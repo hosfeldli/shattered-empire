@@ -58,13 +58,15 @@ One-time setup (needs `gcloud`, and optionally `gh`):
 
 This enables the APIs, creates an Artifact Registry repo, a runtime service account, a deployer service account and a Workload Identity Federation pool restricted to this repository, sets the GitHub Actions variables, and pushes `main`. From then on every push to `main` runs the tests, builds the container, pushes it to Artifact Registry and deploys to Cloud Run. No service-account key is stored in GitHub.
 
-Get the game URL from the Actions run summary, or:
+### Networking
 
-```bash
-gcloud run services describe shattered-empires --region us-east1 --format 'value(status.url)'
+```
+game.liamhosfeld.com ──DNS A──▶ 136.69.75.137 (stem-portfolio-ip, global external Application LB)
+   stem-portfolio-https-proxy (cert: game-liamhosfeld-com-cert, Google-managed)
+   stem-portfolio-url-map ── host game.liamhosfeld.com ──▶ shattered-empires-backend
+   shattered-empires-neg (serverless NEG, us-east1) ──▶ Cloud Run: shattered-empires
 ```
 
-If the URL returns 403, your organization blocks public (`allUsers`) access; allow it with
-`gcloud run services add-iam-policy-binding shattered-empires --region us-east1 --member allUsers --role roles/run.invoker`.
+Cloud Run ingress is `internal-and-cloud-load-balancing`, so the `*.run.app` URL is closed; the game is only reachable through the load balancer. WebSockets (`/ws`) pass through the LB unchanged. `infra/lb.sh` recreates this wiring idempotently.
 
 Cloud Run runs a single instance (`--max-instances 1`, session affinity, 60-minute WebSocket timeout, CPU always allocated) because live matches are held in memory. Scaling past one instance means routing each match to its instance (e.g. match id → instance via Memorystore) — the simulation itself is already isolated per match.

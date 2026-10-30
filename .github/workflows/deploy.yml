@@ -15,6 +15,9 @@ env:
   REGION: ${{ vars.GCP_REGION || 'us-east1' }}
   PROJECT: ${{ vars.GCP_PROJECT }}
   REPOSITORY: shattered-empires
+  # Public entry point: the shared external Application Load Balancer (static IP) -> serverless NEG -> Cloud Run.
+  PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'game.liamhosfeld.com' }}
+  LB_IP: ${{ vars.LB_IP || '136.69.75.137' }}
 
 jobs:
   test:
@@ -77,6 +80,7 @@ jobs:
             --platform managed \
             --service-account "${{ vars.GCP_RUNTIME_SA }}" \
             --allow-unauthenticated \
+            --ingress internal-and-cloud-load-balancing \
             --session-affinity \
             --timeout 3600 \
             --cpu 2 --memory 1Gi \
@@ -88,15 +92,15 @@ jobs:
           URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Smoke test
+      # Cloud Run only accepts traffic from the load balancer, so test through the LB's IP.
+      # (-k: the managed certificate may still be provisioning right after DNS changes.)
+      - name: Smoke test via load balancer
         run: |
-          URL="${{ steps.deploy.outputs.url }}"
-          echo "### Shattered Empires is live: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Shattered Empires deployed: https://${PUBLIC_HOST}" >> "$GITHUB_STEP_SUMMARY"
           for i in $(seq 1 10); do
-            CODE=$(curl -s -o /tmp/health -w '%{http_code}' "$URL/api/health")
+            CODE=$(curl -sk -o /tmp/health -w '%{http_code}' --resolve "${PUBLIC_HOST}:443:${LB_IP}" "https://${PUBLIC_HOST}/api/health")
             if [ "$CODE" = 200 ]; then cat /tmp/health; exit 0; fi
-            echo "attempt $i: HTTP $CODE"; cat /tmp/health; echo
-            sleep 3
+            echo "attempt $i: HTTP $CODE"; head -c 300 /tmp/health; echo
+            sleep 6
           done
-          if [ "$CODE" = 403 ]; then echo "::error::Cloud Run returned 403: the service is not publicly accessible. Your organization policy may block allUsers; see README."; fi
           exit 1
