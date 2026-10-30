@@ -66,7 +66,9 @@ export function findPath(game, civ, start, goal, unitType, maxNodes = 24000) {
   if (stamp[c] !== gen) return null;
   while (c !== start && c >= 0) { path.push(c); c = came[c]; }
   path.reverse();
-  return path.length ? path : null;
+  if (!path.length) return null;
+  if (best !== goal) path.partial = true; // goal unreachable: this only gets as close as possible
+  return path;
 }
 
 // Road routing: prefer passable land, avoid water; returns tile list including start.

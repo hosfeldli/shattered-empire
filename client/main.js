@@ -165,6 +165,7 @@ const actions = {
   jump(tile) { view.centerOn(tile); },
   refresh() { hud.drawer(true); },
   async train(unit) { if (S.selBuilding != null) { const r = await actions.cmd({ c: 'train', building: S.selBuilding, unit }); if (!r.error) hud.toast({ text: `Training ${S.defs.UNITS[unit].name}.`, kind: 'build' }); } },
+  narrow(type) { for (const id of [...S.selUnits]) if (S.units.get(id)?.type !== type) S.selUnits.delete(id); hud.selection(); },
   act(a) {
     const ids = [...S.selUnits].filter((id) => S.units.get(id)?.owner === S.civId);
     if (a === 'stop') actions.cmd({ c: 'stop', units: ids });
@@ -218,6 +219,7 @@ function bindInput() {
   }, { passive: false });
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT') return;
+    if (controlGroupKey(e)) return;
     keys.add(e.key.toLowerCase());
     const k = e.key.toLowerCase();
     if (k === 'escape') { setMode(null); $('menu').hidden = true; }
@@ -293,16 +295,55 @@ async function leftClick(e) {
     }
     if (m.kind === 'road') { if (m.from < 0) { m.from = tile; $('hint').textContent = 'Now click where the road should end. Esc to cancel.'; } else { await actions.cmd({ c: 'road', from: m.from, to: tile, rail: m.rail }); setMode(null); } return; }
     if (m.kind === 'clearPass') { await actions.cmd({ c: 'clearPass', tile }); setMode(null); return; }
-    if (m.kind === 'attackMove') { actions.cmd({ c: 'move', units: [...S.selUnits], tile, attackMove: true }); setMode(null); return; }
+    if (m.kind === 'attackMove') { orderMove([...S.selUnits], tile, true); setMode(null); return; }
   }
   const u = unitUnder(e.offsetX, e.offsetY);
-  if (!e.shiftKey) { S.selUnits.clear(); S.selBuilding = null; }
+  // pointerup does not carry a reliable click count, so track double-clicks ourselves
+  const now = performance.now();
+  const dbl = lastClick && now - lastClick.t < 380 && Math.hypot(e.offsetX - lastClick.x, e.offsetY - lastClick.y) < 10 && u && lastClick.type === u.type;
+  lastClick = { t: now, x: e.offsetX, y: e.offsetY, type: u ? u.type : null };
+  if (!e.shiftKey && !dbl) { S.selUnits.clear(); S.selBuilding = null; }
   if (u) {
-    if (e.detail === 2 && u.owner === S.civId) for (const o of S.units.values()) { if (o.owner === S.civId && o.type === u.type) { const s = view.unitSprites.get(o.id); const [x, y] = view.worldToScreen(s.dx, s.dy); if (x > 0 && y > 0 && x < view.app.screen.width && y < view.app.screen.height) S.selUnits.add(o.id); } }
-    S.selUnits.add(u.id);
+    if (dbl && u.owner === S.civId) {
+      // double-click: every owned unit of that type on screen; with Ctrl/Cmd: across the whole map
+      if (!e.shiftKey) S.selUnits.clear();
+      selectType(u.type, !(e.ctrlKey || e.metaKey));
+      lastClick = null;
+    } else S.selUnits.add(u.id);
   } else if (tile >= 0) { const b = buildingAt(tile); if (b) S.selBuilding = b.id; }
   hud.selection();
   view.syncBuildings();
+}
+let lastClick = null;
+
+function selectType(type, onScreenOnly) {
+  const sw = view.app.screen.width, sh = view.app.screen.height;
+  for (const o of S.units.values()) {
+    if (o.owner !== S.civId || o.type !== type) continue;
+    if (onScreenOnly) { const s = view.unitSprites.get(o.id); if (!s) continue; const [x, y] = view.worldToScreen(s.dx, s.dy); if (x < 0 || y < 0 || x > sw || y > sh) continue; }
+    S.selUnits.add(o.id);
+  }
+}
+
+// Control groups: Ctrl+1..9 assigns, 1..9 recalls, pressing the number twice centres the camera.
+const groups = {};
+let lastGroupKey = { k: null, t: 0 };
+function controlGroupKey(e) {
+  const k = e.key;
+  if (!/^[1-9]$/.test(k)) return false;
+  if (e.ctrlKey || e.metaKey) {
+    groups[k] = [...S.selUnits].filter((id) => S.units.get(id)?.owner === S.civId);
+    hud.toast({ text: `Group ${k}: ${groups[k].length} units.`, kind: 'build' });
+    e.preventDefault(); return true;
+  }
+  const ids = (groups[k] || []).filter((id) => S.units.has(id));
+  if (!ids.length) return true;
+  if (!e.shiftKey) { S.selUnits.clear(); S.selBuilding = null; }
+  ids.forEach((id) => S.selUnits.add(id));
+  const now = performance.now();
+  if (lastGroupKey.k === k && now - lastGroupKey.t < 400) view.centerOn(S.units.get(ids[0]).tile);
+  lastGroupKey = { k, t: now };
+  hud.selection(); return true;
 }
 
 function rightClick(e) {
@@ -319,8 +360,15 @@ function rightClick(e) {
   if (target && target.owner !== S.civId && rel(target.owner) === 'war') { actions.cmd({ c: 'attack', units: mine, target: { kind: 'unit', id: target.id } }); view.ping(target.tile, 0.6, 0xd0533b); return; }
   const b = buildingAt(tile);
   if (b && b.o !== S.civId && rel(b.o) === 'war') { actions.cmd({ c: 'attack', units: mine, target: { kind: 'building', id: b.id } }); view.ping(tile, 0.8, 0xd0533b); return; }
-  actions.cmd({ c: 'move', units: mine, tile, attackMove: e.shiftKey });
+  orderMove(mine, tile, e.shiftKey);
+}
+
+async function orderMove(units, tile, attackMove) {
   view.ping(tile, 0.5, 0xf1c75b);
+  const r = await actions.cmd({ c: 'move', units, tile, attackMove });
+  const o = r && r.order; if (!o) return;
+  if (o.unreachable) hud.toast({ text: `${o.unreachable} unit${o.unreachable > 1 ? 's' : ''} cannot reach that location at all.`, kind: 'error' });
+  else if (o.partial) hud.toast({ text: `No route to that exact spot: ${o.partial} unit${o.partial > 1 ? 's are' : ' is'} moving to the closest reachable point.`, kind: 'warning' });
 }
 
 // ------------------------------------------------------------------ boot

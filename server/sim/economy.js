@@ -275,7 +275,7 @@ export function migrationStep(g) {
     if (a.owner === b.owner || dist(a.tile, b.tile) > 14) continue;
     if (appeal(b) - appeal(a) > 28 && a.pop > 4 && b.pop < b.housing) {
       const m = Math.min(1, a.pop * 0.03); a.pop -= m; b.pop += m;
-      if (Math.random() < 0.3) g.notify(a.owner, `Citizens of ${a.name} are emigrating to ${b.name} (${g.civs[b.owner].name}).`, { kind: 'city', tile: a.tile, quiet: true });
+      if (g.rng() < 0.3) g.notify(a.owner, `Citizens of ${a.name} are emigrating to ${b.name} (${g.civs[b.owner].name}).`, { kind: 'city', tile: a.tile, quiet: true });
     }
   }
 }

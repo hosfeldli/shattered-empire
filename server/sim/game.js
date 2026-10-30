@@ -55,7 +55,7 @@ export class Game {
       rates: {}, researchRate: 0, researching: null, progress: 0, techs: new Set(),
       age: 0, advancing: 0, gov: 'chiefdom', govCooldown: 0, policies: new Set(), tax: 1, focus: 'balanced',
       weariness: 0, casualties: 0, kills: 0, popTotal: 0,
-      knownVer: new Uint16Array(N), explored: new Uint8Array(N), knownOwner: new Int8Array(N).fill(-2), visible: new Uint8Array(N), supply: new Uint8Array(N),
+      knownVer: new Uint16Array(N), explored: new Uint8Array(N), lastOwner: new Int8Array(N).fill(-2), knownCities: new Map(), intel: {}, knownOwner: new Int8Array(N).fill(-2), visible: new Uint8Array(N), supply: new Uint8Array(N),
       visKey: '', proposals: [], wonder: null, notices: [], lastEcon: 0,
     };
   }
@@ -391,8 +391,32 @@ export class Game {
         if (!allies.includes(b.owner)) continue;
         for (const t of disk(b.tile, (BUILDINGS[b.type].vision || 2) + tele)) vis[t] = 1;
       }
-      for (let i = 0; i < N; i++) { if (w.owner[i] === civ.id) vis[i] = 1; if (vis[i]) civ.explored[i] = 1; }
+      for (let i = 0; i < N; i++) { if (w.owner[i] === civ.id) vis[i] = 1; if (vis[i]) { civ.explored[i] = 1; civ.lastOwner[i] = w.owner[i]; } }
+      this.updateIntel(civ);
       this.diplomacy.checkContact(civ);
+    }
+  }
+
+  // What a civilization actually knows about others: cities it has seen (last-known), and the
+  // military strength it has observed. AI planning reads only this, never the true world state.
+  updateIntel(civ) {
+    const vis = civ.visible;
+    for (const c of this.cities.values()) if (vis[c.tile]) civ.knownCities.set(c.id, { tile: c.tile, owner: c.owner, name: c.name, seen: this.time });
+    for (const [id, k] of civ.knownCities) { if (!vis[k.tile]) continue; const c = this.cities.get(id); if (!c || c.tile !== k.tile) civ.knownCities.delete(id); }
+    const seen = {};
+    for (const u of this.units.values()) {
+      if (u.owner === civ.id || !vis[u.tile]) continue;
+      const d = UNITS[u.type]; if (d.civilian) continue;
+      seen[u.owner] = (seen[u.owner] || 0) + (d.atk + d.def) * (u.hp / u.maxHp);
+    }
+    for (const o of this.civs) {
+      if (o === civ) continue;
+      const prev = civ.intel[o.id] || { peak: 0, seen: 0, time: -1 };
+      const now = seen[o.id] || 0;
+      // last-known estimate decays slowly toward what is currently observed
+      prev.peak = Math.max(now, prev.peak * 0.99995);
+      prev.seen = now; if (now > 0) prev.time = this.time;
+      civ.intel[o.id] = prev;
     }
   }
 
@@ -463,7 +487,16 @@ export class Game {
       roads: this.roadJobs.filter((j) => j.owner === civ.id).map((j) => j.tiles.slice(j.i)),
       proposals: civ.proposals,
     };
-    const civs = this.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, alive: c.alive, human: c.human, age: c.age, rel: c.id === civ.id ? null : this.diplomacy.rel(civ.id, c.id), summary: this.civSummary(c) }));
+    // Other empires reveal only what this civilization could know: nothing before contact,
+    // and afterwards only their age (publicly announced) and the cities this civ has seen.
+    const civs = this.civs.map((c) => {
+      const base = { id: c.id, name: c.name, color: c.color, alive: c.alive, human: c.human };
+      if (c.id === civ.id) return { ...base, age: c.age, rel: null, summary: this.civSummary(c) };
+      const rel = this.diplomacy.rel(civ.id, c.id);
+      if (rel.state === 'unmet') return { ...base, rel: { state: 'unmet' } };
+      const knownCities = [...civ.knownCities.values()].filter((k) => k.owner === c.id).length;
+      return { ...base, age: c.age, rel, known: { cities: knownCities } };
+    });
     return { econ: me, buildings, cities, civs, supply: packBits(civ.supply).toString('base64') };
   }
 
@@ -564,15 +597,18 @@ export class Game {
     const units = (ids || []).map((id) => this.units.get(id)).filter((u) => u && u.owner === civ.id);
     // spread a group over the destination area so they do not all stack on one hex
     const spots = units.length > 1 ? disk(tile, units.length > 7 ? 2 : 1).filter((t) => Number.isFinite(TERRAIN[this.world.terr[t]].move) || isWater(this.world.terr[t])) : [tile];
+    const results = { reached: 0, partial: 0, unreachable: 0 };
     units.forEach((u, k) => {
       const dest = spots[k % spots.length];
-      const path = findPath(this, civ, u.tile, dest, u.type);
+      const path = u.tile === dest ? [] : findPath(this, civ, u.tile, dest, u.type);
       u.path = path || [];
-      u.goal = dest;
+      u.goal = path && path.partial ? path[path.length - 1] : dest;
       u.order = { kind: attackMove ? 'attackMove' : 'move' };
-      if (!path && u.tile !== dest) this.notify(civ.id, `${UNITS[u.type].name} cannot reach that location.`, { kind: 'error', quiet: true });
+      if (!path && u.tile !== dest) results.unreachable++;
+      else if (path && path.partial) results.partial++;
+      else results.reached++;
     });
-    return null;
+    return { reply: { t: 'ack', order: results } };
   }
 
   orderAttack(civ, ids, target) {

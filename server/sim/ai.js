@@ -184,7 +184,7 @@ export class AI {
     let s = 0;
     for (const n of disk(t, 3)) {
       if (!this.civ.explored[n]) continue;
-      if (w.owner[n] >= 0 && w.owner[n] !== this.civ.id) s -= 1;
+      if (this.civ.lastOwner[n] >= 0 && this.civ.lastOwner[n] !== this.civ.id) s -= 1;
       s += TERRAIN[w.terr[n]].fert + (w.terr[n] === T.FOREST ? 0.5 : 0) + (w.res[n] ? 1 : 0) + (w.river[n] ? 0.3 : 0);
     }
     return s;
@@ -234,9 +234,11 @@ export class AI {
   strength(units) { return units.reduce((s, u) => s + (UNITS[u.type].civilian ? 0 : (UNITS[u.type].atk + UNITS[u.type].def) * (u.hp / u.maxHp)), 0); }
   enemies() { return this.g.civs.filter((o) => o.alive && this.g.hostile(this.civ.id, o.id)); }
   enemiesNear() {
-    const g = this.g, w = g.world;
-    return [...g.units.values()].filter((u) => g.hostile(this.civ.id, u.owner) && !UNITS[u.type].civilian && (w.owner[u.tile] === this.civ.id || this.cities.some((c) => dist(c.tile, u.tile) <= 6)));
+    const g = this.g, w = g.world, vis = this.civ.visible;
+    return [...g.units.values()].filter((u) => vis[u.tile] && g.hostile(this.civ.id, u.owner) && !UNITS[u.type].civilian && (w.owner[u.tile] === this.civ.id || this.cities.some((c) => dist(c.tile, u.tile) <= 6)));
   }
+  // Observed (last-known) military strength of another empire — never the true value.
+  observed(o) { const i = this.civ.intel[o.id]; return i ? i.peak : 0; }
 
   trainChoice(b) {
     const civ = this.civ, g = this.g;
@@ -296,7 +298,7 @@ export class AI {
       const r = g.diplomacy.rel(civ.id, o.id);
       if (r.state !== 'peace') continue;
       const patience = { warlord: 240, builder: 720, merchant: 900 }[this.p];
-      const theirs = this.strength([...g.units.values()].filter((u) => u.owner === o.id));
+      const theirs = this.observed(o);
       const mine = this.strength(army);
       if (g.time - r.since > patience && mine > theirs * (this.p === 'warlord' ? 1.3 : 1.8) && army.length >= desired * 0.8 && r.attitude < 30) {
         this.cmd({ c: 'diplo', to: o.id, action: 'war' });
@@ -306,7 +308,14 @@ export class AI {
     // campaigns
     if (!enemies.length) { this.campaign = null; this.rally(army); return; }
     const target = this.pickTargetCity(enemies);
-    if (!target) { this.rally(army); return; }
+    if (!target) {
+      // no enemy city has been seen yet: march on the nearest territory we know is theirs, or scout for it
+      const tile = this.knownEnemyTile(enemies);
+      const idle = army.filter((u) => !u.path.length && u.order.kind === 'idle');
+      if (tile >= 0 && idle.length >= Math.max(4, desired * 0.6)) this.cmd({ c: 'move', units: idle.map((u) => u.id), tile, attackMove: true });
+      else this.rally(army);
+      return;
+    }
     const ready = army.filter((u) => u.order.kind !== 'attack');
     const avgSupply = army.length ? army.reduce((s, u) => s + u.supply, 0) / army.length : 100;
     if (!this.campaign || this.campaign.city !== target.id) {
@@ -321,7 +330,7 @@ export class AI {
       if (home) this.cmd({ c: 'move', units: army.map((u) => u.id), tile: home.tile });
       this.campaign = null; return;
     }
-    const town = g.buildings.get(target.buildingId);
+    const town = target.buildingId >= 0 ? g.buildings.get(target.buildingId) : null;
     const near = army.filter((u) => dist(u.tile, target.tile) <= 4);
     if (town && near.length) this.cmd({ c: 'attack', units: near.filter((u) => u.order.kind !== 'attack').map((u) => u.id), target: { kind: 'building', id: town.id } });
     const idle = army.filter((u) => !u.path.length && u.order.kind === 'idle' && dist(u.tile, target.tile) > 4);
@@ -338,21 +347,27 @@ export class AI {
     if (!cap) return;
     // stand guard toward the nearest known foreign city
     let front = cap.tile, bd = Infinity;
-    for (const c of g.cities.values()) if (c.owner !== this.civ.id && this.civ.explored[c.tile]) { const d = dist(cap.tile, c.tile); if (d < bd) { bd = d; front = c.tile; } }
+    for (const k of this.civ.knownCities.values()) if (k.owner !== this.civ.id) { const d = dist(cap.tile, k.tile); if (d < bd) { bd = d; front = k.tile; } }
     const own = this.cities.slice().sort((a, b) => dist(a.tile, front) - dist(b.tile, front))[0] || cap;
     const loiter = army.filter((u) => !u.path.length && u.order.kind === 'idle' && dist(u.tile, own.tile) > 3);
     if (loiter.length) this.cmd({ c: 'move', units: loiter.map((u) => u.id), tile: own.tile });
   }
 
+  // Targets come from the civ's own last-known observations only.
   pickTargetCity(enemies) {
     const g = this.g, cap = g.capital(this.civ);
     let best = null, bd = Infinity;
-    for (const c of g.cities.values()) {
-      if (!enemies.some((e) => e.id === c.owner) || !this.civ.explored[c.tile]) continue;
-      const d = dist(cap.tile, c.tile) + (c.capital ? 6 : 0);
-      if (d < bd) { bd = d; best = c; }
+    for (const [id, k] of this.civ.knownCities) {
+      if (!enemies.some((e) => e.id === k.owner)) continue;
+      const d = dist(cap.tile, k.tile);
+      if (d < bd) { bd = d; best = { id, tile: k.tile, buildingId: g.tileB[k.tile] }; }
     }
-    if (!best) for (const c of g.cities.values()) if (enemies.some((e) => e.id === c.owner)) { const d = dist(cap.tile, c.tile); if (d < bd) { bd = d; best = c; } }
+    return best;
+  }
+  knownEnemyTile(enemies) {
+    const cap = this.g.capital(this.civ); const lo = this.civ.lastOwner;
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < N; i++) { if (lo[i] < 0 || !enemies.some((e) => e.id === lo[i])) continue; const d = dist(cap.tile, i); if (d < bd) { bd = d; best = i; } }
     return best;
   }
 
@@ -363,7 +378,7 @@ export class AI {
     for (const o of g.civs) {
       if (o === civ || !o.alive) continue;
       const r = g.diplomacy.rel(civ.id, o.id);
-      const theirs = this.strength([...g.units.values()].filter((u) => u.owner === o.id));
+      const theirs = this.observed(o);
       if (r.state === 'war' && (mine < theirs * 0.7 || civ.weariness > 35) && g.time - r.since > 120 && g.time - this.lastTrade > 60) {
         this.lastTrade = g.time; g.diplomacy.act(civ, o.id, 'peace');
       } else if (r.state === 'peace' && !r.trade && this.p !== 'warlord' && g.time - this.lastTrade > 150 && civ.techs.has('trade')) {
@@ -375,7 +390,7 @@ export class AI {
   evaluate(from, action) {
     const g = this.g, civ = this.civ, r = g.diplomacy.rel(civ.id, from.id);
     const mine = this.strength([...g.units.values()].filter((u) => u.owner === civ.id));
-    const theirs = this.strength([...g.units.values()].filter((u) => u.owner === from.id));
+    const theirs = this.observed(from);
     switch (action) {
       case 'peace': return mine < theirs * 0.9 || civ.weariness > 25 || (g.time - r.since > 600 && mine < theirs * 1.3) || this.p === 'merchant';
       case 'trade': return r.attitude > -30 && (this.p !== 'warlord' || mine < theirs);

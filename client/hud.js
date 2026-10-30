@@ -127,7 +127,7 @@ export class Hud {
       const avg = (f) => Math.round(units.reduce((s, u) => s + u[f], 0) / units.length);
       const first = D.UNITS[units[0].type];
       html += `<h3>${units.length > 1 ? `${units.length} units` : esc(first.name)}</h3>`;
-      html += `<div class="sub">${own ? [...types].map(([t, n]) => `${n}× ${esc(D.UNITS[t].name)}`).join(', ') : esc(S.civInfo[units[0].owner]?.name || '')}</div>`;
+      html += own ? `<div class="chips">${[...types].map(([t, n]) => `<button class="chip" data-narrow="${t}" title="Select only these">${n}× ${esc(D.UNITS[t].name)}</button>`).join('')}</div>` : `<div class="sub">${esc(S.civInfo[units[0].owner]?.name || '')}</div>`;
       html += `<div>Strength</div><div class="bar hp"><i style="width:${avg('hp')}%"></i></div>`;
       if (own) {
         const outs = units.filter((u) => u.flags & 4).length;
@@ -136,7 +136,7 @@ export class Hud {
         if (units.length === 1) html += `<dl class="kv"><dt>Attack</dt><dd>${first.atk}</dd><dt>Defense</dt><dd>${first.def}</dd><dt>Range</dt><dd>${first.range}</dd><dt>Speed</dt><dd>${first.speed}</dd></dl>`;
         html += `<div class="actions"><button class="btn small" data-act="stop">Stop (S)</button><button class="btn small" data-act="amove">Attack-move (A)</button>`;
         if (units.some((u) => u.type === 'settler')) html += `<button class="btn small primary" data-act="found">Found city (F)</button>`;
-        html += `</div>`;
+        html += `</div><p class="muted">Double-click a unit for all of its type on screen; Ctrl/⌘ + double-click for all on the map. Ctrl+1–9 saves a group.</p>`;
       }
     } else if (S.selBuilding != null && S.buildings.has(S.selBuilding)) {
       const b = S.buildings.get(S.selBuilding), d = D.BUILDINGS[b.ty];
@@ -175,7 +175,8 @@ export class Hud {
   }
 
   onSelClick(e) {
-    const t = e.target.closest('[data-act],[data-train],[data-jump]'); if (!t) return;
+    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-narrow]'); if (!t) return;
+    if (t.dataset.narrow) return this.A.narrow(t.dataset.narrow);
     if (t.dataset.train) return this.A.train(t.dataset.train);
     if (t.dataset.jump) return this.A.jump(+t.dataset.jump);
     this.A.act(t.dataset.act);
@@ -185,7 +186,7 @@ export class Hud {
   drawer(force) {
     const S = this.S, e = S.econ; if (!e) return;
     const D = S.defs;
-    const key = this.tab + JSON.stringify([e.research, Math.floor(e.progress / 5), e.techs.length, e.age, e.advancing > 0, e.gov, e.govCooldown > 0, e.policies, e.tax, e.focus, e.proposals, S.civInfo.map((c) => [c.rel, c.alive, c.summary?.cities, c.age]), this.tab === 'chronicle' ? S.log.length : 0]);
+    const key = this.tab + JSON.stringify([e.research, Math.floor(e.progress / 5), e.techs.length, e.age, e.advancing > 0, e.gov, e.govCooldown > 0, e.policies, e.tax, e.focus, e.proposals, S.civInfo.map((c) => [c.rel, c.alive, c.known?.cities, c.age]), this.tab === 'chronicle' ? S.log.length : 0]);
     if (!force && key === this.drawerKey) return;
     this.drawerKey = key;
     const body = $('drawerBody'); const scroll = body.scrollTop;
@@ -228,10 +229,10 @@ export class Hud {
       for (const c of S.civInfo) {
         if (c.id === S.civId) continue;
         const r = c.rel || { state: 'unmet' };
-        const sm = c.summary || {};
+        const known = c.known || {};
         h += `<div class="civrow"><div class="hd"><span class="swatch" style="background:${cssColor(c.color)}"></span><b>${esc(c.name)}</b><span class="state ${r.state}">${c.alive ? r.state : 'fallen'}</span></div>`;
         if (r.state !== 'unmet' && c.alive) {
-          h += `<div class="muted">${esc(D.AGES[c.age].name)}, ${sm.cities} cities${r.trade ? ', trade agreement' : ''}${r.borders ? ', open borders' : ''}</div><div class="actions">`;
+          h += `<div class="muted">${esc(D.AGES[c.age].name)}, ${known.cities} cities seen${r.trade ? ', trade agreement' : ''}${r.borders ? ', open borders' : ''}</div><div class="actions">`;
           const btn = (a, label, cls = '') => `<button class="btn small ${cls}" data-diplo="${a}" data-to="${c.id}">${label}</button>`;
           if (r.state === 'war') h += btn('peace', 'Propose peace', 'primary');
           else {
