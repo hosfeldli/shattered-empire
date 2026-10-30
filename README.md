@@ -27,7 +27,11 @@ Reclamation → Industrial Recovery → Mechanization → Networked Warfare → 
 - **Armies** take one order and manage formation, stance and spacing; tactical defend zones; automated offensive preparation; rally networks; control groups; double-click selection.
 - **Rebel Free Companies** raise camps in the wilds, raid, occupy ruins and absorb revolting cities.
 - **Alerts** are levelled (info/minor/major/critical); a command history records who ordered what — you, a governor or an army — and why.
+- **Everything is visible in the world**: buildings are drawn as structures on their hexes (barns and silos, pumpjacks, cooling towers, star forts, runways, piers facing the sea) in the owner's era materials and colours. Planned sites are gold blueprints, construction rises from a foundation, damaged buildings are scorched. Status badges show what is wrong right where it happens: no workers, missing input (named up close), no power, awaiting funds, damaged, on fire, training (with a progress ring). City banners carry population, capital and governor plan, with famine, cut off and unrest in words. Armies fly standards with their orders. Press **K** in game for the map key.
 - **The world looks alive**: districts grow with population and era, pedestrians, traffic and freight trains follow the real roads, factories smoke, farms change with the seasons, construction sites have cranes and crews, damage leaves fires and rubble, and a day/night cycle lights the cities.
+
+### Watching AI matches (testing)
+**Watch an AI match** in the lobby starts an AI-only game with no fog of war: every empire's units, cities and buildings are visible, with full city detail. Follow any empire to see its economy, research and cities in the panels, switch to its fog of war to check what it can see, run the match at 1×, 2×, 4× or 8× speed or pause it, and see AI offensives as arrows to the city they are marching on. Running matches also appear in the lobby with a **Watch** button. Spectators cannot give orders. Keys: `[` `]` follow previous/next, `P` pause, `,` `.` slower/faster, `V` fog.
 
 ## Develop locally
 
@@ -39,6 +43,7 @@ npm run test:e2e     # browser tests (needs: npx playwright install chromium)
 npm run demo         # write a 25-minute AI match snapshot; rejoin it with token demo-token
 npm run soak         # 30 minutes of AI-vs-AI in ~5 seconds
 node test/preview.mjs 42 map.png   # render a continent
+# building art gallery: http://localhost:8080/dev/buildings.html?era=0..4&state=op|planned|build|damaged|mix
 ```
 
 ## Deploy (Google Cloud Run via GitHub Actions)

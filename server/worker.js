@@ -23,17 +23,25 @@ function flush() {
   if (out.length) { post({ t: 'out', msgs: out.splice(0) }); }
 }
 
-let tickMs = 0, maxMs = 0, ticks = 0, overSent = false;
+let tickMs = 0, maxMs = 0, ticks = 0, overSent = false, frames = 0;
 const AUTOSAVE_S = +(process.env.AUTOSAVE_SECONDS || 60);
 let nextSave = game.time + AUTOSAVE_S;
+// Spectated AI-only matches can run faster than real time (or pause) for testing.
+const OBSERVE = !!workerData.observe;
+game.speed = 1;
 const timer = setInterval(() => {
   try {
     const t0 = performance.now();
-    game.tick();
-    if (game.tickN % 2 === 0) for (const [civId, msg] of game.snapshots()) send(civId, msg);
+    // at higher speeds, run several ticks per interval but never let one interval overrun
+    let n = 0;
+    while (n < game.speed && (n === 0 || performance.now() - t0 < 70) && !game.over) { game.tick(); n++; }
+    if (!game.speed) { frames++; if (frames % 5 === 0 && game.observer?.connected) send(-2, game.observerSnapshot(false, frames % 10 === 0)); flush(); return; }
+    frames++;
+    // 5 Hz snapshots, economy every second, regardless of how many ticks ran
+    if (frames % 2 === 0) for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg);
     flush();
-    const dt = performance.now() - t0;
-    tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks++;
+    const dt = (performance.now() - t0) / n;
+    tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks += n;
     if (game.time >= nextSave) { nextSave = game.time + AUTOSAVE_S; post({ t: 'autosave', buf: save(), time: game.time }); }
     if (game.over && !overSent) { overSent = true; post({ t: 'over', winner: game.winner, buf: save() }); }
   } catch (e) {
@@ -60,6 +68,30 @@ parentPort.on('message', (m) => {
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel })), start: game.world.starts[m.civId], time: game.time });
       for (const [, msg] of game.snapshots(m.civId)) send(m.civId, msg);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
+      flush();
+    } else if (m.t === 'observe') {
+      game.setObserver({ connected: m.on });
+    } else if (m.t === 'obsWelcome') {
+      const o = game.setObserver({ connected: true });
+      send(-2, { t: 'welcome', match: game.id, civId: o.follow, spectator: true, seed: game.seed, defs: GAME_DEFS,
+        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel })), start: game.world.starts[o.follow], time: game.time });
+      send(-2, game.observerSnapshot(true));
+      for (const e of game.log.slice(-15)) if (e.kind) send(-2, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
+      flush();
+    } else if (m.t === 'obsCmd') {
+      // spectators can only change what they watch and how fast the match runs
+      const c = m.cmd || {};
+      let error;
+      if (c.c === 'follow' || c.c === 'fog') {
+        const before = game.observer?.follow;
+        const o = game.setObserver(c.c === 'follow' ? { follow: c.civ } : { fog: c.on });
+        send(-2, { t: 'ack', rid: m.rid, follow: o.follow, fog: o.fog });
+        if (c.c === 'fog' || before !== o.follow) send(-2, { ...game.observerSnapshot(true), reset: 1 });
+      } else if (c.c === 'speed') {
+        if (!OBSERVE) error = 'Speed control is only available when spectating an AI match';
+        else { game.speed = [0, 1, 2, 4, 8].includes(+c.speed) ? +c.speed : 1; send(-2, { t: 'ack', rid: m.rid, speed: game.speed }); }
+      } else error = 'Spectators cannot give orders';
+      if (error) send(-2, { t: 'ack', rid: m.rid, error });
       flush();
     } else if (m.t === 'save') {
       post({ t: 'saved', buf: save(), time: game.time, rid: m.rid });

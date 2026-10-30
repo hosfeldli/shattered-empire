@@ -3,8 +3,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+// An explicit SNAPSHOT_DIR always wins (tests, local runs), so a stray SNAPSHOT_BUCKET in the
+// environment never sends a dev or CI server to the metadata server.
 export function makeStore(log, dir = process.env.SNAPSHOT_DIR || '.snapshots') {
-  const bucket = process.env.SNAPSHOT_BUCKET;
+  const bucket = process.env.SNAPSHOT_DIR ? null : process.env.SNAPSHOT_BUCKET;
   return bucket ? gcsStore(bucket, log) : fileStore(dir);
 }
 

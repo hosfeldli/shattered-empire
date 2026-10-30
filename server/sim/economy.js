@@ -191,14 +191,18 @@ export function economyStep(g, dt) {
       for (const b of blds) {
         const def = BUILDINGS[b.type];
         const damaged = b.hp < b.maxHp * 0.5 ? 0.5 : 1;          // damaged buildings work at half capacity
-        if (!def.jobs) { if (def.power < 0) powerUse += -def.power * (b.queue.length ? 1 : 0.3); continue; }
+        if (!def.jobs) { b.why = def.power < 0 && b.queue.length && civ.techs.has('electrification') && pr < 0.6 ? 'power' : ''; if (def.power < 0) powerUse += -def.power * (b.queue.length ? 1 : 0.3); continue; }
         const [kind] = def.jobs;
         const n = b.staffed; jobs[kind] += n;
         b.active = n > 0;
+        // why a building is not (fully) working, shown in the world: staff, input, power, rare
+        b.why = n ? '' : b.done ? 'staff' : '';
         if (!n) continue;
         if (def.power > 0) {
           let ok = 1;
-          if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt; if (need > 0) ok = Math.min(ok, Math.max(0, (pool(k) + cd[k]) / need)); }
+          let short = '';
+          if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / need); if (r < ok) { ok = r; short = k; } } }
+          if (ok < 0.5) b.why = 'input:' + short;
           if (def.consume) for (const k in def.consume) cd[k] -= def.consume[k] * n * dt * ok;
           powerGen += def.power * n * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
           if (b.type === 'fusion_plant') research += 0.1 * n;
@@ -206,8 +210,12 @@ export function economyStep(g, dt) {
         }
         let ratio = damaged;
         if (def.power < 0) { powerUse += -def.power * n; ratio *= pr; }
-        if (def.needs === 'rare' && !g.civHasResource(civ, RES.RARE)) ratio = 0;
-        if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) ratio = Math.min(ratio, Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * dt))); }
+        if (def.power < 0 && civ.techs.has('electrification') && pr < 0.6) b.why = 'power';
+        if (def.needs === 'rare' && !g.civHasResource(civ, RES.RARE)) { ratio = 0; b.why = 'rare'; }
+        const before = ratio;
+        let short = '';
+        if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * dt)); if (r < ratio) { ratio = r; short = k; } } }
+        if (before > 0 && ratio < before * 0.5) b.why = 'input:' + short;
         if (def.consume) for (const k in def.consume) cd[k] -= def.consume[k] * n * dt * ratio;
         if (!def.produce) continue;
         for (const k in def.produce) {

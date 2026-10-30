@@ -1,5 +1,5 @@
 // Authoritative match simulation. One Game per match; clients only send intents.
-import { N, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater } from './constants.js';
+import { N, W, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { World } from './world.js';
 import { mulberry32 } from './rng.js';
@@ -519,62 +519,89 @@ export class Game {
   }
 
   // ----------------------------------------------------------------- snapshots
-  snapshots(onlyCiv = null) {
+  // Per-viewer snapshots. A viewer is a civ (fog-filtered) or the spectator (whole map, or a
+  // followed civ's fog). Each viewer keeps its own "already sent" tile versions.
+  snapshots(onlyCiv = null, econFlag = undefined) {
     const out = [];
-    const w = this.world;
     const full = onlyCiv !== null;
-    const econ = this.tickN % 10 === 0 || full;
+    const econ = econFlag ?? (this.tickN % 10 === 0 || full);
     for (const civ of this.civs) {
       if (civ.isRebel) continue;
       if (full ? civ.id !== onlyCiv : !civ.connected) continue;
-      if (full) { civ.knownVer.fill(0); civ.knownOwner.fill(-2); civ.visKey = ''; civ.knownStab = false; }
-      const vis = civ.visible;
-      const tiles = [];
-      const stabOK = civ.techs.has('surveying');
-      for (let i = 0; i < N; i++) {
-        if (!vis[i] && !(full && civ.explored[i])) continue;
-        if (civ.knownVer[i] !== w.ver[i] || civ.knownOwner[i] !== w.owner[i] || (stabOK && civ.knownStab !== true)) {
-          civ.knownVer[i] = w.ver[i]; civ.knownOwner[i] = w.owner[i];
-          tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));
-        }
-      }
-      if (stabOK) civ.knownStab = true;
-      const units = [];
-      for (const u of this.units.values()) {
-        if (u.owner !== civ.id && (!vis[u.tile] || !this.detects(civ.id, u))) continue;
-        units.push([u.id, u.owner, u.type, u.tile, u.next ?? -1, Math.round(u.prog * 100), Math.round((100 * u.hp) / u.maxHp), Math.round(u.supply),
-          (this.time - u.lastCombat < 1.5 ? 1 : 0) | (isWater(w.terr[u.tile]) && !UNITS[u.type].air ? 2 : 0) | (u.outOfSupply ? 4 : 0) | (u.status === 'waiting' ? 8 : 0) | (u.status === 'blocked' ? 16 : 0) | (u.field ? 32 : 0),
-          u.owner === civ.id ? u.stance : undefined]);
-      }
-      const paths = {};
-      for (const u of this.units.values()) if (u.owner === civ.id && (u.path.length || u.field)) paths[u.id] = u.field ? [u.slot] : u.path.slice(0, 40);
-      const fx = this.fx.filter((f) => vis[f[1]] || vis[f[2]]);
-      let visB64;
-      const key = packBits(vis).toString('base64');
-      if (key !== civ.visKey) { civ.visKey = key; visB64 = key; }
-      const msg = { t: 's', time: +this.time.toFixed(1), units, paths, fx };
-      if (tiles.length) msg.tiles = tiles;
-      if (visB64) msg.vis = visB64;
-      if (econ) Object.assign(msg, this.econSnapshot(civ));
-      out.push([civ.id, msg]);
+      out.push([civ.id, this.viewerSnapshot(civ, { civ, vis: civ.visible, explored: civ.explored, god: false }, full, econ)]);
     }
+    if (!full && this.observer && this.observer.connected) out.push([-2, this.observerSnapshot(false, econ)]);
     return out;
   }
 
-  econSnapshot(civ) {
-    const vis = civ.visible;
+  setObserver(opts = {}) {
+    const o = this.observer || (this.observer = { connected: false, follow: 0, fog: false, knownVer: new Uint16Array(N), knownOwner: new Int8Array(N).fill(-2), visKey: '', knownStab: false });
+    if (opts.connected !== undefined) o.connected = !!opts.connected;
+    if (opts.follow !== undefined) { const c = this.civs[opts.follow | 0]; if (c && !c.isRebel) o.follow = c.id; }
+    if (opts.fog !== undefined) o.fog = !!opts.fog;
+    if (!this.civs[o.follow] || this.civs[o.follow].isRebel) o.follow = this.civs.find((c) => !c.isRebel)?.id ?? 0;
+    return o;
+  }
+
+  observerSnapshot(full, econ = true) {
+    const o = this.setObserver();
+    const civ = this.civs[o.follow];
+    if (!this.allSeen) this.allSeen = new Uint8Array(N).fill(1);
+    const view = o.fog ? { civ, vis: civ.visible, explored: civ.explored, god: false, known: o, observer: true } : { civ, vis: this.allSeen, explored: this.allSeen, god: true, known: o, observer: true };
+    return this.viewerSnapshot(civ, view, full, econ);
+  }
+
+  viewerSnapshot(civ, view, full, econ) {
+    const w = this.world;
+    const k = view.known || civ;   // where this viewer's sent-tile bookkeeping lives
+    if (full) { k.knownVer.fill(0); k.knownOwner.fill(-2); k.visKey = ''; k.knownStab = false; }
+    const vis = view.vis, explored = view.explored;
+    const tiles = [];
+    const stabOK = view.god || civ.techs.has('surveying');
+    for (let i = 0; i < N; i++) {
+      if (!vis[i] && !(full && explored[i])) continue;
+      if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
+        k.knownVer[i] = w.ver[i]; k.knownOwner[i] = w.owner[i];
+        tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));
+      }
+    }
+    if (stabOK) k.knownStab = true;
+    const units = [];
+    for (const u of this.units.values()) {
+      if (!view.god && u.owner !== civ.id && (!vis[u.tile] || !this.detects(civ.id, u))) continue;
+      units.push([u.id, u.owner, u.type, u.tile, u.next ?? -1, Math.round(u.prog * 100), Math.round((100 * u.hp) / u.maxHp), Math.round(u.supply),
+        (this.time - u.lastCombat < 1.5 ? 1 : 0) | (isWater(w.terr[u.tile]) && !UNITS[u.type].air ? 2 : 0) | (u.outOfSupply ? 4 : 0) | (u.status === 'waiting' ? 8 : 0) | (u.status === 'blocked' ? 16 : 0) | (u.field ? 32 : 0),
+        u.owner === civ.id || view.god ? u.stance : undefined]);
+    }
+    const paths = {};
+    for (const u of this.units.values()) if ((u.owner === civ.id || view.god) && (u.path.length || u.field)) paths[u.id] = u.field ? [u.slot] : u.path.slice(0, view.god ? 16 : 40);
+    const fx = view.god ? this.fx : this.fx.filter((f) => vis[f[1]] || vis[f[2]]);
+    let visB64;
+    const key = packBits(vis).toString('base64');
+    if (key !== k.visKey) { k.visKey = key; visB64 = key; }
+    const msg = { t: 's', time: +this.time.toFixed(1), units, paths, fx };
+    if (tiles.length) msg.tiles = tiles;
+    if (visB64) msg.vis = visB64;
+    if (view.observer) msg.obs = { follow: civ.id, fog: !view.god, speed: this.speed ?? 1 };
+    if (econ) Object.assign(msg, this.econSnapshot(civ, view));
+    return msg;
+  }
+
+  econSnapshot(civ, view = null) {
+    const vis = view ? view.vis : civ.visible;
+    const god = !!(view && view.god);
     const buildings = [];
     for (const b of this.buildings.values()) {
       if (b.owner !== civ.id && !vis[b.tile]) continue;
-      const own = b.owner === civ.id;
+      const own = b.owner === civ.id || god;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2),
-        ...(own ? { s: b.staffed, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
+        ...(own ? { s: b.staffed, w: b.why || undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
     const cities = [];
     for (const c of this.cities.values()) {
       if (c.owner !== civ.id && !vis[c.tile]) continue;
-      const own = c.owner === civ.id;
+      const own = c.owner === civ.id || god;
       cities.push({ id: c.id, o: c.owner, n: c.name, t: c.tile, pop: +c.pop.toFixed(1), cap: c.capital ? 1 : 0, r: c.radius,
         dmg: this.cityDamage(c),
         ...(own ? { h: c.housing, st: Math.round(c.stability), jobs: c.jobs, un: Math.round(c.unemployed), fs: c.foodShort ? 1 : 0, dis: Math.round(c.disaster), occ: Math.round(c.occupied), unrest: c.stability < 20 ? 1 : 0, trade: c.tradeConnected ? 1 : 0,
@@ -582,7 +609,7 @@ export class Game {
           gov: c.governor ? { enabled: c.governor.enabled, spec: c.governor.spec, reserve: c.governor.reserve, perms: c.governor.perms, log: c.governor.log.slice(0, 12), queue: c.governor.queue } : null } : {}) });
     }
     const ruins = [];
-    for (const [t, r] of this.ruins) if (vis[t] || civ.explored[t]) ruins.push([t, r.type, (r.clearing ? 1 : 0) | (r.smoke > 0 ? 2 : 0) | (r.overgrown ? 4 : 0)]);
+    for (const [t, r] of this.ruins) if (vis[t] || civ.explored[t] || god) ruins.push([t, r.type, (r.clearing ? 1 : 0) | (r.smoke > 0 ? 2 : 0) | (r.overgrown ? 4 : 0)]);
     const traffic = [];
     for (const [k, v] of this.roads.traffic) { const a = Math.floor(k / N), b = k % N; if (v > 0.5 && (vis[a] || vis[b])) traffic.push([a, b, Math.min(9, Math.round(v))]); }
     const soldiers = [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + UNITS[u.type].pop, 0);
@@ -599,11 +626,31 @@ export class Game {
       const base = { id: c.id, name: c.name, color: c.color, alive: c.alive, human: c.human, rebel: c.isRebel };
       if (c.id === civ.id) return { ...base, age: c.age, rel: null, summary: this.civSummary(c) };
       const rel = this.diplomacy.rel(civ.id, c.id);
-      if (rel.state === 'unmet') return { ...base, rel: { state: 'unmet' } };
+      if (rel.state === 'unmet' && !god) return { ...base, rel: { state: 'unmet' } };
       const knownCities = [...civ.knownCities.values()].filter((k) => k.owner === c.id).length;
+      if (god && !c.isRebel) base.summary = this.civSummary(c);
       return { ...base, age: c.isRebel ? undefined : c.age, rel: { state: rel.state, trade: rel.trade, borders: rel.borders, until: rel.until ? Math.round(rel.until - this.time) : undefined }, known: { cities: knownCities } };
     });
-    return { econ: me, buildings, cities, civs, ruins, traffic, supply: packBits(civ.supply).toString('base64') };
+    const out = { econ: me, buildings, cities, civs, ruins, traffic, supply: packBits(civ.supply).toString('base64') };
+    if (god) out.campaigns = this.campaignSummary();
+    return out;
+  }
+
+  // Spectators see every AI offensive: where its army is, the city it is marching on.
+  campaignSummary() {
+    const list = [];
+    for (const c of this.civs) {
+      const cp = c.ai && c.ai.campaign; if (!cp || !c.alive) continue;
+      const city = this.cities.get(cp.city); if (!city) continue;
+      const army = [...this.units.values()].filter((u) => u.owner === c.id && !UNITS[u.type].civilian && !UNITS[u.type].engineer && u.type !== 'scout_buggy');
+      if (!army.length) continue;
+      // the unit nearest the army's centre of mass marks where the army is
+      let sx = 0, sy = 0; for (const u of army) { sx += u.tile % W; sy += (u.tile / W) | 0; }
+      sx /= army.length; sy /= army.length;
+      let best = army[0], bd = Infinity; for (const u of army) { const d = (u.tile % W - sx) ** 2 + (((u.tile / W) | 0) - sy) ** 2; if (d < bd) { bd = d; best = u; } }
+      list.push({ civ: c.id, from: best.tile, to: city.tile, name: city.name, owner: city.owner, n: army.length });
+    }
+    return list;
   }
 
   // ----------------------------------------------------------------- commands

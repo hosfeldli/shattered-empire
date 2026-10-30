@@ -37,6 +37,15 @@
             <select id="pvpAi"><option value="0" selected>0</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="6">6</option></select></label>
           <button id="btnHost" class="btn">Host a match</button>
         </fieldset>
+        <fieldset class="plate watch">
+          <legend>Watch the AI</legend>
+          <p class="muted small">An AI-only match with no fog of war: follow any empire, pause or run it at up to 8× speed. Handy for testing and for learning how empires grow.</p>
+          <label class="field inline"><span>Empires</span>
+            <select id="watchCount"><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option><option value="6">6</option><option value="8">8</option><option value="12">12</option></select></label>
+          <label class="field inline"><span>Temperament</span>
+            <select id="watchPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
+          <button id="btnWatch" class="btn">Watch an AI match</button>
+        </fieldset>
       </div>
       <details class="advanced"><summary>World options</summary>
         <label class="field inline"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
@@ -73,6 +82,7 @@
       <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
       <button id="alertsBtn" class="alerts-btn" aria-label="Alerts"><span class="dot critical" id="alC">0</span><span class="dot major" id="alM">0</span></button>
       <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
+      <button id="btnKey" class="btn icon" aria-label="Map key" title="Map key: what the symbols in the world mean (K)">?</button>
       <button id="btnMenu" class="btn icon" aria-label="Menu">&#9776;</button>
     </header>
     <div id="toasts" aria-live="polite"></div>
@@ -80,6 +90,7 @@
     <aside id="roadPanel" class="plate" hidden></aside>
     <aside id="selection" class="plate"></aside>
     <nav id="buildbar" class="plate"></nav>
+    <nav id="specbar" class="plate" hidden aria-label="Spectator controls"></nav>
     <aside id="drawer" class="plate">
       <div class="tabs" role="tablist">
         <button role="tab" data-tab="research" aria-selected="true">Research</button>
@@ -97,12 +108,14 @@
         <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button><button data-lens="traffic">Traffic</button>
       </div>
     </div>
+    <aside id="mapkey" class="plate" hidden aria-label="Map key"></aside>
     <div id="hint" class="hint"></div>
     <div id="tooltip" class="tooltip" hidden></div>
     <div id="menu" class="modal" hidden>
       <div class="plate">
         <h2>Paused view</h2>
-        <p class="muted">The world keeps moving. Shortcuts: right-click move/attack (Shift: attack-move), A attack-move, S stop, F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Space centre, L cycle lenses, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <p class="muted">The world keeps moving. Shortcuts: right-click move/attack (Shift: attack-move), A attack-move, S stop, F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
         <button id="btnResume" class="btn primary">Back to the map</button>
         <button id="btnSurrender" class="btn danger">Surrender</button>
         <button id="btnQuit" class="btn ghost">Leave match</button>

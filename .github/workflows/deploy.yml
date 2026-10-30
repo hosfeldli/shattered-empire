@@ -18,7 +18,6 @@ env:
   # Public entry point: the shared external Application Load Balancer (static IP) -> serverless NEG -> Cloud Run.
   PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'game.liamhosfeld.com' }}
   LB_IP: ${{ vars.LB_IP || '136.69.75.137' }}
-  SNAPSHOT_BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
 
 jobs:
   test:
@@ -52,6 +51,9 @@ jobs:
     environment:
       name: production
       url: ${{ steps.deploy.outputs.url }}
+    env:
+      # Only the deployed service persists to Cloud Storage; test jobs use a temp folder.
+      SNAPSHOT_BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
     steps:
       - uses: actions/checkout@v4
 

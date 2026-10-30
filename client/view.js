@@ -4,6 +4,7 @@
 import { AmbientWorld } from './visual/AmbientWorld.js';
 import { lodFor } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
+import { drawBuildingArt, waterDir, shade } from './visual/BuildingArt.js';
 
 export const R = 12;
 export const SQ3 = Math.sqrt(3);
@@ -40,7 +41,8 @@ export class View {
     this.borders = L('g'); this.front = L('g'); this.ruinsG = L('g');
     this.districtLayer = L(); this.underG = L('g');
     this.bLayer = L(); this.ambientG = L('g'); this.uLayer = L(); this.fxG = L('g'); this.overlay = L('g');
-    this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.underG, this.bLayer, this.ambientG, this.uLayer, this.fxG, this.overlay);
+    this.overlayTags = L(); this.campG = L('g');
+    this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.underG, this.bLayer, this.ambientG, this.uLayer, this.fxG, this.overlay, this.campG, this.overlayTags);
     // night: a screen tint, then additive lights in world space above it
     this.night = new PIXI.Graphics(); app.stage.addChild(this.night);
     this.lights = new PIXI.Graphics(); this.lights.blendMode = 'add';
@@ -67,6 +69,17 @@ export class View {
     this.dirtyTiles = new Set(); this.dirtyOverlay = new Set(); this.overlayAll = true; this.bordersDirty = true; this.ruinsDirty = true;
     this.ambient = new AmbientWorld(this, this.S);
     app.ticker.add((t) => this.frame(Math.min(0.1, t.deltaMS / 1000)));
+  }
+
+  // spectator follow/fog switches resend the map from scratch
+  resetMap() {
+    for (const ch of this.chunks) {
+      ch.tctx.fillStyle = UNKNOWN; ch.tctx.fillRect(ch.x0, ch.y0, ch.x1 - ch.x0, ch.y1 - ch.y0); ch.tTex.source.update();
+      ch.octx.clearRect(ch.x0, ch.y0, ch.x1 - ch.x0, ch.y1 - ch.y0); ch.oTex.source.update();
+    }
+    for (const s of this.unitSprites.values()) s.destroy({ children: true });
+    this.unitSprites.clear();
+    this.dirtyTiles.clear(); this.overlayAll = true; this.bordersDirty = true; this.ruinsDirty = true;
   }
 
   // ---------------------------------------------------------------- geometry & camera
@@ -255,41 +268,170 @@ export class View {
     return s;
   }
 
+  // In-world label: a small pill (background + text) that keeps a readable on-screen size.
+  makeTag(parent, size = 7, font = 'Barlow Semi Condensed, sans-serif') {
+    const c = new PIXI.Container(); const bg = new PIXI.Graphics();
+    const tx = new PIXI.Text({ text: '', style: { fontFamily: font, fontSize: size, fontWeight: '700', fill: 0xffffff, letterSpacing: 0.3 } });
+    tx.anchor.set(0.5); tx.resolution = 4; c.addChild(bg, tx); parent.addChild(c); c.bg = bg; c.tx = tx; c.cur = '';
+    return c;
+  }
+  setTag(tag, text, fg, bg, opts = {}) {
+    const k = text + fg + bg + (opts.bar ?? '');
+    if (tag.cur === k) return;
+    tag.cur = k; tag.tx.text = text; tag.tx.style.fill = fg;
+    const w = tag.tx.width + 7, hh = tag.tx.height + 2;
+    tag.bg.clear().roundRect(-w / 2, -hh / 2, w, hh, 2.5).fill({ color: bg, alpha: 0.88 }).stroke({ width: 0.8, color: opts.edge ?? 0x0b1518, alpha: 0.9 });
+    if (opts.bar != null) tag.bg.rect(-w / 2 + 1.5, hh / 2 - 1.6, (w - 3) * opts.bar, 1.1).fill({ color: 0x8fe0a8 });
+  }
+
+  setStatusTag(tag, [text, fg, bg, kind], iconOnly) {
+    const k = text + kind + iconOnly;
+    if (tag.cur === k) return;
+    tag.cur = k;
+    tag.tx.visible = !iconOnly; tag.tx.text = text; tag.tx.style.fill = fg;
+    const ic = tag.icon; ic.clear();
+    if (iconOnly) {
+      tag.bg.clear().circle(0, 0, 4.4).fill({ color: bg, alpha: 0.95 }).stroke({ width: 0.8, color: 0x0b1518 });
+      drawStatusIcon(ic, kind, fg); ic.position.set(0, 0);
+    } else {
+      const w = tag.tx.width + 13, hh = Math.max(8.5, tag.tx.height + 2);
+      tag.bg.clear().roundRect(-w / 2, -hh / 2, w, hh, 2.5).fill({ color: bg, alpha: 0.92 }).stroke({ width: 0.8, color: 0x0b1518, alpha: 0.9 });
+      drawStatusIcon(ic, kind, fg); ic.position.set(-w / 2 + 5, 0); tag.tx.position.set(3.2, 0);
+    }
+  }
+
+  // What a building is (not) doing, in words, for its in-world tag. Null when all is well.
+  buildingStatus(b) {
+    const S = this.S, D = S.defs, inspect = b.o === S.civId || S.spectator;
+    if (b.f) return ['ON FIRE', 0xffffff, 0xb5432f, 'fire'];
+    if (b.st === 'damaged') return ['DAMAGED', 0xffd9cf, 0x6a2a1e, 'damaged'];
+    if (b.st === 'planned') return [inspect ? 'AWAITING FUNDS' : 'PLANNED', 0x1b1405, 0xf1c75b, 'funds'];
+    if (!b.d) return null;
+    if (!inspect) return null;
+    if (b.w === 'staff') return ['NO WORKERS', 0x1b1405, 0xf0b54a, 'staff'];
+    if (b.w === 'power') return ['NO POWER', 0x1b1405, 0xf0d84a, 'power'];
+    if (b.w === 'rare') return ['NEEDS RARE EARTHS', 0xffffff, 0x7a4aa8, 'rare'];
+    if (b.w && b.w.startsWith('input:')) { const g = b.w.slice(6); return ['NO ' + (D.GOOD_NAMES[g] || g).toUpperCase(), 0x1b1405, 0xf0b54a, 'input']; }
+    if (b.q?.length) { const u = D.UNITS[b.q[0][0]]; return [`${u ? u.name.toUpperCase() : 'TRAINING'}${b.q.length > 1 ? ' +' + (b.q.length - 1) : ''}`, 0xe9fbef, 0x24533c, 'train']; }
+    return null;
+  }
+
   buildingSprite(b) {
     let s = this.buildingSprites.get(b.id);
     const S = this.S, def = S.defs.BUILDINGS[b.ty];
     if (!s) {
       s = new PIXI.Container();
-      s.body = new PIXI.Graphics(); s.addChild(s.body);
-      s.glyph = new PIXI.Text({ text: def.glyph, style: { fontSize: b.ty === 'town' ? 14 : 11 } }); s.glyph.anchor.set(0.5); s.glyph.resolution = 3; s.addChild(s.glyph);
-      if (b.ty === 'town') { s.name = new PIXI.Text({ text: '', style: { fontFamily: 'IM Fell English SC, serif', fontSize: 12, fill: 0xf3eedf, stroke: { color: 0x0b1518, width: 3 } } }); s.name.anchor.set(0.5, 0); s.name.position.set(0, 14); s.name.resolution = 3; s.addChild(s.name); }
+      s.body = new PIXI.Graphics(); s.marks = new PIXI.Graphics(); s.addChild(s.body, s.marks);
       s.position.set(this.cx[b.t], this.cy[b.t]);
-      this.bLayer.addChild(s); this.buildingSprites.set(b.id, s); s.key = '';
+      this.bLayer.addChild(s); this.buildingSprites.set(b.id, s); s.key = ''; s.mkey = '';
+      // words float above units, so they live on the label layer
+      s.labels = new PIXI.Container(); s.labels.position.copyFrom(s.position); this.overlayTags.addChild(s.labels);
     }
     const city = b.ty === 'town' ? S.cityAt.get(b.t) : null;
-    const key = [b.o, b.hp, b.d, b.p, b.st, b.f, S.selBuilding === b.id, city ? city.n + Math.floor(city.pop) + (city.iso ? 'i' : '') + (city.fs ? 'f' : '') : '', S.lod].join('|');
+    const era = b.o === S.civId ? S.econ?.age || 0 : S.civInfo[b.o]?.age ?? S.econ?.age ?? 0;
+    const planned = b.st === 'planned', building = !b.d && !planned;
+    const stock = city && city.stock ? Object.values(city.stock).reduce((a, v) => a + v, 0) : 0;
+    const key = [b.ty, b.o, b.st, era, building ? Math.round(b.p / 10) : 0, b.a, S.lod, city ? (city.cap ? 'c' : '') + Math.min(5, Math.floor(stock / 150)) : ''].join('|');
     if (key !== s.key) {
       s.key = key;
-      const g = s.body; g.clear();
-      const sz = b.ty === 'town' ? 12 : 8.5;
+      drawBuildingArt(s.body, b, def, { id: b.id, era, civ: S.civColor(b.o), lod: S.lod, ghost: planned, building, damaged: b.st === 'damaged', active: !!b.a,
+        alpha: building ? 0.3 + 0.7 * (b.p / 100) : 1, capital: city?.cap, stockCrates: Math.floor(stock / 150), water: b.ty === 'port' ? waterDir(this, S, b.t) : null });
+    }
+    // progress, condition, training and selection marks
+    const sel = S.selBuilding === b.id;
+    const mkey = [b.hp, b.p, b.d, b.tr ?? -1, sel, S.lod, planned].join('|');
+    if (mkey !== s.mkey) {
+      s.mkey = mkey;
+      const g = s.marks; g.clear();
+      const R0 = b.ty === 'town' ? 12 : 10.5;
+      if (building) g.rect(-8, 9.5, 16, 2.2).fill({ color: 0x1b1405, alpha: 0.85 }).rect(-8, 9.5, (16 * b.p) / 100, 2.2).fill({ color: 0xf1c75b });
+      if (b.hp < 100 && b.d) g.rect(-8, -R0 - 3, 16, 2).fill({ color: 0x220d09, alpha: 0.85 }).rect(-8, -R0 - 3, (16 * b.hp) / 100, 2).fill({ color: b.hp > 50 ? 0x6db36a : 0xd0533b });
+      if (b.tr != null && b.d) g.arc(0, 0, R0, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * b.tr) / 100).stroke({ width: 1.8, color: 0x8fe0a8, alpha: 0.95 });
+      if (sel) g.poly(this.hexLocal(R0 + 1.5)).stroke({ width: 1.8, color: 0xf1c75b });
+    }
+    // status tag above the building
+    // mid zoom: a pictogram badge; close up: pictogram and words
+    const st = this.buildingStatus(b);
+    if (st && S.lod !== 'strategic') {
+      if (!s.tag) { s.tag = this.makeTag(s.labels, 5.6); s.tag.icon = new PIXI.Graphics(); s.tag.addChild(s.tag.icon); s.tag.position.set(0, -13); }
+      this.setStatusTag(s.tag, st, S.lod !== 'micro'); s.tag.visible = true;
+    } else if (s.tag) s.tag.visible = false;
+    // city banner: name, population, capital star, and its troubles in words
+    if (city) {
+      if (!s.banner) { s.banner = this.makeTag(s.labels, 9, 'IM Fell English SC, serif'); s.banner.position.set(0, 16); s.chips = this.makeTag(s.labels, 6); s.chips.position.set(0, 25); }
       const col = S.civColor(b.o);
-      const planned = b.st === 'planned';
-      if (planned) g.roundRect(-sz, -sz, sz * 2, sz * 2, 3).stroke({ width: 1.4, color: col, alpha: 0.7 });
-      else g.roundRect(-sz, -sz, sz * 2, sz * 2, 3).fill({ color: b.st === 'damaged' ? 0x2a1a14 : 0x0f1a1d, alpha: 0.85 }).stroke({ width: 2, color: col, alpha: b.d ? 1 : 0.5 });
-      if (!b.d && !planned) g.rect(-sz, sz + 2, (2 * sz * b.p) / 100, 3).fill({ color: 0xc99a2e });
-      if (b.hp < 100 && !planned) g.rect(-sz, -sz - 5, 2 * sz, 3).fill({ color: 0x220d09 }).rect(-sz, -sz - 5, (2 * sz * b.hp) / 100, 3).fill({ color: b.hp > 50 ? 0x6db36a : 0xd0533b });
-      if (S.selBuilding === b.id) g.roundRect(-sz - 3, -sz - 3, sz * 2 + 6, sz * 2 + 6, 4).stroke({ width: 1.5, color: 0xf1c75b });
-      if (city && city.o === S.civId && (city.iso || city.fs)) g.circle(sz, -sz, 3.5).fill({ color: city.fs ? 0xe0533b : 0xf0b54a }).stroke({ width: 1, color: 0x0b1518 });
-      s.glyph.alpha = planned ? 0.35 : b.d ? 1 : 0.55;
-      if (s.name && city) s.name.text = `${city.n} ${Math.floor(city.pop)}`;
+      this.setTag(s.banner, `${city.cap ? '★ ' : ''}${city.n}  ${Math.floor(city.pop)}`, 0xf3eedf, shade(col, 0.42), { edge: col });
+      const own = city.o === S.civId || S.spectator;
+      const troubles = own ? [city.fs && 'STARVING', city.iso && 'CUT OFF', city.unrest && 'UNREST', city.dmg >= 30 && 'DAMAGED'].filter(Boolean) : [];
+      const gov = own && city.gov?.enabled ? 'GOVERNOR · ' + (S.defs.GOVERNOR_SPECS[city.gov.spec]?.name || '').toUpperCase() : '';
+      if (troubles.length) this.setTag(s.chips, troubles.join(' · '), 0xffffff, 0xb5432f);
+      else if (gov) this.setTag(s.chips, gov, 0xdff3e6, 0x24533c);
+      s.chips.visible = !!(troubles.length || gov);
     }
     return s;
   }
+  hexLocal(r) { const p = []; for (let k = 0; k < 6; k++) p.push(r * CORNERS[k][0], r * CORNERS[k][1]); return p; }
 
   syncBuildings() {
     const S = this.S;
-    for (const [id, s] of this.buildingSprites) if (!S.buildings.has(id)) { s.destroy({ children: true }); this.buildingSprites.delete(id); }
+    for (const [id, s] of this.buildingSprites) if (!S.buildings.has(id)) { s.labels?.destroy({ children: true }); s.destroy({ children: true }); this.buildingSprites.delete(id); }
     for (const b of S.buildings.values()) this.buildingSprite(b);
+  }
+
+  // AI offensives (spectators): a dashed arrow from the army to the city it marches on, labelled.
+  syncCampaigns() {
+    const S = this.S;
+    this.campTags = this.campTags || [];
+    const list = S.campaigns || [];
+    list.forEach((c, i) => {
+      const x0 = this.cx[c.from], y0 = this.cy[c.from], x1 = this.cx[c.to], y1 = this.cy[c.to];
+      const L = Math.hypot(x1 - x0, y1 - y0) || 1, ux = (x1 - x0) / L, uy = (y1 - y0) / L;
+      c.mx = (x0 + x1) / 2 - uy * L * 0.12; c.my = (y0 + y1) / 2 + ux * L * 0.12;
+      let t = this.campTags[i];
+      if (!t) { t = this.makeTag(this.overlayTags, 8); this.campTags[i] = t; }
+      this.setTag(t, `${S.civInfo[c.civ]?.name || ''} → ${c.name} · ${c.n} units`, 0xffffff, 0x5a1e14, { edge: S.civColor(c.civ) });
+      t.position.set(c.mx, c.my); t.visible = true; t.wx = c.mx;
+    });
+    for (let i = list.length; i < this.campTags.length; i++) { this.campTags[i].visible = false; this.campTags[i].wx = null; }
+  }
+  // drawn every frame so the stroke keeps a visible width at any zoom
+  drawCampaigns() {
+    const S = this.S, g = this.campG; g.clear();
+    const w = Math.max(2.5, 2.4 / this.cam.z);
+    for (const c of S.campaigns || []) {
+      if (c.mx == null) continue;
+      const x0 = this.cx[c.from], y0 = this.cy[c.from], x1 = this.cx[c.to], y1 = this.cy[c.to];
+      const col = S.civColor(c.civ);
+      const L = Math.hypot(x1 - x0, y1 - y0) || 1, ux = (x1 - x0) / L, uy = (y1 - y0) / L;
+      const steps = Math.max(8, Math.floor(L / 9));
+      const pts = []; for (let k = 0; k <= steps; k++) { const t = k / steps, a = (1 - t) * (1 - t), b = 2 * (1 - t) * t, cc = t * t; pts.push([a * x0 + b * c.mx + cc * x1, a * y0 + b * c.my + cc * y1]); }
+      // dark casing, then dashes in the attacker's colour, marching toward the target
+      g.moveTo(pts[0][0], pts[0][1]); for (const p of pts) g.lineTo(p[0], p[1]); g.stroke({ width: w + 2, color: 0x0b1518, alpha: 0.55 });
+      const ph = (this.t * 2) % 2;
+      for (let k = 0; k < steps; k++) if (Math.floor(k + ph) % 2 === 0) g.moveTo(pts[k][0], pts[k][1]).lineTo(pts[k + 1][0], pts[k + 1][1]);
+      g.stroke({ width: w, color: col, alpha: 0.95 });
+      const hs = w * 2.6, hx = x1 - ux * hs * 1.6, hy = y1 - uy * hs * 1.6;
+      g.poly([x1 - ux * 4, y1 - uy * 4, hx - uy * hs, hy + ux * hs, hx + uy * hs, hy - ux * hs]).fill({ color: col }).stroke({ width: 1, color: 0x0b1518 });
+      g.circle(x1, y1, Math.max(12, w * 5)).stroke({ width: w * 0.7, color: 0xd0533b, alpha: 0.85 });
+    }
+  }
+
+  // Army standards: each army's name and what it is doing, planted over its centre.
+  syncArmies() {
+    const S = this.S; this.armyTags = this.armyTags || new Map();
+    const seen = new Set();
+    for (const a of S.econ?.armies || []) {
+      if (a.center == null || a.center < 0 || !a.units.length) continue;
+      seen.add(a.id);
+      let t = this.armyTags.get(a.id);
+      if (!t) { t = new PIXI.Container(); t.flag = new PIXI.Graphics(); t.addChild(t.flag); t.tag = this.makeTag(t, 7); t.tag.position.set(0, -24); this.overlayTags.addChild(t); this.armyTags.set(a.id, t); }
+      const col = S.civColor(S.civId);
+      t.flag.clear().moveTo(0, 0).lineTo(0, -19).stroke({ width: 1, color: 0xe7e2d4 }).poly([0, -19, 8, -16.5, 0, -14]).fill({ color: col }).stroke({ width: 0.6, color: 0x0b1518 });
+      const status = { attacking: 0xb5432f, engaging: 0xb5432f, withdrawing: 0x8a4a2a, blocked: 0x8a4a2a, staging: 0x8a6a1e }[a.status] ?? 0x24394a;
+      this.setTag(t.tag, `${a.name} · ${a.units.length} · ${String(a.status || 'idle').toUpperCase()}`, 0xffffff, status, { edge: col });
+      t.tx = this.cx[a.center]; t.ty = this.cy[a.center] - 4;
+    }
+    for (const [id, t] of this.armyTags) if (!seen.has(id)) { t.destroy({ children: true }); this.armyTags.delete(id); }
   }
 
   // ---------------------------------------------------------------- per-frame
@@ -309,8 +451,23 @@ export class View {
     this.lightWorld.scale.set(z); this.lightWorld.position.copyFrom(this.world.position);
     this.vr = this.viewRect(R * 2);
     S.lod = lodFor(z);
+    if (S.lod !== this.lastLod) { this.lastLod = S.lod; this.syncBuildings(); }
     for (const ch of this.chunks) { const v = ch.x1 > this.vr[0] && ch.x0 < this.vr[2] && ch.y1 > this.vr[1] && ch.y0 < this.vr[3]; ch.ts.visible = v; ch.os.visible = v; }
-    for (const s of this.buildingSprites.values()) s.visible = this.inView(s.x, s.y, 40);
+    // labels keep a readable size on screen whatever the zoom
+    const ts = Math.min(3, Math.max(0.55, 1.35 / z));
+    const tagS = Math.min(2.6, Math.max(0.6, 2 / z));
+    for (const s of this.buildingSprites.values()) {
+      s.visible = this.inView(s.x, s.y, 40); s.labels.visible = s.visible;
+      if (!s.visible) continue;
+      if (s.tag) s.tag.scale.set(tagS);
+      if (s.banner) { s.banner.scale.set(ts); s.chips.scale.set(ts); s.banner.y = 11 + 6 * ts; s.chips.y = s.banner.y + 10.5 * ts; }
+      if (s.tag) s.tag.y = -10 - 4 * tagS;
+    }
+    if (this.campTags) for (const t of this.campTags) if (t.wx != null) t.scale.set(ts);
+    if (this.armyTags) for (const t of this.armyTags.values()) {
+      t.sx = t.sx == null ? t.tx : t.sx + (t.tx - t.sx) * Math.min(1, dt * 3); t.sy = t.sy == null ? t.ty : t.sy + (t.ty - t.sy) * Math.min(1, dt * 3);
+      t.position.set(t.sx, t.sy); t.visible = this.inView(t.sx, t.sy, 60); t.tag.scale.set(ts); t.flag.scale.set(Math.max(1, ts * 0.9));
+    }
     // units: interpolate toward server positions, fan out stacks, orient vehicles
     const seen = new Set(), stacks = new Map();
     for (const u of S.units.values()) { const k = u.next >= 0 && u.prog > 50 ? u.next : u.tile; const a = stacks.get(k) || []; a.push(u); stacks.set(k, a); }
@@ -352,6 +509,7 @@ export class View {
     for (const [k, bt] of this.stackBadges) if (!badges.has(k)) { bt.destroy(); this.stackBadges.delete(k); }
     this.ambient.frame(dt, this.t);
     this.drawOverlay();
+    this.drawCampaigns();
     this.drawFx(dt);
   }
 
@@ -428,3 +586,18 @@ export class View {
 }
 
 export function hexA(c, a) { return `rgba(${(c >> 16) & 255},${(c >> 8) & 255},${c & 255},${a})`; }
+
+// Small vector pictograms for building status badges (drawn within about ±3 units).
+export function drawStatusIcon(g, kind, col) {
+  switch (kind) {
+    case 'fire': g.poly([0, -3.2, 2.2, 0, 1.4, 2.6, -1.4, 2.6, -2.2, 0, -0.6, -1]).fill({ color: col }); break;
+    case 'damaged': g.moveTo(-2.6, -2.6).lineTo(-0.4, -0.4).lineTo(-1.4, 0.8).lineTo(2.6, 2.8).stroke({ width: 1.1, color: col }); break;
+    case 'funds': g.poly([-2.2, -2.8, 2.2, -2.8, 0, 0]).fill({ color: col }).poly([-2.2, 2.8, 2.2, 2.8, 0, 0]).fill({ color: col }); break;
+    case 'staff': g.circle(0, -1.6, 1.1).fill({ color: col }).roundRect(-1.7, -0.2, 3.4, 2.8, 1).fill({ color: col }).moveTo(-2.8, 2.8).lineTo(2.8, -2.8).stroke({ width: 0.9, color: 0xb5432f }); break;
+    case 'power': g.poly([0.8, -3.2, -2, 0.4, -0.2, 0.4, -0.8, 3.2, 2, -0.6, 0.2, -0.6]).fill({ color: col }); break;
+    case 'input': g.rect(-2.4, -2.4, 4.8, 4.8).stroke({ width: 0.9, color: col }).moveTo(-2.4, -2.4).lineTo(2.4, 2.4).moveTo(2.4, -2.4).lineTo(-2.4, 2.4).stroke({ width: 0.7, color: col }); break;
+    case 'rare': g.poly([0, -3, 2.4, 0, 0, 3, -2.4, 0]).fill({ color: col }); break;
+    case 'train': g.poly([-2.6, -0.6, 0, -2.8, 2.6, -0.6]).stroke({ width: 1, color: col }).poly([-2.6, 2.2, 0, 0, 2.6, 2.2]).stroke({ width: 1, color: col }); break;
+    default: g.circle(0, 0, 1.5).fill({ color: col });
+  }
+}

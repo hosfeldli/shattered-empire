@@ -29,11 +29,44 @@ export class Hud {
     $('selection').addEventListener('change', (e) => this.onSelChange(e));
     $('buildbar').addEventListener('click', (e) => { const b = e.target.closest('[data-build],[data-tool]'); if (b) this.A.buildMode(b.dataset.build || null, b.dataset.tool || null); });
     $('roadPanel').addEventListener('click', (e) => this.onRoadClick(e));
+    $('specbar').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-follow],[data-speed],[data-fog]'); if (!b) return;
+      if (b.dataset.follow) this.A.follow(+b.dataset.follow);
+      else if (b.dataset.speed) this.A.speed(+b.dataset.speed);
+      else if (b.dataset.fog) this.A.fog(b.dataset.fog === '1');
+    });
     $('roadPanel').addEventListener('change', (e) => { if (e.target.id === 'roadType') this.A.roadType(+e.target.value); if (e.target.id === 'roadAuto') this.A.roadAuto(e.target.checked); });
     $('alertsBtn').addEventListener('click', () => { const a = $('alerts'); a.hidden = !a.hidden; this.unseen = { critical: 0, major: 0 }; this.alertBadges(); this.renderAlerts(); });
     $('alertsClear').addEventListener('click', () => { this.alerts = []; this.renderAlerts(); });
     $('alertList').addEventListener('click', (e) => { const li = e.target.closest('[data-jump]'); if (li) this.A.jump(+li.dataset.jump); });
     this.drawerKey = '';
+    $('btnKey').addEventListener('click', () => this.toggleKey());
+  }
+
+  // ------------------------------------------------------------ map key
+  toggleKey(force) {
+    const el = $('mapkey'); el.hidden = force != null ? !force : !el.hidden;
+    if (el.hidden || el.innerHTML) return;
+    const ic = (bg, path, fg = '#1b1405') => `<svg viewBox="-5 -5 10 10" width="20" height="20" aria-hidden="true"><circle r="4.6" fill="${bg}" stroke="#0b1518" stroke-width="0.8"/><g fill="${fg}" stroke="${fg}">${path}</g></svg>`;
+    const rows = [
+      [ic('#b5432f', '<path d="M0 -3.2 L2.2 0 L1.4 2.6 L-1.4 2.6 L-2.2 0 L-0.6 -1 Z" stroke="none"/>', '#fff'), 'On fire', 'Engineers nearby fight fires; it spreads damage until out.'],
+      [ic('#6a2a1e', '<path d="M-2.6 -2.6 L-0.4 -0.4 L-1.4 0.8 L2.6 2.8" fill="none" stroke-width="1.1"/>', '#ffd9cf'), 'Damaged', 'Half output until repaired (Repair, engineers or a governor).'],
+      [ic('#f1c75b', '<path d="M-2.2 -2.8 L2.2 -2.8 L0 0 Z M-2.2 2.8 L2.2 2.8 L0 0 Z" stroke="none"/>'), 'Awaiting funds', 'Planned: shown as a gold outline; construction starts when affordable.'],
+      [ic('#f0b54a', '<circle cy="-1.6" r="1.1" stroke="none"/><rect x="-1.7" y="-0.2" width="3.4" height="2.8" rx="1" stroke="none"/><path d="M-2.8 2.8 L2.8 -2.8" stroke="#b5432f" stroke-width="0.9"/>'), 'No workers', 'The city has no one to staff it: grow population or build fewer job sites.'],
+      [ic('#f0b54a', '<rect x="-2.4" y="-2.4" width="4.8" height="4.8" fill="none" stroke-width="0.9"/><path d="M-2.4 -2.4 L2.4 2.4 M2.4 -2.4 L-2.4 2.4" stroke-width="0.7"/>'), 'Missing input', 'Short of ore, steel or another input; close up it names the good.'],
+      [ic('#f0d84a', '<path d="M0.8 -3.2 L-2 0.4 L-0.2 0.4 L-0.8 3.2 L2 -0.6 L0.2 -0.6 Z" stroke="none"/>'), 'No power', 'Brownout: generation is below demand.'],
+      [ic('#24533c', '<path d="M-2.6 -0.6 L0 -2.8 L2.6 -0.6 M-2.6 2.2 L0 0 L2.6 2.2" fill="none" stroke-width="1"/>', '#e9fbef'), 'Training', 'The green ring around the building fills as the unit nears completion.'],
+    ];
+    let h = `<div class="hd"><b>Map key</b><button class="btn small ghost" data-close="1" aria-label="Close">Close</button></div>`;
+    h += `<ul class="key">${rows.map(([i, n, d]) => `<li>${i}<span><b>${n}</b><small>${d}</small></span></li>`).join('')}</ul>`;
+    h += `<ul class="key text">
+      <li><span class="sw banner">★ City 12</span><span><small>City banner: ★ capital, population. A red strip underneath lists famine, cut off, unrest or heavy damage; green shows its governor's plan.</small></span></li>
+      <li><span class="sw flag">⚑ 1st Army · 6 · STAGING</span><span><small>Army standard over each army: name, units, what it is doing.</small></span></li>
+      <li><span class="sw bar"></span><span><small>Gold bar under a site: construction progress (scaffolding and crews show the work).</small></span></li>
+      <li><span class="sw outline"></span><span><small>Each building's base is edged in its owner's colour. Buildings change material with the era: timber, brick, concrete, glass, composites.</small></span></li>
+    </ul>`;
+    el.innerHTML = h;
+    el.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) this.toggleKey(false); });
   }
 
   // ------------------------------------------------------------ top bar
@@ -135,6 +168,26 @@ export class Hud {
     if (key !== this.bbKey) { this.bbKey = key; $('buildbar').innerHTML = html; }
   }
 
+  // ------------------------------------------------------------ spectator bar
+  specbar() {
+    const S = this.S, el = $('specbar');
+    if (!S.spectator) { el.hidden = true; return; }
+    el.hidden = false;
+    const D = S.defs, o = S.obs || { speed: 1, fog: false };
+    const civs = S.civInfo.filter((c) => !c.rebel);
+    let h = `<div class="spec-label"><span class="live-dot ${o.speed ? '' : 'paused'}"></span><b>Spectating</b><small>${o.fog ? 'fog: as ' + esc(S.civInfo[S.civId]?.name || '') : 'no fog of war'}</small></div>`;
+    h += `<div class="spec-civs" role="group" aria-label="Follow an empire">${civs.map((c) => {
+      const sm = c.summary || {};
+      const dead = c.alive === false;
+      return `<button class="civchip${c.id === S.civId ? ' on' : ''}${dead ? ' dead' : ''}" data-follow="${c.id}" title="Follow ${esc(c.name)}: see its economy, research and cities in the panels">`
+        + `<span class="swatch" style="background:${cssColor(c.color)}"></span><span class="nm">${esc(c.name)}</span>`
+        + `<small>${dead ? 'fallen' : `${sm.cities ?? '?'} ${sm.cities === 1 ? 'city' : 'cities'} · ${sm.pop ?? '?'} pop · era ${(c.age ?? 0) + 1}`}</small></button>`;
+    }).join('')}</div>`;
+    h += `<div class="seg spec-speed" role="group" aria-label="Match speed">${[[0, 'Pause'], [1, '1×'], [2, '2×'], [4, '4×'], [8, '8×']].map(([v, n]) => `<button class="${o.speed === v ? 'on' : ''}" data-speed="${v}" title="${v ? `Run at ${v}× speed` : 'Pause the match'} (P pause, , and . step)">${n}</button>`).join('')}</div>`;
+    h += `<div class="seg spec-fog" role="group" aria-label="Fog of war"><button class="${o.fog ? '' : 'on'}" data-fog="0" title="Reveal the whole continent (V toggles)">No fog</button><button class="${o.fog ? 'on' : ''}" data-fog="1" title="See only what the followed empire sees (V toggles)">Their fog</button></div>`;
+    if (h !== this.specHtml) { this.specHtml = h; el.innerHTML = h; }
+  }
+
   // ------------------------------------------------------------ road planner
   roadPanel() {
     const S = this.S, m = S.mode, el = $('roadPanel');
@@ -163,7 +216,7 @@ export class Hud {
     let html = '';
     const units = [...S.selUnits].map((id) => S.units.get(id)).filter(Boolean);
     if (units.length) {
-      const own = units[0].owner === S.civId;
+      const own = units[0].owner === S.civId || S.spectator;   // spectators inspect everything
       const types = new Map(); for (const u of units) types.set(u.type, (types.get(u.type) || 0) + 1);
       const avg = (f) => Math.round(units.reduce((s, u) => s + u[f], 0) / units.length);
       const first = D.UNITS[units[0].type];
@@ -188,9 +241,10 @@ export class Hud {
       }
     } else if (S.selBuilding != null && S.buildings.has(S.selBuilding)) {
       const b = S.buildings.get(S.selBuilding), d = D.BUILDINGS[b.ty];
-      const own = b.o === S.civId;
+      const own = b.o === S.civId || S.spectator;
       const city = b.ty === 'town' ? S.cityAt.get(b.t) : null;
-      html += `<h3>${esc(city ? city.n : d.name)}</h3><div class="sub">${esc(city ? d.name + (city.cap ? ' (capital)' : '') : '')}${own ? '' : esc(S.civInfo[b.o]?.name || '')}</div>`;
+      html += `<h3>${esc(city ? city.n : d.name)}</h3><div class="sub">${esc(city ? d.name + (city.cap ? ' (capital)' : '') : '')}${b.o === S.civId && !S.spectator ? '' : (city ? ' · ' : '') + esc(S.civInfo[b.o]?.name || '')}</div>`;
+      if (S.spectator && b.o !== S.civId && S.civInfo[b.o] && !S.civInfo[b.o].rebel) html += `<div class="actions spec-ok"><button class="btn small" data-follow-civ="${b.o}">Follow ${esc(S.civInfo[b.o].name)}</button></div>`;
       if (city && own) {
         html += `<div class="subtabs">${['overview', 'governor', 'storage'].map((t) => `<button class="${this.cityTab === t ? 'on' : ''}" data-ctab="${t}">${t === 'overview' ? 'Overview' : t === 'governor' ? 'Governor' : 'Stockpile'}</button>`).join('')}</div>`;
         if (this.cityTab === 'governor') html += this.governorPanel(city);
@@ -202,9 +256,10 @@ export class Hud {
     } else {
       const e = S.econ;
       const mine = [...S.cities.values()].filter((c) => c.o === S.civId);
-      html += `<h3>Your realm</h3><div class="sub">${mine.length} ${mine.length === 1 ? 'city' : 'cities'}, ${Math.round(mine.reduce((s, c) => s + c.pop, 0))} people, ${e ? fmt(e.men || 0) : 0} soldiers</div>`;
+      html += `<h3>${S.spectator ? 'Following ' + esc(S.civInfo[S.civId]?.name || '') : 'Your realm'}</h3><div class="sub">${mine.length} ${mine.length === 1 ? 'city' : 'cities'}, ${Math.round(mine.reduce((s, c) => s + c.pop, 0))} people, ${e ? fmt(e.men || 0) : 0} soldiers</div>`;
       html += `<ul class="log">${mine.map((c) => `<li data-jump="${c.t}"><b>${esc(c.n)}</b> pop ${Math.floor(c.pop)}/${c.h}, stability <span class="${c.st < 25 ? 'bad' : c.st < 45 ? 'warn' : ''}">${c.st}</span>${c.fs ? ' <span class="tag bad">famine</span>' : ''}${c.iso ? ' <span class="tag warn">cut off</span>' : ''}${c.gov?.enabled ? ' <span class="tag">governed</span>' : ''}</li>`).join('')}</ul>`;
-      html += `<p class="muted">Select units with a click or drag; double-click selects a type. Right-click to move or attack. Pick a building below to place it.</p>`;
+      html += S.spectator ? `<p class="muted">Click any unit, building or city to inspect it. The panels on the right show the followed empire's research, government, cities and armies.</p>`
+        : `<p class="muted">Select units with a click or drag; double-click selects a type. Right-click to move or attack. Pick a building below to place it.</p>`;
     }
     if (html !== this.selHtml) { this.selHtml = html; el.innerHTML = html; }
   }
@@ -217,6 +272,11 @@ export class Hud {
     if (b.st === 'damaged' && own) html += `<div class="bad">Damaged buildings work at half capacity and do not recover by themselves.</div>`;
     if (city) html += `<div>Population ${Math.floor(city.pop)}</div>`;
     if (own && d.jobs && b.d) html += `<div class="muted">${b.s} / ${d.jobs[1]} ${d.jobs[0]}s employed${b.a ? '' : ' (idle)'}</div>`;
+    if (own && b.w) {
+      const g = b.w.startsWith('input:') ? b.w.slice(6) : null;
+      const msg = g ? `Short of ${esc((D.GOOD_NAMES[g] || g).toLowerCase())}: output is limited until supply improves.` : { staff: 'No workers: the city needs more people (housing and food) or fewer job buildings.', power: 'Brownout: power demand exceeds generation. Build or staff a power plant.', rare: 'Needs a rare-earth deposit inside your territory.' }[b.w];
+      if (msg) html += `<div class="warn">${msg}</div>`;
+    }
     if (own && b.gov) html += `<div class="muted">Built by the city governor.</div>`;
     html += this.trainPanel(b, d, own);
     if (own) html += `<div class="actions">${b.hp < 100 && b.d ? '<button class="btn small" data-act="repair">Repair</button>' : ''}${b.ty !== 'town' ? '<button class="btn small ghost" data-act="demolish">Demolish</button>' : ''}</div>`;
@@ -273,7 +333,8 @@ export class Hud {
   }
 
   onSelClick(e) {
-    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card]'); if (!t) return;
+    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ]'); if (!t) return;
+    if (t.dataset.followCiv) return this.A.follow(+t.dataset.followCiv, false);
     if (t.dataset.train) return this.A.train(t.dataset.train);
     if (t.dataset.jump) return this.A.jump(+t.dataset.jump);
     if (t.dataset.ctab) { this.cityTab = t.dataset.ctab; this.selHtml = ''; return this.selection(); }
@@ -467,7 +528,20 @@ export class Hud {
     const tip = $('tooltip'), S = this.S;
     if (tile < 0 || S.terr[tile] === 255) { tip.hidden = true; return; }
     const D = S.defs, t = D.TERRAIN[S.terr[tile]];
-    const parts = [`<b>${esc(t.name)}</b>`];
+    const parts = [];
+    const b = S.buildingAtTile.get(tile);
+    if (b) {
+      const d = D.BUILDINGS[b.ty], city = b.ty === 'town' ? S.cityAt.get(tile) : null;
+      parts.push(`<b class="tt-b">${esc(city ? city.n : d.name)}</b> <span class="muted">${esc(city ? d.name : '')} · ${esc(S.civInfo[b.o]?.name || '')}</span>`);
+      const why = { staff: 'Idle: no workers. The city needs more people (housing, food) or fewer job buildings.', power: 'Brownout: not enough power. Build or staff a power plant.', rare: 'Needs a rare-earth deposit in your territory.' };
+      const state = b.f ? '<span class="bad">On fire</span> — engineers nearby put it out' : b.st === 'damaged' ? '<span class="bad">Damaged</span> — half output until repaired' : b.st === 'planned' ? '<span class="warn">Planned</span> — starts when the resources are available' : !b.d ? `<span class="warn">Under construction ${b.p}%</span>` : b.a ? '<span class="good">Working</span>' : 'Idle';
+      parts.push(state + (b.hp < 100 && b.d ? ` · condition ${b.hp}%` : ''));
+      if (b.w && why[b.w]) parts.push(`<span class="warn">${why[b.w]}</span>`);
+      else if (b.w && b.w.startsWith('input:')) parts.push(`<span class="warn">Short of ${esc((D.GOOD_NAMES[b.w.slice(6)] || b.w.slice(6)).toLowerCase())}: output limited.</span>`);
+      if (b.q?.length) parts.push(`Training ${b.q.map(([u, s2]) => `${esc(D.UNITS[u].name)} (${s2}s)`).join(', ')}`);
+      parts.push('<hr>');
+    }
+    parts.push(`<b>${esc(t.name)}</b>`);
     if (S.flags[tile] & 1) parts.push('River' + (S.flags[tile] & 16 ? ' (low: drought)' : '') + ' — fording is slow; heavy vehicles need paved bridges');
     if (S.flags[tile] & 4) parts.push('Volcanic soil: very fertile');
     if (S.flags[tile] & 32) parts.push('Ashfall: harvests ruined for now');

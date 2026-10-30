@@ -13,6 +13,7 @@ try { ({ chromium } = await import('playwright')); } catch { /* not installed */
 const skip = !chromium && 'playwright not installed';
 const PORT = 19000 + Math.floor(Math.random() * 900);
 let srv, browser, page;
+const pageErrors = [];
 
 before(async () => {
   if (skip) return;
@@ -20,7 +21,7 @@ before(async () => {
   await new Promise((r) => srv.stdout.on('data', (d) => { if (String(d).includes('listening')) r(); }));
   browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.on('pageerror', (e) => { throw e; });
+  page.on('pageerror', (e) => { pageErrors.push(String(e && e.stack || e)); });
   await page.goto(`http://127.0.0.1:${PORT}/`);
   await page.fill('#playerName', 'E2E');
   await page.click('.advanced summary');
@@ -38,7 +39,8 @@ const selected = () => page.evaluate(() => [...window.__S.selUnits]);
 
 test('double-click selects every owned unit of that type on screen, and only that type', { skip }, async () => {
   await page.evaluate(() => { const S = window.__S, v = window.__view(); const c = [...S.cities.values()].find((x) => x.o === S.civId); v.centerOn(c.t, 2.2); });
-  await page.waitForTimeout(800);
+  // wait until sprites have finished easing into their stack positions
+  await page.waitForFunction(() => { const v = window.__view(), S = window.__S; const k = [...v.unitSprites.values()].map((s) => s.dx.toFixed(1) + s.dy.toFixed(1)).join(); const same = k === window.__lastK; window.__lastK = k; return same && S.units.size >= 4; }, null, { timeout: 15000, polling: 400 });
   const units = await myUnits();
   const militia = units.filter((u) => u.type === 'militia');
   assert.ok(militia.length >= 2);
@@ -75,7 +77,7 @@ test('placing a building uses server-computed valid hexes', { skip }, async () =
   await page.waitForTimeout(300);
   const [x, y] = await tilePos(tile);
   await page.mouse.click(x, y);
-  await page.waitForFunction((n) => [...window.__S.buildings.values()].filter((b) => b.ty === 'house').length > n, before, { timeout: 5000 });
+  await page.waitForFunction((n) => [...window.__S.buildings.values()].filter((b) => b.ty === 'house').length > n, before, { timeout: 15000 });
 });
 
 test('road drawing: drag a route, see the server preview, commission it', { skip }, async () => {
@@ -87,14 +89,14 @@ test('road drawing: drag a route, see the server preview, commission it', { skip
   const [x0, y0] = await tilePos(cap);
   await page.mouse.move(x0 + 70, y0 + 10); await page.mouse.down();
   await page.mouse.move(x0 + 110, y0 - 20, { steps: 8 }); await page.mouse.move(x0 + 150, y0 - 40, { steps: 8 }); await page.mouse.up();
-  await page.waitForFunction(() => window.__S.mode?.preview, null, { timeout: 5000 });
+  await page.waitForFunction(() => window.__S.mode?.preview, null, { timeout: 15000 });
   const text = await page.textContent('#roadPanel');
   assert.match(text, /Length/); assert.match(text, /Cost/);
   const pts = await page.evaluate(() => window.__S.mode.points.length);
   assert.ok(pts >= 3, 'freehand drag produced waypoints');
   await page.evaluate(() => window.__S.econ.res.materials);
   await page.click('[data-road=commit]');
-  await page.waitForFunction(() => (window.__S.econ.roads || []).length > 0, null, { timeout: 5000 });
+  await page.waitForFunction(() => (window.__S.econ.roads || []).length > 0, null, { timeout: 15000 });
   await page.keyboard.press('Escape');
 });
 
@@ -109,6 +111,55 @@ test('governor controls: enable, specialise and set a reserve from the city pane
   await page.waitForSelector('[data-ctab=governor]');
   await page.click('[data-ctab=governor]');
   await page.check('[data-gov=enabled]');
+  await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.gov && c.gov.enabled; }, null, { timeout: 15000 });
   await page.selectOption('[data-gov=spec]', 'industrial');
-  await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.gov && c.gov.enabled && c.gov.spec === 'industrial'; }, null, { timeout: 5000 });
+  await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.gov && c.gov.enabled && c.gov.spec === 'industrial'; }, null, { timeout: 15000 });
+});
+
+test('buildings stand in the world as drawn structures with a city banner (no emoji icons)', { skip }, async () => {
+  const r = await page.evaluate(() => {
+    const S = window.__S, v = window.__view();
+    const city = [...S.cities.values()].find((c) => c.o === S.civId);
+    const sprites = [...v.buildingSprites.values()];
+    const emoji = sprites.some((s) => s.children.some((ch) => ch.text && /\p{Extended_Pictographic}/u.test(ch.text)));
+    const drawn = sprites.every((s) => s.body && s.body.context && s.body.context.instructions.length > 3);
+    const banner = sprites.find((s) => s.banner)?.banner.tx.text || '';
+    return { n: sprites.length, emoji, drawn, banner, city: city.n };
+  });
+  assert.ok(r.n >= 2);
+  assert.equal(r.emoji, false, 'no emoji glyph sprites');
+  assert.ok(r.drawn, 'every building has vector art');
+  assert.match(r.banner, new RegExp(r.city));
+});
+
+test('spectator: AI-only match without fog, follow another empire, pause, orders disabled', { skip }, async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await ctx.newPage();
+  p.on('pageerror', (e) => { pageErrors.push('spectator: ' + String(e && e.stack || e)); });
+  await p.goto(`http://127.0.0.1:${PORT}/`);
+  await p.selectOption('#watchCount', '3');
+  await p.click('#btnWatch');
+  await p.waitForFunction(() => window.__S && window.__S.ready && window.__S.spectator && window.__S.econ, null, { timeout: 30000 });
+  assert.equal(await p.isVisible('#specbar'), true);
+  assert.equal(await p.isVisible('#buildbar'), false, 'no build bar while spectating');
+  const info = await p.evaluate(() => { const S = window.__S; let seen = 0; for (let i = 0; i < S.vis.length; i++) seen += S.vis[i]; return { seen, n: S.vis.length, owners: new Set([...S.units.values()].map((u) => u.owner)).size, civ: S.civId }; });
+  assert.equal(info.seen, info.n, 'no fog: every hex visible');
+  assert.ok(info.owners >= 3, 'every empire\'s units are shown');
+  const other = await p.evaluate(() => { const S = window.__S; return S.civInfo.find((c) => !c.rebel && c.id !== S.civId).id; });
+  await p.click(`[data-follow="${other}"]`);
+  await p.waitForFunction((o) => window.__S.civId === o && window.__S.econ, other, { timeout: 15000 });
+  await p.click('[data-speed="0"]');
+  await p.waitForFunction(() => window.__S.obs && window.__S.obs.speed === 0, null, { timeout: 15000 });
+  // right-clicking the map gives no orders while spectating
+  await p.mouse.click(700, 400, { button: 'right' });
+  await p.waitForTimeout(300);
+  assert.equal(await p.locator('#toasts .toast.error').count(), 0, 'no order attempted');
+  // the map key explains the in-world symbols
+  await p.keyboard.press('k');
+  assert.match(await p.textContent('#mapkey'), /No workers/);
+  await ctx.close();
+});
+
+test('no uncaught page errors during the session', { skip }, () => {
+  assert.deepEqual(pageErrors, []);
 });

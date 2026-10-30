@@ -30,10 +30,17 @@ async function refreshMatches() {
   try {
     const list = await (await fetch('/api/matches')).json();
     const open = list.filter((m) => m.status === 'lobby' && m.slots.some((s) => s.human && !s.taken));
-    $('matchList').innerHTML = open.length ? open.map((m) => `<li><span><b>${m.name.replace(/</g, '&lt;')}</b> <span class="muted">${m.slots.filter((s) => s.taken).length}/${m.slots.filter((s) => s.human).length} players · ${m.mapSize}²</span></span><button class="btn small" data-join="${m.id}">Join</button></li>`).join('') : '<li class="empty">No open matches. Host one and share the code.</li>';
+    const live = list.filter((m) => m.status === 'running' || m.status === 'parked').slice(0, 6);
+    const esc = (t) => String(t).replace(/</g, '&lt;');
+    const rows = open.map((m) => `<li><span><b>${esc(m.name)}</b> <span class="muted">${m.slots.filter((s) => s.taken).length}/${m.slots.filter((s) => s.human).length} players · ${m.mapSize}²</span></span><button class="btn small" data-join="${m.id}">Join</button></li>`)
+      .concat(live.map((m) => `<li><span><b>${esc(m.name)}</b> <span class="muted">${m.mode === 'observe' ? 'AI exhibition' : 'in progress'} · ${m.slots.length} empires · ${Math.floor((m.time || 0) / 60)} min</span></span><button class="btn small ghost" data-watch="${m.id}" title="Spectate without fog of war">Watch</button></li>`));
+    $('matchList').innerHTML = rows.length ? rows.join('') : '<li class="empty">No open matches. Host one and share the code.</li>';
   } catch { /* server unreachable; status shown on connect */ }
 }
-$('matchList').addEventListener('click', (e) => { const b = e.target.closest('[data-join]'); if (b) join(b.dataset.join); });
+$('matchList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-join]'); if (b) return join(b.dataset.join);
+  const w = e.target.closest('[data-watch]'); if (w) { lobbyStatus('Opening the spectator view…'); await ensureNet(); net.send({ t: 'spectate', match: w.dataset.watch, name: playerName() }); }
+});
 $('joinForm').addEventListener('submit', (e) => { e.preventDefault(); const code = $('joinCode').value.trim().toLowerCase(); if (code) join(code); });
 
 async function ensureNet() {
@@ -46,6 +53,7 @@ async function ensureNet() {
 const seedVal = () => { const v = $('seed').value.trim(); return v === '' ? undefined : +v; };
 const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked });
 $('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, name: playerName(), ...worldOpts() }); });
+$('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
 $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, name: playerName(), ...worldOpts() }); });
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }
 $('btnStartNow').addEventListener('click', () => net.send({ t: 'start' }));
@@ -57,7 +65,7 @@ if (last) { $('btnRejoin').hidden = false; $('btnRejoin').addEventListener('clic
 function onMessage(m) {
   switch (m.t) {
     case 'error': lobbyStatus(m.error); if (S.ready) hud.toast({ text: m.error, kind: 'error', level: 'major' }); if (/no longer exists|Invalid session/.test(m.error)) { store.del('se.session'); $('btnRejoin').hidden = true; } break;
-    case 'joined': net.session = { match: m.match, token: m.token }; store.set('se.session', JSON.stringify(net.session)); if (m.status === 'lobby') showScreen('room'); break;
+    case 'joined': net.session = { match: m.match, token: m.token, spectator: !!m.spectator }; store.set('se.session', JSON.stringify(net.session)); if (m.status === 'lobby') showScreen('room'); break;
     case 'room': showScreen('room'); $('roomName').textContent = m.name; $('roomCode').textContent = m.match; $('roomSlots').innerHTML = m.slots.map((s) => `<li><span>${s.human ? (s.taken ? s.name.replace(/</g, '&lt;') : 'Waiting for player…') : 'AI empire'}</span><span class="muted">${s.human ? (s.taken ? 'ready' : 'open') : ''}</span></li>`).join(''); break;
     case 'welcome': startGame(m); break;
     case 's': applySnapshot(m); break;
@@ -70,6 +78,8 @@ function onMessage(m) {
 async function startGame(m) {
   const first = !S.defs || S.W !== m.defs.W;
   S.defs = m.defs; S.civId = m.civId; S.W = m.defs.W; S.H = m.defs.H;
+  S.spectator = !!m.spectator; S.obs = m.spectator ? { follow: m.civId, fog: false, speed: 1 } : null;
+  document.body.classList.toggle('spectating', S.spectator);
   S.civInfo = m.civs.map((c) => ({ ...c }));
   const N = S.W * S.H;
   S.terr = new Uint8Array(N).fill(255); S.color = new Uint32Array(N); S.res = new Uint8Array(N); S.road = new Uint32Array(N); S.flags = new Uint8Array(N);
@@ -83,8 +93,10 @@ async function startGame(m) {
     await view.init();
     if (!hud) { hud = new Hud(S, actions); bindInput(); }
   }
-  view.centerOn(m.start, 1.15);
+  view.centerOn(m.start, S.spectator ? 0.7 : 1.15);
   S.ready = true;
+  hud.specbar();
+  if (S.spectator) hud.toast({ text: 'Spectating: the whole continent is revealed. Pick an empire to follow below; [ and ] cycle, P pauses, , and . change speed, V toggles that empire\'s fog.', kind: 'info', level: 'minor' });
 }
 
 function decodeBits(b64, out) {
@@ -93,8 +105,22 @@ function decodeBits(b64, out) {
   return changed;
 }
 
+function resetMap() {
+  S.terr.fill(255); S.owner.fill(-1); S.vis.fill(0); S.road.fill(0); S.res.fill(0); S.flags.fill(0); S.fdir.fill(-1); S.stab.fill(-1);
+  for (const k of ['units', 'buildings', 'cities', 'ruins', 'cityAt', 'buildingAtTile']) S[k].clear();
+  S.buildingTiles.clear(); S.selUnits.clear(); S.selBuilding = null; S.ruinsKey = ''; S.buildingsVersion++; S.ruinsVersion++;
+  view.resetMap();
+}
+
 function applySnapshot(m) {
   if (!S.ready) return;
+  if (m.reset) resetMap();
+  if (m.obs) {
+    const followChanged = S.obs && (S.obs.follow !== m.obs.follow);
+    S.obs = m.obs;
+    if (S.civId !== m.obs.follow) { S.civId = m.obs.follow; view.bordersDirty = true; hud.selHtml = ''; hud.drawerKey = ''; }
+    if (followChanged) hud.specbar();
+  }
   S.time = m.time;
   if (m.tiles) {
     let ownerChanged = false;
@@ -143,8 +169,9 @@ function applyEcon(m) {
   for (const c of m.civs) { const o = S.civInfo[c.id]; if (o && JSON.stringify(o.rel) !== JSON.stringify(c.rel)) relChg = true; Object.assign(S.civInfo[c.id] || (S.civInfo[c.id] = {}), c); }
   if (relChg) view.bordersDirty = true;
   if (S.selBuilding != null && !S.buildings.has(S.selBuilding)) S.selBuilding = null;
-  view.syncBuildings();
-  hud.topbar(); hud.buildbar(); hud.selection(); hud.drawer(); hud.roadPanel();
+  S.campaigns = m.campaigns || null;
+  view.syncBuildings(); view.syncArmies(); view.syncCampaigns();
+  hud.topbar(); if (!S.spectator) hud.buildbar(); hud.selection(); hud.drawer(); hud.roadPanel(); hud.specbar();
   hud.minimap(view);
 }
 
@@ -162,8 +189,8 @@ function onNote(m) {
 
 function gameOver(m) {
   $('gameover').hidden = false;
-  const won = m.winner && m.winner.civ === S.civId;
-  $('goTitle').textContent = won ? 'Your civilization endures' : 'The age has ended';
+  const won = !S.spectator && m.winner && m.winner.civ === S.civId;
+  $('goTitle').textContent = S.spectator ? 'The exhibition has ended' : won ? 'Your civilization endures' : 'The age has ended';
   $('goText').textContent = m.winner ? `${m.winner.name} prevails: ${m.winner.how}.` : '';
   $('goStats').innerHTML = '<tr><th>Empire</th><th>Cities</th><th>Pop</th><th>Techs</th><th>Kills</th><th>Score</th></tr>' + m.stats.map((s) => `<tr><td>${s.name}</td><td>${s.cities}</td><td>${s.pop}</td><td>${s.techs}</td><td>${s.kills}</td><td>${s.score}</td></tr>`).join('');
   store.del('se.session');
@@ -173,7 +200,24 @@ $('btnLobby').addEventListener('click', () => location.reload());
 // ------------------------------------------------------------------ actions (all validated server-side)
 const mineSel = () => [...S.selUnits].filter((id) => S.units.get(id)?.owner === S.civId);
 const actions = {
-  async cmd(c) { const r = await net.cmd(c); if (r && r.error) hud.toast({ text: r.error, kind: 'error', level: 'minor' }); return r || {}; },
+  async cmd(c) {
+    if (S.spectator && !['follow', 'fog', 'speed'].includes(c.c)) { hud.toast({ text: 'You are spectating: orders are disabled. Pick an empire to follow in the bar below.', kind: 'error', level: 'minor' }); return { error: 'spectating' }; }
+    const r = await net.cmd(c); if (r && r.error) hud.toast({ text: r.error, kind: 'error', level: 'minor' }); return r || {};
+  },
+  // spectator controls
+  follow(civ, center = true) {
+    actions.cmd({ c: 'follow', civ }).then((r) => {
+      if (r.error) return;
+      if (center) { const cap = [...S.cities.values()].find((c) => c.o === civ && c.cap) || [...S.cities.values()].find((c) => c.o === civ); if (cap) view.centerOn(cap.t); else { const u = [...S.units.values()].find((x) => x.owner === civ); if (u) view.centerOn(u.tile); } }
+      hud.specbar();
+    });
+  },
+  cycleFollow(dir) {
+    const alive = S.civInfo.filter((c) => !c.rebel && c.alive !== false).map((c) => c.id); if (!alive.length) return;
+    const i = alive.indexOf(S.civId); actions.follow(alive[(i + dir + alive.length) % alive.length]);
+  },
+  fog(on) { actions.cmd({ c: 'fog', on }).then(() => hud.specbar()); },
+  speed(n) { actions.cmd({ c: 'speed', speed: n }).then((r) => { if (!r.error && S.obs) { S.obs.speed = r.speed; hud.specbar(); } }); },
   jump(tile) { if (tile >= 0) view.centerOn(tile); },
   refresh() { hud.drawer(true); },
   selectCity(id) { const c = S.cities.get(id); if (!c) return; const b = S.buildingAtTile.get(c.t); if (b) { S.selUnits.clear(); S.selBuilding = b.id; hud.cityTab = 'overview'; hud.selection(); view.syncBuildings(); } },
@@ -299,10 +343,18 @@ function bindInput() {
   }, { passive: false });
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (S.spectator) {
+      const k0 = e.key;
+      if (k0 === '[' || k0 === ']') { actions.cycleFollow(k0 === ']' ? 1 : -1); return; }
+      if (k0.toLowerCase() === 'p') { actions.speed(S.obs?.speed ? 0 : 1); return; }
+      if (k0 === ',' || k0 === '.') { const sp = [0, 1, 2, 4, 8]; const i = Math.max(0, sp.indexOf(S.obs?.speed ?? 1)); actions.speed(sp[Math.max(0, Math.min(sp.length - 1, i + (k0 === '.' ? 1 : -1)))]); return; }
+      if (k0.toLowerCase() === 'v') { actions.fog(!S.obs?.fog); return; }
+    }
     if (controlGroupKey(e)) return;
     keys.add(e.key.toLowerCase());
     const k = e.key.toLowerCase();
-    if (k === 'escape') { setMode(null); $('menu').hidden = true; $('alerts').hidden = true; }
+    if (S.spectator && ['a', 's', 'f', 'g', 'r'].includes(k)) return;   // WASD only pans while spectating
+    if (k === 'escape') { setMode(null); $('menu').hidden = true; $('alerts').hidden = true; hud.toggleKey(false); }
     if (k === 'a' && S.selUnits.size) actions.act('amove');
     if (k === 's' && S.selUnits.size) actions.act('stop');
     if (k === 'f') actions.act('found');
@@ -311,6 +363,7 @@ function bindInput() {
     if (k === ' ') { const u = S.units.get([...S.selUnits][0]); if (u) view.centerOn(u.tile); else { const c = [...S.cities.values()].find((x) => x.o === S.civId && x.cap); if (c) view.centerOn(c.t); } e.preventDefault(); }
     if (k === '=' || k === '+') view.zoomAt(1.15, view.app.screen.width / 2, view.app.screen.height / 2);
     if (k === '-') view.zoomAt(0.87, view.app.screen.width / 2, view.app.screen.height / 2);
+    if (k === 'k') hud.toggleKey();
     if (k === 'l') { const order = ['terrain', 'territory', 'supply', 'stability', 'traffic']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
     if (k === 'backspace' && S.mode?.kind === 'road') actions.road('undo');
     if (k === 'enter' && S.mode?.kind === 'road') actions.road('commit');
@@ -319,10 +372,10 @@ function bindInput() {
   let uiTick = 0, mmTick = 0;
   S.onFrame = (dt) => {
     const sp = (600 * dt) / view.cam.z;
-    if (keys.has('arrowleft') || (keys.has('a') && !S.selUnits.size)) view.cam.x -= sp;
+    if (keys.has('arrowleft') || (keys.has('a') && (!S.selUnits.size || S.spectator))) view.cam.x -= sp;
     if (keys.has('arrowright') || keys.has('d')) view.cam.x += sp;
     if (keys.has('arrowup') || keys.has('w')) view.cam.y -= sp;
-    if (keys.has('arrowdown') || (keys.has('s') && !S.selUnits.size)) view.cam.y += sp;
+    if (keys.has('arrowdown') || (keys.has('s') && (!S.selUnits.size || S.spectator))) view.cam.y += sp;
     view.clamp();
     hud.seismo(dt);
     hud.clock(S.time, net?.rtt);
@@ -411,6 +464,7 @@ function controlGroupKey(e) {
 }
 
 function rightClick(e) {
+  if (S.spectator) return;   // spectators look, they do not command
   const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
   const tile = view.tileAt(wx, wy); if (tile < 0) return;
   if (S.mode) { if (S.mode.kind === 'road' && S.mode.points.length) { S.mode.points.pop(); requestPreview(); hud.roadPanel(); return; } return setMode(null); }

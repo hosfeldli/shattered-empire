@@ -23,7 +23,7 @@ export class MatchManager {
 
   list() {
     return [...this.matches.values()].map((m) => ({
-      id: m.id, name: m.name, status: m.status, mode: m.mode, created: m.created, mapSize: m.mapSize,
+      id: m.id, name: m.name, status: m.status, mode: m.mode, created: m.created, mapSize: m.mapSize, watchers: (m.watchers || []).filter((w) => w.ws).length,
       slots: m.slots.map((s) => ({ name: s.name, human: s.human, taken: !!s.token, connected: !!s.ws })),
       time: m.stats?.time || 0,
     }));
@@ -33,18 +33,27 @@ export class MatchManager {
     if (this.matches.size >= MAX_MATCHES) throw new Error('Server is full, try again shortly');
     const id = crypto.randomBytes(3).toString('hex');
     const pvp = opts.mode === 'pvp';
-    const humans = Math.max(1, Math.min(MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
-    const ais = Math.max(pvp ? 0 : 1, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
+    const observe = opts.mode === 'observe';   // AI-only match watched by spectators (no fog, speed control)
+    const humans = observe ? 0 : Math.max(1, Math.min(MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
+    const ais = observe ? Math.max(2, Math.min(MAX_CIVS, opts.ais ?? 4)) : Math.max(pvp ? 0 : 1, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
     for (let i = 0; i < humans; i++) slots.push({ human: true, name: i === 0 ? String(opts.name || 'Player').slice(0, 24) : 'Open seat', token: null, ws: null });
     for (let i = 0; i < ais; i++) slots.push({ human: false, name: 'AI', personality: opts.aiPersonality && opts.aiPersonality !== 'random' ? opts.aiPersonality : personalities[(i + ((Math.random() * 3) | 0)) % 3] });
     const mapSize = SIZES[opts.mapSize] || autoSize(slots.length);
-    const m = { id, name: String(opts.title || `${opts.name || 'Player'}'s match`).slice(0, 40), mode: pvp ? 'pvp' : 'ai', status: 'lobby', created: Date.now(), lastActive: Date.now(),
+    const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
       seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: opts.rebels !== false, worker: null, stats: null };
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
+  }
+
+  // spectator seat: watches the whole map, cannot give orders
+  watch(m, name) {
+    if ((m.watchers || (m.watchers = [])).length >= 8) throw new Error('Too many spectators');
+    const w = { token: crypto.randomBytes(16).toString('hex'), ws: null, name: String(name || 'Spectator').slice(0, 24), spectator: true };
+    m.watchers.push(w);
+    return w;
   }
 
   seat(m, name) {
@@ -55,7 +64,7 @@ export class MatchManager {
     return slot;
   }
 
-  meta(m) { return { id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, token: s.token, civId: s.civId })) }; }
+  meta(m) { return { id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
@@ -63,7 +72,7 @@ export class MatchManager {
     m.slots.forEach((s, i) => { s.civId = i; });
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
-      workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf,
+      workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe',
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
@@ -91,7 +100,7 @@ export class MatchManager {
     } catch (e) {
       this.log.error?.(`match ${m.id} could not be recovered`, e);
       m.status = 'over';
-      for (const s of m.slots) if (s.ws) this.send(s.ws, { t: 'error', error: 'This match could not be recovered after a server fault.' });
+      for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws) this.send(s.ws, { t: 'error', error: 'This match could not be recovered after a server fault.' });
     }
   }
 
@@ -110,11 +119,13 @@ export class MatchManager {
       case 'ready':
         m.ready = true;
         for (const s of m.slots) if (s.ws) this.welcome(m, s);
+        for (const w of m.watchers || []) if (w.ws) this.welcome(m, w);
         for (const p of m.pending.splice(0)) m.worker.postMessage(p);
         break;
       case 'out':
         for (const [civId, str] of msg.msgs) {
-          if (civId < 0) { for (const s of m.slots) if (s.ws && s.ws.readyState === 1) s.ws.send(str); }
+          if (civId === -2) { for (const w of m.watchers || []) if (w.ws && w.ws.readyState === 1) w.ws.send(str); continue; }
+          if (civId < 0) { for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws && s.ws.readyState === 1) s.ws.send(str); }
           else { const s = m.slots[civId]; if (s && s.ws && s.ws.readyState === 1) s.ws.send(str); }
         }
         break;
@@ -128,7 +139,7 @@ export class MatchManager {
   }
 
   toWorker(m, msg) { if (!m.worker) return; if (m.ready) m.worker.postMessage(msg); else m.pending.push(msg); }
-  welcome(m, slot) { this.toWorker(m, { t: 'welcome', civId: slot.civId }); }
+  welcome(m, slot) { this.toWorker(m, slot.spectator ? { t: 'obsWelcome' } : { t: 'welcome', civId: slot.civId }); }
   send(ws, msg) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(msg)); } catch { /* closing */ } } }
   roomUpdate(m) { for (const s of m.slots) if (s.ws) this.send(s.ws, { t: 'room', match: m.id, name: m.name, status: m.status, mapSize: m.mapSize, slots: m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token })) }); }
 
@@ -142,7 +153,8 @@ export class MatchManager {
       const { match, slot } = ws.ctx;
       if (match && slot && slot.ws === ws) {
         slot.ws = null;
-        if (slot.civId != null) this.toWorker(match, { t: 'connect', civId: slot.civId, on: false });
+        if (slot.spectator) { if (!match.watchers.some((w) => w.ws)) this.toWorker(match, { t: 'observe', on: false }); }
+        else if (slot.civId != null) this.toWorker(match, { t: 'connect', civId: slot.civId, on: false });
         match.lastActive = Date.now();
         if (match.status === 'lobby') this.roomUpdate(match);
       }
@@ -156,9 +168,18 @@ export class MatchManager {
       case 'list': return this.send(ws, { t: 'lobby', matches: this.list() });
       case 'create': {
         const m = this.create(msg);
-        const slot = this.seat(m, msg.name);
+        const slot = m.mode === 'observe' ? this.watch(m, msg.name) : this.seat(m, msg.name);
         this.bind(ws, m, slot);
-        if (m.mode === 'ai') this.start(m); else this.roomUpdate(m);
+        if (m.mode === 'ai' || m.mode === 'observe') this.start(m); else this.roomUpdate(m);
+        return;
+      }
+      case 'spectate': {
+        // watch any running match (no fog, no orders)
+        const m = this.matches.get(String(msg.match || '').toLowerCase()); if (!m) throw new Error('No such match');
+        if (m.status === 'lobby') throw new Error('Match has not started yet');
+        const w = this.watch(m, msg.name);
+        this.bind(ws, m, w);
+        this.wake(m); this.welcome(m, w);
         return;
       }
       case 'join': {
@@ -172,7 +193,7 @@ export class MatchManager {
       }
       case 'rejoin': {
         const m = this.matches.get(msg.match); if (!m) throw new Error('Match no longer exists');
-        const slot = m.slots.find((s) => s.token && s.token === msg.token); if (!slot) throw new Error('Invalid session');
+        const slot = [...m.slots, ...(m.watchers || [])].find((s) => s.token && s.token === msg.token); if (!slot) throw new Error('Invalid session');
         if (slot.ws && slot.ws !== ws) { try { slot.ws.close(4000, 'replaced'); } catch { /* ignore */ } }
         this.bind(ws, m, slot);
         if (m.status === 'lobby') this.roomUpdate(m); else { this.wake(m); this.welcome(m, slot); }
@@ -180,9 +201,10 @@ export class MatchManager {
       }
       case 'start': { if (ctx.match && ctx.match.status === 'lobby' && ctx.match.slots[0] === ctx.slot) this.start(ctx.match); return; }
       case 'cmd': {
-        const m = ctx.match; if (!m || !m.worker || ctx.slot.civId == null) throw new Error('Not in a running match');
+        const m = ctx.match; if (!m || !m.worker || !ctx.slot || (ctx.slot.civId == null && !ctx.slot.spectator)) throw new Error('Not in a running match');
         m.lastActive = Date.now();
-        this.toWorker(m, { t: 'cmd', civId: ctx.slot.civId, cmd: msg.cmd || {}, rid: msg.rid });
+        if (ctx.slot.spectator) this.toWorker(m, { t: 'obsCmd', cmd: msg.cmd || {}, rid: msg.rid });
+        else this.toWorker(m, { t: 'cmd', civId: ctx.slot.civId, cmd: msg.cmd || {}, rid: msg.rid });
         return;
       }
       default: throw new Error('Unknown message');
@@ -192,7 +214,7 @@ export class MatchManager {
   bind(ws, m, slot) {
     slot.ws = ws; ws.ctx = { match: m, slot };
     m.lastActive = Date.now();
-    this.send(ws, { t: 'joined', match: m.id, token: slot.token, status: m.status, mode: m.mode, mapSize: m.mapSize });
+    this.send(ws, { t: 'joined', match: m.id, token: slot.token, status: m.status, mode: m.mode, mapSize: m.mapSize, spectator: !!slot.spectator });
   }
 
   stopWorker(m) { if (m.worker) { const w = m.worker; m.worker = null; w.terminate(); } }
@@ -200,7 +222,7 @@ export class MatchManager {
   cleanup() {
     const now = Date.now();
     for (const m of this.matches.values()) {
-      const anyone = m.slots.some((s) => s.ws);
+      const anyone = m.slots.some((s) => s.ws) || (m.watchers || []).some((w) => w.ws);
       const idle = !anyone && now - m.lastActive > IDLE_MS;
       const done = m.status === 'over' && now - (m.overAt || now) > 10 * 60 * 1000;
       if (idle && m.status === 'running') {
@@ -234,7 +256,7 @@ export class MatchManager {
         const buf = await this.store.load(id);
         const { meta, game } = JSON.parse(zlib.gunzipSync(buf).toString());
         if (game.over) continue;
-        const m = { ...meta, status: 'parked', lastActive: Date.now(), worker: null, stats: null, lastSnapshot: buf, slots: meta.slots.map((s) => ({ ...s, ws: null })) };
+        const m = { ...meta, status: 'parked', lastActive: Date.now(), worker: null, stats: null, lastSnapshot: buf, slots: meta.slots.map((s) => ({ ...s, ws: null })), watchers: (meta.watchers || []).map((w) => ({ ...w, ws: null, spectator: true })) };
         this.matches.set(id, m); n++;
       } catch (e) { this.log.warn?.(`could not restore ${id}: ${e.message}`); }
     }
@@ -248,7 +270,7 @@ export class MatchManager {
   stats() {
     const ms = [...this.matches.values()];
     return { matches: ms.length, running: ms.filter((m) => m.status === 'running').length, parked: ms.filter((m) => m.status === 'parked').length,
-      players: ms.reduce((s, m) => s + m.slots.filter((x) => x.ws).length, 0), maxMatches: MAX_MATCHES, cpus: os.cpus().length,
+      players: ms.reduce((s, m) => s + m.slots.filter((x) => x.ws).length, 0), spectators: ms.reduce((s, m) => s + (m.watchers || []).filter((x) => x.ws).length, 0), maxMatches: MAX_MATCHES, cpus: os.cpus().length,
       ticks: ms.filter((m) => m.stats).map((m) => ({ id: m.id, avg: m.stats.avg, max: m.stats.max, units: m.stats.units })), store: this.store?.kind || 'none',
       memMB: Math.round(process.memoryUsage().rss / 1e6) };
   }

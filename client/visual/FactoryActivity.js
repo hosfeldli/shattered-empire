@@ -36,8 +36,8 @@ export function drawFactories(g, view, S, t) {
     } else if (['barracks', 'motor_works', 'heavy_assembly'].includes(b.ty) && b.q?.length) {
       for (let k = 0; k < 6; k++) { const a = t * 0.6 + k * 0.4; g.circle(x + Math.cos(a) * 9, y + Math.sin(a) * 6, 0.9).fill({ color: S.civColor(b.o) }); }
     } else if (b.ty === 'airfield') {
-      g.moveTo(x - 9, y + 7).lineTo(x + 9, y - 3).stroke({ width: 2.4, color: 0x3a3a3a });
-      if (active || b.q?.length) { const p = frac(t * 0.15 + h(b.id)); g.rect(x - 9 + p * 18 - 1.5, y + 7 - p * 10 - 1, 3, 2).fill({ color: 0xe0e0e0 }); }
+      // a plane rolling down the runway drawn by BuildingArt
+      if (active || b.q?.length) { const p = frac(t * 0.15 + h(b.id)); g.rect(x - 9 + p * 18 - 1.5, y + 7.2 - p * 12 - 1, 3, 2).fill({ color: 0xe0e0e0 }); }
     } else if (['market', 'steel_mill', 'munitions_plant', 'electronics_plant'].includes(b.ty) && active) {
       // delivery truck shuttling to the nearest road
       const p = frac(t * 0.12 + h(b.id, 4)); const q = p < 0.5 ? p * 2 : 2 - p * 2;

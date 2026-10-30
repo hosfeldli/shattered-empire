@@ -1,0 +1,22 @@
+<!doctype html><html><body style="margin:0;background:#556b4a">
+<!-- Dev gallery: every building type drawn large. Open /dev/buildings.html?era=0..4&state=op|planned|build|damaged|mix -->
+<script src="/vendor/pixi.min.js"></script>
+<script type="module">
+import { drawBuildingArt } from '/visual/BuildingArt.js';
+const types = ['town','house','farm','lumber','quarry','salvage','barracks','market','academy','port','bunker','mine','steel_mill','power_plant','oil_well','munitions_plant','motor_works','depot','fort','seismic','university','heavy_assembly','airfield','stabilizer','electronics_plant','comms_tower','drone_works','fusion_plant','robotics_complex','camp','wonder'];
+const app = new PIXI.Application(); await app.init({ width: 1500, height: 1000, background: 0x6b7f52, antialias: true, resolution: 1 });
+document.body.appendChild(app.canvas);
+const cats = { town:'civic', house:'residential', farm:'agri' };
+const era = +(new URLSearchParams(location.search).get('era') || 0);
+const states = (new URLSearchParams(location.search).get('state') || 'op');
+types.forEach((ty, i) => {
+  const c = new PIXI.Container(); const g = new PIXI.Graphics(); c.addChild(g);
+  const col = i % 8, row = Math.floor(i / 8);
+  c.position.set(90 + col * 180, 110 + row * 230); c.scale.set(5);
+  const st = states === 'mix' ? ['op','planned','build','damaged'][i % 4] : states;
+  drawBuildingArt(g, { ty, id: i + 3 }, { cat: cats[ty] || 'industry' }, { id: i + 3, era, civ: 0x3a7bd5, lod: 'micro', ghost: st === 'planned', building: st === 'build', damaged: st === 'damaged', active: true, alpha: st === 'build' ? 0.6 : 1, capital: true, stockCrates: 4, water: [1, 0.3] });
+  const t = new PIXI.Text({ text: ty + (states === 'mix' ? ' ('+st+')' : ''), style: { fontSize: 14, fill: 0xffffff } }); t.anchor.set(0.5); t.position.set(90 + col * 180, 110 + row * 230 + 85);
+  app.stage.addChild(c, t);
+});
+window.done = true;
+</script></body></html>

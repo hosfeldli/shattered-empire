@@ -5,7 +5,7 @@ export const DAY_SECONDS = 480;
 export function nightLevel(time) {
   const p = frac(time / DAY_SECONDS);            // 0 = dawn
   const sun = Math.sin(p * Math.PI * 2);          // > 0 day, < 0 night
-  return Math.max(0, Math.min(0.5, -sun * 0.65 + 0.05));
+  return Math.max(0, Math.min(0.36, -sun * 0.5 + 0.04));   // dim enough to read as night, light enough to keep playing
 }
 
 export function drawEnvironment(g, view, S, t) {
