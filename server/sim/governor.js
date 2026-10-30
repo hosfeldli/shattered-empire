@@ -11,6 +11,8 @@ export function defaultGovernor(enabled = false, spec = 'balanced') {
 
 function log(g, c, text) {
   const gv = c.governor;
+  // the same decision repeated within a few minutes is noise, not information
+  if (gv.log.slice(0, 8).some((l) => l.text === text && g.time - l.t < 240)) return;
   const civ = g.civs[c.owner];
   if (civ && civ.human && !/^Holding off/.test(text)) g.history(civ, 'governor:' + c.name, text);
   gv.log.unshift({ t: Math.round(g.time), text });

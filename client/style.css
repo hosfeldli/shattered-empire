@@ -127,7 +127,7 @@ input, select { background: #0f1c20; border: 1px solid var(--line); border-radiu
 
 #drawer { position: absolute; right: 10px; top: 56px; width: 340px; bottom: 238px; display: flex; flex-direction: column; z-index: 4; }
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
-.tabs button { flex: 1; background: none; border: 0; padding: 8px 4px; color: var(--chalk-dim); cursor: pointer; font-weight: 600; border-bottom: 2px solid transparent; }
+.tabs button { flex: 1; background: none; border: 0; padding: 8px 2px; font-size: 12.5px; white-space: nowrap; color: var(--chalk-dim); cursor: pointer; font-weight: 600; border-bottom: 2px solid transparent; }
 .tabs button[aria-selected='true'] { color: var(--chalk); border-bottom-color: var(--ochre); }
 #drawerBody { overflow: auto; padding: 10px 12px; flex: 1; }
 #drawer.collapsed { bottom: auto; }
@@ -160,7 +160,7 @@ input, select { background: #0f1c20; border: 1px solid var(--line); border-radiu
 
 #minimapWrap { position: absolute; right: 10px; bottom: 10px; padding: 6px; z-index: 4; width: 206px; }
 #minimap { display: block; width: 192px; height: 168px; cursor: crosshair; background: #10181b; }
-.lenses { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 5px; gap: 2px; }
+.lenses { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 5px; gap: 2px; }
 .lenses button { background: #13232a; border: 1px solid var(--line); color: var(--chalk-dim); font-size: 11px; padding: 3px 0; cursor: pointer; border-radius: 2px; }
 .lenses button.on { color: var(--chalk); border-color: var(--ochre); }
 .hint { position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%); background: rgba(12, 23, 26, 0.92); padding: 6px 12px; border-radius: var(--r); font-size: 13px; z-index: 4; pointer-events: none; box-shadow: inset 0 0 0 1px var(--line); }
@@ -179,3 +179,51 @@ input, select { background: #0f1c20; border: 1px solid var(--line); border-radiu
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 8px; }
 .chip { background: #13232a; border: 1px solid var(--line); color: var(--chalk); border-radius: 2px; padding: 2px 7px; font-size: 13px; cursor: pointer; }
 .chip:hover { border-color: var(--ochre); }
+
+/* ---------------- additions: alerts, road planner, governor, empire, armies, tech graph */
+.alerts-btn { display: flex; gap: 4px; background: none; border: 0; cursor: pointer; padding: 4px; }
+.alerts-btn .dot { min-width: 20px; padding: 1px 5px; border-radius: 9px; font-size: 12px; font-weight: 700; text-align: center; background: #22343a; color: var(--chalk-dim); }
+.alerts-btn .dot.critical.on { background: var(--cinnabar); color: #fff; }
+.alerts-btn .dot.major.on { background: #b07a1e; color: #fff; }
+#alerts { position: absolute; top: 52px; right: 360px; width: 340px; max-height: 50vh; overflow: auto; z-index: 8; padding: 8px 10px; }
+#alerts .hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.log li.lv-critical { border-left: 3px solid var(--cinnabar); padding-left: 6px; color: #ffd1c6; }
+.log li.lv-major { border-left: 3px solid #d39a2c; padding-left: 6px; }
+.log li.lv-minor { border-left: 3px solid var(--line); padding-left: 6px; }
+.log li.lv-info { color: var(--chalk-dim); padding-left: 9px; }
+.toast.lv-critical { border-left-color: var(--cinnabar); background: rgba(60, 18, 12, 0.96); }
+.toast.lv-major { border-left-color: #d39a2c; }
+.log .by { color: var(--ochre); margin-right: 6px; font-size: 12px; }
+#roadPanel { position: absolute; left: 350px; bottom: 84px; width: 330px; padding: 10px 12px; z-index: 6; }
+#roadPanel h3 { font-family: var(--display); font-weight: 400; margin: 0 0 4px; font-size: 20px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.chip { background: #13232a; border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 12px; cursor: pointer; color: var(--chalk-dim); }
+.chip.on { color: var(--chalk); border-color: var(--ochre); }
+.subtabs { display: flex; gap: 2px; margin: 6px 0 8px; border-bottom: 1px solid var(--line); }
+.subtabs button { background: none; border: 0; color: var(--chalk-dim); padding: 4px 8px; cursor: pointer; border-bottom: 2px solid transparent; font-weight: 600; }
+.subtabs button.on { color: var(--chalk); border-bottom-color: var(--ochre); }
+.perm { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 2px 0; }
+.govlog li { font-size: 12.5px; }
+.cards { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.ucard { background: #13232a; border: 1px solid var(--line); border-radius: var(--r); padding: 3px 7px; cursor: pointer; font-size: 12.5px; user-select: none; }
+.ucard b { color: var(--ochre); margin-right: 3px; }
+table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.grid th { text-align: left; color: var(--chalk-dim); font-weight: 600; cursor: pointer; padding: 3px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.grid td { padding: 3px 4px; border-bottom: 1px solid rgba(231, 226, 212, 0.07); font-variant-numeric: tabular-nums; }
+table.grid tr { cursor: pointer; }
+table.grid tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.tag { display: inline-block; font-size: 11px; padding: 0 5px; border-radius: 3px; background: #22343a; margin-right: 2px; }
+.tag.bad { background: #5a2018; color: #ffd1c6; } .tag.warn { background: #5a4214; color: #ffe2a8; } .tag.good { background: #1d4430; color: #c8f0d4; }
+.techgraph { position: relative; }
+.techgraph svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.era { margin-bottom: 10px; }
+.era-hd { display: flex; justify-content: space-between; align-items: baseline; }
+.era-bar { height: 4px; background: #0c171a; margin: 4px 0 6px; } .era-bar i { display: block; height: 100%; background: var(--ochre); }
+.tech .qn { float: right; background: var(--ochre); color: #1a1405; border-radius: 8px; padding: 0 6px; font-size: 11px; font-weight: 700; }
+.tech.queued { border-style: dashed; border-color: var(--ochre); }
+.army { border: 1px solid var(--line); border-radius: var(--r); padding: 8px 9px; margin-bottom: 8px; }
+.army .hd { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.army .meta { font-size: 12.5px; color: var(--chalk-dim); }
+.army select { padding: 2px 4px; font-size: 12.5px; }
+.stock { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px 8px; font-size: 12.5px; }
+@media (max-width: 1100px) { #roadPanel { left: 10px; bottom: auto; top: 130px; } #alerts { right: 10px; } }

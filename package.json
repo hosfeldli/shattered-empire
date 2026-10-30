@@ -4,16 +4,23 @@
   "private": true,
   "description": "Grand-scale RTS on a continent that tears itself apart. Server-authoritative simulation, thin PixiJS client.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test": "node --test test/*.test.js",
     "soak": "node test/headless.mjs 7 30 2",
-    "preview": "node test/preview.mjs"
+    "preview": "node test/preview.mjs",
+    "test:e2e": "node --test test/e2e/*.test.js",
+    "demo": "node test/make-demo.mjs 25 demo01"
   },
   "dependencies": {
     "pixi.js": "8.6.6",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright": "1.48.2"
   }
 }

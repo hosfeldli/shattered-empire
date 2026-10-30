@@ -15,7 +15,7 @@ const mapOut = (m) => (m ? [...m.entries()] : []);
 
 export function serializeGame(g) {
   const w = g.world;
-  const world = { arrays: {}, wiped: [...w.wiped], dirty: w.dirty.size, volcanoes: w.volcanoes, riftTiles: w.riftTiles, faultTiles: w.faultTiles, starts: w.starts, stab0: w.stab0 ? b64(w.stab0) : null };
+  const world = { arrays: {}, wiped: [...w.wiped], dirty: w.dirty.size > 0 ? 1 : 0, volcanoes: w.volcanoes, riftTiles: w.riftTiles, faultTiles: w.faultTiles, starts: w.starts, stab0: w.stab0 ? b64(w.stab0) : null };
   for (const k of WORLD_ARRAYS) world.arrays[k] = b64(w[k]);
   const civs = g.civs.map((c) => {
     const o = {};

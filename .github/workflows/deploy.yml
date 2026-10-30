@@ -18,6 +18,7 @@ env:
   # Public entry point: the shared external Application Load Balancer (static IP) -> serverless NEG -> Cloud Run.
   PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'game.liamhosfeld.com' }}
   LB_IP: ${{ vars.LB_IP || '136.69.75.137' }}
+  SNAPSHOT_BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
 
 jobs:
   test:
@@ -30,8 +31,19 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm test
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
   deploy:
-    needs: test
+    needs: [test, e2e]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -83,11 +95,11 @@ jobs:
             --ingress internal-and-cloud-load-balancing \
             --session-affinity \
             --timeout 3600 \
-            --cpu 2 --memory 1Gi \
+            --cpu 4 --memory 4Gi \
             --no-cpu-throttling --cpu-boost \
             --min-instances 0 --max-instances 1 \
             --concurrency 250 \
-            --set-env-vars "APP_VERSION=${GITHUB_SHA::12},MAX_MATCHES=24" \
+            --set-env-vars "APP_VERSION=${GITHUB_SHA::12},MAX_MATCHES=16,SNAPSHOT_BUCKET=${SNAPSHOT_BUCKET}" \
             --quiet
           URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')
           echo "url=$URL" >> "$GITHUB_OUTPUT"

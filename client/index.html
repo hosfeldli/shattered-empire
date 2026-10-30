@@ -18,13 +18,13 @@
     <div class="lobby-map" aria-hidden="true"><canvas id="lobbyCanvas"></canvas></div>
     <div class="lobby-panel">
       <h1 class="title"><span>Shattered</span><span>Empires</span></h1>
-      <p class="tagline">Raise a civilization on a continent that is slowly tearing itself apart. Mountains rise, rivers wander, the Great Rift floods. The land is your oldest enemy.</p>
+      <p class="tagline">Rebuild civilization on a continent that is still tearing itself apart. Mountains rise, rivers wander, the Great Rift floods. Grow from salvaged ruins to autonomous war machines — the land remains your oldest enemy.</p>
       <label class="field"><span>Your name</span><input id="playerName" maxlength="24" autocomplete="nickname" placeholder="Founder"></label>
       <div class="lobby-actions">
         <fieldset class="plate">
           <legend>Play against the AI</legend>
           <label class="field inline"><span>Rival empires</span>
-            <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select></label>
+            <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="11">11</option></select></label>
           <label class="field inline"><span>Rival temperament</span>
             <select id="aiPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
           <button id="btnPlayAI" class="btn primary">Found your empire</button>
@@ -32,13 +32,15 @@
         <fieldset class="plate">
           <legend>Multiplayer</legend>
           <label class="field inline"><span>Human players</span>
-            <select id="humanCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></label>
+            <select id="humanCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="12">12</option></select></label>
           <label class="field inline"><span>AI empires</span>
-            <select id="pvpAi"><option value="0" selected>0</option><option value="1">1</option><option value="2">2</option></select></label>
+            <select id="pvpAi"><option value="0" selected>0</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="6">6</option></select></label>
           <button id="btnHost" class="btn">Host a match</button>
         </fieldset>
       </div>
-      <details class="advanced"><summary>World seed</summary>
+      <details class="advanced"><summary>World options</summary>
+        <label class="field inline"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
+        <label class="field inline"><span>Rebel Free Companies</span><input id="rebels" type="checkbox" checked></label>
         <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
       </details>
       <div class="open-matches">
@@ -69,16 +71,21 @@
       <div class="realm"><span id="civName" class="civ-name"></span><span id="ageName" class="age"></span></div>
       <ul id="resources" class="resources"></ul>
       <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
+      <button id="alertsBtn" class="alerts-btn" aria-label="Alerts"><span class="dot critical" id="alC">0</span><span class="dot major" id="alM">0</span></button>
       <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
       <button id="btnMenu" class="btn icon" aria-label="Menu">&#9776;</button>
     </header>
     <div id="toasts" aria-live="polite"></div>
+    <aside id="alerts" class="plate" hidden><div class="hd"><b>Alerts</b><button class="btn small ghost" id="alertsClear">Clear</button></div><ul id="alertList" class="log"></ul></aside>
+    <aside id="roadPanel" class="plate" hidden></aside>
     <aside id="selection" class="plate"></aside>
     <nav id="buildbar" class="plate"></nav>
     <aside id="drawer" class="plate">
       <div class="tabs" role="tablist">
         <button role="tab" data-tab="research" aria-selected="true">Research</button>
         <button role="tab" data-tab="realm">Realm</button>
+        <button role="tab" data-tab="empire">Empire</button>
+        <button role="tab" data-tab="armies">Armies</button>
         <button role="tab" data-tab="diplomacy">Diplomacy</button>
         <button role="tab" data-tab="chronicle">Chronicle</button>
       </div>
@@ -87,7 +94,7 @@
     <div id="minimapWrap" class="plate">
       <canvas id="minimap" width="192" height="168"></canvas>
       <div class="lenses" role="group" aria-label="Map lens">
-        <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button>
+        <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button><button data-lens="traffic">Traffic</button>
       </div>
     </div>
     <div id="hint" class="hint"></div>
@@ -95,7 +102,7 @@
     <div id="menu" class="modal" hidden>
       <div class="plate">
         <h2>Paused view</h2>
-        <p class="muted">The world keeps moving. Shortcuts: right-click move/attack, A attack-move, S stop, F found city, R road, Space center, wheel or trackpad to pan, pinch or +/- to zoom.</p>
+        <p class="muted">The world keeps moving. Shortcuts: right-click move/attack (Shift: attack-move), A attack-move, S stop, F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Space centre, L cycle lenses, trackpad or wheel to pan, pinch or +/- to zoom.</p>
         <button id="btnResume" class="btn primary">Back to the map</button>
         <button id="btnSurrender" class="btn danger">Surrender</button>
         <button id="btnQuit" class="btn ghost">Leave match</button>

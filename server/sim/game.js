@@ -756,6 +756,7 @@ export class Game {
           return null;
         }
         case 'army': return armyCommand(this, civ, cmd);
+        case 'autoSettle': { const u = this.units.get(cmd.unit); if (!u || u.owner !== civ.id || u.type !== 'colonist') return { error: 'need a colonist convoy' }; u.auto = true; return null; }
         case 'repair': return this.repairBuilding(civ, this.buildings.get(cmd.id), cmd.by || 'you');
         case 'rallyAll': {
           let n = 0;

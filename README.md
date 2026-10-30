@@ -5,45 +5,38 @@ A grand-scale RTS where you build a civilization on a continent that is tearing 
 ## Architecture: the cloud does the thinking
 
 ```
-Browser (PixiJS)                         Cloud Run (Node.js, 10 Hz authoritative simulation)
+Browser (PixiJS)                         Cloud Run (Node.js; one worker thread per match, 10 Hz)
  ├─ draws server-shaded hex colours  ◀──  world gen · tectonics · quakes · eruptions · hydrology
- ├─ interpolates unit positions      ◀──  A* pathfinding · combat · supply networks · attrition
- ├─ sends intents (move, build, …)   ──▶  economy · jobs · stability · migration · research
- └─ shows fog-filtered snapshots     ◀──  fog of war · AI empires · diplomacy · placement checks
+ ├─ interpolates unit positions      ◀──  A*, shared flow fields, formations, tile/bridge capacity
+ ├─ ambient city life from aggregates◀──  economy · local stockpiles · freight · population · governors
+ ├─ sends intents (move, build, …)   ──▶  combat · supply · armies · AI empires · rebels · diplomacy
+ └─ shows fog-filtered snapshots     ◀──  fog of war, placement checks, road planning & costing
+                                          snapshots → Cloud Storage (matches survive deploys)
 ```
 
-Everything that decides the game runs on the server. Clients never see unexplored or hidden data: tile changes (a collapsed pass, a new lava field) only reach a player when one of their units or buildings can see the place. Even placement validity, road routing, terrain lighting and the lobby map preview are computed server-side.
+Everything that decides the game runs on the server. Clients never see unexplored or hidden data: tile changes only reach a player when they can see the place; foreign empires expose no economy or score; AI empires plan only from what they have observed.
 
-| Module | Responsibility |
-| --- | --- |
-| `server/sim/world.js` | 128×128 hex continent: tectonic plates, the Great Rift, climate, priority-flood hydrology, resources, start sites |
-| `server/sim/geology.js` | Uplift & subsidence, seismic stress & earthquakes (landslides seal passes), eruptions, droughts, river avulsions, seismology warnings |
-| `server/sim/economy.js` | Population (workers, merchants, specialists, soldiers), jobs & production chains, food, taxes, stability, unrest & defection, migration, territory, road trade routes |
-| `server/sim/military.js` | 10 unit types, movement, combat with terrain/river/fort modifiers, supply networks (cities, depots, ports, forts, wagons; cut by enemy armies), attrition, city capture |
-| `server/sim/diplomacy.js` | Contact, war & peace, trade agreements, open borders, alliances, tribute |
-| `server/sim/ai.js` | Builder, merchant and warlord AI empires |
-| `server/sim/game.js` | Tick loop, commands, visibility, per-player snapshots |
-| `server/matches.js` | Lobby, matchmaking, reconnects, 5 Hz streaming |
-| `client/` | PixiJS renderer + HUD (seismograph, research, realm, diplomacy, chronicle) |
+### Eras
+Reclamation → Industrial Recovery → Mechanization → Networked Warfare → Advanced Systems, over a branching 37-technology graph with a research queue. 20 unit types across four movement classes (infantry, wheeled, tracked, aircraft) that interact differently with roads, bridges, rivers, slopes and marshes; engineers repair, fight fires, clear rubble and blast passes.
 
-## Gameplay
-
-1. **Settle**: start with a town, a farm and a lumber camp. Place buildings from the bottom bar.
-2. **Develop**: farms, lumber camps, quarries, mines, houses, markets, libraries, workshops, factories.
-3. **Explore**: scouts reveal terrain, resources, rivals, volcanoes and fault lines (Surveying shows structural stability).
-4. **Expand**: settlers found cities; roads connect them for trade routes and fast supply.
-5. **Fight**: right-click to move/attack, A to attack-move. Armies need supply from cities, depots, ports, forts or wagons; out of supply they weaken and suffer attrition. Cut enemy supply by standing on their roads.
-6. **Adapt**: watch the seismograph. Seismology gives early warning; Geoengineering and Conservation halve disaster damage; Engineering lets you bridge rivers and blast through peaks.
-7. **Advance**: Settlement → Kingdom → Industrial Age. Governments and policies specialise your civilization.
-
-Victory: conquest, or complete the Grand Exposition and hold it for 5 minutes.
+### Living infrastructure
+- **Roads** are an edge graph (dirt, paved, highway, rail) drawn freehand or by waypoints with a costed server preview; bridges, per-segment damage, repair and traffic.
+- **Logistics**: cities share the national stockpile only through the road/rail/sea network, limited by the freight capacity of the weakest link; cut-off cities live on local reserves.
+- **Buildings** go planned → under construction (crews, engineers) → operational → damaged (half output, can burn) → ruined (rubble, salvage, rebuild at half cost).
+- **City governors** automate any city with a specialization, a resource reserve, explicit permissions and a log explaining every decision. AI empires use the same governors.
+- **Armies** take one order and manage formation, stance and spacing; tactical defend zones; automated offensive preparation; rally networks; control groups; double-click selection.
+- **Rebel Free Companies** raise camps in the wilds, raid, occupy ruins and absorb revolting cities.
+- **Alerts** are levelled (info/minor/major/critical); a command history records who ordered what — you, a governor or an army — and why.
+- **The world looks alive**: districts grow with population and era, pedestrians, traffic and freight trains follow the real roads, factories smoke, farms change with the seasons, construction sites have cranes and crews, damage leaves fires and rubble, and a day/night cycle lights the cities.
 
 ## Develop locally
 
 ```bash
 npm install
 npm run dev          # http://localhost:8080
-npm test             # simulation + protocol tests
+npm test             # simulation, systems, fairness, persistence, protocol and load tests
+npm run test:e2e     # browser tests (needs: npx playwright install chromium)
+npm run demo         # write a 25-minute AI match snapshot; rejoin it with token demo-token
 npm run soak         # 30 minutes of AI-vs-AI in ~5 seconds
 node test/preview.mjs 42 map.png   # render a continent
 ```
@@ -69,4 +62,4 @@ game.liamhosfeld.com ──DNS A──▶ 136.69.75.137 (stem-portfolio-ip, glob
 
 Cloud Run ingress is `internal-and-cloud-load-balancing`, so the `*.run.app` URL is closed; the game is only reachable through the load balancer. WebSockets (`/ws`) pass through the LB unchanged. `infra/lb.sh` recreates this wiring idempotently.
 
-Cloud Run runs a single instance (`--max-instances 1`, session affinity, 60-minute WebSocket timeout, CPU always allocated) because live matches are held in memory. Scaling past one instance means routing each match to its instance (e.g. match id → instance via Memorystore) — the simulation itself is already isolated per match.
+Cloud Run runs a single 4 vCPU instance (`--max-instances 1`, session affinity, 60-minute WebSocket timeout, CPU always allocated). Each match runs in its own worker thread, autosaves every 60 s to `gs://stem-471602-se-snapshots`, and is saved again on SIGTERM, so deploys and restarts resume matches where they were; players reconnect automatically. Idle matches are parked to storage and wake when a player returns. Scaling past one instance means routing each match id to the instance that owns it — the per-match isolation and snapshots already make that a routing problem only.
