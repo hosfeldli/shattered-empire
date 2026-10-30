@@ -11,7 +11,15 @@ export class Hud {
     this.S = S; this.A = actions; this.tab = 'research'; this.seis = new Float32Array(240); this.amp = 0; this.alertT = 0; this.shockT = 0;
     this.sctx = $('seismo').getContext('2d');
     this.mctx = $('minimap').getContext('2d');
-    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { this.tab = b.dataset.tab; document.querySelectorAll('.tabs button').forEach((x) => x.setAttribute('aria-selected', x === b)); this.drawer(true); }));
+    const drawerEl = $('drawer');
+    if (window.innerWidth < 1200) drawerEl.classList.add('collapsed');
+    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+      // clicking the open tab folds the drawer away so the map is unobstructed
+      if (this.tab === b.dataset.tab && !drawerEl.classList.contains('collapsed')) { drawerEl.classList.add('collapsed'); b.setAttribute('aria-selected', 'false'); return; }
+      drawerEl.classList.remove('collapsed');
+      this.tab = b.dataset.tab; document.querySelectorAll('.tabs button').forEach((x) => x.setAttribute('aria-selected', x === b)); this.drawer(true);
+    }));
+    if (drawerEl.classList.contains('collapsed')) document.querySelectorAll('.tabs button').forEach((x) => x.setAttribute('aria-selected', 'false'));
     $('drawerBody').addEventListener('click', (e) => this.onDrawerClick(e));
     $('selection').addEventListener('click', (e) => this.onSelClick(e));
     $('buildbar').addEventListener('click', (e) => { const b = e.target.closest('[data-build],[data-tool]'); if (b) this.A.buildMode(b.dataset.build || null, b.dataset.tool || null); });
@@ -60,7 +68,7 @@ export class Hud {
     el.className = 'toast ' + (m.kind || '');
     el.textContent = m.text;
     if (m.tile >= 0) el.addEventListener('click', () => this.A.jump(m.tile));
-    if (m.kind === 'proposal') el.addEventListener('click', () => { this.tab = 'diplomacy'; document.querySelector('[data-tab=diplomacy]').click(); });
+    if (m.kind === 'proposal') el.addEventListener('click', () => { this.tab = ''; document.querySelector('[data-tab=diplomacy]').click(); });
     const box = $('toasts'); box.prepend(el);
     while (box.children.length > 4) box.lastChild.remove();
     setTimeout(() => el.remove(), m.kind === 'warning' || m.kind === 'proposal' ? 12000 : 6500);

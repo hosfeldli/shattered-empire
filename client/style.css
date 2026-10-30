@@ -130,6 +130,9 @@ input, select { background: #0f1c20; border: 1px solid var(--line); border-radiu
 .tabs button { flex: 1; background: none; border: 0; padding: 8px 4px; color: var(--chalk-dim); cursor: pointer; font-weight: 600; border-bottom: 2px solid transparent; }
 .tabs button[aria-selected='true'] { color: var(--chalk); border-bottom-color: var(--ochre); }
 #drawerBody { overflow: auto; padding: 10px 12px; flex: 1; }
+#drawer.collapsed { bottom: auto; }
+#drawer.collapsed #drawerBody { display: none; }
+.resources { scrollbar-width: none; overflow-x: auto; }
 #drawerBody h4 { font-family: var(--display); font-weight: 400; font-size: 18px; margin: 12px 0 6px; color: var(--ochre); }
 #drawerBody h4:first-child { margin-top: 0; }
 .tech { display: block; width: 100%; text-align: left; background: #13232a; border: 1px solid var(--line); border-radius: var(--r); padding: 6px 9px; margin: 0 0 5px; cursor: pointer; color: var(--chalk); }
@@ -170,4 +173,5 @@ input, select { background: #0f1c20; border: 1px solid var(--line); border-radiu
 #goStats { border-collapse: collapse; width: 100%; font-size: 14px; }
 #goStats td, #goStats th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; }
 #goStats td:first-child, #goStats th:first-child { text-align: left; }
-@media (max-width: 1100px) { #drawer { width: 290px; } #buildbar { left: 10px; right: 230px; bottom: auto; top: 56px; } #selection { width: 280px; } }
+@media (max-width: 1100px) { #drawer { width: 300px; } #buildbar { left: 10px; right: 10px; bottom: auto; top: 56px; } #drawer { top: 128px; } #selection { width: 280px; max-height: 38vh; } .seismo canvas { width: 140px; } }
+@media (max-width: 700px) { .realm { min-width: 0; } #minimapWrap { transform: scale(0.8); transform-origin: bottom right; } #selection { width: calc(100% - 200px); } }

@@ -63,6 +63,7 @@ export class Game {
   setupStart(civ, tile) {
     const city = this.foundCity(civ, tile, 7, true);
     city.stability = 70;
+    recomputeTerritory(this);
     const free = this.freeTilesNear(tile, 2);
     spawnUnit(this, civ, 'scout', free[0] ?? tile);
     spawnUnit(this, civ, 'spearman', free[1] ?? tile);
