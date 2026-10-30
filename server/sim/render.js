@@ -37,12 +37,12 @@ export function tileColor(w, i) {
 }
 
 // Compact per-tile record sent to clients:
-// [index, terrain, colorRGB, resource, road, river(0/1)|lake<<1|soil<<2, flowDir, flowBucket, owner, stability(0-100 or -1)]
-export function tileRecord(w, i, showStability) {
-  const fb = w.river[i] ? Math.min(4, Math.floor(Math.log2(w.flow[i] / 42)) + 1) : 0;
+// [index, terrain, colorRGB, resource, roadEdges(packed 6x4 bits), river|lake<<1|soil<<2|ruin<<3|drought<<4|ash<<5, flowDir, flowBucket, owner, stability(0-100 or -1)]
+export function tileRecord(w, i, showStability, roadsPacked = 0, ruin = 0) {
+  const fb = w.river[i] ? Math.min(4, Math.floor(Math.log2(Math.max(1, w.flow[i] / 42))) + 1) : 0;
   return [
-    i, w.terr[i], tileColor(w, i), w.res[i], w.road[i],
-    w.river[i] | (w.lake[i] << 1) | (w.soil[i] << 2),
+    i, w.terr[i], tileColor(w, i), w.res[i], roadsPacked,
+    w.river[i] | (w.lake[i] << 1) | (w.soil[i] << 2) | (ruin ? 8 : 0) | (w.drought[i] > 0 ? 16 : 0) | (w.ash[i] > 0 ? 32 : 0),
     w.flowDir[i], fb, w.owner[i],
     showStability ? Math.round(w.stab[i] * 100) : -1,
   ];

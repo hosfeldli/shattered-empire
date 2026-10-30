@@ -11,6 +11,8 @@ export function mulberry32(seed) {
   f.int = (n) => Math.floor(f() * n);
   f.range = (a0, b0) => a0 + f() * (b0 - a0);
   f.pick = (arr) => arr[Math.floor(f() * arr.length)];
+  f.getState = () => a;
+  f.setState = (v) => { a = v >>> 0; };
   return f;
 }
 

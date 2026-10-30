@@ -30,6 +30,7 @@ export class World {
     this.owner = new Int8Array(N).fill(-1);
     this.ver = new Uint16Array(N).fill(1);
     this.dirty = new Set();
+    this.wiped = new Set();               // tiles whose roads must be obliterated (consumed by Game)
     this.volcanoes = [];
     this.riftTiles = [];
     this.faultTiles = [];
@@ -217,8 +218,7 @@ export class World {
       this.terr[i] = t;
       if (isWater(t) && this.res[i] !== RES.FISH) this.res[i] = RES.NONE;
       if (!isWater(t) && this.res[i] === RES.FISH) this.res[i] = RES.NONE;
-      if (isWater(t) && !isWater(was)) this.road[i] = 0;
-      if (t === T.PEAK || t === T.LAVA) this.road[i] = 0;
+      if ((isWater(t) && !isWater(was)) || t === T.PEAK || t === T.LAVA) this.wiped.add(i); // roads here are destroyed
       return true;
     }
     return false;
@@ -242,18 +242,18 @@ export class World {
 
   placeResources(rng) {
     for (let i = 0; i < N; i++) {
-      const t = this.terr[i], x = hash2(qOf(i), rOf(i), this.seed + 77), y = rng();
+      const t = this.terr[i], y = rng();
       let r = RES.NONE;
-      if (t === T.HILLS || t === T.MOUNTAIN) {
-        if (y < 0.07) r = RES.IRON; else if (y < 0.1) r = RES.GOLD; else if (y < 0.16) r = RES.STONE; else if (y < 0.19) r = RES.COAL;
-      } else if (t === T.FOREST || t === T.MARSH || t === T.TUNDRA) { if (y < 0.035) r = RES.COAL; }
-      else if (t === T.GRASS || t === T.PLAINS) { if (y < 0.03) r = RES.HORSES; else if (y < 0.036) r = RES.STONE; }
-      else if (t === T.DESERT) { if (y < 0.03) r = RES.GOLD; else if (y < 0.05) r = RES.STONE; }
+      if (t === T.MOUNTAIN) { if (y < 0.08) r = RES.IRON; else if (y < 0.12) r = RES.RARE; else if (y < 0.17) r = RES.STONE; else if (y < 0.2) r = RES.COAL; }
+      else if (t === T.HILLS) { if (y < 0.07) r = RES.IRON; else if (y < 0.13) r = RES.COAL; else if (y < 0.18) r = RES.STONE; else if (y < 0.19) r = RES.RARE; }
+      else if (t === T.FOREST) { if (y < 0.03) r = RES.COAL; else if (y < 0.045) r = RES.RUINS; }
+      else if (t === T.MARSH || t === T.TUNDRA) { if (y < 0.05) r = RES.OIL; else if (y < 0.07) r = RES.COAL; }
+      else if (t === T.DESERT) { if (y < 0.06) r = RES.OIL; else if (y < 0.09) r = RES.RUINS; else if (y < 0.1) r = RES.RARE; }
+      else if (t === T.GRASS || t === T.PLAINS) { if (y < 0.03) r = RES.RUINS; else if (y < 0.04) r = RES.OIL; else if (y < 0.045) r = RES.STONE; }
       else if (t === T.SHALLOW && !this.lake[i]) {
         let coast = false; for (let k = 0; k < 6; k++) { const n = NB[i * 6 + k]; if (n >= 0 && this.elev[n] >= 0) coast = true; }
         if (coast && y < 0.08) r = RES.FISH;
       }
-      void x;
       this.res[i] = r;
     }
   }
@@ -305,7 +305,12 @@ export class World {
       ensure((t) => this.terr[t] === T.HILLS || this.res[t] === RES.STONE, (t) => { this.res[t] = RES.STONE; });
       ensure((t) => this.res[t] === RES.STONE, (t) => { this.res[t] = RES.STONE; });
       ensure((t) => this.res[t] === RES.IRON, (t) => { this.res[t] = RES.IRON; });
-      ensure((t) => this.res[t] === RES.HORSES, (t) => { this.res[t] = RES.HORSES; });
+      ensure((t) => this.res[t] === RES.COAL, (t) => { this.res[t] = RES.COAL; });
+      ensure((t) => this.res[t] === RES.RUINS, (t) => { this.res[t] = RES.RUINS; });
+      const wide = disk(s, 6).filter((t) => dist(t, s) >= 4 && !isWater(this.terr[t]) && this.terr[t] !== T.PEAK && !this.res[t]);
+      if (!disk(s, 6).some((t) => this.res[t] === RES.OIL) && wide.length) this.res[rng.pick(wide)] = RES.OIL;
+      const far = disk(s, 10).filter((t) => dist(t, s) >= 6 && (this.terr[t] === T.HILLS || this.terr[t] === T.MOUNTAIN) && !this.res[t]);
+      if (!disk(s, 10).some((t) => this.res[t] === RES.RARE) && far.length) this.res[rng.pick(far)] = RES.RARE;
       for (const t of disk(s, 2)) { this.stab[t] = Math.max(this.stab[t], 0.6); this.rate[t] = Math.max(-0.00002, Math.min(this.rate[t], 0.00002)); }
     }
     return best;

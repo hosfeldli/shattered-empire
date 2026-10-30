@@ -81,7 +81,11 @@ export class Geology {
       if (w.stress[t] > maxS) { maxS = w.stress[t]; maxT = t; }
     }
     if (maxT >= 0 && maxS > 0.86) this.warn('quake:' + maxT, maxT, 'Seismic precursors detected: an earthquake is imminent nearby.', 'quake');
-    if (maxT >= 0 && maxS >= 1 && now - this.lastQuake > QUAKE_COOLDOWN) { this.earthquake(maxT, now); terrainChanged = true; }
+    if (maxT >= 0 && maxS >= 1 && now - this.lastQuake > QUAKE_COOLDOWN) {
+      const o = w.owner[maxT];
+      if (o >= 0 && g.civs[o].techs.has('climate_engineering')) { w.stress[maxT] = 0.5; this.lastQuake = now; }
+      else { this.earthquake(maxT, now); terrainChanged = true; }
+    }
     // --- Volcanoes
     for (const v of w.volcanoes) {
       v.pressure += v.rate * dt * (0.8 + this.rng() * 0.4);
@@ -130,8 +134,8 @@ export class Geology {
         } else {
           w.elev[t] += (rng() - 0.5) * 0.08 * inten;
         }
-        if (w.road[t] && rng() < inten * fragility * 0.8) w.road[t] = 0;
-        if ((w.terr[t] === T.HILLS || w.terr[t] === T.MOUNTAIN) && !w.res[t] && rng() < 0.05 * inten) w.res[t] = rng.pick([RES.IRON, RES.GOLD, RES.COAL, RES.STONE]);
+        g.roads.damageTile(t, 100 * inten * fragility, rng, 0.8);   // quakes break individual road segments and bridges
+        if ((w.terr[t] === T.HILLS || w.terr[t] === T.MOUNTAIN) && !w.res[t] && rng() < 0.05 * inten) w.res[t] = rng.pick([RES.IRON, RES.RARE, RES.COAL, RES.STONE]);
         w.stab[t] = Math.max(0.05, w.stab[t] - 0.06 * inten);
       }
       if (dist(epi, t) <= R - 2) w.stress[t] = 0; else w.stress[t] += 0.15 * rng();
@@ -170,7 +174,7 @@ export class Geology {
       }
     }
     for (const t of lavaTiles) {
-      w.lava[t] = 110 + rng() * 60; w.road[t] = 0; w.res[t] = RES.NONE;
+      w.lava[t] = 110 + rng() * 60; g.roads.obliterate(t); w.res[t] = RES.NONE;
       w.classify(t); w.touch(t);
       for (const b of g.buildingsAt(t)) g.damageBuilding(b, b.maxHp * 5, null, 'lava');
       for (const u of g.unitsAt(t)) g.damageUnit(u, 999, null, 'lava');
@@ -194,6 +198,7 @@ export class Geology {
     const R = 8 + rng.int(6), dur = 120 + rng() * 90;
     for (const t of disk(center, R)) {
       if (isWater(w.terr[t]) && !w.lake[t]) continue;
+      if (w.owner[t] >= 0 && g.civs[w.owner[t]].techs.has('climate_engineering')) continue;
       w.drought[t] = Math.max(w.drought[t], dur * (1 - dist(center, t) / (R + 4))); w.touch(t);
     }
     this.refreshRivers();

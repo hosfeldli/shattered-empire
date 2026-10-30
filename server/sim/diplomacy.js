@@ -13,7 +13,11 @@ export class Diplomacy {
     const n = g.civs.length;
     this.m = [];
     for (let a = 0; a < n; a++) { this.m[a] = []; for (let b = 0; b < n; b++) this.m[a][b] = a === b ? null : undefined; }
-    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) { const r = { state: 'unmet', trade: false, borders: false, since: 0, attitude: 0 }; this.m[a][b] = r; this.m[b][a] = r; }
+    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) {
+      const rebel = g.civs[a].isRebel || g.civs[b].isRebel;
+      const r = { state: rebel ? 'war' : 'unmet', trade: false, borders: false, since: 0, attitude: rebel ? -50 : 0, rebel };
+      this.m[a][b] = r; this.m[b][a] = r;
+    }
     this.nextProposal = 1;
   }
   rel(a, b) { return this.m[a][b] || { state: 'self' }; }
@@ -21,29 +25,47 @@ export class Diplomacy {
   checkContact(civ) {
     const g = this.g, w = g.world;
     for (const o of g.civs) {
-      if (o === civ || !o.alive) continue;
+      if (o === civ || !o.alive || o.isRebel || civ.isRebel) continue;
       const r = this.rel(civ.id, o.id);
       if (r.state !== 'unmet') continue;
-      let met = false;
-      for (const u of g.units.values()) if (u.owner === o.id && civ.visible[u.tile]) { met = true; break; }
+      // radio: once both empires reach Industrial Recovery they hear each other's broadcasts
+      let met = civ.age >= 1 && o.age >= 1;
+      if (!met) for (const u of g.units.values()) if (u.owner === o.id && civ.visible[u.tile]) { met = true; break; }
       if (!met) for (let i = 0; i < N; i += 1) if (w.owner[i] === o.id && civ.visible[i]) { met = true; break; }
       if (met) {
         r.state = 'peace'; r.since = g.time;
-        g.notify(civ.id, `First contact with ${o.name}. You are at peace.`, { kind: 'diplo' });
-        g.notify(o.id, `First contact with ${civ.name}. You are at peace.`, { kind: 'diplo' });
+        const how = civ.age >= 1 && o.age >= 1 ? 'Radio contact established with' : 'First contact with';
+        g.notify(civ.id, `${how} ${o.name}. You are at peace.`, { kind: 'diplo' });
+        g.notify(o.id, `${how} ${civ.name}. You are at peace.`, { kind: 'diplo' });
       }
     }
   }
 
   step() {
-    // expire stale proposals
-    for (const c of this.g.civs) c.proposals = c.proposals.filter((p) => this.g.time - p.time < 60);
+    const g = this.g;
+    for (const c of g.civs) c.proposals = c.proposals.filter((p) => g.time - p.time < 60);
+    // rebel truces expire
+    for (let a = 0; a < this.m.length; a++) for (let b = a + 1; b < this.m.length; b++) {
+      const r = this.m[a][b];
+      if (r.rebel && r.state === 'peace' && g.time > r.until) { r.state = 'war'; const human = g.civs[a].isRebel ? b : a; g.notify(human, 'The truce with the Free Companies has ended.', { kind: 'war' }); }
+    }
   }
 
   act(civ, to, action) {
     const g = this.g, other = g.civs[to];
     if (!other || other === civ || !other.alive) return { error: 'invalid civilization' };
     const r = this.rel(civ.id, to);
+    if (other.isRebel) {
+      if (action === 'payoff') {
+        if (civ.res.credits < 250) return { error: 'not enough credits' };
+        civ.res.credits -= 250; r.state = 'peace'; r.until = g.time + 300;
+        for (const u of g.units.values()) if (u.owner === to && u.order.kind === 'attack') { const tt = u.order.target; const own = tt.kind === 'unit' ? g.units.get(tt.id)?.owner : g.buildings.get(tt.id)?.owner; if (own === civ.id) u.order = { kind: 'idle' }; }
+        g.notify(civ.id, 'The Free Companies accept your payment: a five-minute truce.', { kind: 'peace' });
+        return null;
+      }
+      if (action === 'war') { r.state = 'war'; return null; }
+      return { error: 'the Free Companies only respond to payment' };
+    }
     if (r.state === 'unmet') return { error: 'you have not met them yet' };
     switch (action) {
       case 'war': {
