@@ -49,12 +49,23 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      # New Workload Identity bindings can take a few minutes to propagate; wait for impersonation to work.
+      - name: Wait for deployer impersonation
+        run: |
+          for i in $(seq 1 12); do
+            if gcloud auth print-access-token >/dev/null 2>&1; then echo "Impersonation OK"; exit 0; fi
+            echo "Deployer service account not yet usable (attempt $i/12); IAM may still be propagating..."
+            sleep 20
+          done
+          echo "::error::GitHub could not impersonate ${{ vars.GCP_DEPLOY_SA }}. Re-run infra/bootstrap.sh and check the roles/iam.workloadIdentityUser binding for repository ${{ github.repository }}."
+          gcloud auth print-access-token
+
       - name: Build and push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPOSITORY}/${SERVICE}:${GITHUB_SHA::12}"
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+          for i in 1 2 3; do docker push "$IMAGE" && break; [ "$i" = 3 ] && exit 1; sleep 15; done
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - id: deploy
