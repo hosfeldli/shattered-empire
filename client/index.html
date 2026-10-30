@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shattered Empires</title>
+<meta name="description" content="Build a civilization on a continent that is tearing itself apart.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=Barlow+Semi+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 29 9.5v13L16 30 3 22.5v-13z' fill='%23c99a2e'/%3E%3Cpath d='M9 12 15 18 12 23M22 10 17 17 21 24' stroke='%23172429' stroke-width='2.5' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+<div id="app">
+  <!-- Lobby -->
+  <section id="lobby" class="screen">
+    <div class="lobby-map" aria-hidden="true"><canvas id="lobbyCanvas"></canvas></div>
+    <div class="lobby-panel">
+      <h1 class="title"><span>Shattered</span><span>Empires</span></h1>
+      <p class="tagline">Raise a civilization on a continent that is slowly tearing itself apart. Mountains rise, rivers wander, the Great Rift floods. The land is your oldest enemy.</p>
+      <label class="field"><span>Your name</span><input id="playerName" maxlength="24" autocomplete="nickname" placeholder="Founder"></label>
+      <div class="lobby-actions">
+        <fieldset class="plate">
+          <legend>Play against the AI</legend>
+          <label class="field inline"><span>Rival empires</span>
+            <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select></label>
+          <label class="field inline"><span>Rival temperament</span>
+            <select id="aiPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
+          <button id="btnPlayAI" class="btn primary">Found your empire</button>
+        </fieldset>
+        <fieldset class="plate">
+          <legend>Multiplayer</legend>
+          <label class="field inline"><span>Human players</span>
+            <select id="humanCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></label>
+          <label class="field inline"><span>AI empires</span>
+            <select id="pvpAi"><option value="0" selected>0</option><option value="1">1</option><option value="2">2</option></select></label>
+          <button id="btnHost" class="btn">Host a match</button>
+        </fieldset>
+      </div>
+      <details class="advanced"><summary>World seed</summary>
+        <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
+      </details>
+      <div class="open-matches">
+        <h2>Open matches</h2>
+        <ul id="matchList"><li class="empty">No open matches. Host one and share the code.</li></ul>
+        <form id="joinForm" class="join"><input id="joinCode" placeholder="Match code" maxlength="8" aria-label="Match code"><button class="btn">Join</button></form>
+      </div>
+      <button id="btnRejoin" class="btn ghost" hidden>Return to your last match</button>
+      <p id="lobbyStatus" class="status" role="status"></p>
+    </div>
+  </section>
+
+  <!-- Waiting room -->
+  <section id="room" class="screen" hidden>
+    <div class="plate room-card">
+      <h2 id="roomName">Match</h2>
+      <p>Share this code with the other players: <strong id="roomCode" class="code"></strong></p>
+      <ul id="roomSlots"></ul>
+      <button id="btnStartNow" class="btn primary">Start now (empty seats become AI)</button>
+      <button id="btnLeaveRoom" class="btn ghost">Leave</button>
+    </div>
+  </section>
+
+  <!-- Game -->
+  <section id="game" class="screen" hidden>
+    <div id="stage"></div>
+    <header id="topbar">
+      <div class="realm"><span id="civName" class="civ-name"></span><span id="ageName" class="age"></span></div>
+      <ul id="resources" class="resources"></ul>
+      <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
+      <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
+      <button id="btnMenu" class="btn icon" aria-label="Menu">&#9776;</button>
+    </header>
+    <div id="toasts" aria-live="polite"></div>
+    <aside id="selection" class="plate"></aside>
+    <nav id="buildbar" class="plate"></nav>
+    <aside id="drawer" class="plate">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="research" aria-selected="true">Research</button>
+        <button role="tab" data-tab="realm">Realm</button>
+        <button role="tab" data-tab="diplomacy">Diplomacy</button>
+        <button role="tab" data-tab="chronicle">Chronicle</button>
+      </div>
+      <div id="drawerBody"></div>
+    </aside>
+    <div id="minimapWrap" class="plate">
+      <canvas id="minimap" width="192" height="168"></canvas>
+      <div class="lenses" role="group" aria-label="Map lens">
+        <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button>
+      </div>
+    </div>
+    <div id="hint" class="hint"></div>
+    <div id="tooltip" class="tooltip" hidden></div>
+    <div id="menu" class="modal" hidden>
+      <div class="plate">
+        <h2>Paused view</h2>
+        <p class="muted">The world keeps moving. Shortcuts: right-click move/attack, A attack-move, S stop, F found city, R road, Space center, wheel or trackpad to pan, pinch or +/- to zoom.</p>
+        <button id="btnResume" class="btn primary">Back to the map</button>
+        <button id="btnSurrender" class="btn danger">Surrender</button>
+        <button id="btnQuit" class="btn ghost">Leave match</button>
+      </div>
+    </div>
+    <div id="gameover" class="modal" hidden><div class="plate"><h2 id="goTitle"></h2><p id="goText"></p><table id="goStats"></table><button id="btnLobby" class="btn primary">Back to lobby</button></div></div>
+  </section>
+</div>
+<script src="/vendor/pixi.min.js"></script>
+<script type="module" src="/main.js"></script>
+</body>
+</html>

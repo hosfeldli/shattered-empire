@@ -1,0 +1,19 @@
+{
+  "name": "shattered-empires",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Grand-scale RTS on a continent that tears itself apart. Server-authoritative simulation, thin PixiJS client.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/*.test.js",
+    "soak": "node test/headless.mjs 7 30 2",
+    "preview": "node test/preview.mjs"
+  },
+  "dependencies": {
+    "pixi.js": "8.6.6",
+    "ws": "^8.18.0"
+  }
+}

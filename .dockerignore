@@ -1,0 +1,8 @@
+node_modules
+.deps
+.scratch
+.git
+.github
+test
+infra
+*.md

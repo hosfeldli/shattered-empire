@@ -1,0 +1,86 @@
+name: Test & deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SERVICE: shattered-empires
+  REGION: ${{ vars.GCP_REGION || 'us-east1' }}
+  PROJECT: ${{ vars.GCP_PROJECT }}
+  REPOSITORY: shattered-empires
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless auth via Workload Identity Federation (set up by infra/bootstrap.sh).
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPOSITORY}/${SERVICE}:${GITHUB_SHA::12}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - id: deploy
+        name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --platform managed \
+            --service-account "${{ vars.GCP_RUNTIME_SA }}" \
+            --allow-unauthenticated \
+            --session-affinity \
+            --timeout 3600 \
+            --cpu 2 --memory 1Gi \
+            --no-cpu-throttling --cpu-boost \
+            --min-instances 0 --max-instances 1 \
+            --concurrency 250 \
+            --set-env-vars "APP_VERSION=${GITHUB_SHA::12},MAX_MATCHES=24" \
+            --quiet
+          URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS "${{ steps.deploy.outputs.url }}/healthz"; then exit 0; fi
+            sleep 3
+          done
+          exit 1
