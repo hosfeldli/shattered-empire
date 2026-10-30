@@ -90,8 +90,13 @@ jobs:
 
       - name: Smoke test
         run: |
+          URL="${{ steps.deploy.outputs.url }}"
+          echo "### Shattered Empires is live: $URL" >> "$GITHUB_STEP_SUMMARY"
           for i in $(seq 1 10); do
-            if curl -fsS "${{ steps.deploy.outputs.url }}/healthz"; then exit 0; fi
+            CODE=$(curl -s -o /tmp/health -w '%{http_code}' "$URL/api/health")
+            if [ "$CODE" = 200 ]; then cat /tmp/health; exit 0; fi
+            echo "attempt $i: HTTP $CODE"; cat /tmp/health; echo
             sleep 3
           done
+          if [ "$CODE" = 403 ]; then echo "::error::Cloud Run returned 403: the service is not publicly accessible. Your organization policy may block allUsers; see README."; fi
           exit 1

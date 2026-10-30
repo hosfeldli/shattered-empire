@@ -19,7 +19,7 @@ test('server hosts a match end-to-end', async () => {
   const srv = spawn(process.execPath, ['server/index.js'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'inherit'] });
   try {
     await new Promise((r) => srv.stdout.on('data', (d) => { if (String(d).includes('listening')) r(); }));
-    const health = await (await fetch(`http://127.0.0.1:${PORT}/healthz`)).json();
+    const health = await (await fetch(`http://127.0.0.1:${PORT}/api/health`)).json();
     assert.equal(health.ok, true);
     const html = await (await fetch(`http://127.0.0.1:${PORT}/`)).text();
     assert.match(html, /Shattered Empires/);

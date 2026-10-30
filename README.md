@@ -58,4 +58,13 @@ One-time setup (needs `gcloud`, and optionally `gh`):
 
 This enables the APIs, creates an Artifact Registry repo, a runtime service account, a deployer service account and a Workload Identity Federation pool restricted to this repository, sets the GitHub Actions variables, and pushes `main`. From then on every push to `main` runs the tests, builds the container, pushes it to Artifact Registry and deploys to Cloud Run. No service-account key is stored in GitHub.
 
+Get the game URL from the Actions run summary, or:
+
+```bash
+gcloud run services describe shattered-empires --region us-east1 --format 'value(status.url)'
+```
+
+If the URL returns 403, your organization blocks public (`allUsers`) access; allow it with
+`gcloud run services add-iam-policy-binding shattered-empires --region us-east1 --member allUsers --role roles/run.invoker`.
+
 Cloud Run runs a single instance (`--max-instances 1`, session affinity, 60-minute WebSocket timeout, CPU always allocated) because live matches are held in memory. Scaling past one instance means routing each match to its instance (e.g. match id → instance via Memorystore) — the simulation itself is already isolated per match.
