@@ -25,20 +25,23 @@ test('AI vs AI match runs 20 minutes with terrain events, economy and combat', (
   for (const e of g.log) kinds.add(e.kind);
   assert.ok(kinds.has('quake'), 'earthquake happened');
   assert.ok(kinds.has('eruption') || kinds.has('drought'), 'other events happened');
-  for (const c of g.civs) {
+  for (const c of g.civs.filter((x) => !x.isRebel)) {
     assert.ok(c.techs.size >= 5, `${c.name} researched`);
     assert.ok(g.cityOf(c).length >= 2 || !c.alive, `${c.name} expanded`);
   }
-  const pop = g.civs.map((c) => g.civSummary(c).pop);
+  const pop = g.civs.filter((c) => !c.isRebel).map((c) => g.civSummary(c).pop);
   assert.ok(pop.every((p) => p > 20), 'populations grew ' + pop);
 });
 
 test('commands are validated server-side', () => {
   const g = new Game({ id: 't', seed: 3, slots: [{ human: true }, { personality: 'builder' }] });
   const civ = g.civs[0];
-  assert.ok(g.command(0, { c: 'build', type: 'factory', tile: 0 }).error, 'cannot build industrial building in settlement age');
-  assert.ok(g.command(0, { c: 'research', tech: 'steam_power' }).error);
-  assert.equal(g.command(0, { c: 'research', tech: 'agriculture' }), null);
+  assert.ok(g.command(0, { c: 'build', type: 'heavy_assembly', tile: 0 }).error, 'cannot build a Mechanization building in the Reclamation era');
+  assert.ok(!g.civs[0].researching || g.civs[0].researching !== 'mechanization');
+  g.command(0, { c: 'research', tech: 'mechanization' });
+  assert.notEqual(g.civs[0].researching, 'mechanization', 'future-era tech is queued, not researched');
+  assert.ok(g.civs[0].queue.includes('mechanization') && g.civs[0].queue.includes('motorization'), 'prerequisites queued in order');
+  assert.equal(g.command(0, { c: 'research', tech: 'agronomy' }), null);
   const enemyUnit = [...g.units.values()].find((u) => u.owner === 1);
   g.command(0, { c: 'move', units: [enemyUnit.id], tile: 0 });
   assert.equal(enemyUnit.goal, -1, 'cannot order enemy units');

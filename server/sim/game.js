@@ -13,6 +13,12 @@ import { Diplomacy } from './diplomacy.js';
 import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
 import { defaultGovernor, governorStep, autoColonists } from './governor.js';
+import { armyCommand, armiesStep, armySummary } from './armies.js';
+import { recoveryStep } from './recovery.js';
+
+const LEVEL_OF = { tech: 'info', build: 'info', unit: 'info', history: 'info', rumor: 'minor', city: 'minor', diplo: 'minor', peace: 'minor', age: 'minor', gov: 'minor',
+  quake: 'major', eruption: 'major', rift: 'minor', uplift: 'minor', drought: 'major', river: 'minor', warning: 'major', rebel: 'major', loss: 'major', isolated: 'major', blocked: 'major', proposal: 'major', war: 'major', error: 'minor',
+  famine: 'critical', fall: 'critical', wonder: 'critical' };
 
 const CITY_NAMES = ['Aldmoor', 'Brightwater', 'Cindervale', 'Dunhollow', 'Emberfell', 'Frosthaven', 'Greywatch', 'Highcrag', 'Ironford', 'Juniper', 'Kingsreach', 'Lowmarsh', 'Mistport', 'Northgate', 'Oakheart', 'Pinecrest', 'Quarrytown', 'Redcliff', 'Stonebridge', 'Thornfield', 'Umberdale', 'Valewind', 'Westmarch', 'Yarrow', 'Zephyr Rock', 'Ashmere', 'Blackreed', 'Coldspring', 'Deepwell', 'Eastbrook', 'Foundry Hill', 'Gantry', 'Harrowgate', 'Isolde', 'Jetty'];
 
@@ -20,6 +26,7 @@ export class Game {
   constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null }) {
     this.id = id;
     this.seed = seed;
+    this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality }));
     this.defs = GAME_DEFS;
     this.rng = mulberry32(seed ^ 0x9e3779b9);
     this.world = new World(seed);
@@ -59,7 +66,7 @@ export class Game {
       weariness: 0, casualties: 0, kills: 0, popTotal: 0, powerGen: 0, powerUse: 0, powerRatio: 1,
       knownVer: new Uint16Array(N), knownOwner: new Int8Array(N).fill(-2), visible: new Uint8Array(N), detect: new Uint8Array(N), supply: new Uint8Array(N), airSupply: new Uint8Array(N),
       explored: new Uint8Array(N), lastOwner: new Int8Array(N).fill(-2), knownCities: new Map(), intel: {},
-      visKey: '', proposals: [], wonder: null,
+      visKey: '', proposals: [], wonder: null, armies: new Map(), cmdlog: [],
     };
   }
 
@@ -109,9 +116,17 @@ export class Game {
   damageBuilding(b, amount, attacker, cause) { damageBuilding(this, b, amount, attacker, cause); }
   maxHouses(civ) { return 3 + 2 * Math.min(3, civ.age); }
 
+  // Alerts carry a level so players can tell routine news from emergencies.
   notify(civId, text, extra = {}) {
     const msg = { t: 'note', time: Math.round(this.time), text, ...extra };
+    if (!msg.level) msg.level = LEVEL_OF[msg.kind] || (msg.quiet ? 'info' : 'minor');
     this.outbox.push([civId < 0 ? -1 : civId, msg]);
+  }
+  // Command history: what was ordered, by whom (you, a governor, an army controller), and why.
+  history(civ, by, text) {
+    if (!civ || civ.isAI) return;
+    civ.cmdlog.unshift({ t: Math.round(this.time), by, text });
+    if (civ.cmdlog.length > 120) civ.cmdlog.length = 120;
   }
   geoEvent(kind, tile, radius, text, extra = {}) {
     this.log.push({ time: this.time, kind, tile, text });
@@ -152,6 +167,7 @@ export class Game {
     const id = this.id_();
     const name = CITY_NAMES[this.cityNameIdx++ % CITY_NAMES.length] + (this.cityNameIdx > CITY_NAMES.length ? ' II' : '');
     const city = { id, owner: civ.id, tile, name, pop, housing: 8, stability: 60, disaster: 0, occupied: 0, unrestT: 0, founded: this.time, capital, foodShort: false, jobs: {}, unemployed: 0, radius: 3,
+      isolated: !capital, freight: capital ? Infinity : 0, stock: {}, tradeConnected: false,
       governor: defaultGovernor(civ.isAI) };
     this.cities.set(id, city);
     this.ruins.delete(tile);
@@ -162,7 +178,8 @@ export class Game {
 
   makeBuilding(civ, type, tile, done) {
     const def = BUILDINGS[type];
-    const b = { id: this.id_(), owner: civ.id, type, tile, hp: done ? def.hp : def.hp * 0.1, maxHp: def.hp, done: !!done, progress: done ? 1 : 0, queue: [], staffed: 0, cityId: -1, cooldown: 0, rally: -1, active: false, placedAt: this.time };
+    const b = { id: this.id_(), owner: civ.id, type, tile, hp: done ? def.hp : def.hp * 0.1, maxHp: def.hp, done: !!done, progress: done ? 1 : 0, queue: [], staffed: 0, cityId: -1, cooldown: 0, rally: -1, active: false, placedAt: this.time,
+      state: done ? 'operational' : 'construction', funded: true, fire: 0, crew: 0 };
     this.buildings.set(b.id, b);
     this.tileB[tile] = b.id;
     this.ruins.delete(tile);
@@ -205,7 +222,7 @@ export class Game {
       case 'flat': if (ter === T.MOUNTAIN || ter === T.MARSH) return false; break;
       default: break;
     }
-    if (!ignoreCost && !this.canAfford(civ, this.buildingCost(civ, type, t))) return false;
+    if (!ignoreCost && !this.canAfford(civ, this.buildingCost(civ, type, t), t)) return false;
     return true;
   }
 
@@ -224,13 +241,39 @@ export class Game {
     if (type === 'colonist' && civ.policies.has('homesteading')) for (const k in c) c[k] = Math.round(c[k] * 0.6);
     return c;
   }
-  canAfford(civ, cost) { for (const k in cost) if ((civ.res[k] || 0) < cost[k]) return false; return true; }
-  pay(civ, cost) { for (const k in cost) civ.res[k] -= cost[k]; }
+  // Spending draws on the stockpile that can actually reach the place: the national pool, or the
+  // local reserves of a city that is cut off from the network. Credits are always national.
+  poolAt(civ, tile) {
+    if (tile == null || tile < 0) return null;
+    const c = this.cities.get(this.nearestCityId(civ.id, tile));
+    return c && c.isolated && c.stock ? c.stock : null;
+  }
+  canAfford(civ, cost, tile) {
+    const local = this.poolAt(civ, tile);
+    for (const k in cost) { const have = local && k !== 'credits' ? local[k] || 0 : civ.res[k] || 0; if (have < cost[k]) return false; }
+    return true;
+  }
+  pay(civ, cost, tile) {
+    const local = this.poolAt(civ, tile);
+    for (const k in cost) { if (local && k !== 'credits') local[k] = (local[k] || 0) - cost[k]; else civ.res[k] -= cost[k]; }
+  }
 
-  placeBuilding(civ, type, tile, instant = false) {
+  placeBuilding(civ, type, tile, instant = false, planned = false) {
     const cost = this.buildingCost(civ, type, tile);
-    if (!instant) this.pay(civ, cost);
-    return this.makeBuilding(civ, type, tile, instant);
+    if (!instant && !planned) this.pay(civ, cost, tile);
+    const b = this.makeBuilding(civ, type, tile, instant);
+    if (planned) { b.funded = false; b.state = 'planned'; b.cost = cost; }
+    return b;
+  }
+
+  // Lifecycle: planned -> construction -> operational <-> damaged -> (ruin) -> cleared/rebuilt
+  refreshState(b) {
+    const s = !b.done ? (b.funded ? 'construction' : 'planned') : b.hp < b.maxHp * 0.5 ? 'damaged' : 'operational';
+    if (s !== b.state) { b.state = s; this.world.touch(b.tile); }
+  }
+  ignite(b, chance = 0.5) {
+    if (b.fire > 0 || b.hp > b.maxHp * 0.6 || this.rng() > chance) return;
+    b.fire = 25 + this.rng() * 25; this.world.touch(b.tile);
   }
 
   canTrain(civ, b, unit) {
@@ -241,7 +284,7 @@ export class Game {
     const city = this.cities.get(b.cityId);
     if (city && def.pop && city.pop - def.pop < 2) return 'not enough population';
     if (b.queue.length >= 5) return 'queue full';
-    if (!this.canAfford(civ, this.unitCost(civ, unit))) return 'cannot afford';
+    if (!this.canAfford(civ, this.unitCost(civ, unit), b.tile)) return 'cannot afford';
     return null;
   }
 
@@ -268,10 +311,11 @@ export class Game {
       governorStep(this, 1);
       this.checkVictory();
     }
-    if (t % 20 === 0) { recomputeSupply(this); autoColonists(this); if (this.world.dirty.size) { this.navVersion++; this.world.dirty.clear(); } }
+    if (t % 20 === 0) { recomputeSupply(this); autoColonists(this); armiesStep(this); if (this.world.dirty.size) { this.navVersion++; this.world.dirty.clear(); } }
     if (t % 30 === 0) recomputeTerritory(this);
     if (t % 50 === 0) { recomputeTradeNetwork(this); this.roads.decayTraffic(); }
     if (t % 100 === 0) migrationStep(this);
+    if (t % 300 === 0) recoveryStep(this);
     for (const civ of this.civs) if (civ.ai && civ.alive && (t + civ.id * 7) % (civ.isRebel ? 30 : 20) === 0) civ.ai.think();
     if (t % 2 === 0) this.refreshVisibility();
   }
@@ -288,35 +332,75 @@ export class Game {
   }
 
   constructionStep(dt) {
-    for (const [t, r] of this.ruins) if (r.clearing && this.time >= r.clearAt) { this.ruins.delete(t); this.world.touch(t); }
+    for (const [t, r] of this.ruins) {
+      if (r.clearing && this.time >= r.clearAt) { this.ruins.delete(t); this.world.touch(t); continue; }
+      if (r.smoke > 0) { r.smoke -= dt; if (r.smoke <= 0) this.world.touch(t); }
+    }
+    // construction crews: each city puts its idle hands (plus nearby engineers) to work on its sites
+    const sites = new Map();
+    for (const b of this.buildings.values()) if (!b.done && b.funded) { const a = sites.get(b.cityId) || []; a.push(b); sites.set(b.cityId, a); }
+    const engineers = [...this.units.values()].filter((u) => UNITS[u.type].engineer);
+    for (const [cityId, list] of sites) {
+      const city = this.cities.get(cityId);
+      const crews = 1 + (city ? Math.min(3, city.unemployed * 0.25) : 0);
+      for (const b of list) {
+        const eng = engineers.filter((u) => u.owner === b.owner && dist(u.tile, b.tile) <= 2).length;
+        b.crew = Math.max(0.35, Math.min(1.6, crews / list.length + eng * 0.75));
+      }
+    }
     for (const b of this.buildings.values()) {
+      const civ = this.civs[b.owner];
+      if (b.fire > 0) {
+        b.fire -= dt;
+        b.hp -= b.maxHp * 0.012 * dt; b.lastHit = this.time;
+        if (this.rng() < 0.01 * dt) for (const n of disk(b.tile, 1)) { const o = this.buildingAtTile(n); if (o && o !== b) this.ignite(o, 0.4); }
+        if (b.hp <= 0) { damageBuilding(this, b, 1, null, 'fire'); continue; }
+        if (b.fire <= 0) { b.fire = 0; this.world.touch(b.tile); }
+      }
       if (b.done) {
         if (b.queue.length) {
-          const q = b.queue[0]; q.left -= dt;
+          const q = b.queue[0]; q.left -= dt * (b.state === 'damaged' ? 0.5 : 1);
           if (q.left <= 0) {
             b.queue.shift();
-            const civ = this.civs[b.owner];
             const spot = this.freeTilesNear(b.tile, 2)[0] ?? b.tile;
             const u = spawnUnit(this, civ, q.unit, spot);
             if (q.unit === 'colonist' && (q.auto || civ.isAI === false && this.cities.get(b.cityId)?.governor?.enabled && this.cities.get(b.cityId)?.governor?.perms.settle)) u.auto = true;
+            if (q.army && civ.armies?.has(q.army)) civ.armies.get(q.army).units.push(u.id);
             if (b.rally >= 0) this.orderMove(civ, [u.id], b.rally, false);
-            this.notify(civ.id, `${UNITS[q.unit].name} ready.`, { kind: 'unit', tile: spot, quiet: true });
+            this.notify(civ.id, `${UNITS[q.unit].name} ready.`, { kind: 'unit', tile: spot, quiet: true, level: 'info' });
           }
         }
-        // slow natural repair; governors and engineers repair much faster
-        if (b.hp < b.maxHp && this.time - (b.lastHit || -99) > 15) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.002 * dt);
+        // natural upkeep only keeps sound buildings sound; damaged ones need repair (governor, engineers, or you)
+        if (b.hp < b.maxHp && b.hp >= b.maxHp * 0.5 && !b.fire && this.time - (b.lastHit || -99) > 15) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.002 * dt);
+        this.refreshState(b);
         continue;
       }
-      const civ = this.civs[b.owner];
-      const def = BUILDINGS[b.type];
-      b.progress += dt / def.time;
-      b.hp = Math.min(b.maxHp, b.hp + (b.maxHp * 0.9 * dt) / def.time);
-      if (b.progress >= 1) {
-        b.done = true; b.progress = 1; this.world.touch(b.tile);
-        this.notify(civ.id, `${def.name} completed.`, { kind: 'build', tile: b.tile, quiet: true });
-        if (b.type === 'wonder') { civ.wonder = { since: this.time, id: b.id }; this.notify(-1, `${civ.name} has completed the Continental Arcology! They win if it stands for 5 minutes.`, { kind: 'wonder', tile: b.tile }); }
+      if (!b.funded) {
+        // planned: starts as soon as the resources exist where it is being built
+        if (this.canAfford(civ, b.cost, b.tile)) { this.pay(civ, b.cost, b.tile); b.funded = true; this.refreshState(b); }
+        continue;
       }
+      const def = BUILDINGS[b.type];
+      const rate = (b.crew || 1) * (civ.policies.has('public_works') ? 1.15 : 1);
+      b.progress += (dt * rate) / def.time;
+      b.hp = Math.min(b.maxHp, b.hp + (b.maxHp * 0.9 * dt * rate) / def.time);
+      if (b.progress >= 1) {
+        b.done = true; b.progress = 1; this.refreshState(b);
+        this.notify(civ.id, `${def.name} completed.`, { kind: 'build', tile: b.tile, quiet: true, level: 'info' });
+        if (b.type === 'wonder') { civ.wonder = { since: this.time, id: b.id }; this.notify(-1, `${civ.name} has completed the Continental Arcology! They win if it stands for 5 minutes.`, { kind: 'wonder', tile: b.tile, level: 'critical' }); }
+      }
+      this.refreshState(b);
     }
+  }
+
+  repairBuilding(civ, b, by = 'you') {
+    if (!b || b.owner !== civ.id || !b.done || b.hp >= b.maxHp) return { error: 'Nothing to repair' };
+    const cost = { materials: Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) };
+    if (!this.canAfford(civ, cost, b.tile)) return { error: `Repair needs ${cost.materials} materials` };
+    this.pay(civ, cost, b.tile);
+    b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4); b.fire = 0; this.refreshState(b); this.world.touch(b.tile);
+    this.history(civ, by, `Repaired ${BUILDINGS[b.type].name}`);
+    return null;
   }
 
   researchStep(dt) {
@@ -377,7 +461,7 @@ export class Game {
   }
 
   // ----------------------------------------------------------------- visibility & intel
-  refreshVisibility() {
+  refreshVisibility(intel = true) {
     const w = this.world;
     for (const civ of this.civs) {
       if (!civ.alive) continue;
@@ -398,8 +482,7 @@ export class Game {
         for (const t of disk(b.tile, 2)) det[t] = 1;
       }
       for (let i = 0; i < N; i++) { if (w.owner[i] === civ.id) vis[i] = 1; if (vis[i]) { civ.explored[i] = 1; civ.lastOwner[i] = w.owner[i]; } }
-      this.updateIntel(civ);
-      this.diplomacy.checkContact(civ);
+      if (intel) { this.updateIntel(civ); this.diplomacy.checkContact(civ); }
     }
   }
 
@@ -422,6 +505,17 @@ export class Game {
       prev.seen = now; if (now > 0) prev.time = this.time;
       civ.intel[o.id] = prev;
     }
+  }
+
+  // share of a city's buildings that are damaged or in ruins (drives damaged-district visuals)
+  cityDamage(c) {
+    let n = 0, bad = 0;
+    for (const t of disk(c.tile, Math.min(3, c.radius || 3))) {
+      const b = this.buildingAtTile(t);
+      if (b && b.owner === c.owner) { n++; if (b.state === 'damaged' || b.fire > 0) bad++; }
+      else if (this.ruins.has(t)) { n++; bad++; }
+    }
+    return n ? Math.round((100 * bad) / n) : 0;
   }
 
   // ----------------------------------------------------------------- snapshots
@@ -474,6 +568,7 @@ export class Game {
       if (b.owner !== civ.id && !vis[b.tile]) continue;
       const own = b.owner === civ.id;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
+        st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2),
         ...(own ? { s: b.staffed, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
     const cities = [];
@@ -481,11 +576,13 @@ export class Game {
       if (c.owner !== civ.id && !vis[c.tile]) continue;
       const own = c.owner === civ.id;
       cities.push({ id: c.id, o: c.owner, n: c.name, t: c.tile, pop: +c.pop.toFixed(1), cap: c.capital ? 1 : 0, r: c.radius,
+        dmg: this.cityDamage(c),
         ...(own ? { h: c.housing, st: Math.round(c.stability), jobs: c.jobs, un: Math.round(c.unemployed), fs: c.foodShort ? 1 : 0, dis: Math.round(c.disaster), occ: Math.round(c.occupied), unrest: c.stability < 20 ? 1 : 0, trade: c.tradeConnected ? 1 : 0,
+          iso: c.isolated ? 1 : 0, fr: c.freight === Infinity ? -1 : +(c.freight || 0).toFixed(1), stock: roundObj(c.stock || {}), ship: +(c.shipped || 0).toFixed(1),
           gov: c.governor ? { enabled: c.governor.enabled, spec: c.governor.spec, reserve: c.governor.reserve, perms: c.governor.perms, log: c.governor.log.slice(0, 12), queue: c.governor.queue } : null } : {}) });
     }
     const ruins = [];
-    for (const [t, r] of this.ruins) if (vis[t] || civ.explored[t]) ruins.push([t, r.type, r.clearing ? 1 : 0]);
+    for (const [t, r] of this.ruins) if (vis[t] || civ.explored[t]) ruins.push([t, r.type, (r.clearing ? 1 : 0) | (r.smoke > 0 ? 2 : 0) | (r.overgrown ? 4 : 0)]);
     const traffic = [];
     for (const [k, v] of this.roads.traffic) { const a = Math.floor(k / N), b = k % N; if (v > 0.5 && (vis[a] || vis[b])) traffic.push([a, b, Math.min(9, Math.round(v))]); }
     const soldiers = [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + UNITS[u.type].pop, 0);
@@ -495,6 +592,8 @@ export class Game {
       tax: civ.tax, focus: civ.focus, weariness: Math.round(civ.weariness), soldiers, wonder: civ.wonder ? Math.round(300 - (this.time - civ.wonder.since)) : null,
       power: { gen: Math.round(civ.powerGen), use: Math.round(civ.powerUse) }, storage: civ.storage || 0,
       roads: this.roads.projectsFor(civ.id), proposals: civ.proposals,
+      armies: armySummary(this, civ), cmdlog: civ.cmdlog.slice(0, 60),
+      men: [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + (UNITS[u.type].men || 0), 0),
     };
     const civs = this.civs.map((c) => {
       const base = { id: c.id, name: c.name, color: c.color, alive: c.alive, human: c.human, rebel: c.isRebel };
@@ -511,6 +610,34 @@ export class Game {
   command(civId, cmd) {
     const civ = this.civs[civId];
     if (!civ || !civ.alive || this.over) return { error: 'not active' };
+    const res = this.commandInner(civ, cmd);
+    if (!(res && res.error) && civ.human) { const d = this.describeCommand(civ, cmd); if (d) this.history(civ, cmd.by || 'you', d); }
+    return res;
+  }
+
+  describeCommand(civ, cmd) {
+    const n = (ids) => (ids || []).length;
+    switch (cmd.c) {
+      case 'move': return `${cmd.attackMove ? 'Attack-move' : 'Move'} ${n(cmd.units)} unit${n(cmd.units) === 1 ? '' : 's'} (${cmd.formation || 'line'})`;
+      case 'attack': return `Attack with ${n(cmd.units)} unit${n(cmd.units) === 1 ? '' : 's'}`;
+      case 'build': return `${cmd.plan ? 'Plan' : 'Build'} ${BUILDINGS[cmd.type]?.name}` + (cmd.why ? `: ${cmd.why}` : '');
+      case 'train': return `Train ${UNITS[cmd.unit]?.name}`;
+      case 'research': return `${cmd.queue ? 'Queue' : 'Research'} ${TECHS[cmd.tech]?.name}`;
+      case 'advance': return `Advance to the ${AGES[civ.age + 1]?.name} era`;
+      case 'gov': return `Government: ${GOVS[cmd.id]?.name}`;
+      case 'policy': return `${cmd.on ? 'Enact' : 'Repeal'} ${POLICIES[cmd.id]?.name}`;
+      case 'tax': return `Tax level ${cmd.level}`;
+      case 'diplo': return `Diplomacy: ${cmd.action} → ${this.civs[cmd.to]?.name}`;
+      case 'demolish': return 'Demolish building';
+      case 'found': return 'Found a city';
+      case 'roadPlan': return cmd.commit ? `Commission road (${(cmd.tiles || []).length} waypoints)` : null;
+      case 'governor': return `Governor settings for ${this.cities.get(cmd.city)?.name}`;
+      case 'clearPass': return 'Blast a pass through the peaks';
+      default: return null;
+    }
+  }
+
+  commandInner(civ, cmd) {
     try {
       switch (cmd.c) {
         case 'move': return this.orderMove(civ, cmd.units, cmd.tile, !!cmd.attackMove, cmd.formation || 'line');
@@ -518,8 +645,11 @@ export class Game {
         case 'stop': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id) { u.path = []; u.field = false; u.order = { kind: 'idle' }; u.goal = -1; u.slot = -1; u.groupSpeed = 0; } } return null;
         case 'stance': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['aggressive', 'defensive', 'hold'].includes(cmd.stance) && !UNITS[u.type].civilian) u.stance = cmd.stance; } return null;
         case 'build': {
-          if (!this.canPlace(civ, cmd.type, cmd.tile)) return { error: 'Cannot build there' };
-          this.placeBuilding(civ, cmd.type, cmd.tile); return null;
+          if (!this.canPlace(civ, cmd.type, cmd.tile, true)) return { error: 'Cannot build there' };
+          const affordable = this.canAfford(civ, this.buildingCost(civ, cmd.type, cmd.tile), cmd.tile);
+          if (!affordable && !cmd.plan) return { error: 'Not enough resources (shift-click to plan it; it starts when funded)' };
+          this.placeBuilding(civ, cmd.type, cmd.tile, false, !affordable);
+          return null;
         }
         case 'placement': {
           const tiles = [];
@@ -554,21 +684,22 @@ export class Game {
           const b = this.buildings.get(cmd.building);
           if (!b) return { error: 'no building' };
           const why = this.canTrain(civ, b, cmd.unit); if (why) return { error: why };
-          this.pay(civ, this.unitCost(civ, cmd.unit));
+          this.pay(civ, this.unitCost(civ, cmd.unit), b.tile);
           const city = this.cities.get(b.cityId); if (city) city.pop -= UNITS[cmd.unit].pop;
-          b.queue.push({ unit: cmd.unit, left: UNITS[cmd.unit].time, auto: !!cmd.auto });
+          b.queue.push({ unit: cmd.unit, left: UNITS[cmd.unit].time, auto: !!cmd.auto, army: cmd.army || b.rallyArmy || 0 });
           return null;
         }
-        case 'rally': { const b = this.buildings.get(cmd.building); if (b && b.owner === civ.id) b.rally = cmd.tile; return null; }
+        case 'rally': { const b = this.buildings.get(cmd.building); if (b && b.owner === civ.id) { b.rally = cmd.tile; b.rallyArmy = cmd.army || 0; } return null; }
         case 'found': {
           const u = this.units.get(cmd.unit);
           if (!u || u.owner !== civ.id || u.type !== 'colonist') return { error: 'need a colonist convoy' };
           const why = this.canFound(civ, u.tile); if (why) return { error: why };
           this.units.delete(u.id);
           const c = this.foundCity(civ, u.tile, civ.policies.has('homesteading') ? 4 : 3);
+          c.stock = { food: 80, materials: 60 };   // the convoy's wagons become the new town's first reserves
           if (civ.human && u.auto) { c.governor.enabled = true; }
           this.notify(civ.id, `New city founded: ${c.name}.`, { kind: 'city', tile: c.tile });
-          recomputeTerritory(this);
+          recomputeTerritory(this); recomputeTradeNetwork(this);
           return null;
         }
         case 'research': {
@@ -622,6 +753,14 @@ export class Game {
           if (cmd.reserve !== undefined) gv.reserve = Math.max(0, Math.min(0.9, +cmd.reserve));
           if (cmd.perms) for (const k of ['build', 'roads', 'repair', 'recruit', 'settle']) if (cmd.perms[k] !== undefined) gv.perms[k] = !!cmd.perms[k];
           if (cmd.cancel) { const b = this.buildings.get(cmd.cancel); if (b && !b.done && b.owner === civ.id) { this.command(civ.id, { c: 'demolish', id: b.id, block: true }); gv.log.unshift({ t: Math.round(this.time), text: `Project cancelled by you: ${BUILDINGS[b.type].name}. The governor will not build on that hex again.` }); } }
+          return null;
+        }
+        case 'army': return armyCommand(this, civ, cmd);
+        case 'repair': return this.repairBuilding(civ, this.buildings.get(cmd.id), cmd.by || 'you');
+        case 'rallyAll': {
+          let n = 0;
+          for (const b of this.buildings.values()) if (b.owner === civ.id && BUILDINGS[b.type].trains && (!cmd.cat || BUILDINGS[b.type].cat === cmd.cat)) { b.rally = cmd.tile; b.rallyArmy = cmd.army || 0; n++; }
+          this.history(civ, cmd.by || 'you', `Rally point set for ${n} production buildings`);
           return null;
         }
         case 'diplo': return this.diplomacy.act(civ, cmd.to, cmd.action);

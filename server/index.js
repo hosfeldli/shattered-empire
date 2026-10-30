@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { MatchManager } from './matches.js';
+import { makeStore } from './storage.js';
 import { continentPreview } from './png.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,7 +23,8 @@ const log = {
 };
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
-const manager = new MatchManager(log);
+const manager = new MatchManager(log, makeStore(log));
+manager.restoreAll().catch((e) => log.error('restore failed', e));
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -63,13 +65,15 @@ const heartbeat = setInterval(() => {
 
 server.listen(PORT, () => log.info(`Shattered Empires server ${VERSION} listening on :${PORT}`));
 
-function shutdown() {
-  log.info('shutting down');
+// Cloud Run sends SIGTERM before replacing an instance: snapshot every live match first so the
+// next revision resumes them and players reconnect automatically.
+async function shutdown() {
+  log.info('shutting down: saving matches');
   clearInterval(heartbeat);
-  manager.shutdown();
+  setTimeout(() => process.exit(0), 9000).unref();
+  try { await manager.shutdown(); } catch (e) { log.error('save on shutdown failed', e); }
   for (const ws of wss.clients) ws.close(1012, 'server restarting');
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 3000).unref();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

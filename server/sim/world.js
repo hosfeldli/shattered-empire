@@ -287,13 +287,18 @@ export class World {
       const s = this.siteScore(i); if (s > 12) cands.push([i, s]);
     }
     cands.sort((a, b) => b[1] - a[1]);
-    const pool = cands.slice(0, 600).map((c) => c[0]);
+    // farthest-point sampling over good sites: each new start maximises its distance to the others
+    const pool = cands.slice(0, Math.max(600, n * 120)).map((c) => c[0]);
     let best = null, bestScore = -1;
-    for (let attempt = 0; attempt < 300; attempt++) {
-      const pick = [];
-      for (let k = 0; k < n; k++) pick.push(rng.pick(pool));
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const pick = [rng.pick(pool)];
+      while (pick.length < n) {
+        let bt = -1, bd = -1;
+        for (const t of pool) { let m = Infinity; for (const p of pick) { const d = dist(t, p); if (d < m) m = d; } if (m > bd) { bd = m; bt = t; } }
+        pick.push(bt);
+      }
       let minD = Infinity;
-      for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) minD = Math.min(minD, dist(pick[a], pick[b]));
+      for (let a2 = 0; a2 < n; a2++) for (let b2 = a2 + 1; b2 < n; b2++) minD = Math.min(minD, dist(pick[a2], pick[b2]));
       if (minD > bestScore) { bestScore = minD; best = pick; }
     }
     if (!best) throw new Error('no start positions');

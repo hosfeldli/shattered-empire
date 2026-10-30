@@ -11,6 +11,8 @@ export function defaultGovernor(enabled = false, spec = 'balanced') {
 
 function log(g, c, text) {
   const gv = c.governor;
+  const civ = g.civs[c.owner];
+  if (civ && civ.human && !/^Holding off/.test(text)) g.history(civ, 'governor:' + c.name, text);
   gv.log.unshift({ t: Math.round(g.time), text });
   if (gv.log.length > 30) gv.log.length = 30;
 }
@@ -68,6 +70,8 @@ export function cityNeeds(g, civ, c, spec) {
   if (has('stabilizer') < 1 && w.stab[c.tile] < 0.4) push('stabilizer', 'city sits on a fault');
   if (civ.techs.has('networked_command') && civCount(g, civ, 'comms_tower') < g.cityOf(civ).length) push('comms_tower', 'extend command network');
   if (civ.techs.has('seafaring') && has('port') < 1 && c.capital) push('port', 'no harbour');
+  if (civ.techs.has('seafaring') && has('port') < 1 && c.isolated && c.noLandRoute) push('port', 'cut off by water: a port opens a sea lane to the network');
+  if (c.isolated && c.noLandRoute && c.capital === false && !civ.techs.has('seafaring')) c.wantsSeafaring = true;
   if (civ.techs.has('fortification') && has('bunker') < 1 && (c.capital || spec === 'fortress')) push('bunker', 'city has no defenses');
   if (civ.techs.has('continental_arcology') && civCount(g, civ, 'wonder') < 1 && c.capital && civ.res.credits > 2500) push('wonder', 'the Arcology would secure victory');
   if (c.unemployed > 2) for (const t of ['lumber', 'quarry', 'salvage', 'mine', 'market', 'academy', 'steel_mill', 'munitions_plant', 'university', 'farm']) push(t, `${Math.round(c.unemployed)} citizens unemployed`);
@@ -146,7 +150,7 @@ function build(g, civ, c, gv) {
     if (!governorCanSpend(civ, gv, cost)) continue;
     const t = pickTile(g, civ, c, type, gv);
     if (t < 0) continue;
-    const res = g.command(civ.id, { c: 'build', type, tile: t, by: 'governor' });
+    const res = g.command(civ.id, { c: 'build', type, tile: t, by: 'governor:' + c.name, why: reason });
     if (res && res.error) continue;
     const b = g.buildingAtTile(t);
     if (b) gv.queue.push(b.id);
@@ -169,16 +173,27 @@ function roads(g, civ, c, gv) {
     plan.segments.forEach((s) => { if (s.reason === 'already built') { s.ok = true; s.skip = false; } });
     if (governorCanSpend(civ, gv, plan.cost) && !g.roads.startProject(g, civ, plan).error) { log(g, c, 'Repairing a damaged road segment.'); return true; }
   }
-  if (c.capital || c.tradeConnected) return false;
-  const cap = g.capital(civ); if (!cap) return false;
-  const type = bestRoadType(civ);
-  const route = findRoadRoute(g, civ, c.tile, cap.tile, type) || findRoadRoute(g, civ, c.tile, cap.tile, 1);
-  if (!route) return false;
-  const plan = g.roads.plan(g, civ, route, route ? type : 1); plan.by = 'governor:' + c.id;
+  if (!c.isolated) return false;
+  // connect to whichever already-connected city is closest, not necessarily the capital
+  const hubs = g.cityOf(civ).filter((o) => o !== c && !o.isolated).sort((a, b) => dist(a.tile, c.tile) - dist(b.tile, c.tile)).slice(0, 3);
+  if (!hubs.length) return false;
+  const best = bestRoadType(civ);
+  let route = null, type = best, hub = null;
+  for (const h of hubs) {
+    for (const ty of [best, ...(best !== 2 && civ.techs.has('civil_engineering') ? [2] : [])]) {
+      route = findRoadRoute(g, civ, c.tile, h.tile, ty);
+      if (route) { type = ty; hub = h; break; }
+    }
+    if (route) break;
+  }
+  c.noLandRoute = !route;
+  if (!route) { if (!gv.noRouteNoted) { gv.noRouteNoted = true; log(g, c, 'No land route to the network (major river or sea in the way): a port or paved bridges are needed.'); } return false; }
+  const plan = g.roads.plan(g, civ, route, type); plan.by = 'governor:' + c.id;
   if (!plan.buildable) return false;
   if (!governorCanSpend(civ, gv, plan.cost)) return false;
   if (g.roads.startProject(g, civ, plan).error) return false;
-  log(g, c, `Building ${ROAD_TYPES[type].name.toLowerCase()} to ${cap.name} (${plan.length} hexes, ${plan.bridges} bridges) to join the trade network.`);
+  gv.noRouteNoted = false;
+  log(g, c, `Building ${ROAD_TYPES[type].name.toLowerCase()} to ${hub.name} (${plan.length} hexes, ${plan.bridges} bridges) to rejoin the supply network.`);
   return true;
 }
 

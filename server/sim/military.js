@@ -161,7 +161,9 @@ function engineerWork(g, u, dt) {
   }
   for (const t of disk(u.tile, 1)) {
     const b = g.buildingAtTile(t);
-    if (b && b.owner === u.owner && b.done && b.hp < b.maxHp && civ.res.materials >= 0.5 * dt) { b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.04 * dt); civ.res.materials -= 0.5 * dt; return; }
+    if (b && b.owner === u.owner && b.fire > 0) { b.fire = Math.max(0, b.fire - 6 * dt); if (!b.fire) g.world.touch(b.tile); return; }
+    if (b && b.owner === u.owner && b.done && b.hp < b.maxHp && civ.res.materials >= 0.5 * dt) { b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.04 * dt); civ.res.materials -= 0.5 * dt; g.refreshState(b); return; }
+    if (b && b.owner === u.owner && !b.done && b.funded) { b.progress = Math.min(0.999, b.progress + (dt * 0.5) / BUILDINGS[b.type].time); return; }
     const r = g.ruins.get(t);
     if (r && (g.world.owner[t] === u.owner || g.world.owner[t] < 0)) { r.clear = (r.clear || 0) + dt; if (r.clear >= 6) { g.ruins.delete(t); g.world.touch(t); } return; }
   }
@@ -222,7 +224,7 @@ export function damageUnit(g, u, amount, attackerCivId, cause) {
 export function damageBuilding(g, b, amount, attackerCivId, cause) {
   if (!g.buildings.has(b.id)) return;
   b.hp -= amount; b.lastHit = g.time;
-  if (b.hp > 0) return;
+  if (b.hp > 0) { if (cause === 'combat' || cause === 'quake' || cause === 'lava') g.ignite(b, cause === 'lava' ? 1 : 0.15); g.refreshState(b); return; }
   const owner = g.civs[b.owner];
   if (b.type === 'town') {
     const city = [...g.cities.values()].find((c) => c.buildingId === b.id);
@@ -251,7 +253,7 @@ export function damageBuilding(g, b, amount, attackerCivId, cause) {
     b.hp = 1; return;
   }
   g.removeBuilding(b);
-  if (cause !== 'flood' && cause !== 'demolish') g.addRuin(b.tile, b.type, b.owner);
+  if (cause !== 'flood' && cause !== 'demolish') { g.addRuin(b.tile, b.type, b.owner); const r = g.ruins.get(b.tile); if (r) r.smoke = 60; }
   g.notify(owner.id, `${BUILDINGS[b.type].name} destroyed${cause === 'combat' ? ' by enemy forces' : cause === 'quake' ? ' in the earthquake' : cause === 'lava' ? ' by lava' : ''}.`, { kind: 'loss', tile: b.tile, quiet: cause !== 'combat' });
   g.fx.push(['boom', b.tile, b.tile]);
 }

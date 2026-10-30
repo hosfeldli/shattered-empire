@@ -92,7 +92,7 @@ export class RoadNet {
       if (ter === T.PEAK) return 'impassable peaks';
       if (ter === T.LAVA) return 'lava';
       if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return 'foreign territory';
-      if (w.owner[t] < 0 && !civ.supply[t]) return 'outside your territory and supply';
+      if (w.owner[t] < 0 && !civ.supply[t] && !civ.explored[t]) return 'unexplored land';
     }
     const rt = ROAD_TYPES[type];
     if (rt.tech && !civ.techs.has(rt.tech)) return `${rt.name} needs ${g.defs.TECHS[rt.tech].name}`;

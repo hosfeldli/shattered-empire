@@ -64,7 +64,9 @@ export class AI {
       if (have >= next.techsNeeded && this.g.canAfford(civ, next.cost)) this.cmd({ c: 'advance' });
     }
     if (!civ.researching) {
-      const t = TECH_PREF[this.p].find((k) => !civ.techs.has(k) && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)));
+      // cities stranded across water make Seafaring urgent
+      const urgent = this.cities.some((c) => c.wantsSeafaring) && !civ.techs.has('seafaring') && TECHS.seafaring.req.every((r) => civ.techs.has(r)) ? ['seafaring'] : [];
+      const t = [...urgent, ...TECH_PREF[this.p]].find((k) => !civ.techs.has(k) && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)));
       if (t) this.cmd({ c: 'research', tech: t });
     }
   }

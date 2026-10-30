@@ -1,6 +1,6 @@
 // Server-side navigation: per-movement-class step costs, A*, shared flow fields for
 // large groups, and road routing. Clients never path-find.
-import { N, T, MOVE, UNITS, TERRAIN, isWater } from './constants.js';
+import { N, W, H, T, MOVE, UNITS, TERRAIN, isWater } from './constants.js';
 import { NB, dist } from './hex.js';
 import { MinHeap } from './world.js';
 import { riverSize } from './roads.js';
@@ -24,7 +24,7 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
     if (!civ.techs.has('seafaring')) return Infinity;
     if (!isWater(ta)) {
       const pb = game.buildingAtTile(a);
-      if (!pb || pb.type !== 'port' || pb.owner !== civ.id || pb.state !== 'operational') return Infinity; // embark only at own ports
+      if (!pb || pb.type !== 'port' || pb.owner !== civ.id || (pb.state !== 'operational' && pb.state !== 'damaged')) return Infinity; // embark only at own ports
     }
     return tb === T.DEEP ? 0.6 : 0.7;
   }
@@ -124,7 +124,7 @@ export function formationSlots(game, civ, units, goal, shape = 'line') {
   const sorted = units.slice().sort((a, b) => role(a) - role(b) || a.id - b.id);
   // facing: from the group's centre toward the goal
   let cx = 0, cy = 0;
-  const pos = (t) => [Math.sqrt(3) * ((t % 128) + 0.5 * (((t / 128) | 0) & 1)), 1.5 * ((t / 128) | 0)];
+  const pos = (t) => [Math.sqrt(3) * ((t % W) + 0.5 * (((t / W) | 0) & 1)), 1.5 * ((t / W) | 0)];
   for (const u of units) { const [x, y] = pos(u.tile); cx += x; cy += y; }
   cx /= units.length; cy /= units.length;
   const [gx, gy] = pos(goal);
@@ -137,11 +137,11 @@ export function formationSlots(game, civ, units, goal, shape = 'line') {
     let best = -1, bd = Infinity;
     const r0 = Math.round(y / 1.5);
     for (let r = r0 - 2; r <= r0 + 2; r++) {
-      if (r < 0 || r >= 128) continue;
+      if (r < 0 || r >= H) continue;
       const q0 = Math.round(x / Math.sqrt(3) - 0.5 * (r & 1));
       for (let q = q0 - 2; q <= q0 + 2; q++) {
-        if (q < 0 || q >= 128) continue;
-        const t = r * 128 + q; if (taken.has(t)) continue;
+        if (q < 0 || q >= W) continue;
+        const t = r * W + q; if (taken.has(t)) continue;
         const ter = w.terr[t]; if (isWater(ter) || !Number.isFinite(TERRAIN[ter].move)) continue;
         const [px, py] = pos(t); const d = (px - x) ** 2 + (py - y) ** 2;
         if (d < bd) { bd = d; best = t; }

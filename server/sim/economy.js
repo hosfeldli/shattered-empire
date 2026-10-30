@@ -1,6 +1,6 @@
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
-import { N, T, TERRAIN, BUILDINGS, UNITS, TAX, RES, GOODS, isWater } from './constants.js';
+import { N, T, TERRAIN, BUILDINGS, UNITS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 
 const BASE_PRIORITY = { town: 120, farm: 100, port: 95, lumber: 70, quarry: 66, salvage: 68, mine: 64, oil_well: 63, power_plant: 80, fusion_plant: 82, steel_mill: 60, munitions_plant: 52, electronics_plant: 54, market: 56, academy: 55, university: 52, seismic: 40 };
@@ -34,34 +34,48 @@ export function recomputeTerritory(g) {
   if (changed) g.navVersion++;
 }
 
-// Cities connected to their capital over intact road edges (or between own ports) form trade routes.
+// The logistics network: cities linked to the capital over intact road/rail edges (or by sea between
+// own ports) share the national stockpile, limited by the freight capacity of the weakest link.
+// Cities that are cut off live on their own local reserves until a route is restored.
 export function recomputeTradeNetwork(g) {
   const roads = g.roads;
   for (const civ of g.civs) {
     if (!civ.alive) continue;
     const cap = g.capital(civ); if (!cap) continue;
-    const seen = new Uint8Array(N); const q = [cap.tile]; seen[cap.tile] = 1;
+    // widest-path search: maximise the bottleneck freight capacity to the capital
+    const width = new Float32Array(N).fill(-1);
     const parent = new Int32Array(N).fill(-1);
+    width[cap.tile] = Infinity;
+    const heap = [[Infinity, cap.tile]];
+    const ports = [...g.buildings.values()].filter((o) => o.type === 'port' && o.owner === civ.id && o.done);
     let portsLinked = false;
-    for (let h = 0; h < q.length; h++) {
-      const i = q[h];
+    while (heap.length) {
+      heap.sort((a, b) => a[0] - b[0]);
+      const [wd, i] = heap.pop();
+      if (wd < width[i]) continue;
       for (let d = 0; d < 6; d++) {
-        const n = NB[i * 6 + d]; if (n < 0 || seen[n]) continue;
-        if (!roads.usable(i, n)) continue;
-        seen[n] = 1; parent[n] = i; q.push(n);
+        const n = NB[i * 6 + d]; if (n < 0) continue;
+        const e = roads.usable(i, n); if (!e) continue;
+        const nw = Math.min(wd, ROAD_TYPES[e.type].freight * (e.cond < 50 ? 0.5 : 1));
+        if (nw > width[n]) { width[n] = nw; parent[n] = i; heap.push([nw, n]); }
       }
       const b = g.buildingAtTile(i);
       if (!portsLinked && b && b.type === 'port' && b.owner === civ.id && b.done) {
         portsLinked = true;
-        for (const o of g.buildings.values()) if (o.type === 'port' && o.owner === civ.id && o.done && !seen[o.tile]) { seen[o.tile] = 1; q.push(o.tile); }
+        for (const o of ports) { const nw = Math.min(wd, PORT_FREIGHT); if (nw > width[o.tile]) { width[o.tile] = nw; parent[o.tile] = i; heap.push([nw, o.tile]); } }
       }
     }
     for (const c of g.cityOf(civ)) {
-      let linked = seen[c.tile] === 1;
-      if (!linked) for (let d = 0; d < 6 && !linked; d++) { const n = NB[c.tile * 6 + d]; if (n >= 0 && seen[n]) linked = true; }
-      c.tradeConnected = !c.capital && linked;
-      // trade convoys run along the connecting roads: this is what civilian traffic visuals show
-      if (c.tradeConnected) { let t = seen[c.tile] ? c.tile : -1; const amt = 0.5 + Math.min(4, c.pop / 10); let guard = 0; while (t >= 0 && parent[t] >= 0 && guard++ < 400) { roads.noteTraffic(t, parent[t], amt); t = parent[t]; } }
+      let t = width[c.tile] >= 0 ? c.tile : -1;
+      if (t < 0) for (let d = 0; d < 6; d++) { const n = NB[c.tile * 6 + d]; if (n >= 0 && width[n] > (t >= 0 ? width[t] : -1)) t = n; }
+      const was = c.isolated;
+      c.tradeConnected = !c.capital && t >= 0;
+      c.isolated = !c.capital && t < 0;
+      c.freight = c.capital ? Infinity : t >= 0 ? width[t] : 0;
+      if (was === false && c.isolated && !civ.isRebel) g.notify(civ.id, `${c.name} is cut off from the supply network and must live on local reserves.`, { kind: 'isolated', tile: c.tile, level: 'major' });
+      if (was === true && !c.isolated && !civ.isRebel) g.notify(civ.id, `${c.name} is reconnected to the network.`, { kind: 'city', tile: c.tile, level: 'minor' });
+      // convoys run along the connecting roads: this is what civilian traffic visuals show
+      if (c.tradeConnected) { const amt = 0.5 + Math.min(4, c.pop / 10); let guard = 0; while (t >= 0 && parent[t] >= 0 && guard++ < 600) { roads.noteTraffic(t, parent[t], amt); t = parent[t]; } }
     }
   }
 }
@@ -87,6 +101,43 @@ function farmPer(g, civ, b) {
 }
 export { farmYield };
 
+// Move a city's net production/consumption between its local warehouse and the national stockpile,
+// limited by freight capacity. Isolated cities keep everything (and must cover their needs) locally.
+function shipGoods(civ, c, cd, delta, dt) {
+  const st = c.stock;
+  delta.credits += cd.credits;
+  c.localShort = false;
+  if (c.isolated) {
+    for (const k of GOODS) {
+      if (k === 'credits') continue;
+      const v = (st[k] || 0) + cd[k];
+      if (v < 0 && k === 'food') c.localShort = true;
+      st[k] = Math.max(0, Math.min(LOCAL_STORE, v));
+    }
+    c.shipped = 0;
+    return;
+  }
+  // flows: this tick's net plus any backlog waiting in the local warehouse
+  let budget = c.capital || c.freight === Infinity ? Infinity : (c.freight || 0) * dt;
+  let shipped = 0;
+  for (const k of GOODS) {
+    if (k === 'credits') continue;
+    let f = cd[k] + (st[k] || 0);
+    st[k] = 0;
+    if (f >= 0) {
+      const m = Math.min(f, budget); delta[k] += m; budget -= m; shipped += m;
+      st[k] = Math.min(LOCAL_STORE, f - m);
+    } else {
+      // a deficit: import from the nation as far as freight allows, then go short
+      const need = -f;
+      const m = Math.min(need, budget, Math.max(0, civ.res[k] + delta[k]));
+      delta[k] -= m; budget -= m; shipped += m;
+      if (need - m > 1e-6 && k === 'food') c.localShort = true;
+    }
+  }
+  c.shipped = shipped;
+}
+
 export function economyStep(g, dt) {
   const w = g.world;
   const unitCount = new Map();
@@ -107,10 +158,14 @@ export function economyStep(g, dt) {
     let totalPop = 0;
     const upkeepShare = (0.05 * (unitCount.get(civ.id) || 0)) / cities.length;
     // power grid: generation from staffed plants vs. demand from staffed industry (last tick's staffing)
-    const pr = civ.powerRatio ?? 1;
+    // before Electrification, industry runs on furnaces and steam: no grid, but only 70% output
+    const pr = civ.techs.has('electrification') ? civ.powerRatio ?? 1 : 0.7;
     let powerGen = 0, powerUse = 0;
     for (const c of cities) {
       const blds = byCity.get(c.id) || [];
+      if (!c.stock) c.stock = {};
+      const cd = {}; for (const k of GOODS) cd[k] = 0;
+      const pool = (k) => (c.isolated && k !== 'credits' ? c.stock[k] || 0 : civ.res[k] || 0);
       let housing = 8 + 4 * Math.min(2, civ.age) + (civ.techs.has('mechanized_agriculture') ? 4 : 0);
       for (const b of blds) if (b.type === 'house') housing += 4 + civ.age;
       c.housing = housing;
@@ -123,7 +178,7 @@ export function economyStep(g, dt) {
       const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
       const govMul = gov === 'federal' ? 1.1 : 1;
       const foodB = jobBlds.filter((b) => b.type === 'farm' || b.type === 'port').sort((a, b) => farmPer(g, civ, b) - farmPer(g, civ, a));
-      const foodTarget = (0.12 * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : civ.res.food > 600 ? 0.75 : civ.res.food > 250 ? 1.0 : 1.25) - 0.4;
+      const foodTarget = (0.12 * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
       let foodPlanned = 0;
       for (const b of foodB) {
         if (foodPlanned >= foodTarget || !avail) break;
@@ -143,8 +198,8 @@ export function economyStep(g, dt) {
         if (!n) continue;
         if (def.power > 0) {
           let ok = 1;
-          if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt; if (need > 0) ok = Math.min(ok, Math.max(0, (civ.res[k] + delta[k]) / need)); }
-          if (def.consume) for (const k in def.consume) delta[k] -= def.consume[k] * n * dt * ok;
+          if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt; if (need > 0) ok = Math.min(ok, Math.max(0, (pool(k) + cd[k]) / need)); }
+          if (def.consume) for (const k in def.consume) cd[k] -= def.consume[k] * n * dt * ok;
           powerGen += def.power * n * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
           if (b.type === 'fusion_plant') research += 0.1 * n;
           continue;
@@ -152,8 +207,8 @@ export function economyStep(g, dt) {
         let ratio = damaged;
         if (def.power < 0) { powerUse += -def.power * n; ratio *= pr; }
         if (def.needs === 'rare' && !g.civHasResource(civ, RES.RARE)) ratio = 0;
-        if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) ratio = Math.min(ratio, Math.max(0, (civ.res[k] + delta[k]) / (def.consume[k] * n * dt))); }
-        if (def.consume) for (const k in def.consume) delta[k] -= def.consume[k] * n * dt * ratio;
+        if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) ratio = Math.min(ratio, Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * dt))); }
+        if (def.consume) for (const k in def.consume) cd[k] -= def.consume[k] * n * dt * ratio;
         if (!def.produce) continue;
         for (const k in def.produce) {
           let v = def.produce[k] * n * dt * eff * govMul * ratio;
@@ -167,16 +222,18 @@ export function economyStep(g, dt) {
           if (k === 'steel' && P.has('industrial_planning')) v *= 1.3;
           if (gov === 'corporate' && (k === 'steel' || k === 'munitions' || k === 'electronics')) v *= 1.1;
           if (k === 'research') { research += v; continue; }
-          delta[k] += v;
+          cd[k] += v;
         }
       }
       c.jobs = jobs;
       c.unemployed = Math.max(0, c.pop - jobs.worker - jobs.merchant - jobs.specialist);
       // the settlement hub itself always yields a little (scavengers, artisans)
-      delta.food += 0.4 * dt; delta.materials += 0.4 * dt; delta.credits += 0.3 * dt;
-      delta.food -= 0.12 * c.pop * dt;
-      delta.credits += c.pop * TAX[civ.tax].credits * dt * (gov === 'corporate' ? 1.3 : 1) * (P.has('martial_law') ? 0.85 : 1);
-      if (c.tradeConnected) delta.credits += (1 + (gov === 'corporate' ? 1 : 0)) * dt;
+      cd.food += 0.4 * dt; cd.materials += 0.4 * dt; cd.credits += 0.3 * dt;
+      cd.food -= 0.12 * c.pop * dt;
+      cd.credits += c.pop * TAX[civ.tax].credits * dt * (gov === 'corporate' ? 1.3 : 1) * (P.has('martial_law') ? 0.85 : 1);
+      if (c.tradeConnected) cd.credits += (1 + (gov === 'corporate' ? 1 : 0)) * dt;
+      // route this city's surplus and needs through its link to the network
+      shipGoods(civ, c, cd, delta, dt);
       totalPop += c.pop;
     }
     civ.powerGen = powerGen; civ.powerUse = powerUse;
@@ -201,10 +258,12 @@ export function economyStep(g, dt) {
     civ.storage = 1500 + 800 * cities.length + 500 * depots;
     for (const k of GOODS) civ.res[k] = Math.max(0, k === 'credits' ? civ.res[k] + delta[k] : Math.min(civ.storage, civ.res[k] + delta[k]));
     civ.rates = delta;
-    const starving = civ.res.food <= 0 && delta.food < 0;
+    const starvingNational = civ.res.food <= 0 && delta.food < 0;
     civ.popTotal = totalPop;
     civ.weariness = Math.max(0, civ.weariness - 0.08 * dt * (atWar ? 0.5 : 1.5));
     for (const c of cities) {
+      const starving = c.isolated ? c.localShort : starvingNational || c.localShort;
+      if (starving && !c.foodShort && !civ.isRebel) g.notify(civ.id, `${c.name} has run out of food!`, { kind: 'famine', tile: c.tile, level: 'critical' });
       c.foodShort = starving;
       const enemyNear = [...g.units.values()].some((u) => g.hostile(u.owner, civ.id) && !UNITS[u.type].civilian && dist(u.tile, c.tile) <= 4);
       let target = 62 + TAX[civ.tax].stab;
