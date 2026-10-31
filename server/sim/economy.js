@@ -1,6 +1,7 @@
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
-import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, DIFFICULTY } from './constants.js';
+import { ACTIVITY } from './logistics.js';
+import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, aiProfile } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { allocate } from './workforce.js';
 import { labor, populationStep, crowdingPenalty, hasServices, migrationStep as migrate } from './population.js';
@@ -106,6 +107,23 @@ function farmPer(g, civ, b) {
   return v;
 }
 export { farmYield };
+
+// pay, spares, fuel and ammunition by unit tier (credits/s, fuel/s)
+function upkeepByCiv(g) {
+  if (g._upkeepTick === g.tickN) return g._upkeep;
+  const m = new Map();
+  for (const u of g.units.values()) {
+    const d = UNITS[u.type]; if (d.civilian) continue;
+    const e = m.get(u.owner) || { credits: 0, fuel: 0 }; m.set(u.owner, e);
+    // fixed maintenance (credits) does not depend on activity; operational food and fuel do
+    const act = ACTIVITY[u.activity] || ACTIVITY.moving;
+    e.credits += 0.02 + 0.012 * d.age + (d.cat === 'artillery' ? 0.008 : 0);
+    e.food = (e.food || 0) + 0.05 * (d.air ? 1 : act.food);
+    if (d.move !== 'infantry') e.fuel += (0.018 + 0.005 * d.age + (d.air ? 0.01 : 0)) * (d.air ? 1 : act.fuel);
+  }
+  g._upkeepTick = g.tickN; g._upkeep = m;
+  return m;
+}
 
 const SHIP_VALUE = { food: 2, materials: 1, ore: 2.5, steel: 6, fuel: 5, munitions: 5, electronics: 12 };
 function shipRank(civ, c, cd, k) {
@@ -216,7 +234,7 @@ export function economyStep(g, dt) {
       const prio = FOCUS_BONUS[civ.focus] || {};
       const jobs = { worker: 0, merchant: 0, specialist: 0 };
       const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
-      const govMul = (gov === 'federal' ? 1.1 : 1) * (civ.isAI ? DIFFICULTY[civ.difficulty]?.econ || 1 : 1);
+      const govMul = (gov === 'federal' ? 1.1 : 1) * (civ.isAI && !civ.isRebel ? aiProfile(civ).adv.econ : 1);
       const foodTarget = (0.12 * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
       const sites = blds.filter((b) => !b.done && b.funded).length;
       const alloc = allocate(c, blds, {
@@ -297,23 +315,26 @@ export function economyStep(g, dt) {
     let nb = 0; for (const c of cities) nb += (byCity.get(c.id) || []).length;
     delta.credits -= nb * (0.01 + 0.008 * civ.age) * dt;
     const uc = unitCount.get(civ.id) || 0;
-    delta.food -= 0.05 * uc * dt;
+    delta.food -= (upkeepByCiv(g).get(civ.id)?.food || 0) * dt;      // field rations by activity
     delta.credits -= (civ.age >= 1 ? 0.03 : 0.01) * uc * dt;
-    delta.fuel -= 0.01 * [...g.units.values()].filter((u) => u.owner === civ.id && UNITS[u.type].move !== 'infantry').length * dt;
     for (const o of g.civs) {
       if (o === civ || !o.alive || o.isRebel) continue;
       const rel = g.diplomacy.rel(civ.id, o.id);
       if (rel.trade) delta.credits += (1.5 + 0.5 * Math.min(cities.length, g.cityOf(o).length)) * (P.has('free_markets') ? 1.5 : 1) * dt;
     }
     // army maintenance grows faster than the army: pay, spares and fuel (logistics, not a hard cap)
+    const tierUpkeep = upkeepByCiv(g);
     const nArmy = unitCount.get(civ.id) || 0;
-    civ.upkeep = { credits: +(nArmy * 0.03 * (1 + nArmy / 60)).toFixed(2), fuel: +((vehicles.get(civ.id) || 0) * 0.012).toFixed(3) };
+    // operating cost rises with the technology tier: advanced formations are efficient where they
+    // are needed and expensive to keep in unnecessary numbers
+    const tierCost = tierUpkeep.get(civ.id) || { credits: 0, fuel: 0 };
+    civ.upkeep = { credits: +(tierCost.credits * (1 + nArmy / 60)).toFixed(2), fuel: +tierCost.fuel.toFixed(3) };
     delta.credits -= civ.upkeep.credits * dt;
     if (civ.upkeep.fuel) delta.fuel -= Math.min(civ.res.fuel || 0, civ.upkeep.fuel * dt);
     if (P.has('research_grants')) research *= 1.3;
     if (gov === 'technocracy') research *= 1.2;
     if (gov === 'junta') research *= 0.85;
-    if (civ.isAI) research *= DIFFICULTY[civ.difficulty]?.research || 1;
+    if (civ.isAI && !civ.isRebel) research *= aiProfile(civ).adv.research;
     civ.researchRate = research;
     // storage capacity: warehouses in each city plus depots; credits are a treasury and uncapped
     let depots = 0; for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === 'depot' && b.done) depots++;

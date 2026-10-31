@@ -250,14 +250,33 @@ export const IMPORT_PER_MARKET = 60;     // units per minute each operational ma
 
 // Refit paths: surviving units (and their veterancy) are re-equipped instead of replaced.
 // conv: a conversion between movement classes, priced closer to a new unit.
-// AI difficulty: how efficiently AI empires run their economy, how large an army they keep,
-// and (in missions.js) how quickly their generals react. Never applied to human players.
+// AI difficulty (profile v2). Two separate things:
+//   skill       - how well the AI plans (army sizing, reconnaissance, reserves, retreat judgment,
+//                 counter-composition, campaign coordination, fortifying, reacting to artillery)
+//   advantages  - explicit numerical bonuses. Off at every level under Fair Play (the default);
+//                 only Brutal offers them, and the lobby discloses them.
+// Matches saved before v2 keep their old multipliers (profile 'legacy'), shown as such.
 export const DIFFICULTY = {
-  easy: { name: 'Relaxed', econ: 0.85, army: 0.7, research: 0.85 },
-  normal: { name: 'Standard', econ: 1, army: 1, research: 1 },
-  hard: { name: 'Hard', econ: 1.12, army: 1.25, research: 1.1 },
-  brutal: { name: 'Brutal', econ: 1.25, army: 1.5, research: 1.2 },
+  easy: { name: 'Relaxed', blurb: 'Learns with you: builds, defends, forms armies; slow to adapt and makes readable mistakes.',
+    skill: { level: 0, react: 1.0, switch: 2.0, commit: 1.4, recon: 0.5, reserve: 0, retreat: 0.25, counter: 0, scale: 0.8, fortify: false, screen: false, raid: false, disperse: false, plan: 'short' } },
+  normal: { name: 'Standard', blurb: 'The fair benchmark: a working economy, sensible research, balanced armies and stable objectives.',
+    skill: { level: 1, react: 1.3, switch: 1.5, commit: 1, recon: 1, reserve: 0.15, retreat: 0.35, counter: 0.35, scale: 1, fortify: true, screen: false, raid: false, disperse: true, plan: 'moderate' } },
+  hard: { name: 'Hard', blurb: 'Deeper planning, better scouting, deliberate reserves and counter-aware armies.',
+    skill: { level: 2, react: 1.5, switch: 1.35, commit: 0.85, recon: 1.5, reserve: 0.25, retreat: 0.45, counter: 0.7, scale: 1.05, fortify: true, screen: true, raid: false, disperse: true, plan: 'long' } },
+  expert: { name: 'Expert', blurb: 'Coordinates offense and defense, hunts exposed logistics, weighs relative strength before it commits.',
+    skill: { level: 3, react: 1.6, switch: 1.3, commit: 0.8, recon: 1.5, reserve: 0.3, retreat: 0.5, counter: 0.85, scale: 1.1, fortify: true, screen: true, raid: true, disperse: true, plan: 'long' } },
+  brutal: { name: 'Brutal', blurb: 'The strongest planner, adapting aggressively. Economic help only if you allow it (shown below).',
+    skill: { level: 4, react: 1.8, switch: 1.2, commit: 0.7, recon: 2, reserve: 0.3, retreat: 0.5, counter: 1, scale: 1.15, fortify: true, screen: true, raid: true, disperse: true, plan: 'multi' },
+    advantages: { econ: 1.15, research: 1.1, army: 1.2 } },
 };
+export const DIFFICULTY_LEGACY = { easy: { econ: 0.85, army: 0.7, research: 0.85 }, normal: { econ: 1, army: 1, research: 1 }, hard: { econ: 1.12, army: 1.25, research: 1.1 }, brutal: { econ: 1.25, army: 1.5, research: 1.2 } };
+export const NO_ADVANTAGE = { econ: 1, research: 1, army: 1 };
+// the profile an AI empire actually runs with
+export function aiProfile(civ) {
+  const d = DIFFICULTY[civ.difficulty] || DIFFICULTY.normal;
+  if (civ.diffProfile === 'legacy') return { skill: d.skill, adv: DIFFICULTY_LEGACY[civ.difficulty] || NO_ADVANTAGE, legacy: true };
+  return { skill: d.skill, adv: civ.fairPlay === false && d.advantages ? d.advantages : NO_ADVANTAGE, legacy: false };
+}
 
 export const REFIT = {
   militia: [{ to: 'rifle_squad' }],
@@ -275,5 +294,5 @@ export const VET_NAMES = ['Green', 'Regular', 'Veteran', 'Elite'];
 export const GOVERNOR_GOALS = { none: { name: 'No particular goal' }, grow: { name: 'Grow population' }, steel: { name: 'Increase steel output' }, self: { name: 'Become self-sufficient' },
   defense: { name: 'Strengthen defenses' }, repair: { name: 'Repair war damage' }, research: { name: 'Become a research centre' } };
 
-export const GAME_DEFS = { GOVERNOR_GOALS, IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, VET_NAMES, W, H, TERRAIN, MOVE, ROAD_TYPES, RESOURCE, GOODS, GOOD_NAMES, AGES, TECHS, GOVS, POLICIES, FOCI, TAX, BUILDINGS, UNITS, CIV_COLORS, CIV_NAMES, REBEL, GOVERNOR_SPECS, FORMATIONS, STANCES, ALERT_LEVELS,
+export const GAME_DEFS = { DIFFICULTY, GOVERNOR_GOALS, IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, VET_NAMES, W, H, TERRAIN, MOVE, ROAD_TYPES, RESOURCE, GOODS, GOOD_NAMES, AGES, TECHS, GOVS, POLICIES, FOCI, TAX, BUILDINGS, UNITS, CIV_COLORS, CIV_NAMES, REBEL, GOVERNOR_SPECS, FORMATIONS, STANCES, ALERT_LEVELS,
   WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ENGAGE_POLICIES, COMBAT_STATUS };

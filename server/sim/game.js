@@ -1,6 +1,6 @@
 // Authoritative match simulation. One Game per match; clients only send intents.
 import { Scheduler } from './scheduler.js';
-import { IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, N, W, H, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater } from './constants.js';
+import { IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, N, W, H, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater, DIFFICULTY } from './constants.js';
 import { NB, disk, dist, centroid, dqWrap, stamp, idx as hexIdx } from './hex.js';
 import { recruitBlock, reserve, commitTraining, releaseTraining, enlistExisting, demobilize, labor, recruitable } from './population.js';
 import { World } from './world.js';
@@ -16,13 +16,17 @@ import { Diplomacy } from './diplomacy.js';
 import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
 import { defaultGovernor, governorStep, autoColonists, migrateGovernor, answerProposal, LEVELS } from './governor.js';
-import { GOALS, readiness } from './planner.js';
+import { GOALS, readiness, candidates } from './planner.js';
 import { armyCommand, armiesStep, armySummary } from './armies.js';
 import { recoveryStep } from './recovery.js';
-import { projectilesStep, moraleStep, eventsFor, CS, vetLevel } from './combat.js';
+import { projectilesStep, moraleStep, eventsFor, CS, vetLevel, testImpact } from './combat.js';
 import { bfInit, battlefieldStep, battlefieldSnapshot, concealBySmoke } from './battlefield.js';
 import { battlesStep, battlesFor, assignTargets } from './battles.js';
 import { runScenario, spawnGroup, clearForces, SCENARIOS } from './sandbox.js';
+import { rebuildEntering } from './tacticalOccupancy.js';
+import { lInit, supplyRun, cancelRun, logisticsStep, policyStep, convoysFor, cachesFor, PRESETS, cargoTotal } from './logistics.js';
+import { deployOrder, formationCommand, formationsStep, formationsSnapshot, detach } from './formations.js';
+import { fwInit, fortify, clearFieldworks, fieldworksStep, urbanStep, buildOver, fieldworksFor, siteProblem, canDig, FIELDWORKS } from './fieldworks.js';
 
 const LEVEL_OF = { tech: 'info', build: 'info', unit: 'info', history: 'info', rumor: 'minor', city: 'minor', diplo: 'minor', peace: 'minor', age: 'minor', gov: 'minor',
   quake: 'major', eruption: 'major', rift: 'minor', uplift: 'minor', drought: 'major', river: 'minor', warning: 'major', rebel: 'major', loss: 'major', isolated: 'major', blocked: 'major', proposal: 'major', war: 'major', error: 'minor',
@@ -48,6 +52,10 @@ function makeScheduler(g) {
     { name: 'diplomacy', every: 10, phase: 4, fn: () => g.diplomacy.step(1), budget: 2 },
     { name: 'governors', every: 10, phase: 2, fn: () => governorStep(g, 1), budget: 10 },
     { name: 'victory', every: 10, fn: () => g.checkVictory(), budget: 2 },
+    { name: 'formations', every: 10, phase: 3, fn: () => formationsStep(g), budget: 4 },
+    { name: 'fieldworks', every: 10, phase: 7, fn: () => fieldworksStep(g, 1), budget: 4 },
+    { name: 'logistics', every: 10, phase: 9, fn: () => { logisticsStep(g, 1); if ((g.policyT = (g.policyT || 0) + 1) % 5 === 0) policyStep(g); }, budget: 5 },
+    { name: 'urban', every: 30, phase: 23, fn: () => urbanStep(g), budget: 4 },
     { name: 'supplyNet', every: 20, phase: 13, fn: () => { recomputeSupply(g); autoColonists(g); armiesStep(g); if (g.world.dirty.size) { g.navVersion++; g.world.dirty.clear(); } }, budget: 15 },
     { name: 'territory', every: 30, phase: 21, fn: () => recomputeTerritory(g), budget: 10 },
     { name: 'trade', every: 50, phase: 47, fn: () => { recomputeTradeNetwork(g); g.roads.decayTraffic(); }, budget: 15 },
@@ -65,6 +73,12 @@ function makeScheduler(g) {
   return new Scheduler(T, { tickBudget: 1000 / 10, adaptive: !!g.adaptive });
 }
 
+// research helpers
+function researchReady(civ, k) { const t = TECHS[k]; return !!t && !civ.techs.has(k) && t.age <= civ.age && t.req.every((r) => civ.techs.has(r)); }
+function researchChain(civ, k) { const chain = []; const add = (x) => { if (civ.techs.has(x) || chain.includes(x)) return; for (const r of TECHS[x].req) add(r); chain.push(x); }; add(k); return chain; }
+const prereqCache = new Map();
+function researchPrereqsAll(k) { let s = prereqCache.get(k); if (s) return s; s = new Set(); const walk = (x) => { for (const r of TECHS[x].req) if (!s.has(r)) { s.add(r); walk(r); } }; walk(k); prereqCache.set(k, s); return s; }
+
 export class Game {
   constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, cataclysm = null, style = null }) {
     this.id = id;
@@ -72,7 +86,7 @@ export class Game {
     // the world is peaceful unless the match asks for destructive geology (Cataclysm mode)
     this.cataclysm = cataclysm && cataclysm.on ? { on: true, freq: Math.max(0.25, Math.min(3, +cataclysm.freq || 1)), sev: Math.max(0.25, Math.min(2, +cataclysm.sev || 1)) } : null;
     this.worldStyle = style || null;
-    this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty }));
+    this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay }));
     this.defs = GAME_DEFS;
     this.rng = mulberry32(seed ^ 0x9e3779b9);
     this.world = new World(seed, { style });
@@ -87,6 +101,8 @@ export class Game {
     // combat: sequenced event stream, projectiles in flight, damage already on its way, battles
     this.events = []; this.eventSeq = 0; this.projectiles = new Map(); this.pending = new Map(); this.assigned = new Map(); this.battles = []; this.nextBattle = 1;
     bfInit(this);
+    this.formations = new Map();
+    fwInit(this); lInit(this);
     this.over = false; this.winner = null; this.log = []; this.outbox = [];
     this.cityNameIdx = 0;
     this.civs = slots.map((s, i) => this.makeCiv(i, s));
@@ -107,10 +123,10 @@ export class Game {
   makeCiv(id, slot) {
     return {
       id, name: slot.name || CIV_NAMES[id % CIV_NAMES.length], leader: slot.leader || (slot.human ? 'Player' : 'AI'), color: CIV_COLORS[id % CIV_COLORS.length],
-      human: !!slot.human, isAI: !slot.human, isRebel: false, personality: slot.personality || ['merchant', 'warlord', 'builder'][id % 3], difficulty: slot.difficulty || 'normal',
+      human: !!slot.human, isAI: !slot.human, isRebel: false, personality: slot.personality || ['merchant', 'warlord', 'builder'][id % 3], difficulty: DIFFICULTY[slot.difficulty] ? slot.difficulty : 'normal', fairPlay: slot.fairPlay !== false, diffProfile: 'v2',
       alive: true, connected: false, token: null,
       res: { food: 220, materials: 260, ore: 0, steel: 20, fuel: 0, electronics: 0, munitions: 20, credits: 150 },
-      rates: {}, researchRate: 0, researching: null, progress: 0, queue: [], techs: new Set(),
+      rates: {}, researchRate: 0, researching: null, progress: 0, techProgress: {}, researchGoal: null, queue: [], techs: new Set(),
       age: 0, advancing: 0, gov: 'council', govCooldown: 0, policies: new Set(), tax: 1, focus: 'balanced',
       weariness: 0, casualties: 0, kills: 0, popTotal: 0, powerGen: 0, powerUse: 0, powerRatio: 1,
       knownVer: new Uint16Array(N), knownOwner: new Int8Array(N).fill(-2), visible: new Uint8Array(N), detect: new Uint8Array(N), supply: new Uint8Array(N), airSupply: new Uint8Array(N),
@@ -158,7 +174,13 @@ export class Game {
   }
   cityOf(civ) { return [...this.cities.values()].filter((c) => c.owner === civ.id); }
   capital(civ) { return this.cityOf(civ).sort((a, b) => (b.capital ? 1 : 0) - (a.capital ? 1 : 0) || a.id - b.id)[0]; }
-  civHasResource(civ, r) { const w = this.world; for (let i = 0; i < N; i++) if (w.owner[i] === civ.id && w.res[i] === r) return true; return false; }
+  // cached per second: a full-map scan, asked many times per economy step
+  civHasResource(civ, r) {
+    const c = this._resCache || (this._resCache = new Map()), k = civ.id * 32 + r, sec = Math.floor(this.tickN / 10);
+    const hit = c.get(k); if (hit && hit.sec === sec) return hit.v;
+    const w = this.world; let v = false; for (let i = 0; i < N; i++) if (w.owner[i] === civ.id && w.res[i] === r) { v = true; break; }
+    c.set(k, { sec, v }); return v;
+  }
   damageUnit(u, amount, attacker, cause) { damageUnit(this, u, amount, attacker, cause); }
   damageBuilding(b, amount, attacker, cause) { damageBuilding(this, b, amount, attacker, cause); }
   maxHouses(civ) { return 3 + 2 * Math.min(3, civ.age); }
@@ -216,6 +238,8 @@ export class Game {
     const city = { id, owner: civ.id, tile, name, pop, housing: 8, stability: 60, disaster: 0, occupied: 0, unrestT: 0, founded: this.time, capital, foodShort: false, jobs: {}, unemployed: 0, radius: 3,
       isolated: !capital, freight: capital ? Infinity : 0, stock: {}, tradeConnected: false,
       governor: defaultGovernor(civ.isAI) };
+    // new human cities start with an advisor: suggestions only, no spending
+    if (!civ.isAI) { city.governor.enabled = true; city.governor.level = 'advisor'; city.governor.emergency = false; }
     this.cities.set(id, city);
     this.ruins.delete(tile);
     const b = this.makeBuilding(civ, 'town', tile, true);
@@ -230,6 +254,7 @@ export class Game {
     this.buildings.set(b.id, b);
     this.tileB[tile] = b.id;
     this.ruins.delete(tile);
+    buildOver(this, tile);
     if (type !== 'town') b.cityId = this.nearestCityId(civ.id, tile);
     this.world.touch(tile);
     return b;
@@ -352,8 +377,30 @@ export class Game {
     (this.sched || (this.sched = makeScheduler(this))).run(this.tickN, this);
   }
 
+  // which way to face a new trench: toward the nearest known threat
+  threatFacing(civ, tile) {
+    const xy = (t) => { const r = (t / W) | 0, q = t % W; return [Math.sqrt(3) * (q + 0.5 * (r & 1)), 1.5 * r]; };
+    let best = -1, bd = Infinity;
+    for (const u of this.units.values()) if (this.hostile(civ.id, u.owner) && civ.visible[u.tile]) { const d = dist(u.tile, tile); if (d < bd) { bd = d; best = u.tile; } }
+    if (best < 0) for (const k of civ.knownCities.values()) if (this.hostile(civ.id, k.owner)) { const d = dist(k.tile, tile); if (d < bd) { bd = d; best = k.tile; } }
+    if (best < 0) { const cap = this.capital(civ); if (cap && cap.tile !== tile) { const [ax, ay] = xy(cap.tile), [bx, by] = xy(tile); const l = Math.hypot(bx - ax, by - ay) || 1; return [(bx - ax) / l, (by - ay) / l]; } return [0, -1]; }
+    const [ax, ay] = xy(tile); let [bx, by] = xy(best); const P = Math.sqrt(3) * W; bx += Math.round((ax - bx) / P) * P;
+    const l = Math.hypot(bx - ax, by - ay) || 1; return [(bx - ax) / l, (by - ay) / l];
+  }
+
+  areaImpactForTest(owner, tile, wk) { this.rebuildTileUnits(); testImpact(this, owner, tile, wk); }
+
+  // a queued deployment comes up for one of its units: run it once for the whole group
+  runQueuedDeploy(u, d) {
+    this.deploysDone = this.deploysDone || new Set();
+    if (this.deploysDone.has(d.key)) return;
+    this.deploysDone.add(d.key); if (this.deploysDone.size > 200) this.deploysDone.delete(this.deploysDone.values().next().value);
+    for (const id of d.units) { const o = this.units.get(id); if (o && o.queue) o.queue = o.queue.filter((q) => !(q.deploy && q.deploy.key === d.key)); }
+    deployOrder(this, this.civs[u.owner], d, u.auth || '');
+  }
+
   rebuildTileUnits() {
-    this.tileUnits.clear(); this.tileLoad.clear();
+    this.tileUnits.clear(); this.tileLoad.clear(); this.knownCache?.clear();
     for (const u of this.units.values()) {
       let a = this.tileUnits.get(u.tile); if (!a) this.tileUnits.set(u.tile, a = []); a.push(u.id);
       if (!UNITS[u.type].air) {
@@ -361,7 +408,9 @@ export class Game {
         if (u.next >= 0 && u.prog > 0) this.tileLoad.set(u.next, (this.tileLoad.get(u.next) || 0) + 1);
       }
     }
+    rebuildEntering(this);
   }
+
 
   constructionStep(dt) {
     for (const [t, r] of this.ruins) {
@@ -450,18 +499,23 @@ export class Game {
         if (civ.advancing <= 0) { civ.advancing = 0; civ.age++; this.notify(-1, `${civ.name} has entered the ${AGES[civ.age].name} era!`, { kind: 'age' }); }
       }
       if (civ.govCooldown > 0) civ.govCooldown -= dt;
+      const tp = civ.techProgress || (civ.techProgress = {});
       if (!civ.researching && civ.queue.length) {
-        const nxt = civ.queue.find((k) => !civ.techs.has(k) && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)));
-        if (nxt) { civ.researching = nxt; civ.progress = 0; civ.queue = civ.queue.filter((k) => k !== nxt); }
+        const nxt = civ.queue.find((k) => researchReady(civ, k));
+        if (nxt) { civ.researching = nxt; civ.queue = civ.queue.filter((k) => k !== nxt); }
       }
-      if (!civ.researching) continue;
-      civ.progress += civ.researchRate * dt;
+      if (!civ.researching) { civ.progress = 0; continue; }
+      // progress belongs to the technology: switching away and back loses nothing
+      tp[civ.researching] = (tp[civ.researching] || 0) + civ.researchRate * dt;
+      civ.progress = tp[civ.researching];
       const tech = TECHS[civ.researching];
-      if (civ.progress >= tech.cost) {
+      if (tp[civ.researching] >= tech.cost) {
         civ.techs.add(civ.researching);
-        this.notify(civ.id, `Research complete: ${tech.name}.`, { kind: 'tech' });
+        delete tp[civ.researching];
+        this.notify(civ.id, `Research complete: ${tech.name}.`, { kind: 'tech', sound: 'research' });
         civ.researching = null; civ.progress = 0;
         civ.queue = civ.queue.filter((k) => !civ.techs.has(k));
+        if (civ.researchGoal && civ.techs.has(civ.researchGoal)) { this.notify(civ.id, `Research goal reached: ${tech.name}.`, { kind: 'tech' }); civ.researchGoal = null; }
       }
     }
   }
@@ -541,10 +595,14 @@ export class Game {
     for (const c of this.cities.values()) if (vis[c.tile]) civ.knownCities.set(c.id, { tile: c.tile, owner: c.owner, name: c.name, seen: this.time });
     for (const [id, k] of civ.knownCities) { if (!vis[k.tile]) continue; const c = this.cities.get(id); if (!c || c.tile !== k.tile) civ.knownCities.delete(id); }
     const seen = {};
+    // what kinds of hostile forces have been seen (decaying memory; feeds AI counter-composition)
+    const comp = civ.seenComp || (civ.seenComp = { inf: 0, armor: 0, art: 0, air: 0 });
+    for (const k of Object.keys(comp)) comp[k] *= 0.999;
     for (const u of this.units.values()) {
       if (u.owner === civ.id || !vis[u.tile] || !this.detects(civ.id, u)) continue;
       const d = UNITS[u.type]; if (d.civilian) continue;
       seen[u.owner] = (seen[u.owner] || 0) + (d.atk + d.def) * (u.hp / u.maxHp);
+      if (this.hostile(civ.id, u.owner)) comp[d.air ? 'air' : d.cat === 'artillery' ? 'art' : d.move === 'infantry' ? 'inf' : 'armor'] += 0.02;
     }
     for (const o of this.civs) {
       if (o === civ) continue;
@@ -623,7 +681,8 @@ export class Game {
         u.owner === civ.id || view.god ? u.stance : undefined,
         u.owner === civ.id || view.god ? u.cstat || 0 : undefined, u.owner === civ.id || view.god ? u.tgt || 0 : undefined,
         Math.round(u.supp || 0), u.owner === civ.id || view.god ? Math.round(u.morale ?? 100) : undefined,
-        vetLevel(u), u.refitUntil > this.time ? Math.ceil(u.refitUntil - this.time) : 0]);
+        vetLevel(u), u.refitUntil > this.time ? Math.ceil(u.refitUntil - this.time) : 0,
+        u.owner === civ.id || view.god ? u.formation || 0 : 0, u.detached ? 1 : 0]);
     }
     const paths = {};
     for (const u of this.units.values()) if ((u.owner === civ.id || view.god) && (u.path.length || u.field)) paths[u.id] = u.field ? [u.slot] : u.path.slice(0, view.god ? 16 : 40);
@@ -639,7 +698,12 @@ export class Game {
     if (tiles.length) msg.tiles = tiles;
     if (visB64) msg.vis = visB64;
     if (view.observer) msg.obs = { follow: civ.id, fog: !view.god, speed: this.speed ?? 1 };
-    if (econ) Object.assign(msg, this.econSnapshot(civ, view));
+    if (econ) {
+      Object.assign(msg, this.econSnapshot(civ, view));
+      msg.fw = fieldworksFor(this, civ, view.god ? vis : vis);
+      // developed city districts (authoritative; drawn by the client, they also forbid trenches)
+      if (full || k.urbanVer !== this.urbanVer) { k.urbanVer = this.urbanVer; const u = new Uint8Array(N); for (let i = 0; i < N; i++) u[i] = this.urban[i] && explored[i] ? 1 : 0; msg.urban = packBits(u).toString('base64'); }
+    }
     return msg;
   }
 
@@ -672,7 +736,7 @@ export class Game {
     for (const [k, v] of this.roads.traffic) { const a = Math.floor(k / N), b = k % N; if (v > 0.5 && (vis[a] || vis[b])) traffic.push([a, b, Math.min(9, Math.round(v))]); }
     const soldiers = [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + UNITS[u.type].pop, 0);
     const me = {
-      res: roundObj(civ.res), rates: roundObj(civ.rates, 2), research: civ.researching, progress: Math.round(civ.progress), researchRate: +civ.researchRate.toFixed(2), queue: civ.queue,
+      res: roundObj(civ.res), rates: roundObj(civ.rates, 2), research: civ.researching, progress: Math.round(civ.progress), researchRate: +civ.researchRate.toFixed(2), queue: civ.queue, techProgress: Object.fromEntries(Object.entries(civ.techProgress || {}).map(([k, v]) => [k, Math.round(v)])), researchGoal: civ.researchGoal, gross: roundObj(civ.gross || {}, 2), saving: civ.saving || null,
       techs: [...civ.techs], age: civ.age, advancing: Math.round(civ.advancing), gov: civ.gov, govCooldown: Math.round(civ.govCooldown), policies: [...civ.policies],
       tax: civ.tax, focus: civ.focus, weariness: Math.round(civ.weariness), soldiers, wonder: civ.wonder ? Math.round(300 - (this.time - civ.wonder.since)) : null,
       power: { gen: Math.round(civ.powerGen), use: Math.round(civ.powerUse) }, storage: civ.storage || 0,
@@ -682,6 +746,9 @@ export class Game {
       upkeep: civ.upkeep || null, natReserve: civ.natReserve ? civ.natReserve.type : null,
       market: civ.techs.has('trade_networks') ? this.marketInfo(civ) : null,
       men: [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + (UNITS[u.type].men || 0), 0),
+      formations: formationsSnapshot(this, civ.id), command: civ.command || null,
+      convoys: convoysFor(this, civ), caches: cachesFor(this, civ), logPolicies: civ.logPolicies ? [...civ.logPolicies].map(([k, p]) => ({ key: k, auto: p.auto, threshold: p.threshold, preset: p.preset, note: p.note || '' })) : [],
+      fortifyTypes: Object.keys(FIELDWORKS).filter((k) => !FIELDWORKS[k].tech || civ.techs.has(FIELDWORKS[k].tech)),
     };
     const civs = this.civs.map((c) => {
       const base = { id: c.id, name: c.name, color: c.color, alive: c.alive, human: c.human, rebel: c.isRebel };
@@ -753,8 +820,74 @@ export class Game {
       switch (cmd.c) {
         case 'move': {
           const line = Array.isArray(cmd.line) && cmd.line.length === 2 && cmd.line.every((t) => t >= 0 && t < N) ? cmd.line : null;
+          detach(this, cmd.units || []);          // moving part of a formation by hand detaches just those units
+          for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && u.convoy && u.convoy.state !== 'available' && !cmd.by && this.authOf(civ, cmd) === 'player') u.convoy = { state: 'available', note: 'redirected by you (cargo still aboard)' }; }
           return this.orderMove(civ, cmd.units, line ? line[0] : cmd.tile, !!cmd.attackMove, cmd.formation || 'line', { auth: this.authOf(civ, cmd), queue: !!cmd.queue, line });
         }
+        case 'deploy': return deployOrder(this, civ, cmd, this.authOf(civ, cmd));
+        case 'fortify': case 'fortifyPreview': {
+          // dig in where the selected troops stand (or on given tiles), facing their formation's front
+          const us = (cmd.units || []).map((id) => this.units.get(id)).filter((u) => u && u.owner === civ.id);
+          const diggers = us.filter(canDig);
+          let tiles = Array.isArray(cmd.tiles) ? cmd.tiles.filter((t) => Number.isInteger(t) && t >= 0 && t < N).slice(0, 60) : null;
+          if (!tiles) tiles = [...new Set(diggers.map((u) => (u.formation && this.formations.get(u.formation)?.slots[u.id]) ?? u.tile))];
+          if (!tiles.length) return { error: 'select infantry or engineers to dig in' };
+          const f = us.map((u) => u.formation && this.formations.get(u.formation)).find(Boolean);
+          let facing = Array.isArray(cmd.facing) && cmd.facing.length === 2 ? cmd.facing.map(Number) : f?.facing || null;
+          if (!facing) facing = this.threatFacing(civ, tiles[0]);
+          const type = cmd.type === 'reinforced' ? 'reinforced' : 'basic';
+          if (cmd.c === 'fortifyPreview') {
+            const spec = FIELDWORKS[type === 'reinforced' && civ.techs.has('fortification') ? 'reinforced' : 'basic'];
+            const ok = [], skipped = [];
+            for (const t of tiles) { const why = siteProblem(this, civ, t); if (why) skipped.push([t, why]); else ok.push(t); }
+            const eng = diggers.some((u) => UNITS[u.type].engineer);
+            const crews = Math.max(1, Math.min(ok.length, diggers.length));
+            const rate = (eng ? 1.4 : 1) * (civ.techs.has('fortification') ? 1.2 : 1);
+            return { reply: { t: 'ack', fortify: { valid: ok.length, total: tiles.length, skipped, cost: Object.fromEntries(Object.entries(spec.cost).map(([k, v]) => [k, v * ok.length])), seconds: Math.ceil((spec.time / rate) * Math.ceil(ok.length / crews)), diggers: diggers.length, type: spec.name } } };
+          }
+          if (!diggers.length && !cmd.tiles) return { error: 'only infantry and engineers can dig trenches' };
+          const r = fortify(this, civ, tiles, { type, facing, group: f?.id || 0, diggers: diggers.some((u) => UNITS[u.type].engineer) ? 'engineer' : 'infantry' });
+          for (const u of diggers) if (!u.path.length && u.order.kind === 'idle' && u.stance !== 'hold') u.stance = 'hold';
+          return { reply: { t: 'ack', fortify: { placed: r.placed.length, skipped: r.skipped, cost: r.cost, seconds: r.seconds, type: r.type } } };
+        }
+        case 'supplyRun': {
+          // one click: pick a truck and a source, load a package by need, deliver behind the force
+          const target = cmd.formation ? { kind: 'formation', id: cmd.formation } : cmd.army ? { kind: 'army', id: cmd.army } : { kind: 'units', units: (cmd.units || []).slice(0, 80) };
+          if (target.kind === 'formation' && this.formations.get(target.id)?.owner !== civ.id) return { error: 'not your formation' };
+          return supplyRun(this, civ, target, { preset: PRESETS[cmd.preset] ? cmd.preset : 'auto', truck: cmd.truck });
+        }
+        case 'supplyPolicy': {
+          const key = cmd.formation ? 'f:' + cmd.formation : cmd.army ? 'a:' + cmd.army : null;
+          if (!key) return { error: 'choose a formation or an army' };
+          if (key[0] === 'f' && this.formations.get(cmd.formation)?.owner !== civ.id) return { error: 'not your formation' };
+          if (key[0] === 'a' && !civ.armies?.has(cmd.army)) return { error: 'not your army' };
+          civ.logPolicies = civ.logPolicies || new Map();
+          if (!cmd.auto) civ.logPolicies.delete(key);
+          else civ.logPolicies.set(key, { auto: true, threshold: Math.max(15, Math.min(80, cmd.threshold | 0 || 40)), preset: PRESETS[cmd.preset] ? cmd.preset : 'auto' });
+          return null;
+        }
+        case 'cancelSupplyRun': case 'returnSupplyTruck': return cancelRun(this, civ, cmd.truck, true);
+        case 'inspectLogistics': return { reply: { t: 'ack', logistics: { convoys: convoysFor(this, civ), caches: cachesFor(this, civ), trucks: [...this.units.values()].filter((u) => u.owner === civ.id && u.type === 'supply_truck').map((u) => ({ id: u.id, cargo: Math.round(cargoTotal(u.cargo)), state: u.convoy?.state || 'available' })) } } };
+        case 'cityPlan': {
+          // the city development planner: the same scoring governors use, as advice
+          const c = this.cities.get(cmd.city);
+          if (!c || c.owner !== civ.id) return { error: 'not your city' };
+          const gv = c.governor || defaultGovernor();
+          const { list, deferred } = candidates(this, civ, c, gv);
+          const none = list.find((x) => x.kind === 'none')?.u ?? 6;
+          const recs = list.filter((x) => x.kind !== 'none' && x.u > none).slice(0, 4).map((x) => ({ kind: x.kind, type: x.type, u: Math.round(x.u), reason: x.reason, cost: x.cost }));
+          const issues = [];
+          if (c.isolated) issues.push('Cut off from the network: build a road (or a port) to share the national stockpile.');
+          else if (c.freight !== Infinity && (c.shipped || 0) >= (c.freight || 0) * 0.95) issues.push('Freight capacity is the bottleneck: upgrade the road link to move more goods.');
+          if ((c.unemployed || 0) > 3) issues.push(`${Math.round(c.unemployed)} people without work: more workplaces would pay off.`);
+          if (c.pop >= c.housing * 0.95) issues.push('Housing is full: growth stalls without more homes.');
+          return { reply: { t: 'ack', plan: { city: c.id, recs, avoid: deferred.slice(0, 4), issues } } };
+        }
+        case 'clearFieldworks': {
+          const tiles = Array.isArray(cmd.tiles) ? cmd.tiles : (cmd.units || []).map((id) => this.units.get(id)).filter((u) => u && u.owner === civ.id).map((u) => u.tile);
+          return { reply: { t: 'ack', cleared: clearFieldworks(this, civ, tiles, { finished: !!cmd.finished }) } };
+        }
+        case 'formation': return formationCommand(this, civ, cmd, this.authOf(civ, cmd));
         case 'attack': return this.orderAttack(civ, cmd.units, cmd.target, { focus: !!cmd.focus, auth: this.authOf(civ, cmd) });
         case 'withdraw': return this.orderWithdraw(civ, cmd.units, cmd.tile);
         case 'sandbox': {
@@ -835,19 +968,48 @@ export class Game {
         case 'research': {
           const tech = TECHS[cmd.tech];
           if (!tech || civ.techs.has(cmd.tech)) return { error: 'unavailable' };
-          const ready = tech.age <= civ.age && tech.req.every((r) => civ.techs.has(r));
-          if (!ready || cmd.queue) {
+          if (!researchReady(civ, cmd.tech) || cmd.queue) {
             // queue it (and any missing prerequisites in order)
-            const chain = [];
-            const add = (k) => { if (civ.techs.has(k) || chain.includes(k)) return; for (const r of TECHS[k].req) add(r); chain.push(k); };
-            add(cmd.tech);
-            for (const k of chain) if (!civ.queue.includes(k) && k !== civ.researching) civ.queue.push(k);
+            for (const k of researchChain(civ, cmd.tech)) if (!civ.queue.includes(k) && k !== civ.researching) civ.queue.push(k);
+            if (civ.queue.length > 40) civ.queue.length = 40;
             return null;
           }
-          if (civ.researching !== cmd.tech) { civ.researching = cmd.tech; civ.progress = 0; civ.queue = civ.queue.filter((k) => k !== cmd.tech); }
+          // switching keeps the earned progress of the previous project (no penalty)
+          if (civ.researching !== cmd.tech) {
+            if (civ.researching && !civ.queue.includes(civ.researching)) civ.queue.unshift(civ.researching);
+            civ.researching = cmd.tech; civ.progress = civ.techProgress?.[cmd.tech] || 0; civ.queue = civ.queue.filter((k) => k !== cmd.tech);
+          }
           return null;
         }
         case 'unqueue': civ.queue = civ.queue.filter((k) => k !== cmd.tech); return null;
+        case 'researchQueue': {
+          // queue management: add (with prerequisites), remove, move to an index, move to the front,
+          // clear, or set a long-term goal (which may lie in a later era)
+          const k = cmd.tech, t = TECHS[k];
+          if (cmd.op !== 'clear' && (!t || civ.techs.has(k))) return { error: 'unknown or already researched' };
+          if (cmd.op === 'add' || cmd.op === 'goal') {
+            for (const x of researchChain(civ, k)) if (!civ.queue.includes(x) && x !== civ.researching) civ.queue.push(x);
+            if (cmd.op === 'goal') civ.researchGoal = k;
+          } else if (cmd.op === 'remove') {
+            // removing a technology also removes queued ones that depend on it
+            const drop = new Set([k]); let grew = true;
+            while (grew) { grew = false; for (const x of civ.queue) if (!drop.has(x) && TECHS[x].req.some((r) => drop.has(r))) { drop.add(x); grew = true; } }
+            civ.queue = civ.queue.filter((x) => !drop.has(x));
+            if (civ.researchGoal && drop.has(civ.researchGoal)) civ.researchGoal = null;
+          } else if (cmd.op === 'move' || cmd.op === 'front') {
+            const i = civ.queue.indexOf(k); if (i < 0) return { error: 'not queued' };
+            civ.queue.splice(i, 1);
+            let to = cmd.op === 'front' ? 0 : Math.max(0, Math.min(civ.queue.length, cmd.index | 0));
+            // never ahead of its own prerequisites
+            for (const r of researchPrereqsAll(k)) { const j = civ.queue.indexOf(r); if (j >= to) to = j + 1; }
+            civ.queue.splice(to, 0, k);
+            // nor behind technologies that need it
+            for (let j = 0; j < to; j++) if (researchPrereqsAll(civ.queue[j]).has(k)) { const [x] = civ.queue.splice(j, 1); civ.queue.splice(civ.queue.indexOf(k) + 1, 0, x); j--; to--; }
+          } else if (cmd.op === 'clear') { civ.queue = []; civ.researchGoal = null; }
+          else return { error: 'unknown queue operation' };
+          if (civ.queue.length > 40) civ.queue.length = 40;
+          return null;
+        }
         case 'advance': {
           const next = AGES[civ.age + 1]; if (!next || civ.advancing) return { error: 'cannot advance' };
           const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;

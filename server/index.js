@@ -22,7 +22,7 @@ const log = {
   error: (m, e) => console.error(JSON.stringify({ severity: 'ERROR', message: m + ' ' + (e && e.stack ? e.stack : e) })),
 };
 
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.webp': 'image/webp' };
 const manager = new MatchManager(log, makeStore(log));
 manager.restoreAll().catch((e) => log.error('restore failed', e));
 
@@ -41,6 +41,8 @@ const server = http.createServer((req, res) => {
     if (fs.existsSync(PIXI_LOCAL)) { res.writeHead(200, { 'content-type': TYPES['.js'], 'cache-control': 'public, max-age=86400' }); return fs.createReadStream(PIXI_LOCAL).pipe(res); }
     res.writeHead(302, { location: `https://cdn.jsdelivr.net/npm/pixi.js@${PIXI_VERSION}/dist/pixi.min.js` }); return res.end();
   }
+  // pure simulation helpers the browser runs too (same code for previews and authority)
+  if (url.pathname === '/shared/deploy.js') { res.writeHead(200, { 'content-type': TYPES['.js'], 'cache-control': 'no-cache' }); return fs.createReadStream(new URL('./sim/deploy.js', import.meta.url)).pipe(res); }
   let p = decodeURIComponent(url.pathname);
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(CLIENT, p));

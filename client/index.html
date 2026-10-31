@@ -27,8 +27,13 @@
             <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="11">11</option></select></label>
           <label class="field inline"><span>Rival temperament</span>
             <select id="aiPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
-          <label class="field inline"><span>Rival difficulty</span>
-            <select id="aiDifficulty"><option value="easy">Relaxed</option><option value="normal" selected>Standard</option><option value="hard">Hard</option><option value="brutal">Brutal</option></select></label>
+          <details class="difficulty" id="difficultyBox"><summary>Rival difficulty: <b id="diffName">Standard</b> <span class="muted" id="diffFair">· fair play</span></summary>
+            <div class="seg" id="diffSeg"><button data-diff="easy">Relaxed</button><button data-diff="normal" class="on">Standard</button><button data-diff="hard">Hard</button><button data-diff="expert">Expert</button><button data-diff="brutal">Brutal</button></div>
+            <input type="hidden" id="aiDifficulty" value="normal">
+            <div id="diffInfo" class="diff-info"></div>
+            <label class="field inline check"><input type="checkbox" id="fairPlay" checked><span>Fair Play: no economic or research bonuses for any AI</span></label>
+            <details><summary>Configure each rival</summary><div id="rivalRows"></div></details>
+          </details>
           <button id="btnPlayAI" class="btn primary">Found your empire</button>
         </fieldset>
         <fieldset class="plate">
@@ -84,47 +89,66 @@
     <div id="stage"></div>
     <header id="topbar">
       <div class="realm"><span id="civName" class="civ-name"></span><span id="ageName" class="age"></span></div>
+      <button id="researchChip" class="research-chip" title="Research (T): open the technology tree"><span class="rc-name" id="rcName">Research</span><span class="rc-bar"><i id="rcBar"></i></span><small id="rcEta"></small></button>
       <ul id="resources" class="resources"></ul>
       <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
-      <button id="alertsBtn" class="alerts-btn" aria-label="Alerts"><span class="dot critical" id="alC">0</span><span class="dot major" id="alM">0</span></button>
+      <button id="alertsBtn" class="alerts-btn" aria-label="Alerts" title="Alerts: critical and actionable problems"><span class="dot critical" id="alC">0</span><span class="dot major" id="alM">0</span></button>
       <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
+      <button id="btnSearch" class="btn icon" aria-label="Search" title="Search cities, units, buildings, technologies and commands (/ or Ctrl+K)">&#9906;</button>
       <button id="btnSound" class="btn icon" aria-label="Sound on or off" title="Sound (M to mute; volumes in the menu)">&#9835;</button>
       <button id="btnKey" class="btn icon" aria-label="Map key" title="Map key: what the symbols in the world mean (K)">?</button>
-      <button id="btnMenu" class="btn icon" aria-label="Menu">&#9776;</button>
+      <button id="btnMenu" class="btn icon" aria-label="Menu and settings">&#9776;</button>
     </header>
+    <nav id="rail" class="plate" aria-label="Command rail">
+      <button data-ws="world" class="on" title="World: close management views (Esc)"><span class="ri">◎</span><span class="rl">World</span></button>
+      <button data-ws="build" title="Build palette (B)"><span class="ri">⌂</span><span class="rl">Build</span></button>
+      <button data-ws="cities" title="Cities: every city at a glance"><span class="ri">▦</span><span class="rl">Cities</span></button>
+      <button data-ws="military" title="Military: armies, formations, readiness"><span class="ri">⚔</span><span class="rl">Military</span></button>
+      <button data-ws="economy" title="Economy and logistics: production chains and city plans"><span class="ri">⚙</span><span class="rl">Economy</span></button>
+      <button data-ws="research" title="Research: technology tree (T)"><span class="ri">✦</span><span class="rl">Research</span></button>
+      <button data-ws="government" title="Government, policies and the world market"><span class="ri">⚖</span><span class="rl">Government</span></button>
+      <button data-ws="diplomacy" title="Diplomacy"><span class="ri">✉</span><span class="rl">Diplomacy</span></button>
+      <button data-ws="chronicle" title="Chronicle: events and command history"><span class="ri">☰</span><span class="rl">Chronicle</span></button>
+      <button data-rail="toggle" class="rail-toggle" title="Show or hide labels" aria-label="Expand the command rail">»</button>
+    </nav>
     <div id="toasts" aria-live="polite"></div>
-    <aside id="alerts" class="plate" hidden><div class="hd"><b>Alerts</b><button class="btn small ghost" id="alertsClear">Clear</button></div><ul id="alertList" class="log"></ul></aside>
+    <aside id="alerts" class="plate" hidden><div class="hd"><b>Alerts</b><span><button class="btn small ghost" id="alertsClear">Clear</button></span></div><div class="seg" id="alertFilter"><button data-af="all" class="on">All</button><button data-af="critical">Critical</button><button data-af="actionable">Actionable</button><button data-af="info">Info</button></div><ul id="alertList" class="log"></ul></aside>
     <aside id="roadPanel" class="plate" hidden></aside>
-    <aside id="selection" class="plate"></aside>
-    <nav id="buildbar" class="plate"></nav>
+    <aside id="selection" class="plate" aria-label="Inspector"></aside>
+    <div id="deployBar" class="plate" hidden aria-label="Deployment"></div>
+    <aside id="fortifyPanel" class="plate" hidden aria-label="Fortify position"></aside>
+    <nav id="buildbar" class="plate" hidden></nav>
     <nav id="specbar" class="plate" hidden aria-label="Spectator controls"></nav>
-    <aside id="drawer" class="plate">
-      <div class="tabs" role="tablist">
-        <button role="tab" data-tab="research" aria-selected="true">Research</button>
-        <button role="tab" data-tab="realm">Realm</button>
-        <button role="tab" data-tab="empire">Empire</button>
-        <button role="tab" data-tab="armies">Armies</button>
-        <button role="tab" data-tab="diplomacy">Diplomacy</button>
-        <button role="tab" data-tab="chronicle">Chronicle</button>
+    <section id="drawer" class="plate workspace" hidden aria-label="Management">
+      <div class="tabs" role="tablist" hidden>
+        <button role="tab" data-tab="research">Research</button><button role="tab" data-tab="realm">Realm</button><button role="tab" data-tab="empire">Empire</button>
+        <button role="tab" data-tab="armies">Armies</button><button role="tab" data-tab="diplomacy">Diplomacy</button><button role="tab" data-tab="chronicle">Chronicle</button>
       </div>
+      <header class="ws-hd" id="wsHead"><h2 id="wsTitle"></h2><button class="btn small ghost" data-ws-close="1" aria-label="Close">Close ✕</button></header>
       <div id="drawerBody"></div>
-    </aside>
+    </section>
     <div id="minimapWrap" class="plate">
       <canvas id="minimap" width="192" height="168"></canvas>
-      <div class="lenses" role="group" aria-label="Map lens">
-        <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button><button data-lens="traffic">Traffic</button>
+      <div class="mm-bar">
+        <button id="lensBtn" class="btn tiny" title="Map lens (L)" aria-haspopup="true">Lens: <span id="lensName">Terrain</span> ▾</button>
         <select id="findType" class="findsel" title="Find buildings: highlight every building of a type or class (on the map and minimap)"><option value="">Find…</option></select>
+        <button id="mmSize" class="btn tiny ghost" title="Minimap size" aria-label="Minimap size">⤢</button>
+      </div>
+      <div class="lenses plate" id="lensPop" role="group" aria-label="Map lens" hidden>
+        <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button><button data-lens="traffic">Traffic</button><button data-lens="front" title="Front lines: who controls which ground, contested gaps, fortified positions, convoys">Front lines</button><button data-lens="tactical" title="Tactical overlay: formations, objectives, units without supply or pinned">Tactical</button>
       </div>
     </div>
+    <button id="mmShow" class="btn small" hidden>Map ▴</button>
     <aside id="mapkey" class="plate" hidden aria-label="Map key"></aside>
     <aside id="battle" class="plate" hidden aria-label="Battle summary"></aside>
     <aside id="sandbox" class="plate" hidden aria-label="Combat sandbox"></aside>
+    <div id="search" class="modal" hidden><div class="plate search-box"><input id="searchInput" type="search" placeholder="Search cities, units, buildings, technologies, commands…" aria-label="Search"><ul id="searchResults" class="log"></ul></div></div>
     <div id="hint" class="hint"></div>
     <div id="tooltip" class="tooltip" hidden></div>
     <div id="menu" class="modal" hidden>
       <div class="plate">
         <h2>Paused view</h2>
-        <p class="muted">The world keeps moving. Shortcuts: right-click move, right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to set a battle line and its facing, Shift+right-click queue a waypoint, Alt+right-click attack-move, A attack-move, S stop, H hold, X withdraw, F cycle formation (found a city with colonists), F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <p class="muted">The world keeps moving. Shortcuts: right-click move, right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), Shift+F fortify where the troops stand, T research, B build, / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, A attack-move, S stop, H hold, X withdraw, F cycle formation (found a city with colonists), F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
         <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
         <div class="sound-settings" id="soundSettings">
           <h4>Sound</h4>
@@ -135,6 +159,18 @@
           <label class="field inline check"><input type="checkbox" data-vol="muted"><span>Mute everything (M)</span></label>
           <p class="muted small">You only hear what you can see: fighting under the fog stays silent.</p>
         </div>
+        <details class="prefs" id="prefs"><summary>Display &amp; accessibility</summary>
+          <label class="field inline"><span>Interface size</span><input type="range" min="0.85" max="1.3" step="0.05" data-pref="uiScale"></label>
+          <label class="field inline"><span>Graphics</span><select data-pref="graphics"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+          <label class="field inline"><span>Particle density</span><input type="range" min="0.2" max="1.6" step="0.1" data-pref="particles"></label>
+          <label class="field inline check"><input type="checkbox" data-pref="shake"><span>Screen shake</span></label>
+          <label class="field inline check"><input type="checkbox" data-pref="reducedMotion"><span>Reduced motion</span></label>
+          <label class="field inline check"><input type="checkbox" data-pref="factionPattern"><span>Faction markings (not colour alone)</span></label>
+          <label class="field inline check"><input type="checkbox" data-pref="highContrast"><span>High-contrast selection</span></label>
+          <label class="field inline"><span>Unit labels</span><select data-pref="labels"><option value="few">Few</option><option value="normal">Normal</option><option value="all">All</option></select></label>
+          <label class="field inline"><span>Notifications</span><select data-pref="notify"><option value="quiet">Critical only</option><option value="normal">Normal</option><option value="verbose">Everything</option></select></label>
+          <label class="field inline"><span>Inspector width</span><input type="range" min="280" max="520" step="20" data-pref="inspectorWidth"></label>
+        </details>
         <button id="btnResume" class="btn primary">Back to the map</button>
         <button id="btnSurrender" class="btn danger">Surrender</button>
         <button id="btnQuit" class="btn ghost">Leave match</button>

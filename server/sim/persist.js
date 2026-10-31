@@ -6,6 +6,7 @@ import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
 import { getNextArmyId, setNextArmyId } from './armies.js';
 import { serializeBattlefield, restoreBattlefield } from './battlefield.js';
+import { serializeFieldworks, restoreFieldworks } from './fieldworks.js';
 
 const WORLD_ARRAYS = ['elev', 'stab', 'moist', 'temp', 'rate', 'stress', 'plate', 'terr', 'res', 'river', 'lake', 'flowDir', 'flow', 'road', 'soil', 'lava', 'ash', 'drought', 'owner', 'ver'];
 const CIV_ARRAYS = ['explored', 'lastOwner', 'visible', 'detect', 'supply', 'airSupply'];
@@ -46,6 +47,8 @@ export function serializeGame(g) {
     // v2: wrapped topology, world style, Cataclysm settings (v1 saves were bounded and always cataclysmic)
     wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style, cataclysm: g.cataclysm,
     slots: g.slotsDef, world, roads: { ...g.roads.serialize(), traffic: mapOut(g.roads.traffic) },
+    fieldworks: serializeFieldworks(g), logistics: { caches: [...(g.caches || new Map())], seq: g.convoySeq || 0 },
+    formations: { list: [...(g.formations || new Map()).values()], nextId: g.nextFormationId || 0 },
     combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g) },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
     civs, diplomacy: { pairs: diplo, nextProposal: g.diplomacy.nextProposal },
@@ -81,11 +84,19 @@ export function restoreGame(data) {
   g.projectiles = new Map((cb.projectiles || []).map((p) => [p.id, p])); g.pending = new Map(cb.pending || []);
   g.eventSeq = cb.eventSeq || 0; g.events = [];
   restoreBattlefield(g, cb.battlefield);
+  restoreFieldworks(g, data.fieldworks);
+  g.caches = new Map(data.logistics?.caches || []); g.convoySeq = data.logistics?.seq || 0;
+  g.formations = new Map((data.formations?.list || []).map((f) => [f.id, f])); g.nextFormationId = data.formations?.nextId || 0;
   g.tileB.fill(-1); for (const b of g.buildings.values()) g.tileB[b.tile] = b.id;
   data.civs.forEach((o, i) => {
     const c = g.civs[i];
     for (const [k, v] of Object.entries(o)) { if (k.startsWith('$')) continue; c[k] = revive(v); }
     for (const k of CIV_ARRAYS) c[k] = fromB64(o.$arrays[k], c[k].constructor);
+    // saves from before difficulty profile v2 keep the multipliers they were started with
+    if (o.diffProfile === undefined && c.isAI && !c.isRebel) { c.diffProfile = 'legacy'; c.fairPlay = false; }
+    // saves from before per-technology progress: keep the active project's progress
+    if (!c.techProgress) c.techProgress = {};
+    if (c.researching && c.progress > 0 && c.techProgress[c.researching] == null) c.techProgress[c.researching] = c.progress;
     c.knownVer.fill(0); c.knownOwner.fill(-2); c.visKey = ''; c.knownStab = false; c.connected = false; c.token = o.$token || null;
     if (o.$ai) {
       if (o.$ai.kind === 'rebel') { c.ai = new RebelAI(g, c); Object.assign(c.ai, { nextCamp: o.$ai.nextCamp, nextSpawn: o.$ai.nextSpawn, raid: o.$ai.raid }); }

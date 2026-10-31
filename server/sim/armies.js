@@ -89,6 +89,7 @@ function issue(g, civ, a) {
 
 // Runs every 2 s for every civ.
 export function armiesStep(g) {
+  for (const civ of g.civs) if (civ.alive && !civ.isRebel) commandStep(g, civ);
   for (const civ of g.civs) {
     if (!civ.alive || !civ.armies) continue;
     for (const a of civ.armies.values()) {
@@ -134,6 +135,39 @@ export function armiesStep(g) {
   }
 }
 
+// Soft command capacity. Organised forces (armies, deployed formations, AI missions) are easy to
+// command; a sprawl of loose units beyond what the nation's staff and communications can manage
+// loses cohesion: slower recovery of morale and suppression (never less damage, never a cap).
+export function commandCapacity(g, civ) {
+  let cap = 14 + 5 * g.cityOf(civ).length + 6 * (civ.armies ? [...civ.armies.values()].filter((a) => a.units.length).length : 0);
+  if (civ.techs.has('logistics')) cap += 10;
+  if (civ.techs.has('networked_command')) cap *= 1.35;
+  return Math.round(cap);
+}
+function commandStep(g, civ) {
+  const organised = new Set();
+  for (const a of (civ.armies || new Map()).values()) for (const id of a.units) organised.add(id);
+  for (const f of g.formations?.values() || []) if (f.owner === civ.id) for (const id of f.units) organised.add(id);
+  if (civ.ai?.mil) for (const id of civ.ai.mil.assignedIds()) organised.add(id);
+  const units = [...g.units.values()].filter((u) => u.owner === civ.id && !UNITS[u.type].civilian);
+  const loose = units.filter((u) => !organised.has(u.id));
+  const cap = commandCapacity(g, civ);
+  const over = Math.max(0, loose.length - cap) / Math.max(1, cap);
+  for (const u of loose) u.cohesion = Math.max(0.5, 1 - over * 0.5);
+  for (const a of (civ.armies || new Map()).values()) {
+    const us = a.units.map((id) => g.units.get(id)).filter(Boolean); if (!us.length) continue;
+    const c = centroid(g, a);
+    const spread = c >= 0 ? us.reduce((s, u) => s + dist(u.tile, c), 0) / us.length : 0;
+    const trucks = us.some((u) => u.type === 'supply_truck');
+    let coh = 1 - Math.max(0, spread - 6) * 0.04 - (us.length > 30 && !trucks ? 0.15 : 0) + (trucks ? 0.05 : 0);
+    coh = Math.max(0.4, Math.min(1, coh));
+    a.cohesion = Math.round(coh * 100);
+    for (const u of us) u.cohesion = coh;
+  }
+  for (const f of g.formations?.values() || []) if (f.owner === civ.id) for (const id of f.units) { const u = g.units.get(id); if (u && !u.detached) u.cohesion = Math.max(u.cohesion ?? 1, 0.95); }
+  civ.command = { cap, loose: loose.length, organised: units.length - loose.length, over: +over.toFixed(2) };
+}
+
 function observedNear(g, civ, tile) {
   let s = 0;
   for (const t of disk(tile, 6)) for (const id of g.tileUnits.get(t) || []) {
@@ -144,9 +178,30 @@ function observedNear(g, civ, tile) {
   return s;
 }
 
+// The four operational indicators of a force: supply, readiness, sustainability, cohesion (0-100).
+export function operational(g, civ, a) {
+  const us = a.units.map((id) => g.units.get(id)).filter(Boolean);
+  if (!us.length) return { readiness: 0, sustain: 0, cohesion: 0 };
+  const avg = (f) => us.reduce((s, u) => s + f(u), 0) / us.length;
+  const readiness = Math.round(100 * avg((u) => (u.hp / u.maxHp) * (0.5 + 0.5 * (u.morale ?? 100) / 100) * (1 - 0.5 * Math.min(1, (u.supp || 0) / 100))));
+  // can the nation replace what this force burns? munitions/fuel stock vs upkeep, reserve manpower
+  const up = civ.upkeep || { fuel: 0 };
+  const fuelDays = up.fuel > 0 ? (civ.res.fuel || 0) / (up.fuel * 60) : 99;     // minutes of fuel
+  const ammo = Math.min(1, (civ.res.munitions || 0) / Math.max(20, us.length * 6));
+  const men = g.cityOf(civ).reduce((s, c) => s + Math.max(0, (c.pop || 0) * 0.1 - (c.reserved || 0)), 0);
+  const sustain = Math.round(100 * Math.min(1, 0.4 * Math.min(1, fuelDays / 5) + 0.35 * ammo + 0.25 * Math.min(1, men / Math.max(1, us.length))));
+  const issues = [];
+  if (a.supply < 50) issues.push(a.supply < 25 ? 'severe supply shortage' : 'supply running low');
+  if (readiness < 50) issues.push('worn down: rest and resupply');
+  if (sustain < 40) issues.push(fuelDays < 2 ? 'fuel stocks low' : ammo < 0.5 ? 'munitions low' : 'few replacements');
+  if ((a.cohesion ?? 100) < 75) issues.push('spread out: tighten the formation');
+  return { readiness, sustain, cohesion: a.cohesion ?? 100, issues };
+}
+
 export function armySummary(g, civ) {
   return [...(civ.armies || new Map()).values()].filter((a) => a.units.length).map((a) => ({
     id: a.id, name: a.name, units: a.units, formation: a.formation, stance: a.stance, status: a.status, note: a.note, men: a.men || 0, hp: a.hp, supply: a.supply, center: a.center,
+    ...operational(g, civ, a),
     order: { kind: a.order.kind, tile: a.order.tile, radius: a.order.radius, staging: a.order.staging, phase: a.order.phase },
   }));
 }

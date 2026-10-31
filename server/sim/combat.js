@@ -1,6 +1,7 @@
 // Combat resolution: weapons fire (hitscan volleys or authoritative projectiles that damage on
 // impact), area blasts, suppression and morale, cover and line of fire, target choice with
 // overkill avoidance, and a sequenced combat-event stream that clients replay.
+import { trenchCover, damageFieldworks } from './fieldworks.js';
 import { UNITS, BUILDINGS, TERRAIN, T, isWater } from './constants.js';
 import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ARMORED } from './weapons.js';
 import { disk, dist, hexLine } from './hex.js';
@@ -40,7 +41,7 @@ export function eventsFor(g, since, vis, god) {
 }
 
 // ------------------------------------------------------------------ terrain & cover
-export function coverAt(g, u) {
+export function coverAt(g, u, from = -1, indirect = false) {
   const def = UNITS[u.type];
   if (def.air) return 0;
   const w = g.world, t = u.tile;
@@ -50,7 +51,11 @@ export function coverAt(g, u) {
   if (g.ruins.has(t)) c = Math.max(c, 0.3);
   c = Math.max(c, scarCover(g, t));
   if (w.terr[t] === T.FOREST) c = Math.max(c, 0.15);
-  return def.move === 'infantry' ? c : c * 0.5;
+  if (g.urban?.[t]) c = Math.max(c, 0.3);                // built-up districts: strong infantry positions
+  c = def.move === 'infantry' ? c : c * 0.5;
+  // field trenches: directional, and the best cover counts (sources never add up past a cap)
+  if (g.fieldworks?.size) c = Math.max(c, trenchCover(g, u, from, indirect));
+  return Math.min(0.6, c);
 }
 
 // Direct fire needs a clear line: peaks and mountains block it, forests, buildings and smoke
@@ -88,6 +93,14 @@ function combinedArms(g, u) {
 }
 
 // ------------------------------------------------------------------ firing
+// Firing effectiveness by supply: 50-100 full, 25-49 reduced, 10-24 severe, under 10 barely.
+export function supplyFire(s, hiTech) {
+  const f = s >= 50 ? 1 : s >= 25 ? 0.85 + (s - 25) * 0.006 : s >= 10 ? 0.6 + (s - 10) * 0.0167 : 0.4 + s * 0.02;
+  return hiTech ? 1 - (1 - f) * 1.35 : f;
+}
+// Recovery (healing, morale, suppression shaking-off) by supply and command cohesion.
+export function recoveryFactor(u) { const s = u.supply ?? 100; return (s >= 80 ? 1 : s >= 50 ? 0.7 : s >= 25 ? 0.45 : 0.25) * (0.6 + 0.4 * (u.cohesion ?? 1)); }
+
 // Attacker-side strength of one shot from a unit (supply, health, government, munitions, terrain).
 function unitStrength(g, u) {
   const def = UNITS[u.type], civ = g.civs[u.owner], w = g.world;
@@ -95,8 +108,9 @@ function unitStrength(g, u) {
   if (civ.gov === 'corporate') a *= 0.9;
   if (civ.gov === 'junta') a *= 1.1;
   if (civ.policies.has('total_war')) a *= 1.2;
-  // high-tech equipment suffers more without supply (fuel, parts, ammunition)
-  a *= def.age >= 2 ? 0.25 + 0.75 * (u.supply / 100) : 0.4 + 0.6 * (u.supply / 100);
+  // supply bands: full strength above half supply, then a gradual decline (never zero: an
+  // isolated defender can still resist); high-tech equipment feels it more
+  a *= supplyFire(u.supply, def.age >= 2);
   a *= 1 + 0.1 * vetLevel(u);
   a *= 1 + combinedArms(g, u);
   a *= 0.5 + 0.5 * (u.hp / u.maxHp);
@@ -179,7 +193,7 @@ function resolveHit(g, src, wpn, strength, acc, tg, tt, factor) {
     let d = ed.def * (ed.air ? 1 : 1 + TERRAIN[w.terr[e.tile]].def) * (1 + 0.08 * vetLevel(e));
     const fortB = g.buildingAtTile(e.tile); if (fortB && fortB.owner === e.owner && (fortB.type === 'fort' || fortB.type === 'bunker')) d *= 1.5;
     if (isWater(w.terr[e.tile]) && !ed.air) d *= 0.5;
-    const cover = coverAt(g, e);
+    const cover = coverAt(g, e, src.tile, !!wpn.arc);
     const dmg = a * 1.6 * rand * (10 / (10 + d)) * acc * factor * (1 - cover);
     suppress(g, e, wpn.supp * factor * (1 - Math.min(0.8, cover * 1.4)));
     if (dmg <= 0.05) { emit(g, { k: 'hit', t: e.id, b: e.tile, d: 0, o: 'blocked', a: src.tile }); return 0; }
@@ -233,11 +247,17 @@ function impact(g, p) {
     blast(g, src, wpn, p.str, p.acc, to, p.tg);
   }
   // high explosives scar the ground, the roads and the air
+  if (wpn.he >= 0.5 && g.fieldworks?.size) for (const t of disk(to, wpn.blast || 0)) if (g.fieldworks.has(t)) damageFieldworks(g, t, (t === to ? 14 : 6) * wpn.he);
   if (wpn.he >= 1 && !isWater(g.world.terr[to])) {
     if (g.rng() < 0.35 * wpn.he) addCrater(g, to, wpn.he >= 1.5 ? 2 : 1);
     if (g.rng() < 0.3) g.roads.damageTile(to, 10 * wpn.he, g.rng, 0.5);
     addSmoke(g, to, 0.25 + 0.15 * wpn.he, 8 + 6 * wpn.he);
   } else if (wpn.he >= 0.5) addSmoke(g, to, 0.15, 5);
+}
+
+// tests and the sandbox: one shell of a weapon lands on a hex (same path as a real impact)
+export function testImpact(g, owner, tile, wk, str = 20) {
+  impact(g, { id: g.id_(), owner, src: 0, sb: 0, w: wk, from: tile, to: tile, aim: tile, tg: { kind: 'tile', id: 0 }, at: g.time, launched: g.time, str, acc: 1, vsB: 1, bonus: null, aa: 0 });
 }
 
 function blast(g, src, wpn, str, acc, center, tg) {
@@ -248,6 +268,7 @@ function blast(g, src, wpn, str, acc, center, tg) {
       const e = g.units.get(id);
       if (!e || !g.hostile(src.owner, e.owner)) continue;
       if (UNITS[e.type].air && !src.aa) continue;
+      e.blastAt = g.time;
       resolveHit(g, src, wpn, str, acc, { kind: 'unit', id }, t, f);
     }
     // nearby friendly troops are rattled, not hurt
@@ -279,11 +300,11 @@ export function moraleStep(g, dt) {
     if (UNITS[u.type].civilian) continue;
     if (u.supp > 0 && g.time - (u.suppAt || 0) > 2) {
       const before = u.supp;
-      u.supp = Math.max(0, u.supp - 12 * dt * (coverAt(g, u) > 0.2 ? 1.5 : 1));
+      u.supp = Math.max(0, u.supp - 12 * dt * (coverAt(g, u) > 0.2 ? 1.5 : 1) * (0.6 + 0.4 * (u.cohesion ?? 1)));
       if (before >= 60 && u.supp < 60) emit(g, { k: 'supp', t: u.id, b: u.tile, o: 'off' });
     }
     const m = u.morale ?? 100;
-    if (g.time - u.lastCombat > 6) u.morale = Math.min(100, m + (u.outOfSupply ? 0.5 : 3) * dt);
+    if (g.time - u.lastCombat > 6) u.morale = Math.min(100, m + (u.outOfSupply ? 0.5 : 3) * recoveryFactor(u) * dt);
     else if (u.outOfSupply) u.morale = Math.max(0, m - 0.5 * dt);
   }
 }
@@ -362,7 +383,8 @@ export function coverPosition(g, u, threatTile) {
     const ter = g.world.terr[t];
     if (isWater(ter) || !Number.isFinite(TERRAIN[ter].move)) continue;
     if (threatTile >= 0 && dist(t, threatTile) < dist(u.tile, threatTile)) continue;
-    const c = scarCover(g, t) + (g.ruins.has(t) ? 0.3 : 0) + (ter === T.FOREST ? 0.15 : 0);
+    const fw = g.fieldworks?.get(t);
+    const c = scarCover(g, t) + (g.ruins.has(t) ? 0.3 : 0) + (ter === T.FOREST ? 0.15 : 0) + (fw && fw.progress >= 1 ? 0.25 * fw.hp / 100 : 0);
     if (c > bc) { bc = c; best = t; }
   }
   return best;

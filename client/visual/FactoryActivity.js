@@ -43,6 +43,5 @@ export function drawFactories(g, view, S, t) {
       const p = frac(t * 0.12 + h(b.id, 4)); const q = p < 0.5 ? p * 2 : 2 - p * 2;
       g.rect(x - 2 + q * 9, y + 6 - q * 3, 2.6, 1.6).fill({ color: era === 0 ? 0x7a5a3a : 0xd8d2c4 });
     }
-    if (S.night > 0.2 && active && era >= 1) S.lightsList.push([x, y, 6, 0xffd48a]);
   }
 }

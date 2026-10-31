@@ -27,7 +27,6 @@ export function drawTraffic(g, view, S, t) {
       const x = ax + (bx - ax) * p + (nx / nl) * off, y = ay + (by - ay) * p + (ny / nl) * off;
       const col = era === 0 ? 0x7a5a3a : [0xd8d2c4, 0xb84a3a, 0x3b6ea8, 0x2f2f2f, 0xc9a43a][Math.floor(h(a, b, k + 5) * 5)];
       g.rect(x - 1.2, y - 0.8, era === 0 ? 2 : 2.6, 1.6).fill({ color: col });
-      if (S.night > 0.2 && era >= 1) S.lightsList.push([x, y, 1.6, 0xffe2a0]);
       budget--;
     }
   }

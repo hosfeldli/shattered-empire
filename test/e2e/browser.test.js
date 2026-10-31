@@ -47,6 +47,7 @@ test('double-click selects every owned unit of that type on screen, and only tha
   const [x, y] = await unitPos(militia[0].id);
   await page.mouse.click(x, y);
   assert.deepEqual(await selected(), [militia[0].id], 'single click selects one unit');
+  await page.waitForTimeout(700);                                   // let the single click stand alone
   await page.mouse.click(x, y); await page.mouse.click(x, y);   // two quick clicks
   const sel = await selected();
   assert.deepEqual(sel.sort(), militia.map((u) => u.id).sort(), 'double-click selects all militia');
@@ -70,6 +71,7 @@ test('box selection and control groups', { skip }, async () => {
 
 test('placing a building uses server-computed valid hexes', { skip }, async () => {
   const before = await page.evaluate(() => [...window.__S.buildings.values()].filter((b) => b.ty === 'house').length);
+  await page.keyboard.press('b');                       // the build palette opens from the rail (B)
   await page.click('[data-build=house]');
   await page.waitForFunction(() => window.__S.mode && window.__S.mode.tiles && window.__S.mode.tiles.size > 0);
   const tile = await page.evaluate(() => [...window.__S.mode.tiles][0]);
@@ -239,6 +241,65 @@ test('sound: unlocked by a gesture, volume sliders persist, and fogged fighting 
   await page.keyboard.press('m');
   assert.equal(await page.evaluate(() => window.__audio().settings.muted), true, 'M mutes');
   await page.keyboard.press('m');
+});
+
+test('research workspace: full-screen graph, inspect without researching, queue with prerequisites, progress kept', { skip }, async () => {
+  await page.evaluate(() => { window.__S.selUnits.clear(); const S = window.__S; for (const u of S.units.values()) if (u.owner === S.civId) { S.selUnits.add(u.id); break; } });
+  const selBefore = await selected();
+  await page.keyboard.press('t');
+  await page.waitForSelector('#rwG .node', { timeout: 10000 });
+  assert.equal(await page.isVisible('#drawer'), true);
+  assert.ok(await page.locator('#rwG .node').count() >= 30, 'every technology is a node');
+  // selecting a late node only inspects it
+  const research0 = await page.evaluate(() => window.__S.econ.research);
+  const bb = await page.locator('#rwG .node[data-tech=mechanization]').boundingBox();
+  await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await page.waitForSelector('#rwInsp [data-rw=queue]');
+  assert.equal(await page.evaluate(() => window.__S.econ.research), research0, 'inspecting does not start research');
+  await page.click('#rwInsp [data-rw=queue]');
+  await page.waitForFunction(() => window.__S.econ.queue.includes('mechanization') && window.__S.econ.queue.indexOf('motorization') < window.__S.econ.queue.indexOf('mechanization'), null, { timeout: 15000 });
+  // reorder keeps prerequisites first
+  await page.click('#rwQueue [data-rw=up][data-k=mechanization]').catch(() => {});
+  await page.waitForTimeout(400);
+  const q = await page.evaluate(() => window.__S.econ.queue);
+  assert.ok(q.indexOf('motorization') < q.indexOf('mechanization'));
+  // switching research keeps earned progress
+  const avail = await page.evaluate(() => { const D = window.__S.defs, e = window.__S.econ; return Object.keys(D.TECHS).filter((k) => !e.techs.includes(k) && D.TECHS[k].age <= e.age && D.TECHS[k].req.every((r) => e.techs.includes(r))).slice(0, 2); });
+  await page.evaluate((k) => window.__actions().cmd({ c: 'research', tech: k }), avail[0]);
+  await page.waitForFunction((k) => window.__S.econ.research === k && window.__S.econ.progress > 0, avail[0], { timeout: 20000 });
+  await page.evaluate((k) => window.__actions().cmd({ c: 'research', tech: k }), avail[1]);
+  await page.waitForFunction((k) => window.__S.econ.research === k, avail[1], { timeout: 15000 });
+  assert.ok(await page.evaluate((k) => (window.__S.econ.techProgress[k] || 0) > 0, avail[0]), 'progress on the first project is kept');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.isVisible('#drawer'), false, 'Escape closes the workspace');
+  assert.deepEqual(await selected(), selBefore, 'the unit selection survived');
+});
+
+test('line deployment: right-drag shows the plan, release commits a formation; Fortify digs in', { skip }, async () => {
+  const units = (await myUnits()).filter((u) => ['militia', 'rifle_squad'].includes(u.type));
+  await page.evaluate((ids) => { const S = window.__S; S.selUnits.clear(); for (const id of ids) S.selUnits.add(id); S.selBuilding = null; }, units.map((u) => u.id));
+  const cap = await page.evaluate(() => [...window.__S.cities.values()].find((x) => x.o === window.__S.civId).t);
+  await page.evaluate((t) => window.__view().centerOn(t, 1.6), cap);
+  await page.waitForTimeout(300);
+  await page.waitForSelector('#deployBar:not([hidden])', { timeout: 5000 });
+  const [x0, y0] = await tilePos(cap);
+  await page.mouse.move(x0 - 60, y0 + 60); await page.mouse.down({ button: 'right' });
+  await page.mouse.move(x0 + 20, y0 + 60, { steps: 8 });
+  await page.waitForFunction(() => window.__S.deploy && window.__S.deploy.plan && window.__S.deploy.plan.slots.size > 0, null, { timeout: 5000 });
+  assert.match(await page.textContent('#deployBar'), /Dispersed|Concentrated|Dense/);
+  const preview = await page.evaluate(() => [...window.__S.deploy.plan.slots.entries()]);
+  await page.mouse.up({ button: 'right' });
+  await page.waitForFunction(() => (window.__S.econ.formations || []).length > 0, null, { timeout: 15000 });
+  const f = await page.evaluate(() => window.__S.econ.formations[0]);
+  const same = preview.filter(([id, t]) => f.slots[id] === t).length;
+  assert.ok(same >= preview.length - 1, `the server agreed with the preview (${same}/${preview.length})`);
+  // fortify: preview, then dig
+  await page.waitForSelector('#selection [data-act=fortify]', { timeout: 10000 });
+  await page.click('#selection [data-act=fortify]');
+  await page.waitForSelector('#fortifyPanel:not([hidden]) [data-fz=go]', { timeout: 10000 });
+  assert.match(await page.textContent('#fortifyPanel'), /Valid segments/);
+  await page.click('[data-fz=go]');
+  await page.waitForFunction(() => window.__S.fw && window.__S.fw.size > 0, null, { timeout: 20000 });
 });
 
 test('no uncaught page errors during the session', { skip }, () => {

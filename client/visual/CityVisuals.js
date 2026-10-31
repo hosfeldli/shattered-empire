@@ -24,7 +24,7 @@ export class CityVisuals {
     for (const [id, rec] of this.cities) if (!S.cities.has(id)) { rec.g.destroy(); this.cities.delete(id); }
     for (const c of S.cities.values()) {
       const era = this.eraOf(c.o);
-      const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, S.buildingsVersion, S.ruinsVersion].join('|');
+      const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, S.buildingsVersion, S.ruinsVersion, S.urbanVersion || 0].join('|');
       let rec = this.cities.get(c.id);
       if (rec && rec.key === key) continue;
       if (!rec) { rec = { g: new PIXI.Graphics() }; v.districtLayer.addChild(rec.g); v.mirrorOf?.(rec.g); this.cities.set(c.id, rec); }
@@ -49,8 +49,11 @@ export class CityVisuals {
       cand.push([t, d + h(c.id, t) * 0.6]);
     }
     cand.sort((a, b) => a[1] - b[1]);
+    // the server's developed footprint is authoritative (trenches cannot exist there); draw
+    // districts exactly on it, falling back to a population estimate before it is known
+    const urban = S.urban ? cand.filter(([t]) => S.urban[t]).map((x) => x[0]) : [];
     const nHex = Math.max(1, Math.min(cand.length, Math.round(c.pop / 5)));
-    const hexes = cand.slice(0, nHex).map((x) => x[0]);
+    const hexes = urban.length ? urban : cand.slice(0, nHex).map((x) => x[0]);
     const set = new Set(hexes);
     rec.blocks = []; rec.streets = []; rec.hexes = hexes;
     // streets: between developed hexes and from the town centre; they reuse real road directions where present

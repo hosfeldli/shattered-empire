@@ -240,11 +240,10 @@ export class AudioManager {
       this.mix = {
         wind: 0.06 + 0.14 * far + 0.12 * (high / n),
         sea: 0.22 * (sea / n) * (0.4 + 0.6 * zoom),
-        forest: 0.07 * (forest / n) * zoom * (1 - (S.night || 0) * 0.6),
+        forest: 0.07 * (forest / n) * zoom,
         city: Math.min(0.14, city * 0.012) * zoom,
         industry: Math.min(0.08, industry * 0.02) * zoom,
       };
-      if ((S.night || 0) > 0.5) this.mix.city *= 0.6;
     }
     const a = this.amb, m = this.mix, tc = 0.6;
     a.wind.g.gain.setTargetAtTime(m.wind, t, tc); a.wind.f.frequency.setTargetAtTime(380 + 260 * Math.sin(t * 0.13) + 120 * Math.sin(t * 0.37), t, 0.5);

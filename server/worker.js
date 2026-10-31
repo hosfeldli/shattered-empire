@@ -6,7 +6,7 @@ import zlib from 'node:zlib';
 globalThis.SE_MAP_SIZE = workerData.mapSize;
 globalThis.SE_WRAP = workerData.wrap !== false;   // bounded only for matches saved before wrapping existed
 const { Game } = await import('./sim/game.js');
-const { GAME_DEFS, TICK_HZ } = await import('./sim/constants.js');
+const { GAME_DEFS, TICK_HZ, aiProfile } = await import('./sim/constants.js');
 const { serializeGame, restoreGame } = await import('./sim/persist.js');
 
 let game;
@@ -82,7 +82,7 @@ parentPort.on('message', (m) => {
       const civ = game.civs[m.civId];
       civ.connected = true;
       send(m.civId, { t: 'welcome', match: game.id, civId: m.civId, seed: game.seed, defs: GAME_DEFS, world: { wrap: globalThis.SE_WRAP, style: game.world.style, cataclysm: !!game.cataclysm }, sandbox: !!game.sandbox,
-        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel })), start: game.world.starts[m.civId], time: game.time });
+        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
       for (const [, msg] of game.snapshots(m.civId)) send(m.civId, msg);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
       flush();
@@ -91,7 +91,7 @@ parentPort.on('message', (m) => {
     } else if (m.t === 'obsWelcome') {
       const o = game.setObserver({ connected: true });
       send(-2, { t: 'welcome', match: game.id, civId: o.follow, spectator: true, seed: game.seed, defs: GAME_DEFS, world: { wrap: globalThis.SE_WRAP, style: game.world.style, cataclysm: !!game.cataclysm },
-        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel })), start: game.world.starts[o.follow], time: game.time });
+        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
       send(-2, game.observerSnapshot(true));
       for (const e of game.log.slice(-15)) if (e.kind) send(-2, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
       flush();

@@ -8,7 +8,7 @@
 // blast: hex radius of area damage (0 = the target only); falloff applies to the ring.
 export const WEAPONS = {
   carbine:  { name: 'Carbines',       mode: 'hitscan', cooldown: 1.5, burst: 2, supp: 5,  vsArmor: 0.5, tracer: 'light' },
-  rifle:    { name: 'Rifles',         mode: 'hitscan', cooldown: 1.8, burst: 3, supp: 8,  vsArmor: 0.45, tracer: 'light' },
+  rifle:    { name: 'Rifles',         mode: 'hitscan', cooldown: 1.8, burst: 3, supp: 8,  vsArmor: 0.35, tracer: 'light' },
   smg_team: { name: 'Assault rifles', mode: 'hitscan', cooldown: 1.4, burst: 4, supp: 10, vsArmor: 0.6, tracer: 'light' },
   mg:       { name: 'Machine gun',    mode: 'hitscan', cooldown: 1.6, burst: 6, supp: 16, vsArmor: 0.4, tracer: 'heavy' },
   autocannon:{ name: 'Autocannon',    mode: 'hitscan', cooldown: 1.6, burst: 4, supp: 14, vsArmor: 0.9, tracer: 'heavy' },

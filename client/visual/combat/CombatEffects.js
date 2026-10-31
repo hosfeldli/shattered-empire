@@ -73,7 +73,7 @@ export class CombatEffects {
       const a = 1 - f.t / f.ttl;
       if (f.ring) g.circle(f.x, f.y, f.r * (0.4 + 1.4 * (1 - a))).stroke({ width: 1.2 * f.size, color: 0xfff2d8, alpha: a * 0.7 });
       else g.circle(f.x, f.y, f.r * (0.6 + 0.4 * a)).fill({ color: f.col, alpha: a });
-      if (f.light && S.night > 0.15) S.lightsList.push([f.x, f.y, f.r * 3, 0xffb050]);
+      if (f.light) S.lightsList.push([f.x, f.y, f.r * 3, 0xffb050]);
     }
     // particles: debris, dust, sparks
     this.parts = this.parts.filter((p) => (p.t += dt) < p.ttl);
@@ -132,13 +132,13 @@ export class CombatEffects {
     const dx = dst[0] - src[0], dy = dst[1] - src[1], l = Math.hypot(dx, dy) || 1;
     this.flashes.push({ x: src[0] + (dx / l) * 4, y: src[1] + (dy / l) * 4, r: 2 * size, col: 0xffe08a, t: 0, ttl: 0.09, light: true });
   }
-  dust(x, y, n, size, delay) { if (this.parts.length > MAX_PARTICLES) return; for (let i = 0; i < n; i++) this.parts.push({ kind: 'dust', x, y, vx: (Math.random() - 0.5) * 14, vy: -6 - Math.random() * 8, g: 30, r: size, col: 0xb8a98a, t: -delay, ttl: 0.45 }); }
-  puff(x, y, r, col) { if (this.parts.length > MAX_PARTICLES) return; this.parts.push({ kind: 'smoke', x, y, vx: (Math.random() - 0.5) * 4, vy: -5 - Math.random() * 4, g: 0, r, col, t: 0, ttl: 2.2 }); }
+  dust(x, y, n, size, delay) { n = Math.max(1, Math.round(n * Math.min(1.6, this.S.particleScale ?? 1))); if (this.parts.length > MAX_PARTICLES * (this.S.particleScale ?? 1)) return; for (let i = 0; i < n; i++) this.parts.push({ kind: 'dust', x, y, vx: (Math.random() - 0.5) * 14, vy: -6 - Math.random() * 8, g: 30, r: size, col: 0xb8a98a, t: -delay, ttl: 0.45 }); }
+  puff(x, y, r, col) { if (this.parts.length > MAX_PARTICLES * (this.S.particleScale ?? 1)) return; this.parts.push({ kind: 'smoke', x, y, vx: (Math.random() - 0.5) * 4, vy: -5 - Math.random() * 4, g: 0, r, col, t: 0, ttl: 2.2 }); }
   explosion(x, y, size, small) {
     this.flashes.push({ x, y, r: 5 * size, col: 0xffd070, t: 0, ttl: 0.12, light: true });
     this.flashes.push({ x, y, r: 3.5 * size, col: 0xff7a2a, t: 0, ttl: 0.3 });
     this.flashes.push({ x, y, r: 9 * size, size, ring: true, t: 0, ttl: 0.35 });
-    if (this.parts.length > MAX_PARTICLES) return;
+    if (this.parts.length > MAX_PARTICLES * (this.S.particleScale ?? 1)) return;
     const n = Math.round((small ? 4 : 9) * size);
     for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = 20 + Math.random() * 40 * size; this.parts.push({ kind: 'debris', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.6 - 25, g: 70, r: 0.8 + Math.random() * 1.2, col: i % 3 ? 0x4a4038 : 0x8a7a68, t: 0, ttl: 0.6 + Math.random() * 0.4 }); }
     for (let i = 0; i < Math.ceil(size * 2); i++) this.puff(x + (Math.random() - 0.5) * 6 * size, y + (Math.random() - 0.5) * 4, 2.5 * size, i % 2 ? 0x6a625a : 0x9a9086);

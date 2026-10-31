@@ -4,6 +4,8 @@
 import { AmbientWorld } from './visual/AmbientWorld.js';
 import { lodFor } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
+import { UnitAtlas, attachArt, updateArt } from './visual/UnitSpriteManager.js';
+import { drawFieldworks } from './visual/FieldworksVisuals.js';
 import { drawBuildingArt, waterDir, shade } from './visual/BuildingArt.js';
 import { paintTerrainDetail, smoothColor } from './visual/TerrainMaterials.js';
 import { CombatEffects } from './visual/combat/CombatEffects.js';
@@ -41,17 +43,18 @@ export class View {
     await app.init({ resizeTo: this.host, background: 0x0d1416, antialias: true, autoDensity: true, resolution: Math.min(2, window.devicePixelRatio || 1) });
     this.app = app;
     this.host.appendChild(app.canvas);
+    this.atlas = new UnitAtlas(); await this.atlas.load();
     const L = (name) => { const c = name === 'g' ? new PIXI.Graphics() : new PIXI.Container(); return c; };
     this.world = new PIXI.Container(); app.stage.addChild(this.world);
     this.terrainLayer = L(); this.overlayLayer = L();
     this.world.addChild(this.terrainLayer, this.overlayLayer);
-    this.borders = L('g'); this.front = L('g'); this.ruinsG = L('g');
+    this.borders = L('g'); this.front = L('g'); this.ruinsG = L('g'); this.fwG = L('g'); this.tacG = L('g');
     this.districtLayer = L(); this.underG = L('g');
     this.bLayer = L(); this.ambientG = L('g'); this.uLayer = L(); this.fxG = L('g'); this.overlay = L('g');
     this.overlayTags = L(); this.campG = L('g');
     // combat layers: ground decals under buildings, wrecks with them, effects and smoke over units
     this.decalG = L('g'); this.wreckG = L('g'); this.cfxG = L('g'); this.smokeG = L('g'); this.engageG = L('g');
-    this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.decalG, this.underG, this.bLayer, this.wreckG, this.ambientG, this.uLayer, this.cfxG, this.smokeG, this.fxG, this.engageG, this.overlay, this.campG, this.overlayTags);
+    this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.fwG, this.decalG, this.underG, this.bLayer, this.wreckG, this.ambientG, this.uLayer, this.cfxG, this.smokeG, this.fxG, this.engageG, this.tacG, this.overlay, this.campG, this.overlayTags);
     this.combat = new CombatEffects(this, this.S);
     this.combat.attach({ decal: this.decalG, wreck: this.wreckG, fx: this.cfxG, smoke: this.smokeG, engage: this.engageG });
     // night: a screen tint, then additive lights in world space above it
@@ -61,7 +64,7 @@ export class View {
     this.selG = new PIXI.Graphics(); app.stage.addChild(this.selG);
     // static graphics are mirrored by sharing their geometry (redrawing one redraws all three)
     this.mirrorOf = (g) => { if (!this.wrap) return; const i = g.parent.getChildIndex(g); for (const k of [-1, 1]) { const m = new PIXI.Graphics(g.context); m.x = k * this.P; g.parent.addChildAt(m, i + 1); } };
-    for (const g of [this.borders, this.front, this.ruinsG]) this.mirrorOf(g);
+    for (const g of [this.borders, this.front, this.ruinsG, this.fwG]) this.mirrorOf(g);
     this.chunks = [];
     const ccols = Math.ceil(this.W / CH), crows = Math.ceil(this.H / CH);
     for (let cr = 0; cr < crows; cr++) for (let cc = 0; cc < ccols; cc++) {
@@ -309,6 +312,8 @@ export class View {
       s.body = new PIXI.Graphics(); s.addChild(s.body);
       s.label = new PIXI.Text({ text: this.S.defs.UNITS[u.type].glyph, style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 8, fontWeight: '700', fill: 0xffffff } });
       s.label.anchor.set(0.5); s.label.resolution = 3; s.addChild(s.label);
+      // illustrated artwork from the atlas (letter glyphs only as a fallback)
+      if (attachArt(s, this.atlas, u.type, this.S.defs.UNITS[u.type])) s.label.visible = false;
       s.dx = this.cx[u.tile]; s.dy = this.cy[u.tile]; s.heading = 0; s.utype = u.type;
       s.position.set(s.dx, s.dy);
       this.uLayer.addChild(s); this.unitSprites.set(u.id, s); s.key = '';
@@ -491,8 +496,10 @@ export class View {
     if (this.overlayAll || this.dirtyOverlay.size) this.redrawOverlay();
     if (this.bordersDirty) this.redrawBorders();
     if (this.ruinsDirty) this.redrawRuins();
+    { const k = (this.S.fwVersion || 0) + (this.S.lod === 'strategic' ? 's' : 'c'); if (k !== this.fwKey) { this.fwKey = k; drawFieldworks(this.fwG, this, this.S, this.S.lod === 'strategic'); } }
     S.onFrame?.(dt);
     let sx = 0, sy = 0;
+    if (this.S.shakeOff) this.shake = 0;
     if (this.shake > 0) { this.shake = Math.max(0, this.shake - dt); sx = (Math.random() - 0.5) * 10 * this.shake; sy = (Math.random() - 0.5) * 10 * this.shake; }
     const z = this.cam.z;
     this.world.scale.set(z); this.world.position.set(-this.cam.x * z + sx, -this.cam.y * z + sy);
@@ -536,20 +543,24 @@ export class View {
     this.hitGrid.clear();
     const badges = new Set();
     for (const [tileKey, arr] of stacks) {
-      // big stacks: draw up to 8 markers and a "+N" badge instead of an unreadable pile
-      if (arr.length > 8) {
+      // stacks: up to three pieces of artwork and a count badge with the stack's average strength
+      const MAXV = arr.length > 3 ? 3 : arr.length;
+      if (arr.length > 3) {
         badges.add(tileKey);
         let bt = this.stackBadges.get(tileKey);
-        if (!bt) { bt = new PIXI.Text({ text: '', style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 10, fontWeight: '700', fill: 0xffffff, stroke: { color: 0x0b1518, width: 3 } } }); bt.anchor.set(0.5); bt.resolution = 3; this.uLayer.addChild(bt); this.stackBadges.set(tileKey, bt); }
-        bt.text = '+' + (arr.length - 8); bt.position.set(this.cx[tileKey], this.cy[tileKey] - 16); bt.visible = this.inView(this.cx[tileKey], this.cy[tileKey]);
+        if (!bt) { bt = new PIXI.Container(); bt.g = new PIXI.Graphics(); bt.t = new PIXI.Text({ text: '', style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 9, fontWeight: '700', fill: 0xffffff } }); bt.t.anchor.set(0.5); bt.t.resolution = 4; bt.addChild(bt.g, bt.t); this.uLayer.addChild(bt); this.stackBadges.set(tileKey, bt); }
+        const own = arr[0].owner, hp = Math.round(arr.reduce((s2, x) => s2 + x.hp, 0) / arr.length), key = arr.length + '|' + hp + '|' + own;
+        if (bt.k !== key) { bt.k = key; bt.t.text = '×' + arr.length; bt.g.clear().roundRect(-9, -6, 18, 12, 3).fill({ color: 0x0b1518, alpha: 0.85 }).stroke({ width: 1.2, color: S.civColor(own) }).rect(-8, 6.5, 16, 2).fill({ color: 0x220d09 }).rect(-8, 6.5, (16 * hp) / 100, 2).fill({ color: hp > 40 ? 0x7ccf73 : 0xe0533b }); }
+        const sc = S.lod === 'strategic' ? Math.min(2.4, 1 / this.cam.z) : 1;
+        bt.scale.set(sc); bt.position.set(this.near(this.cx[tileKey], this.cxCenter || this.cx[tileKey]), this.cy[tileKey] - 14 * sc); bt.visible = this.inView(bt.x, bt.y);
       }
       arr.forEach((u, idx) => {
         const s = this.unitSprite(u); seen.add(u.id);
         let tx = this.cx[u.tile], ty = this.cy[u.tile];
         if (u.next >= 0) { const p = u.prog / 100; tx += (this.near(this.cx[u.next], tx) - tx) * p; ty += (this.cy[u.next] - ty) * p; }
-        const shown = Math.min(8, arr.length);
-        if (idx >= 8) { s.visible = false; s.dx = tx; s.dy = ty; return; }
-        if (arr.length > 1) { const a = (idx / shown) * Math.PI * 2, rr = Math.min(9, 3 + shown); tx += Math.cos(a) * rr; ty += Math.sin(a) * rr; }
+        const shown = MAXV;
+        if (idx >= MAXV) { s.visible = false; s.dx = tx; s.dy = ty; return; }
+        if (arr.length > 1) { const a = (idx / shown) * Math.PI * 2 + 0.6, rr = Math.min(7, 3 + shown * 1.4); tx += Math.cos(a) * rr; ty += Math.sin(a) * rr * 0.8; }
         if (this.wrap && Math.abs(tx - s.dx) > this.P / 2) s.dx += Math.round((tx - s.dx) / this.P) * this.P;   // crossed the seam
         const ox = s.dx, oy = s.dy;
         s.dx += (tx - s.dx) * k1; s.dy += (ty - s.dy) * k1;
@@ -560,8 +571,10 @@ export class View {
         s.visible = this.inView(s.dx, s.dy, 20);
         if (!s.visible) return;
         const sel = S.selUnits.has(u.id);
-        const key = [u.hp, u.sup, u.flags, sel, u.owner, S.lod, Math.round(s.heading * 4)].join('|');
-        if (key !== s.key) { s.key = key; drawUnitBody(s.body, u, def, S, sel, s.heading); s.label.visible = S.lod !== 'strategic'; }
+        updateArt(s, u, def, S, s.heading, S.lod === 'strategic');
+        const key = [u.hp, u.sup, u.flags, sel, u.owner, S.lod, s.art ? u.vet : Math.round(s.heading * 4), u.det, S.prefs?.factionPattern, S.prefs?.highContrast].join('|');
+        if (key !== s.key) { s.key = key; drawUnitBody(s.body, u, def, S, sel, s.heading, !!s.art); s.label.visible = !s.art && S.lod !== 'strategic'; }
+        if (s.art && S.lod === 'strategic') s.scale.set(Math.min(2.2, 0.9 / this.cam.z)); else if (s.scale.x !== 1) s.scale.set(1);
         // screen-space spatial index for O(1) hit-testing
         const [px, py] = this.worldToScreen(s.dx, s.dy);
         const ck = ((px / 32) | 0) + ',' + ((py / 32) | 0); const cell = this.hitGrid.get(ck); if (cell) cell.push(u.id); else this.hitGrid.set(ck, [u.id]);
@@ -573,6 +586,7 @@ export class View {
     this.combat.frame(dt, this.t);
     this.audio?.frame(dt);
     this.drawOverlay();
+    this.tacT = (this.tacT || 0) + dt; if (this.tacT > 0.25) { this.tacT = 0; this.drawTactical(); }
     this.drawCampaigns();
     this.drawFx(dt);
   }
@@ -588,6 +602,54 @@ export class View {
       }
     }
     return best;
+  }
+
+  // Front Lines and Tactical lenses (and a light version for a selected force): control zones,
+  // contested gaps, fortified positions, formation lines and objectives, convoys, units in trouble.
+  // Only what this client has been sent (fog-filtered by the server) is drawn.
+  drawTactical() {
+    const S = this.S, g = this.tacG; g.clear();
+    const lens = S.lens, D = S.defs; if (!D) return;
+    const selF = new Set([...S.selUnits].map((id) => S.units.get(id)?.form).filter(Boolean));
+    // convoys on the move always show their cargo and where they are going
+    for (const c of S.econ?.convoys || []) {
+      if (c.state === 'available') continue;
+      const s = this.unitSprites.get(c.truck); if (!s || !s.visible) continue;
+      const col = c.state === 'blocked' ? 0xe0533b : c.state === 'returning' ? 0x9aa58a : 0x8fd19e;
+      if (c.cargo > 0) g.rect(s.dx - 3, s.dy - 14, 6, 5).fill({ color: 0xb9a77a }).stroke({ width: 1, color: col });
+      if (c.dest >= 0 && (S.selUnits.has(c.truck) || lens === 'front' || lens === 'tactical')) { const dx = this.near(this.cx[c.dest], s.dx); for (let k = 0; k < 8; k++) { const a = k / 8, b = (k + 0.5) / 8; g.moveTo(s.dx + (dx - s.dx) * a, s.dy + (this.cy[c.dest] - s.dy) * a).lineTo(s.dx + (dx - s.dx) * b, s.dy + (this.cy[c.dest] - s.dy) * b); } g.stroke({ width: 1.2, color: col, alpha: 0.8 }); g.rect(dx - 3, this.cy[c.dest] - 3, 6, 6).stroke({ width: 1.4, color: col }); }
+    }
+    if (lens !== 'front' && lens !== 'tactical' && !selF.size) return;
+    const hexAt = (t, col, a) => g.poly(this.hexPoints(t, -1)).fill({ color: col, alpha: a });
+    if (lens === 'front') {
+      const mine = new Map(), theirs = new Map();
+      for (const u of S.units.values()) {
+        const d = D.UNITS[u.type]; if (d.air || d.civilian || u.hp < 15) continue;
+        const m = u.owner === S.civId ? mine : S.civInfo[u.owner]?.rel?.state === 'war' || S.civInfo[u.owner]?.rebel ? theirs : null; if (!m) continue;
+        m.set(u.tile, 2); for (let k = 0; k < 6; k++) { const n = this.nb(u.tile, k); if (n >= 0 && !m.has(n)) m.set(n, 1); }
+      }
+      for (const [t, w] of mine) if (this.inView(this.cx[t], this.cy[t])) hexAt(t, theirs.has(t) ? 0xf0b54a : S.civColor(S.civId), theirs.has(t) ? 0.32 : w === 2 ? 0.22 : 0.1);
+      for (const [t, w] of theirs) if (!mine.has(t) && this.inView(this.cx[t], this.cy[t])) hexAt(t, 0xd0533b, w === 2 ? 0.28 : 0.12);
+      for (const f of S.fw?.values() || []) if (f.p >= 100 && this.inView(this.cx[f.t], this.cy[f.t])) g.poly(this.hexPoints(f.t, -2)).stroke({ width: 1.6, color: f.o === S.civId ? 0x8fd19e : 0xd0533b, alpha: 0.9 });
+    }
+    // formation lines (selected ones always; all of them on the tactical/front lenses)
+    for (const f of S.econ?.formations || []) {
+      if (!(lens === 'tactical' || lens === 'front' || selF.has(f.id))) continue;
+      const slots = Object.values(f.slots || {}); if (!slots.length) continue;
+      for (const t of new Set(slots)) g.poly(this.hexPoints(t, -3)).stroke({ width: 1.2, color: f.behavior === 'hold' ? 0x8fd19e : f.behavior === 'attackMove' ? 0xf0b54a : 0x6fa8dc, alpha: 0.85 });
+      const [a, b] = f.line || []; if (a >= 0 && b >= 0) g.moveTo(this.cx[a], this.cy[a]).lineTo(this.near(this.cx[b], this.cx[a]), this.cy[b]).stroke({ width: 1.4, color: 0xf1c75b, alpha: 0.6 });
+    }
+    if (lens === 'tactical' || lens === 'front') {
+      // army objectives and defensive zones
+      for (const a of S.econ?.armies || []) { const o = a.order || {}; if (o.tile >= 0) { if (o.kind === 'defend') g.circle(this.cx[o.tile], this.cy[o.tile], (o.radius || 4) * 18).stroke({ width: 1.4, color: 0x6fa8dc, alpha: 0.7 }); else g.circle(this.cx[o.tile], this.cy[o.tile], 7).stroke({ width: 2, color: 0xf0b54a }); } }
+      for (const c of S.econ?.caches || []) g.rect(this.cx[c.t] - 4, this.cy[c.t] - 4, 8, 8).fill({ color: 0x8fd19e, alpha: 0.5 }).stroke({ width: 1, color: 0x0b1518 });
+      // own units in trouble
+      for (const u of S.units.values()) {
+        if (u.owner !== S.civId) continue; const s = this.unitSprites.get(u.id); if (!s || !s.visible) continue;
+        if (u.flags & 4) g.circle(s.dx, s.dy, 13).stroke({ width: 1.6, color: 0xe0533b, alpha: 0.9 });
+        else if (u.supp >= 60) g.circle(s.dx, s.dy, 13).stroke({ width: 1.6, color: 0xf0b54a, alpha: 0.9 });
+      }
+    }
   }
 
   drawOverlay() {
@@ -648,7 +710,25 @@ export class View {
     const f = this.fxG; f.clear();
     this.pings = this.pings.filter((p) => (p.t -= dt) > 0);
     for (const p of this.pings) { const a = p.t / p.max; f.circle(this.cx[p.tile], this.cy[p.tile], R * (p.radius || 2) * (1.4 - a * 0.4)).stroke({ width: 3, color: p.color, alpha: a }); }
-    // right-drag battle line preview
+    // deployment preview: ghost slots with per-hex counts (colour by density), the facing,
+    // ranks, impassable hexes; the same planner the server will run on commit
+    const dp = this.S.deploy;
+    if (dp && dp.plan) {
+      const p = dp.plan, ln = p.line || [];
+      if (ln.length) { f.moveTo(this.cx[ln[0]], this.cy[ln[0]]); for (const t of ln) f.lineTo(this.near(this.cx[t], this.cx[ln[0]]), this.cy[t]); f.stroke({ width: 2, color: 0xf1c75b, alpha: 0.8 }); }
+      for (const [t, n] of p.perHex) {
+        const x = this.near(this.cx[t], this.cxCenter || this.cx[t]), y = this.cy[t];
+        const col = n >= 4 ? 0xe0533b : n >= 2 ? 0xf0b54a : 0x8fd19e;
+        f.poly(this.hexPoints(t, -2).map((v, i) => (i % 2 ? v : v + (x - this.cx[t])))).fill({ color: col, alpha: 0.18 }).stroke({ width: 1.4, color: col, alpha: 0.9 });
+        for (let k = 0; k < Math.min(n, 9); k++) { const a = (k / Math.min(n, 9)) * Math.PI * 2 - Math.PI / 2, rr = n > 1 ? 4.5 : 0; f.circle(x + Math.cos(a) * rr, y + Math.sin(a) * rr, 1.8).fill({ color: col }); }
+      }
+      for (const t of p.invalid) { const x = this.cx[t], y = this.cy[t]; f.moveTo(x - 4, y - 4).lineTo(x + 4, y + 4).moveTo(x + 4, y - 4).lineTo(x - 4, y + 4).stroke({ width: 2, color: 0xe0533b }); }
+      if (ln.length) {
+        const mid = ln[Math.floor(ln.length / 2)], mx = this.cx[mid], my = this.cy[mid], [fx, fy] = p.facing || [0, -1];
+        f.moveTo(mx, my).lineTo(mx + fx * 18, my + fy * 18).stroke({ width: 2.4, color: 0xf1c75b });
+        f.poly([mx + fx * 24, my + fy * 24, mx + fx * 16 - fy * 5, my + fy * 16 + fx * 5, mx + fx * 16 + fy * 5, my + fy * 16 - fx * 5]).fill({ color: 0xf1c75b });
+      }
+    }
     const dl = this.S.dragLine;
     if (dl) {
       f.moveTo(dl.x0, dl.y0).lineTo(dl.x1, dl.y1).stroke({ width: 2, color: 0xf1c75b, alpha: 0.9 });

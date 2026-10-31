@@ -4,6 +4,8 @@ import { Net } from './net.js';
 import { View } from './view.js';
 import { Hud } from './hud.js';
 import { AudioManager } from './audio/AudioManager.js';
+import { planDeployment, deployRole } from '/shared/deploy.js';
+import { loadPrefs, savePrefs, applyPrefs, GRAPHICS } from './prefs.js';
 
 const $ = (id) => document.getElementById(id);
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }, del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } } };
@@ -12,7 +14,7 @@ const store = { get(k) { try { return localStorage.getItem(k); } catch { return 
 let audio;
 const S = {
   ready: false, defs: null, civId: -1, civInfo: [], W: 128, H: 128, lens: 'terrain', mode: null, hover: -1, formation: 'line', lod: 'city', night: 0,
-  selUnits: new Set(), selBuilding: null, selBuildings: new Set(), batchCount: 4, batchMode: 'total', units: new Map(), paths: {}, buildings: new Map(), cities: new Map(), ruins: new Map(), traffic: [], trafficTile: new Map(),
+  selUnits: new Set(), selBuilding: null, selBuildings: new Set(), batchCount: 4, batchMode: 'total', deploy: null, deployOpts: { mode: 'line', density: 'auto', depth: 'auto', behavior: 'defend', reverse: false, fortify: false }, prefs: loadPrefs(), units: new Map(), paths: {}, buildings: new Map(), cities: new Map(), ruins: new Map(), traffic: [], trafficTile: new Map(),
   cityAt: new Map(), buildingAtTile: new Map(), buildingTiles: new Set(), buildingsVersion: 0, ruinsVersion: 0, econ: null, log: [], time: 0, lightsList: [],
   civColor(id) { return (this.civInfo[id] && this.civInfo[id].color) ?? 0x888888; },
 };
@@ -58,10 +60,34 @@ async function ensureNet() {
 }
 const seedVal = () => { const v = $('seed').value.trim(); return v === '' ? undefined : +v; };
 const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked, style: $('worldStyle').value || undefined, cataclysm: $('cataclysm').checked, cataclysmFreq: $('cataclysmFreq').value });
-$('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, difficulty: $('aiDifficulty').value, name: playerName(), ...worldOpts() }); });
+// ---- lobby: rival difficulty with full disclosure of what each level does
+const DIFF_TEXT = {
+  easy: ['Gentle', 'Basic', 'Simple', 'Short campaigns, limited reserves, slow to adapt'],
+  normal: ['Fair benchmark', 'Competent', 'Balanced', 'Stable objectives, moderate adaptation'],
+  hard: ['Demanding', 'Strong', 'Counter-aware', 'Long campaigns, deliberate reserves, better scouting'],
+  expert: ['Very demanding', 'Advanced', 'Counter-aware', 'Coordinated offense and defense, raids on exposed logistics'],
+  brutal: ['Maximum', 'Advanced', 'Adaptive', 'Multi-objective campaigns, aggressive adaptation'],
+};
+function renderDifficulty() {
+  const d = $('aiDifficulty').value, fair = $('fairPlay').checked, t = DIFF_TEXT[d] || DIFF_TEXT.normal;
+  const adv = d === 'brutal' && !fair ? 'Economy +15%, research +10%, army +20% (disclosed to every player)' : 'None';
+  $('diffName').textContent = { easy: 'Relaxed', normal: 'Standard', hard: 'Hard', expert: 'Expert', brutal: 'Brutal' }[d];
+  $('diffFair').textContent = adv === 'None' ? '· fair play' : '· with economic help';
+  $('diffInfo').innerHTML = `<dl class="kv"><dt>Challenge</dt><dd>${t[0]}</dd><dt>Strategic planning</dt><dd>${t[1]}</dd><dt>Army composition</dt><dd>${t[2]}</dd><dt>Military coordination</dt><dd>${t[3]}</dd><dt>Economic advantages</dt><dd class="${adv === 'None' ? 'good' : 'warn'}">${adv}</dd></dl>`;
+  for (const b of document.querySelectorAll('#diffSeg button')) b.classList.toggle('on', b.dataset.diff === d);
+  const n = +$('aiCount').value || 1, rows = $('rivalRows'), cur = rows.children.length;
+  if (cur !== n) rows.innerHTML = Array.from({ length: n }, (_, i) => `<div class="rival"><span>Rival ${i + 1}</span><select data-rival-p="${i}"><option value="">Temperament: shared</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select><select data-rival-d="${i}"><option value="">Difficulty: shared</option><option value="easy">Relaxed</option><option value="normal">Standard</option><option value="hard">Hard</option><option value="expert">Expert</option><option value="brutal">Brutal</option></select></div>`).join('');
+}
+function rivalSettings() { return [...document.querySelectorAll('#rivalRows .rival')].map((r) => ({ personality: r.querySelector('[data-rival-p]').value || undefined, difficulty: r.querySelector('[data-rival-d]').value || undefined })); }
+$('diffSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-diff]'); if (!b) return; $('aiDifficulty').value = b.dataset.diff; renderDifficulty(); });
+$('fairPlay').addEventListener('change', renderDifficulty);
+$('aiCount').addEventListener('change', renderDifficulty);
+renderDifficulty();
+
+$('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, rivals: rivalSettings(), name: playerName(), ...worldOpts() }); });
 $('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
 $('btnSandbox').addEventListener('click', async () => { lobbyStatus('Preparing the combat sandbox…'); await ensureNet(); net.send({ t: 'create', mode: 'sandbox', name: playerName(), seed: seedVal() }); });
-$('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, name: playerName(), ...worldOpts() }); });
+$('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, name: playerName(), ...worldOpts() }); });
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }
 $('btnStartNow').addEventListener('click', () => net.send({ t: 'start' }));
 $('btnLeaveRoom').addEventListener('click', () => location.reload());
@@ -73,9 +99,9 @@ function onMessage(m) {
   switch (m.t) {
     case 'error': lobbyStatus(m.error); if (S.ready) hud.toast({ text: m.error, kind: 'error', level: 'major' }); if (/no longer exists|Invalid session/.test(m.error)) { store.del('se.session'); $('btnRejoin').hidden = true; } break;
     case 'joined': net.session = { match: m.match, token: m.token, spectator: !!m.spectator }; store.set('se.session', JSON.stringify(net.session)); if (m.status === 'lobby') showScreen('room'); break;
-    case 'room': showScreen('room'); $('roomName').textContent = m.name; $('roomCode').textContent = m.match; $('roomSlots').innerHTML = m.slots.map((s) => `<li><span>${s.human ? (s.taken ? s.name.replace(/</g, '&lt;') : 'Waiting for player…') : 'AI empire'}</span><span class="muted">${s.human ? (s.taken ? 'ready' : 'open') : ''}</span></li>`).join(''); break;
+    case 'room': showScreen('room'); $('roomName').textContent = m.name; $('roomCode').textContent = m.match; $('roomSlots').innerHTML = m.slots.map((s) => `<li><span>${s.human ? (s.taken ? s.name.replace(/</g, '&lt;') : 'Waiting for player…') : `AI empire${s.personality ? ` (${s.personality})` : ''}`}</span><span class="muted">${s.human ? (s.taken ? 'ready' : 'open') : `${({ easy: 'Relaxed', normal: 'Standard', hard: 'Hard', expert: 'Expert', brutal: 'Brutal' })[s.difficulty] || 'Standard'} · ${s.fairPlay === false && s.difficulty === 'brutal' ? 'economic help' : 'fair play'}`}</span></li>`).join(''); break;
     case 'welcome': startGame(m); break;
-    case 's': applySnapshot(m); break;
+    case 's': if (!S.ready) (S.early || (S.early = [])).push(m); else applySnapshot(m); break;   // snapshots that arrive while the renderer loads are applied once it is ready
     case 'note': onNote(m); break;
     case 'over': gameOver(m); break;
     default: break;
@@ -93,7 +119,7 @@ async function startGame(m) {
   S.civInfo = m.civs.map((c) => ({ ...c }));
   const N = S.W * S.H;
   S.terr = new Uint8Array(N).fill(255); S.color = new Uint32Array(N); S.res = new Uint8Array(N); S.road = new Uint32Array(N); S.flags = new Uint8Array(N);
-  S.fdir = new Int8Array(N).fill(-1); S.fb = new Uint8Array(N); S.owner = new Int8Array(N).fill(-1); S.stab = new Int8Array(N).fill(-1); S.vis = new Uint8Array(N); S.supply = new Uint8Array(N);
+  S.fdir = new Int8Array(N).fill(-1); S.fb = new Uint8Array(N); S.owner = new Int8Array(N).fill(-1); S.stab = new Int8Array(N).fill(-1); S.vis = new Uint8Array(N); S.supply = new Uint8Array(N); S.urban = new Uint8Array(N); S.fw = new Map();
   for (const k of ['units', 'buildings', 'cities', 'ruins', 'cityAt', 'buildingAtTile']) S[k].clear();
   S.buildingTiles.clear(); S.selUnits.clear(); S.selBuilding = null; S.time = m.time;
   showScreen('game');
@@ -106,6 +132,7 @@ async function startGame(m) {
   }
   view.centerOn(m.start, S.spectator ? 0.7 : 1.15);
   S.ready = true;
+  for (const m2 of S.early || []) applySnapshot(m2); S.early = null;
   hud.specbar(); hud.sandboxPanel();
   if (S.sandbox) hud.toast({ text: 'Combat sandbox: pick a scenario on the right, or spawn forces for either side and fight.', kind: 'info', level: 'minor' });
   if (S.spectator) hud.toast({ text: 'Spectating: the whole continent is revealed. Pick an empire to follow below; [ and ] cycle, P pauses, , and . change speed, V toggles that empire\'s fog.', kind: 'info', level: 'minor' });
@@ -148,11 +175,11 @@ function applySnapshot(m) {
   if (m.vis) for (const i of decodeBits(m.vis, S.vis)) view.dirtyOverlay.add(i);
   const seen = new Set();
   for (const a of m.units) {
-    const [id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit] = a;
+    const [id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit, form, det] = a;
     seen.add(id);
     const u = S.units.get(id);
-    if (u) Object.assign(u, { type, tile, next, prog, hp, sup, flags, owner, stance, cstat, tgt, supp, morale, vet, refit });
-    else S.units.set(id, { id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit });
+    if (u) Object.assign(u, { type, tile, next, prog, hp, sup, flags, owner, stance, cstat, tgt, supp, morale, vet, refit, form, det });
+    else S.units.set(id, { id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit, form, det });
   }
   for (const id of S.units.keys()) if (!seen.has(id)) { S.units.delete(id); S.selUnits.delete(id); }
   S.paths = m.paths || {};
@@ -162,6 +189,9 @@ function applySnapshot(m) {
 
 function applyEcon(m) {
   S.econ = m.econ;
+  // field trenches (authoritative) and the developed city footprint
+  if (m.fw) { const k = m.fw.length + ':' + m.fw.reduce((s, f) => s + f[0] * 7 + f[4] + f[5] * 3, 0); if (k !== S.fwKey) { S.fwKey = k; S.fw = new Map(m.fw.map((f) => [f[0], { t: f[0], o: f[1], type: f[2] ? 'reinforced' : 'basic', dir: f[3], p: f[4], hp: f[5], st: f[6] }])); S.fwVersion = (S.fwVersion || 0) + 1; } }
+  if (m.urban) { decodeBits(m.urban, S.urban); S.urbanVersion = (S.urbanVersion || 0) + 1; }
   for (const i of decodeBits(m.supply, S.supply)) if (S.lens === 'supply') view.dirtyOverlay.add(i);
   const got = new Set(m.buildings.map((b) => b.id));
   let bchg = false;
@@ -244,6 +274,19 @@ const actions = {
   },
   act(a) {
     const ids = mineSel();
+    if (a === 'fortify') return actions.fortifyPreview(ids);
+    if (a === 'supply') {
+      const forms = new Set(ids.map((id) => S.units.get(id)?.form).filter(Boolean));
+      const c = forms.size === 1 ? { c: 'supplyRun', formation: [...forms][0], preset: hud.preset || 'auto' } : { c: 'supplyRun', units: ids.filter((id) => !S.defs.UNITS[S.units.get(id)?.type]?.civilian), preset: hud.preset || 'auto' };
+      return actions.cmd(c).then((r) => { if (r.supplyRun) hud.toast({ text: `Supply truck dispatched: ${Object.entries(r.supplyRun.cargo).map(([k, v]) => `${Math.round(v)} ${S.defs.GOOD_NAMES[k].toLowerCase()}`).join(', ')}.`, kind: 'unit', level: 'info' }); });
+    }
+    if (a === 'spread') {
+      // spread a stack over a short line through its hex, perpendicular to the threat side
+      const u = S.units.get(ids[0]); if (!u) return;
+      const q = u.tile % S.W, r = (u.tile / S.W) | 0, n = Math.max(2, Math.ceil(ids.length / 2));
+      const a0 = r * S.W + ((q - Math.floor(n / 2) + S.W) % S.W), b0 = r * S.W + ((q + Math.ceil(n / 2)) % S.W);
+      return actions.cmd({ c: 'deploy', units: ids, line: [a0, b0], density: 'spread', behavior: 'defend' });
+    }
     if (a === 'stop') actions.cmd({ c: 'stop', units: ids });
     if (a === 'hold') { actions.cmd({ c: 'hold', units: ids }); hud.toast({ text: `${ids.length} unit${ids.length > 1 ? 's' : ''} holding position.`, kind: 'unit', level: 'info' }); }
     if (a === 'withdraw') { actions.cmd({ c: 'withdraw', units: ids }).then((r) => { if (!r.error) hud.toast({ text: 'Withdrawing toward the nearest friendly city.', kind: 'unit', level: 'info' }); }); }
@@ -268,6 +311,33 @@ const actions = {
     const r = await actions.cmd({ c: 'army', op: 'create', units: ids });
     if (!r.error) { hud.toast({ text: `Army formed with ${ids.length} units.`, kind: 'unit', level: 'minor' }); hud.tab = ''; document.querySelector('[data-tab=armies]').click(); }
   },
+  // ---- deployment, formations, fortification
+  deploy(line, { queue, attackMove } = {}) {
+    const o = S.deployOpts, units = mineSel();
+    actions.cmd({ c: 'deploy', units, line, mode: o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, behavior: attackMove ? 'attackMove' : o.behavior, reverse: o.reverse, queue: !!queue, fortify: o.fortify ? (S.econ?.fortifyTypes?.includes('reinforced') ? 'reinforced' : 'basic') : false })
+      .then((r) => {
+        const d = r.deploy; if (!d) return;
+        if (d.queued) return hud.toast({ text: `Deployment queued for ${d.queued} units.`, kind: 'unit', level: 'info' });
+        const parts = [`${d.placed + d.partial} deploying`]; if (d.overflow?.length) parts.push(`${d.overflow.length} did not fit (no room on that line)`); if (d.unreachable) parts.push(`${d.unreachable} cannot reach`);
+        hud.toast({ text: `Line ${d.label === 'dense' ? '(dense: vulnerable to artillery) ' : ''}— ${parts.join(', ')}.`, kind: d.overflow?.length || d.unreachable ? 'warning' : 'unit', level: d.overflow?.length ? 'minor' : 'info' });
+      });
+    view.ping(line[1], 0.5, 0xf1c75b);
+  },
+  formationOp(op, id) {
+    if (op === 'reinforce') return actions.cmd({ c: 'formation', id, op: 'reinforce', units: mineSel().filter((x) => !S.units.get(x)?.form) }).then((r) => { if (r.reinforce) hud.toast({ text: `${r.reinforce.placed} units reinforce the line${r.reinforce.overflow ? `, ${r.reinforce.overflow} found no room` : ''}.`, kind: 'unit', level: 'info' }); });
+    return actions.cmd({ c: 'formation', id, op });
+  },
+  selectFormation(id) { const f = (S.econ?.formations || []).find((x) => x.id === id); if (!f) return; S.selUnits.clear(); for (const u of f.units) S.selUnits.add(u); S.selBuilding = null; hud.closeWorkspace(); hud.selection(); const u = S.units.get(f.units[0]); if (u) view.centerOn(u.tile); },
+  pickUnit(id) { S.selUnits.clear(); S.selUnits.add(id); hud.selHtml = ''; hud.selection(); },
+  async fortifyPreview(ids) {
+    const r = await actions.cmd({ c: 'fortifyPreview', units: ids, type: S.econ?.fortifyTypes?.includes('reinforced') ? 'reinforced' : 'basic' });
+    if (!r.fortify) return;
+    hud.fortifyPanel(r.fortify, () => actions.cmd({ c: 'fortify', units: ids, type: S.econ?.fortifyTypes?.includes('reinforced') ? 'reinforced' : 'basic' }).then((x) => { if (x.fortify) hud.toast({ text: `Digging ${x.fortify.placed} trench segment${x.fortify.placed === 1 ? '' : 's'} (${x.fortify.type === 'reinforced' ? 'reinforced' : 'earthworks'}): about ${x.fortify.seconds}s each.`, kind: 'build', level: 'info' }); }));
+  },
+  // ---- preferences
+  prefs() { return S.prefs; },
+  pref(k, v) { S.prefs[k] = v; savePrefs(S.prefs); applyPrefs(S.prefs); syncPrefs(); },
+  inBattle() { return (S.battles || []).some((b) => b.mine?.n > 0); },
   async batchTrain(unit) {
     const ids = [...S.selBuildings].filter((id) => S.buildings.get(id)?.o === S.civId);
     const per = S.batchMode === 'per';
@@ -315,6 +385,7 @@ const actions = {
     if (op === 'withdraw') { const ids = [...S.units.values()].filter((u) => u.owner === S.civId && hexDistC(u.tile, b.t) <= 6).map((u) => u.id); actions.cmd({ c: 'withdraw', units: ids }); }
     if (op === 'hold') { const ids = [...S.units.values()].filter((u) => u.owner === S.civId && hexDistC(u.tile, b.t) <= 6).map((u) => u.id); actions.cmd({ c: 'hold', units: ids }); }
     if (op === 'close') { hud.battleId = null; hud.battlePanel(); }
+    if (op === 'command') hud.openWorkspace('military');
   },
   selectType(type, onScreen) { S.selUnits.clear(); selectType(type, onScreen); hud.selection(); },
   narrowTo(type) { for (const id of [...S.selUnits]) if (S.units.get(id)?.type !== type) S.selUnits.delete(id); hud.selection(); },
@@ -388,7 +459,7 @@ function bindInput() {
     S.hover = view.tileAt(wx, wy);
     if (rdrag) {
       if (Math.hypot(e.offsetX - rdrag.x, e.offsetY - rdrag.y) > 14 && mineSel().length && !S.spectator) rdrag.moved = true;
-      if (rdrag.moved) S.dragLine = linePreview(rdrag.wx, rdrag.wy, wx, wy, mineSel().length);
+      if (rdrag.moved) { rdrag.end = view.tileAt(wx, wy); updateDeployPreview(rdrag.tile, rdrag.end, e.altKey); }
       return;
     }
     if (!drag && !stroke) { const hu = view.unitAtScreen(e.offsetX, e.offsetY); S.hoverUnit = hu ? hu.id : null; }
@@ -406,13 +477,15 @@ function bindInput() {
     if (pan) { pan = null; return; }
     if (rdrag && e.button === 2) {
       const r = rdrag; rdrag = null;
-      if (r.moved && S.dragLine) {
+      if (r.moved && S.deploy) {
         const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
-        const b = view.tileAt(wx, wy); S.dragLine = null;
-        if (r.tile >= 0 && b >= 0) { const units = mineSel(); actions.cmd({ c: 'move', units, line: [r.tile, b], attackMove: e.altKey, formation: S.formation, queue: e.shiftKey }); view.ping(b, 0.5, 0xf1c75b); }
+        const b = view.tileAt(wx, wy);
+        if (r.tile >= 0 && b >= 0 && !r.cancelled) actions.deploy([r.tile, b], { queue: e.shiftKey, attackMove: e.altKey });
+        S.deploy = null; hud.deployBar();
         return;
       }
-      S.dragLine = null;
+      S.deploy = null; S.dragLine = null;
+      if (r.cancelled) return;
       rightClick(e); return;
     }
     if (stroke) { const s = stroke; stroke = null; if (!s.moved && S.hover >= 0) { S.mode.points.push(S.hover); requestPreview(); hud.roadPanel(); } return; }
@@ -440,7 +513,18 @@ function bindInput() {
     keys.add(e.key.toLowerCase());
     const k = e.key.toLowerCase();
     if (S.spectator && ['a', 's', 'f', 'g', 'r'].includes(k)) return;   // WASD only pans while spectating
-    if (k === 'escape') { setMode(null); $('menu').hidden = true; $('alerts').hidden = true; hud.toggleKey(false); }
+    if (k === 'tab' && rdrag && S.deploy) { e.preventDefault(); S.deployOpts.reverse = !S.deployOpts.reverse; updateDeployPreview(rdrag.tile, rdrag.end, false); return; }
+    if (k === 'escape') {
+      if (rdrag && S.deploy) { rdrag.cancelled = true; S.deploy = null; hud.deployBar(); return; }
+      if (!$('menu').hidden) { $('menu').hidden = true; return; }
+      if (S.mode) { setMode(null); return; }
+      if (hud.escape()) return;
+      if (S.selUnits.size || S.selBuilding != null) { S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear(); hud.selection(); return; }
+    }
+    if ((k === '/' || (k === 'k' && (e.ctrlKey || e.metaKey)))) { e.preventDefault(); openSearch(); return; }
+    if (k === 't' && !e.ctrlKey && !e.metaKey) { hud.ws === 'research' ? hud.closeWorkspace() : hud.openWorkspace('research'); return; }
+    if (k === 'b' && !e.ctrlKey && !e.metaKey && !S.spectator) { hud.toggleBuild(); return; }
+    if (k === 'f' && e.shiftKey && S.selUnits.size) { actions.act('fortify'); return; }
     if (k === 'a' && S.selUnits.size) actions.act('amove');
     if (k === 's' && S.selUnits.size) actions.act('stop');
     if (k === 'f') { if (mineSel().some((id) => S.units.get(id)?.type === 'colonist')) actions.act('found'); else if (S.selUnits.size) actions.cycleFormation(); }
@@ -453,7 +537,7 @@ function bindInput() {
     if (k === '-') view.zoomAt(0.87, view.app.screen.width / 2, view.app.screen.height / 2);
     if (k === 'k') hud.toggleKey();
     if (k === 'm') $('btnSound').click();
-    if (k === 'l') { const order = ['terrain', 'territory', 'supply', 'stability', 'traffic']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
+    if (k === 'l') { const order = ['terrain', 'territory', 'supply', 'stability', 'traffic', 'front', 'tactical']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
     if (k === 'backspace' && S.mode?.kind === 'road') actions.road('undo');
     if (k === 'enter' && S.mode?.kind === 'road') actions.road('commit');
   });
@@ -468,11 +552,36 @@ function bindInput() {
     view.clamp();
     hud.seismo(dt);
     hud.clock(S.time, net?.rtt);
-    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); }
+    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); if (Math.random() < 0.25) hud.checkTips(); }
     mmTick += dt; if (mmTick > 1) { mmTick = 0; hud.minimap(view); }
   };
-  $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const x = (ev.offsetX / 192) * view.pw, y = (ev.offsetY / 168) * view.ph; view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
-  document.querySelectorAll('.lenses button').forEach((b) => b.addEventListener('click', () => setLens(b.dataset.lens)));
+  $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const cvs = $('minimap'), x = (ev.offsetX / cvs.clientWidth) * view.pw, y = (ev.offsetY / cvs.clientHeight) * view.ph; view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
+  document.querySelectorAll('.lenses button').forEach((b) => b.addEventListener('click', () => { setLens(b.dataset.lens); $('lensPop').hidden = true; }));
+  $('lensBtn').addEventListener('click', () => { $('lensPop').hidden = !$('lensPop').hidden; });
+  // minimap: compact -> expanded -> hidden (a small button brings it back)
+  $('mmSize').addEventListener('click', () => { const order = ['compact', 'expanded', 'hidden']; actions.pref('minimap', order[(order.indexOf(S.prefs.minimap) + 1) % 3]); $('mmShow').hidden = S.prefs.minimap !== 'hidden'; });
+  $('mmShow').addEventListener('click', () => { actions.pref('minimap', 'compact'); $('mmShow').hidden = true; });
+  $('mmShow').hidden = S.prefs.minimap !== 'hidden';
+  // search palette
+  $('btnSearch').addEventListener('click', openSearch);
+  $('searchInput').addEventListener('input', (e) => renderSearch(e.target.value));
+  $('searchInput').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchSel = Math.max(0, Math.min(searchList.length - 1, searchSel + (e.key === 'ArrowDown' ? 1 : -1))); [...$('searchResults').children].forEach((li, i) => li.classList.toggle('on', i === searchSel)); }
+    else if (e.key === 'Enter') { const r = searchList[searchSel]; $('search').hidden = true; if (r) r.go(); }
+    else if (e.key === 'Escape') { $('search').hidden = true; }
+  });
+  $('searchResults').addEventListener('click', (e) => { const li = e.target.closest('[data-i]'); if (!li) return; $('search').hidden = true; searchList[+li.dataset.i]?.go(); });
+  $('search').addEventListener('click', (e) => { if (e.target.id === 'search') $('search').hidden = true; });
+  // preferences
+  for (const el of document.querySelectorAll('[data-pref]')) el.addEventListener('input', () => { const k = el.dataset.pref; actions.pref(k, el.type === 'checkbox' ? el.checked : el.type === 'range' ? +el.value : el.value); });
+  // deployment toolbar
+  $('deployBar').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-dopt]'); if (!b) return;
+    const k = b.dataset.dopt, v = b.dataset.v;
+    if (k === 'reverse' || k === 'fortify') S.deployOpts[k] = !S.deployOpts[k]; else S.deployOpts[k] = v;
+    hud.deployBar(true);
+  });
+  applyPrefs(S.prefs); syncPrefs();
   // building finder: classes first, then every building type
   const fsel = $('findType');
   const classes = { 'class:milprod': 'Military production', 'class:defense': 'Defenses', 'class:power': 'Power', 'class:research': 'Research', 'class:industry': 'Industry', 'class:food': 'Food', 'class:logistics': 'Logistics' };
@@ -488,7 +597,7 @@ function bindInput() {
   $('btnQuit').addEventListener('click', () => { store.del('se.session'); location.reload(); });
 }
 
-function setLens(l) { S.lens = l; view.overlayAll = true; document.querySelectorAll('.lenses button').forEach((b) => b.classList.toggle('on', b.dataset.lens === l)); hud.minimap(view); }
+function setLens(l) { S.lens = l; view.overlayAll = true; document.querySelectorAll('.lenses button').forEach((b) => b.classList.toggle('on', b.dataset.lens === l)); $('lensName').textContent = { terrain: 'Terrain', territory: 'Borders', supply: 'Supply', stability: 'Stability', traffic: 'Traffic', tactical: 'Tactical', front: 'Front lines' }[l] || l; hud.minimap(view); }
 function drawBox(d) { const g = view.selG; g.clear(); g.rect(Math.min(d.x, d.x1), Math.min(d.y, d.y1), Math.abs(d.x1 - d.x), Math.abs(d.y1 - d.y)).fill({ color: 0xf1c75b, alpha: 0.08 }).stroke({ width: 1, color: 0xf1c75b, alpha: 0.8 }); }
 
 // Selected buildings: S.selBuildings holds them all; S.selBuilding stays the primary one so every
@@ -567,7 +676,7 @@ async function leftClick(e) {
   const now = performance.now();
   const hb = !u && tile >= 0 ? S.buildingAtTile.get(tile) : null;
   const ckey = u ? u.type : hb ? 'b:' + hb.ty : null;
-  const dbl = lastClick && now - lastClick.t < 380 && Math.hypot(e.offsetX - lastClick.x, e.offsetY - lastClick.y) < 10 && ckey && lastClick.type === ckey;
+  const dbl = lastClick && now - lastClick.t < 500 && Math.hypot(e.offsetX - lastClick.x, e.offsetY - lastClick.y) < 10 && ckey && lastClick.type === ckey;
   lastClick = { t: now, x: e.offsetX, y: e.offsetY, type: ckey };
   // buildings: double-click = every one of that type on screen (Ctrl/Cmd: all), Shift-click = add/remove
   if (hb && hb.o === S.civId && !S.spectator) {
@@ -654,6 +763,58 @@ function attackTarget(target, focus, tile) {
 }
 
 // Battle line preview for a right-drag: where each selected unit will stand and which way it faces.
+// Live deployment preview: the same planner the server runs, fed with what this client knows.
+function deployEnv(sel) {
+  const D = S.defs, selSet = new Set(sel.map((u) => u.id));
+  return {
+    W: S.W, H: S.H, wrap: S.wrap,
+    passable: (t, u) => {
+      const ter = S.terr[t]; if (ter === 255 || !D.TERRAIN[ter] || D.TERRAIN[ter].water || !Number.isFinite(D.TERRAIN[ter].move ?? Infinity)) return false;
+      if (u && D.MOVE[D.UNITS[u.type]?.move]?.terrain && !Number.isFinite(D.MOVE[D.UNITS[u.type].move].terrain[ter] ?? 1)) return false;
+      return true;
+    },
+    capacity: (t) => {
+      const b = S.buildingAtTile.get(t); if (b && b.ty === 'town') return 14;
+      let rt = 0; const p = S.road[t]; for (let d = 0; d < 6; d++) rt = Math.max(rt, (p >> (d * 4)) & 7);
+      const wr = 0; return rt ? Math.max(2, (D.ROAD_TYPES[rt]?.capacity || 6) - wr) : 6;
+    },
+    occupied: (t) => { let n = 0; for (const u of S.units.values()) if (u.tile === t && u.owner === S.civId && !selSet.has(u.id) && !D.UNITS[u.type].air && !S.paths[u.id]) n++; return n; },
+  };
+}
+function updateDeployPreview(a, b, attackMove) {
+  if (!(a >= 0) || !(b >= 0)) return;
+  const D = S.defs;
+  const sel = mineSel().map((id) => S.units.get(id)).filter((u) => u && !D.UNITS[u.type].civilian);
+  if (!sel.length) return;
+  const o = S.deployOpts;
+  const plan = planDeployment(deployEnv(sel), sel.map((u) => ({ id: u.id, tile: u.tile, type: u.type, role: deployRole(D.UNITS[u.type]), air: !!D.UNITS[u.type].air })), [a, b], { mode: o.mode === 'preserve' ? 'line' : o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, reverse: o.reverse });
+  S.deploy = { line: [a, b], plan, attackMove, n: sel.length };
+  hud.deployBar();
+}
+function openSearch() {
+  const box = $('search'); box.hidden = false; const inp = $('searchInput'); inp.value = ''; inp.focus(); renderSearch('');
+}
+function searchItems(q) {
+  const D = S.defs, out = []; q = q.trim().toLowerCase(); if (!q) return out;
+  for (const c of S.cities.values()) if (c.n.toLowerCase().includes(q)) out.push({ label: c.n, hint: c.o === S.civId ? 'your city' : 'city', go: () => { actions.jump(c.t); actions.selectCity(c.id); } });
+  const types = new Map(); for (const u of S.units.values()) if (u.owner === S.civId) types.set(u.type, (types.get(u.type) || 0) + 1);
+  for (const [t, n] of types) if (D.UNITS[t].name.toLowerCase().includes(q)) out.push({ label: D.UNITS[t].name, hint: `${n} unit${n > 1 ? 's' : ''}: select all`, go: () => actions.selectType(t, false) });
+  for (const [k, b] of Object.entries(D.BUILDINGS)) if (b.name.toLowerCase().includes(q)) { const n = [...S.buildings.values()].filter((x) => x.o === S.civId && x.ty === k).length; out.push({ label: b.name, hint: n ? `${n} built: find` : 'building: open build palette', go: () => { if (n) { $('findType').value = k; $('findType').dispatchEvent(new Event('change')); } else hud.toggleBuild(true); } }); }
+  for (const [k, t] of Object.entries(D.TECHS)) if (t.name.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q)) out.push({ label: t.name, hint: 'technology', go: () => { hud.openWorkspace('research'); hud.research.sel = k; hud.research.refresh(); setTimeout(() => hud.research.focus(k), 60); } });
+  const cmds = [['Research', 'research'], ['Economy', 'economy'], ['Military', 'military'], ['Cities', 'cities'], ['Government', 'government'], ['Diplomacy', 'diplomacy'], ['Chronicle', 'chronicle']];
+  for (const [n, w] of cmds) if (n.toLowerCase().includes(q)) out.push({ label: n, hint: 'open workspace', go: () => hud.openWorkspace(w) });
+  if ('road'.includes(q) || 'plan road'.includes(q)) out.push({ label: 'Plan road', hint: 'command (R)', go: () => startRoadMode() });
+  return out.slice(0, 14);
+}
+let searchSel = 0, searchList = [];
+function renderSearch(q) { searchList = searchItems(q); searchSel = 0; $('searchResults').innerHTML = searchList.map((r, i) => `<li data-i="${i}" class="${i === 0 ? 'on' : ''}"><span>${r.label.replace(/</g, '&lt;')}</span><small>${r.hint}</small></li>`).join('') || (q ? '<li class="muted">Nothing found.</li>' : '<li class="muted">Type to search cities, units, buildings, technologies and commands.</li>'); }
+function syncPrefs() {
+  for (const el of document.querySelectorAll('[data-pref]')) { const k = el.dataset.pref, v = S.prefs[k]; if (el.type === 'checkbox') el.checked = !!v; else el.value = v; }
+  S.shakeOff = !S.prefs.shake || S.prefs.reducedMotion;
+  S.particleScale = (GRAPHICS[S.prefs.graphics]?.particles || 1) * (S.prefs.particles ?? 1);
+  S.decor = GRAPHICS[S.prefs.graphics]?.decor !== false;
+}
+
 function linePreview(x0, y0, x1, y1, n) {
   const L = Math.hypot(x1 - x0, y1 - y0) || 1, rx = (x1 - x0) / L, ry = (y1 - y0) / L, fx = ry, fy = -rx;
   const step = 21, width = Math.max(1, Math.min(n, Math.round(L / step) + 1)), sp = width > 1 ? Math.max(step, L / (width - 1)) : step;
@@ -682,3 +843,5 @@ refreshMatches();
 setInterval(() => { if (!S.ready) refreshMatches(); }, 4000);
 window.__S = S;
 window.__view = () => view;
+window.__hud = () => hud;
+window.__actions = () => actions;

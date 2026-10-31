@@ -6,7 +6,7 @@ import { drawTraffic } from './CivilianTraffic.js';
 import { drawPedestrians } from './PedestrianSystem.js';
 import { drawFactories } from './FactoryActivity.js';
 import { drawConstruction } from './ConstructionVisuals.js';
-import { drawEnvironment, nightLevel, DAY_SECONDS } from './EnvironmentalEffects.js';
+import { drawEnvironment } from './EnvironmentalEffects.js';
 
 export class AmbientWorld {
   constructor(view, S) { this.view = view; this.S = S; this.cityVis = new CityVisuals(view, S); this.acc = 0; }
@@ -15,28 +15,17 @@ export class AmbientWorld {
     const S = this.S, v = this.view, g = v.ambientG;
     this.acc += dt;
     if (this.acc > 0.5) { this.acc = 0; this.cityVis.update(); }
-    S.night = nightLevel(S.time);
+    S.night = 0;                    // consistent daylight: no day/night cycle
     S.lightsList = [];
     g.clear();
     drawFactories(g, v, S, t);
     drawConstruction(g, v, S, t);
-    drawTraffic(g, v, S, t);
-    drawPedestrians(g, v, S, this.cityVis, t);
+    // decorative life is the first thing the Low graphics preset drops (gameplay cues never are)
+    if (S.decor !== false) { drawTraffic(g, v, S, t); drawPedestrians(g, v, S, this.cityVis, t); }
     drawEnvironment(g, v, S, t);
-    // night: dim the world, then light windows, streets, vehicles and fires additively
-    const n = v.night; n.clear();
-    // dawn and dusk: a warm, low light; night: a cool tint light enough to keep commanding armies
-    const sun = Math.sin(((S.time / DAY_SECONDS) % 1) * Math.PI * 2);
-    const dusk = Math.max(0, 0.3 - Math.abs(sun)) / 0.3;
-    if (dusk > 0.02) n.rect(0, 0, v.app.screen.width, v.app.screen.height).fill({ color: 0xff8a3a, alpha: dusk * 0.1 });
-    if (S.night > 0.01) n.rect(0, 0, v.app.screen.width, v.app.screen.height).fill({ color: 0x07112a, alpha: S.night });
+    // consistent daylight: only fires and explosions glow, locally, in daylight
+    v.night.clear();
     const L = v.lights; L.clear();
-    if (S.night > 0.15) {
-      for (const rec of this.cityVis.cities.values()) {
-        // district blocks are stored at base positions: light the copy nearest the camera
-        for (const b of rec.blocks || []) { if (b.ruined) continue; const bx = v.wrap ? v.near(b.x, v.cxCenter) : b.x; if (!v.inView(bx, b.y)) continue; if ((Math.floor(b.x * 7 + b.y * 3) & 3) === 0) continue; L.rect(bx - 0.6, b.y - 0.6, 1.2, 1.2).fill({ color: 0xffd98a, alpha: S.night * 1.6 }); }
-      }
-      for (const [x, y, r, c] of S.lightsList) if (v.inView(x, y)) L.circle(x, y, r).fill({ color: c, alpha: S.night * 0.5 });
-    }
+    for (const [x, y, r, c] of S.lightsList) if (v.inView(x, y)) L.circle(x, y, r * 0.6).fill({ color: c, alpha: 0.14 });
   }
 }

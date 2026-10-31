@@ -36,7 +36,7 @@ export function battlesStep(g) {
 export function battlesFor(g, civ, vis, god) {
   const out = [];
   for (const b of g.battles) {
-    const mine = { n: 0, engaged: 0, suppressed: 0, retreating: 0, lost: b.losses[civ.id] || 0 };
+    const mine = { n: 0, engaged: 0, suppressed: 0, retreating: 0, lost: b.losses[civ.id] || 0, sup: 0, lowSup: 0, inbound: 0 };
     const foes = new Map(), sides = new Set();
     for (const t of disk(b.tile, RADIUS)) {
       const ids = g.tileUnits.get(t); if (!ids) continue;
@@ -47,12 +47,16 @@ export function battlesFor(g, civ, vis, god) {
           if ([2, 7, 8].includes(u.cstat)) mine.engaged++;
           if (u.cstat === 4 || u.cstat === 10) mine.suppressed++;
           if (u.cstat === 9) mine.retreating++;
+          mine.sup += u.supply; if (u.supply < 40) mine.lowSup++;
         } else if (god || (vis[t] && g.detects(civ.id, u))) {
           const f = foes.get(u.owner) || { n: 0, str: 0 }; f.n++; f.str += (UNITS[u.type].atk + UNITS[u.type].def) * (u.hp / u.maxHp); foes.set(u.owner, f); sides.add(u.owner);
         }
       }
     }
     if (!god && !mine.n && !vis[b.tile]) continue;
+    if (mine.n) mine.sup = Math.round(mine.sup / mine.n);
+    // reinforcements: own units whose route ends in the battle area
+    for (const u of g.units.values()) if (u.owner === civ.id && !UNITS[u.type].civilian && dist(u.tile, b.tile) > RADIUS && u.path.length && dist(u.path[u.path.length - 1], b.tile) <= RADIUS) mine.inbound++;
     let near = null, nd = Infinity;
     for (const c of g.cities.values()) { const d = dist(c.tile, b.tile); if (d < nd) { nd = d; near = c; } }
     const myStr = [...g.units.values()].filter((u) => u.owner === civ.id && !UNITS[u.type].civilian && dist(u.tile, b.tile) <= RADIUS).reduce((s, u) => s + (UNITS[u.type].atk + UNITS[u.type].def) * (u.hp / u.maxHp), 0);

@@ -50,7 +50,15 @@ export class MatchManager {
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
     for (let i = 0; i < humans; i++) slots.push({ human: true, name: i === 0 ? String(opts.name || 'Player').slice(0, 24) : 'Open seat', token: null, ws: null });
-    for (let i = 0; i < ais; i++) slots.push({ human: false, name: 'AI', personality: opts.aiPersonality && opts.aiPersonality !== 'random' ? opts.aiPersonality : personalities[(i + ((Math.random() * 3) | 0)) % 3], difficulty: ['easy', 'normal', 'hard', 'brutal'].includes(opts.difficulty) ? opts.difficulty : 'normal' });
+    const DIFFS = ['easy', 'normal', 'hard', 'expert', 'brutal'];
+    const fairPlay = opts.fairPlay !== false;            // default: no numerical AI advantages at any level
+    for (let i = 0; i < ais; i++) {
+      // per-rival settings (advanced lobby) override the shared ones
+      const r = Array.isArray(opts.rivals) ? opts.rivals[i] || {} : {};
+      const pers = ['warlord', 'merchant', 'builder'].includes(r.personality) ? r.personality : opts.aiPersonality && opts.aiPersonality !== 'random' ? opts.aiPersonality : personalities[(i + ((Math.random() * 3) | 0)) % 3];
+      const diff = DIFFS.includes(r.difficulty) ? r.difficulty : DIFFS.includes(opts.difficulty) ? opts.difficulty : 'normal';
+      slots.push({ human: false, name: 'AI', personality: pers, difficulty: diff, fairPlay });
+    }
     const mapSize = SIZES[opts.mapSize] || autoSize(slots.length);
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
       seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize: sandbox ? 128 : mapSize, rebels: sandbox ? false : opts.rebels !== false, worker: null, stats: null,
@@ -77,7 +85,7 @@ export class MatchManager {
     return slot;
   }
 
-  meta(m) { return { id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style, cataclysm: m.cataclysm, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
+  meta(m) { return { id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style, cataclysm: m.cataclysm, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
@@ -86,7 +94,7 @@ export class MatchManager {
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, cataclysm: m.cataclysm, sandbox: m.mode === 'sandbox',
-        slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty })) },
+        slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
     m.worker = worker; m.ready = false; m.pending = [];
@@ -154,7 +162,7 @@ export class MatchManager {
   toWorker(m, msg) { if (!m.worker) return; if (m.ready) m.worker.postMessage(msg); else m.pending.push(msg); }
   welcome(m, slot) { this.toWorker(m, slot.spectator ? { t: 'obsWelcome' } : { t: 'welcome', civId: slot.civId }); }
   send(ws, msg) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(msg)); } catch { /* closing */ } } }
-  roomUpdate(m) { for (const s of m.slots) if (s.ws) this.send(s.ws, { t: 'room', match: m.id, name: m.name, status: m.status, mapSize: m.mapSize, slots: m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token })) }); }
+  roomUpdate(m) { for (const s of m.slots) if (s.ws) this.send(s.ws, { t: 'room', match: m.id, name: m.name, status: m.status, mapSize: m.mapSize, slots: m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token, difficulty: x.human ? undefined : x.difficulty, personality: x.human ? undefined : x.personality, fairPlay: x.human ? undefined : x.fairPlay !== false })) }); }
 
   attach(ws) {
     ws.ctx = { match: null, slot: null };

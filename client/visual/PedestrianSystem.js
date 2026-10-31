@@ -9,7 +9,7 @@ export function drawPedestrians(g, view, S, cityVis, t) {
     if (!view.inView(view.cx[c.t], view.cy[c.t], 80)) continue;
     const shift = view.wrap ? view.cx[c.t] - (view.cx0 ? view.cx0[c.t] : view.cx[c.t]) : 0;   // streets are stored at base positions
     const busy = c.o === S.civId && c.jobs ? Math.min(1, (c.jobs.worker + c.jobs.merchant + c.jobs.specialist) / Math.max(1, c.pop)) : 0.7;
-    const n = Math.min(40, Math.round((c.pop / 2) * (0.4 + busy * 0.6) * (c.fs ? 0.4 : 1) * (1 - S.night * 0.7)));
+    const n = Math.min(40, Math.round((c.pop / 2) * (0.4 + busy * 0.6) * (c.fs ? 0.4 : 1)));
     for (let k = 0; k < n && budget > 0; k++, budget--) {
       const s = rec.streets[Math.floor(h(c.id, k) * rec.streets.length)];
       const p = frac(t * (0.03 + h(k, c.id, 2) * 0.04) + h(c.id, k, 3));

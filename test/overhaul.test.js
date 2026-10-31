@@ -7,7 +7,7 @@ import { serializeGame, restoreGame } from '../server/sim/persist.js';
 import { spawnUnit } from '../server/sim/military.js';
 import { findPath } from '../server/sim/path.js';
 import { demobilize, casualty, recruitable } from '../server/sim/population.js';
-import { BUILDINGS, isWater, W } from '../server/sim/constants.js';
+import { BUILDINGS, isWater, W, aiProfile } from '../server/sim/constants.js';
 import { disk, dist, idx, qOf, rOf, WRAP, NB } from '../server/sim/hex.js';
 
 const newGame = (seed = 7, extra = {}) => new Game({ id: 'o' + seed + Math.random(), seed, slots: [{ human: true }, { personality: 'builder' }], rebels: false, ...extra });
@@ -196,11 +196,22 @@ test('refits and veterancy: a unit keeps its experience through a refit', () => 
   void cap;
 });
 
-test('AI difficulty changes how strongly rival empires develop (never the human player)', () => {
-  const mk = (difficulty) => { const g = new Game({ id: 'd' + difficulty, seed: 5, slots: [{ human: true }, { personality: 'builder', difficulty }], rebels: false }); run(g, 3000); return g; };
-  const easy = mk('easy'), hard = mk('brutal');
-  assert.equal(hard.civs[1].difficulty, 'brutal');
-  const score = (g) => { const c = g.civs[1]; return c.techs.size * 50 + c.researchRate * 100 + (c.res.materials || 0) + (c.res.steel || 0) * 3; };
-  assert.ok(score(hard) > score(easy), `brutal ${score(hard).toFixed(2)} > relaxed ${score(easy).toFixed(2)}`);
-  assert.equal(easy.civs[0].difficulty, 'normal');
+test('AI difficulty: fair play by default, skill differs, advantages only when disclosed, legacy saves keep theirs', () => {
+  const mk = (difficulty, fairPlay) => new Game({ id: 'd' + difficulty + Math.random(), seed: 5, slots: [{ human: true }, { personality: 'builder', difficulty, fairPlay }], rebels: false });
+  for (const d of ['easy', 'normal', 'hard', 'expert', 'brutal']) {
+    const g = mk(d);
+    const p = aiProfile(g.civs[1]);
+    assert.deepEqual(p.adv, { econ: 1, research: 1, army: 1 }, `${d}: no numerical advantage under Fair Play`);
+    assert.equal(g.civs[1].difficulty, d);
+  }
+  assert.ok(aiProfile(mk('brutal').civs[1]).skill.level > aiProfile(mk('normal').civs[1]).skill.level, 'skill rises with difficulty');
+  const unfair = mk('brutal', false);
+  assert.ok(aiProfile(unfair.civs[1]).adv.econ > 1, 'Brutal advantages only with Fair Play off');
+  assert.equal(aiProfile(mk('hard', false).civs[1]).adv.econ, 1, 'Hard never cheats');
+  // a save from before profile v2 keeps its old multipliers
+  const g = mk('hard'); const snap = serializeGame(g); for (const c of snap.civs) delete c.diffProfile;
+  const old = restoreGame(snap);
+  assert.equal(old.civs[1].diffProfile, 'legacy');
+  assert.ok(aiProfile(old.civs[1]).legacy && aiProfile(old.civs[1]).adv.econ > 1);
+  assert.equal(g.civs[0].difficulty, 'normal');
 });

@@ -1,12 +1,6 @@
-// Fires, smouldering ruins, falling ash, flocks of birds and the day/night cycle.
+// Fires, smouldering ruins, falling ash and flocks of birds (consistent daylight: no day/night).
 import { h, frac, atLeast } from './VisualLOD.js';
 
-export const DAY_SECONDS = 480;
-export function nightLevel(time) {
-  const p = frac(time / DAY_SECONDS);            // 0 = dawn
-  const sun = Math.sin(p * Math.PI * 2);          // > 0 day, < 0 night
-  return Math.max(0, Math.min(0.36, -sun * 0.5 + 0.04));   // dim enough to read as night, light enough to keep playing
-}
 
 export function drawEnvironment(g, view, S, t) {
   for (const b of S.buildings.values()) {
@@ -30,8 +24,8 @@ export function drawEnvironment(g, view, S, t) {
     const tile = view.tileAt(x, y); if (tile < 0 || !(S.flags[tile] & 32)) continue;
     g.rect(x + Math.sin(t + k) * 2, y, 0.9, 0.9).fill({ color: 0x9a948c, alpha: 0.7 }); n++;
   }
-  // birds over the land by day
-  if (S.night < 0.2) for (let f = 0; f < 3; f++) {
+  // birds over the land
+  for (let f = 0; f < 3; f++) {
     const bx = x0 + frac(h(f, 1) + t * 0.01 * (1 + f * 0.3)) * (x1 - x0), by = y0 + h(f, 2) * (y1 - y0);
     for (let k = 0; k < 5; k++) { const ox = -k * 3, oy = (k % 2 ? 1 : -1) * k * 1.6; const wing = Math.sin(t * 8 + k) * 1.2; g.moveTo(bx + ox - 1.5, by + oy).lineTo(bx + ox, by + oy - 0.6 - wing).lineTo(bx + ox + 1.5, by + oy).stroke({ width: 0.7, color: 0x1b1b1b, alpha: 0.6 }); }
   }

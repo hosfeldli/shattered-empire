@@ -4,7 +4,7 @@
 //   warlord  - militarized industrial state that seeks conquest
 // City development runs through the same governor code that players can enable.
 import { MilitaryPlanner } from './missions.js';
-import { N, UNITS, TECHS, AGES, isWater, DIFFICULTY } from './constants.js';
+import { N, UNITS, TECHS, AGES, isWater, aiProfile } from './constants.js';
 import { dist } from './hex.js';
 import { defaultGovernor, steerColonist } from './governor.js';
 import { nationalRoles } from './planner.js';
@@ -51,12 +51,52 @@ export class AI {
     this.cities = g.cityOf(civ);
     if (!this.cities.length) return;
     this.myUnits = [...g.units.values()].filter((u) => u.owner === civ.id);
+    this.strategy();
     this.research();
     this.government();
     this.governors();
     this.expand();
     this.military();
     this.diplomacy();
+  }
+
+  // ---------------------------------------------------------------- strategic layer
+  // One coherent goal at a time, with a minimum commitment and hysteresis, so the empire does not
+  // lurch between plans whenever one number moves. The goal steers army size, offensives,
+  // expansion and city goals; every choice is explained (civ.strategy.why).
+  strategy() {
+    const g = this.g, civ = this.civ, sk = aiProfile(civ).skill;
+    const s = civ.strategy || (civ.strategy = { goal: 'recovery', since: g.time, until: g.time + 120, why: 'starting out', score: 0 });
+    if (g.time - (s.checked || 0) < 15) return;
+    s.checked = g.time;
+    const army = this.myUnits.filter((u) => !UNITS[u.type].civilian);
+    const enemies = this.enemies(), threats = this.enemiesNear();
+    const mine = this.strength(army), theirs = Math.max(0, ...enemies.map((o) => this.observed(o)));
+    const pop = this.cities.reduce((t, c) => t + c.pop, 0), starving = this.cities.some((c) => c.foodShort);
+    const next = AGES[civ.age + 1];
+    const techsLeft = next ? Math.max(0, next.techsNeeded - [...civ.techs].filter((t) => TECHS[t].age === civ.age).length) : 9;
+    const lost = (s.peakArmy || 0) > 8 && army.length < (s.peakArmy || 0) * 0.5;
+    s.peakArmy = Math.max((s.peakArmy || 0) * 0.995, army.length);
+    const P = this.p;
+    const score = {
+      recovery: (starving ? 60 : 0) + (pop < 30 ? 30 : 0) + (g.time < 240 ? 40 : 0),
+      expansion: this.cities.length < ({ builder: 5, merchant: 4, warlord: 3 }[P] + Math.min(3, civ.age)) ? 35 + (P === 'builder' ? 10 : 0) : 0,
+      technology: (techsLeft <= 2 ? 45 : 20) + (P === 'builder' ? 12 : 0) + (P === 'merchant' ? 6 : 0),
+      defense: threats.length ? 40 + Math.min(40, threats.length * 4) : enemies.length && theirs > mine ? 35 : 0,
+      modernization: civ.age >= 1 && army.some((u) => (g.defs.REFIT[u.type] || []).some((r) => UNITS[r.to].age <= civ.age)) ? 22 : 0,
+      offensive: enemies.length && mine > theirs * (P === 'warlord' ? 1.15 : 1.5) && army.length >= 8 ? 30 + (P === 'warlord' ? 25 : 0) + sk.level * 4 : 0,
+      rebuild: lost ? 55 : 0,
+      victory: civ.age >= 4 ? 50 : 0,
+    };
+    const [best, bv] = Object.entries(score).sort((a, b) => b[1] - a[1])[0];
+    const cur = score[s.goal] ?? 0;
+    // switch only after the commitment ends and for a clearly better goal (or an emergency)
+    const emergency = (best === 'defense' && bv >= 60) || (best === 'rebuild' && s.goal === 'offensive');
+    if (best !== s.goal && (emergency || (g.time >= s.until && bv > cur * 1.25 + 5))) {
+      const WHY = { recovery: 'feed and house the people first', expansion: 'settle more land', technology: `reach ${next ? next.name : 'the last era'}`, defense: 'enemy forces threaten our cities', modernization: 'refit the army with newer equipment', offensive: 'our forces outmatch what we have seen of the enemy', rebuild: 'recover from heavy losses', victory: 'pursue the civilizational victory' };
+      s.goal = best; s.since = g.time; s.until = g.time + ({ short: 90, moderate: 150, long: 200, multi: 200 }[sk.plan] || 150); s.why = WHY[best];
+    }
+    s.score = Math.round(score[s.goal] || 0);
   }
 
   research() {
@@ -149,6 +189,16 @@ export class AI {
     const have = { inf: 0, armor: 0, art: 0, aa: 0 }; for (const u of army) have[role(u.type)]++;
     const n = Math.max(1, army.length);
     const target = { armor: civ.age >= 1 ? 0.35 : 0, art: civ.age >= 1 ? 0.2 : 0.1, aa: this.enemyAir ? 0.12 : 0, inf: 0.4 };
+    // counter-composition (skill): answer what has actually been seen of the enemy
+    const k = aiProfile(civ).skill.counter, seen = civ.seenComp;
+    if (k > 0 && seen) {
+      const tot = Math.max(1, seen.inf + seen.armor + seen.art + seen.air);
+      target.art += k * 0.2 * (seen.inf / tot);                 // massed infantry: guns and mortars
+      target.armor += k * 0.15 * (seen.inf / tot) - k * 0.1 * (seen.armor / tot);
+      target.inf += k * 0.15 * (seen.armor / tot);               // armour: dug-in infantry and field guns
+      target.art += k * 0.1 * (seen.armor / tot);
+      target.aa = Math.max(target.aa, k * 0.3 * (seen.air / tot));
+    }
     const gaps = Object.entries(target).map(([r, t]) => [r, t - have[r] / n]).sort((a, b2) => b2[1] - a[1]);
     const best = (r) => opts.filter((t) => role(t) === r).sort((a, b2) => UNITS[b2].age - UNITS[a].age || (UNITS[b2].atk + UNITS[b2].def) - (UNITS[a].atk + UNITS[a].def))[0];
     for (const [r] of gaps) { const t = best(r); if (t) return t; }
@@ -182,7 +232,9 @@ export class AI {
     // size the army by need and by what the treasury can sustain, not by population
     let desired = 4 + 3 * civ.age + 2 * Math.min(8, this.cities.length);
     if (this.p === 'warlord') desired = Math.round(desired * 1.4);
-    desired = Math.round(desired * (DIFFICULTY[civ.difficulty]?.army || 1));
+    const prof = aiProfile(civ);
+    desired = Math.round(desired * prof.skill.scale * prof.adv.army);
+    desired = Math.round(desired * ({ offensive: 1.15, defense: 1.2, rebuild: 1.1, technology: 0.9, recovery: 0.85 }[civ.strategy?.goal] || 1));
     if (enemies.length) desired += 6;
     desired += Math.min(12, threats.length);
     const income = Math.max(1, (civ.gross?.credits || 0));
@@ -205,7 +257,8 @@ export class AI {
     if (!this.myUnits.some((u) => u.type === 'engineer') && !queuedType('engineer') && civ.res.materials > 80) { const h = this.hub(); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'engineer' }); }
     const scouts = this.myUnits.filter((u) => u.type === 'scout_buggy');
     const unmet = g.civs.some((o) => o !== civ && o.alive && !o.isRebel && g.diplomacy.rel(civ.id, o.id).state === 'unmet');
-    if (!scouts.length && !queuedType('scout_buggy') && (g.time < 900 || unmet) && civ.res.food > 60) { const h = this.hub(8); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'scout_buggy' }); }
+    const wantScouts = Math.max(1, Math.round(prof.skill.recon * (unmet || g.time < 900 ? 1 : enemies.length ? 1 : 0)));
+    if (scouts.length < wantScouts && !queuedType('scout_buggy') && (g.time < 900 || unmet || (enemies.length && prof.skill.recon >= 1)) && civ.res.food > 60) { const h = this.hub(8); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'scout_buggy' }); }
     this.mil.scouts(scouts);
     // engineers follow the army or fix things at home
     for (const e of this.myUnits.filter((u) => u.type === 'engineer' && !u.path.length && !u.field)) {
@@ -224,7 +277,7 @@ export class AI {
       }
     }
     // missions own their units; the reserve rallies at the front city or hunts nearby rebels
-    this.mil.step(army, threats, enemies, desired);
+    this.mil.step(army, threats, enemies, desired, { allowOffensive: ['offensive', 'victory'].includes(civ.strategy?.goal) || (civ.strategy?.goal === 'modernization' && this.p === 'warlord') });
     const off = [...this.mil.missions.values()].find((m) => m.kind === 'offensive');
     this.campaign = off ? { city: off.target, start: off.units.size, stage: off.staging } : null;
     const assigned = this.mil.assignedIds();

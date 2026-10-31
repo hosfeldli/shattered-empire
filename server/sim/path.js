@@ -1,5 +1,6 @@
 // Server-side navigation: per-movement-class step costs, A*, shared flow fields for
 // large groups, and road routing. Clients never path-find.
+import { knownSets } from './tacticalOccupancy.js';
 import { N, W, H, T, MOVE, UNITS, TERRAIN, isWater } from './constants.js';
 import { NB, dist, dqWrap, inBounds, idx } from './hex.js';
 import { MinHeap } from './world.js';
@@ -59,6 +60,9 @@ export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avo
   let expanded = 0, best = start, bestH = dist(start, goal);
   const air = MOVE[(UNITS[unitType] || UNITS.militia).move].air;
   const hw = air ? 1 : 0.25;
+  // what this empire can see of enemy lines: held hexes are closed (except an attack's goal),
+  // controlled ground costs more, so routes go around a front instead of into it
+  const known = air || !civ || !civ.visible ? null : knownSets(game, civ);
   while (heap.size) {
     const cur = heap.pop();
     if (closed[cur] === gen) continue;
@@ -69,8 +73,12 @@ export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avo
     if (++expanded > maxNodes) break;
     for (let d = 0; d < 6; d++) {
       const n = NB[cur * 6 + d]; if (n < 0 || closed[n] === gen) continue;
-      const c = stepCost(game, civ, cur, n, unitType, avoid);
+      let c = stepCost(game, civ, cur, n, unitType, avoid);
       if (!Number.isFinite(c)) continue;
+      if (known && known.occ.size) {
+        if (known.occ.has(n) && n !== goal) continue;
+        if (known.zoc.has(n)) c += known.zoc.has(cur) ? 6 : 1.5;
+      }
       const ng = gScore[cur] + c;
       if (stamp[n] !== gen || ng < gScore[n]) {
         stamp[n] = gen; gScore[n] = ng; came[n] = cur;

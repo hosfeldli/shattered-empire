@@ -3,10 +3,11 @@ import { atLeast } from './VisualLOD.js';
 
 function rotPoly(pts, a) { const c = Math.cos(a), s = Math.sin(a); const out = []; for (let i = 0; i < pts.length; i += 2) out.push(pts[i] * c - pts[i + 1] * s, pts[i] * s + pts[i + 1] * c); return out; }
 
-export function drawUnitBody(g, u, def, S, sel, heading) {
+export function drawUnitBody(g, u, def, S, sel, heading, art = false) {
   g.clear();
   const col = S.civColor(u.owner);
   const dark = 0x0b1518;
+  if (art) return drawOverlays(g, u, def, S, sel, col, dark);
   if (S.lod === 'strategic') {
     g.circle(0, 0, 5).fill({ color: col }).stroke({ width: 1, color: dark });
     if (sel) g.circle(0, 0, 8).stroke({ width: 1.6, color: 0xf1c75b });
@@ -42,4 +43,29 @@ export function drawUnitBody(g, u, def, S, sel, heading) {
   if (u.owner === S.civId && u.flags & 8) g.circle(-7, 7, 2.4).fill({ color: 0xf0b54a });
   if (u.owner === S.civId && u.flags & 16) g.moveTo(-4, -4).lineTo(4, 4).moveTo(4, -4).lineTo(-4, 4).stroke({ width: 2, color: 0xe0533b });
   if (u.flags & 1) g.circle(-7, -7, 2.2).fill({ color: 0xffe08a });
+}
+
+// Overlays on top of atlas artwork: ownership ring (with a per-empire pattern when faction
+// markings are on, so colour is never the only cue), selection, health, supply, status, rank.
+function drawOverlays(g, u, def, S, sel, col, dark) {
+  const strategic = S.lod === 'strategic';
+  const r = strategic ? 8 : def.move === 'infantry' ? 9 : 11;
+  if (!strategic) {
+    // a thin owner ring under the artwork (plus the tinted accent on the sprite itself)
+    g.ellipse(0, 1, r, r * 0.8).stroke({ width: 1, color: col, alpha: 0.7 });
+    if (S.prefs?.factionPattern) {
+      // pattern by empire: ticks around the ring (1-4 by id), readable without colour
+      const n = (u.owner % 4) + 1;
+      for (let k = 0; k < n; k++) { const a = -Math.PI / 2 + (k - (n - 1) / 2) * 0.42; g.moveTo(Math.cos(a) * r, Math.sin(a) * r * 0.82).lineTo(Math.cos(a) * (r + 3), Math.sin(a) * (r + 3) * 0.82).stroke({ width: 1.6, color: col }); }
+    }
+  }
+  if (u.flags & 2) g.ellipse(0, 2, r, r * 0.55).stroke({ width: 1, color: 0x6a8fb0, alpha: 0.8 });          // afloat
+  if (sel) g.ellipse(0, 0, r + 3, (r + 3) * 0.82).stroke({ width: S.prefs?.highContrast ? 2.6 : 1.8, color: S.prefs?.highContrast ? 0xffffff : 0xf1c75b });
+  if (u.hp < 100) { const w = strategic ? 12 : 16; g.rect(-w / 2, r * 0.82 + 1.5, w, 2.2).fill({ color: 0x220d09 }).rect(-w / 2, r * 0.82 + 1.5, (w * u.hp) / 100, 2.2).fill({ color: u.hp > 40 ? 0x7ccf73 : 0xe0533b }); }
+  if (u.owner === S.civId && u.flags & 4) g.circle(r * 0.75, -r * 0.6, 2.6).fill({ color: 0xe0533b }).stroke({ width: 0.8, color: dark });        // out of supply
+  if (u.owner === S.civId && u.flags & 8) g.circle(-r * 0.75, r * 0.6, 2.4).fill({ color: 0xf0b54a });                                          // waiting
+  if (u.owner === S.civId && u.flags & 16) g.moveTo(-4, -4).lineTo(4, 4).moveTo(4, -4).lineTo(-4, 4).stroke({ width: 2, color: 0xe0533b });   // blocked
+  if (u.flags & 1) g.circle(-r * 0.75, -r * 0.6, 2.2).fill({ color: 0xffe08a });                                                                // in combat
+  if (u.vet > 0 && !strategic) for (let k = 0; k < u.vet; k++) g.poly([r - 1 - k * 3.2, -r * 0.82 - 1, r + 0.6 - k * 3.2, -r * 0.82 - 3.2, r + 2.2 - k * 3.2, -r * 0.82 - 1]).fill({ color: 0xf1c75b });
+  if (u.det && u.owner === S.civId) g.circle(0, -r * 0.82 - 3, 1.6).fill({ color: 0x6fa8dc });                                                    // detached from its formation
 }

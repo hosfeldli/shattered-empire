@@ -1,5 +1,7 @@
 // Units: movement (flow fields, formations, tile/bridge capacity), combat (incl. air),
 // supply networks & attrition, engineers, and damage that persists in the world.
+import { stepBlock, reserve } from './tacticalOccupancy.js';
+import { ACTIVITY, activityOf } from './logistics.js';
 import { casualty } from './population.js';
 import { N, T, TERRAIN, UNITS, BUILDINGS, MOVE, ROAD_TYPES, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
@@ -151,6 +153,7 @@ export function unitsStep(g, dt) {
         for (let d = 0; d < 6; d++) {
           const n = NB[u.tile * 6 + d]; if (n < 0 || !Number.isFinite(field[n])) continue;
           const c = stepCost(g, civ, u.tile, n, u.type); if (!Number.isFinite(c)) continue;
+          if (stepBlock(g, u, n)) continue;          // enemy-held or controlled ground: steer around
           const v = field[n] + (isAir(u) ? 0 : (g.tileLoad.get(n) || 0) * 0.35);
           if (v < bv) { bv = v; best = n; }
         }
@@ -172,7 +175,24 @@ export function unitsStep(g, dt) {
         if (!u.path.length) { u.status = 'blocked'; if (civ.human && (g.tickN + u.id) % 30 === 0) g.notify(civ.id, `${def.name} is blocked: the route is no longer passable.`, { kind: 'error', tile: u.tile, quiet: true }); }
         continue;
       }
-      if (!isAir(u) && u.prog === 0 && (g.tileLoad.get(nxt) || 0) >= tileCapacity(g, nxt) && !g.hostileAt(u.owner, nxt)) {
+      // occupancy and zones of control: never into an enemy-held hex, never sliding along a line
+      if (!isAir(u) && u.prog === 0) {
+        const blk = stepBlock(g, u, nxt);
+        if (blk) {
+          u.next = -1; u.field = false; u.status = 'contact'; u.contact = g.time;
+          // a bounded reroute for movement orders; otherwise stop here and fight from the edge
+          if ((u.order.kind === 'move' || u.order.kind === 'attackMove') && (u.blockTries || 0) < 3 && !(u.order.kind === 'attackMove' && blk !== 'contested')) {
+            u.blockTries = (u.blockTries || 0) + 1;
+            const goal = u.slot >= 0 ? u.slot : u.goal;
+            const alt = goal >= 0 ? findPath(g, civ, u.tile, goal, u.type, 6000, new Set([nxt])) : null;
+            u.path = alt && alt[0] !== nxt ? alt : [];
+          } else u.path = [];
+          if (!u.path.length && u.order.kind === 'move' && !u.order.withdraw) { u.order = { kind: 'idle' }; u.groupSpeed = 0; }
+          continue;
+        }
+        reserve(g, u, nxt);
+      }
+      if (!isAir(u) && u.prog === 0 && (g.tileLoad.get(nxt) || 0) >= tileCapacity(g, nxt)) {
         // congestion: wait in line; after a while try another way; give up eventually
         u.wait += dt; u.status = 'waiting';
         if (u.wait > 4 && u.wait - dt <= 4) {
@@ -186,13 +206,15 @@ export function unitsStep(g, dt) {
       u.wait = 0; u.status = 'ok';
       g.tileLoad.set(nxt, (g.tileLoad.get(nxt) || 0) + (u.prog === 0 && !isAir(u) ? 1 : 0));
       const onWater = isWater(w.terr[nxt]);
-      let spd = (onWater && !isAir(u) ? 1.0 : def.speed) * (u.outOfSupply ? 0.75 : 1);
+      // low supply slows an advance gradually (fuel, spares), not all at once
+      let spd = (onWater && !isAir(u) ? 1.0 : def.speed) * (u.supply >= 50 ? 1 : u.supply >= 25 ? 0.9 : u.supply >= 10 ? 0.78 : 0.7);
       if (u.groupSpeed) spd = Math.min(spd, u.groupSpeed);   // formations move at their slowest member's pace
       if (u.supp > 30) spd *= 1 - 0.35 * (u.supp / 100);
       u.prog += (spd * dt) / c;
       if (u.prog >= 1) {
         if (!isAir(u)) g.roads.noteTraffic(u.tile, nxt, def.move === 'infantry' ? 0.5 : 1);
-        u.tile = nxt; u.path.shift(); u.prog = 0; u.next = -1;
+        u.tile = nxt; u.path.shift(); u.prog = 0; u.next = -1; u.blockTries = 0;
+
       }
     } else if (!u.field) {
       u.next = -1; u.prog = 0;
@@ -201,7 +223,8 @@ export function unitsStep(g, dt) {
         u.order = { kind: 'idle' }; u.groupSpeed = 0; u.home = u.tile;
         if (withdrew) { u.retreating = (u.morale ?? 100) < 55; }
         // shift-queued waypoints: carry on with the next leg
-        if (u.queue && u.queue.length) { const nx = u.queue.shift(); u.order = { kind: nx.attackMove ? 'attackMove' : 'move' }; u.goal = nx.tile; u.slot = nx.tile; u.path = findPath(g, civ, u.tile, nx.tile, u.type) || []; }
+        if (u.queue && u.queue.length && u.queue[0].deploy) { const nx = u.queue.shift(); g.runQueuedDeploy(u, nx.deploy); }
+        else if (u.queue && u.queue.length) { const nx = u.queue.shift(); u.order = { kind: nx.attackMove ? 'attackMove' : 'move' }; u.goal = nx.tile; u.slot = nx.tile; u.path = findPath(g, civ, u.tile, nx.tile, u.type) || []; }
         if (!u.path.length && u.order.kind !== 'idle') u.order = { kind: 'idle' };
         if (u.auth === 'player' && u.order.kind === 'idle') u.auth = '';
       }
@@ -321,7 +344,7 @@ export function recomputeSupply(g) {
       const s = BUILDINGS[b.type].supply; if (s) addSrc(b.tile, s + bonus);
       if (b.type === 'fort') addSrc(b.tile, 2 + bonus);
     }
-    for (const u of g.units.values()) if (u.owner === civ.id && UNITS[u.type].supplyRadius && civ.res.food > 0) addSrc(u.tile, UNITS[u.type].supplyRadius + (bonus ? 1 : 0));
+    // supply trucks no longer project an aura: they deliver finite cargo (logistics.js)
     const sup = civ.supply; sup.fill(0);
     while (heap.size) {
       const i = heap.pop();
@@ -351,6 +374,7 @@ export function recomputeSupply(g) {
 
 export function supplyStep(g, dt) {
   for (const u of g.units.values()) {
+    u.activity = activityOf(g, u);
     const civ = g.civs[u.owner];
     const def = UNITS[u.type];
     const air = !!def.air;
@@ -361,7 +385,7 @@ export function supplyStep(g, dt) {
       u.supply = Math.min(100, u.supply + (air ? 25 : 15) * dt);
       if (air) civ.res.fuel = Math.max(0, civ.res.fuel - 0.03 * dt);
       if (g.time - u.lastCombat > 5 && u.hp < u.maxHp) {
-        let heal = u.maxHp * 0.03 * dt;
+        let heal = u.maxHp * 0.03 * dt * (u.supply >= 80 ? 1 : u.supply >= 50 ? 0.6 : 0.3);
         const nearFort = disk(u.tile, 1).some((t) => { const b = g.buildingAtTile(t); return b && b.owner === u.owner && BUILDINGS[b.type].heals; });
         if (nearFort) heal *= 2;
         const part = def.move === 'infantry' ? 'food' : 'steel';
@@ -369,7 +393,8 @@ export function supplyStep(g, dt) {
         u.hp = Math.min(u.maxHp, u.hp + heal);
       }
     } else {
-      u.supply = Math.max(0, u.supply - (air ? 6 : 2.5) * dt);
+      // cut off: reserves drain by what the unit is doing (entrenched troops last far longer)
+      u.supply = Math.max(0, u.supply - (air ? 6 : ACTIVITY[u.activity]?.loss ?? 2.5) * dt);
       if (u.supply <= 0 && air) damageUnit(g, u, u.maxHp * 0.06 * dt, null, 'fuel');
       else if (u.supply <= 0 && !def.civilian) damageUnit(g, u, u.maxHp * 0.015 * dt, null, 'attrition');
     }
