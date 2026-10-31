@@ -1,7 +1,9 @@
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
-import { N, T, TERRAIN, BUILDINGS, UNITS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater } from './constants.js';
+import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
+import { allocate } from './workforce.js';
+import { labor, populationStep, crowdingPenalty, hasServices, migrationStep as migrate } from './population.js';
 
 const BASE_PRIORITY = { town: 120, farm: 100, port: 95, lumber: 70, quarry: 66, salvage: 68, mine: 64, oil_well: 63, power_plant: 80, fusion_plant: 82, steel_mill: 60, munitions_plant: 52, electronics_plant: 54, market: 56, academy: 55, university: 52, seismic: 40 };
 const FOCUS_BONUS = {
@@ -83,6 +85,8 @@ export function recomputeTradeNetwork(g) {
 function farmYield(g, civ, b) {
   const w = g.world, t = b.tile;
   let y = TERRAIN[w.terr[t]].fert;
+  if (w.terr[t] === T.HILLS) y = Math.max(y, 0.55);       // terraced fields
+  if (w.terr[t] === T.FOREST) y = Math.max(y, 0.5);       // cleared woodland
   let river = w.river[t];
   for (let d = 0; d < 6 && !river; d++) { const n = NB[t * 6 + d]; if (n >= 0 && w.river[n]) river = 1; }
   if (river) y += 0.35;
@@ -138,10 +142,28 @@ function shipGoods(civ, c, cd, delta, dt) {
   c.shipped = shipped;
 }
 
+// Rare earths: from a deposit in your territory, from a trade partner who has one, or recycled
+// from salvage once Materials Recycling is known. Never a single-route dead end.
+// is there anything left to research in reach? (otherwise research jobs are wasted labor)
+export function researchOpenFor(civ) {
+  if (civ.researching || civ.queue?.length) return true;
+  for (const [t, x] of Object.entries(TECHS)) if (!civ.techs.has(t) && x.age <= civ.age) return true;
+  return false;
+}
+
+export function rareAccess(g, civ) {
+  if (g.civHasResource(civ, RES.RARE)) return true;
+  if (civ.techs.has('materials_recycling')) return true;
+  for (const o of g.civs) if (o !== civ && o.alive && !o.isRebel && g.diplomacy.rel(civ.id, o.id).trade && g.civHasResource(o, RES.RARE)) return true;
+  return false;
+}
+
 export function economyStep(g, dt) {
   const w = g.world;
   const unitCount = new Map();
   for (const u of g.units.values()) unitCount.set(u.owner, (unitCount.get(u.owner) || 0) + (UNITS[u.type].civilian ? 0.5 : UNITS[u.type].pop === 0 ? 0.3 : 1));
+  const vehicles = new Map();
+  for (const u of g.units.values()) { const m = UNITS[u.type].move; if (m === 'wheeled' || m === 'tracked' || m === 'aircraft') vehicles.set(u.owner, (vehicles.get(u.owner) || 0) + 1); }
   const byCity = new Map();
   for (const b of g.buildings.values()) {
     if (!b.done) continue;
@@ -161,33 +183,36 @@ export function economyStep(g, dt) {
     // before Electrification, industry runs on furnaces and steam: no grid, but only 70% output
     const pr = civ.techs.has('electrification') ? civ.powerRatio ?? 1 : 0.7;
     let powerGen = 0, powerUse = 0;
+    const grossNext = {}, shortNext = new Set();
+    const researchOpen = researchOpenFor(civ);
     for (const c of cities) {
       const blds = byCity.get(c.id) || [];
       if (!c.stock) c.stock = {};
       const cd = {}; for (const k of GOODS) cd[k] = 0;
       const pool = (k) => (c.isolated && k !== 'credits' ? c.stock[k] || 0 : civ.res[k] || 0);
       let housing = 8 + 4 * Math.min(2, civ.age) + (civ.techs.has('mechanized_agriculture') ? 4 : 0);
-      for (const b of blds) if (b.type === 'house') housing += 4 + civ.age;
+      for (const b of blds) if (b.type === 'house' && b.done) housing += (4 + civ.age) * (b.level || 1);   // upgraded blocks hold more
       c.housing = housing;
-      // jobs: feed the city first, then staff industry by priority, then surplus to food
+      // jobs: the shared labor allocator (food first, player locks, crews, priorities, runnable only)
       const prio = FOCUS_BONUS[civ.focus] || {};
-      const jobBlds = blds.filter((b) => BUILDINGS[b.type].jobs).sort((a, b) => ((BASE_PRIORITY[b.type] || 50) + (prio[b.type] || 0) + (b.prio || 0)) - ((BASE_PRIORITY[a.type] || 50) + (prio[a.type] || 0) + (a.prio || 0)) || a.id - b.id);
-      for (const b of jobBlds) b.staffed = 0;
-      let avail = Math.floor(c.pop);
       const jobs = { worker: 0, merchant: 0, specialist: 0 };
       const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
       const govMul = gov === 'federal' ? 1.1 : 1;
-      const foodB = jobBlds.filter((b) => b.type === 'farm' || b.type === 'port').sort((a, b) => farmPer(g, civ, b) - farmPer(g, civ, a));
       const foodTarget = (0.12 * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
-      let foodPlanned = 0;
-      for (const b of foodB) {
-        if (foodPlanned >= foodTarget || !avail) break;
-        const per = farmPer(g, civ, b) * eff;
-        const n = Math.min(BUILDINGS[b.type].jobs[1], avail, Math.max(1, Math.ceil((foodTarget - foodPlanned) / Math.max(0.05, per))));
-        b.staffed = n; avail -= n; foodPlanned += per * n;
-      }
-      for (const b of jobBlds) { if (b.staffed || foodB.includes(b)) continue; const n = Math.min(BUILDINGS[b.type].jobs[1], avail); b.staffed = n; avail -= n; }
-      if (civ.res.food < 1500) for (const b of foodB) { const n = Math.min(BUILDINGS[b.type].jobs[1] - b.staffed, avail); b.staffed += n; avail -= n; }
+      const sites = blds.filter((b) => !b.done && b.funded).length;
+      const alloc = allocate(c, blds, {
+        labor: labor(c), foodTarget, sites, foodLow: pool('food') < 1500,
+        perFood: (b) => farmPer(g, civ, b) * eff,
+        base: (b) => (BASE_PRIORITY[b.type] || 50) + (prio[b.type] || 0) + (b.prio || 0),
+        pool, gross: (k) => civ.gross?.[k] || 0,
+        full: (k) => (k === 'research' ? !researchOpen : k !== 'credits' && pool(k) >= (c.isolated ? LOCAL_STORE : civ.storage || 1500) * 0.85),
+        want: (k) => (civ.saving?.[k] ? 40 : 0) + (civ.short?.has(k) ? 30 : 0) + (k === 'research' ? 10 : 0) - (k !== 'credits' && k !== 'research' && pool(k) > (c.isolated ? LOCAL_STORE : civ.storage || 1500) * 0.5 ? 35 : 0),
+        powerOk: !civ.techs.has('electrification') || pr >= 0.5,
+        rareOk: rareAccess(g, civ),
+      });
+      for (const b of blds) if (BUILDINGS[b.type].jobs) { b.staffed = alloc.plan.get(b.id) || 0; b.why = alloc.why.get(b.id) || ''; if (b.why.startsWith('input:')) shortNext.add(b.why.slice(6)); }
+      c.unassigned = alloc.unassigned;
+      c.jobsOpen = blds.reduce((s2, b) => s2 + (b.done && BUILDINGS[b.type].jobs ? BUILDINGS[b.type].jobs[1] - (b.staffed || 0) : 0), 0);
       for (const b of blds) {
         const def = BUILDINGS[b.type];
         const damaged = b.hp < b.maxHp * 0.5 ? 0.5 : 1;          // damaged buildings work at half capacity
@@ -195,8 +220,7 @@ export function economyStep(g, dt) {
         const [kind] = def.jobs;
         const n = b.staffed; jobs[kind] += n;
         b.active = n > 0;
-        // why a building is not (fully) working, shown in the world: staff, input, power, rare
-        b.why = n ? '' : b.done ? 'staff' : '';
+        // the allocator explained idle buildings; production below explains limited ones
         if (!n) continue;
         if (def.power > 0) {
           let ok = 1;
@@ -211,7 +235,7 @@ export function economyStep(g, dt) {
         let ratio = damaged;
         if (def.power < 0) { powerUse += -def.power * n; ratio *= pr; }
         if (def.power < 0 && civ.techs.has('electrification') && pr < 0.6) b.why = 'power';
-        if (def.needs === 'rare' && !g.civHasResource(civ, RES.RARE)) { ratio = 0; b.why = 'rare'; }
+        if (def.needs === 'rare' && !rareAccess(g, civ)) { ratio = 0; b.why = 'rare'; }
         const before = ratio;
         let short = '';
         if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * dt)); if (r < ratio) { ratio = r; short = k; } } }
@@ -230,7 +254,7 @@ export function economyStep(g, dt) {
           if (k === 'steel' && P.has('industrial_planning')) v *= 1.3;
           if (gov === 'corporate' && (k === 'steel' || k === 'munitions' || k === 'electronics')) v *= 1.1;
           if (k === 'research') { research += v; continue; }
-          cd[k] += v;
+          cd[k] += v; grossNext[k] = (grossNext[k] || 0) + v / dt;
         }
       }
       c.jobs = jobs;
@@ -238,13 +262,17 @@ export function economyStep(g, dt) {
       // the settlement hub itself always yields a little (scavengers, artisans)
       cd.food += 0.4 * dt; cd.materials += 0.4 * dt; cd.credits += 0.3 * dt;
       cd.food -= 0.12 * c.pop * dt;
+      c.foodBal = cd.food / dt;
       cd.credits += c.pop * TAX[civ.tax].credits * dt * (gov === 'corporate' ? 1.3 : 1) * (P.has('martial_law') ? 0.85 : 1);
       if (c.tradeConnected) cd.credits += (1 + (gov === 'corporate' ? 1 : 0)) * dt;
       // route this city's surplus and needs through its link to the network
       shipGoods(civ, c, cd, delta, dt);
       totalPop += c.pop;
     }
-    civ.powerGen = powerGen; civ.powerUse = powerUse;
+    civ.powerGen = powerGen; civ.powerUse = powerUse; civ.gross = grossNext; civ.short = shortNext;
+    // what the grid would carry if every consumer were staffed (planners size plants on this)
+    let potential = 0; for (const c2 of cities) for (const b of byCity.get(c2.id) || []) { const d = BUILDINGS[b.type]; if (b.done && d.power < 0) potential += -d.power * (d.jobs ? d.jobs[1] : 1); }
+    civ.powerPotential = potential;
     civ.powerRatio = powerUse > 0 ? Math.min(1, powerGen / powerUse) : 1;
     let nb = 0; for (const c of cities) nb += (byCity.get(c.id) || []).length;
     delta.credits -= nb * (0.01 + 0.008 * civ.age) * dt;
@@ -257,6 +285,11 @@ export function economyStep(g, dt) {
       const rel = g.diplomacy.rel(civ.id, o.id);
       if (rel.trade) delta.credits += (1.5 + 0.5 * Math.min(cities.length, g.cityOf(o).length)) * (P.has('free_markets') ? 1.5 : 1) * dt;
     }
+    // army maintenance grows faster than the army: pay, spares and fuel (logistics, not a hard cap)
+    const nArmy = unitCount.get(civ.id) || 0;
+    civ.upkeep = { credits: +(nArmy * 0.03 * (1 + nArmy / 60)).toFixed(2), fuel: +((vehicles.get(civ.id) || 0) * 0.012).toFixed(3) };
+    delta.credits -= civ.upkeep.credits * dt;
+    if (civ.upkeep.fuel) delta.fuel -= Math.min(civ.res.fuel || 0, civ.upkeep.fuel * dt);
     if (P.has('research_grants')) research *= 1.3;
     if (gov === 'technocracy') research *= 1.2;
     if (gov === 'junta') research *= 0.85;
@@ -287,7 +320,7 @@ export function economyStep(g, dt) {
       if (P.has('conservation')) target += 5;
       if (starving) target -= 30;
       if (c.pop > 0) target -= (c.unemployed / c.pop) * 22;
-      if (c.pop > c.housing) target -= 10;
+      target -= crowdingPenalty(c);
       if (civ.powerRatio < 0.6 && civ.powerUse > 0) target -= 6;      // blackouts
       target -= Math.min(30, civ.weariness * 0.4 * (gov === 'federal' ? 2 : 1));
       target -= c.disaster;
@@ -298,14 +331,7 @@ export function economyStep(g, dt) {
       c.stability += (target - c.stability) * 0.06 * dt;
       c.disaster = Math.max(0, c.disaster - 0.35 * dt);
       c.occupied = Math.max(0, c.occupied - 0.4 * dt);
-      if (starving) c.pop = Math.max(1, c.pop - 0.012 * c.pop * dt);
-      else if (c.stability >= 20) {
-        let gr = 0.008 * c.pop * (1 - c.pop / c.housing) + (c.pop < c.housing ? 0.02 : 0);
-        if (P.has('martial_law')) gr *= 0.75;
-        if (P.has('homesteading') && g.time - c.founded < 300) gr *= 1.5;
-        if (c.pop < c.housing) c.pop = Math.min(c.housing, c.pop + gr * dt);
-        else c.pop = Math.max(c.housing, c.pop - 0.01 * c.pop * dt);
-      }
+      populationStep(g, civ, c, { starving, enemyNear, foodBalance: c.isolated ? c.foodBal ?? 0 : delta.food / dt, foodStock: c.isolated ? c.stock?.food || 0 : civ.res.food, services: hasServices(g, c) }, dt);
       if (c.stability < 8 && !c.capital) {
         c.unrestT += dt;
         if (c.unrestT > 45) defect(g, c);
@@ -343,7 +369,7 @@ function defect(g, c) {
 export function transferCity(g, c, to) {
   const fromId = c.owner;
   c.owner = to.id; c.capital = false; c.stability = 30; c.occupied = 30;
-  if (c.governor) { c.governor.enabled = !!to.isAI; c.governor.log = []; c.governor.queue = []; }
+  if (c.governor) { c.governor.enabled = !!to.isAI; c.governor.level = to.isAI ? 'autonomous' : 'off'; c.governor.log = []; c.governor.queue = []; c.governor.proposals = []; }
   for (const b of g.buildings.values()) if (b.cityId === c.id && b.owner === fromId) { b.owner = to.id; b.queue = []; b.rally = -1; }
   recomputeTerritory(g);
   const fromCiv = g.civs[fromId];
@@ -352,22 +378,31 @@ export function transferCity(g, c, to) {
   else if (!g.cityOf(fromCiv).some((x) => x.capital)) { const nc = g.cityOf(fromCiv)[0]; nc.capital = true; }
 }
 
-export function migrationStep(g) {
-  const cities = [...g.cities.values()].filter((c) => !g.civs[c.owner].isRebel);
-  const appeal = (c) => c.stability + (c.foodShort ? -30 : 0) + Math.min(15, (c.housing - c.pop) * 2) - c.unemployed * 1.5;
-  for (const civ of g.civs) {
-    const mine = cities.filter((c) => c.owner === civ.id);
-    if (mine.length < 2) continue;
-    mine.sort((a, b) => appeal(a) - appeal(b));
-    const lo = mine[0], hi = mine[mine.length - 1];
-    if (appeal(hi) - appeal(lo) > 15 && lo.pop > 8 && hi.pop < hi.housing) { const m = Math.min(1.5, lo.pop * 0.04); lo.pop -= m; hi.pop += m; }
-  }
-  for (const a of cities) for (const b of cities) {
-    if (a.owner === b.owner || dist(a.tile, b.tile) > 14) continue;
-    if (appeal(b) - appeal(a) > 28 && a.pop > 8 && b.pop < b.housing) {
-      const m = Math.min(1, a.pop * 0.03); a.pop -= m; b.pop += m;
-      if (g.rng() < 0.3) g.notify(a.owner, `Citizens of ${a.name} are emigrating to ${b.name} (${g.civs[b.owner].name}).`, { kind: 'city', tile: a.tile, quiet: true });
-    }
-  }
-}
+export function migrationStep(g) { migrate(g); }
 void T;
+
+// Run the allocator for one city with (optionally) different settings, without changing anything:
+// used for the auto-balance preview and by governors to forecast a reassignment.
+export function allocationFor(g, civ, c, wf = c.wf) {
+  const blds = [...g.buildings.values()].filter((b) => b.cityId === c.id && b.owner === civ.id);
+  const pool = (k) => (c.isolated && k !== 'credits' ? c.stock?.[k] || 0 : civ.res[k] || 0);
+  const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
+  const prio = FOCUS_BONUS[civ.focus] || {};
+  const pr = civ.techs.has('electrification') ? civ.powerRatio ?? 1 : 0.7;
+  const foodTarget = 0.12 * c.pop * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
+  const saved = c.wf, savedFw = c.foodWorkers; c.wf = wf;
+  const res = allocate(c, blds, {
+    labor: labor(c), foodTarget, sites: blds.filter((b) => !b.done && b.funded).length, foodLow: pool('food') < 1500,
+    perFood: (b) => farmPer(g, civ, b) * eff, base: (b) => (BASE_PRIORITY[b.type] || 50) + (prio[b.type] || 0) + (b.prio || 0),
+    pool, gross: (k) => civ.gross?.[k] || 0, full: (k) => (k === 'research' ? !researchOpenFor(civ) : k !== 'credits' && pool(k) >= (c.isolated ? LOCAL_STORE : civ.storage || 1500) * 0.85), want: (k) => (civ.saving?.[k] ? 40 : 0) + (civ.short?.has(k) ? 30 : 0) - (k !== 'credits' && pool(k) > (c.isolated ? LOCAL_STORE : civ.storage || 1500) * 0.5 ? 35 : 0), powerOk: !civ.techs.has('electrification') || pr >= 0.3, rareOk: rareAccess(g, civ),
+  });
+  c.wf = saved; c.foodWorkers = savedFw;
+  // rough effect on output per second: each worker's base production
+  const effect = {};
+  for (const b of blds) {
+    const d = BUILDINGS[b.type]; if (!d.jobs || !d.produce) continue;
+    const delta = (res.plan.get(b.id) || 0) - (b.staffed || 0); if (!delta) continue;
+    for (const [k, v] of Object.entries(d.produce)) effect[k] = +((effect[k] || 0) + v * delta * eff * (b.type === 'farm' ? farmYield(g, civ, b) : 1)).toFixed(2);
+  }
+  return { ...res, blds, effect };
+}

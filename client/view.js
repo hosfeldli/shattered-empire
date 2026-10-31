@@ -5,6 +5,7 @@ import { AmbientWorld } from './visual/AmbientWorld.js';
 import { lodFor } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
 import { drawBuildingArt, waterDir, shade } from './visual/BuildingArt.js';
+import { CombatEffects } from './visual/combat/CombatEffects.js';
 
 export const R = 12;
 export const SQ3 = Math.sqrt(3);
@@ -42,7 +43,11 @@ export class View {
     this.districtLayer = L(); this.underG = L('g');
     this.bLayer = L(); this.ambientG = L('g'); this.uLayer = L(); this.fxG = L('g'); this.overlay = L('g');
     this.overlayTags = L(); this.campG = L('g');
-    this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.underG, this.bLayer, this.ambientG, this.uLayer, this.fxG, this.overlay, this.campG, this.overlayTags);
+    // combat layers: ground decals under buildings, wrecks with them, effects and smoke over units
+    this.decalG = L('g'); this.wreckG = L('g'); this.cfxG = L('g'); this.smokeG = L('g'); this.engageG = L('g');
+    this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.decalG, this.underG, this.bLayer, this.wreckG, this.ambientG, this.uLayer, this.cfxG, this.smokeG, this.fxG, this.engageG, this.overlay, this.campG, this.overlayTags);
+    this.combat = new CombatEffects(this, this.S);
+    this.combat.attach({ decal: this.decalG, wreck: this.wreckG, fx: this.cfxG, smoke: this.smokeG, engage: this.engageG });
     // night: a screen tint, then additive lights in world space above it
     this.night = new PIXI.Graphics(); app.stage.addChild(this.night);
     this.lights = new PIXI.Graphics(); this.lights.blendMode = 'add';
@@ -256,12 +261,13 @@ export class View {
   // ---------------------------------------------------------------- entities
   unitSprite(u) {
     let s = this.unitSprites.get(u.id);
+    if (s && s.utype !== u.type) { s.destroy({ children: true }); this.unitSprites.delete(u.id); s = null; }   // refitted
     if (!s) {
       s = new PIXI.Container();
       s.body = new PIXI.Graphics(); s.addChild(s.body);
       s.label = new PIXI.Text({ text: this.S.defs.UNITS[u.type].glyph, style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 8, fontWeight: '700', fill: 0xffffff } });
       s.label.anchor.set(0.5); s.label.resolution = 3; s.addChild(s.label);
-      s.dx = this.cx[u.tile]; s.dy = this.cy[u.tile]; s.heading = 0;
+      s.dx = this.cx[u.tile]; s.dy = this.cy[u.tile]; s.heading = 0; s.utype = u.type;
       s.position.set(s.dx, s.dy);
       this.uLayer.addChild(s); this.unitSprites.set(u.id, s); s.key = '';
     }
@@ -508,6 +514,7 @@ export class View {
     for (const [id, s] of this.unitSprites) if (!seen.has(id)) { s.destroy({ children: true }); this.unitSprites.delete(id); }
     for (const [k, bt] of this.stackBadges) if (!badges.has(k)) { bt.destroy(); this.stackBadges.delete(k); }
     this.ambient.frame(dt, this.t);
+    this.combat.frame(dt, this.t);
     this.drawOverlay();
     this.drawCampaigns();
     this.drawFx(dt);
@@ -568,20 +575,19 @@ export class View {
 
   drawFx(dt) {
     const f = this.fxG; f.clear();
-    this.fx = this.fx.filter((e) => (e.t -= dt) > 0);
-    for (const e of this.fx) {
-      const a = e.t / e.max;
-      if (e.kind === 'shot') f.moveTo(this.cx[e.a], this.cy[e.a]).lineTo(this.cx[e.b], this.cy[e.b]).stroke({ width: 1.2, color: 0xffe9a8, alpha: a });
-      else if (e.kind === 'shell') { const p = 1 - a; const x = this.cx[e.a] + (this.cx[e.b] - this.cx[e.a]) * p, y = this.cy[e.a] + (this.cy[e.b] - this.cy[e.a]) * p - Math.sin(p * Math.PI) * 18; f.circle(x, y, 1.6).fill({ color: 0xffe0a0, alpha: 1 }); if (a < 0.15) f.circle(this.cx[e.b], this.cy[e.b], 7).fill({ color: 0xf08a3c, alpha: 0.6 }); }
-      else if (e.kind === 'melee') f.circle(this.cx[e.b], this.cy[e.b], 4 + 5 * (1 - a)).stroke({ width: 1.4, color: 0xffd0a0, alpha: a });
-      else if (e.kind === 'die') f.circle(this.cx[e.a], this.cy[e.a], 3 + 9 * (1 - a)).fill({ color: 0xd0533b, alpha: a * 0.6 });
-      else if (e.kind === 'boom') f.circle(this.cx[e.a], this.cy[e.a], 6 + 16 * (1 - a)).fill({ color: 0xf08a3c, alpha: a * 0.6 });
-    }
     this.pings = this.pings.filter((p) => (p.t -= dt) > 0);
     for (const p of this.pings) { const a = p.t / p.max; f.circle(this.cx[p.tile], this.cy[p.tile], R * (p.radius || 2) * (1.4 - a * 0.4)).stroke({ width: 3, color: p.color, alpha: a }); }
+    // right-drag battle line preview
+    const dl = this.S.dragLine;
+    if (dl) {
+      f.moveTo(dl.x0, dl.y0).lineTo(dl.x1, dl.y1).stroke({ width: 2, color: 0xf1c75b, alpha: 0.9 });
+      for (const [x, y] of dl.slots) f.circle(x, y, 3).fill({ color: 0xf1c75b, alpha: 0.35 }).stroke({ width: 1, color: 0xf1c75b });
+      const mx = (dl.x0 + dl.x1) / 2, my = (dl.y0 + dl.y1) / 2;
+      f.moveTo(mx, my).lineTo(mx + dl.fx * 16, my + dl.fy * 16).stroke({ width: 2, color: 0xf1c75b });
+      f.poly([mx + dl.fx * 20, my + dl.fy * 20, mx + dl.fx * 14 - dl.fy * 4, my + dl.fy * 14 + dl.fx * 4, mx + dl.fx * 14 + dl.fy * 4, my + dl.fy * 14 - dl.fx * 4]).fill({ color: 0xf1c75b });
+    }
   }
 
-  addFx(list) { for (const [kind, a, b] of list) { const max = kind === 'shot' ? 0.25 : kind === 'shell' ? 0.7 : 0.45; this.fx.push({ kind, a, b, t: max, max }); } }
   ping(tile, radius, color) { this.pings.push({ tile, radius, color, t: 2.4, max: 2.4 }); }
 }
 

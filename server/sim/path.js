@@ -4,6 +4,7 @@ import { N, W, H, T, MOVE, UNITS, TERRAIN, isWater } from './constants.js';
 import { NB, dist } from './hex.js';
 import { MinHeap } from './world.js';
 import { riverSize } from './roads.js';
+import { scarCost } from './battlefield.js';
 
 const gScore = new Float32Array(N);
 const came = new Int32Array(N);
@@ -44,6 +45,7 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
       c += f;
     }
   }
+  if (game.craters && (game.craters.size || game.wrecks.size)) c += scarCost(game, b, def.move);
   if (avoid && avoid.has(b)) c += 6;
   return c;
 }
@@ -118,7 +120,7 @@ export function flowField(game, civ, goal, unitType) {
 }
 
 // Formation slots around a goal: front rank melee/armor, then ranged, then artillery, then support.
-export function formationSlots(game, civ, units, goal, shape = 'line') {
+export function formationSlots(game, civ, units, goal, shape = 'line', line = null) {
   const w = game.world;
   const role = (u) => { const d = UNITS[u.type]; if (d.civilian || d.cat === 'support') return 3; if (d.cat === 'artillery') return 2; if (d.range >= 2 && d.cat === 'infantry') return 1; return 0; };
   const sorted = units.slice().sort((a, b) => role(a) - role(b) || a.id - b.id);
@@ -127,10 +129,20 @@ export function formationSlots(game, civ, units, goal, shape = 'line') {
   const pos = (t) => [Math.sqrt(3) * ((t % W) + 0.5 * (((t / W) | 0) & 1)), 1.5 * ((t / W) | 0)];
   for (const u of units) { const [x, y] = pos(u.tile); cx += x; cy += y; }
   cx /= units.length; cy /= units.length;
-  const [gx, gy] = pos(goal);
+  let [gx, gy] = pos(goal);
   let fx = gx - cx, fy = gy - cy; const fl = Math.hypot(fx, fy) || 1; fx /= fl; fy /= fl;
-  const rx = -fy, ry = fx;
-  const width = shape === 'column' ? 1 : Math.max(2, Math.ceil(Math.sqrt(units.length * 2)));
+  let rx = -fy, ry = fx;
+  let width = shape === 'column' ? 1 : Math.max(2, Math.ceil(Math.sqrt(units.length * 2)));
+  let spacing = 1.75;
+  if (line) {
+    // a dragged battle line: its length sets the frontage, its direction the facing
+    const [ax, ay] = pos(line[0]), [bx, by] = pos(line[1]);
+    const lx = bx - ax, ly = by - ay, ll = Math.hypot(lx, ly) || 1;
+    rx = lx / ll; ry = ly / ll; fx = ry; fy = -rx;              // facing: the drag direction turned left
+    gx = (ax + bx) / 2; gy = (ay + by) / 2;
+    width = Math.max(1, Math.min(units.length, Math.round(ll / 1.75) + 1));
+    spacing = width > 1 ? Math.max(1.75, ll / (width - 1)) : 1.75;
+  }
   const taken = new Set();
   const slots = new Map();
   const near = (x, y) => {
@@ -151,7 +163,7 @@ export function formationSlots(game, civ, units, goal, shape = 'line') {
   };
   sorted.forEach((u, i) => {
     const rank = Math.floor(i / width), file = i % width;
-    const off = (file - (width - 1) / 2) * 1.75;
+    const off = (file - (width - 1) / 2) * spacing;
     const x = gx + rx * off - fx * rank * 1.6, y = gy + ry * off - fy * rank * 1.6;
     let t = UNITS[u.type].air ? goal : near(x, y);
     if (t < 0) t = goal;

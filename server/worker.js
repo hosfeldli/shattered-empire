@@ -13,7 +13,9 @@ if (workerData.restore) {
   game = restoreGame(JSON.parse(zlib.gunzipSync(Buffer.from(workerData.restore)).toString()));
 } else {
   game = new Game({ id: workerData.id, seed: workerData.seed, slots: workerData.slots, rebels: workerData.rebels !== false });
+  if (workerData.sandbox) { const { makeSandbox } = await import('./sim/sandbox.js'); makeSandbox(game); }
 }
+if (workerData.sandbox) { game.sandbox = true; game.sandboxReveal = true; for (const c of game.civs) if (!c.human) c.ai = null; }
 const post = (m) => parentPort.postMessage(m);
 const out = [];
 const send = (civId, msg) => out.push([civId, JSON.stringify(msg)]);
@@ -64,7 +66,7 @@ parentPort.on('message', (m) => {
     } else if (m.t === 'welcome') {
       const civ = game.civs[m.civId];
       civ.connected = true;
-      send(m.civId, { t: 'welcome', match: game.id, civId: m.civId, seed: game.seed, defs: GAME_DEFS,
+      send(m.civId, { t: 'welcome', match: game.id, civId: m.civId, seed: game.seed, defs: GAME_DEFS, sandbox: !!game.sandbox,
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel })), start: game.world.starts[m.civId], time: game.time });
       for (const [, msg] of game.snapshots(m.civId)) send(m.civId, msg);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });

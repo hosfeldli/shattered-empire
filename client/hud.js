@@ -41,6 +41,47 @@ export class Hud {
     $('alertList').addEventListener('click', (e) => { const li = e.target.closest('[data-jump]'); if (li) this.A.jump(+li.dataset.jump); });
     this.drawerKey = '';
     $('btnKey').addEventListener('click', () => this.toggleKey());
+    $('battle').addEventListener('click', (e) => { const b = e.target.closest('[data-battle]'); if (b) this.A.battle(b.dataset.battle, this.battleId); });
+  }
+
+  // ------------------------------------------------------------ combat sandbox
+  sandboxPanel() {
+    const S = this.S, D = S.defs, el = $('sandbox');
+    if (!S.sandbox) { el.hidden = true; return; }
+    el.hidden = false;
+    if (el.innerHTML) return;
+    const sc = [['rifles', '10 v 10 rifle squads'], ['mixed', '20 mixed vs 12 defenders'], ['armor', 'Tanks vs fortified position'], ['artillery', 'Artillery bombardment'], ['large', '30 v 30 combined arms']];
+    const types = Object.entries(D.UNITS).filter(([, u]) => !u.civilian || u.supplyRadius).map(([k, u]) => `<option value="${k}">${esc(u.name)}</option>`).join('');
+    el.innerHTML = `<div class="hd"><b>Combat sandbox</b><button class="btn small ghost" data-sb="toggle" title="Show or hide the sandbox tools">▾</button></div><p class="muted">Stage a battle, then command your side. The enemy fights back but does not plan.</p>
+      <div class="sbsc">${sc.map(([k, n]) => `<button class="btn small" data-sb="scenario" data-key="${k}">${esc(n)}</button>`).join('')}</div>
+      <h4>Spawn</h4><div class="actions"><select id="sbCiv"><option value="0">Your side</option><option value="1">Enemy</option></select><select id="sbType">${types}</select><input id="sbN" type="number" min="1" max="30" value="5" style="width:52px"></div>
+      <div class="actions"><button class="btn small primary" data-sb="spawn">Place (click map)</button><button class="btn small" data-sb="advance">Enemy attacks…</button><button class="btn small ghost" data-sb="clear">Clear forces</button></div>`;
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-sb]'); if (!b) return;
+      if (b.dataset.sb === 'toggle') { el.classList.toggle('min'); b.textContent = el.classList.contains('min') ? '▸' : '▾'; return; }
+      if (b.dataset.sb === 'scenario') { this.A.sandbox('scenario', b.dataset.key); el.classList.add('min'); el.querySelector('[data-sb=toggle]').textContent = '▸'; }
+      else if (b.dataset.sb === 'spawn') this.A.sandbox('spawn', { civ: +$('sbCiv').value, type: $('sbType').value, n: +$('sbN').value || 1 });
+      else this.A.sandbox(b.dataset.sb);
+    });
+  }
+
+  // ------------------------------------------------------------ battle summary
+  battlePanel() {
+    const S = this.S, D = S.defs, el = $('battle');
+    const b = (S.battles || []).find((x) => x.id === this.battleId);
+    if (!b) { el.hidden = true; if (this.battleId != null && !(S.battles || []).length) this.battleId = null; return; }
+    el.hidden = false;
+    const foeStr = b.foes.reduce((s2, f) => s2 + f.str, 0), total = Math.max(1, foeStr + b.myStr), mine = b.mine;
+    const m = Math.floor(b.age / 60), sec = b.age % 60;
+    let h = `<div class="hd"><b>${esc(b.name)}</b><button class="btn small ghost" data-battle="close">Close</button></div>`;
+    h += `<div class="muted">Fighting for ${m}:${String(sec).padStart(2, '0')} · intensity ${b.heat > 30 ? 'heavy' : b.heat > 10 ? 'sustained' : 'light'}</div>`;
+    h += `<div class="balance" title="Estimated strength in the area (enemy only as far as you can see)"><i style="width:${Math.round((100 * b.myStr) / total)}%; background:${cssColor(S.civColor(S.civId))}"></i></div>`;
+    if (mine.n) h += `<dl class="kv"><dt>Your units</dt><dd>${mine.n} (${mine.engaged} engaging${mine.suppressed ? `, ${mine.suppressed} suppressed` : ''}${mine.retreating ? `, ${mine.retreating} falling back` : ''})</dd><dt>Your losses</dt><dd>${mine.lost}</dd></dl>`;
+    for (const f of b.foes) h += `<div class="civrow"><span class="swatch" style="background:${cssColor(S.civColor(f.civ))}"></span><b>${esc(S.civInfo[f.civ]?.name || 'Unknown')}</b> <span class="muted">${f.n} seen${f.lost != null ? ` · ${f.lost} lost` : ''}</span></div>`;
+    if (!b.foes.length) h += `<p class="muted">No enemy forces in sight.</p>`;
+    h += `<div class="actions"><button class="btn small" data-battle="jump">Go to</button>${mine.n ? '<button class="btn small" data-battle="select">Select my units here</button>' : ''}<button class="btn small primary" data-battle="reinforce" title="Send the current selection to this battle">Reinforce</button>${mine.n ? '<button class="btn small" data-battle="hold">Hold</button><button class="btn small ghost" data-battle="withdraw">Withdraw</button>' : ''}</div>`;
+    void D;
+    if (h !== this.battleHtml) { this.battleHtml = h; el.innerHTML = h; }
   }
 
   // ------------------------------------------------------------ map key
@@ -63,6 +104,10 @@ export class Hud {
       <li><span class="sw banner">★ City 12</span><span><small>City banner: ★ capital, population. A red strip underneath lists famine, cut off, unrest or heavy damage; green shows its governor's plan.</small></span></li>
       <li><span class="sw flag">⚑ 1st Army · 6 · STAGING</span><span><small>Army standard over each army: name, units, what it is doing.</small></span></li>
       <li><span class="sw bar"></span><span><small>Gold bar under a site: construction progress (scaffolding and crews show the work).</small></span></li>
+      <li><span class="sw battle">✕ Battle</span><span><small>Battle marker (zoomed out): click for forces, losses and relative strength; reinforce, hold or withdraw from there.</small></span></li>
+      <li><span class="sw fire">- - ▸ ◯</span><span><small>Selected units' fire: one dashed arrow per target, thicker with more shooters. A ring is a spread attack; red brackets are focus fire. Red chevrons on a unit show incoming fire and where it comes from.</small></span></li>
+      <li><span class="sw supp">▬▬▬</span><span><small>Amber bars under a unit: suppression. Three bars: pinned down, crawling for cover.</small></span></li>
+      <li><span class="sw crater"></span><span><small>Craters slow vehicles and give infantry cover; wrecks narrow the way until engineers clear them; dense smoke hides what is inside it.</small></span></li>
       <li><span class="sw outline"></span><span><small>Each building's base is edged in its owner's colour. Buildings change material with the era: timber, brick, concrete, glass, composites.</small></span></li>
     </ul>`;
     el.innerHTML = h;
@@ -221,9 +266,24 @@ export class Hud {
       const avg = (f) => Math.round(units.reduce((s, u) => s + u[f], 0) / units.length);
       const first = D.UNITS[units[0].type];
       const men = units.reduce((s, u) => s + (D.UNITS[u.type].men || 0), 0);
-      html += `<h3>${units.length > 1 ? `${units.length} units selected` : esc(first.name)}</h3>`;
-      html += `<div class="sub">${own ? `${men} soldiers represented` : esc(S.civInfo[units[0].owner]?.name || '')}</div>`;
-      if (own) html += `<div class="cards">${[...types].map(([t, n]) => `<span class="ucard" data-card="${t}" title="Click: keep only these. Double-click: every ${esc(D.UNITS[t].name)} on screen (Ctrl/Cmd: whole map)"><b>${n}×</b>${esc(D.UNITS[t].name)}</span>`).join('')}</div>`;
+      const big = own && units.length >= 10;
+      html += `<h3>${big ? 'Task force' : units.length > 1 ? `${units.length} units selected` : esc(first.name)}</h3>`;
+      html += `<div class="sub">${own ? `${units.length} unit${units.length > 1 ? 's' : ''} · ${men} soldiers represented` : esc(S.civInfo[units[0].owner]?.name || '')}</div>`;
+      if (big) {
+        // composition at a glance instead of a long list of cards
+        const comp = { Infantry: 0, Armour: 0, Artillery: 0, Air: 0, Support: 0 };
+        for (const u of units) { const d = D.UNITS[u.type]; comp[d.air ? 'Air' : d.cat === 'artillery' ? 'Artillery' : d.civilian || d.cat === 'support' ? 'Support' : d.move === 'infantry' ? 'Infantry' : 'Armour']++; }
+        html += `<div class="comp">${Object.entries(comp).filter(([, n]) => n).map(([k, n]) => `<div><b>${n}</b><span>${k}</span></div>`).join('')}</div>`;
+      } else if (own) html += `<div class="cards">${[...types].map(([t, n]) => `<span class="ucard" data-card="${t}" title="Click: keep only these. Double-click: every ${esc(D.UNITS[t].name)} on screen (Ctrl/Cmd: whole map)"><b>${n}×</b>${esc(D.UNITS[t].name)}</span>`).join('')}</div>`;
+      if (own && D.COMBAT_STATUS) {
+        // what the group is doing, from the server's combat state
+        const st = {}; for (const u of units) if (!D.UNITS[u.type].civilian) { const k = u.cstat || 0; st[k] = (st[k] || 0) + 1; }
+        const tone = { 2: 'good', 4: 'bad', 10: 'bad', 9: 'warn', 5: 'warn', 6: 'warn', 8: 'warn' };
+        const chips = Object.entries(st).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="tag ${tone[k] || ''}" title="${esc(D.COMBAT_STATUS[k])}">${esc(D.COMBAT_STATUS[k])} ${n}</span>`).join('');
+        if (chips) html += `<div class="cstat">${chips}</div>`;
+        const mor = Math.round(units.reduce((s2, u) => s2 + (u.morale ?? 100), 0) / units.length), sup = Math.round(units.reduce((s2, u) => s2 + (u.supp || 0), 0) / units.length);
+        if (mor < 70 || sup > 15) html += `<div class="${mor < 35 ? 'bad' : 'warn'}">Morale ${mor}%${sup > 15 ? ` · suppression ${sup}%` : ''}${mor < 35 ? ' — units not under your direct orders may fall back' : ''}</div>`;
+      }
       html += `<div>Strength ${avg('hp')}%</div><div class="bar hp"><i style="width:${avg('hp')}%"></i></div>`;
       if (own) {
         const outs = units.filter((u) => u.flags & 4).length, waiting = units.filter((u) => u.flags & 8).length, blocked = units.filter((u) => u.flags & 16).length;
@@ -231,10 +291,20 @@ export class Hud {
         if (outs) html += `<div class="bad">${outs} out of supply: weakening. Bring them within range of a city, depot, port, fortress or supply truck${units.some((u) => D.UNITS[u.type].air) ? ' (aircraft need an airfield)' : ''}.</div>`;
         if (waiting) html += `<div class="warn">${waiting} waiting for a congested road or bridge.</div>`;
         if (blocked) html += `<div class="bad">${blocked} cannot reach their destination: the route is blocked.</div>`;
+        // veterancy: experienced units are worth keeping (and refitting rather than replacing)
+        const vets = units.filter((u) => u.vet > 0);
+        if (vets.length) html += `<div class="muted">${D.VET_NAMES.slice(1).map((n, i) => [n, vets.filter((u) => u.vet === i + 1).length]).filter(([, k]) => k).map(([n, k]) => `${k} ${n.toLowerCase()}`).join(', ')} — +${10 * Math.max(...vets.map((u) => u.vet))}% attack</div>`;
+        const inRefit = units.filter((u) => u.refit > 0).length;
+        if (inRefit) html += `<div class="warn">${inRefit} in the workshop being refitted.</div>`;
+        if (!S.spectator) html += this.refitPanel(units);
         if (units.length === 1) html += `<dl class="kv"><dt>Attack / Defense</dt><dd>${first.atk} / ${first.def}</dd><dt>Range / Speed</dt><dd>${first.range} / ${first.speed}</dd><dt>Movement</dt><dd>${esc(first.move)}${first.aa ? `, anti-air ×${first.aa}` : ''}</dd></dl>`;
         const stance = units.find((u) => u.stance)?.stance || 'defensive';
         html += `<div class="actions"><select data-sel="stance" title="Stance">${Object.entries(D.STANCES).map(([k, n]) => `<option value="${k}" ${k === stance ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><select data-sel="formation" title="Formation for the next order">${Object.entries(D.FORMATIONS).map(([k, n]) => `<option value="${k}" ${k === S.formation ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>`;
-        html += `<div class="actions"><button class="btn small" data-act="stop">Stop (S)</button><button class="btn small" data-act="amove">Attack-move (A)</button><button class="btn small" data-act="army">Form army (G)</button>`;
+        if (units.length >= 3) {
+          html += `<div class="gcmds">${[['amove', 'Advance', 'Attack-move: advance and engage on the way (A)'], ['engageMode', 'Engage', 'Click an enemy: fire is spread over nearby threats (right-click)'], ['focusMode', 'Focus fire', 'Click an enemy: every weapon on one target (Ctrl+right-click)'], ['defendMode', 'Defend', 'Hold a zone as an army'], ['withdraw', 'Withdraw', 'Fall back to the nearest friendly city, firing only in passing (X)'], ['moveMode', 'Reposition', 'Move without engaging (right-drag for a battle line)'], ['hold', 'Hold', 'Stop and hold this ground (H)']].map(([a, n, t]) => `<button class="btn small${a === 'withdraw' ? ' ghost' : ''}" data-act="${a}" title="${t}">${n}</button>`).join('')}</div>`;
+          html += `<div class="actions"><label class="field inline"><span>Engagement</span><select data-sel="policy">${Object.entries(D.ENGAGE_POLICIES).map(([k, n]) => `<option value="${k}" ${S.policy === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label></div>`;
+        }
+        html += `<div class="actions"><button class="btn small" data-act="stop">Stop (S)</button>${units.length < 3 ? '<button class="btn small" data-act="amove">Attack-move (A)</button><button class="btn small" data-act="hold">Hold (H)</button><button class="btn small ghost" data-act="withdraw">Withdraw (X)</button>' : ''}<button class="btn small" data-act="army">Form army (G)</button>`;
         if (units.some((u) => u.type === 'colonist')) html += `<button class="btn small primary" data-act="found">Found city (F)</button><button class="btn small" data-act="autoSettle">Auto-settle</button>`;
         html += `</div>`;
         if (units.some((u) => D.UNITS[u.type].engineer)) html += `<p class="muted">Idle engineers repair roads and buildings, fight fires and clear rubble next to them, and speed up nearby construction.</p>`;
@@ -246,8 +316,10 @@ export class Hud {
       html += `<h3>${esc(city ? city.n : d.name)}</h3><div class="sub">${esc(city ? d.name + (city.cap ? ' (capital)' : '') : '')}${b.o === S.civId && !S.spectator ? '' : (city ? ' · ' : '') + esc(S.civInfo[b.o]?.name || '')}</div>`;
       if (S.spectator && b.o !== S.civId && S.civInfo[b.o] && !S.civInfo[b.o].rebel) html += `<div class="actions spec-ok"><button class="btn small" data-follow-civ="${b.o}">Follow ${esc(S.civInfo[b.o].name)}</button></div>`;
       if (city && own) {
-        html += `<div class="subtabs">${['overview', 'governor', 'storage'].map((t) => `<button class="${this.cityTab === t ? 'on' : ''}" data-ctab="${t}">${t === 'overview' ? 'Overview' : t === 'governor' ? 'Governor' : 'Stockpile'}</button>`).join('')}</div>`;
+        const props = city.gov?.proposals?.length || 0;
+        html += `<div class="subtabs">${['overview', 'workforce', 'governor', 'storage'].map((t) => `<button class="${this.cityTab === t ? 'on' : ''}" data-ctab="${t}">${{ overview: 'Overview', workforce: 'Workforce', governor: 'Governor' + (props ? ` (${props})` : ''), storage: 'Stockpile' }[t]}</button>`).join('')}</div>`;
         if (this.cityTab === 'governor') html += this.governorPanel(city);
+        else if (this.cityTab === 'workforce') html += this.workforcePanel(city);
         else if (this.cityTab === 'storage') html += this.storagePanel(city);
         else html += this.cityOverview(city, b, d);
       } else {
@@ -261,7 +333,21 @@ export class Hud {
       html += S.spectator ? `<p class="muted">Click any unit, building or city to inspect it. The panels on the right show the followed empire's research, government, cities and armies.</p>`
         : `<p class="muted">Select units with a click or drag; double-click selects a type. Right-click to move or attack. Pick a building below to place it.</p>`;
     }
-    if (html !== this.selHtml) { this.selHtml = html; el.innerHTML = html; }
+    if (html !== this.selHtml) { this.selHtml = html; patchHtml(el, html); }
+  }
+
+  // Refit options for the selected units: one button per available upgrade path.
+  refitPanel(units) {
+    const S = this.S, D = S.defs, e = S.econ; if (!e) return '';
+    const byType = new Map(); for (const u of units) if (!u.refit) byType.set(u.type, (byType.get(u.type) || 0) + 1);
+    const btns = [];
+    for (const [t, n] of byType) for (const r of D.REFIT[t] || []) {
+      const ud = D.UNITS[r.to]; const ok = ud.age <= e.age && (!ud.tech || e.techs.includes(ud.tech));
+      const fac = Object.values(D.BUILDINGS).find((b) => (b.trains || []).includes(r.to));
+      btns.push(`<button class="btn small" data-refit="${t}" data-to="${r.to}" ${ok ? '' : 'disabled'} title="${ok ? `Re-equip within 3 hexes of a ${esc(fac?.name || 'facility')}. Veterancy is kept${r.conv ? '; a conversion costs most of a new unit' : ''}.` : `Needs ${esc(ud.tech ? D.TECHS[ud.tech].name : D.AGES[ud.age].name)}`}">Refit ${n} ${esc(D.UNITS[t].name)} → ${esc(ud.name)}</button>`);
+    }
+    btns.push(`<button class="btn small ghost" data-act="disband" title="Demobilise: about 80% of the soldiers return home as civilians">Disband</button>`);
+    return `<div class="actions refits">${btns.join('')}</div>`;
   }
 
   buildingPanel(b, d, own, city) {
@@ -271,7 +357,8 @@ export class Hud {
     else if (!b.d) html += `<div class="warn">Under construction: ${b.p}% (crew rate ×${(b.cr || 1).toFixed(1)}; engineers nearby speed this up)</div>`;
     if (b.st === 'damaged' && own) html += `<div class="bad">Damaged buildings work at half capacity and do not recover by themselves.</div>`;
     if (city) html += `<div>Population ${Math.floor(city.pop)}</div>`;
-    if (own && d.jobs && b.d) html += `<div class="muted">${b.s} / ${d.jobs[1]} ${d.jobs[0]}s employed${b.a ? '' : ' (idle)'}</div>`;
+    if (own && d.jobs && b.d) html += `<div class="${b.w && !['under', 'surplus', 'locked'].includes(b.w) ? 'warn' : 'muted'}">${esc(staffText(b, D))}</div>`;
+    if (own && b.ty === 'house' && b.d && !S.spectator) html += `<div class="muted">Density level ${b.lv || 1} of 3.</div>${(b.lv || 1) < 3 ? `<div class="actions"><button class="btn small" data-upgrade="${b.id}" title="Add storeys: more homes on the same hex">Upgrade housing (${(S.econ?.age || 0) >= 1 ? `${40 * (b.lv || 1)} materials, ${10 * (b.lv || 1)} steel` : `${45 * (b.lv || 1)} materials`})</button></div>` : ''}`;
     if (own && b.w) {
       const g = b.w.startsWith('input:') ? b.w.slice(6) : null;
       const msg = g ? `Short of ${esc((D.GOOD_NAMES[g] || g).toLowerCase())}: output is limited until supply improves.` : { staff: 'No workers: the city needs more people (housing and food) or fewer job buildings.', power: 'Brownout: power demand exceeds generation. Build or staff a power plant.', rare: 'Needs a rare-earth deposit inside your territory.' }[b.w];
@@ -292,14 +379,19 @@ export class Hud {
       const ud = D.UNITS[u]; const locked = ud.tech && !e.techs.includes(ud.tech);
       return `<button class="btn trainbtn" data-train="${u}" ${locked ? 'disabled' : ''} title="${esc(ud.name)}: ${esc(cost(ud.cost))}${ud.pop ? `, ${ud.pop} pop` : ''}${ud.men ? `, ${ud.men} soldiers` : ''}"><span>${esc(ud.name)}</span><small>${locked ? 'needs ' + esc(D.TECHS[ud.tech].name) : esc(cost(ud.cost))}</small></button>`;
     }).join('') + `</div>`;
-    if (b.q?.length) html += `<div class="queue">${b.q.map(([u, t]) => `<span>${esc(D.UNITS[u].name)} ${t}s</span>`).join('')}</div>`;
+    if (b.q?.length) html += `<div class="queue">${b.q.map(([u, t], i) => `<span>${esc(D.UNITS[u].name)} ${t}s <button class="x" data-qcancel="${i}" title="Cancel: ${i === 0 ? 'half the cost back once training has started' : 'full refund'}; the reserved manpower returns to work">×</button></span>`).join('')}</div>`;
     const armies = e.armies || [];
     html += `<div class="muted">Right-click the map to set a rally point${armies.length ? `; new units join <select data-sel="rallyArmy"><option value="0">no army</option>${armies.map((a) => `<option value="${a.id}" ${b.rallyArmy === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}.</div>`;
     return html;
   }
 
   cityOverview(city, b, d) {
-    let html = `<dl class="kv"><dt>Population</dt><dd>${city.pop.toFixed(1)} / ${city.h} housing</dd><dt>Workers</dt><dd>${city.jobs?.worker || 0}</dd><dt>Merchants</dt><dd>${city.jobs?.merchant || 0}</dd><dt>Specialists</dt><dd>${city.jobs?.specialist || 0}</dd><dt>Unemployed</dt><dd>${city.un}</dd>
+    const gr = city.gr || 0;
+    let html = `<div class="ledger">
+      <div><b>${Math.floor(city.pop)}</b><span>civilians</span></div><div><b>${city.lab ?? '–'}</b><span>labor</span></div>
+      <div><b>${city.rsv || 0}</b><span>in training</span></div><div><b>${city.mil || 0}</b><span>serving</span></div><div><b>${city.rec ?? 0}</b><span>recruitable</span></div></div>
+      <div class="muted">Growth ${gr >= 0 ? '+' : ''}${gr.toFixed(1)}/min · housing ${city.h}${city.pop > city.h ? ' <span class="warn">(overcrowded)</span>' : ''}${city.recov ? ' · <span class="good">post-war recovery</span>' : ''}${city.mig > 0.05 ? ` · migrants +${city.mig}` : ''}${city.back ? ' · demobilised soldiers returning' : ''}</div>
+      <dl class="kv"><dt>Population</dt><dd>${city.pop.toFixed(1)} / ${city.h} housing</dd><dt>Workers</dt><dd>${city.jobs?.worker || 0}</dd><dt>Merchants</dt><dd>${city.jobs?.merchant || 0}</dd><dt>Specialists</dt><dd>${city.jobs?.specialist || 0}</dd><dt>Unemployed</dt><dd>${city.un}</dd>
       <dt>Network</dt><dd>${city.cap ? 'Capital' : city.iso ? '<span class="bad">Cut off: living on local reserves</span>' : `<span class="good">Connected</span> (${city.fr} goods/s freight)`}</dd></dl>`;
     html += `<div>Stability ${city.st}</div><div class="bar stab"><i style="width:${city.st}%"></i></div>`;
     if (city.unrest) html += `<div class="bad">Unrest! Output halved. Below 8 the city may rebel and defect.</div>`;
@@ -317,15 +409,57 @@ export class Hud {
     return `<p class="muted">${city.cap ? 'The capital draws directly on the national stockpile.' : city.iso ? 'This city is cut off: it produces and consumes from these local reserves until a road, railway or sea lane reconnects it.' : `Goods move to the national stockpile at up to ${city.fr}/s over the weakest link of its route; surplus waits here. Shipping ${city.ship}/s now.`}</p><div class="stock">${rows}</div>`;
   }
 
+  // Workforce: category priorities, per-building staffing in words, locks, and an auto-balance preview.
+  workforcePanel(city) {
+    const S = this.S, D = S.defs;
+    const wf = city.wf || { mode: 'balanced', prio: { food: 'critical', industry: 'normal', research: 'normal', commerce: 'normal' } };
+    const CAT = { agri: 'food', industry: 'industry', power: 'industry', science: 'research', commerce: 'commerce' };
+    const catOf = (t) => (t === 'port' ? 'food' : CAT[D.BUILDINGS[t].cat] || 'industry');
+    const blds = [...S.buildings.values()].filter((b) => b.c === city.id && b.d && D.BUILDINGS[b.ty].jobs);
+    const sum = {}; for (const k of ['food', 'industry', 'research', 'commerce']) sum[k] = { s: 0, n: 0, list: [] };
+    for (const b of blds) { const k = catOf(b.ty); sum[k].s += b.s || 0; sum[k].n += D.BUILDINGS[b.ty].jobs[1]; sum[k].list.push(b); }
+    const assigned = blds.reduce((s2, b) => s2 + (b.s || 0), 0);
+    let h = `<div class="ledger"><div><b>${Math.floor(city.pop)}</b><span>population</span></div><div><b>${city.lab ?? 0}</b><span>available</span></div><div><b>${assigned}</b><span>assigned</span></div><div><b>${city.ua ?? 0}</b><span>unassigned</span></div></div>`;
+    const levels = ['critical', 'high', 'normal', 'low', 'off'];
+    const names = { food: 'Food', industry: 'Industry', research: 'Research', commerce: 'Commerce' };
+    for (const [k, v] of Object.entries(sum)) {
+      const open = this.wfOpen === k;
+      h += `<div class="wfcat"><button class="wfhd" data-wf="toggle" data-cat="${k}"><b>${names[k]}</b><span>${v.s} / ${v.n} positions staffed</span></button>
+        <select data-wfprio="${k}" title="Priority for ${names[k].toLowerCase()} jobs">${levels.map((l) => `<option value="${l}" ${wf.prio?.[k] === l ? 'selected' : ''}>${l[0].toUpperCase() + l.slice(1)}</option>`).join('')}</select></div>`;
+      if (open) h += `<ul class="log wfb">${v.list.map((b) => {
+        const n = D.BUILDINGS[b.ty].jobs[1];
+        return `<li><span>${esc(D.BUILDINGS[b.ty].name)}</span> <span class="muted">${esc(staffText(b, D))}</span>
+          <span class="wfctl"><button class="btn small ghost" data-wf="lock" data-id="${b.id}" data-n="${Math.max(0, (b.lk ?? b.s ?? 0) - 1)}" title="Lock one fewer worker">−</button><button class="btn small ghost" data-wf="lock" data-id="${b.id}" data-n="${Math.min(n, (b.lk ?? b.s ?? 0) + 1)}" title="Lock one more worker">+</button>${b.lk != null ? `<button class="btn small ghost" data-wf="lock" data-id="${b.id}" data-n="null" title="Let the allocator decide again">unlock</button>` : ''}<button class="btn small ghost" data-wf="off" data-id="${b.id}" data-on="${b.off ? '0' : '1'}">${b.off ? 'enable' : 'disable'}</button></span></li>`;
+      }).join('') || '<li class="muted">No workplaces.</li>'}</ul>`;
+    }
+    const p = this.wfPreview;
+    h += `<div class="actions"><select id="wfMode">${['balanced', 'growth', 'industry', 'research', 'commerce'].map((m) => `<option value="${m}" ${(p?.mode || wf.mode) === m ? 'selected' : ''}>${m[0].toUpperCase() + m.slice(1)}</option>`).join('')}</select><button class="btn small" data-wf="preview" data-mode="${p?.mode || (wf.mode === 'custom' ? 'balanced' : wf.mode)}">Preview auto-balance</button></div>`;
+    if (p) {
+      h += `<div class="preview"><b>Auto-balance (${esc(p.mode)})</b>${p.changes.length ? `<ul class="log">${p.changes.map((c) => `<li>${esc(D.BUILDINGS[c.type].name)}: ${c.from} → <b>${c.to}</b></li>`).join('')}</ul>` : '<p class="muted">No assignments would change.</p>'}`;
+      const eff = Object.entries(p.effect || {}).filter(([, v]) => Math.abs(v) >= 0.05);
+      if (eff.length) h += `<p class="muted">Estimated effect: ${eff.map(([k, v]) => `<span class="${v < 0 ? 'bad' : 'good'}">${v > 0 ? '+' : ''}${v.toFixed(1)} ${esc((D.GOOD_NAMES[k] || k).toLowerCase())}/s</span>`).join(', ')}</p>`;
+      h += `<div class="actions"><button class="btn small primary" data-wf="apply" data-mode="${esc(p.mode)}">Apply (clears locks)</button><button class="btn small ghost" data-wf="cancelPreview">Cancel</button></div></div>`;
+    }
+    h += `<p class="muted">Food is always staffed first up to what the city eats. Locked buildings keep exactly their workers; governors never change locks. Buildings that cannot run (no inputs, power or storage) leave their workers free.</p>`;
+    return h;
+  }
+
   governorPanel(city) {
-    const S = this.S, D = S.defs, gv = city.gov || { enabled: false, spec: 'balanced', reserve: 0.25, perms: {}, log: [], queue: [] };
+    const S = this.S, D = S.defs, gv = city.gov || { enabled: false, level: 'off', goal: 'none', budget: 0.15, emergency: true, spec: 'balanced', reserve: 0.25, perms: {}, log: [], queue: [], proposals: [], deferred: [] };
     const perm = (k, label) => `<label class="perm"><input type="checkbox" data-gperm="${k}" ${gv.perms[k] ? 'checked' : ''}> ${label}</label>`;
-    let html = `<label class="perm"><input type="checkbox" data-gov="enabled" ${gv.enabled ? 'checked' : ''}> <b>Autonomous governor</b></label>`;
-    html += `<label class="field inline"><span>Specialization</span><select data-gov="spec">${Object.entries(D.GOVERNOR_SPECS).map(([k, s]) => `<option value="${k}" ${gv.spec === k ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>`;
-    html += `<p class="muted">${esc(D.GOVERNOR_SPECS[gv.spec]?.desc || '')}</p>`;
+    const LV = { off: ['Off', 'No delegated actions.'], advisor: ['Advisor', 'Analyses the city and proposes projects for your approval. Only permitted emergency repairs run on their own.'], managed: ['Managed', 'Handles labor priorities, repairs, rubble, farms and housing within its budget; asks before anything else.'], autonomous: ['Autonomous', 'Develops the city within its budget, goal and permissions. Founding cities still needs your approval.'] };
+    let html = `<div class="seg govlv">${Object.entries(LV).map(([k, [n]]) => `<button class="${(gv.level || 'off') === k ? 'on' : ''}" data-govlevel="${k}">${n}</button>`).join('')}</div><p class="muted">${esc(LV[gv.level || 'off'][1])}</p>`;
+    if ((gv.proposals || []).length) {
+      html += `<h4 style="margin:6px 0 2px">Proposals</h4>` + gv.proposals.map((p) => `<div class="proposal"><b>${p.action === 'build' ? 'Construct ' + esc(D.BUILDINGS[p.type]?.name) : p.action === 'upgrade' ? 'Upgrade a housing block' : p.action === 'road' ? 'Build a road' : p.action === 'settle' ? 'Train a colonist convoy' : esc(p.action)}</b><small>${esc(p.reason || '')}</small><small class="muted">${Object.entries(p.cost || {}).map(([k, v]) => `${v} ${esc((D.GOOD_NAMES[k] || k).toLowerCase())}`).join(', ')}${p.confidence ? ` · confidence ${Math.round(p.confidence * 100)}%` : ''}</small>
+        <div class="actions"><button class="btn small primary" data-prop="${p.id}" data-answer="approve">Approve</button><button class="btn small" data-prop="${p.id}" data-answer="defer">Later</button><button class="btn small ghost" data-prop="${p.id}" data-answer="reject">Reject</button>${p.tile >= 0 ? `<button class="btn small ghost" data-jump="${p.tile}">Show site</button>` : ''}</div></div>`).join('');
+    }
+    if ((gv.deferred || []).length) html += `<h4 style="margin:6px 0 2px">Deliberately not building</h4><ul class="log">${gv.deferred.map((d2) => `<li class="muted">${esc(d2)}</li>`).join('')}</ul>`;
+    html += `<label class="field inline"><span>City goal</span><select data-gov="goal">${Object.entries(D.GOVERNOR_GOALS || {}).map(([k, g]) => `<option value="${k}" ${gv.goal === k ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label>`;
+    html += `<label class="field inline"><span>Specialization</span><select data-gov="spec">${Object.entries(D.GOVERNOR_SPECS).map(([k, sp]) => `<option value="${k}" ${gv.spec === k ? 'selected' : ''}>${esc(sp.name)}</option>`).join('')}</select></label>`;
+    html += `<label class="field inline"><span>Budget ${Math.round((gv.budget ?? 0.15) * 100)}% of a stockpile per project</span><input type="range" min="5" max="60" step="5" value="${Math.round((gv.budget ?? 0.15) * 100)}" data-gov="budget"></label>`;
     html += `<label class="field inline"><span>Reserve ${Math.round(gv.reserve * 100)}%</span><input type="range" min="0" max="90" step="5" value="${Math.round(gv.reserve * 100)}" data-gov="reserve"></label>`;
-    html += `<p class="muted">The governor never spends the reserved share of any stockpile.</p>`;
-    html += perm('build', 'Construct buildings') + perm('roads', 'Build and repair roads') + perm('repair', 'Repair damage and clear ruins') + perm('recruit', 'Recruit a defensive garrison') + perm('settle', 'Found new settlements');
+    html += `<label class="perm"><input type="checkbox" data-gov="emergency" ${gv.emergency !== false ? 'checked' : ''}> Allow emergency repairs in Advisor mode</label>`;
+    html += perm('build', 'Construct buildings') + perm('roads', 'Build and repair roads') + perm('repair', 'Repair damage and clear ruins') + perm('recruit', 'Recruit a defensive garrison (Autonomous)') + perm('settle', 'Propose new settlements');
     const queued = (gv.queue || []).map((id) => S.buildings.get(id)).filter(Boolean);
     if (queued.length) html += `<h4 style="margin:6px 0 2px">Projects</h4><ul class="log">${queued.map((b) => `<li>${esc(D.BUILDINGS[b.ty].name)} ${b.st === 'planned' ? '(waiting for funds)' : `${b.p}%`} <button class="btn small ghost" data-gcancel="${b.id}" title="Cancel and never build on that hex again">Cancel &amp; lock</button></li>`).join('')}</ul>`;
     html += `<h4 style="margin:6px 0 2px">Decisions</h4><ul class="log govlog">${(gv.log || []).map((l) => `<li><time>${Math.floor(l.t / 60)}:${String(l.t % 60).padStart(2, '0')}</time>${esc(l.text)}</li>`).join('') || '<li class="muted">No decisions yet.</li>'}</ul>`;
@@ -333,7 +467,15 @@ export class Hud {
   }
 
   onSelClick(e) {
-    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ]'); if (!t) return;
+    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ],[data-refit],[data-wf],[data-prop],[data-qcancel],[data-upgrade],[data-import],[data-govlevel]'); if (!t) return;
+    if (t.dataset.refit) return this.A.refit(t.dataset.refit, t.dataset.to);
+    if (t.dataset.wf === 'toggle') { this.wfOpen = this.wfOpen === t.dataset.cat ? null : t.dataset.cat; this.selHtml = ''; return this.selection(); }
+    if (t.dataset.wf === 'cancelPreview') { this.wfPreview = null; this.selHtml = ''; return this.selection(); }
+    if (t.dataset.wf) return this.A.workforce(t.dataset);
+    if (t.dataset.govlevel) return this.A.governor({ level: t.dataset.govlevel });
+    if (t.dataset.prop) return this.A.governor({ proposal: +t.dataset.prop, answer: t.dataset.answer });
+    if (t.dataset.qcancel != null) return this.A.cmd({ c: 'cancelTrain', building: this.S.selBuilding, index: +t.dataset.qcancel });
+    if (t.dataset.upgrade) return this.A.cmd({ c: 'upgrade', id: +t.dataset.upgrade });
     if (t.dataset.followCiv) return this.A.follow(+t.dataset.followCiv, false);
     if (t.dataset.train) return this.A.train(t.dataset.train);
     if (t.dataset.jump) return this.A.jump(+t.dataset.jump);
@@ -346,9 +488,15 @@ export class Hud {
     const t = e.target;
     if (t.dataset.sel === 'stance') this.A.stance(t.value);
     else if (t.dataset.sel === 'formation') { this.S.formation = t.value; }
+    else if (t.dataset.sel === 'policy') this.A.policy(t.value);
     else if (t.dataset.sel === 'rallyArmy') this.A.rallyArmy(+t.value);
     else if (t.dataset.gov === 'enabled') this.A.governor({ enabled: t.checked });
     else if (t.dataset.gov === 'spec') this.A.governor({ spec: t.value });
+    else if (t.dataset.gov === 'goal') this.A.governor({ goal: t.value });
+    else if (t.dataset.gov === 'budget') this.A.governor({ budget: +t.value / 100 });
+    else if (t.dataset.gov === 'emergency') this.A.governor({ emergency: t.checked });
+    else if (t.dataset.wfprio) this.A.workforce({ wf: 'prio', cat: t.dataset.wfprio, level: t.value });
+    else if (t.id === 'wfMode') { this.wfPreview = null; this.A.workforce({ wf: 'preview', mode: t.value }); }
     else if (t.dataset.gov === 'reserve') this.A.governor({ reserve: +t.value / 100 });
     else if (t.dataset.gperm) this.A.governor({ perms: { [t.dataset.gperm]: t.checked } });
   }
@@ -357,7 +505,7 @@ export class Hud {
   drawer(force) {
     const S = this.S, e = S.econ; if (!e) return;
     if ($('drawer').classList.contains('collapsed') && !force) return;
-    const key = this.tab + JSON.stringify([e.research, Math.floor(e.progress / 10), e.queue, e.techs.length, e.age, e.advancing > 0, e.gov, e.govCooldown > 0, e.policies, e.tax, e.focus, e.proposals,
+    const key = this.tab + (this.tab === 'research' ? JSON.stringify(e.readiness) : this.tab === 'realm' ? JSON.stringify([e.market, e.upkeep]) : '') + JSON.stringify([e.research, Math.floor(e.progress / 10), e.queue, e.techs.length, e.age, e.advancing > 0, e.gov, e.govCooldown > 0, e.policies, e.tax, e.focus, e.proposals,
       S.civInfo.map((c) => [c.rel, c.alive, c.age, c.known]), this.tab === 'chronicle' ? [S.log.length, e.cmdlog?.length, e.cmdlog?.[0]?.t, this.chronTab] : 0,
       this.tab === 'empire' ? [[...S.cities.values()].filter((c) => c.o === S.civId).map((c) => [Math.round(c.pop / 4), Math.round(c.st / 5), c.fs, c.iso, c.unrest, c.gov?.enabled, c.gov?.spec]), this.empireSort, this.empireFilter] : 0,
       this.tab === 'armies' ? (e.armies || []).map((a) => [a.id, a.name, a.units.length, a.status, a.formation, a.stance, a.note, Math.round((a.hp || 0) / 5), Math.round((a.supply || 0) / 5)]) : 0]);
@@ -381,6 +529,7 @@ export class Hud {
       h += e.advancing ? `<p class="warn">Advancing… ${e.advancing}s</p>` : `<button class="btn primary" data-advance="1" ${have < next.techsNeeded ? 'disabled' : ''}>Advance to ${esc(next.name)}</button>`;
     }
     if (e.queue.length) h += `<p class="muted">Queue: ${e.queue.map((k) => esc(D.TECHS[k].name)).join(' → ')}</p>`;
+    h += this.readinessHtml();
     h += `<p class="muted">Click an available technology to research it now; click a locked one to queue it with all its prerequisites.</p><div class="techgraph" id="techgraph"><svg id="techlinks"></svg>`;
     for (let age = 0; age < D.AGES.length; age++) {
       h += `<div class="era"><h4>${esc(D.AGES[age].name)}</h4>`;
@@ -395,6 +544,20 @@ export class Hud {
     }
     return h + '</div>';
   }
+  // What stands between the empire and its next era and each locked unit, in one place.
+  readinessHtml() {
+    const S = this.S, D = S.defs, r = S.econ?.readiness; if (!r) return '';
+    let h = '<details class="ready" open><summary>Readiness</summary>';
+    if (r.era) {
+      h += `<div class="muted">${esc(r.era.name)}: ${r.era.techs[0]}/${r.era.techs[1]} technologies${r.era.research ? ` — ${esc(r.era.research)}` : ''}</div><ul class="log">`;
+      for (const [k, c] of Object.entries(r.era.cost)) h += `<li><span class="${c.have >= c.need ? 'good' : 'warn'}">${esc(D.GOOD_NAMES[k] || k)} ${c.have}/${c.need}</span>${c.blockers.length ? ` <span class="muted">— ${esc(c.blockers.join('; '))}</span>` : ''}</li>`;
+      h += '</ul>';
+    }
+    const units = (r.units || []).filter((u) => !D.UNITS[u.unit].civilian).slice(0, 6);
+    if (units.length) h += `<div class="muted">Locked units</div><ul class="log">${units.map((u) => `<li><b>${esc(D.UNITS[u.unit].name)}</b> <span class="muted">needs ${esc(u.needs.join(', '))}</span></li>`).join('')}</ul>`;
+    return h + '</details>';
+  }
+
   drawTechLinks() {
     const svg = $('techlinks'), host = $('techgraph'); if (!svg || !host) return;
     const D = this.S.defs, hb = host.getBoundingClientRect(); let p = '';
@@ -416,6 +579,12 @@ export class Hud {
     for (const [k, p] of Object.entries(D.POLICIES)) { const ok = !p.tech || e.techs.includes(p.tech), on = e.policies.includes(k); h += `<button class="policy${on ? ' on' : ''}" data-policy="${k}" ${!ok ? 'disabled' : ''}><b>${esc(p.name)}</b> <span class="muted">${on ? 'active' : ok ? '' : 'needs ' + esc(D.TECHS[p.tech].name)}</span><small>${esc(p.desc)}</small></button>`; }
     h += `<h4>Taxation</h4><div class="seg">${D.TAX.map((t, i) => `<button class="${e.tax === i ? 'on' : ''}" data-tax="${i}" title="${t.stab >= 0 ? '+' : ''}${t.stab} stability">${esc(t.name)}</button>`).join('')}</div>`;
     h += `<h4>Labour focus</h4><div class="seg">${Object.entries(D.FOCI).map(([k, n]) => `<button class="${e.focus === k ? 'on' : ''}" data-focus="${k}">${esc(n)}</button>`).join('')}</div>`;
+    if (e.market && !S.spectator) {
+      h += `<h4>World market</h4><p class="muted">Buy what your land cannot provide. Each market brings in ${D.IMPORT_PER_MARKET} units a minute; trade agreements lower prices.</p><div class="market">`;
+      for (const [k, q] of Object.entries(e.market)) h += `<div><span>${esc(D.GOOD_NAMES[k] || k)}</span>${q.error ? `<small class="muted">${esc(q.error)}</small>` : `<small>${q.unit} cr · ${q.room} available</small><button class="btn small" data-import="${k}" data-amount="${Math.min(50, q.room)}">Buy ${Math.min(50, q.room)}</button>`}</div>`;
+      h += '</div>';
+    }
+    if (e.upkeep) h += `<p class="muted">Army upkeep ${e.upkeep.credits} credits/s${e.upkeep.fuel ? `, ${e.upkeep.fuel} fuel/s` : ''} — grows faster than the army itself.</p>`;
     h += `<p class="muted">War weariness ${e.weariness}. Power ${e.power?.gen || 0}/${e.power?.use || 0}. National storage cap ${e.storage}.${e.wonder != null ? ` Arcology victory in ${e.wonder}s.` : ''}</p>`;
     return h;
   }
@@ -502,6 +671,7 @@ export class Hud {
   onDrawerClick(ev) {
     const t = ev.target.closest('button,[data-jump],[data-efilter],[data-esort],[data-chron]'); if (!t) return;
     const d = t.dataset;
+    if (d.import) { this.A.cmd({ c: 'import', good: d.import, amount: +d.amount }).then((r) => { if (r.bought) this.toast({ text: `Imported ${r.bought.amount} ${D_name(this.S, r.bought.good)} for ${r.bought.credits} credits.`, kind: 'build', level: 'minor' }); }); return; }
     if (d.tech) this.A.cmd({ c: 'research', tech: d.tech, queue: t.classList.contains('locked') || t.classList.contains('queued') ? true : undefined });
     else if (d.advance) this.A.cmd({ c: 'advance' });
     else if (d.gov) this.A.cmd({ c: 'gov', id: d.gov });
@@ -565,3 +735,35 @@ function hexDist(S, a, b) {
   return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
 }
 function mix(a, b, t) { const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255, br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255; return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t); }
+
+// One building's staffing in plain words (mirrors server/sim/workforce.js staffingText).
+function staffText(b, D) {
+  const d = D.BUILDINGS[b.ty]; if (!d.jobs) return '';
+  const head = `${b.s || 0}/${d.jobs[1]} ${d.jobs[0]}s`, w = b.w || '';
+  const cat = { food: 'agriculture', industry: 'industry', research: 'research', commerce: 'commerce' };
+  if (b.off || w === 'off') return `${head} — disabled by player`;
+  if (w === 'locked') return `${head} — locked by player`;
+  if (w === 'rare') return `${head} — needs rare earths`;
+  if (w === 'power') return `${head} — not enough power`;
+  if (w === 'full') return `${head} — storage for its output is full`;
+  if (w.startsWith('input:')) return `${head} — no incoming ${(D.GOOD_NAMES[w.slice(6)] || w.slice(6)).toLowerCase()}`;
+  if (w === 'prio:off') return `${head} — its category is switched off`;
+  if (w.startsWith('prio:')) return `${head} — ${cat[w.slice(5)] || w.slice(5)} has higher priority`;
+  if (w === 'surplus') return `${head} — not needed: food target met`;
+  if (w === 'staff') return `${head} — no workers available`;
+  if (w === 'under') return `${head} — understaffed`;
+  return `${head} — operating`;
+}
+const D_name = (S, k) => (S.defs.GOOD_NAMES[k] || k).toLowerCase();
+
+// Replace only the top-level children that changed, so buttons the player is about to click
+// are not swapped out underneath the pointer every time a number updates.
+function patchHtml(el, html) {
+  const t = document.createElement('template'); t.innerHTML = html;
+  const next = [...t.content.childNodes], cur = [...el.childNodes];
+  if (cur.length !== next.length || document.activeElement && el.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') {
+    if (cur.length === next.length) { next.forEach((n, i) => { if (!cur[i].isEqualNode(n) && !cur[i].contains(document.activeElement)) el.replaceChild(n, cur[i]); }); return; }
+    el.replaceChildren(...next); return;
+  }
+  next.forEach((n, i) => { if (!cur[i].isEqualNode(n)) el.replaceChild(n, cur[i]); });
+}

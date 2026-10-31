@@ -51,6 +51,7 @@
         <label class="field inline"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
         <label class="field inline"><span>Rebel Free Companies</span><input id="rebels" type="checkbox" checked></label>
         <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
+        <button id="btnSandbox" class="btn ghost small" type="button" title="A small map with one passive opponent: stage battles and test units and weapons">Open the combat sandbox</button>
       </details>
       <div class="open-matches">
         <h2>Open matches</h2>
@@ -109,12 +110,14 @@
       </div>
     </div>
     <aside id="mapkey" class="plate" hidden aria-label="Map key"></aside>
+    <aside id="battle" class="plate" hidden aria-label="Battle summary"></aside>
+    <aside id="sandbox" class="plate" hidden aria-label="Combat sandbox"></aside>
     <div id="hint" class="hint"></div>
     <div id="tooltip" class="tooltip" hidden></div>
     <div id="menu" class="modal" hidden>
       <div class="plate">
         <h2>Paused view</h2>
-        <p class="muted">The world keeps moving. Shortcuts: right-click move/attack (Shift: attack-move), A attack-move, S stop, F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <p class="muted">The world keeps moving. Shortcuts: right-click move, right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to set a battle line and its facing, Shift+right-click queue a waypoint, Alt+right-click attack-move, A attack-move, S stop, H hold, X withdraw, F cycle formation (found a city with colonists), F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
         <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
         <button id="btnResume" class="btn primary">Back to the map</button>
         <button id="btnSurrender" class="btn danger">Surrender</button>

@@ -100,7 +100,7 @@ test('road drawing: drag a route, see the server preview, commission it', { skip
   await page.keyboard.press('Escape');
 });
 
-test('governor controls: enable, specialise and set a reserve from the city panel', { skip }, async () => {
+test('governor controls: autonomy level, specialisation, and the workforce tab', { skip }, async () => {
   const hub = await page.evaluate(() => { const S = window.__S; const c = [...S.cities.values()].find((x) => x.o === S.civId); return c.t; });
   await page.evaluate((t) => window.__view().centerOn(t, 1.6), hub);
   await page.waitForTimeout(300);
@@ -110,10 +110,21 @@ test('governor controls: enable, specialise and set a reserve from the city pane
   await page.evaluate(([x, y]) => { const S = window.__S; const b = [...S.buildings.values()].find((b) => b.ty === 'town' && b.o === S.civId); S.selBuilding = b.id; }, [x, y]);
   await page.waitForSelector('[data-ctab=governor]');
   await page.click('[data-ctab=governor]');
-  await page.check('[data-gov=enabled]');
-  await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.gov && c.gov.enabled; }, null, { timeout: 15000 });
+  await page.click('[data-govlevel=managed]');
+  await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.gov && c.gov.enabled && c.gov.level === 'managed'; }, null, { timeout: 15000 });
   await page.selectOption('[data-gov=spec]', 'industrial');
   await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.gov && c.gov.enabled && c.gov.spec === 'industrial'; }, null, { timeout: 15000 });
+  // workforce: categories with staffing, priorities, and an auto-balance preview
+  await page.click('[data-ctab=workforce]');
+  await page.waitForSelector('[data-wfprio=industry]');
+  assert.match(await page.textContent('#selection'), /positions staffed/);
+  await page.selectOption('[data-wfprio=research]', 'high');
+  await page.waitForFunction(() => { const c = [...window.__S.cities.values()].find((x) => x.o === window.__S.civId); return c.wf && c.wf.prio.research === 'high'; }, null, { timeout: 15000 });
+  await page.click('[data-wf=preview]');
+  await page.waitForSelector('.preview', { timeout: 15000 });
+  // overview: the population ledger
+  await page.click('[data-ctab=overview]');
+  assert.match(await page.textContent('#selection'), /civilians[\s\S]*labor[\s\S]*serving/);
 });
 
 test('buildings stand in the world as drawn structures with a city banner (no emoji icons)', { skip }, async () => {

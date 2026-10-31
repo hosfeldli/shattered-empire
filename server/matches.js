@@ -34,15 +34,16 @@ export class MatchManager {
     const id = crypto.randomBytes(3).toString('hex');
     const pvp = opts.mode === 'pvp';
     const observe = opts.mode === 'observe';   // AI-only match watched by spectators (no fog, speed control)
+    const sandbox = opts.mode === 'sandbox';   // developer combat sandbox: one player, one passive opponent
     const humans = observe ? 0 : Math.max(1, Math.min(MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
-    const ais = observe ? Math.max(2, Math.min(MAX_CIVS, opts.ais ?? 4)) : Math.max(pvp ? 0 : 1, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
+    const ais = sandbox ? 1 : observe ? Math.max(2, Math.min(MAX_CIVS, opts.ais ?? 4)) : Math.max(pvp ? 0 : 1, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
     for (let i = 0; i < humans; i++) slots.push({ human: true, name: i === 0 ? String(opts.name || 'Player').slice(0, 24) : 'Open seat', token: null, ws: null });
     for (let i = 0; i < ais; i++) slots.push({ human: false, name: 'AI', personality: opts.aiPersonality && opts.aiPersonality !== 'random' ? opts.aiPersonality : personalities[(i + ((Math.random() * 3) | 0)) % 3] });
     const mapSize = SIZES[opts.mapSize] || autoSize(slots.length);
-    const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
-      seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: opts.rebels !== false, worker: null, stats: null };
+    const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
+      seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize: sandbox ? 128 : mapSize, rebels: sandbox ? false : opts.rebels !== false, worker: null, stats: null };
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
@@ -72,7 +73,7 @@ export class MatchManager {
     m.slots.forEach((s, i) => { s.civId = i; });
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
-      workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe',
+      workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', sandbox: m.mode === 'sandbox',
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
@@ -170,7 +171,7 @@ export class MatchManager {
         const m = this.create(msg);
         const slot = m.mode === 'observe' ? this.watch(m, msg.name) : this.seat(m, msg.name);
         this.bind(ws, m, slot);
-        if (m.mode === 'ai' || m.mode === 'observe') this.start(m); else this.roomUpdate(m);
+        if (m.mode === 'ai' || m.mode === 'observe' || m.mode === 'sandbox') this.start(m); else this.roomUpdate(m);
         return;
       }
       case 'spectate': {

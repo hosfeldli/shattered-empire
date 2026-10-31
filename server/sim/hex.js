@@ -73,3 +73,21 @@ export function center(i, size = 1) {
   const q = qOf(i), r = rOf(i);
   return [size * Math.sqrt(3) * (q + 0.5 * (r & 1)), size * 1.5 * r];
 }
+
+// Hexes on the straight line from a to b (inclusive), by cube-coordinate interpolation.
+export function hexLine(a, b) {
+  const n = dist(a, b); if (!n) return [a];
+  const [ax, ay, az] = toCube(a), [bx, by, bz] = toCube(b);
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    let x = ax + (bx - ax) * t + 1e-6, y = ay + (by - ay) * t + 1e-6, z = az + (bz - az) * t - 2e-6;
+    let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
+    const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
+    if (dx > dy && dx > dz) rx = -ry - rz; else if (dy > dz) ry = -rx - rz;
+    const r = ry, q = rx + ((r - (r & 1)) >> 1);
+    if (q < 0 || r < 0 || q >= W || r >= H) continue;
+    out.push(r * W + q);
+  }
+  return out;
+}

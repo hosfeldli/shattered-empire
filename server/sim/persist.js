@@ -4,10 +4,11 @@ import { Game } from './game.js';
 import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
 import { getNextArmyId, setNextArmyId } from './armies.js';
+import { serializeBattlefield, restoreBattlefield } from './battlefield.js';
 
 const WORLD_ARRAYS = ['elev', 'stab', 'moist', 'temp', 'rate', 'stress', 'plate', 'terr', 'res', 'river', 'lake', 'flowDir', 'flow', 'road', 'soil', 'lava', 'ash', 'drought', 'owner', 'ver'];
 const CIV_ARRAYS = ['explored', 'lastOwner', 'visible', 'detect', 'supply', 'airSupply'];
-const TRANSIENT = new Set(['ai', 'knownStab', 'visKey', 'connected', 'token']);
+const TRANSIENT = new Set(['ai', 'knownStab', 'visKey', 'connected', 'token', 'evSeq', 'readinessCache', 'importUsedNext']);
 
 const b64 = (ta) => Buffer.from(ta.buffer, ta.byteOffset, ta.byteLength).toString('base64');
 function fromB64(str, Ctor) { const buf = Buffer.from(str, 'base64'); const out = new Ctor(buf.byteLength / Ctor.BYTES_PER_ELEMENT); new Uint8Array(out.buffer).set(buf); return out; }
@@ -28,7 +29,7 @@ export function serializeGame(g) {
     o.$arrays = {}; for (const k of CIV_ARRAYS) o.$arrays[k] = b64(c[k]);
     if (c.ai) {
       const a = c.ai;
-      o.$ai = c.isRebel ? { kind: 'rebel', nextCamp: a.nextCamp, nextSpawn: a.nextSpawn, raid: a.raid } : { kind: 'ai', campaign: a.campaign, lastTrade: a.lastTrade, colonists: mapOut(a.colonists) };
+      o.$ai = c.isRebel ? { kind: 'rebel', nextCamp: a.nextCamp, nextSpawn: a.nextSpawn, raid: a.raid } : { kind: 'ai', campaign: a.campaign, lastTrade: a.lastTrade, colonists: mapOut(a.colonists), mil: a.mil.serialize(), econ: a.econ ? a.econ.serialize() : null };
     }
     o.$token = c.token;
     o.armies = { $map: [...(c.armies || new Map()).entries()] };
@@ -42,6 +43,7 @@ export function serializeGame(g) {
     v: 1, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
     slots: g.slotsDef, world, roads: { ...g.roads.serialize(), traffic: mapOut(g.roads.traffic) },
+    combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g) },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
     civs, diplomacy: { pairs: diplo, nextProposal: g.diplomacy.nextProposal },
     geology: { lastQuake: geo.lastQuake, nextDrought: geo.nextDrought, nextAvulsion: geo.nextAvulsion, hydroTimer: geo.hydroTimer, warned: mapOut(geo.warned),
@@ -67,6 +69,10 @@ export function restoreGame(data) {
   g.buildings = new Map(data.buildings.map((b) => [b.id, b]));
   g.cities = new Map(data.cities.map((c) => [c.id, { ...c, freight: c.capital ? Infinity : c.freight ?? 0 }]));
   g.ruins = new Map(data.ruins);
+  const cb = data.combat || {};
+  g.projectiles = new Map((cb.projectiles || []).map((p) => [p.id, p])); g.pending = new Map(cb.pending || []);
+  g.eventSeq = cb.eventSeq || 0; g.events = [];
+  restoreBattlefield(g, cb.battlefield);
   g.tileB.fill(-1); for (const b of g.buildings.values()) g.tileB[b.tile] = b.id;
   data.civs.forEach((o, i) => {
     const c = g.civs[i];
@@ -75,7 +81,7 @@ export function restoreGame(data) {
     c.knownVer.fill(0); c.knownOwner.fill(-2); c.visKey = ''; c.knownStab = false; c.connected = false; c.token = o.$token || null;
     if (o.$ai) {
       if (o.$ai.kind === 'rebel') { c.ai = new RebelAI(g, c); Object.assign(c.ai, { nextCamp: o.$ai.nextCamp, nextSpawn: o.$ai.nextSpawn, raid: o.$ai.raid }); }
-      else { c.ai = new AI(g, c); Object.assign(c.ai, { campaign: o.$ai.campaign, lastTrade: o.$ai.lastTrade, colonists: new Map(o.$ai.colonists) }); }
+      else { c.ai = new AI(g, c); Object.assign(c.ai, { campaign: o.$ai.campaign, lastTrade: o.$ai.lastTrade, colonists: new Map(o.$ai.colonists) }); c.ai.mil.load(o.$ai.mil); if (c.ai.econ && o.$ai.econ) c.ai.econ.load(o.$ai.econ); }
     }
   });
   for (const [a, b, r] of data.diplomacy.pairs) { g.diplomacy.m[a][b] = r; g.diplomacy.m[b][a] = r; }

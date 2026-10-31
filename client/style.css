@@ -279,3 +279,56 @@ table.grid tr:hover td { background: rgba(255, 255, 255, 0.03); }
 .key .sw.outline { width: 22px; height: 22px; padding: 0; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); background: #3a7bd5; box-shadow: inset 0 0 0 3px #7b6a52; }
 .spec-only { display: none; }
 .spectating .spec-only { display: block; }
+
+/* combat HUD */
+.comp { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 6px 0; }
+.comp div { background: rgba(13, 26, 30, 0.6); border: 1px solid var(--line); border-radius: var(--r); text-align: center; padding: 3px 0; }
+.comp b { display: block; font-size: 18px; line-height: 1.1; }
+.comp span { font-size: 11px; color: var(--chalk-dim); }
+.cstat { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.gcmds { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 6px 0; }
+.gcmds .btn { padding: 5px 4px; }
+#battle { position: absolute; right: 10px; top: 56px; width: 320px; padding: 10px 12px; z-index: 6; }
+#battle .hd { display: flex; justify-content: space-between; align-items: center; }
+#battle .hd b { font-family: var(--display); font-weight: 400; font-size: 19px; color: #e0533b; }
+#battle .civrow { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+#battle .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.balance { height: 8px; background: #6a2a1e; border-radius: 4px; overflow: hidden; margin: 6px 0; }
+.balance i { display: block; height: 100%; }
+.spectating #battle .actions { display: none; }
+#sandbox { position: absolute; left: 10px; top: 56px; width: 330px; padding: 8px 12px; z-index: 5; }
+#sandbox .hd b { font-family: var(--display); font-weight: 400; font-size: 19px; color: var(--ochre); }
+#sandbox h4 { margin: 8px 0 2px; }
+#sandbox .hd { display: flex; justify-content: space-between; align-items: center; }
+#sandbox.min > :not(.hd) { display: none; }
+.sbsc { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+#sandbox p { margin: 2px 0 6px; font-size: 13px; }
+.sandbox-on #selection { max-height: calc(100vh - 130px); }
+.key .sw.battle { background: #2a0f0b; border: 1px solid #e0533b; color: #f3eedf; }
+.key .sw.fire { color: #f1c75b; background: #13232a; }
+.key .sw.supp { color: #f0b54a; background: #13232a; letter-spacing: -1px; }
+.key .sw.crater { width: 26px; height: 16px; padding: 0; border-radius: 50%; background: radial-gradient(#3a2f26 55%, #8a7a64 60%, transparent 70%); }
+
+/* population ledger, workforce, governor proposals, readiness, market */
+.ledger { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 6px 0; }
+.ledger div { background: rgba(13, 26, 30, 0.55); border-radius: var(--r); padding: 3px 4px; text-align: center; box-shadow: inset 0 0 0 1px var(--line); }
+.ledger b { display: block; font-size: 16px; }
+.ledger span { font-size: 10.5px; color: var(--chalk-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.wfcat { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.wfhd { flex: 1; display: flex; justify-content: space-between; align-items: baseline; background: rgba(13, 26, 30, 0.55); border: 1px solid #0d1a1e; border-radius: var(--r); padding: 4px 8px; cursor: pointer; text-align: left; }
+.wfhd span { color: var(--chalk-dim); font-size: 12.5px; }
+.wfb li { display: grid; grid-template-columns: 1fr; gap: 2px; }
+.wfctl { display: flex; gap: 3px; flex-wrap: wrap; }
+.wfctl .btn { padding: 1px 7px; }
+.preview { border: 1px solid var(--ochre); border-radius: var(--r); padding: 6px 8px; margin-top: 6px; background: rgba(201, 154, 46, 0.07); }
+.proposal { border-left: 3px solid var(--ochre); padding: 4px 8px; margin: 4px 0; background: rgba(13, 26, 30, 0.45); }
+.proposal b { display: block; }
+.proposal small { display: block; }
+.govlv button { padding: 5px 4px; }
+.queue .x { background: none; border: 0; color: var(--chalk-dim); cursor: pointer; padding: 0 2px; font-size: 14px; }
+.queue .x:hover { color: #e0533b; }
+.ready { margin: 6px 0; border: 1px solid var(--line); border-radius: var(--r); padding: 4px 8px; }
+.ready summary { cursor: pointer; font-family: var(--display); color: var(--ochre); font-size: 16px; }
+.market { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; }
+.market div { background: rgba(13, 26, 30, 0.55); border-radius: var(--r); padding: 4px 6px; display: grid; gap: 2px; }
+.refits { flex-wrap: wrap; }

@@ -1,16 +1,21 @@
 // Units: movement (flow fields, formations, tile/bridge capacity), combat (incl. air),
 // supply networks & attrition, engineers, and damage that persists in the world.
+import { casualty } from './population.js';
 import { N, T, TERRAIN, UNITS, BUILDINGS, MOVE, ROAD_TYPES, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { findPath, stepCost, flowField } from './path.js';
 import { MinHeap } from './world.js';
 import { transferCity, recomputeTerritory } from './economy.js';
+import { fireUnit, fireBuilding, chooseTarget, firingPosition, coverPosition, emit, onUnitLost, CS, lineOfFire } from './combat.js';
+import { UNIT_WEAPON, WEAPONS } from './weapons.js';
+import { addWreck, engineerClear, scarCost } from './battlefield.js';
 
 export function spawnUnit(g, civ, type, tile) {
   const def = UNITS[type];
   const maxHp = Math.round(def.hp);
   const u = { id: g.id_(), owner: civ.id, type, tile, next: -1, prog: 0, path: [], goal: -1, slot: -1, hp: maxHp, maxHp, supply: 100, cooldown: 0,
-    order: { kind: 'idle' }, lastCombat: -99, outOfSupply: false, repathAt: 0, home: tile, stance: def.civilian ? 'passive' : 'defensive', field: false, wait: 0, status: 'ok', groupSpeed: 0 };
+    order: { kind: 'idle' }, lastCombat: -99, outOfSupply: false, repathAt: 0, home: tile, stance: def.civilian ? 'passive' : 'defensive', field: false, wait: 0, status: 'ok', groupSpeed: 0,
+    supp: 0, morale: 100, cstat: 0, tgt: 0, auth: '', queue: [] };
   g.units.set(u.id, u);
   return u;
 }
@@ -50,8 +55,9 @@ export function tileCapacity(g, t) {
   if (g.tileB[t] >= 0 && g.buildings.get(g.tileB[t])?.type === 'town') return 14;
   const r = w.road[t];
   if (w.river[t] && r) return r >= 2 ? 5 : 3;          // bridges are bottlenecks
-  if (r) return ROAD_TYPES[r].capacity;
-  return 6;
+  const wr = g.wrecks.get(t)?.length || 0;     // wrecks narrow the passage
+  if (r) return Math.max(2, ROAD_TYPES[r].capacity - wr);
+  return Math.max(2, 6 - wr);
 }
 
 export function unitsStep(g, dt) {
@@ -61,36 +67,77 @@ export function unitsStep(g, dt) {
     const def = UNITS[u.type];
     const civ = g.civs[u.owner];
     u.cooldown -= dt;
+    if (u.refitUntil > g.time) { u.cstat = 0; continue; }   // in the workshop
     let holdPosition = false;
     // ------------------------------------------------ targeting
+    // combat status shown to the player: what this unit is doing and why
+    let cstat = u.retreating ? CS.retreating : u.path.length || u.field ? CS.moving : CS.idle;
+    u.tgt = 0;
     if (def.atk > 0) {
+      const wpn = WEAPONS[UNIT_WEAPON[u.type]] || WEAPONS.carbine;
       if (u.order.kind === 'attack') {
         const tt = targetTile(g, u.order.target);
         const to = tt >= 0 ? targetOwner(g, u.order.target) : -1;
         if (tt < 0 || !g.hostile(u.owner, to)) {
           if (u.order.resume !== undefined && u.order.resume >= 0) { const goal = u.order.resume; u.order = { kind: 'attackMove' }; u.goal = goal; u.path = findPath(g, civ, u.tile, goal, u.type) || []; }
           else { u.order = { kind: 'idle' }; u.path = []; }
-        } else if (dist(u.tile, tt) <= def.range) {
-          holdPosition = u.prog === 0;
-          if (holdPosition) { u.path = []; u.next = -1; u.field = false; }
-          if (u.cooldown <= 0 && holdPosition) attack(g, u, u.order.target, tt);
-        } else if (u.stance === 'hold') {
-          u.order = { kind: 'idle' };
-        } else if (g.time >= u.repathAt) {
-          u.repathAt = g.time + 2; u.field = false;
-          u.path = findPath(g, civ, u.tile, tt, u.type, 6000) || [];
+        } else {
+          u.tgt = u.order.target.kind === 'unit' ? u.order.target.id : -u.order.target.id;
+          const inRange = dist(u.tile, tt) <= def.range;
+          const lof = inRange && (wpn.arc || lineOfFire(g, u.tile, tt, false, !!def.air || (u.order.target.kind === 'unit' && !!UNITS[g.units.get(u.order.target.id)?.type]?.air)).ok);
+          if (inRange && lof) {
+            holdPosition = u.prog === 0;
+            if (holdPosition) { u.path = []; u.next = -1; u.field = false; }
+            cstat = u.cooldown > 0.6 && wpn.mode === 'projectile' ? CS.reloading : CS.engaging;
+            if (u.cooldown <= 0 && holdPosition) fireUnit(g, u, u.order.target, tt);
+          } else if (inRange) {
+            // in range but something is in the way: shift to a hex with a clear line (bounded)
+            cstat = CS.no_los;
+            if (u.stance !== 'hold' && g.time >= u.repathAt) {
+              u.repathAt = g.time + 3; u.field = false;
+              const fp = firingPosition(g, u, tt);
+              if (fp >= 0) { u.path = findPath(g, civ, u.tile, fp, u.type, 2000) || []; cstat = CS.repositioning; }
+            }
+          } else if (u.stance === 'hold') {
+            u.order = { kind: 'idle' }; cstat = CS.out_of_range;
+          } else {
+            cstat = CS.repositioning;
+            // first take the assigned place in the line, then close with the target
+            if (u.order.slot >= 0 && (u.tile === u.order.slot || dist(u.tile, tt) <= dist(u.order.slot, tt))) u.order.slot = -1;
+            if (g.time >= u.repathAt) { u.repathAt = g.time + 2; u.field = false; u.path = findPath(g, civ, u.tile, u.order.slot >= 0 ? u.order.slot : tt, u.type, 6000) || []; }
+          }
         }
       } else if ((g.tickN + u.id) % 5 === 0 && u.cooldown <= 0 && u.stance !== 'passive') {
         const k = u.order.kind;
         const scan = k === 'attackMove' || u.stance === 'aggressive' ? Math.max(def.range, def.vision) : k === 'idle' && u.stance !== 'hold' ? def.range + 1 : def.range;
-        const tg = findEnemyNear(g, u, scan);
-        if (tg) {
-          const tt = targetTile(g, tg);
-          if (k === 'move' || u.stance === 'hold') { if (dist(u.tile, tt) <= def.range) attack(g, u, tg, tt); }   // fire on the move / from position
-          else { u.order = { kind: 'attack', target: tg, resume: k === 'attackMove' ? u.goal : undefined }; u.repathAt = 0; }
+        const pick = chooseTarget(g, u, scan);
+        if (pick) {
+          const { tg, tile: tt } = pick;
+          // on the move, withdrawing or holding: shoot what is in range, do not chase
+          if (k === 'move' || u.stance === 'hold' || u.retreating) { if (dist(u.tile, tt) <= def.range && fireUnit(g, u, tg, tt)) cstat = CS.engaging; }
+          else { u.order = { kind: 'attack', target: tg, resume: k === 'attackMove' ? u.goal : u.order.resume }; u.repathAt = 0; }
         }
       }
+      if (u.lowAmmo && cstat === CS.engaging) cstat = CS.low_ammo;
+      if ((u.supp || 0) >= 60 && cstat !== CS.retreating) cstat = CS.suppressed;
     }
+    // pinned infantry stay down (and crawl to cover) unless the player ordered the move
+    if ((u.supp || 0) >= 75 && def.move === 'infantry' && !def.civilian && u.auth !== 'player' && u.order.kind !== 'move') {
+      cstat = CS.pinned;
+      if (!u.pinnedMove && g.rng() < 0.2) {
+        const threat = u.order.kind === 'attack' ? targetTile(g, u.order.target) : -1;
+        const cp = coverPosition(g, u, threat);
+        if (cp >= 0) { u.path = [cp]; u.pinnedMove = true; }
+      }
+      if (!u.pinnedMove) { u.cstat = cstat; continue; }
+    } else u.pinnedMove = false;
+    // morale breaks: units not under a direct player order fall back toward home
+    if ((u.morale ?? 100) < 20 && !u.retreating && !def.civilian && u.stance !== 'hold' && u.auth !== 'player') {
+      const home = g.nearestCityTile ? g.nearestCityTile(u.owner, u.tile) : u.home;
+      if (home >= 0 && dist(home, u.tile) > 2) { u.retreating = true; u.order = { kind: 'move', withdraw: true }; u.goal = home; u.slot = home; u.field = false; u.path = findPath(g, civ, u.tile, home, u.type) || []; cstat = CS.retreating; if (civ.human) g.notify(civ.id, `${def.name} is falling back: morale broken.`, { kind: 'unit', tile: u.tile, quiet: true, level: 'minor' }); }
+    }
+    if (u.retreating && (u.morale ?? 100) > 55 && !u.order.withdraw) u.retreating = false;
+    u.cstat = cstat;
     if (def.engineer && u.order.kind !== 'move' && !u.path.length) engineerWork(g, u, dt);
     if (holdPosition) continue;
     // ------------------------------------------------ steering: shared flow field, then own slot
@@ -141,6 +188,7 @@ export function unitsStep(g, dt) {
       const onWater = isWater(w.terr[nxt]);
       let spd = (onWater && !isAir(u) ? 1.0 : def.speed) * (u.outOfSupply ? 0.75 : 1);
       if (u.groupSpeed) spd = Math.min(spd, u.groupSpeed);   // formations move at their slowest member's pace
+      if (u.supp > 30) spd *= 1 - 0.35 * (u.supp / 100);
       u.prog += (spd * dt) / c;
       if (u.prog >= 1) {
         if (!isAir(u)) g.roads.noteTraffic(u.tile, nxt, def.move === 'infantry' ? 0.5 : 1);
@@ -148,13 +196,22 @@ export function unitsStep(g, dt) {
       }
     } else if (!u.field) {
       u.next = -1; u.prog = 0;
-      if (u.order.kind === 'move' || u.order.kind === 'attackMove') { u.order = { kind: 'idle' }; u.groupSpeed = 0; u.home = u.tile; }
+      if (u.order.kind === 'move' || u.order.kind === 'attackMove') {
+        const withdrew = u.order.withdraw;
+        u.order = { kind: 'idle' }; u.groupSpeed = 0; u.home = u.tile;
+        if (withdrew) { u.retreating = (u.morale ?? 100) < 55; }
+        // shift-queued waypoints: carry on with the next leg
+        if (u.queue && u.queue.length) { const nx = u.queue.shift(); u.order = { kind: nx.attackMove ? 'attackMove' : 'move' }; u.goal = nx.tile; u.slot = nx.tile; u.path = findPath(g, civ, u.tile, nx.tile, u.type) || []; }
+        if (!u.path.length && u.order.kind !== 'idle') u.order = { kind: 'idle' };
+        if (u.auth === 'player' && u.order.kind === 'idle') u.auth = '';
+      }
     }
   }
 }
 
 function engineerWork(g, u, dt) {
   const civ = g.civs[u.owner];
+  if (engineerClear(g, u, dt)) return;
   // repair damaged road segments and buildings on or next to the engineer's hex
   for (const e of g.roads.edgesOf(u.tile)) {
     if (e.cond < 100 && civ.res.materials >= 0.5 * dt) { e.cond = Math.min(100, e.cond + 25 * dt); civ.res.materials -= 0.5 * dt; g.roads.refresh(e.a); g.roads.refresh(e.b); return; }
@@ -169,55 +226,20 @@ function engineerWork(g, u, dt) {
   }
 }
 
-function attack(g, u, tg, tt) {
-  const def = UNITS[u.type];
-  const civ = g.civs[u.owner];
-  const w = g.world;
-  let a = def.atk;
-  if (civ.gov === 'corporate') a *= 0.9;
-  if (civ.gov === 'junta') a *= 1.1;
-  if (civ.policies.has('total_war')) a *= 1.2;
-  a *= 0.4 + 0.6 * (u.supply / 100);
-  a *= 0.5 + 0.5 * (u.hp / u.maxHp);
-  if (def.age >= 1) { const need = 0.05 * (def.cat === 'artillery' ? 3 : 1); if (civ.res.munitions >= need) civ.res.munitions -= need; else a *= 0.6; }
-  if (!def.air && w.river[u.tile] && !w.road[u.tile] && def.range <= 1) a *= 0.75;
-  if (isWater(w.terr[u.tile]) && !def.air) a *= 0.6;
-  const rand = 0.85 + g.rng() * 0.3;
-  if (tg.kind === 'unit') {
-    const e = g.units.get(tg.id); if (!e) return;
-    const ed = UNITS[e.type];
-    if (ed.air) { if (!def.aa) return; a *= def.aa; }
-    if (def.bonus && def.bonus[ed.cat]) a *= def.bonus[ed.cat];
-    let d = ed.def * (ed.air ? 1 : 1 + TERRAIN[w.terr[e.tile]].def);
-    const fortB = g.buildingAtTile(e.tile); if (fortB && fortB.owner === e.owner && (fortB.type === 'fort' || fortB.type === 'bunker')) d *= 1.5;
-    if (isWater(w.terr[e.tile]) && !ed.air) d *= 0.5;
-    damageUnit(g, e, a * 1.6 * rand * (10 / (10 + d)), u.owner, 'combat');
-  } else {
-    const b = g.buildings.get(tg.id); if (!b) return;
-    const bd = BUILDINGS[b.type];
-    let d = bd.attack ? 12 : 6;
-    if ((b.type === 'fort' || b.type === 'bunker') && g.civs[b.owner].policies.has('fortification')) d *= 1.5;
-    damageBuilding(g, b, a * 1.6 * rand * (def.vsBuildings || 1) * (10 / (10 + d)), u.owner, 'combat');
-  }
-  // heavy weapons crater the roads around their target
-  if (def.cat === 'artillery' && g.rng() < 0.3) g.roads.damageTile(tt, 12, g.rng, 0.5);
-  u.cooldown = def.cat === 'artillery' ? 3 : def.range > 1 ? 1.8 : 1.5;
-  u.lastCombat = g.time;
-  g.fx.push([def.range > 1 ? (def.cat === 'artillery' ? 'shell' : 'shot') : 'melee', u.tile, tt]);
-}
-
 export function damageUnit(g, u, amount, attackerCivId, cause) {
   if (!g.units.has(u.id)) return;
   u.hp -= amount;
   if (attackerCivId != null) u.lastCombat = g.time;
   if (u.hp <= 0) {
     g.units.delete(u.id);
+    onUnitLost(g, u); casualty(g, u);
+    if (cause === 'combat' || cause === 'fuel') addWreck(g, u.tile, u.type, u.owner);
     const civ = g.civs[u.owner];
     civ.casualties++;
     civ.weariness += UNITS[u.type].pop * 2;
     if (attackerCivId != null && g.civs[attackerCivId]) g.civs[attackerCivId].kills++;
     if (cause === 'lava' || cause === 'flood' || cause === 'fuel') g.notify(civ.id, `${UNITS[u.type].name} lost ${cause === 'lava' ? 'to the lava' : cause === 'fuel' ? '(out of fuel)' : 'to the rising waters'}.`, { kind: 'loss', tile: u.tile, quiet: true });
-    g.fx.push(['die', u.tile, u.tile]);
+    emit(g, { k: 'kill', t: u.id, b: u.tile, ty: u.type, o: cause, ow: u.owner });
   }
 }
 
@@ -255,7 +277,7 @@ export function damageBuilding(g, b, amount, attackerCivId, cause) {
   g.removeBuilding(b);
   if (cause !== 'flood' && cause !== 'demolish') { g.addRuin(b.tile, b.type, b.owner); const r = g.ruins.get(b.tile); if (r) r.smoke = 60; }
   g.notify(owner.id, `${BUILDINGS[b.type].name} destroyed${cause === 'combat' ? ' by enemy forces' : cause === 'quake' ? ' in the earthquake' : cause === 'lava' ? ' by lava' : ''}.`, { kind: 'loss', tile: b.tile, quiet: cause !== 'combat' });
-  g.fx.push(['boom', b.tile, b.tile]);
+  emit(g, { k: 'bkill', t: b.id, b: b.tile, ty: b.type, o: cause });
 }
 
 export function buildingCombatStep(g, dt) {
@@ -275,11 +297,7 @@ export function buildingCombatStep(g, dt) {
       }
     }
     if (!best) continue;
-    let a = def.attack * (g.civs[b.owner].policies.has('fortification') && b.type !== 'town' ? 1.5 : 1) * (0.4 + 0.6 * b.hp / b.maxHp);
-    if (UNITS[best.type].air) a *= def.aa;
-    damageUnit(g, best, a * 1.6 * (10 / (10 + UNITS[best.type].def)), b.owner, 'combat');
-    b.cooldown = 2;
-    g.fx.push(['shot', b.tile, best.tile]);
+    fireBuilding(g, b, best);
   }
 }
 
@@ -335,7 +353,7 @@ export function supplyStep(g, dt) {
     const civ = g.civs[u.owner];
     const def = UNITS[u.type];
     const air = !!def.air;
-    const inSup = air ? civ.airSupply[u.tile] === 1 : civ.supply[u.tile] === 1;
+    const inSup = g.sandbox || (air ? civ.airSupply[u.tile] === 1 : civ.supply[u.tile] === 1);
     const fed = civ.res.food > 0 && (!air || civ.res.fuel > 0);
     u.outOfSupply = !inSup || !fed;
     if (inSup && fed) {

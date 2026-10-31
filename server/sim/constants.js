@@ -105,7 +105,8 @@ export const TECHS = {
   self_propelled_guns: { name: 'Self-Propelled Guns', age: 2, cost: 700, req: ['field_artillery'], desc: 'Self-propelled artillery.' },
   corporate_charter: { name: 'Corporate Charter', age: 2, cost: 650, req: ['trade_networks'], desc: 'Corporate State government.' },
   // Networked Warfare
-  computing: { name: 'Computing', age: 3, cost: 1200, req: ['electrification', 'higher_education'], desc: 'Electronics plants (need rare earths in territory).' },
+  computing: { name: 'Computing', age: 3, cost: 1200, req: ['electrification', 'higher_education'], desc: 'Electronics plants (rare earths from a deposit, a trade partner, imports or recycling).' },
+  materials_recycling: { name: 'Materials Recycling', age: 3, cost: 900, req: ['computing', 'salvage_engineering'], desc: 'Recover rare earths from salvage: electronics plants run without a deposit.' },
   networked_command: { name: 'Networked Command', age: 3, cost: 1200, req: ['computing'], desc: 'Comms towers: long-range vision, +1 supply range.' },
   drones: { name: 'Drones', age: 3, cost: 1250, req: ['computing', 'aviation'], desc: 'Drone works: recon drones.' },
   precision_missiles: { name: 'Precision Missiles', age: 3, cost: 1300, req: ['drones'], desc: 'Missile batteries.' },
@@ -196,6 +197,7 @@ export const BUILDINGS = {
   wonder: { name: 'Continental Arcology', glyph: '\u{1F3D9}', age: 4, tech: 'continental_arcology', cost: { steel: 2500, electronics: 900, credits: 4000, materials: 3000 }, time: 180, hp: 3000, place: 'flat', wonder: true, power: -10, cat: 'civic' },
 };
 
+import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS } from './weapons.js';
 // ---- Units ----------------------------------------------------------------
 // move: movement class; cat: combat category (for bonuses); aa: multiplier vs aircraft (0 = cannot hit air).
 export const UNITS = {
@@ -239,4 +241,29 @@ export const GOVERNOR_SPECS = {
   fortress: { name: 'Fortress City', desc: 'Bunkers, fortresses and a standing garrison.' },
 };
 
-export const GAME_DEFS = { W, H, TERRAIN, MOVE, ROAD_TYPES, RESOURCE, GOODS, GOOD_NAMES, AGES, TECHS, GOVS, POLICIES, FOCI, TAX, BUILDINGS, UNITS, CIV_COLORS, CIV_NAMES, REBEL, GOVERNOR_SPECS, FORMATIONS, STANCES, ALERT_LEVELS };
+export const ENGAGE_POLICIES = { balanced: 'Balanced engagement', focus: 'Focus fire', threat: 'Threat priority', antiArmor: 'Anti-armour', counterBattery: 'Counter-battery', defensive: 'Defensive (no pursuit)' };
+export const COMBAT_STATUS = ['Idle', 'Moving', 'Engaging', 'Repositioning', 'Suppressed', 'Out of range', 'No line of fire', 'Reloading', 'Low ammunition', 'Retreating', 'Pinned down'];
+// World market: goods bought with credits through your markets (another route past a missing deposit).
+export const IMPORT_PRICE = { food: 2, materials: 3, ore: 5, steel: 11, fuel: 9, munitions: 9, electronics: 24 };
+export const IMPORT_PER_MARKET = 60;     // units per minute each operational market can bring in
+
+// Refit paths: surviving units (and their veterancy) are re-equipped instead of replaced.
+// conv: a conversion between movement classes, priced closer to a new unit.
+export const REFIT = {
+  militia: [{ to: 'rifle_squad' }],
+  rifle_squad: [{ to: 'mech_infantry' }, { to: 'special_forces' }],
+  mech_infantry: [{ to: 'exo_infantry' }],
+  scout_buggy: [{ to: 'armored_car' }],
+  armored_car: [{ to: 'tank', conv: true }, { to: 'air_defense' }],
+  tank: [{ to: 'autonomous_tank' }],
+  mortar_team: [{ to: 'field_gun', conv: true }],
+  field_gun: [{ to: 'sp_artillery', conv: true }],
+  sp_artillery: [{ to: 'missile_battery', conv: true }],
+  helicopter: [{ to: 'strike_swarm', conv: true }],
+};
+export const VET_NAMES = ['Green', 'Regular', 'Veteran', 'Elite'];
+export const GOVERNOR_GOALS = { none: { name: 'No particular goal' }, grow: { name: 'Grow population' }, steel: { name: 'Increase steel output' }, self: { name: 'Become self-sufficient' },
+  defense: { name: 'Strengthen defenses' }, repair: { name: 'Repair war damage' }, research: { name: 'Become a research centre' } };
+
+export const GAME_DEFS = { GOVERNOR_GOALS, IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, VET_NAMES, W, H, TERRAIN, MOVE, ROAD_TYPES, RESOURCE, GOODS, GOOD_NAMES, AGES, TECHS, GOVS, POLICIES, FOCI, TAX, BUILDINGS, UNITS, CIV_COLORS, CIV_NAMES, REBEL, GOVERNOR_SPECS, FORMATIONS, STANCES, ALERT_LEVELS,
+  WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ENGAGE_POLICIES, COMBAT_STATUS };

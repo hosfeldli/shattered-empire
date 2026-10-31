@@ -86,7 +86,7 @@ test('a human city governor builds within its reserve and permissions, and expla
   const g = newGame(7);
   const civ = g.civs[0], c = g.capital(civ);
   civ.res.materials = 1000;
-  g.command(0, { c: 'governor', city: c.id, enabled: true, spec: 'agrarian', reserve: 0.5, perms: { build: true, roads: false, repair: true, recruit: false, settle: false } });
+  g.command(0, { c: 'governor', city: c.id, enabled: true, level: 'autonomous', spec: 'agrarian', reserve: 0.5, perms: { build: true, roads: false, repair: true, recruit: false, settle: false } });
   const before = g.buildings.size;
   run(g, 1200);
   assert.ok(g.buildings.size > before, 'governor built something');

@@ -3,9 +3,11 @@
 //   merchant - trade, markets, diplomacy
 //   warlord  - militarized industrial state that seeks conquest
 // City development runs through the same governor code that players can enable.
+import { MilitaryPlanner } from './missions.js';
 import { N, UNITS, TECHS, AGES, isWater } from './constants.js';
 import { dist } from './hex.js';
 import { defaultGovernor, steerColonist } from './governor.js';
+import { nationalRoles } from './planner.js';
 
 const TECH_PREF = {
   builder: ['agronomy', 'salvage_engineering', 'schooling', 'surveying', 'trade_networks', 'fortification', 'small_arms', 'seafaring',
@@ -37,6 +39,7 @@ export class AI {
   constructor(g, civ) {
     this.g = g; this.civ = civ; this.p = civ.personality;
     this.campaign = null; this.lastTrade = 0; this.colonists = new Map();
+    this.mil = new MilitaryPlanner(this);
   }
   cmd(c) { return this.g.command(this.civ.id, c); }
   // civilian units come from the most populous town, never from a city that can't spare people
@@ -62,7 +65,15 @@ export class AI {
     if (next && !civ.advancing) {
       const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;
       if (have >= next.techsNeeded && this.g.canAfford(civ, next.cost)) this.cmd({ c: 'advance' });
-    }
+      // national budget: once the era is within reach, save for it instead of spending everything
+      civ.saving = have >= next.techsNeeded - 1 ? next.cost : null;
+      // missing a deposit is not a dead end: buy the shortfall on the world market
+      if (civ.saving && civ.res.credits > (civ.saving.credits || 0) + 400) for (const [k, v] of Object.entries(civ.saving)) {
+        if (k === 'credits' || (civ.res[k] || 0) >= v || (civ.gross?.[k] || 0) * 60 > v - (civ.res[k] || 0)) continue;
+        const q = this.g.importQuote(civ, k, Math.ceil(v - (civ.res[k] || 0)));
+        if (!q.error && civ.res.credits - q.credits > (civ.saving.credits || 0) + 200) this.g.command(civ.id, { c: 'import', good: k, amount: q.amount });
+      }
+    } else civ.saving = null;
     if (!civ.researching) {
       // cities stranded across water make Seafaring urgent
       const urgent = this.cities.some((c) => c.wantsSeafaring) && !civ.techs.has('seafaring') && TECHS.seafaring.req.every((r) => civ.techs.has(r)) ? ['seafaring'] : [];
@@ -85,6 +96,9 @@ export class AI {
   }
 
   governors() {
+    nationalRoles(this.g, this.civ);
+    const civ0 = this.civ; civ0.claims = civ0.claims || {};
+    for (const [k, id] of Object.entries(civ0.claims)) { const c = this.g.cities.get(id); if (!c || c.owner !== civ0.id || [...this.g.buildings.values()].some((b) => b.owner === civ0.id && b.type === k && b.done)) delete civ0.claims[k]; }
     const atWar = this.enemies().length > 0;
     // save up when the next era is within reach
     const civ = this.civ, next = AGES[civ.age + 1];
@@ -92,8 +106,9 @@ export class AI {
     this.cities.forEach((c, i) => {
       if (!c.governor) c.governor = defaultGovernor(true);
       const gv = c.governor;
-      gv.enabled = true;
-      gv.spec = c.capital ? 'balanced' : SPEC[this.p][i % SPEC[this.p].length];
+      gv.enabled = true; gv.level = 'autonomous';
+      // roles are earned from geography and the nation's needs, and kept stable (planner.js)
+      gv.spec = civ.roles?.[c.id] || 'balanced';
       gv.reserve = saving ? 0.75 : atWar ? 0.35 : 0.1;
       gv.perms = { build: true, roads: true, repair: true, recruit: !c.capital || atWar, settle: false };
     });
@@ -122,17 +137,39 @@ export class AI {
   }
   observed(o) { const i = this.civ.intel[o.id]; return i ? i.peak : 0; }
 
+  // Recruitment by role: fill the largest gap in the intended mix (armour, artillery, air
+  // defence, line infantry) with the best unit the facility can make, newest era first.
   trainChoice(b) {
     const g = this.g, civ = this.civ;
-    const opts = (g.defs.BUILDINGS[b.type].trains || []).filter((u) => !UNITS[u].civilian && !UNITS[u].engineer);
-    const army = this.myUnits.filter((u) => !UNITS[u.type].civilian);
-    const cnt = (cat) => army.filter((u) => UNITS[u.type].cat === cat).length;
-    const order = ARMY_PREF.filter((u) => opts.includes(u));
-    // keep some artillery and air defense in the mix
-    if (cnt('artillery') < army.length / 5) order.sort((a, b) => (UNITS[b].cat === 'artillery') - (UNITS[a].cat === 'artillery'));
-    if (this.enemyAir && !army.some((u) => (UNITS[u.type].aa || 0) >= 2)) order.unshift('air_defense');
-    for (const u of order) if (opts.includes(u) && !g.canTrain(civ, b, u)) return u;
-    return null;
+    const opts = (g.defs.BUILDINGS[b.type].trains || []).filter((u) => !UNITS[u].civilian && !UNITS[u].engineer && !g.canTrain(civ, b, u));
+    if (!opts.length) return null;
+    const army = this.myUnits.filter((u) => !UNITS[u.type].civilian && !UNITS[u.type].engineer);
+    const role = (t) => { const d = UNITS[t]; return d.aa >= 2 ? 'aa' : d.cat === 'artillery' ? 'art' : d.cat === 'tracked' || d.cat === 'wheeled' || d.cat === 'air' ? 'armor' : 'inf'; };
+    const have = { inf: 0, armor: 0, art: 0, aa: 0 }; for (const u of army) have[role(u.type)]++;
+    const n = Math.max(1, army.length);
+    const target = { armor: civ.age >= 1 ? 0.35 : 0, art: civ.age >= 1 ? 0.2 : 0.1, aa: this.enemyAir ? 0.12 : 0, inf: 0.4 };
+    const gaps = Object.entries(target).map(([r, t]) => [r, t - have[r] / n]).sort((a, b2) => b2[1] - a[1]);
+    const best = (r) => opts.filter((t) => role(t) === r).sort((a, b2) => UNITS[b2].age - UNITS[a].age || (UNITS[b2].atk + UNITS[b2].def) - (UNITS[a].atk + UNITS[a].def))[0];
+    for (const [r] of gaps) { const t = best(r); if (t) return t; }
+    return opts.sort((a, b2) => UNITS[b2].age - UNITS[a].age)[0];
+  }
+
+  // Refit the reserve before raising more low-tier troops: veterans keep their experience.
+  refits(army) {
+    const g = this.g, civ = this.civ;
+    if (civ.saving) return 0;
+    let n = 0;
+    for (const u of army) {
+      if (n >= 3 || u.refitUntil > g.time) continue;
+      const path = (g.defs.REFIT[u.type] || []).filter((r) => { const d = UNITS[r.to]; return d.age <= civ.age && (!d.tech || civ.techs.has(d.tech)); }).pop();
+      if (!path) continue;
+      const fac = [...g.buildings.values()].find((b) => b.owner === civ.id && b.done && (g.defs.BUILDINGS[b.type].trains || []).includes(path.to));
+      if (!fac) continue;
+      if (this.mil.owner && this.mil.owner(u.id)) continue;             // busy on a mission
+      if (dist(u.tile, fac.tile) <= 3) { const r = g.command(civ.id, { c: 'refit', units: [u.id], to: path.to }); if (!(r && r.error)) n++; }
+      else if (!u.path.length && !u.field && u.order.kind === 'idle') this.cmd({ c: 'move', units: [u.id], tile: fac.tile, auth: 'mission' });
+    }
+    return n;
   }
 
   military() {
@@ -141,12 +178,18 @@ export class AI {
     const enemies = this.enemies();
     const threats = this.enemiesNear();
     this.enemyAir = threats.some((u) => UNITS[u.type].air);
-    let desired = 3 + 2 * civ.age + Math.min(8, this.cities.length) + Math.floor(civ.popTotal / 10);
-    if (this.p === 'warlord') desired = Math.round(desired * 1.6);
-    if (enemies.length) desired += 4;
-    desired += threats.length;
-    desired = Math.min(desired, Math.round(civ.popTotal / 3) + 4);   // an army must not eat the realm
-    if (army.length < desired && civ.res.food > 50) {
+    // size the army by need and by what the treasury can sustain, not by population
+    let desired = 4 + 3 * civ.age + 2 * Math.min(8, this.cities.length);
+    if (this.p === 'warlord') desired = Math.round(desired * 1.4);
+    if (enemies.length) desired += 6;
+    desired += Math.min(12, threats.length);
+    const income = Math.max(1, (civ.gross?.credits || 0));
+    if ((civ.upkeep?.credits || 0) > income * 0.45 && !threats.length) desired = Math.min(desired, army.length);   // logistics limit
+    // strength, not head-count: a tank is worth several militia
+    const tier = army.reduce((s2, u) => s2 + 1 + UNITS[u.type].age * 0.6, 0);
+    if (army.length >= desired * 0.6) this.refits(army);
+    civ.armyCap = Math.round(desired * 1.2);
+    if (tier < desired * (1 + civ.age * 0.6) && army.length < desired * 1.2 && civ.res.food > 50) {
       for (const b of g.buildings.values()) {
         if (b.owner !== civ.id || !b.done || b.queue.length >= 2) continue;
         if (!['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'].includes(b.type)) continue;
@@ -161,17 +204,11 @@ export class AI {
     const scouts = this.myUnits.filter((u) => u.type === 'scout_buggy');
     const unmet = g.civs.some((o) => o !== civ && o.alive && !o.isRebel && g.diplomacy.rel(civ.id, o.id).state === 'unmet');
     if (!scouts.length && !queuedType('scout_buggy') && (g.time < 900 || unmet) && civ.res.food > 60) { const h = this.hub(8); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'scout_buggy' }); }
-    for (const s of scouts) if (!s.path.length) { const t = this.randomUnexplored(); if (t >= 0) this.cmd({ c: 'move', units: [s.id], tile: t }); }
+    this.mil.scouts(scouts);
     // engineers follow the army or fix things at home
-    for (const e of this.myUnits.filter((u) => u.type === 'engineer' && !u.path.length)) {
+    for (const e of this.myUnits.filter((u) => u.type === 'engineer' && !u.path.length && !u.field)) {
       const broken = [...g.roads.edges.values()].find((x) => x.cond < 60 && g.world.owner[x.a] === civ.id);
       if (broken && dist(e.tile, broken.a) > 0) this.cmd({ c: 'move', units: [e.id], tile: broken.a });
-    }
-    if (threats.length) {
-      const t = threats[0];
-      const defenders = army.filter((u) => u.order.kind !== 'attack' && dist(u.tile, t.tile) < 20);
-      if (defenders.length) this.cmd({ c: 'move', units: defenders.map((u) => u.id), tile: t.tile, attackMove: true, formation: 'line' });
-      return;
     }
     for (const o of g.civs) {
       if (o === civ || !o.alive || o.isRebel) continue;
@@ -184,35 +221,14 @@ export class AI {
         break;
       }
     }
-    if (!enemies.length) { this.campaign = null; this.rally(army); this.huntRebels(army); return; }
-    const target = this.pickTargetCity(enemies);
-    if (!target) {
-      const tile = this.knownEnemyTile(enemies);
-      const idle = army.filter((u) => !u.path.length && !u.field && u.order.kind === 'idle');
-      if (tile >= 0 && idle.length >= Math.max(4, desired * 0.6)) this.cmd({ c: 'move', units: idle.map((u) => u.id), tile, attackMove: true, formation: 'line' });
-      else this.rally(army);
-      return;
-    }
-    const ready = army.filter((u) => u.order.kind !== 'attack');
-    const avgSupply = army.length ? army.reduce((s, u) => s + u.supply, 0) / army.length : 100;
-    if (!this.campaign || this.campaign.city !== target.id) {
-      if (army.length < Math.max(4, desired * 0.7)) { this.rally(army); return; }
-      this.campaign = { city: target.id, start: army.length, stage: target.tile };
-      this.cmd({ c: 'move', units: ready.map((u) => u.id), tile: target.tile, attackMove: true, formation: 'line' });
-      return;
-    }
-    if (army.length < this.campaign.start * 0.35 || avgSupply < 15) {
-      const home = g.capital(civ);
-      if (home) this.cmd({ c: 'move', units: army.map((u) => u.id), tile: home.tile, formation: 'column' });
-      this.campaign = null; return;
-    }
-    const town = target.buildingId >= 0 ? g.buildings.get(target.buildingId) : null;
-    const near = army.filter((u) => dist(u.tile, target.tile) <= 5);
-    if (town && near.length) this.cmd({ c: 'attack', units: near.filter((u) => u.order.kind !== 'attack').map((u) => u.id), target: { kind: 'building', id: town.id } });
-    const idle = army.filter((u) => !u.path.length && !u.field && u.order.kind === 'idle' && dist(u.tile, target.tile) > 5);
-    if (idle.length) this.cmd({ c: 'move', units: idle.map((u) => u.id), tile: target.tile, attackMove: true });
-    const trucks = this.myUnits.filter((u) => u.type === 'supply_truck' && !u.path.length);
-    if (trucks.length && army.length) { const cx = army[0].tile; for (const t of trucks) if (dist(t.tile, cx) > 3) this.cmd({ c: 'move', units: [t.id], tile: cx }); }
+    // missions own their units; the reserve rallies at the front city or hunts nearby rebels
+    this.mil.step(army, threats, enemies, desired);
+    const off = [...this.mil.missions.values()].find((m) => m.kind === 'offensive');
+    this.campaign = off ? { city: off.target, start: off.units.size, stage: off.staging } : null;
+    const assigned = this.mil.assignedIds();
+    const reserve = army.filter((u) => !assigned.has(u.id));
+    this.rally(reserve);
+    if (!enemies.length && !threats.length) this.huntRebels(reserve);
   }
 
   huntRebels(army) {

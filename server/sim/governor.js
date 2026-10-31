@@ -4,9 +4,27 @@
 import { T, TERRAIN, BUILDINGS, UNITS, RES, ROAD_TYPES, GOVERNOR_SPECS } from './constants.js';
 import { disk, dist } from './hex.js';
 import { findRoadRoute } from './path.js';
+import { assess, candidates, isRoutine } from './planner.js';
+import { allocationFor } from './economy.js';
+import { catOf, defaultWorkforce } from './workforce.js';
 
+// Autonomy levels (what the governor may do without asking):
+//   off         nothing
+//   advisor     analyses and proposes; only permitted emergency repairs run on their own (default)
+//   managed     labor priorities, repairs, rubble, farms and housing within budget; asks for the rest
+//   autonomous  develops the city within its budget, goal and permissions (AI empires use this)
+export const LEVELS = ['off', 'advisor', 'managed', 'autonomous'];
 export function defaultGovernor(enabled = false, spec = 'balanced') {
-  return { enabled, spec, reserve: 0.25, perms: { build: true, roads: true, repair: true, recruit: false, settle: false }, log: [], queue: [], blocked: [], next: 0 };
+  return { enabled, level: enabled ? 'autonomous' : 'off', spec, goal: 'none', reserve: 0.25, budget: 0.15, emergency: true,
+    perms: { build: true, roads: true, repair: true, recruit: false, settle: false }, log: [], queue: [], blocked: [], next: 0,
+    proposals: [], deferred: [], rejected: {}, cooldown: 0, nextProposal: 1 };
+}
+// older saves: an enabled governor without a level was fully automatic
+export function migrateGovernor(gv) {
+  if (!gv.level) gv.level = gv.enabled ? 'autonomous' : 'off';
+  for (const [k, v] of Object.entries({ goal: 'none', budget: 0.15, emergency: true, proposals: [], deferred: [], rejected: {}, cooldown: 0, nextProposal: 1 })) if (gv[k] === undefined) gv[k] = Array.isArray(v) ? [] : typeof v === 'object' ? {} : v;
+  gv.enabled = gv.level !== 'off';
+  return gv;
 }
 
 function log(g, c, text) {
@@ -19,9 +37,16 @@ function log(g, c, text) {
   if (gv.log.length > 30) gv.log.length = 30;
 }
 
-// Spending rule: never dip into the reserved share of any stockpile.
-export function governorCanSpend(civ, gv, cost) {
-  for (const k in cost) if ((civ.res[k] || 0) * (1 - gv.reserve) < cost[k]) return false;
+// Spending rule: draw from the stockpile that will actually pay (local reserves for a cut-off
+// city), never dip into the reserved share, and stay within the governor's budget share.
+export function governorCanSpend(civ, gv, cost, c = null) {
+  const auto = civ.isAI || gv.level === 'autonomous';
+  const budget = civ.isAI ? 0.7 : Math.max(gv.budget || 0.15, auto ? 0.35 : 0);
+  for (const k in cost) {
+    const pool = c && c.isolated && k !== 'credits' ? c.stock?.[k] || 0 : civ.res[k] || 0;
+    if (pool * (1 - gv.reserve) < cost[k]) return false;
+    if (cost[k] > Math.max(pool * budget, k === 'materials' ? 60 : 0)) return false;
+  }
   return true;
 }
 
@@ -30,58 +55,6 @@ function civCount(g, civ, type) { let n = 0; for (const b of g.buildings.values(
 const unlocked = (civ, type) => { const d = BUILDINGS[type]; return d && d.age <= civ.age && (!d.tech || civ.techs.has(d.tech)); };
 
 // Ranked wish-list for a city: [type, reason]. Specialization reorders and adds priorities.
-export function cityNeeds(g, civ, c, spec) {
-  const w = g.world, out = [];
-  const has = (t) => count(g, c, t);
-  const push = (type, reason) => { if (unlocked(civ, type) && !out.some((x) => x[0] === type)) out.push([type, reason]); };
-  const food = civ.rates.food || 0;
-  const terrIn = (pred) => disk(c.tile, c.radius || 3).some((t) => w.owner[t] === civ.id && pred(t));
-  // survival first
-  if (food < 0.8 || (civ.res.food < 80 && food < 2)) push('farm', `food surplus ${food.toFixed(1)}/s is below target`);
-  if (c.pop >= c.housing - 1.5) push('house', `population ${Math.floor(c.pop)} has reached housing ${c.housing}`);
-  if (civ.powerUse > civ.powerGen * 0.95 && civ.powerUse > 0 && c.pop >= 8) { push('fusion_plant', 'power demand exceeds generation'); push('power_plant', `power demand ${civ.powerUse.toFixed(0)} exceeds generation ${civ.powerGen.toFixed(0)}`); }
-  const specList = {
-    balanced: [],
-    industrial: [['mine', 'industrial specialization: ore'], ['steel_mill', 'industrial specialization: steel'], ['oil_well', 'industrial specialization: fuel'], ['munitions_plant', 'industrial specialization: munitions'], ['electronics_plant', 'industrial specialization: electronics'], ['quarry', 'materials for industry']],
-    agrarian: [['farm', 'breadbasket specialization'], ['house', 'breadbasket grows population'], ['port', 'fishing']],
-    commercial: [['market', 'trade hub specialization'], ['port', 'trade hub: sea trade'], ['house', 'more merchants need housing']],
-    research: [['academy', 'research campus'], ['university', 'research campus'], ['seismic', 'research campus: seismic monitoring']],
-    fortress: [['bunker', 'fortress city: defensive line'], ['fort', 'fortress city: stronghold'], ['barracks', 'fortress city: garrison']],
-  }[spec] || [];
-  for (const [t, r] of specList) if (has(t) < (t === 'farm' || t === 'house' ? 4 : t === 'bunker' ? 3 : 2)) push(t, r);
-  if (has('lumber') < 1 && terrIn((t) => w.terr[t] === T.FOREST)) push('lumber', 'no timber mill for materials');
-  if (has('farm') < 2) push('farm', 'every city needs two farms');
-  if (has('salvage') < 1 && terrIn((t) => w.res[t] === RES.RUINS)) push('salvage', 'old-world ruins in range can be salvaged');
-  if (has('quarry') < 1) push('quarry', 'no quarry for materials');
-  if (has('mine') < 2 && terrIn((t) => w.res[t] === RES.IRON || w.res[t] === RES.COAL)) push('mine', 'ore deposits in range');
-  if (has('oil_well') < 1 && terrIn((t) => w.res[t] === RES.OIL)) push('oil_well', 'oil field in range');
-  if (c.capital && civCount(g, civ, 'barracks') < 1) push('barracks', 'the realm has no barracks');
-  if (has('market') < 1) push('market', 'no market for merchants');
-  if (has('academy') < 1) push('academy', 'no academy for research');
-  if (civ.techs.has('metallurgy') && civCount(g, civ, 'steel_mill') < Math.min(3, g.cityOf(civ).length)) push('steel_mill', 'steel output is limited');
-  if (civ.techs.has('electrification') && civCount(g, civ, 'power_plant') + civCount(g, civ, 'fusion_plant') < 1) push('power_plant', 'industry needs a power grid');
-  if (has('university') < 1 && c.pop > 12) push('university', 'large city without a university');
-  if (civ.techs.has('munitions_industry') && civCount(g, civ, 'munitions_plant') < 1) push('munitions_plant', 'armies need munitions');
-  if (civ.techs.has('motorization') && civCount(g, civ, 'motor_works') < 1 && c.capital) push('motor_works', 'no vehicle production');
-  if (civ.techs.has('mechanization') && civCount(g, civ, 'heavy_assembly') < 1 && c.capital) push('heavy_assembly', 'no armor production');
-  if (civ.techs.has('aviation') && civCount(g, civ, 'airfield') < 1 && c.capital) push('airfield', 'no air base');
-  if (civ.techs.has('drones') && civCount(g, civ, 'drone_works') < 1 && c.capital) push('drone_works', 'no drone production');
-  if (civ.techs.has('robotics') && civCount(g, civ, 'robotics_complex') < 1 && c.capital) push('robotics_complex', 'no robotics production');
-  if (civ.techs.has('computing') && civCount(g, civ, 'electronics_plant') < 1 && g.civHasResource(civ, RES.RARE)) push('electronics_plant', 'rare earths available for electronics');
-  if (has('seismic') < 1 && w.stab[c.tile] < 0.55) push('seismic', `ground stability ${Math.round(w.stab[c.tile] * 100)}% is low`);
-  if (has('stabilizer') < 1 && w.stab[c.tile] < 0.4) push('stabilizer', 'city sits on a fault');
-  if (civ.techs.has('networked_command') && civCount(g, civ, 'comms_tower') < g.cityOf(civ).length) push('comms_tower', 'extend command network');
-  if (civ.techs.has('seafaring') && has('port') < 1 && c.capital) push('port', 'no harbour');
-  if (civ.techs.has('seafaring') && has('port') < 1 && c.isolated && c.noLandRoute) push('port', 'cut off by water: a port opens a sea lane to the network');
-  if (c.isolated && c.noLandRoute && c.capital === false && !civ.techs.has('seafaring')) c.wantsSeafaring = true;
-  if (civ.techs.has('fortification') && has('bunker') < 1 && (c.capital || spec === 'fortress')) push('bunker', 'city has no defenses');
-  if (civ.techs.has('continental_arcology') && civCount(g, civ, 'wonder') < 1 && c.capital && civ.res.credits > 2500) push('wonder', 'the Arcology would secure victory');
-  if (c.unemployed > 2) for (const t of ['lumber', 'quarry', 'salvage', 'mine', 'market', 'academy', 'steel_mill', 'munitions_plant', 'university', 'farm']) push(t, `${Math.round(c.unemployed)} citizens unemployed`);
-  if (has('farm') < 4 && c.pop > 12 && food < 2) push('farm', 'growing city needs more food');
-  if (has('house') < 3) push('house', 'room to grow');
-  return out;
-}
-
 export function pickTile(g, civ, c, type, gv) {
   const w = g.world;
   let best = -1, bs = -Infinity;
@@ -101,31 +74,133 @@ export function pickTile(g, civ, c, type, gv) {
 
 export function governorStep(g, dt) {
   for (const c of g.cities.values()) {
-    const gv = c.governor; if (!gv || !gv.enabled) continue;
+    const gv = c.governor; if (!gv) continue;
+    migrateGovernor(gv);
+    if (gv.level === 'off') continue;
     const civ = g.civs[c.owner]; if (!civ || !civ.alive) continue;
     if (g.time < gv.next) continue;
     gv.next = g.time + (civ.isAI ? 2 : 3) + (c.id % 3) * 0.3;
     gv.queue = gv.queue.filter((id) => { const b = g.buildings.get(id); return b && !b.done; });
+    gv.proposals = (gv.proposals || []).filter((p) => p.status === 'proposed' && g.time - p.at < 300);
+    const level = civ.isAI ? 'autonomous' : gv.level;
     // each area of responsibility gets its own turn so construction never starves roads or the garrison
     gv.turn = ((gv.turn || 0) + 1) % 4;
-    const did = (gv.perms.repair && repair(g, civ, c, gv)) || false;
-    if (!did && gv.perms.build && (gv.turn !== 1 || !gv.perms.roads)) build(g, civ, c, gv);
-    if (gv.perms.roads && gv.turn === 1) roads(g, civ, c, gv);
-    if (gv.perms.recruit && gv.turn === 2) recruit(g, civ, c, gv);
-    if (gv.perms.settle && gv.turn === 3) settle(g, civ, c, gv);
+    const repairOk = gv.perms.repair && (level !== 'advisor' || gv.emergency);
+    const did = (repairOk && repair(g, civ, c, gv, level)) || false;
+    if (!did && gv.perms.build && (gv.turn !== 1 || !gv.perms.roads)) develop(g, civ, c, gv, level);
+    if (gv.perms.roads && gv.turn === 1) roads(g, civ, c, gv, level);
+    if (gv.perms.recruit && gv.turn === 2 && (level === 'autonomous')) recruit(g, civ, c, gv);
+    if (gv.perms.settle && gv.turn === 3) settle(g, civ, c, gv, level);
+    if (level !== 'advisor' && gv.turn === 0) laborPriorities(g, civ, c, gv);
   }
 }
 
-function repair(g, civ, c, gv) {
+// Managed and autonomous governors may shift flexible labor priorities (never the player's locks)
+// toward what the nation is short of, and say what they expect it to achieve.
+function laborPriorities(g, civ, c, gv) {
+  const wf = c.wf || (c.wf = defaultWorkforce());
+  if (gv.wfLocked) return;
+  const want = new Set([...(civ.short || []), ...Object.keys(civ.saving || {})]);
+  const blds = [...g.buildings.values()].filter((b) => b.cityId === c.id && b.owner === civ.id && b.done && BUILDINGS[b.type].jobs);
+  for (const b of blds) {
+    if (!(b.why || '').startsWith('prio:') || b.lock != null) continue;
+    const d = BUILDINGS[b.type]; if (!d.produce || !Object.keys(d.produce).some((k) => want.has(k))) continue;
+    const cat = catOf(b.type); if (wf.prio[cat] === 'high' || wf.prio[cat] === 'critical') continue;
+    const before = allocationFor(g, civ, c);
+    const next = { ...wf, prio: { ...wf.prio, [cat]: 'high' }, mode: 'custom' };
+    const after = allocationFor(g, civ, c, next);
+    const gain = Object.entries(after.effect).filter(([k]) => want.has(k)).reduce((s2, [, v]) => s2 + v, 0);
+    void before;
+    if (gain <= 0) continue;
+    c.wf = next;
+    log(g, c, `Raised ${cat} labor priority so ${d.name.toLowerCase()}s are staffed: forecast ${Object.entries(after.effect).map(([k, v]) => `${v > 0 ? '+' : ''}${v.toFixed(1)} ${k}/s`).join(', ')}.`);
+    return true;
+  }
+  return false;
+}
+
+// Development: score every option, act within authority, propose the rest, explain deferrals.
+function develop(g, civ, c, gv, level) {
+  const maxProjects = civ.isAI ? 2 : level === 'autonomous' ? 2 : 1;
+  if (gv.queue.length >= maxProjects || g.time < (gv.cooldown || 0)) return false;
+  const a = assess(g, civ, c);
+  const { list, deferred } = candidates(g, civ, c, gv, a);
+  gv.deferred = deferred.slice(0, 4);
+  const none = list.find((x) => x.kind === 'none').u;
+  for (const cand of list) {
+    if (cand.kind === 'none' || cand.u <= none) break;
+    if (gv.rejected?.[cand.type] && g.time < gv.rejected[cand.type]) continue;
+    const routine = isRoutine(cand.type);
+    if (cand.kind === 'upgrade') {
+      if (!(level === 'autonomous' || level === 'managed')) { propose(g, civ, c, gv, { action: 'upgrade', type: 'house', id: cand.id, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: 0.8 }); return false; }
+      if (!governorCanSpend(civ, gv, cand.cost, c)) continue;
+      const r = g.command(civ.id, { c: 'upgrade', id: cand.id, by: 'governor:' + c.name });
+      if (r && r.error) continue;
+      gv.cooldown = g.time + (civ.isAI ? 8 : 20);
+      log(g, c, `Upgrading a housing block: ${cand.reason}.`);
+      return true;
+    }
+    const may = level === 'autonomous' || (level === 'managed' && routine);
+    const t = pickTile(g, civ, c, cand.type, gv);
+    if (t < 0) continue;
+    if (!may) { propose(g, civ, c, gv, { action: 'build', type: cand.type, tile: t, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: Math.min(0.95, 0.5 + cand.u / 200) }); return false; }
+    if (!governorCanSpend(civ, gv, cand.cost, c)) {
+      // a national project the empire cannot yet afford: reserve for it so other automation waits
+      if (civ.isAI && NATIONAL_CLAIM.has(cand.type) && !civ.natReserve) { civ.natReserve = { type: cand.type, cost: cand.cost, city: c.id, since: g.time }; log(g, c, `Saving for the nation's first ${BUILDINGS[cand.type].name}.`); }
+      continue;
+    }
+    const res = g.command(civ.id, { c: 'build', type: cand.type, tile: t, by: 'governor:' + c.name, why: cand.reason, national: NATIONAL_CLAIM.has(cand.type) });
+    if (res && res.error) continue;
+    const b = g.buildingAtTile(t);
+    if (b) { gv.queue.push(b.id); if (civ.claims && BUILDINGS[cand.type] && NATIONAL_CLAIM.has(cand.type)) civ.claims[cand.type] = c.id; if (civ.natReserve?.type === cand.type) civ.natReserve = null; }
+    gv.cooldown = g.time + (civ.isAI ? 8 : 20);
+    log(g, c, `Building ${BUILDINGS[cand.type].name}: ${cand.reason}.`);
+    return true;
+  }
+  if (deferred.length && level !== 'off') { const d = deferred[0]; if (gv.lastDeferred !== d) { gv.lastDeferred = d; log(g, c, `Holding off on ${d}.`); } }
+  return false;
+}
+const NATIONAL_CLAIM = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'comms_tower', 'fusion_plant', 'wonder']);
+
+// Proposals wait for the player's decision; at most three at a time, no duplicates.
+function propose(g, civ, c, gv, p) {
+  if (gv.proposals.length >= 3 || gv.proposals.some((x) => x.type === p.type && x.action === p.action)) return;
+  gv.proposals.push({ id: gv.nextProposal++, cityId: c.id, status: 'proposed', at: g.time, requiresApproval: true, ...p });
+  if (civ.human) g.notify(civ.id, `${c.name}'s governor proposes: ${p.action === 'build' ? BUILDINGS[p.type].name : p.action}${p.reason ? ` (${p.reason})` : ''}.`, { kind: 'proposal', tile: c.tile, level: 'minor', quiet: true });
+}
+
+// The player's answer. Approval re-validates everything (placement, cost, permission) now.
+export function answerProposal(g, civ, c, id, answer) {
+  const gv = migrateGovernor(c.governor || defaultGovernor());
+  const p = gv.proposals.find((x) => x.id === id); if (!p) return { error: 'no such proposal' };
+  gv.proposals = gv.proposals.filter((x) => x !== p);
+  if (answer === 'reject') { gv.rejected[p.type || p.action] = g.time + 300; log(g, c, `Proposal declined: ${p.type ? BUILDINGS[p.type].name : p.action}. Not proposing it again for five minutes.`); return null; }
+  if (answer === 'defer') { gv.rejected[p.type || p.action] = g.time + 90; return null; }
+  if (p.action === 'build') {
+    let t = p.tile;
+    if (!g.canPlace(civ, p.type, t, true)) t = pickTile(g, civ, c, p.type, gv);
+    if (t < 0) return { error: 'no valid site any more' };
+    const res = g.command(civ.id, { c: 'build', type: p.type, tile: t, plan: true, by: 'governor:' + c.name, why: 'approved: ' + p.reason });
+    if (res && res.error) return res;
+    const b = g.buildingAtTile(t); if (b) gv.queue.push(b.id);
+    log(g, c, `Approved and started: ${BUILDINGS[p.type].name}.`);
+  } else if (p.action === 'road') { const r = roads(g, civ, c, gv, 'autonomous'); if (!r) return { error: 'the route is no longer buildable' }; }
+  else if (p.action === 'upgrade') { const r = g.command(civ.id, { c: 'upgrade', id: p.id, by: 'governor:' + c.name }); if (r && r.error) return r; log(g, c, 'Approved: upgrading a housing block.'); }
+  else if (p.action === 'settle') { const r = settle(g, civ, c, gv, 'autonomous', true); if (!r) return { error: 'cannot train a convoy now' }; }
+  return null;
+}
+
+function repair(g, civ, c, gv, level = 'autonomous') {
   for (const b of g.buildings.values()) {
     if (b.cityId !== c.id || b.owner !== civ.id || !b.done || b.hp >= b.maxHp * 0.7 || g.time - (b.lastHit || -99) < 8) continue;
     const cost = { materials: Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) };
-    if (!governorCanSpend(civ, gv, cost)) return false;
-    g.pay(civ, cost); b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4);
+    if (!governorCanSpend(civ, gv, cost, c)) return false;
+    g.pay(civ, cost, b.tile); b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4);
     log(g, c, `Repaired ${BUILDINGS[b.type].name} (${Math.round((100 * b.hp) / b.maxHp)}%) for ${cost.materials} materials.`);
     return true;
   }
-  // clear rubble that blocks good sites
+  // clear rubble that blocks good sites (routine work: not in advisor mode)
+  if (level === 'advisor') return false;
   for (const t of disk(c.tile, c.radius || 3)) {
     const r = g.ruins.get(t);
     if (!r || g.world.owner[t] !== civ.id || r.clearing) continue;
@@ -138,33 +213,9 @@ function repair(g, civ, c, gv) {
   return false;
 }
 
-function build(g, civ, c, gv) {
-  const busy = gv.queue.length > (civ.isAI ? 1 : 0);
-  for (const [type, reason] of cityNeeds(g, civ, c, gv.spec)) {
-    if (busy && type !== 'farm' && type !== 'house' && type !== 'power_plant') continue;
-    // don't add more of something whose existing copies stand idle (no workers or no inputs)
-    const def = BUILDINGS[type];
-    if (def.jobs) {
-      const idle = [...g.buildings.values()].some((b) => b.type === type && b.owner === civ.id && (b.cityId === c.id || def.power) && (!b.done || b.staffed === 0 || (def.power > 0 && civ.powerGen === 0 && b.staffed > 0 && type === 'power_plant' && civ.res.ore < 1)));
-      if (idle) { if (!gv.idleNoted || gv.idleNoted !== type) { gv.idleNoted = type; log(g, c, `Holding off on another ${def.name}: existing ones are idle or under construction.`); } continue; }
-    }
-    const cost = g.buildingCost(civ, type, null);
-    if (!governorCanSpend(civ, gv, cost)) continue;
-    const t = pickTile(g, civ, c, type, gv);
-    if (t < 0) continue;
-    const res = g.command(civ.id, { c: 'build', type, tile: t, by: 'governor:' + c.name, why: reason });
-    if (res && res.error) continue;
-    const b = g.buildingAtTile(t);
-    if (b) gv.queue.push(b.id);
-    log(g, c, `Building ${BUILDINGS[type].name}: ${reason}.`);
-    return true;
-  }
-  return false;
-}
-
 function bestRoadType(civ) { for (let t = 3; t >= 1; t--) if (!ROAD_TYPES[t].tech || civ.techs.has(ROAD_TYPES[t].tech)) return t; return 1; }
 
-function roads(g, civ, c, gv) {
+function roads(g, civ, c, gv, level = 'autonomous') {
   if (g.roads.projects.some((p) => p.owner === civ.id && !p.done && p.by === 'governor:' + c.id)) return false;
   // repair ruined segments inside the city's territory
   const ruined = [];
@@ -192,6 +243,7 @@ function roads(g, civ, c, gv) {
   if (!route) { if (!gv.noRouteNoted) { gv.noRouteNoted = true; log(g, c, 'No land route to the network (major river or sea in the way): a port or paved bridges are needed.'); } return false; }
   const plan = g.roads.plan(g, civ, route, type); plan.by = 'governor:' + c.id;
   if (!plan.buildable) return false;
+  if (level !== 'autonomous') { propose(g, civ, c, gv, { action: 'road', cost: plan.cost, reason: `${ROAD_TYPES[type].name.toLowerCase()} to ${hub.name} (${plan.length} hexes) would reconnect the city`, benefit: 40, confidence: 0.8 }); return false; }
   if (!governorCanSpend(civ, gv, plan.cost)) return false;
   if (g.roads.startProject(g, civ, plan).error) return false;
   gv.noRouteNoted = false;
@@ -202,7 +254,8 @@ function roads(g, civ, c, gv) {
 function recruit(g, civ, c, gv) {
   if (c.pop < 8) return false;
   const military = [...g.units.values()].filter((u) => u.owner === civ.id && !UNITS[u.type].civilian).length;
-  if (military >= Math.max(4, civ.popTotal / 4)) return false;
+  // garrisons come out of the national army budget, not on top of it
+  if (military >= (civ.armyCap ?? Math.max(4, g.cityOf(civ).length * 3))) return false;
   const threat = [...g.units.values()].filter((u) => g.hostile(civ.id, u.owner) && civ.visible[u.tile] && dist(u.tile, c.tile) < 10 && !UNITS[u.type].civilian).length;
   const garrison = [...g.units.values()].filter((u) => u.owner === civ.id && !UNITS[u.type].civilian && (dist(u.tile, c.tile) <= 3 || u.garrison === c.id)).length;
   const want = (gv.spec === 'fortress' ? 4 : 2) + threat;
@@ -213,7 +266,7 @@ function recruit(g, civ, c, gv) {
     for (const u of opts) {
       if (g.canTrain(civ, b, u)) continue;
       if (!governorCanSpend(civ, gv, g.unitCost(civ, u))) continue;
-      if (g.command(civ.id, { c: 'train', building: b.id, unit: u })) continue;
+      if (g.command(civ.id, { c: 'train', building: b.id, unit: u, by: 'governor:' + c.name })) continue;
       log(g, c, `Recruiting ${UNITS[u].name} for the garrison (${garrison}/${want}${threat ? `, ${threat} hostiles nearby` : ''}).`);
       return true;
     }
@@ -221,12 +274,14 @@ function recruit(g, civ, c, gv) {
   return false;
 }
 
-function settle(g, civ, c, gv) {
+function settle(g, civ, c, gv, level = 'autonomous', approved = false) {
   if (c.pop < 12 || g.cityOf(civ).length >= 8) return false;
   const b = g.buildings.get(c.buildingId); if (!b || b.queue.length) return false;
   if ([...g.units.values()].some((u) => u.owner === civ.id && u.type === 'colonist')) return false;
-  if (!governorCanSpend(civ, gv, g.unitCost(civ, 'colonist'))) return false;
-  if (g.command(civ.id, { c: 'train', building: b.id, unit: 'colonist' })) return false;
+  if (!governorCanSpend(civ, gv, g.unitCost(civ, 'colonist'), c)) return false;
+  // founding a city is a major decision: only AI empires and explicit approval start one
+  if (!civ.isAI && !approved) { propose(g, civ, c, gv, { action: 'settle', cost: g.unitCost(civ, 'colonist'), reason: 'the city is large enough to found a new settlement', benefit: 30, confidence: 0.6 }); return false; }
+  if (g.command(civ.id, { c: 'train', building: b.id, unit: 'colonist', by: 'governor:' + c.name })) return false;
   log(g, c, 'Training a colonist convoy to found a new settlement.');
   return true;
 }

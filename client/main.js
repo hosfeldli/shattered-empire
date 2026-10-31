@@ -54,6 +54,7 @@ const seedVal = () => { const v = $('seed').value.trim(); return v === '' ? unde
 const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked });
 $('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, name: playerName(), ...worldOpts() }); });
 $('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
+$('btnSandbox').addEventListener('click', async () => { lobbyStatus('Preparing the combat sandbox…'); await ensureNet(); net.send({ t: 'create', mode: 'sandbox', name: playerName(), seed: seedVal() }); });
 $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, name: playerName(), ...worldOpts() }); });
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }
 $('btnStartNow').addEventListener('click', () => net.send({ t: 'start' }));
@@ -78,8 +79,9 @@ function onMessage(m) {
 async function startGame(m) {
   const first = !S.defs || S.W !== m.defs.W;
   S.defs = m.defs; S.civId = m.civId; S.W = m.defs.W; S.H = m.defs.H;
-  S.spectator = !!m.spectator; S.obs = m.spectator ? { follow: m.civId, fog: false, speed: 1 } : null;
+  S.spectator = !!m.spectator; S.sandbox = !!m.sandbox; S.obs = m.spectator ? { follow: m.civId, fog: false, speed: 1 } : null;
   document.body.classList.toggle('spectating', S.spectator);
+  document.body.classList.toggle('sandbox-on', S.sandbox);
   S.civInfo = m.civs.map((c) => ({ ...c }));
   const N = S.W * S.H;
   S.terr = new Uint8Array(N).fill(255); S.color = new Uint32Array(N); S.res = new Uint8Array(N); S.road = new Uint32Array(N); S.flags = new Uint8Array(N);
@@ -95,7 +97,8 @@ async function startGame(m) {
   }
   view.centerOn(m.start, S.spectator ? 0.7 : 1.15);
   S.ready = true;
-  hud.specbar();
+  hud.specbar(); hud.sandboxPanel();
+  if (S.sandbox) hud.toast({ text: 'Combat sandbox: pick a scenario on the right, or spawn forces for either side and fight.', kind: 'info', level: 'minor' });
   if (S.spectator) hud.toast({ text: 'Spectating: the whole continent is revealed. Pick an empire to follow below; [ and ] cycle, P pauses, , and . change speed, V toggles that empire\'s fog.', kind: 'info', level: 'minor' });
 }
 
@@ -136,15 +139,15 @@ function applySnapshot(m) {
   if (m.vis) for (const i of decodeBits(m.vis, S.vis)) view.dirtyOverlay.add(i);
   const seen = new Set();
   for (const a of m.units) {
-    const [id, owner, type, tile, next, prog, hp, sup, flags, stance] = a;
+    const [id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit] = a;
     seen.add(id);
     const u = S.units.get(id);
-    if (u) Object.assign(u, { tile, next, prog, hp, sup, flags, owner, stance });
-    else S.units.set(id, { id, owner, type, tile, next, prog, hp, sup, flags, stance });
+    if (u) Object.assign(u, { type, tile, next, prog, hp, sup, flags, owner, stance, cstat, tgt, supp, morale, vet, refit });
+    else S.units.set(id, { id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit });
   }
   for (const id of S.units.keys()) if (!seen.has(id)) { S.units.delete(id); S.selUnits.delete(id); }
   S.paths = m.paths || {};
-  if (m.fx) view.addFx(m.fx);
+  if (m.ev) view.combat.ingest(m.ev, m.tick);
   if (m.econ) applyEcon(m);
 }
 
@@ -170,6 +173,9 @@ function applyEcon(m) {
   if (relChg) view.bordersDirty = true;
   if (S.selBuilding != null && !S.buildings.has(S.selBuilding)) S.selBuilding = null;
   S.campaigns = m.campaigns || null;
+  S.battles = m.battles || [];
+  view.combat.syncBattlefield(m.bf);
+  if (hud.battleId != null) hud.battlePanel();
   view.syncBuildings(); view.syncArmies(); view.syncCampaigns();
   hud.topbar(); if (!S.spectator) hud.buildbar(); hud.selection(); hud.drawer(); hud.roadPanel(); hud.specbar();
   hud.minimap(view);
@@ -230,6 +236,12 @@ const actions = {
   act(a) {
     const ids = mineSel();
     if (a === 'stop') actions.cmd({ c: 'stop', units: ids });
+    if (a === 'hold') { actions.cmd({ c: 'hold', units: ids }); hud.toast({ text: `${ids.length} unit${ids.length > 1 ? 's' : ''} holding position.`, kind: 'unit', level: 'info' }); }
+    if (a === 'withdraw') { actions.cmd({ c: 'withdraw', units: ids }).then((r) => { if (!r.error) hud.toast({ text: 'Withdrawing toward the nearest friendly city.', kind: 'unit', level: 'info' }); }); }
+    if (a === 'engageMode') setMode({ kind: 'engage' }, 'Click an enemy: fire is spread over the threats around it. Click ground to advance and engage.');
+    if (a === 'focusMode') setMode({ kind: 'focus' }, 'Click an enemy: every selected weapon fires on it.');
+    if (a === 'moveMode') setMode({ kind: 'move' }, 'Click where to reposition (drag with the right button to set a battle line and facing).');
+    if (a === 'defendMode') setMode({ kind: 'defendZone' }, 'Click the centre of the area to defend: the group becomes an army that holds that zone.');
     if (a === 'amove') setMode({ kind: 'attackMove' }, 'Left-click a destination: units will fight anything they meet on the way.');
     if (a === 'found' || a === 'autoSettle') {
       const cols = ids.map((id) => S.units.get(id)).filter((u) => u.type === 'colonist');
@@ -239,6 +251,7 @@ const actions = {
     if (a === 'army') actions.formArmy();
     if (a === 'demolish' && S.selBuilding != null) { actions.cmd({ c: 'demolish', id: S.selBuilding }); S.selBuilding = null; }
     if (a === 'repair' && S.selBuilding != null) actions.cmd({ c: 'repair', id: S.selBuilding });
+    if (a === 'disband') actions.cmd({ c: 'disband', units: ids }).then((r) => { if (r.men) { hud.toast({ text: `${ids.length} unit${ids.length > 1 ? 's' : ''} disbanded: ${Math.round(r.back)} of ${r.men} soldiers return home as civilians.`, kind: 'city', level: 'minor' }); S.selUnits.clear(); hud.selection(); } });
   },
   async formArmy() {
     const ids = mineSel().filter((id) => !S.defs.UNITS[S.units.get(id).type].civilian);
@@ -246,7 +259,46 @@ const actions = {
     const r = await actions.cmd({ c: 'army', op: 'create', units: ids });
     if (!r.error) { hud.toast({ text: `Army formed with ${ids.length} units.`, kind: 'unit', level: 'minor' }); hud.tab = ''; document.querySelector('[data-tab=armies]').click(); }
   },
+  async refit(type, to) {
+    const ids = mineSel().filter((id) => S.units.get(id)?.type === type);
+    const r = await actions.cmd({ c: 'refit', units: ids, to });
+    if (r.refitted) hud.toast({ text: `${r.refitted} ${S.defs.UNITS[type].name}${r.refitted > 1 ? 's' : ''} going into the workshop to become ${S.defs.UNITS[to].name}.`, kind: 'build', level: 'minor' });
+  },
+  async workforce(d) {
+    const b = S.buildings.get(S.selBuilding); const c = b && S.cityAt.get(b.t); if (!c) return;
+    let r = {};
+    if (d.wf === 'preview') { r = await actions.cmd({ c: 'workforcePreview', city: c.id, mode: d.mode }); hud.wfPreview = r.preview || null; hud.selHtml = ''; hud.selection(); return; }
+    if (d.wf === 'apply') { r = await actions.cmd({ c: 'workforce', city: c.id, mode: d.mode, autoBalance: true }); hud.wfPreview = null; }
+    else if (d.wf === 'prio') r = await actions.cmd({ c: 'workforce', city: c.id, prio: { [d.cat]: d.level } });
+    else if (d.wf === 'lock') r = await actions.cmd({ c: 'workforce', city: c.id, building: +d.id, lock: d.n === 'null' ? null : +d.n });
+    else if (d.wf === 'off') r = await actions.cmd({ c: 'workforce', city: c.id, building: +d.id, off: d.on === '1' });
+    if (!r.error) setTimeout(() => { hud.selHtml = ''; hud.selection(); }, 1100);
+  },
   stance(st) { actions.cmd({ c: 'stance', units: mineSel(), stance: st }); },
+  policy(p) { actions.cmd({ c: 'engage', units: mineSel(), policy: p }).then(() => hud.toast({ text: `Engagement: ${S.defs.ENGAGE_POLICIES[p]}.`, kind: 'unit', level: 'info' })); S.policy = p; },
+  cycleFormation() { const ks = Object.keys(S.defs.FORMATIONS); S.formation = ks[(ks.indexOf(S.formation) + 1) % ks.length]; hud.selHtml = ''; hud.selection(); hud.toast({ text: `Formation: ${S.defs.FORMATIONS[S.formation]}.`, kind: 'unit', level: 'info' }); },
+  selectNear(tile, radius = 6) { S.selUnits = new Set([...S.units.values()].filter((u) => u.owner === S.civId && !S.defs.UNITS[u.type].civilian && hexDistC(u.tile, tile) <= radius).map((u) => u.id)); S.selBuilding = null; hud.selection(); },
+  async sandbox(op, arg) {
+    if (op === 'scenario') {
+      const r = await actions.cmd({ c: 'sandbox', op: 'scenario', key: arg });
+      const sc = r.scenario; if (!sc) return;
+      view.centerOn(sc.arena, 1.6);
+      S.selUnits = new Set(sc.A); S.selBuilding = null; hud.selection();
+      hud.toast({ text: `${sc.name}: your force is selected. Right-click to attack, or right-drag a battle line.`, kind: 'info', level: 'minor' });
+    }
+    if (op === 'spawn') setMode({ kind: 'spawn', ...arg }, `Click to place ${arg.n} × ${S.defs.UNITS[arg.type].name} for ${arg.civ ? 'the enemy' : 'you'}.`);
+    if (op === 'advance') setMode({ kind: 'sbAdvance' }, 'Click where the enemy should attack.');
+    if (op === 'clear') actions.cmd({ c: 'sandbox', op: 'clear' });
+  },
+  battle(op, id) {
+    const b = (S.battles || []).find((x) => x.id === id); if (!b) return;
+    if (op === 'jump') view.centerOn(b.t);
+    if (op === 'select') actions.selectNear(b.t);
+    if (op === 'reinforce') { const ids = mineSel(); if (!ids.length) return hud.toast({ text: 'Select the units to send first.', kind: 'error', level: 'minor' }); orderMove(ids, b.t, true); }
+    if (op === 'withdraw') { const ids = [...S.units.values()].filter((u) => u.owner === S.civId && hexDistC(u.tile, b.t) <= 6).map((u) => u.id); actions.cmd({ c: 'withdraw', units: ids }); }
+    if (op === 'hold') { const ids = [...S.units.values()].filter((u) => u.owner === S.civId && hexDistC(u.tile, b.t) <= 6).map((u) => u.id); actions.cmd({ c: 'hold', units: ids }); }
+    if (op === 'close') { hud.battleId = null; hud.battlePanel(); }
+  },
   selectType(type, onScreen) { S.selUnits.clear(); selectType(type, onScreen); hud.selection(); },
   narrowTo(type) { for (const id of [...S.selUnits]) if (S.units.get(id)?.type !== type) S.selUnits.delete(id); hud.selection(); },
   governor(patch) { const b = S.buildings.get(S.selBuilding); const c = b && S.cityAt.get(b.t); if (c) actions.cmd({ c: 'governor', city: c.id, ...patch }).then(() => setTimeout(() => { hud.selHtml = ''; hud.selection(); }, 1100)); },
@@ -303,7 +355,7 @@ function requestPreview() {
 // ------------------------------------------------------------------ input
 function bindInput() {
   const cv = view.app.canvas;
-  let drag = null, pan = null, stroke = null;
+  let drag = null, pan = null, stroke = null, rdrag = null;
   const keys = new Set();
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
   cv.addEventListener('pointerdown', (e) => {
@@ -311,12 +363,18 @@ function bindInput() {
     if (e.button === 1 || (e.button === 0 && e.altKey)) { pan = { x: e.clientX, y: e.clientY, cx: view.cam.x, cy: view.cam.y }; return; }
     if (e.button === 0 && S.mode?.kind === 'road') { stroke = { x: e.offsetX, y: e.offsetY, moved: false, start: S.mode.points.length }; return; }
     if (e.button === 0) drag = { x: e.offsetX, y: e.offsetY, x1: e.offsetX, y1: e.offsetY };
-    if (e.button === 2) rightClick(e);
+    if (e.button === 2) { const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY); rdrag = { x: e.offsetX, y: e.offsetY, wx, wy, tile: view.tileAt(wx, wy), moved: false }; }
   });
   cv.addEventListener('pointermove', (e) => {
     if (pan) { view.cam.x = pan.cx - (e.clientX - pan.x) / view.cam.z; view.cam.y = pan.cy - (e.clientY - pan.y) / view.cam.z; view.clamp(); return; }
     const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
     S.hover = view.tileAt(wx, wy);
+    if (rdrag) {
+      if (Math.hypot(e.offsetX - rdrag.x, e.offsetY - rdrag.y) > 14 && mineSel().length && !S.spectator) rdrag.moved = true;
+      if (rdrag.moved) S.dragLine = linePreview(rdrag.wx, rdrag.wy, wx, wy, mineSel().length);
+      return;
+    }
+    if (!drag && !stroke) { const hu = view.unitAtScreen(e.offsetX, e.offsetY); S.hoverUnit = hu ? hu.id : null; }
     if (stroke && S.hover >= 0) {
       // freehand road sketch: every hex the cursor crosses becomes a waypoint
       if (Math.hypot(e.offsetX - stroke.x, e.offsetY - stroke.y) > 6) stroke.moved = true;
@@ -329,6 +387,17 @@ function bindInput() {
   cv.addEventListener('pointerleave', () => { S.hover = -1; hud.tooltip(-1); });
   cv.addEventListener('pointerup', (e) => {
     if (pan) { pan = null; return; }
+    if (rdrag && e.button === 2) {
+      const r = rdrag; rdrag = null;
+      if (r.moved && S.dragLine) {
+        const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
+        const b = view.tileAt(wx, wy); S.dragLine = null;
+        if (r.tile >= 0 && b >= 0) { const units = mineSel(); actions.cmd({ c: 'move', units, line: [r.tile, b], attackMove: e.altKey, formation: S.formation, queue: e.shiftKey }); view.ping(b, 0.5, 0xf1c75b); }
+        return;
+      }
+      S.dragLine = null;
+      rightClick(e); return;
+    }
     if (stroke) { const s = stroke; stroke = null; if (!s.moved && S.hover >= 0) { S.mode.points.push(S.hover); requestPreview(); hud.roadPanel(); } return; }
     if (!drag || e.button !== 0) return;
     const d = drag; drag = null; view.selG.clear();
@@ -357,7 +426,9 @@ function bindInput() {
     if (k === 'escape') { setMode(null); $('menu').hidden = true; $('alerts').hidden = true; hud.toggleKey(false); }
     if (k === 'a' && S.selUnits.size) actions.act('amove');
     if (k === 's' && S.selUnits.size) actions.act('stop');
-    if (k === 'f') actions.act('found');
+    if (k === 'f') { if (mineSel().some((id) => S.units.get(id)?.type === 'colonist')) actions.act('found'); else if (S.selUnits.size) actions.cycleFormation(); }
+    if (k === 'h' && S.selUnits.size) actions.act('hold');
+    if (k === 'x' && S.selUnits.size) actions.act('withdraw');
     if (k === 'g' && S.selUnits.size) actions.formArmy();
     if (k === 'r') startRoadMode();
     if (k === ' ') { const u = S.units.get([...S.selUnits][0]); if (u) view.centerOn(u.tile); else { const c = [...S.cities.values()].find((x) => x.o === S.civId && x.cap); if (c) view.centerOn(c.t); } e.preventDefault(); }
@@ -419,6 +490,23 @@ async function leftClick(e) {
     }
     if (m.kind === 'clearPass') { await actions.cmd({ c: 'clearPass', tile }); setMode(null); return; }
     if (m.kind === 'attackMove') { orderMove(mineSel(), tile, true); setMode(null); return; }
+    if (m.kind === 'move') { orderMove(mineSel(), tile, false); setMode(null); return; }
+    if (m.kind === 'spawn') { actions.cmd({ c: 'sandbox', op: 'spawn', civ: m.civ, type: m.type, n: m.n, tile }); if (!e.shiftKey) setMode(null); return; }
+    if (m.kind === 'sbAdvance') { actions.cmd({ c: 'sandbox', op: 'advance', tile }); view.ping(tile, 1, 0xd0533b); setMode(null); return; }
+    if (m.kind === 'engage' || m.kind === 'focus') {
+      const tu = view.unitAtScreen(e.offsetX, e.offsetY, (u) => u.owner !== S.civId);
+      const tb = S.buildingAtTile.get(tile);
+      const target = tu ? { kind: 'unit', id: tu.id } : tb && tb.o !== S.civId ? { kind: 'building', id: tb.id } : null;
+      if (target) attackTarget(target, m.kind === 'focus', tu ? tu.tile : tile);
+      else if (m.kind === 'engage') orderMove(mineSel(), tile, true);
+      else return hud.toast({ text: 'Click an enemy unit or building.', kind: 'error', level: 'minor' });
+      setMode(null); return;
+    }
+    if (m.kind === 'defendZone') {
+      const ids = mineSel().filter((id) => !S.defs.UNITS[S.units.get(id).type].civilian);
+      actions.cmd({ c: 'army', op: 'create', units: ids }).then((r) => { const id = r.army ?? r.id; if (id != null) actions.cmd({ c: 'army', op: 'order', id, kind: 'defend', tile, radius: 4 }); });
+      view.ping(tile, 4, 0x8fd19e); setMode(null); return;
+    }
     if (m.kind === 'armyOrder') { actions.cmd({ c: 'army', op: 'order', id: m.id, kind: m.op, tile, radius: 4 }); view.ping(tile, m.op === 'defend' ? 4 : 1, 0xf1c75b); setMode(null); return; }
     if (m.kind === 'rallyAll') { actions.cmd({ c: 'rallyAll', tile }); view.ping(tile, 1, 0x8fe0a8); setMode(null); return; }
   }
@@ -428,6 +516,7 @@ async function leftClick(e) {
   const dbl = lastClick && now - lastClick.t < 380 && Math.hypot(e.offsetX - lastClick.x, e.offsetY - lastClick.y) < 10 && u && lastClick.type === u.type;
   lastClick = { t: now, x: e.offsetX, y: e.offsetY, type: u ? u.type : null };
   if (!e.shiftKey && !dbl) { S.selUnits.clear(); S.selBuilding = null; }
+  if (!u && !e.shiftKey) { const bt = view.combat.battleAt(e.offsetX, e.offsetY); if (bt) { hud.battleId = bt.id; hud.battlePanel(); return; } }
   if (u) {
     if (dbl && u.owner === S.civId) { if (!e.shiftKey) S.selUnits.clear(); selectType(u.type, !(e.ctrlKey || e.metaKey)); lastClick = null; }
     else S.selUnits.add(u.id);
@@ -475,15 +564,41 @@ function rightClick(e) {
   }
   const rel = (o) => S.civInfo[o]?.rel?.state;
   const target = view.unitAtScreen(e.offsetX, e.offsetY, (u) => u.owner !== S.civId);
-  if (target && rel(target.owner) === 'war') { actions.cmd({ c: 'attack', units: mine, target: { kind: 'unit', id: target.id } }); view.ping(target.tile, 0.6, 0xd0533b); return; }
+  const focus = e.ctrlKey || e.metaKey;
+  if (target && rel(target.owner) === 'war') return attackTarget({ kind: 'unit', id: target.id }, focus, target.tile);
   const b = S.buildingAtTile.get(tile);
-  if (b && b.o !== S.civId && rel(b.o) === 'war') { actions.cmd({ c: 'attack', units: mine, target: { kind: 'building', id: b.id } }); view.ping(tile, 0.8, 0xd0533b); return; }
-  orderMove(mine, tile, e.shiftKey);
+  if (b && b.o !== S.civId && rel(b.o) === 'war') return attackTarget({ kind: 'building', id: b.id }, focus, tile);
+  orderMove(mine, tile, e.altKey, e.shiftKey);
 }
 
-async function orderMove(units, tile, attackMove) {
-  view.ping(tile, 0.5, 0xf1c75b);
-  const r = await actions.cmd({ c: 'move', units, tile, attackMove, formation: S.formation });
+function attackTarget(target, focus, tile) {
+  const units = mineSel();
+  S.focusSet = S.focusSet || new Set();
+  const key = target.kind === 'unit' ? target.id : -target.id;
+  if (focus) S.focusSet.add(key); else S.focusSet.delete(key);
+  actions.cmd({ c: 'attack', units, target, focus });
+  view.ping(tile, focus ? 0.4 : 0.8, 0xd0533b);
+  if (units.length > 2) hud.toast({ text: focus ? `Focus fire: ${units.length} units on one target.` : `Attack: fire spread over the threats around the target.`, kind: 'unit', level: 'info' });
+}
+
+// Battle line preview for a right-drag: where each selected unit will stand and which way it faces.
+function linePreview(x0, y0, x1, y1, n) {
+  const L = Math.hypot(x1 - x0, y1 - y0) || 1, rx = (x1 - x0) / L, ry = (y1 - y0) / L, fx = ry, fy = -rx;
+  const step = 21, width = Math.max(1, Math.min(n, Math.round(L / step) + 1)), sp = width > 1 ? Math.max(step, L / (width - 1)) : step;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, slots = [];
+  for (let i = 0; i < n; i++) { const rank = Math.floor(i / width), file = i % width, off = (file - (width - 1) / 2) * sp; slots.push([mx + rx * off - fx * rank * 19, my + ry * off - fy * rank * 19]); }
+  return { x0, y0, x1, y1, fx, fy, slots };
+}
+function hexDistC(a, b) {
+  const cube = (i) => { const q = i % S.W, r = (i / S.W) | 0; const x = q - ((r - (r & 1)) >> 1); return [x, r, -x - r]; };
+  const [ax, ay, az] = cube(a), [bx, by, bz] = cube(b);
+  return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+}
+
+async function orderMove(units, tile, attackMove, queue) {
+  view.ping(tile, 0.5, queue ? 0x8fd19e : 0xf1c75b);
+  const r = await actions.cmd({ c: 'move', units, tile, attackMove, formation: S.formation, queue });
+  if (r && r.order && r.order.queued) return hud.toast({ text: `Waypoint queued for ${r.order.queued} unit${r.order.queued > 1 ? 's' : ''}.`, kind: 'unit', level: 'info' });
   const o = r && r.order; if (!o) return;
   if (o.unreachable) hud.toast({ text: `${o.unreachable} unit${o.unreachable > 1 ? 's' : ''} cannot reach that location.`, kind: 'error', level: 'minor' });
   if (o.partial) hud.toast({ text: `${o.partial} unit${o.partial > 1 ? 's' : ''} will get as close as the terrain allows.`, kind: 'warning', level: 'minor' });
