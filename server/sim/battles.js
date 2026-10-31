@@ -2,7 +2,7 @@
 // can show one marker and an engagement summary instead of hundreds of individual effects.
 // Group target assignment for attack orders also lives here.
 import { UNITS, W } from './constants.js';
-import { dist, disk } from './hex.js';
+import { dist, disk, dqWrap, idx } from './hex.js';
 import { WEAPONS, UNIT_WEAPON, ARMORED } from './weapons.js';
 
 const RADIUS = 6;
@@ -16,8 +16,10 @@ export function battlesStep(g) {
     for (const b of g.battles) { const d = dist(b.tile, e.b); if (d <= RADIUS && d < bd) { bd = d; bt = b; } }
     if (!bt) { bt = { id: g.nextBattle++, tile: e.b, since: g.time, last: g.time, sq: 0, sr: 0, n: 0, losses: {}, heat: 0 }; g.battles.push(bt); }
     bt.last = g.time; bt.heat++;
-    bt.sq += e.b % W; bt.sr += (e.b / W) | 0; bt.n++;
-    if (bt.n >= 4) bt.tile = Math.round(bt.sr / bt.n) * W + Math.round(bt.sq / bt.n);
+    // running centre, seam-safe: offsets are measured from the battle's first hex
+    bt.q0 = bt.q0 ?? (bt.tile % W);
+    bt.sq += dqWrap(bt.q0, e.b % W); bt.sr += (e.b / W) | 0; bt.n++;
+    if (bt.n >= 4) bt.tile = idx(Math.round(bt.q0 + bt.sq / bt.n), Math.round(bt.sr / bt.n));
     if (e.k === 'kill' && e.ow >= 0) bt.losses[e.ow] = (bt.losses[e.ow] || 0) + 1;
   }
   g.battleSeq = g.eventSeq;

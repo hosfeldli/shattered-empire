@@ -1,6 +1,7 @@
 // Full match serialization: everything needed to resume a match bit-for-bit (including the RNG),
 // so live games survive deploys, restarts and crashes, and replays can be verified.
 import { Game } from './game.js';
+import { WRAP } from './hex.js';
 import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
 import { getNextArmyId, setNextArmyId } from './armies.js';
@@ -40,8 +41,10 @@ export function serializeGame(g) {
   const diplo = [];
   for (let a = 0; a < g.civs.length; a++) for (let b = a + 1; b < g.civs.length; b++) diplo.push([a, b, g.diplomacy.m[a][b]]);
   return {
-    v: 1, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
+    v: 2, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
+    // v2: wrapped topology, world style, Cataclysm settings (v1 saves were bounded and always cataclysmic)
+    wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style, cataclysm: g.cataclysm,
     slots: g.slotsDef, world, roads: { ...g.roads.serialize(), traffic: mapOut(g.roads.traffic) },
     combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g) },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
@@ -54,7 +57,12 @@ export function serializeGame(g) {
 const revive = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? (v.$set ? new Set(v.$set) : v.$map ? new Map(v.$map) : v) : v);
 
 export function restoreGame(data) {
-  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, restore: true, rebels: data.civs.some((c) => c.isRebel) });
+  const savedWrap = data.wrap === undefined ? false : !!data.wrap;
+  if (savedWrap !== WRAP) throw new Error(`snapshot topology (${savedWrap ? 'wrapped' : 'bounded'}) does not match this worker`);
+  // v1 saves predate the peaceful default: they keep their destructive geology
+  const cataclysm = data.v >= 2 ? data.cataclysm : { on: true, freq: 1, sev: 1 };
+  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, restore: true, rebels: data.civs.some((c) => c.isRebel), cataclysm, style: data.style || data.worldStyle || null });
+  g.worldStyle = data.worldStyle ?? null;
   const w = g.world;
   if (w.elev.length !== data.size) throw new Error(`snapshot map size ${data.size} does not match this worker (${w.elev.length})`);
   for (const k of WORLD_ARRAYS) w[k] = fromB64(data.world.arrays[k], w[k].constructor);

@@ -5,6 +5,7 @@ import { AmbientWorld } from './visual/AmbientWorld.js';
 import { lodFor } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
 import { drawBuildingArt, waterDir, shade } from './visual/BuildingArt.js';
+import { paintTerrainDetail, smoothColor } from './visual/TerrainMaterials.js';
 import { CombatEffects } from './visual/combat/CombatEffects.js';
 
 export const R = 12;
@@ -26,6 +27,11 @@ export class View {
     this.cx = new Float32Array(this.N); this.cy = new Float32Array(this.N);
     for (let i = 0; i < this.N; i++) { const q = i % this.W, r = (i / this.W) | 0; this.cx[i] = R * SQ3 * (q + 0.5 * (r & 1)) + HW; this.cy[i] = R * 1.5 * r + R; }
     this.pw = Math.ceil(R * SQ3 * (this.W + 0.5) + 2); this.ph = Math.ceil(R * 1.5 * this.H + R + 2);
+    // A wrapped world is a cylinder of circumference P. Static layers (terrain chunks, borders,
+    // ruins, districts) are drawn once at base positions (cx0) and mirrored one period east and
+    // west; everything drawn per frame uses cx, re-based each frame to the copy nearest the camera.
+    this.wrap = !!S.wrap; this.P = R * SQ3 * this.W;
+    this.cx0 = Float32Array.from(this.cx); this.cxCenter = NaN;
     this.unitSprites = new Map(); this.buildingSprites = new Map(); this.fx = []; this.pings = [];
     this.shake = 0; this.hitGrid = new Map(); this.stackBadges = new Map();
   }
@@ -53,6 +59,9 @@ export class View {
     this.lights = new PIXI.Graphics(); this.lights.blendMode = 'add';
     this.lightWorld = new PIXI.Container(); this.lightWorld.addChild(this.lights); app.stage.addChild(this.lightWorld);
     this.selG = new PIXI.Graphics(); app.stage.addChild(this.selG);
+    // static graphics are mirrored by sharing their geometry (redrawing one redraws all three)
+    this.mirrorOf = (g) => { if (!this.wrap) return; const i = g.parent.getChildIndex(g); for (const k of [-1, 1]) { const m = new PIXI.Graphics(g.context); m.x = k * this.P; g.parent.addChildAt(m, i + 1); } };
+    for (const g of [this.borders, this.front, this.ruinsG]) this.mirrorOf(g);
     this.chunks = [];
     const ccols = Math.ceil(this.W / CH), crows = Math.ceil(this.H / CH);
     for (let cr = 0; cr < crows; cr++) for (let cc = 0; cc < ccols; cc++) {
@@ -61,13 +70,16 @@ export class View {
       const x1 = Math.ceil(R * SQ3 * (Math.min(this.W, q0 + CH) + 0.5)) + 4, y1 = Math.ceil(R * 1.5 * Math.min(this.H, r0 + CH) + R) + 4;
       const mk = () => { const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; return c; };
       const tc = mk(), oc = mk();
-      const tctx = tc.getContext('2d'); tctx.fillStyle = UNKNOWN; tctx.fillRect(0, 0, tc.width, tc.height); tctx.translate(-x0, -y0);
+      const tctx = tc.getContext('2d'); if (!this.wrap) { tctx.fillStyle = UNKNOWN; tctx.fillRect(0, 0, tc.width, tc.height); } tctx.translate(-x0, -y0);   // wrapped: margins stay transparent so mirrors overlap cleanly
       const octx = oc.getContext('2d'); octx.translate(-x0, -y0);
       const tTex = PIXI.Texture.from(tc), oTex = PIXI.Texture.from(oc);
       const ts = new PIXI.Sprite(tTex), os = new PIXI.Sprite(oTex);
       ts.position.set(x0, y0); os.position.set(x0, y0);
       this.terrainLayer.addChild(ts); this.overlayLayer.addChild(os);
-      this.chunks.push({ x0, y0, x1, y1, tctx, octx, tTex, oTex, ts, os, tDirty: false, oDirty: false });
+      // wrapped world: the same textures drawn one period east and west
+      const mirrors = [];
+      if (this.wrap) for (const k of [-1, 1]) { const mt = new PIXI.Sprite(tTex), mo = new PIXI.Sprite(oTex); mt.position.set(x0 + k * this.P, y0); mo.position.set(x0 + k * this.P, y0); this.terrainLayer.addChild(mt); this.overlayLayer.addChild(mo); mirrors.push({ k, mt, mo }); }
+      this.chunks.push({ x0, y0, x1, y1, tctx, octx, tTex, oTex, ts, os, mirrors, tDirty: false, oDirty: false });
     }
     this.ccols = ccols;
     this.cam = { x: 0, y: 0, z: 1 };
@@ -79,7 +91,7 @@ export class View {
   // spectator follow/fog switches resend the map from scratch
   resetMap() {
     for (const ch of this.chunks) {
-      ch.tctx.fillStyle = UNKNOWN; ch.tctx.fillRect(ch.x0, ch.y0, ch.x1 - ch.x0, ch.y1 - ch.y0); ch.tTex.source.update();
+      if (this.wrap) ch.tctx.clearRect(ch.x0, ch.y0, ch.x1 - ch.x0, ch.y1 - ch.y0); else { ch.tctx.fillStyle = UNKNOWN; ch.tctx.fillRect(ch.x0, ch.y0, ch.x1 - ch.x0, ch.y1 - ch.y0); } ch.tTex.source.update();
       ch.octx.clearRect(ch.x0, ch.y0, ch.x1 - ch.x0, ch.y1 - ch.y0); ch.oTex.source.update();
     }
     for (const s of this.unitSprites.values()) s.destroy({ children: true });
@@ -87,14 +99,36 @@ export class View {
     this.dirtyTiles.clear(); this.overlayAll = true; this.bordersDirty = true; this.ruinsDirty = true;
   }
 
+  // the image of x (one period east or west) nearest to ref
+  near(x, ref) { if (!this.wrap) return x; const P = this.P; return x + Math.round((ref - x) / P) * P; }
+  // re-base per-frame positions on the camera centre (only when it has moved a long way)
+  rebase() {
+    if (!this.wrap) return;
+    const c = this.cam.x + this.app.screen.width / 2 / this.cam.z;
+    if (Math.abs(c - this.cxCenter) < this.P * 0.05) return;
+    this.cxCenter = c;
+    const P = this.P, cx = this.cx, cx0 = this.cx0;
+    for (let i = 0; i < this.N; i++) cx[i] = cx0[i] + Math.round((c - cx0[i]) / P) * P;
+    this.rebased = true;
+  }
+
   // ---------------------------------------------------------------- geometry & camera
   chunksFor(i) {
-    const x = this.cx[i], y = this.cy[i], out = [];
+    const x = this.cx0[i], y = this.cy[i], out = [];
     for (const ch of this.chunks) if (x + R + 1 > ch.x0 && x - R - 1 < ch.x1 && y + R + 1 > ch.y0 && y - R - 1 < ch.y1) out.push(ch);
     return out;
   }
   centerOn(i, z) { if (z) this.cam.z = z; const sw = this.app.screen.width, sh = this.app.screen.height; this.cam.x = this.cx[i] - sw / 2 / this.cam.z; this.cam.y = this.cy[i] - sh / 2 / this.cam.z; this.clamp(); }
   clamp() {
+    if (this.wrap) {
+      const zmin = (this.app.screen.width / (this.P * 0.9));
+      if (this.cam.z < zmin) this.cam.z = zmin;
+      const sh = this.app.screen.height / this.cam.z;
+      this.cam.x = ((this.cam.x % this.P) + this.P) % this.P;
+      // north and south are real edges: never scroll far past the polar seas
+      this.cam.y = sh >= this.ph ? (this.ph - sh) / 2 : Math.max(-R * 3, Math.min(this.ph - sh + R * 3, this.cam.y));
+      return;
+    }
     const sw = this.app.screen.width / this.cam.z, sh = this.app.screen.height / this.cam.z;
     this.cam.x = Math.max(-sw * 0.4, Math.min(this.pw - sw * 0.6, this.cam.x));
     this.cam.y = Math.max(-sh * 0.4, Math.min(this.ph - sh * 0.6, this.cam.y));
@@ -109,23 +143,25 @@ export class View {
   viewRect(margin = 0) { const sw = this.app.screen.width / this.cam.z, sh = this.app.screen.height / this.cam.z; return [this.cam.x - margin, this.cam.y - margin, this.cam.x + sw + margin, this.cam.y + sh + margin]; }
   inView(x, y, m = 30) { const v = this.vr; return x > v[0] - m && x < v[2] + m && y > v[1] - m && y < v[3] + m; }
   tileAt(wx, wy) {
+    if (this.wrap) wx = ((wx % this.P) + this.P) % this.P;
     const r0 = Math.round((wy - R) / (1.5 * R));
     let best = -1, bd = Infinity;
     for (let r = r0 - 1; r <= r0 + 1; r++) {
       if (r < 0 || r >= this.H) continue;
       const q0 = Math.round((wx - HW) / (R * SQ3) - 0.5 * (r & 1));
       for (let q = q0 - 1; q <= q0 + 1; q++) {
-        if (q < 0 || q >= this.W) continue;
-        const i = r * this.W + q, d = (this.cx[i] - wx) ** 2 + (this.cy[i] - wy) ** 2;
+        if (!this.wrap && (q < 0 || q >= this.W)) continue;
+        const qq = this.wrap ? (q + this.W) % this.W : q;
+        const i = r * this.W + qq, d = (this.near(this.cx0[i], wx) - wx) ** 2 + (this.cy[i] - wy) ** 2;
         if (d < bd) { bd = d; best = i; }
       }
     }
     return bd <= R * R * 1.1 ? best : -1;
   }
-  nb(i, d) { const q = i % this.W, r = (i / this.W) | 0; const dd = (r & 1 ? DIRS_ODD : DIRS_EVEN)[d]; const nq = q + dd[0], nr = r + dd[1]; return nq < 0 || nr < 0 || nq >= this.W || nr >= this.H ? -1 : nr * this.W + nq; }
+  nb(i, d) { const q = i % this.W, r = (i / this.W) | 0; const dd = (r & 1 ? DIRS_ODD : DIRS_EVEN)[d]; let nq = q + dd[0]; const nr = r + dd[1]; if (this.wrap) nq = (nq + this.W) % this.W; return nq < 0 || nr < 0 || nq >= this.W || nr >= this.H ? -1 : nr * this.W + nq; }
   dirTo(a, b) { for (let d = 0; d < 6; d++) if (this.nb(a, d) === b) return d; return -1; }
   hexPath(ctx, i, grow = 0) {
-    const x = this.cx[i], y = this.cy[i], rr = R + grow;
+    const x = this.cx0[i], y = this.cy[i], rr = R + grow;
     ctx.beginPath();
     for (let k = 0; k < 6; k++) { const px = x + rr * CORNERS[k][0], py = y + rr * CORNERS[k][1]; k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
     ctx.closePath();
@@ -145,22 +181,28 @@ export class View {
   }
   paintChunkTiles(ch, tiles) {
     const S = this.S, ctx = ch.tctx;
-    const mine = [...tiles].filter((i) => { const x = this.cx[i], y = this.cy[i]; return x + R + 1 > ch.x0 && x - R - 1 < ch.x1 && y + R + 1 > ch.y0 && y - R - 1 < ch.y1; });
-    for (const i of mine) { this.hexPath(ctx, i, 0.6); ctx.fillStyle = S.terr[i] === 255 ? UNKNOWN : '#' + S.color[i].toString(16).padStart(6, '0'); ctx.fill(); }
+    const mine = [...tiles].filter((i) => { const x = this.cx0[i], y = this.cy[i]; return x + R + 1 > ch.x0 && x - R - 1 < ch.x1 && y + R + 1 > ch.y0 && y - R - 1 < ch.y1; });
+    // base fills (softened toward same-biome neighbours), then blends, relief and biome detail
+    for (const i of mine) {
+      this.hexPath(ctx, i, 0.6);
+      if (S.terr[i] === 255) ctx.fillStyle = UNKNOWN; else { const c = smoothColor(this, S, i); ctx.fillStyle = `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`; }
+      ctx.fill();
+    }
+    for (const i of mine) paintTerrainDetail(ctx, this, S, i, R, CORNERS);
     ctx.lineCap = 'round';
     for (const i of mine) {
       if (S.terr[i] === 255 || !(S.flags[i] & 1) || S.fdir[i] < 0) continue;
       const n = this.nb(i, S.fdir[i]); if (n < 0) continue;
       ctx.strokeStyle = S.flags[i] & 16 ? '#6f8fa8' : '#3f86c4'; ctx.lineWidth = (1.4 + S.fb[i] * 0.8) * (S.flags[i] & 16 ? 0.5 : 1);
-      ctx.beginPath(); ctx.moveTo(this.cx[i], this.cy[i]); ctx.lineTo(this.cx[n], this.cy[n]); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(this.cx0[i], this.cy[i]); ctx.lineTo(this.near(this.cx0[n], this.cx0[i]), this.cy[n]); ctx.stroke();
     }
     for (const i of mine) {
       if (S.terr[i] === 255 || !S.road[i]) continue;
-      const x = this.cx[i], y = this.cy[i];
+      const x = this.cx0[i], y = this.cy[i];
       for (let d = 0; d < 6; d++) {
         const ty = this.roadType(i, d); if (!ty) continue;
         const n = this.nb(i, d); if (n < 0) continue;
-        const mx = (x + this.cx[n]) / 2, my = (y + this.cy[n]) / 2;
+        const mx = (x + this.near(this.cx0[n], x)) / 2, my = (y + this.cy[n]) / 2;
         const ruined = this.roadRuined(i, d);
         const bridge = (S.flags[i] & 1) || (S.flags[n] & 1);
         const st = ROAD_STYLE[ty];
@@ -179,8 +221,8 @@ export class View {
     ctx.font = 'bold 7px "Barlow Semi Condensed", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const i of mine) {
       const r = S.res[i]; if (!r || S.terr[i] === 255) continue;
-      ctx.fillStyle = 'rgba(10,16,18,0.6)'; ctx.beginPath(); ctx.arc(this.cx[i] + 5, this.cy[i] - 5, 5.2, 0, 7); ctx.fill();
-      ctx.fillStyle = RES_COLORS[r] === '#1c1c1c' ? '#e9d36b' : RES_COLORS[r]; ctx.fillText(S.defs.RESOURCE[r].glyph, this.cx[i] + 5, this.cy[i] - 4.6);
+      ctx.fillStyle = 'rgba(10,16,18,0.42)'; ctx.beginPath(); ctx.arc(this.cx0[i] + 5, this.cy[i] - 5, 4.6, 0, 7); ctx.fill();
+      ctx.fillStyle = RES_COLORS[r] === '#1c1c1c' ? '#e9d36b' : RES_COLORS[r]; ctx.fillText(S.defs.RESOURCE[r].glyph, this.cx0[i] + 5, this.cy[i] - 4.6);
     }
   }
 
@@ -212,7 +254,7 @@ export class View {
         for (const ch of this.chunksFor(i)) {
           const ctx = ch.octx; ch.oDirty = true;
           ctx.save(); this.hexPath(ctx, i, 0.6); ctx.clip();
-          ctx.clearRect(this.cx[i] - R - 1, this.cy[i] - R - 1, 2 * R + 2, 2 * R + 2);
+          ctx.clearRect(this.cx0[i] - R - 1, this.cy[i] - R - 1, 2 * R + 2, 2 * R + 2);
           if (f) for (const c of f) { ctx.fillStyle = c; ctx.fill(); }
           ctx.restore();
         }
@@ -234,10 +276,10 @@ export class View {
         const on = n >= 0 ? S.owner[n] : -1;
         if (on === o) continue;
         const [a, b] = EDGE[d];
-        const seg = [this.cx[i] + (R - 1.2) * CORNERS[a][0], this.cy[i] + (R - 1.2) * CORNERS[a][1], this.cx[i] + (R - 1.2) * CORNERS[b][0], this.cy[i] + (R - 1.2) * CORNERS[b][1]];
+        const seg = [this.cx0[i] + (R - 1.2) * CORNERS[a][0], this.cy[i] + (R - 1.2) * CORNERS[a][1], this.cx0[i] + (R - 1.2) * CORNERS[b][0], this.cy[i] + (R - 1.2) * CORNERS[b][1]];
         let arr = byCiv.get(o); if (!arr) byCiv.set(o, arr = []); arr.push(seg);
         // front line: our border where it touches an empire we are at war with
-        if (o === S.civId && on >= 0 && atWar(on)) fronts.push([this.cx[i] + R * CORNERS[a][0], this.cy[i] + R * CORNERS[a][1], this.cx[i] + R * CORNERS[b][0], this.cy[i] + R * CORNERS[b][1]]);
+        if (o === S.civId && on >= 0 && atWar(on)) fronts.push([this.cx0[i] + R * CORNERS[a][0], this.cy[i] + R * CORNERS[a][1], this.cx0[i] + R * CORNERS[b][0], this.cy[i] + R * CORNERS[b][1]]);
       }
     }
     for (const [o, arr] of byCiv) { for (const s of arr) g.moveTo(s[0], s[1]).lineTo(s[2], s[3]); g.stroke({ width: 2, color: S.civColor(o), alpha: 0.9 }); }
@@ -248,7 +290,7 @@ export class View {
   redrawRuins() {
     const g = this.ruinsG; g.clear();
     for (const [t, r] of this.S.ruins) {
-      const x = this.cx[t], y = this.cy[t];
+      const x = this.cx0[t], y = this.cy[t];
       const over = r.flags & 4;
       g.poly(this.hexPoints(t, -3)).fill({ color: over ? 0x3d5233 : 0x3a332c, alpha: 0.75 });
       for (let k = 0; k < 7; k++) { const a = (k * 2.4 + t) % 6.28, d = 2 + ((k * 37 + t) % 7); g.rect(x + Math.cos(a) * d - 1.5, y + Math.sin(a) * d - 1.5, 3, 2.4).fill({ color: over ? 0x587a44 : 0x7c7062 }); }
@@ -328,7 +370,7 @@ export class View {
     if (!s) {
       s = new PIXI.Container();
       s.body = new PIXI.Graphics(); s.marks = new PIXI.Graphics(); s.addChild(s.body, s.marks);
-      s.position.set(this.cx[b.t], this.cy[b.t]);
+      s.position.set(this.cx[b.t], this.cy[b.t]); s.t = b.t;
       this.bLayer.addChild(s); this.buildingSprites.set(b.id, s); s.key = ''; s.mkey = '';
       // words float above units, so they live on the label layer
       s.labels = new PIXI.Container(); s.labels.position.copyFrom(s.position); this.overlayTags.addChild(s.labels);
@@ -344,7 +386,7 @@ export class View {
         alpha: building ? 0.3 + 0.7 * (b.p / 100) : 1, capital: city?.cap, stockCrates: Math.floor(stock / 150), water: b.ty === 'port' ? waterDir(this, S, b.t) : null });
     }
     // progress, condition, training and selection marks
-    const sel = S.selBuilding === b.id;
+    const sel = S.selBuilding === b.id || !!S.selBuildings?.has(b.id);
     const mkey = [b.hp, b.p, b.d, b.tr ?? -1, sel, S.lod, planned].join('|');
     if (mkey !== s.mkey) {
       s.mkey = mkey;
@@ -435,7 +477,7 @@ export class View {
       t.flag.clear().moveTo(0, 0).lineTo(0, -19).stroke({ width: 1, color: 0xe7e2d4 }).poly([0, -19, 8, -16.5, 0, -14]).fill({ color: col }).stroke({ width: 0.6, color: 0x0b1518 });
       const status = { attacking: 0xb5432f, engaging: 0xb5432f, withdrawing: 0x8a4a2a, blocked: 0x8a4a2a, staging: 0x8a6a1e }[a.status] ?? 0x24394a;
       this.setTag(t.tag, `${a.name} · ${a.units.length} · ${String(a.status || 'idle').toUpperCase()}`, 0xffffff, status, { edge: col });
-      t.tx = this.cx[a.center]; t.ty = this.cy[a.center] - 4;
+      t.tile = a.center; t.tx = this.cx[a.center]; t.ty = this.cy[a.center] - 4;
     }
     for (const [id, t] of this.armyTags) if (!seen.has(id)) { t.destroy({ children: true }); this.armyTags.delete(id); }
   }
@@ -455,16 +497,29 @@ export class View {
     const z = this.cam.z;
     this.world.scale.set(z); this.world.position.set(-this.cam.x * z + sx, -this.cam.y * z + sy);
     this.lightWorld.scale.set(z); this.lightWorld.position.copyFrom(this.world.position);
+    this.rebase();
     this.vr = this.viewRect(R * 2);
+    if (this.rebased) {
+      // everything positioned from cx moves to the copy nearest the camera
+      this.rebased = false;
+      for (const s of this.buildingSprites.values()) { s.x = this.cx[s.t]; s.labels.x = s.x; }
+      if (this.armyTags) for (const t of this.armyTags.values()) { t.tx = this.cx[t.tile]; t.sx = t.tx; }
+      this.syncCampaigns?.();
+    }
     S.lod = lodFor(z);
     if (S.lod !== this.lastLod) { this.lastLod = S.lod; this.syncBuildings(); }
-    for (const ch of this.chunks) { const v = ch.x1 > this.vr[0] && ch.x0 < this.vr[2] && ch.y1 > this.vr[1] && ch.y0 < this.vr[3]; ch.ts.visible = v; ch.os.visible = v; }
+    for (const ch of this.chunks) {
+      const vy = ch.y1 > this.vr[1] && ch.y0 < this.vr[3];
+      const v = vy && ch.x1 > this.vr[0] && ch.x0 < this.vr[2]; ch.ts.visible = v; ch.os.visible = v;
+      for (const m of ch.mirrors) { const mv = vy && ch.x1 + m.k * this.P > this.vr[0] && ch.x0 + m.k * this.P < this.vr[2]; m.mt.visible = mv; m.mo.visible = mv; }
+    }
     // labels keep a readable size on screen whatever the zoom
     const ts = Math.min(3, Math.max(0.55, 1.35 / z));
     const tagS = Math.min(2.6, Math.max(0.6, 2 / z));
     for (const s of this.buildingSprites.values()) {
       s.visible = this.inView(s.x, s.y, 40); s.labels.visible = s.visible;
       if (!s.visible) continue;
+      s.scale.set(S.lod === 'strategic' ? Math.min(2.6, 1.15 / z) : 1);   // pictograms stay readable zoomed out
       if (s.tag) s.tag.scale.set(tagS);
       if (s.banner) { s.banner.scale.set(ts); s.chips.scale.set(ts); s.banner.y = 11 + 6 * ts; s.chips.y = s.banner.y + 10.5 * ts; }
       if (s.tag) s.tag.y = -10 - 4 * tagS;
@@ -491,10 +546,11 @@ export class View {
       arr.forEach((u, idx) => {
         const s = this.unitSprite(u); seen.add(u.id);
         let tx = this.cx[u.tile], ty = this.cy[u.tile];
-        if (u.next >= 0) { const p = u.prog / 100; tx += (this.cx[u.next] - tx) * p; ty += (this.cy[u.next] - ty) * p; }
+        if (u.next >= 0) { const p = u.prog / 100; tx += (this.near(this.cx[u.next], tx) - tx) * p; ty += (this.cy[u.next] - ty) * p; }
         const shown = Math.min(8, arr.length);
         if (idx >= 8) { s.visible = false; s.dx = tx; s.dy = ty; return; }
         if (arr.length > 1) { const a = (idx / shown) * Math.PI * 2, rr = Math.min(9, 3 + shown); tx += Math.cos(a) * rr; ty += Math.sin(a) * rr; }
+        if (this.wrap && Math.abs(tx - s.dx) > this.P / 2) s.dx += Math.round((tx - s.dx) / this.P) * this.P;   // crossed the seam
         const ox = s.dx, oy = s.dy;
         s.dx += (tx - s.dx) * k1; s.dy += (ty - s.dy) * k1;
         if (Math.hypot(s.dx - ox, s.dy - oy) > 0.05) s.heading = Math.atan2(s.dy - oy, s.dx - ox);
@@ -515,6 +571,7 @@ export class View {
     for (const [k, bt] of this.stackBadges) if (!badges.has(k)) { bt.destroy(); this.stackBadges.delete(k); }
     this.ambient.frame(dt, this.t);
     this.combat.frame(dt, this.t);
+    this.audio?.frame(dt);
     this.drawOverlay();
     this.drawCampaigns();
     this.drawFx(dt);
@@ -569,6 +626,20 @@ export class View {
         g.rect(this.cx[o.staging] - 1, this.cy[o.staging] - 14, 2, 14).fill({ color: 0xe7e2d4 }).poly([this.cx[o.staging] + 1, this.cy[o.staging] - 14, this.cx[o.staging] + 10, this.cy[o.staging] - 10, this.cx[o.staging] + 1, this.cy[o.staging] - 6]).fill({ color: 0xd0533b });
       }
     }
+    // building finder: pulse every match; count those off-screen
+    if (S.find) {
+      const pulse = 0.5 + 0.5 * Math.sin(this.t * 4);
+      let on = 0, off = 0;
+      for (const b of S.buildings.values()) {
+        if (b.o !== S.civId || !findMatch(S, b.ty, S.find)) continue;
+        const x = this.cx[b.t], y = this.cy[b.t];
+        if (!this.inView(x, y, 0)) { off++; continue; }
+        on++;
+        g.circle(x, y, R * (1.05 + 0.25 * pulse)).stroke({ width: 2.4 / Math.max(0.6, this.cam.z) + 1, color: 0xf1c75b, alpha: 0.55 + 0.45 * pulse });
+      }
+      const label = `${on + off} found${off ? ` (${off} off-screen: see the minimap)` : ''}`;
+      if (S.findLabel !== label) { S.findLabel = label; document.getElementById('hint').textContent = `Find: ${label}. Choose "Find…" to clear.`; }
+    } else if (S.findLabel) { S.findLabel = null; document.getElementById('hint').textContent = ''; }
     if (S.hover >= 0 && S.terr[S.hover] !== 255) g.poly(this.hexPoints(S.hover, -0.5)).stroke({ width: 1.2, color: 0xffffff, alpha: 0.45 });
     if (S.selBuilding != null) { const b = S.buildings.get(S.selBuilding); if (b && b.r >= 0) { g.moveTo(this.cx[b.t], this.cy[b.t]).lineTo(this.cx[b.r], this.cy[b.r]).stroke({ width: 1, color: 0x8fe0a8, alpha: 0.6 }); g.circle(this.cx[b.r], this.cy[b.r], 4).stroke({ width: 1.5, color: 0x8fe0a8 }); } }
   }
@@ -606,4 +677,14 @@ export function drawStatusIcon(g, kind, col) {
     case 'train': g.poly([-2.6, -0.6, 0, -2.8, 2.6, -0.6]).stroke({ width: 1, color: col }).poly([-2.6, 2.2, 0, 0, 2.6, 2.2]).stroke({ width: 1, color: col }); break;
     default: g.circle(0, 0, 1.5).fill({ color: col });
   }
+}
+
+// Building finder classes (shared with the minimap).
+const FIND_CLASSES = { milprod: ['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'], defense: ['bunker', 'fort'], power: ['power_plant', 'fusion_plant'], research: ['academy', 'university', 'seismic'], food: ['farm', 'port'], logistics: ['depot', 'port', 'comms_tower'] };
+export function findMatch(S, type, key) {
+  if (!key) return false;
+  if (!key.startsWith('class:')) return type === key;
+  const c = key.slice(6);
+  if (c === 'industry') return S.defs.BUILDINGS[type]?.cat === 'industry';
+  return (FIND_CLASSES[c] || []).includes(type);
 }

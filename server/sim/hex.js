@@ -4,10 +4,15 @@ import { W, H } from './constants.js';
 const DIRS_EVEN = [[1, 0], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1]];
 const DIRS_ODD = [[1, 0], [1, -1], [0, -1], [-1, 0], [0, 1], [1, 1]];
 
-export const idx = (q, r) => r * W + q;
+// The world is a cylinder: travelling off the east edge brings you onto the west edge. North and
+// south stay bounded. A process decides once (SE_WRAP), since neighbour tables are global; saves
+// from bounded worlds keep their topology.
+export const WRAP = (globalThis.SE_WRAP ?? (typeof process !== 'undefined' && process.env.SE_WRAP === '0' ? false : true)) !== false;
+export const wrapQ = (q) => (WRAP ? ((q % W) + W) % W : q);
+export const idx = (q, r) => r * W + wrapQ(q);
 export const qOf = (i) => i % W;
 export const rOf = (i) => (i / W) | 0;
-export const inBounds = (q, r) => q >= 0 && r >= 0 && q < W && r < H;
+export const inBounds = (q, r) => r >= 0 && r < H && (WRAP || (q >= 0 && q < W));
 
 // Precomputed neighbour table: NB[i*6+d] = neighbour index or -1.
 export const NB = new Int32Array(W * H * 6).fill(-1);
@@ -36,7 +41,24 @@ export function toCube(i) {
 
 export function dist(a, b) {
   const [ax, ay, az] = toCube(a), [bx, by, bz] = toCube(b);
-  return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+  const d0 = Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+  if (!WRAP) return d0;
+  // shortest of the equivalent images east and west (x shifts by W, z by -W)
+  const d1 = Math.max(Math.abs(ax - bx - W), Math.abs(ay - by), Math.abs(az - bz + W));
+  const d2 = Math.max(Math.abs(ax - bx + W), Math.abs(ay - by), Math.abs(az - bz - W));
+  return Math.min(d0, d1, d2);
+}
+
+// Signed shortest column offset from a to b (for directions and centroids across the seam).
+export function dqWrap(qa, qb) { let d = qb - qa; if (WRAP) { if (d > W / 2) d -= W; else if (d < -W / 2) d += W; } return d; }
+
+// Centre of a set of tiles that may straddle the seam (circular mean of columns).
+export function centroid(tiles) {
+  if (!tiles.length) return -1;
+  const q0 = qOf(tiles[0]); let sq = 0, sr = 0;
+  for (const t of tiles) { sq += dqWrap(q0, qOf(t)); sr += rOf(t); }
+  const r = Math.max(0, Math.min(H - 1, Math.round(sr / tiles.length)));
+  return idx(Math.round(q0 + sq / tiles.length), r);
 }
 
 // Tiles within radius rad of center (inclusive), cached offsets per (radius, parity).
@@ -68,6 +90,17 @@ export function disk(center, rad) {
   return res;
 }
 
+// Write `val` into arr for every tile within rad of center, without allocating (vision, fog).
+export function stamp(arr, center, rad, val = 1) {
+  const r0 = rOf(center), q0 = qOf(center);
+  const key = rad * 2 + (r0 & 1);
+  if (!diskCache.has(key)) disk(center, rad);
+  const offs = diskCache.get(key);
+  const inner = q0 - rad - 1 >= 0 && q0 + rad + 1 < W && r0 - rad >= 0 && r0 + rad < H;
+  if (inner) { for (let k = 0; k < offs.length; k++) { const o = offs[k]; arr[(r0 + o[1]) * W + q0 + o[0]] = val; } return; }
+  for (let k = 0; k < offs.length; k++) { const o = offs[k], q = q0 + o[0], r = r0 + o[1]; if (inBounds(q, r)) arr[idx(q, r)] = val; }
+}
+
 // Pixel-space centre for a hex of "size" (radius) — used for continuous positions.
 export function center(i, size = 1) {
   const q = qOf(i), r = rOf(i);
@@ -77,7 +110,9 @@ export function center(i, size = 1) {
 // Hexes on the straight line from a to b (inclusive), by cube-coordinate interpolation.
 export function hexLine(a, b) {
   const n = dist(a, b); if (!n) return [a];
-  const [ax, ay, az] = toCube(a), [bx, by, bz] = toCube(b);
+  const [ax, ay, az] = toCube(a);
+  let [bx, by, bz] = toCube(b);
+  if (WRAP) { const dx = bx - ax; if (dx > W / 2) { bx -= W; bz += W; } else if (dx < -W / 2) { bx += W; bz -= W; } }   // toward the nearer image
   const out = [];
   for (let i = 0; i <= n; i++) {
     const t = i / n;
@@ -86,8 +121,8 @@ export function hexLine(a, b) {
     const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
     if (dx > dy && dx > dz) rx = -ry - rz; else if (dy > dz) ry = -rx - rz;
     const r = ry, q = rx + ((r - (r & 1)) >> 1);
-    if (q < 0 || r < 0 || q >= W || r >= H) continue;
-    out.push(r * W + q);
+    if (!inBounds(q, r)) continue;
+    out.push(idx(q, r));
   }
   return out;
 }

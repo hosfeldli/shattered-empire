@@ -161,7 +161,7 @@ input, select { background: #0f1c20; border: 1px solid var(--line); border-radiu
 #minimapWrap { position: absolute; right: 10px; bottom: 10px; padding: 6px; z-index: 4; width: 206px; }
 #minimap { display: block; width: 192px; height: 168px; cursor: crosshair; background: #10181b; }
 .lenses { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 5px; gap: 2px; }
-.lenses button { background: #13232a; border: 1px solid var(--line); color: var(--chalk-dim); font-size: 11px; padding: 3px 0; cursor: pointer; border-radius: 2px; }
+.lenses button { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #13232a; border: 1px solid var(--line); color: var(--chalk-dim); font-size: 10.5px; padding: 3px 0; cursor: pointer; border-radius: 2px; }
 .lenses button.on { color: var(--chalk); border-color: var(--ochre); }
 .hint { position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%); background: rgba(12, 23, 26, 0.92); padding: 6px 12px; border-radius: var(--r); font-size: 13px; z-index: 4; pointer-events: none; box-shadow: inset 0 0 0 1px var(--line); }
 .hint:empty { display: none; }
@@ -332,3 +332,16 @@ table.grid tr:hover td { background: rgba(255, 255, 255, 0.03); }
 .market { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; }
 .market div { background: rgba(13, 26, 30, 0.55); border-radius: var(--r); padding: 4px 6px; display: grid; gap: 2px; }
 .refits { flex-wrap: wrap; }
+
+.findsel { grid-column: 1 / -1; margin-top: 3px; background: #13232a; color: var(--chalk-dim); border: 1px solid var(--line); border-radius: var(--r); font-size: 12px; padding: 2px 4px; max-width: 100%; }
+
+.batchctl { align-items: center; gap: 6px; }
+.batchctl input { width: 54px; background: #13232a; border: 1px solid var(--line); border-radius: var(--r); padding: 3px 5px; color: var(--chalk); }
+.batchctl .seg { flex: 1; }
+
+.sound-settings { margin: 10px 0 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); text-align: left; }
+.sound-settings h4 { margin: 0 0 6px; }
+.sound-settings .field.inline { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 0; }
+.sound-settings input[type=range] { width: 160px; accent-color: var(--brass, #c9a24a); }
+.sound-settings .check { justify-content: flex-start !important; }
+#btnSound.off { opacity: 0.45; text-decoration: line-through; }

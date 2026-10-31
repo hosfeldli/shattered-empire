@@ -1,6 +1,6 @@
 # Shattered Empires
 
-A grand-scale RTS where you build a civilization on a continent that is tearing itself apart. Mountains rise and seal passes, the Great Rift sinks into the sea, volcanoes bury roads in lava and leave fertile soil, droughts dry rivers into crossings, and silted rivers carve new courses. The land is a strategic opponent.
+A grand-scale RTS where you rebuild a civilization on a shattered world that wraps around east to west. Cities grow from a real population ledger, workers are allocated to the jobs that matter, governors and rival empires plan with the same tools you do, and armies are drawn from your people. By default the land is peaceful; turn on **Cataclysm mode** for a world that tears itself apart: rising mountains, a sinking Great Rift, eruptions, droughts and wandering rivers.
 
 ## Architecture: the cloud does the thinking
 
@@ -30,6 +30,22 @@ Reclamation → Industrial Recovery → Mechanization → Networked Warfare → 
 - **Everything is visible in the world**: buildings are drawn as structures on their hexes (barns and silos, pumpjacks, cooling towers, star forts, runways, piers facing the sea) in the owner's era materials and colours. Planned sites are gold blueprints, construction rises from a foundation, damaged buildings are scorched. Status badges show what is wrong right where it happens: no workers, missing input (named up close), no power, awaiting funds, damaged, on fire, training (with a progress ring). City banners carry population, capital and governor plan, with famine, cut off and unrest in words. Armies fly standards with their orders. Press **K** in game for the map key.
 - **The world looks alive**: districts grow with population and era, pedestrians, traffic and freight trains follow the real roads, factories smoke, farms change with the seasons, construction sites have cranes and crews, damage leaves fires and rubble, and a day/night cycle lights the cities.
 
+### Population, labour and governors
+- **Population ledger**: every city counts civilians, recruits in training (reserved) and serving soldiers. Training draws on a recruitable share that never strips essential workers; cancelling returns the people, demobilising sends most of them home, casualties are a real loss. Growth follows food, housing (blocks gain storeys), stability and services, with a post-war recovery boost.
+- **Workforce**: food first, then your category priorities (or a mode: balanced, growth, industry, research, commerce). Lock a building's staff or switch it off; every building says why it is or is not staffed (no power, missing input, storage full, no rare earths…). An auto-balance preview shows the change before you apply it.
+- **Governor autonomy**: Off, Advisor (proposals only), Managed (routine work), or Autonomous; goals, a spending budget, emergency powers, and proposals you approve, defer or reject. The forecast planner scores every option (benefit + resilience + specialisation − cost − risk) and explains what it holds off on and why.
+- **Era progression** is paced (economy 2–4 min, rifles 4–8, industrial 10–15, mechanised 18–25, networked 30–45, advanced 45–60) with national savings for the next era, refits that keep veterancy, and logistics upkeep that limits unit spam. The readiness panel shows what stands between you and the next era.
+
+### Production and sound
+- **Multi-building production**: Alt-drag to box-select buildings, Shift-click to add one, double-click for all of a type on screen (Ctrl/Cmd for the whole map). One order trains *N in total* (each unit goes where it finishes soonest) or *N per building*, is charged exactly once, queues what it can and says what blocked the rest. Repeat production keeps a facility busy while it can afford a double order. Rally points apply to the whole selection.
+- **Spatial sound** (Web Audio, synthesised, nothing to download): volleys, launches and impacts panned and muffled by where they are on screen, ambience that follows what is in view (wind, sea, forest, city, industry, distant battle). Only what you can see is heard. Volume sliders in the menu, **M** mutes; audio waits for your first click and pauses in a background tab.
+
+### World
+Four world styles (continents, pangaea, archipelago, inland sea) on a seamless east–west wrap: movement, roads, vision, borders and the camera all cross the seam. Starts are checked for fair access to food, materials, metals, fuel and rare earths. AI rivals come in four difficulties (Relaxed to Brutal), which change their economic efficiency, army size and how fast their generals react — never your empire.
+
+### Server performance
+Each tick runs through a scheduler: every system has a cadence, a phase (the once-a-second systems are spread over the second) and a time budget, and records p50/p95/p99/max timings and overruns (`/api/metrics`; the slowest systems also appear in `/api/health`). Autosaves are captured on the tick and compressed off it. On live servers AI planning may slide a tick when one runs long; tests and replays stay deterministic. New matches are refused with a clear message when the running ones already use most of the CPU or memory.
+
 ### Watching AI matches (testing)
 **Watch an AI match** in the lobby starts an AI-only game with no fog of war: every empire's units, cities and buildings are visible, with full city detail. Follow any empire to see its economy, research and cities in the panels, switch to its fog of war to check what it can see, run the match at 1×, 2×, 4× or 8× speed or pause it, and see AI offensives as arrows to the city they are marching on. Running matches also appear in the lobby with a **Watch** button. Spectators cannot give orders. Keys: `[` `]` follow previous/next, `P` pause, `,` `.` slower/faster, `V` fog.
 
@@ -38,7 +54,8 @@ Reclamation → Industrial Recovery → Mechanization → Networked Warfare → 
 ```bash
 npm install
 npm run dev          # http://localhost:8080
-npm test             # simulation, systems, fairness, persistence, protocol and load tests
+npm test             # simulation, systems, overhaul acceptance, fairness, persistence, protocol and load tests
+node test/balance.mjs 7,11 30 4   # balance probe: era timings, armies, starvation per seed
 npm run test:e2e     # browser tests (needs: npx playwright install chromium)
 npm run demo         # write a 25-minute AI match snapshot; rejoin it with token demo-token
 npm run soak         # 30 minutes of AI-vs-AI in ~5 seconds

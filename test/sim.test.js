@@ -19,7 +19,7 @@ test('continent generation is deterministic and playable', () => {
 });
 
 test('AI vs AI match runs 20 minutes with terrain events, economy and combat', () => {
-  const g = new Game({ id: 't', seed: 11, slots: [{ personality: 'warlord' }, { personality: 'builder' }] });
+  const g = new Game({ id: 't', seed: 11, slots: [{ personality: 'warlord' }, { personality: 'builder' }], cataclysm: { on: true } });   // terrain events are opt-in
   const kinds = new Set();
   for (let i = 0; i < 12000 && !g.over; i++) { g.tick(); g.outbox.length = 0; }
   for (const e of g.log) kinds.add(e.kind);

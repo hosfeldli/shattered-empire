@@ -1,6 +1,7 @@
 // Authoritative match simulation. One Game per match; clients only send intents.
-import { IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, N, W, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater } from './constants.js';
-import { NB, disk, dist } from './hex.js';
+import { Scheduler } from './scheduler.js';
+import { IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, N, W, H, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater } from './constants.js';
+import { NB, disk, dist, centroid, dqWrap, stamp, idx as hexIdx } from './hex.js';
 import { recruitBlock, reserve, commitTraining, releaseTraining, enlistExisting, demobilize, labor, recruitable } from './population.js';
 import { World } from './world.js';
 import { mulberry32 } from './rng.js';
@@ -10,7 +11,7 @@ import { findPath, findRoadRoute, flowField, formationSlots } from './path.js';
 import { RoadNet } from './roads.js';
 import { economyStep, recomputeTerritory, recomputeTradeNetwork, migrationStep, allocationFor } from './economy.js';
 import { MODES, PRIORITY, CATEGORIES, defaultWorkforce } from './workforce.js';
-import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding } from './military.js';
+import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding, hardened } from './military.js';
 import { Diplomacy } from './diplomacy.js';
 import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
@@ -31,14 +32,50 @@ const CITY_NAMES = ['Aldmoor', 'Brightwater', 'Cindervale', 'Dunhollow', 'Emberf
 
 const ESSENTIAL = new Set(['farm', 'house', 'port']);
 
+// Every system with its cadence (ticks), phase (spreads the once-a-second systems over the
+// second instead of piling them onto one tick) and time budget in ms. Order inside a tick is fixed.
+function makeScheduler(g) {
+  const T = [
+    { name: 'tileUnits', fn: () => g.rebuildTileUnits(), budget: 3 },
+    { name: 'units', fn: () => unitsStep(g, DT), budget: 15 },
+    { name: 'projectiles', fn: () => projectilesStep(g), budget: 3 },
+    { name: 'morale', every: 5, fn: () => moraleStep(g, 0.5), budget: 3 },
+    { name: 'battlefield', every: 10, phase: 5, fn: () => { battlefieldStep(g, 1); battlesStep(g); }, budget: 4 },
+    { name: 'buildingCombat', every: 5, fn: () => buildingCombatStep(g, 0.5), budget: 3 },
+    { name: 'construction', every: 10, fn: () => { g.constructionStep(1); g.roads.step(g, 1); }, budget: 5 },
+    { name: 'economy', every: 10, phase: 8, fn: () => { economyStep(g, 1); supplyStep(g, 1); g.researchStep(1); }, budget: 20 },
+    { name: 'geology', every: 10, phase: 6, fn: () => { g.geology.step(1, g.time); for (const tile of g.world.wiped) g.roads.obliterate(tile); g.world.wiped.clear(); }, budget: 5 },
+    { name: 'diplomacy', every: 10, phase: 4, fn: () => g.diplomacy.step(1), budget: 2 },
+    { name: 'governors', every: 10, phase: 2, fn: () => governorStep(g, 1), budget: 10 },
+    { name: 'victory', every: 10, fn: () => g.checkVictory(), budget: 2 },
+    { name: 'supplyNet', every: 20, phase: 13, fn: () => { recomputeSupply(g); autoColonists(g); armiesStep(g); if (g.world.dirty.size) { g.navVersion++; g.world.dirty.clear(); } }, budget: 15 },
+    { name: 'territory', every: 30, phase: 21, fn: () => recomputeTerritory(g), budget: 10 },
+    { name: 'trade', every: 50, phase: 47, fn: () => { recomputeTradeNetwork(g); g.roads.decayTraffic(); }, budget: 15 },
+    { name: 'migration', every: 100, phase: 89, fn: () => migrationStep(g), budget: 5 },
+    { name: 'recovery', every: 300, phase: 283, fn: () => recoveryStep(g), budget: 10 },
+    // AI planning: each empire thinks every 2 s, staggered; deferrable when a tick runs long
+    { name: 'aiQueue', budget: 1, fn: (gg, t) => { const due = gg.aiDue || (gg.aiDue = new Set()); for (const civ of gg.civs) if (civ.ai && civ.alive && (t + civ.id * 7) % (civ.isRebel ? 30 : 20) === 0) due.add(civ.id); } },
+    { name: 'ai', deferrable: true, budget: 20, fn: (gg) => {
+      const due = gg.aiDue; if (!due || !due.size) return;
+      for (const id of [...due].sort((a, b) => a - b)) { const civ = gg.civs[id]; if (civ.ai && civ.alive) civ.ai.think(); }
+      due.clear();
+    } },
+    { name: 'visibility', every: 2, fn: () => g.refreshVisibility(), budget: 8 },
+  ];
+  return new Scheduler(T, { tickBudget: 1000 / 10, adaptive: !!g.adaptive });
+}
+
 export class Game {
-  constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null }) {
+  constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, cataclysm = null, style = null }) {
     this.id = id;
     this.seed = seed;
+    // the world is peaceful unless the match asks for destructive geology (Cataclysm mode)
+    this.cataclysm = cataclysm && cataclysm.on ? { on: true, freq: Math.max(0.25, Math.min(3, +cataclysm.freq || 1)), sev: Math.max(0.25, Math.min(2, +cataclysm.sev || 1)) } : null;
+    this.worldStyle = style || null;
     this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty }));
     this.defs = GAME_DEFS;
     this.rng = mulberry32(seed ^ 0x9e3779b9);
-    this.world = new World(seed);
+    this.world = new World(seed, { style });
     this.world.generate(slots.length);
     this.roads = new RoadNet(this.world);
     this.time = 0; this.tickN = 0; this.nextId = 1;
@@ -311,34 +348,8 @@ export class Game {
     if (this.over) return;
     this.time += DT;
     this.tickN++;
-    const t = this.tickN;
     this.assigned.clear();
-    this.rebuildTileUnits();
-    unitsStep(this, DT);
-    projectilesStep(this);
-    if (t % 5 === 0) moraleStep(this, 0.5);
-    if (t % 10 === 5) { battlefieldStep(this, 1); battlesStep(this); }
-    if (t % 5 === 0) buildingCombatStep(this, 0.5);
-    if (t % 10 === 0) {
-      this.constructionStep(1);
-      this.roads.step(this, 1);
-      economyStep(this, 1);
-      supplyStep(this, 1);
-      this.researchStep(1);
-      this.geology.step(1, this.time);
-      for (const tile of this.world.wiped) this.roads.obliterate(tile);
-      this.world.wiped.clear();
-      this.diplomacy.step(1);
-      governorStep(this, 1);
-      this.checkVictory();
-    }
-    if (t % 20 === 0) { recomputeSupply(this); autoColonists(this); armiesStep(this); if (this.world.dirty.size) { this.navVersion++; this.world.dirty.clear(); } }
-    if (t % 30 === 0) recomputeTerritory(this);
-    if (t % 50 === 0) { recomputeTradeNetwork(this); this.roads.decayTraffic(); }
-    if (t % 100 === 0) migrationStep(this);
-    if (t % 300 === 0) recoveryStep(this);
-    for (const civ of this.civs) if (civ.ai && civ.alive && (t + civ.id * 7) % (civ.isRebel ? 30 : 20) === 0) civ.ai.think();
-    if (t % 2 === 0) this.refreshVisibility();
+    (this.sched || (this.sched = makeScheduler(this))).run(this.tickN, this);
   }
 
   rebuildTileUnits() {
@@ -392,8 +403,14 @@ export class Game {
             this.notify(civ.id, `${UNITS[q.unit].name} ready.`, { kind: 'unit', tile: spot, quiet: true, level: 'info' });
           }
         }
+        // repeat production: only when affordable twice over and manpower is spare (never starves the city)
+        if (b.repeat && !b.queue.length && this.tickN % 10 === 0) {
+          const cost = this.unitCost(civ, b.repeat), dbl = {}; for (const [k, v] of Object.entries(cost)) dbl[k] = v * 2;
+          const city = this.cities.get(b.cityId), men = UNITS[b.repeat].pop || 0;
+          if (this.canAfford(civ, dbl, b.tile) && (!men || !city || recruitable(civ, city) >= men * 2) && !this.canTrainBatch(civ, b, b.repeat)) this.trainBatch(civ, [b.id], b.repeat, 1, {});
+        }
         // natural upkeep only keeps sound buildings sound; damaged ones need repair (governor, engineers, or you)
-        if (b.hp < b.maxHp && b.hp >= b.maxHp * 0.5 && !b.fire && this.time - (b.lastHit || -99) > 15) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.002 * dt);
+        if (b.hp < b.maxHp && b.hp >= b.maxHp * 0.5 && !b.fire && this.time - (b.lastHit || -99) > 15) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.002 * dt * (hardened(this, b) ? 2 : 1));
         this.refreshState(b);
         continue;
       }
@@ -484,30 +501,37 @@ export class Game {
 
   // ----------------------------------------------------------------- visibility & intel
   refreshVisibility(intel = true) {
-    const w = this.world;
-    for (const civ of this.civs) {
+    const w = this.world, civs = this.civs;
+    // what each empire's own units, buildings and territory reveal (computed once per owner) ...
+    if (!this.visOwn || this.visOwn.length < civs.length) this.visOwn = civs.map((_, i) => this.visOwn?.[i] || { v: new Uint8Array(N), d: new Uint8Array(N) });
+    const own = this.visOwn;
+    for (let i = 0; i < civs.length; i++) { own[i].v.fill(0); own[i].d.fill(0); }
+    for (const u of this.units.values()) {
+      const o = own[u.owner]; if (!o) continue;
+      const def = UNITS[u.type];
+      let v = def.vision;
+      if (!def.air) { const tt = w.terr[u.tile]; if (tt === T.HILLS) v += 1; else if (tt === T.MOUNTAIN) v += 2; }
+      stamp(o.v, u.tile, v);
+      stamp(o.d, u.tile, def.cat === 'air' && def.civilian ? 4 : 2);
+    }
+    for (const b of this.buildings.values()) {
+      const o = own[b.owner]; if (!o) continue;
+      stamp(o.v, b.tile, (BUILDINGS[b.type].vision || 2) + (civs[b.owner].techs.has('networked_command') ? 1 : 0));
+      stamp(o.d, b.tile, 2);
+    }
+    for (let i = 0; i < N; i++) { const o = w.owner[i]; if (o >= 0 && own[o]) own[o].v[i] = 1; }
+    // ... then each empire sees what it and its allies see
+    for (const civ of civs) {
       if (!civ.alive) continue;
-      const vis = civ.visible, det = civ.detect; vis.fill(0); det.fill(0);
-      const allies = this.civs.filter((o) => o.alive && this.allied(civ.id, o.id)).map((o) => o.id);
-      for (const u of this.units.values()) {
-        if (!allies.includes(u.owner)) continue;
-        const def = UNITS[u.type];
-        let v = def.vision;
-        if (!def.air) { const tt = w.terr[u.tile]; if (tt === T.HILLS) v += 1; else if (tt === T.MOUNTAIN) v += 2; }
-        for (const t of disk(u.tile, v)) vis[t] = 1;
-        for (const t of disk(u.tile, def.cat === 'air' && def.civilian ? 4 : 2)) det[t] = 1;
-      }
-      const tele = civ.techs.has('networked_command') ? 1 : 0;
-      for (const b of this.buildings.values()) {
-        if (!allies.includes(b.owner)) continue;
-        for (const t of disk(b.tile, (BUILDINGS[b.type].vision || 2) + tele)) vis[t] = 1;
-        for (const t of disk(b.tile, 2)) det[t] = 1;
-      }
-      for (let i = 0; i < N; i++) if (w.owner[i] === civ.id) vis[i] = 1;
+      const vis = civ.visible, det = civ.detect;
+      const allies = civs.filter((o) => o.alive && this.allied(civ.id, o.id)).map((o) => o.id);
+      vis.set(own[civ.id].v); det.set(own[civ.id].d);
+      for (const a of allies) if (a !== civ.id) { const ov = own[a].v, od = own[a].d; for (let i = 0; i < N; i++) { vis[i] |= ov[i]; det[i] |= od[i]; } }
       if (this.smoke.size) concealBySmoke(this, civ, vis, allies);
       if (this.sandboxReveal && civ.human) vis.fill(1);      // developer sandbox matches see the whole field
-      for (let i = 0; i < N; i++) if (vis[i]) { civ.explored[i] = 1; civ.lastOwner[i] = w.owner[i]; }
-      if (intel) { this.updateIntel(civ); this.diplomacy.checkContact(civ); }
+      const ex = civ.explored, lo = civ.lastOwner, seenOwners = new Set();
+      for (let i = 0; i < N; i++) if (vis[i]) { ex[i] = 1; const o = w.owner[i]; lo[i] = o; if (o >= 0) seenOwners.add(o); }
+      if (intel) { this.updateIntel(civ); this.diplomacy.checkContact(civ, seenOwners); }
     }
   }
 
@@ -628,7 +652,7 @@ export class Game {
       const own = b.owner === civ.id || god;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2),
-        lv: b.level > 1 ? b.level : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
+        lv: b.level > 1 ? b.level : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
     const cities = [];
     for (const c of this.cities.values()) {
@@ -683,9 +707,8 @@ export class Game {
       const army = [...this.units.values()].filter((u) => u.owner === c.id && !UNITS[u.type].civilian && !UNITS[u.type].engineer && u.type !== 'scout_buggy');
       if (!army.length) continue;
       // the unit nearest the army's centre of mass marks where the army is
-      let sx = 0, sy = 0; for (const u of army) { sx += u.tile % W; sy += (u.tile / W) | 0; }
-      sx /= army.length; sy /= army.length;
-      let best = army[0], bd = Infinity; for (const u of army) { const d = (u.tile % W - sx) ** 2 + (((u.tile / W) | 0) - sy) ** 2; if (d < bd) { bd = d; best = u; } }
+      const mid = centroid(army.map((u) => u.tile));
+      let best = army[0], bd = Infinity; for (const u of army) { const d = dist(u.tile, mid); if (d < bd) { bd = d; best = u; } }
       list.push({ civ: c.id, from: best.tile, to: city.tile, name: city.name, owner: city.owner, n: army.length });
     }
     return list;
@@ -709,6 +732,7 @@ export class Game {
       case 'hold': return `Hold position (${n(cmd.units)} units)`;
       case 'build': return `${cmd.plan ? 'Plan' : 'Build'} ${BUILDINGS[cmd.type]?.name}` + (cmd.why ? `: ${cmd.why}` : '');
       case 'train': return `Train ${UNITS[cmd.unit]?.name}`;
+      case 'batchTrain': return `Train ${cmd.count} ${UNITS[cmd.unit]?.name} across ${n(cmd.buildings)} buildings`;
       case 'research': return `${cmd.queue ? 'Queue' : 'Research'} ${TECHS[cmd.tech]?.name}`;
       case 'advance': return `Advance to the ${AGES[civ.age + 1]?.name} era`;
       case 'gov': return `Government: ${GOVS[cmd.id]?.name}`;
@@ -956,6 +980,19 @@ export class Game {
           this.world.touch(b.tile);
           return null;
         }
+        case 'batchTrain': {
+          // one order, many facilities: idempotent per requestId, charged once per unit queued
+          if (cmd.requestId != null) { this.requests = this.requests || new Map(); const seen = this.requests.get(civ.id + ':' + cmd.requestId); if (seen) return { reply: { t: 'ack', batch: seen, repeat: true } }; }
+          const res = this.trainBatch(civ, cmd.buildings || [], cmd.unit, Math.max(1, Math.min(60, cmd.count | 0)), { policy: cmd.policy === 'all' ? 'all' : 'partial', by: cmd.by, army: cmd.army, each: cmd.each ? Math.max(1, Math.min(8, cmd.each | 0)) : 0 });
+          if (cmd.requestId != null) { this.requests.set(civ.id + ':' + cmd.requestId, res); if (this.requests.size > 300) this.requests.delete(this.requests.keys().next().value); }
+          if (res.error) return { error: res.error };
+          return { reply: { t: 'ack', batch: res } };
+        }
+        case 'repeat': {
+          // repeat production: a facility re-queues its unit whenever its queue empties (with safeguards)
+          for (const id of cmd.buildings || []) { const b = this.buildings.get(id); if (b && b.owner === civ.id && BUILDINGS[b.type].trains) b.repeat = cmd.unit && BUILDINGS[b.type].trains.includes(cmd.unit) ? cmd.unit : null; }
+          return null;
+        }
         case 'cancelTrain': {
           const b = this.buildings.get(cmd.building);
           if (!b || b.owner !== civ.id) return { error: 'no building' };
@@ -1012,6 +1049,54 @@ export class Game {
   // who stands behind an order: the player directly, or automation (governor, army, AI)
   // automation (AI empires, governors, armies) spends within the national savings plan
   isAutomated(civ, cmd) { return !civ.human || !!cmd.by; }
+  // Production manager (players, governors and AI): distribute `count` units over facilities so
+  // each next unit goes where it would finish earliest; reserve cost and manpower exactly once.
+  trainBatch(civ, ids, unit, count, opts = {}) {
+    const blds = [...new Set(ids)].map((id) => this.buildings.get(id)).filter((b) => b && b.owner === civ.id && b.done && (BUILDINGS[b.type].trains || []).includes(unit));
+    if (!blds.length) return { error: `none of the selected buildings can train ${UNITS[unit]?.name || unit}` };
+    const ud = UNITS[unit], cost = this.unitCost(civ, unit);
+    if (opts.policy === 'all') {
+      // all-or-nothing: check the whole order first
+      const total = {}; for (const [k, v] of Object.entries(cost)) total[k] = v * count;
+      if (!this.canAfford(civ, total, blds[0].tile)) return { error: `cannot afford ${count} ${ud.name}` };
+      const menNeed = (ud.pop || 0) * count;
+      const room = blds.reduce((s2, b) => s2 + Math.max(0, 8 - b.queue.length), 0);
+      if (room < count) return { error: `queues have room for only ${room}` };
+      if (menNeed) { const cities = new Map(); for (const b of blds) cities.set(b.cityId, this.cities.get(b.cityId)); let rec = 0; for (const c of cities.values()) if (c) rec += Math.max(0, recruitable(civ, c)); if (rec < menNeed) return { error: `needs ${menNeed} reserve manpower, ${rec} available` }; }
+    }
+    const eta = (b) => b.queue.reduce((s2, q) => s2 + q.left, 0) + ud.time * (b.state === 'damaged' ? 2 : 1);
+    const per = {}; let queued = 0, blocked = '';
+    for (let n = 0; n < count; n++) {
+      // `each`: exactly that many per building; otherwise each unit goes where it finishes soonest
+      const order = blds.filter((b) => b.queue.length < 8 && (!opts.each || (per[b.id] || 0) < opts.each)).sort((a, b) => eta(a) - eta(b) || a.id - b.id);
+      let placed = false;
+      for (const b of order) {
+        const why = this.canTrainBatch(civ, b, unit);
+        if (why) { blocked = why; continue; }
+        this.pay(civ, cost, b.tile);
+        const city = this.cities.get(b.cityId), men = city ? ud.pop || 0 : 0;
+        if (city && men) reserve(city, men);
+        b.queue.push({ unit, left: ud.time, auto: false, army: opts.army || b.rallyArmy || 0, men, cost, batch: 1 });
+        per[b.id] = (per[b.id] || 0) + 1; queued++; placed = true; break;
+      }
+      if (!placed) break;
+    }
+    const total = {}; for (const [k, v] of Object.entries(cost)) total[k] = v * queued;
+    const finish = blds.length ? Math.round(Math.max(...blds.map((b) => b.queue.reduce((s2, q) => s2 + q.left, 0)))) : 0;
+    return { unit, requested: count, queued, per, cost: total, finish, blocked: queued < count ? blocked || 'queues are full' : '', text: queued < count ? `${queued} of ${count} queued. Remaining ${count - queued} blocked: ${blocked || 'queues are full'}.` : `${queued} ${ud.name} queued across ${Object.keys(per).length} building${Object.keys(per).length > 1 ? 's' : ''}.` };
+  }
+  // like canTrain, but a batch may fill queues up to 8
+  canTrainBatch(civ, b, unit) {
+    const def = UNITS[unit], bd = BUILDINGS[b.type];
+    if (!def || !bd.trains || !bd.trains.includes(unit) || !b.done || b.owner !== civ.id) return 'not available here';
+    if (def.age > civ.age) return 'requires ' + AGES[def.age].name;
+    if (def.tech && !civ.techs.has(def.tech)) return 'requires ' + TECHS[def.tech].name;
+    const city = this.cities.get(b.cityId);
+    if (city && def.pop) { const why = recruitBlock(civ, city, def.pop); if (why) return 'insufficient reserve manpower'; }
+    if (b.queue.length >= 8) return 'queues are full';
+    if (!this.canAfford(civ, this.unitCost(civ, unit), b.tile)) return 'cannot afford';
+    return null;
+  }
   // World market capacity refills over a minute; trade partners make goods cheaper.
   importQuote(civ, k, amount) {
     const price = IMPORT_PRICE[k]; if (!price) return { error: 'that cannot be imported' };
@@ -1105,11 +1190,11 @@ export class Game {
     // a group closes in as a line facing the target instead of trickling down one road
     let approach = null;
     if (units.length >= 4 && tt >= 0) {
-      let sx = 0, sy = 0; for (const u of units) { sx += u.tile % W; sy += (u.tile / W) | 0; }
-      const cq = sx / units.length, cr = sy / units.length, tq = tt % W, tr = (tt / W) | 0;
+      const mid = centroid(units.map((u) => u.tile));
+      const tq = tt % W, tr = (tt / W) | 0, cq = tq - dqWrap(mid % W, tq), cr = (mid / W) | 0;
       const d = Math.hypot(tq - cq, tr - cr) || 1, stand = Math.min(d, 2.5);
-      const aq = Math.round(tq - ((tq - cq) / d) * stand), ar = Math.round(tr - ((tr - cr) / d) * stand);
-      const at = Math.max(0, Math.min(N - 1, ar * W + aq));
+      const aq = Math.round(tq - ((tq - cq) / d) * stand), ar = Math.max(0, Math.min(H - 1, Math.round(tr - ((tr - cr) / d) * stand)));
+      const at = hexIdx(aq, ar);
       if (dist(at, tt) < d) approach = formationSlots(this, civ, units, at, 'line');
     }
     for (const u of units) {
@@ -1127,8 +1212,7 @@ export class Game {
     if (!units.length) return null;
     let dest = tile;
     if (!(dest >= 0)) {
-      let sx = 0, sy = 0; for (const u of units) { sx += u.tile % W; sy += (u.tile / W) | 0; }
-      const c = Math.round(sy / units.length) * W + Math.round(sx / units.length);
+      const c = centroid(units.map((u) => u.tile));
       dest = this.nearestCityTile(civ.id, c);
     }
     if (!(dest >= 0)) return { error: 'nowhere to fall back to' };

@@ -6,7 +6,7 @@ import { UNITS, TERRAIN, isWater, N } from './constants.js';
 import { dist, disk, hexLine } from './hex.js';
 
 const COMMIT = { defend: 15, offensive: 90, scout: 60 };
-const DIFF = { easy: { react: 1.0, switch: 2.0, commit: 1.4 }, normal: { react: 1.3, switch: 1.5, commit: 1 }, hard: { react: 1.6, switch: 1.3, commit: 0.8 } };
+const DIFF = { easy: { react: 1.0, switch: 2.0, commit: 1.4 }, normal: { react: 1.3, switch: 1.5, commit: 1 }, hard: { react: 1.6, switch: 1.3, commit: 0.8 }, brutal: { react: 1.8, switch: 1.2, commit: 0.7 } };
 
 export class MilitaryPlanner {
   constructor(ai) { this.ai = ai; this.missions = new Map(); this.nextId = 1; this.memory = new Map(); this.cooldown = {}; this.reversals = 0; }

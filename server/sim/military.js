@@ -245,6 +245,7 @@ export function damageUnit(g, u, amount, attackerCivId, cause) {
 
 export function damageBuilding(g, b, amount, attackerCivId, cause) {
   if (!g.buildings.has(b.id)) return;
+  if (hardened(g, b)) amount *= 0.6;                  // a crustal stabilizer nearby hardens infrastructure
   b.hp -= amount; b.lastHit = g.time;
   if (b.hp > 0) { if (cause === 'combat' || cause === 'quake' || cause === 'lava') g.ignite(b, cause === 'lava' ? 1 : 0.15); g.refreshState(b); return; }
   const owner = g.civs[b.owner];
@@ -375,3 +376,8 @@ export function supplyStep(g, dt) {
   }
 }
 void MOVE;
+
+export function hardened(g, b) {
+  for (const s of g.buildings.values()) if (s.owner === b.owner && s.type === 'stabilizer' && s.done && s.state !== 'damaged' && dist(s.tile, b.tile) <= 4) return true;
+  return false;
+}

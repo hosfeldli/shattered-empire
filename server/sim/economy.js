@@ -1,6 +1,6 @@
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
-import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater } from './constants.js';
+import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, DIFFICULTY } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { allocate } from './workforce.js';
 import { labor, populationStep, crowdingPenalty, hasServices, migrationStep as migrate } from './population.js';
@@ -95,6 +95,8 @@ function farmYield(g, civ, b) {
   if (w.ash[t] > 0) y *= 0.3;
   if (civ.techs.has('agronomy')) y *= 1.25;
   if (civ.techs.has('mechanized_agriculture')) y *= 1.5;
+  if (civ.techs.has('climate_engineering')) y *= 1.2;
+  y *= 1 + 0.1 * Math.sin((g.time / 600) * Math.PI * 2);   // seasons: a gentle swing, never a disaster
   return y;
 }
 function farmPer(g, civ, b) {
@@ -104,6 +106,14 @@ function farmPer(g, civ, b) {
   return v;
 }
 export { farmYield };
+
+const SHIP_VALUE = { food: 2, materials: 1, ore: 2.5, steel: 6, fuel: 5, munitions: 5, electronics: 12 };
+function shipRank(civ, c, cd, k) {
+  const f = cd[k] + (c.stock[k] || 0);
+  if (f < 0) return 1000 + (k === 'food' ? 100 : 0);
+  if (k === 'food' && (civ.res.food || 0) < 800) return 300;              // feeding the nation comes before industry
+  return (civ.saving?.[k] && (civ.res[k] || 0) < civ.saving[k] ? 200 : 0) + ((civ.res[k] || 0) < 50 ? 50 : 0) + (SHIP_VALUE[k] || 1);
+}
 
 // Move a city's net production/consumption between its local warehouse and the national stockpile,
 // limited by freight capacity. Isolated cities keep everything (and must cover their needs) locally.
@@ -124,7 +134,10 @@ function shipGoods(civ, c, cd, delta, dt) {
   // flows: this tick's net plus any backlog waiting in the local warehouse
   let budget = c.capital || c.freight === Infinity ? Infinity : (c.freight || 0) * dt;
   let shipped = 0;
-  for (const k of GOODS) {
+  // limited freight goes first to the city's own shortfalls (food first), then to what the nation
+  // is saving for, then by value: steel and fuel before bulk timber and stone
+  const order = budget === Infinity ? GOODS : GOODS.filter((k) => k !== 'credits').sort((a, b) => shipRank(civ, c, cd, b) - shipRank(civ, c, cd, a));
+  for (const k of order) {
     if (k === 'credits') continue;
     let f = cd[k] + (st[k] || 0);
     st[k] = 0;
@@ -148,6 +161,12 @@ function shipGoods(civ, c, cd, delta, dt) {
 export function researchOpenFor(civ) {
   if (civ.researching || civ.queue?.length) return true;
   for (const [t, x] of Object.entries(TECHS)) if (!civ.techs.has(t) && x.age <= civ.age) return true;
+  return false;
+}
+
+// survey stations (seismic stations) raise extraction within 4 hexes
+export function surveyed(g, civ, tile) {
+  for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === 'seismic' && b.done && b.state !== 'damaged' && dist(b.tile, tile) <= 4) return true;
   return false;
 }
 
@@ -197,7 +216,7 @@ export function economyStep(g, dt) {
       const prio = FOCUS_BONUS[civ.focus] || {};
       const jobs = { worker: 0, merchant: 0, specialist: 0 };
       const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
-      const govMul = gov === 'federal' ? 1.1 : 1;
+      const govMul = (gov === 'federal' ? 1.1 : 1) * (civ.isAI ? DIFFICULTY[civ.difficulty]?.econ || 1 : 1);
       const foodTarget = (0.12 * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
       const sites = blds.filter((b) => !b.done && b.funded).length;
       const alloc = allocate(c, blds, {
@@ -248,6 +267,7 @@ export function economyStep(g, dt) {
           if (k === 'food') { if (P.has('rationing')) v *= 1.2; if (P.has('total_war')) v *= 0.8; }
           if (k === 'materials') { if (P.has('rationing')) v *= 0.9; if (P.has('extraction_quotas')) v *= 1.3; }
           if (b.type === 'quarry' && w.res[b.tile] === RES.STONE) v *= 1.5;
+          if ((b.type === 'mine' || b.type === 'quarry' || b.type === 'oil_well') && surveyed(g, civ, b.tile)) v *= 1.15;   // survey stations
           if ((k === 'ore' || k === 'fuel') && P.has('extraction_quotas')) v *= 1.3;
           if (k === 'credits') { if (gov === 'corporate') v *= 1.3; if (P.has('research_grants')) v *= 0.9; if (P.has('martial_law')) v *= 0.85; if (b.type === 'market' && P.has('free_markets')) v *= 1.3; }
           if (k === 'munitions') { if (P.has('total_war')) v *= 1.3; if (P.has('free_markets')) v *= 0.9; if (P.has('industrial_planning')) v *= 1.3; }
@@ -293,6 +313,7 @@ export function economyStep(g, dt) {
     if (P.has('research_grants')) research *= 1.3;
     if (gov === 'technocracy') research *= 1.2;
     if (gov === 'junta') research *= 0.85;
+    if (civ.isAI) research *= DIFFICULTY[civ.difficulty]?.research || 1;
     civ.researchRate = research;
     // storage capacity: warehouses in each city plus depots; credits are a treasury and uncapped
     let depots = 0; for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === 'depot' && b.done) depots++;

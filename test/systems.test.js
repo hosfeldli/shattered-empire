@@ -114,9 +114,8 @@ test('a city cut off from the network lives on local reserves and recovers when 
   const c2 = [...g.cities.values()].find((c) => c.tile === site);
   assert.ok(c2.isolated, 'a fresh colony starts unconnected');
   assert.ok(c2.stock.food > 0, 'colonists bring starter reserves');
-  const route = g.roads.plan(g, civ, [site, cap.tile], 1);
-  void route;
-  const r = g.command(0, { c: 'roadPlan', tiles: [site, cap.tile], type: 1, auto: true, commit: true });
+  civ.techs.add('civil_engineering');      // paved bridges, in case a major river lies between
+  const r = g.command(0, { c: 'roadPlan', tiles: [site, cap.tile], type: 2, auto: true, commit: true });
   assert.ok(!r.error, JSON.stringify(r));
   civ.res.materials = 2000;
   run(g, 900);

@@ -27,7 +27,7 @@ export class CityVisuals {
       const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, S.buildingsVersion, S.ruinsVersion].join('|');
       let rec = this.cities.get(c.id);
       if (rec && rec.key === key) continue;
-      if (!rec) { rec = { g: new PIXI.Graphics() }; v.districtLayer.addChild(rec.g); this.cities.set(c.id, rec); }
+      if (!rec) { rec = { g: new PIXI.Graphics() }; v.districtLayer.addChild(rec.g); v.mirrorOf?.(rec.g); this.cities.set(c.id, rec); }
       rec.key = key;
       this.build(rec, c, era);
     }
@@ -35,11 +35,14 @@ export class CityVisuals {
 
   build(rec, c, era) {
     const S = this.S, v = this.view, g = rec.g; g.clear();
+    const base = v.cx0 || v.cx, X = (t) => (v.near ? v.near(base[t], base[c.t]) : base[t]);
     const st = STYLE[Math.min(4, era)];
     const rad = Math.min(3, c.r || 3);
     const cand = [];
     for (let q = -rad - 1; q <= rad + 1; q++) for (let r = -rad; r <= rad; r++) {
-      const t = c.t + r * v.W + q; if (t < 0 || t >= v.N) continue;
+      const r0 = (c.t / v.W) | 0, rr2 = r0 + r; if (rr2 < 0 || rr2 >= v.H) continue;
+      let q2 = (c.t % v.W) + q; if (v.wrap) q2 = (q2 + v.W) % v.W; else if (q2 < 0 || q2 >= v.W) continue;
+      const t = rr2 * v.W + q2;
       const d = hexDist(v, c.t, t); if (d < 1 || d > rad) continue;
       const ter = S.terr[t];
       if (ter === 255 || ter <= 1 || ter >= 9 || S.owner[t] !== c.o || S.buildingTiles.has(t) || S.ruins.has(t)) continue;
@@ -53,7 +56,7 @@ export class CityVisuals {
     // streets: between developed hexes and from the town centre; they reuse real road directions where present
     for (const t of [c.t, ...hexes]) for (let d = 0; d < 3; d++) {
       const n = v.nb(t, d); if (n < 0 || !(set.has(n) || n === c.t) || !(set.has(t) || t === c.t)) continue;
-      rec.streets.push([v.cx[t], v.cy[t], v.cx[n], v.cy[n]]);
+      rec.streets.push([X(t), v.cy[t], X(n), v.cy[n]]);
     }
     for (const s of rec.streets) g.moveTo(s[0], s[1]).lineTo(s[2], s[3]);
     if (rec.streets.length) g.stroke({ width: 1.6, color: 0x5d5a52, alpha: 0.75 });
@@ -67,7 +70,7 @@ export class CityVisuals {
       const pal = st[type];
       for (let k = 0; k < dens; k++) {
         const a = h(c.id, t, k) * Math.PI * 2, rr = 2.5 + h(t, k, 7) * 6.5;
-        const x = v.cx[t] + Math.cos(a) * rr, y = v.cy[t] + Math.sin(a) * rr;
+        const x = X(t) + Math.cos(a) * rr, y = v.cy[t] + Math.sin(a) * rr;
         const w = (type === 'ind' ? 4 : 2.6) + h(t, k, 3) * 2, hh = (type === 'ind' ? 3 : 2.2) + h(t, k, 5) * 1.6;
         const ruined = h(c.id, t, k + 99) < dmg;
         const tall = st.tall * (type === 'com' ? 1.4 : 1) * (0.7 + h(t, k, 9) * 0.6);
@@ -76,7 +79,7 @@ export class CityVisuals {
         g.rect(x - w / 2, y - hh / 2, w, hh).fill({ color: pal[(k + t) % pal.length] }).stroke({ width: 0.4, color: 0x1b1b1b, alpha: 0.6 });
         rec.blocks.push({ x, y, w, h: hh, type, tall });
       }
-      if (era >= 2 && type === 'res' && h(c.id, t, 51) < 0.35) g.circle(v.cx[t] + 4, v.cy[t] + 4, 2.2).fill({ color: 0x4f7a3a, alpha: 0.9 }); // a park
+      if (era >= 2 && type === 'res' && h(c.id, t, 51) < 0.35) g.circle(X(t) + 4, v.cy[t] + 4, 2.2).fill({ color: 0x4f7a3a, alpha: 0.9 }); // a park
     }
   }
 }
@@ -84,5 +87,8 @@ export class CityVisuals {
 export function hexDist(v, a, b) {
   const cube = (i) => { const q = i % v.W, r = (i / v.W) | 0; const x = q - ((r - (r & 1)) >> 1); return [x, r, -x - r]; };
   const [ax, ay, az] = cube(a), [bx, by, bz] = cube(b);
-  return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+  const d0 = Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+  if (!v.wrap) return d0;
+  const Wd = v.W;
+  return Math.min(d0, Math.max(Math.abs(ax - bx - Wd), Math.abs(ay - by), Math.abs(az - bz + Wd)), Math.max(Math.abs(ax - bx + Wd), Math.abs(ay - by), Math.abs(az - bz - Wd)));
 }

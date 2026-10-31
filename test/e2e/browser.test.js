@@ -87,9 +87,16 @@ test('road drawing: drag a route, see the server preview, commission it', { skip
   await page.keyboard.press('r');
   assert.equal(await page.isVisible('#roadPanel'), true);
   const [x0, y0] = await tilePos(cap);
-  await page.mouse.move(x0 + 70, y0 + 10); await page.mouse.down();
-  await page.mouse.move(x0 + 110, y0 - 20, { steps: 8 }); await page.mouse.move(x0 + 150, y0 - 40, { steps: 8 }); await page.mouse.up();
-  await page.waitForFunction(() => window.__S.mode?.preview, null, { timeout: 15000 });
+  // try a few directions until the server says a route is buildable (rivers or sea may block some)
+  const dirs = [[1, -0.5], [-1, 0.4], [0.3, 1], [-0.4, -1], [1, 0.6], [-1, -0.6]];
+  for (const [dx, dy] of dirs) {
+    await page.mouse.move(x0 + dx * 40, y0 + dy * 40); await page.mouse.down();
+    await page.mouse.move(x0 + dx * 80, y0 + dy * 80, { steps: 8 }); await page.mouse.move(x0 + dx * 120, y0 + dy * 120, { steps: 8 }); await page.mouse.up();
+    await page.waitForFunction(() => window.__S.mode?.preview, null, { timeout: 15000 });
+    if (await page.evaluate(() => !!window.__S.mode.preview.buildable)) break;
+    await page.click('[data-road=clear]');
+    await page.waitForFunction(() => !window.__S.mode?.points?.length, null, { timeout: 5000 });
+  }
   const text = await page.textContent('#roadPanel');
   assert.match(text, /Length/); assert.match(text, /Cost/);
   const pts = await page.evaluate(() => window.__S.mode.points.length);
@@ -125,6 +132,42 @@ test('governor controls: autonomy level, specialisation, and the workforce tab',
   // overview: the population ledger
   await page.click('[data-ctab=overview]');
   assert.match(await page.textContent('#selection'), /civilians[\s\S]*labor[\s\S]*serving/);
+});
+
+test('multi-building selection: Alt-drag selects buildings, one order trains across all of them', { skip }, async () => {
+  const cap = await page.evaluate(() => [...window.__S.cities.values()].find((x) => x.o === window.__S.civId).t);
+  await page.evaluate((t) => { window.__S.selUnits.clear(); window.__view().centerOn(t, 1.4); }, cap);
+  await page.waitForTimeout(400);
+  const own = await page.evaluate(() => [...window.__S.buildings.values()].filter((b) => b.o === window.__S.civId && b.d).map((b) => ({ id: b.id, t: b.t, ty: b.ty })));
+  const [cx, cy] = await tilePos(cap);
+  // only buildings near the centre, so the box stays clear of the HUD panels
+  const pts = (await Promise.all(own.map((b) => tilePos(b.t)))).filter(([x, y]) => Math.abs(x - cx) < 200 && Math.abs(y - cy) < 160);
+  assert.ok(pts.length >= 2, 'at least two buildings near the capital');
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  await page.keyboard.down('Alt');
+  await page.mouse.move(Math.max(5, Math.min(...xs) - 30), Math.max(5, Math.min(...ys) - 30));
+  await page.mouse.down(); await page.mouse.move(Math.min(1400, Math.max(...xs) + 30), Math.min(880, Math.max(...ys) + 30), { steps: 6 }); await page.mouse.up();
+  await page.keyboard.up('Alt');
+  const n = await page.evaluate(() => window.__S.selBuildings.size);
+  assert.ok(n >= 2, `box selected ${n} buildings`);
+  assert.equal((await selected()).length, 0, 'Alt-drag selects buildings, not units');
+  await page.waitForFunction(() => /buildings selected/.test(document.querySelector('#selection').textContent), null, { timeout: 15000 });
+  // Shift-click adds the barracks to the selection
+  const bar = own.find((b) => b.ty === 'barracks');
+  if (bar && !(await page.evaluate((id) => window.__S.selBuildings.has(id), bar.id))) {
+    await page.evaluate((t) => window.__view().centerOn(t, 1.4), bar.t); await page.waitForTimeout(300);
+    const [bx, by] = await tilePos(bar.t);
+    await page.keyboard.down('Shift'); await page.mouse.click(bx, by); await page.keyboard.up('Shift');
+    await page.waitForFunction((id) => window.__S.selBuildings.has(id), bar.id, { timeout: 5000 });
+  }
+  // switch to "per building", then train from every capable building in the selection
+  await page.click('[data-batchmode=per]');
+  await page.waitForFunction(() => window.__S.batchMode === 'per');
+  const q0 = await page.evaluate(() => [...window.__S.buildings.values()].filter((b) => b.o === window.__S.civId).reduce((s, b) => s + (b.q?.length || 0), 0));
+  await page.click('[data-batchtrain]:not([disabled])');
+  await page.waitForFunction((q0) => [...window.__S.buildings.values()].filter((b) => b.o === window.__S.civId).reduce((s, b) => s + (b.q?.length || 0), 0) > q0, q0, { timeout: 15000 });
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { window.__S.selBuildings.clear(); window.__S.selBuilding = null; });
 });
 
 test('buildings stand in the world as drawn structures with a city banner (no emoji icons)', { skip }, async () => {
@@ -169,6 +212,33 @@ test('spectator: AI-only match without fog, follow another empire, pause, orders
   await p.keyboard.press('k');
   assert.match(await p.textContent('#mapkey'), /No workers/);
   await ctx.close();
+});
+
+test('sound: unlocked by a gesture, volume sliders persist, and fogged fighting stays silent', { skip }, async () => {
+  await page.mouse.click(720, 450);   // a gesture unlocks audio
+  await page.waitForFunction(() => window.__audio().ctx && window.__audio().ctx.state === 'running', null, { timeout: 10000 });
+  await page.click('#btnMenu');
+  await page.locator('[data-vol=effects]').fill('0.3');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('se.audio')).effects), 0.3);
+  await page.click('#btnResume');
+  const r = await page.evaluate(() => {
+    const a = window.__audio(), S = window.__S, v = window.__view();
+    // centre the camera on a hidden tile and on a visible one, and feed each a firefight
+    let hidden = -1, seen = -1;
+    for (let i = 0; i < S.vis.length && (hidden < 0 || seen < 0); i += 7) { if (!S.vis[i] && hidden < 0) hidden = i; if (S.vis[i] && seen < 0 && S.terr[i] !== 255) seen = i; }
+    v.centerOn(hidden); v.frame(0.016);
+    a.cluster.clear(); a.combat([{ k: 'fire', a: hidden, b: hidden, s: 1, t: 2, x: 3, n: 0, i: 1 }]);
+    const fogged = a.cluster.size;
+    v.centerOn(seen); v.frame(0.016);
+    a.combat([{ k: 'fire', a: seen, b: seen, s: 1, t: 2, x: 3, n: 0, i: 2 }]);
+    const visible = a.cluster.size; a.flush();
+    return { fogged, visible, voices: a.voices };
+  });
+  assert.equal(r.fogged, 0, 'nothing is heard under the fog');
+  assert.equal(r.visible, 1, 'visible fighting is heard (as one clustered volley)');
+  await page.keyboard.press('m');
+  assert.equal(await page.evaluate(() => window.__audio().settings.muted), true, 'M mutes');
+  await page.keyboard.press('m');
 });
 
 test('no uncaught page errors during the session', { skip }, () => {

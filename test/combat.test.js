@@ -142,6 +142,8 @@ test('battlefield aftermath: wrecks, craters, smoke; engineers clear them', () =
   const [t] = g.wrecks.keys();
   for (const wr of g.wrecks.get(t)) wr.burn = 0;
   const before = g.wrecks.get(t).length;
+  for (const u of [...g.units.values()]) if (u.owner === 1) g.units.delete(u.id);   // the fight is over: a work crew moves in
+  g.projectiles.clear(); g.pending.clear(); g.rebuildTileUnits();
   const [eng] = spawnGroup(g, 0, 'engineer', t, 1);
   eng.stance = 'passive';
   run(g, 12);

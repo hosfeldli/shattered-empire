@@ -3,16 +3,22 @@
 import { Net } from './net.js';
 import { View } from './view.js';
 import { Hud } from './hud.js';
+import { AudioManager } from './audio/AudioManager.js';
 
 const $ = (id) => document.getElementById(id);
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }, del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } } };
 
+// sound: created now, unlocked by the first click or key press
+let audio;
 const S = {
   ready: false, defs: null, civId: -1, civInfo: [], W: 128, H: 128, lens: 'terrain', mode: null, hover: -1, formation: 'line', lod: 'city', night: 0,
-  selUnits: new Set(), selBuilding: null, units: new Map(), paths: {}, buildings: new Map(), cities: new Map(), ruins: new Map(), traffic: [], trafficTile: new Map(),
+  selUnits: new Set(), selBuilding: null, selBuildings: new Set(), batchCount: 4, batchMode: 'total', units: new Map(), paths: {}, buildings: new Map(), cities: new Map(), ruins: new Map(), traffic: [], trafficTile: new Map(),
   cityAt: new Map(), buildingAtTile: new Map(), buildingTiles: new Set(), buildingsVersion: 0, ruinsVersion: 0, econ: null, log: [], time: 0, lightsList: [],
   civColor(id) { return (this.civInfo[id] && this.civInfo[id].color) ?? 0x888888; },
 };
+audio = new AudioManager(S);
+window.__audio = () => audio;
+
 let view = null, hud = null, net = null;
 
 // ------------------------------------------------------------------ lobby
@@ -51,8 +57,8 @@ async function ensureNet() {
   return net;
 }
 const seedVal = () => { const v = $('seed').value.trim(); return v === '' ? undefined : +v; };
-const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked });
-$('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, name: playerName(), ...worldOpts() }); });
+const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked, style: $('worldStyle').value || undefined, cataclysm: $('cataclysm').checked, cataclysmFreq: $('cataclysmFreq').value });
+$('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, difficulty: $('aiDifficulty').value, name: playerName(), ...worldOpts() }); });
 $('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
 $('btnSandbox').addEventListener('click', async () => { lobbyStatus('Preparing the combat sandbox…'); await ensureNet(); net.send({ t: 'create', mode: 'sandbox', name: playerName(), seed: seedVal() }); });
 $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, name: playerName(), ...worldOpts() }); });
@@ -77,8 +83,10 @@ function onMessage(m) {
 }
 
 async function startGame(m) {
-  const first = !S.defs || S.W !== m.defs.W;
+  const first = !S.defs || S.W !== m.defs.W || (view && view.wrap !== (m.world ? m.world.wrap !== false : false));
   S.defs = m.defs; S.civId = m.civId; S.W = m.defs.W; S.H = m.defs.H;
+  S.wrap = m.world ? m.world.wrap !== false : false; S.cataclysm = !!m.world?.cataclysm; S.worldStyle = m.world?.style || '';
+  document.querySelector('.seismo').hidden = !S.cataclysm;     // a peaceful world has nothing to measure
   S.spectator = !!m.spectator; S.sandbox = !!m.sandbox; S.obs = m.spectator ? { follow: m.civId, fog: false, speed: 1 } : null;
   document.body.classList.toggle('spectating', S.spectator);
   document.body.classList.toggle('sandbox-on', S.sandbox);
@@ -93,6 +101,7 @@ async function startGame(m) {
     if (view) { view.app.destroy(true); $('stage').innerHTML = ''; }
     view = new View(S, $('stage'));
     await view.init();
+    view.audio = audio; audio.attach(view);
     if (!hud) { hud = new Hud(S, actions); bindInput(); }
   }
   view.centerOn(m.start, S.spectator ? 0.7 : 1.15);
@@ -147,7 +156,7 @@ function applySnapshot(m) {
   }
   for (const id of S.units.keys()) if (!seen.has(id)) { S.units.delete(id); S.selUnits.delete(id); }
   S.paths = m.paths || {};
-  if (m.ev) view.combat.ingest(m.ev, m.tick);
+  if (m.ev) { view.combat.ingest(m.ev, m.tick); if (!S.spectator || !S.obs || S.obs.speed !== 0) audio.combat(m.ev); }
   if (m.econ) applyEcon(m);
 }
 
@@ -188,7 +197,7 @@ function onNote(m) {
   if (geo.includes(m.kind)) hud.quake(m.kind);
   if (m.tile >= 0 && !m.quiet) view.ping(m.tile, m.radius || 2, m.kind === 'warning' ? 0xf0b54a : geo.includes(m.kind) ? 0xff7a5c : m.level === 'critical' || m.kind === 'war' ? 0xd0533b : 0x8fd19e);
   if (m.kind === 'quake' && m.tile >= 0 && S.vis[m.tile]) view.shake = 1.2;
-  if (!m.quiet && m.level !== 'info') hud.toast(m);
+  if (!m.quiet && m.level !== 'info') { hud.toast(m); if (m.level === 'critical' || m.level === 'major') audio.ui('alert'); else if (m.kind === 'unit' || m.kind === 'build') audio.ui('done'); }
   hud.alert(m);
   if (hud.tab === 'chronicle') hud.drawer();
 }
@@ -208,7 +217,7 @@ const mineSel = () => [...S.selUnits].filter((id) => S.units.get(id)?.owner === 
 const actions = {
   async cmd(c) {
     if (S.spectator && !['follow', 'fog', 'speed'].includes(c.c)) { hud.toast({ text: 'You are spectating: orders are disabled. Pick an empire to follow in the bar below.', kind: 'error', level: 'minor' }); return { error: 'spectating' }; }
-    const r = await net.cmd(c); if (r && r.error) hud.toast({ text: r.error, kind: 'error', level: 'minor' }); return r || {};
+    const r = await net.cmd(c); if (r && r.error) { hud.toast({ text: r.error, kind: 'error', level: 'minor' }); audio.ui('error'); } else if (!['workforcePreview', 'importQuote', 'roadPreview', 'follow', 'fog', 'speed'].includes(c.c)) audio.ui(c.c === 'build' || c.c === 'batchTrain' || c.c === 'train' ? 'build' : ['move', 'attack', 'withdraw', 'army'].includes(c.c) ? 'order' : 'click'); return r || {};
   },
   // spectator controls
   follow(civ, center = true) {
@@ -259,6 +268,14 @@ const actions = {
     const r = await actions.cmd({ c: 'army', op: 'create', units: ids });
     if (!r.error) { hud.toast({ text: `Army formed with ${ids.length} units.`, kind: 'unit', level: 'minor' }); hud.tab = ''; document.querySelector('[data-tab=armies]').click(); }
   },
+  async batchTrain(unit) {
+    const ids = [...S.selBuildings].filter((id) => S.buildings.get(id)?.o === S.civId);
+    const per = S.batchMode === 'per';
+    const n = Math.max(1, Math.min(60, S.batchCount | 0)) * (per ? ids.filter((id) => S.defs.BUILDINGS[S.buildings.get(id).ty].trains?.includes(unit)).length : 1);
+    const r = await actions.cmd({ c: 'batchTrain', buildings: ids, unit, count: n, each: per ? Math.max(1, Math.min(60, S.batchCount | 0)) : 0, policy: 'partial', requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` });
+    if (r.batch) hud.toast({ text: r.batch.text, kind: r.batch.queued < r.batch.requested ? 'warning' : 'build', level: 'minor' });
+  },
+  repeat(unit) { const ids = [...S.selBuildings].filter((id) => S.buildings.get(id)?.o === S.civId); actions.cmd({ c: 'repeat', buildings: ids, unit }); hud.toast({ text: unit ? `Repeat production: ${S.defs.UNITS[unit].name} whenever a queue empties (pauses when resources or manpower run low).` : 'Repeat production off.', kind: 'build', level: 'info' }); },
   async refit(type, to) {
     const ids = mineSel().filter((id) => S.units.get(id)?.type === type);
     const r = await actions.cmd({ c: 'refit', units: ids, to });
@@ -360,7 +377,7 @@ function bindInput() {
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
   cv.addEventListener('pointerdown', (e) => {
     cv.setPointerCapture(e.pointerId);
-    if (e.button === 1 || (e.button === 0 && e.altKey)) { pan = { x: e.clientX, y: e.clientY, cx: view.cam.x, cy: view.cam.y }; return; }
+    if (e.button === 1) { pan = { x: e.clientX, y: e.clientY, cx: view.cam.x, cy: view.cam.y }; return; }   // Alt-drag now box-selects buildings
     if (e.button === 0 && S.mode?.kind === 'road') { stroke = { x: e.offsetX, y: e.offsetY, moved: false, start: S.mode.points.length }; return; }
     if (e.button === 0) drag = { x: e.offsetX, y: e.offsetY, x1: e.offsetX, y1: e.offsetY };
     if (e.button === 2) { const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY); rdrag = { x: e.offsetX, y: e.offsetY, wx, wy, tile: view.tileAt(wx, wy), moved: false }; }
@@ -401,7 +418,7 @@ function bindInput() {
     if (stroke) { const s = stroke; stroke = null; if (!s.moved && S.hover >= 0) { S.mode.points.push(S.hover); requestPreview(); hud.roadPanel(); } return; }
     if (!drag || e.button !== 0) return;
     const d = drag; drag = null; view.selG.clear();
-    if (Math.hypot(d.x1 - d.x, d.y1 - d.y) > 6 && !S.mode) return boxSelect(d, e.shiftKey);
+    if (Math.hypot(d.x1 - d.x, d.y1 - d.y) > 6 && !S.mode) return e.altKey ? boxSelectBuildings(d, e.shiftKey) : boxSelect(d, e.shiftKey);
     leftClick(e);
   });
   cv.addEventListener('wheel', (e) => {
@@ -435,6 +452,7 @@ function bindInput() {
     if (k === '=' || k === '+') view.zoomAt(1.15, view.app.screen.width / 2, view.app.screen.height / 2);
     if (k === '-') view.zoomAt(0.87, view.app.screen.width / 2, view.app.screen.height / 2);
     if (k === 'k') hud.toggleKey();
+    if (k === 'm') $('btnSound').click();
     if (k === 'l') { const order = ['terrain', 'territory', 'supply', 'stability', 'traffic']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
     if (k === 'backspace' && S.mode?.kind === 'road') actions.road('undo');
     if (k === 'enter' && S.mode?.kind === 'road') actions.road('commit');
@@ -455,7 +473,16 @@ function bindInput() {
   };
   $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const x = (ev.offsetX / 192) * view.pw, y = (ev.offsetY / 168) * view.ph; view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
   document.querySelectorAll('.lenses button').forEach((b) => b.addEventListener('click', () => setLens(b.dataset.lens)));
+  // building finder: classes first, then every building type
+  const fsel = $('findType');
+  const classes = { 'class:milprod': 'Military production', 'class:defense': 'Defenses', 'class:power': 'Power', 'class:research': 'Research', 'class:industry': 'Industry', 'class:food': 'Food', 'class:logistics': 'Logistics' };
+  fsel.innerHTML = '<option value="">Find…</option>' + Object.entries(classes).map(([k, n]) => `<option value="${k}">${n}</option>`).join('') + '<option disabled>──────────</option>' + Object.entries(S.defs.BUILDINGS).filter(([k, d]) => !d.rebelOnly && k !== 'town').map(([k, d]) => `<option value="${k}">${d.name}</option>`).join('');
+  fsel.addEventListener('change', () => { S.find = fsel.value || null; hud.minimap(view); fsel.blur(); });
   $('btnMenu').addEventListener('click', () => { $('menu').hidden = false; });
+  const syncSound = () => { for (const el of document.querySelectorAll('[data-vol]')) { const k = el.dataset.vol; if (k === 'muted') el.checked = audio.settings.muted; else el.value = audio.settings[k]; } $('btnSound').classList.toggle('off', audio.settings.muted); };
+  for (const el of document.querySelectorAll('[data-vol]')) el.addEventListener('input', () => { const k = el.dataset.vol; audio.set(k, k === 'muted' ? el.checked : el.value); syncSound(); });
+  $('btnSound').addEventListener('click', () => { audio.unlock(); audio.set('muted', !audio.settings.muted); syncSound(); });
+  syncSound();
   $('btnResume').addEventListener('click', () => { $('menu').hidden = true; });
   $('btnSurrender').addEventListener('click', () => { actions.cmd({ c: 'surrender' }); $('menu').hidden = true; });
   $('btnQuit').addEventListener('click', () => { store.del('se.session'); location.reload(); });
@@ -464,8 +491,33 @@ function bindInput() {
 function setLens(l) { S.lens = l; view.overlayAll = true; document.querySelectorAll('.lenses button').forEach((b) => b.classList.toggle('on', b.dataset.lens === l)); hud.minimap(view); }
 function drawBox(d) { const g = view.selG; g.clear(); g.rect(Math.min(d.x, d.x1), Math.min(d.y, d.y1), Math.abs(d.x1 - d.x), Math.abs(d.y1 - d.y)).fill({ color: 0xf1c75b, alpha: 0.08 }).stroke({ width: 1, color: 0xf1c75b, alpha: 0.8 }); }
 
+// Selected buildings: S.selBuildings holds them all; S.selBuilding stays the primary one so every
+// single-building panel and action keeps working.
+function setBuildings(ids, add) {
+  if (!add) S.selBuildings.clear();
+  for (const id of ids) S.selBuildings.add(id);
+  S.selBuilding = S.selBuildings.size ? [...S.selBuildings][0] : null;
+  hud.cityTab = 'overview'; hud.selHtml = ''; hud.selection(); view.syncBuildings();
+}
+function boxSelectBuildings(d, add) {
+  if (!add) S.selUnits.clear();
+  const x0 = Math.min(d.x, d.x1), x1 = Math.max(d.x, d.x1), y0 = Math.min(d.y, d.y1), y1 = Math.max(d.y, d.y1);
+  const ids = [];
+  for (const b of S.buildings.values()) { if (b.o !== S.civId) continue; const [sx, sy] = view.worldToScreen(view.cx[b.t], view.cy[b.t]); if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) ids.push(b.id); }
+  setBuildings(ids, add);
+}
+function selectBuildingType(type, onScreenOnly) {
+  const sw = view.app.screen.width, sh = view.app.screen.height, ids = [];
+  for (const b of S.buildings.values()) {
+    if (b.o !== S.civId || b.ty !== type || !b.d) continue;
+    if (onScreenOnly) { const [x, y] = view.worldToScreen(view.cx[b.t], view.cy[b.t]); if (x < 0 || y < 0 || x > sw || y > sh) continue; }
+    ids.push(b.id);
+  }
+  setBuildings(ids, false);
+}
+
 function boxSelect(d, add) {
-  if (!add) { S.selUnits.clear(); S.selBuilding = null; }
+  if (!add) { S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear(); }
   const x0 = Math.min(d.x, d.x1), x1 = Math.max(d.x, d.x1), y0 = Math.min(d.y, d.y1), y1 = Math.max(d.y, d.y1);
   for (const u of S.units.values()) {
     if (u.owner !== S.civId) continue;
@@ -513,14 +565,22 @@ async function leftClick(e) {
   const u = view.unitAtScreen(e.offsetX, e.offsetY);
   // pointerup carries no reliable click count, so double-clicks are tracked explicitly
   const now = performance.now();
-  const dbl = lastClick && now - lastClick.t < 380 && Math.hypot(e.offsetX - lastClick.x, e.offsetY - lastClick.y) < 10 && u && lastClick.type === u.type;
-  lastClick = { t: now, x: e.offsetX, y: e.offsetY, type: u ? u.type : null };
-  if (!e.shiftKey && !dbl) { S.selUnits.clear(); S.selBuilding = null; }
+  const hb = !u && tile >= 0 ? S.buildingAtTile.get(tile) : null;
+  const ckey = u ? u.type : hb ? 'b:' + hb.ty : null;
+  const dbl = lastClick && now - lastClick.t < 380 && Math.hypot(e.offsetX - lastClick.x, e.offsetY - lastClick.y) < 10 && ckey && lastClick.type === ckey;
+  lastClick = { t: now, x: e.offsetX, y: e.offsetY, type: ckey };
+  // buildings: double-click = every one of that type on screen (Ctrl/Cmd: all), Shift-click = add/remove
+  if (hb && hb.o === S.civId && !S.spectator) {
+    S.selUnits.clear();
+    if (dbl) { selectBuildingType(hb.ty, !(e.ctrlKey || e.metaKey)); lastClick = null; return; }
+    if (e.shiftKey) { if (S.selBuildings.has(hb.id)) S.selBuildings.delete(hb.id); else S.selBuildings.add(hb.id); setBuildings([], true); return; }
+  }
+  if (!e.shiftKey && !dbl) { S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear(); }
   if (!u && !e.shiftKey) { const bt = view.combat.battleAt(e.offsetX, e.offsetY); if (bt) { hud.battleId = bt.id; hud.battlePanel(); return; } }
   if (u) {
     if (dbl && u.owner === S.civId) { if (!e.shiftKey) S.selUnits.clear(); selectType(u.type, !(e.ctrlKey || e.metaKey)); lastClick = null; }
     else S.selUnits.add(u.id);
-  } else if (tile >= 0) { const b = S.buildingAtTile.get(tile); if (b) { S.selBuilding = b.id; hud.cityTab = 'overview'; } }
+  } else if (tile >= 0) { const b = S.buildingAtTile.get(tile); if (b) { S.selBuildings.clear(); S.selBuildings.add(b.id); S.selBuilding = b.id; hud.cityTab = 'overview'; } }
   hud.selHtml = ''; hud.selection();
   view.syncBuildings();
 }
@@ -541,7 +601,17 @@ let lastGroupKey = { k: null, t: 0 };
 function controlGroupKey(e) {
   const k = e.key;
   if (!/^[1-9]$/.test(k)) return false;
-  if (e.ctrlKey || e.metaKey) { groups[k] = mineSel(); hud.toast({ text: `Group ${k}: ${groups[k].length} units.`, kind: 'build', level: 'info' }); e.preventDefault(); return true; }
+  if (e.ctrlKey || e.metaKey) {
+    if (!mineSel().length && S.selBuildings.size) { groups[k] = { buildings: [...S.selBuildings] }; hud.toast({ text: `Group ${k}: ${S.selBuildings.size} buildings.`, kind: 'build', level: 'info' }); }
+    else { groups[k] = mineSel(); hud.toast({ text: `Group ${k}: ${groups[k].length} units.`, kind: 'build', level: 'info' }); }
+    e.preventDefault(); return true;
+  }
+  if (groups[k] && groups[k].buildings) {
+    const bids = groups[k].buildings.filter((id) => S.buildings.has(id)); if (!bids.length) return true;
+    S.selUnits.clear(); setBuildings(bids, e.shiftKey);
+    const now = performance.now(); if (lastGroupKey.k === k && now - lastGroupKey.t < 400) view.centerOn(S.buildings.get(bids[0]).t);
+    lastGroupKey = { k, t: now }; return true;
+  }
   const ids = (groups[k] || []).filter((id) => S.units.has(id));
   if (!ids.length) return true;
   if (!e.shiftKey) { S.selUnits.clear(); S.selBuilding = null; }
@@ -559,7 +629,9 @@ function rightClick(e) {
   if (S.mode) { if (S.mode.kind === 'road' && S.mode.points.length) { S.mode.points.pop(); requestPreview(); hud.roadPanel(); return; } return setMode(null); }
   const mine = mineSel();
   if (!mine.length) {
-    if (S.selBuilding != null) { const b = S.buildings.get(S.selBuilding); if (b && b.o === S.civId && S.defs.BUILDINGS[b.ty].trains) { actions.cmd({ c: 'rally', building: b.id, tile, army: b.rallyArmy || 0 }); b.r = tile; hud.toast({ text: 'Rally point set.', kind: 'build', level: 'info' }); } }
+    // rally point for every selected production building
+    const rb = [...S.selBuildings].map((id) => S.buildings.get(id)).filter((b) => b && b.o === S.civId && S.defs.BUILDINGS[b.ty].trains);
+    if (rb.length) { for (const b of rb) { actions.cmd({ c: 'rally', building: b.id, tile, army: b.rallyArmy || 0 }); b.r = tile; } hud.toast({ text: `Rally point set for ${rb.length} building${rb.length > 1 ? 's' : ''}.`, kind: 'build', level: 'info' }); view.ping(tile, 0.8, 0x8fe0a8); }
     return;
   }
   const rel = (o) => S.civInfo[o]?.rel?.state;

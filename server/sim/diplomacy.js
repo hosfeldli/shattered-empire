@@ -22,7 +22,7 @@ export class Diplomacy {
   }
   rel(a, b) { return this.m[a][b] || { state: 'self' }; }
 
-  checkContact(civ) {
+  checkContact(civ, seenOwners = null) {
     const g = this.g, w = g.world;
     for (const o of g.civs) {
       if (o === civ || !o.alive || o.isRebel || civ.isRebel) continue;
@@ -31,7 +31,7 @@ export class Diplomacy {
       // radio: once both empires reach Industrial Recovery they hear each other's broadcasts
       let met = civ.age >= 1 && o.age >= 1;
       if (!met) for (const u of g.units.values()) if (u.owner === o.id && civ.visible[u.tile]) { met = true; break; }
-      if (!met) for (let i = 0; i < N; i += 1) if (w.owner[i] === o.id && civ.visible[i]) { met = true; break; }
+      if (!met) { if (seenOwners) met = seenOwners.has(o.id); else for (let i = 0; i < N; i += 1) if (w.owner[i] === o.id && civ.visible[i]) { met = true; break; } }
       if (met) {
         r.state = 'peace'; r.since = g.time;
         const how = civ.age >= 1 && o.age >= 1 ? 'Radio contact established with' : 'First contact with';

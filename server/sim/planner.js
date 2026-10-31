@@ -139,7 +139,9 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
       if (d.produce && Object.keys(d.produce).every((k) => demand(g, civ, c, k) === 0)) { deferred.push(`${d.name}: storage for its output is already full`); continue; }
     }
     switch (type) {
-      case 'house': B = a.crowd > 0.85 ? 45 : a.crowd > 0.7 ? 18 : 0; if (a.laborFree < 0) B *= 0.5; why.push(`population ${Math.floor(a.pop)} of housing ${a.housing}`); break;
+      case 'house':
+        if (has('house') >= g.maxHouses(civ)) { if (a.crowd > 0.85) deferred.push(`more Housing Blocks: the ${has('house')} allowed this era are built (raise their storeys, or advance an era)`); continue; }
+        B = a.crowd > 0.85 ? 45 : a.crowd > 0.7 ? 18 : 0; if (a.laborFree < 0) B *= 0.5; why.push(`population ${Math.floor(a.pop)} of housing ${a.housing}`); break;
       case 'farm':
         if (a.idle.farm || a.idle.port) continue;                  // surplus farms already exist
         if (a.foodLow || (a.foodBal < 0 && pool('food') < 600)) { R = 45; why.push(`food balance ${a.foodBal.toFixed(1)}/s, ${Math.floor(pool('food'))} in store`); } else continue;
@@ -157,10 +159,18 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
       case 'munitions_plant': if (pool('munitions') < 120 && civ.age >= 1) R = 18; break;
       case 'electronics_plant': if (civ.saving?.electronics || pool('electronics') < 80) R = 25; break;
       case 'academy': case 'university': R = civ.researching ? 8 : 0; break;
-      case 'market': if (pool('credits') > 3000) continue; break;
+      case 'market':
+        // the world market is the way past a missing deposit: one market comes first when the nation needs imports
+        if (civ.needsMarket && !nationHas('market')) { B = 75; why.push(`buy ${civ.needsMarket} on the world market (no deposit to extract it)`); break; }
+        if (pool('credits') > 3000) continue; break;
       case 'bunker': case 'fort': if (a.enemyNear) { R = 30; why.push('enemies within reach'); } else if (!S) continue; if (has(type) >= 2 + (type === 'bunker' ? 2 : 0)) continue; B = 10; break;
       case 'depot': if (a.isolated || has('depot')) continue; B = c.capital ? 0 : 8; break;
-      case 'seismic': case 'stabilizer': if (!g.cataclysm) continue; break;
+      case 'seismic': {
+        // a survey station pays off where extraction is concentrated
+        const ex = a.blds.filter((b) => (b.type === 'mine' || b.type === 'quarry' || b.type === 'oil_well') && b.done).length;
+        if (ex < 3 && !g.cataclysm) continue; B += ex * 6; why.push(`${ex} extraction sites to survey`); break;
+      }
+      case 'stabilizer': if (!g.cataclysm && !a.enemyNear && a.damaged < 2) continue; B += 20; why.push(g.cataclysm ? 'the ground here is unstable' : 'harden infrastructure against attack'); break;
       case 'wonder': if (!civ.isAI || civ.age < 4 || g.cityOf(civ).length < 4) continue; B = 120; break;
       default: break;
     }
@@ -245,6 +255,7 @@ export function readiness(g, civ) {
     if (!blds.length) {
       const reachable = prod.find((t) => unlocked(civ, t));
       list.push(reachable ? `no ${BUILDINGS[reachable].name.toLowerCase()} yet` : `${prod.map((t) => BUILDINGS[t]?.name).filter(Boolean).join('/')} not unlocked`);
+      if (k !== 'credits' && ![...g.buildings.values()].some((b) => b.owner === civ.id && b.type === 'market')) list.push('or import it: build a market (Realm → World market)');
       if (k === 'fuel' || k === 'ore') { const rk = k === 'fuel' ? RES.OIL : RES.IRON; let dep = false; for (let t = 0; t < g.world.res.length && !dep; t++) if (g.world.owner[t] === civ.id && g.world.res[t] === rk) dep = true; if (!dep) list.push(`no ${k === 'fuel' ? 'oil' : 'ore'} deposit in your territory: expand, trade, or import`); }
     }
     const reasons = {};

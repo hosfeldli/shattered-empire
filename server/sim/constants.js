@@ -67,10 +67,11 @@ export const GOOD_NAMES = { food: 'Food', materials: 'Materials', ore: 'Ore', st
 
 export const AGES = [
   { id: 0, name: 'Reclamation' },
-  { id: 1, name: 'Industrial Recovery', techsNeeded: 5, cost: { food: 500, materials: 500, credits: 300 }, time: 40 },
-  { id: 2, name: 'Mechanization', techsNeeded: 5, cost: { steel: 350, fuel: 150, credits: 800 }, time: 50 },
-  { id: 3, name: 'Networked Warfare', techsNeeded: 5, cost: { steel: 700, fuel: 500, credits: 1500, munitions: 200 }, time: 60 },
-  { id: 4, name: 'Advanced Systems', techsNeeded: 5, cost: { steel: 1000, electronics: 400, credits: 2500 }, time: 70 },
+  // paced for: industrial ~10-15 min, mechanised ~18-25, networked ~30-45, advanced ~45-60
+  { id: 1, name: 'Industrial Recovery', techsNeeded: 6, cost: { food: 700, materials: 700, credits: 400 }, time: 60 },
+  { id: 2, name: 'Mechanization', techsNeeded: 5, cost: { steel: 350, fuel: 150, credits: 800 }, time: 60 },
+  { id: 3, name: 'Networked Warfare', techsNeeded: 6, cost: { steel: 1100, fuel: 700, credits: 2500, munitions: 300 }, time: 90 },
+  { id: 4, name: 'Advanced Systems', techsNeeded: 6, cost: { steel: 1600, electronics: 600, credits: 4000 }, time: 120 },
 ];
 
 // ---- Technology graph (req = prerequisites) --------------------------------
@@ -93,7 +94,7 @@ export const TECHS = {
   logistics: { name: 'Logistics', age: 1, cost: 320, req: ['motorization'], desc: 'Supply depots; +2 supply range.' },
   field_artillery: { name: 'Field Artillery', age: 1, cost: 340, req: ['munitions_industry'], desc: 'Field guns.' },
   civil_engineering: { name: 'Civil Engineering', age: 1, cost: 320, req: ['electrification'], desc: 'Paved roads, heavy bridges, fortresses, blasting peaks.' },
-  seismology: { name: 'Seismology', age: 1, cost: 300, req: ['surveying'], desc: 'Seismic stations; early warning of quakes & eruptions.' },
+  seismology: { name: 'Seismology', age: 1, cost: 300, req: ['surveying'], desc: 'Survey stations: +15% output for mines, quarries and oil wells within 4 hexes, and research. In Cataclysm mode they also warn of quakes and eruptions.' },
   higher_education: { name: 'Higher Education', age: 1, cost: 300, req: ['schooling'], desc: 'Universities; Technocracy.' },
   // Mechanization
   mechanization: { name: 'Mechanization', age: 2, cost: 700, req: ['motorization'], desc: 'Heavy assembly: tanks, mechanized infantry.' },
@@ -101,7 +102,7 @@ export const TECHS = {
   highways: { name: 'Highways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Highways: fastest road movement and supply.' },
   railways: { name: 'Railways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Railways for bulk supply and transport.' },
   mechanized_agriculture: { name: 'Mechanized Agriculture', age: 2, cost: 650, req: ['agronomy'], desc: '+50% farm output, +housing.' },
-  geoengineering: { name: 'Geoengineering', age: 2, cost: 700, req: ['seismology'], desc: 'Stabilizers; Conservation policy; terrain events do half damage.' },
+  geoengineering: { name: 'Geoengineering', age: 2, cost: 700, req: ['seismology'], desc: 'Infrastructure hardening: buildings within 4 hexes of a stabilizer take 40% less damage and repair twice as fast; Conservation policy. In Cataclysm mode terrain events do half damage.' },
   self_propelled_guns: { name: 'Self-Propelled Guns', age: 2, cost: 700, req: ['field_artillery'], desc: 'Self-propelled artillery.' },
   corporate_charter: { name: 'Corporate Charter', age: 2, cost: 650, req: ['trade_networks'], desc: 'Corporate State government.' },
   // Networked Warfare
@@ -118,7 +119,7 @@ export const TECHS = {
   fusion_power: { name: 'Fusion Power', age: 4, cost: 2100, req: ['electrification', 'computing'], desc: 'Fusion plants: abundant power without fuel.' },
   strike_swarms: { name: 'Strike Swarms', age: 4, cost: 2100, req: ['drones', 'robotics'], desc: 'Strike drone swarms.' },
   exo_armor: { name: 'Exo Armor', age: 4, cost: 2000, req: ['robotics'], desc: 'Exo-armored infantry.' },
-  climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['geoengineering'], desc: 'Droughts and quakes in your territory are suppressed.' },
+  climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['geoengineering'], desc: 'Engineered climate: +20% farm yields in your territory; in Cataclysm mode droughts and quakes there are suppressed.' },
   continental_arcology: { name: 'Continental Arcology', age: 4, cost: 2400, req: ['fusion_power'], desc: 'The Arcology wonder (victory project).' },
 };
 
@@ -249,6 +250,15 @@ export const IMPORT_PER_MARKET = 60;     // units per minute each operational ma
 
 // Refit paths: surviving units (and their veterancy) are re-equipped instead of replaced.
 // conv: a conversion between movement classes, priced closer to a new unit.
+// AI difficulty: how efficiently AI empires run their economy, how large an army they keep,
+// and (in missions.js) how quickly their generals react. Never applied to human players.
+export const DIFFICULTY = {
+  easy: { name: 'Relaxed', econ: 0.85, army: 0.7, research: 0.85 },
+  normal: { name: 'Standard', econ: 1, army: 1, research: 1 },
+  hard: { name: 'Hard', econ: 1.12, army: 1.25, research: 1.1 },
+  brutal: { name: 'Brutal', econ: 1.25, army: 1.5, research: 1.2 },
+};
+
 export const REFIT = {
   militia: [{ to: 'rifle_squad' }],
   rifle_squad: [{ to: 'mech_infantry' }, { to: 'special_forces' }],

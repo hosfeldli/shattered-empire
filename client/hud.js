@@ -1,6 +1,7 @@
 // DOM HUD: resources & alerts, seismograph, selection & city management (incl. governors),
 // build bar, road planner, and the drawer (tech graph, realm, empire overview, armies,
 // diplomacy, chronicle + command history). The HUD only ever sends intents to the server.
+import { findMatch } from './view.js';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 export const fmt = (n) => (Math.abs(n) >= 10000 ? (n / 1000).toFixed(0) + 'k' : Math.abs(n) >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.floor(n).toString());
@@ -192,10 +193,16 @@ export class Hud {
     }
     c.putImageData(img, 0, 0);
     for (const u of S.units.values()) { c.fillStyle = cssColor(S.civColor(u.owner)); const q = u.tile % W, r = (u.tile / W) | 0; c.fillRect((q + 0.5 * (r & 1)) * sx - 1, r * sy - 1, 2.5, 2.5); }
+    if (S.find) for (const b of S.buildings.values()) if (b.o === S.civId && findMatch(S, b.ty, S.find)) { const q = b.t % W, r = (b.t / W) | 0; c.fillStyle = '#f1c75b'; c.strokeStyle = '#0b1518'; c.beginPath(); c.arc((q + 0.5 * (r & 1)) * sx, r * sy, 3.2, 0, 7); c.fill(); c.stroke(); }
     for (const city of S.cities.values()) { c.fillStyle = cssColor(S.civColor(city.o)); c.strokeStyle = '#f3eedf'; const q = city.t % W, r = (city.t / W) | 0; c.fillRect((q + 0.5 * (r & 1)) * sx - 3, r * sy - 3, 6, 6); c.strokeRect((q + 0.5 * (r & 1)) * sx - 3, r * sy - 3, 6, 6); }
     const v = view; const [x0, y0] = v.screenToWorld(0, 0); const [x1, y1] = v.screenToWorld(v.app.screen.width, v.app.screen.height);
     const kx = MW / v.pw, ky = MH / v.ph;
-    c.strokeStyle = '#f1c75b'; c.lineWidth = 1; c.strokeRect(x0 * kx, y0 * ky, (x1 - x0) * kx, (y1 - y0) * ky);
+    c.strokeStyle = '#f1c75b'; c.lineWidth = 1;
+    if (v.wrap) {
+      // the viewport wraps around the cylinder: draw it on both sides of the seam
+      const P = v.P * kx, ax = (((x0 * kx) % P) + P) % P, w2 = (x1 - x0) * kx;
+      c.strokeRect(ax, y0 * ky, w2, (y1 - y0) * ky); if (ax + w2 > MW) c.strokeRect(ax - P, y0 * ky, w2, (y1 - y0) * ky);
+    } else c.strokeRect(x0 * kx, y0 * ky, (x1 - x0) * kx, (y1 - y0) * ky);
   }
 
   // ------------------------------------------------------------ build bar
@@ -259,6 +266,8 @@ export class Hud {
   selection() {
     const S = this.S, el = $('selection'), D = S.defs;
     let html = '';
+    // keep the multi-selection consistent with code that sets a single building
+    if (S.selBuildings) { if (S.selBuilding == null || !S.buildings.has(S.selBuilding)) S.selBuildings.clear(); else if (!S.selBuildings.has(S.selBuilding)) { S.selBuildings.clear(); S.selBuildings.add(S.selBuilding); } for (const id of [...S.selBuildings]) if (!S.buildings.has(id)) S.selBuildings.delete(id); }
     const units = [...S.selUnits].map((id) => S.units.get(id)).filter(Boolean);
     if (units.length) {
       const own = units[0].owner === S.civId || S.spectator;   // spectators inspect everything
@@ -309,6 +318,8 @@ export class Hud {
         html += `</div>`;
         if (units.some((u) => D.UNITS[u.type].engineer)) html += `<p class="muted">Idle engineers repair roads and buildings, fight fires and clear rubble next to them, and speed up nearby construction.</p>`;
       }
+    } else if (S.selBuildings && S.selBuildings.size > 1) {
+      html += this.multiBuildingPanel([...S.selBuildings].map((id) => S.buildings.get(id)).filter(Boolean));
     } else if (S.selBuilding != null && S.buildings.has(S.selBuilding)) {
       const b = S.buildings.get(S.selBuilding), d = D.BUILDINGS[b.ty];
       const own = b.o === S.civId || S.spectator;
@@ -334,6 +345,30 @@ export class Hud {
         : `<p class="muted">Select units with a click or drag; double-click selects a type. Right-click to move or attack. Pick a building below to place it.</p>`;
     }
     if (html !== this.selHtml) { this.selHtml = html; patchHtml(el, html); }
+  }
+
+  // Several buildings selected: one production interface for all of them.
+  multiBuildingPanel(blds) {
+    const S = this.S, D = S.defs, e = S.econ;
+    const byType = {}; for (const b of blds) byType[b.ty] = (byType[b.ty] || 0) + 1;
+    let html = `<h3>${blds.length} buildings selected</h3><div class="sub">${Object.entries(byType).map(([t, n]) => `${n} ${esc(D.BUILDINGS[t].name)}`).join(', ')}</div>`;
+    const queued = blds.reduce((s2, b) => s2 + (b.q?.length || 0), 0), longest = Math.max(0, ...blds.map((b) => (b.q || []).reduce((s2, q) => s2 + q[1], 0)));
+    html += `<div class="muted">${queued} in training${queued ? ` · last finishes in about ${longest}s` : ''}. Right-click the map to set one rally point for all of them.</div>`;
+    const units = new Map();
+    for (const b of blds) if (b.d && b.o === S.civId) for (const u of D.BUILDINGS[b.ty].trains || []) if (D.UNITS[u].age <= (e?.age || 0)) units.set(u, (units.get(u) || 0) + 1);
+    if (!units.size || S.spectator) return html;
+    const per = S.batchMode === 'per', n = S.batchCount;
+    html += `<div class="actions batchctl"><span>Train</span><input type="number" min="1" max="60" value="${n}" data-batch="count" aria-label="How many">
+      <div class="seg"><button class="${per ? '' : 'on'}" data-batchmode="total" title="${n} units in total, spread over the buildings">in total</button><button class="${per ? 'on' : ''}" data-batchmode="per" title="${n} units from each building">per building</button></div></div>`;
+    const cost = (c, k) => Object.entries(c).map(([g, v]) => `${v * k} ${(D.GOOD_NAMES[g] || g).toLowerCase()}`).join(', ');
+    html += `<div class="actions">` + [...units].map(([u, nb]) => {
+      const ud = D.UNITS[u]; const locked = ud.tech && !e.techs.includes(ud.tech);
+      const total = per ? n * nb : n;
+      return `<button class="btn trainbtn" data-batchtrain="${u}" ${locked ? 'disabled' : ''} title="${esc(ud.name)} ×${total}: ${esc(cost(ud.cost, total))}${ud.pop ? `, ${ud.pop * total} manpower` : ''}; spread over ${nb} building${nb > 1 ? 's' : ''} to finish soonest"><span>${esc(ud.name)} ×${total}</span><small>${locked ? 'needs ' + esc(D.TECHS[ud.tech].name) : `${nb} building${nb > 1 ? 's' : ''}`}</small></button>`;
+    }).join('') + `</div>`;
+    const rep = blds.find((b) => b.rp)?.rp;
+    html += `<div class="actions"><label class="field inline"><span>Repeat production</span><select data-batch="repeat"><option value="">Off</option>${[...units.keys()].map((u) => `<option value="${u}" ${rep === u ? 'selected' : ''}>${esc(D.UNITS[u].name)}</option>`).join('')}</select></label></div>`;
+    return html;
   }
 
   // Refit options for the selected units: one button per available upgrade path.
@@ -467,7 +502,9 @@ export class Hud {
   }
 
   onSelClick(e) {
-    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ],[data-refit],[data-wf],[data-prop],[data-qcancel],[data-upgrade],[data-import],[data-govlevel]'); if (!t) return;
+    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ],[data-refit],[data-wf],[data-prop],[data-qcancel],[data-upgrade],[data-import],[data-govlevel],[data-batchtrain],[data-batchmode]'); if (!t) return;
+    if (t.dataset.batchtrain) return this.A.batchTrain(t.dataset.batchtrain);
+    if (t.dataset.batchmode) { this.S.batchMode = t.dataset.batchmode; this.selHtml = ''; return this.selection(); }
     if (t.dataset.refit) return this.A.refit(t.dataset.refit, t.dataset.to);
     if (t.dataset.wf === 'toggle') { this.wfOpen = this.wfOpen === t.dataset.cat ? null : t.dataset.cat; this.selHtml = ''; return this.selection(); }
     if (t.dataset.wf === 'cancelPreview') { this.wfPreview = null; this.selHtml = ''; return this.selection(); }
@@ -493,6 +530,8 @@ export class Hud {
     else if (t.dataset.gov === 'enabled') this.A.governor({ enabled: t.checked });
     else if (t.dataset.gov === 'spec') this.A.governor({ spec: t.value });
     else if (t.dataset.gov === 'goal') this.A.governor({ goal: t.value });
+    else if (t.dataset.batch === 'count') { this.S.batchCount = Math.max(1, Math.min(60, +t.value || 1)); this.selHtml = ''; this.selection(); }
+    else if (t.dataset.batch === 'repeat') this.A.repeat(t.value || null);
     else if (t.dataset.gov === 'budget') this.A.governor({ budget: +t.value / 100 });
     else if (t.dataset.gov === 'emergency') this.A.governor({ emergency: t.checked });
     else if (t.dataset.wfprio) this.A.workforce({ wf: 'prio', cat: t.dataset.wfprio, level: t.value });
@@ -732,7 +771,9 @@ export class Hud {
 function hexDist(S, a, b) {
   const cube = (i) => { const q = i % S.W, r = (i / S.W) | 0; const x = q - ((r - (r & 1)) >> 1); return [x, r, -x - r]; };
   const [ax, ay, az] = cube(a), [bx, by, bz] = cube(b);
-  return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+  const d0 = Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
+  if (!S.wrap) return d0;
+  return Math.min(d0, Math.max(Math.abs(ax - bx - S.W), Math.abs(ay - by), Math.abs(az - bz + S.W)), Math.max(Math.abs(ax - bx + S.W), Math.abs(ay - by), Math.abs(az - bz - S.W)));
 }
 function mix(a, b, t) { const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255, br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255; return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t); }
 

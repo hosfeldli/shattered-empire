@@ -11,6 +11,14 @@ const MAX_CIVS = 12;
 const IDLE_MS = 10 * 60 * 1000;
 const SIZES = { small: 128, medium: 192, large: 256 };
 const autoSize = (n) => (n <= 4 ? 128 : n <= 8 ? 192 : 256);
+// Admission control (inside this process: no change to how many instances run). A new match is
+// refused, with a clear message, when the running matches already use most of the CPU time the
+// tick loops have, or when free memory would not hold another worker of that map size.
+const ADMIT_CPU = +(process.env.ADMIT_CPU_SHARE || 0.85);
+const WORKER_MB = { 128: 140, 192: 260, 256: 420 };
+
+// the three systems with the highest p95 in a match (for /api/health and the logs)
+const slowest = (sys = {}) => Object.entries(sys).filter(([k]) => k !== 'tick').sort((a, b) => b[1].p95 - a[1].p95).slice(0, 3).map(([k, v]) => ({ system: k, p50: v.p50, p95: v.p95, p99: v.p99 }));
 
 export class MatchManager {
   constructor(log = console, store = null) {
@@ -31,6 +39,8 @@ export class MatchManager {
 
   create(opts) {
     if (this.matches.size >= MAX_MATCHES) throw new Error('Server is full, try again shortly');
+    const why = this.admit(SIZES[opts.mapSize] || 192);
+    if (why) throw new Error(why);
     const id = crypto.randomBytes(3).toString('hex');
     const pvp = opts.mode === 'pvp';
     const observe = opts.mode === 'observe';   // AI-only match watched by spectators (no fog, speed control)
@@ -40,10 +50,12 @@ export class MatchManager {
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
     for (let i = 0; i < humans; i++) slots.push({ human: true, name: i === 0 ? String(opts.name || 'Player').slice(0, 24) : 'Open seat', token: null, ws: null });
-    for (let i = 0; i < ais; i++) slots.push({ human: false, name: 'AI', personality: opts.aiPersonality && opts.aiPersonality !== 'random' ? opts.aiPersonality : personalities[(i + ((Math.random() * 3) | 0)) % 3] });
+    for (let i = 0; i < ais; i++) slots.push({ human: false, name: 'AI', personality: opts.aiPersonality && opts.aiPersonality !== 'random' ? opts.aiPersonality : personalities[(i + ((Math.random() * 3) | 0)) % 3], difficulty: ['easy', 'normal', 'hard', 'brutal'].includes(opts.difficulty) ? opts.difficulty : 'normal' });
     const mapSize = SIZES[opts.mapSize] || autoSize(slots.length);
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
-      seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize: sandbox ? 128 : mapSize, rebels: sandbox ? false : opts.rebels !== false, worker: null, stats: null };
+      seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize: sandbox ? 128 : mapSize, rebels: sandbox ? false : opts.rebels !== false, worker: null, stats: null,
+      wrap: true, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : null,
+      cataclysm: opts.cataclysm && !sandbox ? { on: true, freq: { rare: 0.5, normal: 1, frequent: 2 }[opts.cataclysmFreq] || 1, sev: 1 } : null };
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
@@ -65,7 +77,7 @@ export class MatchManager {
     return slot;
   }
 
-  meta(m) { return { id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
+  meta(m) { return { id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style, cataclysm: m.cataclysm, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
@@ -73,8 +85,8 @@ export class MatchManager {
     m.slots.forEach((s, i) => { s.civId = i; });
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
-      workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', sandbox: m.mode === 'sandbox',
-        slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality })) },
+      workerData: { id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, cataclysm: m.cataclysm, sandbox: m.mode === 'sandbox',
+        slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
     m.worker = worker; m.ready = false; m.pending = [];
@@ -130,7 +142,7 @@ export class MatchManager {
           else { const s = m.slots[civId]; if (s && s.ws && s.ws.readyState === 1) s.ws.send(str); }
         }
         break;
-      case 'stats': m.stats = msg; if (msg.avg > 50) this.log.warn?.(`match ${m.id} avg tick ${msg.avg}ms (max ${msg.max}ms)`); break;
+      case 'stats': m.stats = msg; if (msg.avg > 50) this.log.warn?.(`match ${m.id} avg tick ${msg.avg}ms (max ${msg.max}ms); slowest: ${slowest(msg.systems).map((x) => `${x.system} p95 ${x.p95}ms`).join(', ')}`); break;
       case 'autosave': this.persist(m, msg.buf); break;
       case 'saved': this.persist(m, msg.buf).then(() => { const r = m.saveWaiters?.shift(); if (r) r(); }); break;
       case 'over': m.status = 'over'; m.overAt = Date.now(); this.persist(m, msg.buf); setTimeout(() => this.stopWorker(m), 5000); break;
@@ -257,7 +269,7 @@ export class MatchManager {
         const buf = await this.store.load(id);
         const { meta, game } = JSON.parse(zlib.gunzipSync(buf).toString());
         if (game.over) continue;
-        const m = { ...meta, status: 'parked', lastActive: Date.now(), worker: null, stats: null, lastSnapshot: buf, slots: meta.slots.map((s) => ({ ...s, ws: null })), watchers: (meta.watchers || []).map((w) => ({ ...w, ws: null, spectator: true })) };
+        const m = { ...meta, wrap: meta.wrap === true, status: 'parked', lastActive: Date.now(), worker: null, stats: null, lastSnapshot: buf, slots: meta.slots.map((s) => ({ ...s, ws: null })), watchers: (meta.watchers || []).map((w) => ({ ...w, ws: null, spectator: true })) };
         this.matches.set(id, m); n++;
       } catch (e) { this.log.warn?.(`could not restore ${id}: ${e.message}`); }
     }
@@ -268,11 +280,28 @@ export class MatchManager {
   // parked matches wake up when a player comes back
   wake(m) { if (m.status === 'parked' && m.lastSnapshot) this.start(m, this.gameBuf(m.lastSnapshot)); }
 
+  // load = sum over running matches of (average tick time / tick interval), in CPU cores
+  load() {
+    let cores = 0, heap = 0;
+    for (const m of this.matches.values()) if (m.status === 'running' && m.stats) { cores += (m.stats.avg || 0) / 100; heap += m.stats.heapMb || 0; }
+    return { cores: +cores.toFixed(2), capacity: os.cpus().length, heapMb: heap, freeMb: Math.round(os.freemem() / 1048576) };
+  }
+  admit(mapSize) {
+    if (process.env.ADMIT_OFF === '1') return null;
+    const l = this.load();
+    if (l.cores > l.capacity * ADMIT_CPU) return 'The server is busy running other matches; try again in a minute.';
+    if (l.freeMb < (WORKER_MB[mapSize] || 260) * 1.2) return 'The server is short of memory for another match right now; try a smaller map or try again shortly.';
+    return null;
+  }
+
+  // per-match, per-system tick timings (p50 / p95 / p99 / max, budget overruns, deferrals)
+  metrics() { return { load: this.load(), matches: [...this.matches.values()].filter((m) => m.stats).map((m) => ({ id: m.id, status: m.status, avg: m.stats.avg, max: m.stats.max, units: m.stats.units, heapMb: m.stats.heapMb, systems: m.stats.systems || {} })) }; }
+
   stats() {
     const ms = [...this.matches.values()];
     return { matches: ms.length, running: ms.filter((m) => m.status === 'running').length, parked: ms.filter((m) => m.status === 'parked').length,
       players: ms.reduce((s, m) => s + m.slots.filter((x) => x.ws).length, 0), spectators: ms.reduce((s, m) => s + (m.watchers || []).filter((x) => x.ws).length, 0), maxMatches: MAX_MATCHES, cpus: os.cpus().length,
-      ticks: ms.filter((m) => m.stats).map((m) => ({ id: m.id, avg: m.stats.avg, max: m.stats.max, units: m.stats.units })), store: this.store?.kind || 'none',
+      ticks: ms.filter((m) => m.stats).map((m) => ({ id: m.id, avg: m.stats.avg, max: m.stats.max, units: m.stats.units, heapMb: m.stats.heapMb, slowest: slowest(m.stats.systems) })), store: this.store?.kind || 'none', load: this.load(),
       memMB: Math.round(process.memoryUsage().rss / 1e6) };
   }
 

@@ -27,6 +27,8 @@
             <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="11">11</option></select></label>
           <label class="field inline"><span>Rival temperament</span>
             <select id="aiPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
+          <label class="field inline"><span>Rival difficulty</span>
+            <select id="aiDifficulty"><option value="easy">Relaxed</option><option value="normal" selected>Standard</option><option value="hard">Hard</option><option value="brutal">Brutal</option></select></label>
           <button id="btnPlayAI" class="btn primary">Found your empire</button>
         </fieldset>
         <fieldset class="plate">
@@ -49,7 +51,10 @@
       </div>
       <details class="advanced"><summary>World options</summary>
         <label class="field inline"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
+        <label class="field inline"><span>World</span><select id="worldStyle"><option value="">Any</option><option value="continents">Continents</option><option value="pangaea">Pangaea</option><option value="archipelago">Archipelago</option><option value="inlandSea">Inland sea</option></select></label>
         <label class="field inline"><span>Rebel Free Companies</span><input id="rebels" type="checkbox" checked></label>
+        <label class="field inline" title="Earthquakes, eruptions, droughts, wandering rivers and rising mountains. Off by default: the world evolves peacefully."><span>Cataclysm mode</span><input id="cataclysm" type="checkbox"></label>
+        <label class="field inline"><span>Cataclysm frequency</span><select id="cataclysmFreq"><option value="rare">Rare</option><option value="normal" selected>Normal</option><option value="frequent">Frequent</option></select></label>
         <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
         <button id="btnSandbox" class="btn ghost small" type="button" title="A small map with one passive opponent: stage battles and test units and weapons">Open the combat sandbox</button>
       </details>
@@ -83,6 +88,7 @@
       <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
       <button id="alertsBtn" class="alerts-btn" aria-label="Alerts"><span class="dot critical" id="alC">0</span><span class="dot major" id="alM">0</span></button>
       <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
+      <button id="btnSound" class="btn icon" aria-label="Sound on or off" title="Sound (M to mute; volumes in the menu)">&#9835;</button>
       <button id="btnKey" class="btn icon" aria-label="Map key" title="Map key: what the symbols in the world mean (K)">?</button>
       <button id="btnMenu" class="btn icon" aria-label="Menu">&#9776;</button>
     </header>
@@ -107,6 +113,7 @@
       <canvas id="minimap" width="192" height="168"></canvas>
       <div class="lenses" role="group" aria-label="Map lens">
         <button data-lens="terrain" class="on">Terrain</button><button data-lens="territory">Borders</button><button data-lens="supply">Supply</button><button data-lens="stability">Stability</button><button data-lens="traffic">Traffic</button>
+        <select id="findType" class="findsel" title="Find buildings: highlight every building of a type or class (on the map and minimap)"><option value="">Find…</option></select>
       </div>
     </div>
     <aside id="mapkey" class="plate" hidden aria-label="Map key"></aside>
@@ -117,8 +124,17 @@
     <div id="menu" class="modal" hidden>
       <div class="plate">
         <h2>Paused view</h2>
-        <p class="muted">The world keeps moving. Shortcuts: right-click move, right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to set a battle line and its facing, Shift+right-click queue a waypoint, Alt+right-click attack-move, A attack-move, S stop, H hold, X withdraw, F cycle formation (found a city with colonists), F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <p class="muted">The world keeps moving. Shortcuts: right-click move, right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to set a battle line and its facing, Shift+right-click queue a waypoint, Alt+right-click attack-move, A attack-move, S stop, H hold, X withdraw, F cycle formation (found a city with colonists), F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
         <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
+        <div class="sound-settings" id="soundSettings">
+          <h4>Sound</h4>
+          <label class="field inline"><span>Master</span><input type="range" min="0" max="1" step="0.05" data-vol="master"></label>
+          <label class="field inline"><span>Battle &amp; world effects</span><input type="range" min="0" max="1" step="0.05" data-vol="effects"></label>
+          <label class="field inline"><span>Ambience</span><input type="range" min="0" max="1" step="0.05" data-vol="ambience"></label>
+          <label class="field inline"><span>Interface</span><input type="range" min="0" max="1" step="0.05" data-vol="ui"></label>
+          <label class="field inline check"><input type="checkbox" data-vol="muted"><span>Mute everything (M)</span></label>
+          <p class="muted small">You only hear what you can see: fighting under the fog stays silent.</p>
+        </div>
         <button id="btnResume" class="btn primary">Back to the map</button>
         <button id="btnSurrender" class="btn danger">Surrender</button>
         <button id="btnQuit" class="btn ghost">Leave match</button>

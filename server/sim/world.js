@@ -1,13 +1,23 @@
 // Continental world: generation, terrain classification and hydrology.
 import { W, H, N, T, RES, TERRAIN, isWater } from './constants.js';
-import { NB, idx, qOf, rOf, dist, disk } from './hex.js';
+import { NB, idx, qOf, rOf, dist, disk, WRAP, dqWrap } from './hex.js';
 import { mulberry32, fbm, hash2 } from './rng.js';
 
 export const RIVER_FLOW = 42;
+export const WORLD_STYLES = { continents: { plates: 11, land: 0.42, cont: 0.45 }, pangaea: { plates: 8, land: 0.55, cont: 0.7 }, archipelago: { plates: 18, land: 0.34, cont: 0.4 }, inlandSea: { plates: 10, land: 0.56, cont: 0.75 } };
+
+// Noise that tiles horizontally: two copies one world-width apart, cross-faded, so the seam
+// between the last and first column is invisible (and so are rivers and coasts that cross it).
+export function pfbm(q, r, scale, seed, octaves = 5) {
+  if (!WRAP) return fbm(q / scale, r / scale, seed, octaves);
+  const t = (((q % W) + W) % W) / W;
+  return fbm(q / scale, r / scale, seed, octaves) * (1 - t) + fbm((q - W) / scale, r / scale, seed, octaves) * t;
+}
 
 export class World {
-  constructor(seed) {
+  constructor(seed, opts = {}) {
     this.seed = seed;
+    this.opts = opts;
     this.rng = mulberry32(seed);
     this.elev = new Float32Array(N);      // < 0 is sea
     this.stab = new Float32Array(N);      // structural stability 0..1
@@ -41,19 +51,27 @@ export class World {
   generate(nCivs) {
     const rng = this.rng, seed = this.seed;
     // --- Tectonic plates (warped Voronoi)
-    const P = 11;
+    const styleKeys = Object.keys(WORLD_STYLES);
+    this.style = WORLD_STYLES[this.opts.style] ? this.opts.style : styleKeys[Math.floor(rng() * styleKeys.length)];
+    const ST = WORLD_STYLES[this.style];
+    const P = ST.plates;
     const plates = [];
     for (let p = 0; p < P; p++) {
-      const q = rng.range(6, W - 6), r = rng.range(6, H - 6);
-      const dc = Math.hypot((q - W / 2) / W, (r - H / 2) / H);
-      plates.push({ q, r, cont: dc < 0.33 ? rng() < 0.85 : rng() < 0.25, vx: rng.range(-1, 1), vy: rng.range(-1, 1) });
+      const q = WRAP ? rng.range(0, W) : rng.range(6, W - 6), r = rng.range(6, H - 6);
+      const lat = Math.abs(r / H - 0.5) * 2;
+      let cont = rng() < ST.cont * (1.15 - lat * 0.5);
+      if (!WRAP) { const dc = Math.hypot((q - W / 2) / W, (r - H / 2) / H); cont = dc < 0.33 ? rng() < 0.85 : rng() < 0.25; }
+      plates.push({ q, r, cont, vx: rng.range(-1, 1), vy: rng.range(-1, 1) });
     }
+    // an inland sea: the plate nearest the middle of the land is drowned
+    if (this.style === 'inlandSea') { const mid = plates.reduce((b, p) => (Math.abs(p.r - H / 2) < Math.abs(b.r - H / 2) ? p : b), plates[0]); mid.cont = false; mid.sea = true; }
+    if (!plates.some((p) => p.cont)) plates[0].cont = true;
     this.plates = plates;
     for (let i = 0; i < N; i++) {
-      const q = qOf(i) + (fbm(qOf(i) / 22, rOf(i) / 22, seed + 7) - 0.5) * 26;
-      const r = rOf(i) + (fbm(qOf(i) / 22, rOf(i) / 22, seed + 11) - 0.5) * 26;
+      const q = qOf(i) + (pfbm(qOf(i), rOf(i), 22, seed + 7) - 0.5) * 26;
+      const r = rOf(i) + (pfbm(qOf(i), rOf(i), 22, seed + 11) - 0.5) * 26;
       let best = 0, bd = Infinity;
-      for (let p = 0; p < P; p++) { const d = (q - plates[p].q) ** 2 + (r - plates[p].r) ** 2; if (d < bd) { bd = d; best = p; } }
+      for (let p = 0; p < P; p++) { const dq = WRAP ? dqWrap(plates[p].q, q) : q - plates[p].q; const d = dq ** 2 + (r - plates[p].r) ** 2; if (d < bd) { bd = d; best = p; } }
       this.plate[i] = best;
     }
     // --- Boundary interaction strength (convergent > 0, divergent < 0)
@@ -65,7 +83,7 @@ export class World {
         const n = NB[i * 6 + d]; if (n < 0) continue;
         if (this.plate[n] === this.plate[i]) continue;
         const b = plates[this.plate[n]];
-        const nx = qOf(n) - qOf(i), ny = rOf(n) - rOf(i), len = Math.hypot(nx, ny) || 1;
+        const nx = dqWrap(qOf(i), qOf(n)), ny = rOf(n) - rOf(i), len = Math.hypot(nx, ny) || 1;
         const rel = ((a.vx - b.vx) * nx + (a.vy - b.vy) * ny) / len;
         if (Math.abs(rel) > Math.abs(bound[i])) bound[i] = rel;
         isB[i] = 1;
@@ -86,27 +104,53 @@ export class World {
     for (let i = 0; i < N; i++) {
       const q = qOf(i), r = rOf(i);
       const nx = (q - W / 2) / (W / 2), ny = (r - H / 2) / (H / 2);
-      const falloff = 1 - Math.pow(Math.hypot(nx * 0.95, ny * 1.05), 2.2);
+      // a cylinder has no east/west edge: only the polar seas fall away
+      const falloff = WRAP ? 1 - Math.pow(Math.abs(ny) * 1.08, 3) : 1 - Math.pow(Math.hypot(nx * 0.95, ny * 1.05), 2.2);
       const pl = plates[this.plate[i]];
-      let e = (pl.cont ? 0.12 : -0.18) + (fbm(q / 28, r / 28, seed + 3) - 0.5) * 0.7 + falloff * 0.42 - 0.17;
-      e += (fbm(q / 7, r / 7, seed + 5) - 0.5) * 0.14;
+      let e = (pl.cont ? 0.12 : -0.18) + (pfbm(q, r, 28, seed + 3) - 0.5) * 0.7 + falloff * 0.42 - 0.17;
+      e += (pfbm(q, r, 7, seed + 5) - 0.5) * 0.14;
       const f = Math.exp(-bdist[i] / 2.2);
       const v = bval[i];
       if (v > 0) e += Math.min(0.75, v * 0.55) * f * (pl.cont ? 1 : 0.6);
       else e += v * 0.18 * f;
       this.elev[i] = e;
-      this.stab[i] = Math.max(0.05, Math.min(1, 1 - 0.8 * f * Math.min(1, Math.abs(v) + 0.25) + (fbm(q / 9, r / 9, seed + 9) - 0.5) * 0.25));
+      this.stab[i] = Math.max(0.05, Math.min(1, 1 - 0.8 * f * Math.min(1, Math.abs(v) + 0.25) + (pfbm(q, r, 9, seed + 9) - 0.5) * 0.25));
       this.rate[i] = v > 0 ? 0.00011 * f * Math.min(1.5, v) : v * 0.00004 * f;
       if (bdist[i] <= 1 && Math.abs(v) > 0.25) this.faultTiles.push(i);
+    }
+    // two smoothing passes: without an island falloff, near-sea-level land would otherwise
+    // leave one-hex slivers along every coast
+    if (WRAP) for (let pass = 0; pass < 2; pass++) {
+      const e2 = new Float32Array(N);
+      for (let i = 0; i < N; i++) { let s2 = this.elev[i] * 2, n2 = 2; for (let d = 0; d < 6; d++) { const n = NB[i * 6 + d]; if (n >= 0) { s2 += this.elev[n]; n2++; } } e2[i] = s2 / n2; }
+      this.elev.set(e2);
+    }
+    // sea level by land fraction, so every style gets the coastline it promises
+    if (WRAP) {
+      const sorted = Float32Array.from(this.elev).sort();
+      const sea = sorted[Math.floor(N * (1 - ST.land))];
+      for (let i = 0; i < N; i++) { this.elev[i] -= sea; if (plates[this.plate[i]].sea) this.elev[i] = Math.min(this.elev[i], -0.15); }
     }
     // --- The Great Rift: a subsiding fracture through the continent, leaving an isthmus.
     this.makeRift(rng);
     // --- Climate
     const waterDist = this.distanceToWater();
+    // westerly winds carry sea moisture east; mountains wring it out (rain shadows behind ranges)
+    const humid = new Float32Array(N);
+    if (WRAP && !globalThis.SE_NO_SHADOW) for (let r = 0; r < H; r++) {
+      let h = 0.6;
+      for (let lap = 0; lap < 2; lap++) for (let q = 0; q < W; q++) {
+        const i = r * W + q, e = this.elev[i];
+        if (e < 0) h = Math.min(1, h + 0.12); else { h *= e > 0.55 ? 0.7 : e > 0.35 ? 0.9 : 0.985; }
+        if (lap) humid[i] = h;
+      }
+    } else humid.fill(0.6);
     for (let i = 0; i < N; i++) {
       const q = qOf(i), r = rOf(i);
-      this.moist[i] = Math.max(0, Math.min(1, fbm(q / 18, r / 18, seed + 21) * 0.9 + 0.36 * Math.exp(-waterDist[i] / 7) - 0.07));
-      this.temp[i] = 0.15 + 0.8 * (r / H) - Math.max(0, this.elev[i]) * 0.45 + (fbm(q / 30, r / 30, seed + 31) - 0.5) * 0.3;
+      this.moist[i] = Math.max(0, Math.min(1, pfbm(q, r, 18, seed + 21) * 0.7 + 0.3 * humid[i] + 0.3 * Math.exp(-waterDist[i] / 7) - 0.1));
+      // latitude: warm at the equator (mid-map), cold toward both poles
+      const lat = WRAP ? 1 - Math.abs(r / H - 0.5) * 2 : r / H;
+      this.temp[i] = 0.15 + 0.8 * lat - Math.max(0, this.elev[i]) * 0.45 + (pfbm(q, r, 30, seed + 31) - 0.5) * 0.3;
     }
     this.recomputeHydrology(true);
     for (let i = 0; i < N; i++) this.classify(i);
@@ -129,7 +173,7 @@ export class World {
       pos = [pos[0] + Math.cos(ang), pos[1] + Math.sin(ang)];
       let q = Math.round(pos[0]), r = Math.round(pos[1]);
       if (flip) { if (horizontal) q = W - 1 - q; else r = H - 1 - r; }
-      if (q < 0 || r < 0 || q >= W || r >= H) break;
+      if (r < 0 || r >= H || (!WRAP && (q < 0 || q >= W))) break;
       for (const t of disk(idx(q, r), 1)) {
         if (seen.has(t)) continue; seen.add(t);
         const core = t === idx(q, r);
@@ -159,7 +203,7 @@ export class World {
     const done = new Uint8Array(N);
     const heap = new MinHeap();
     for (let i = 0; i < N; i++) {
-      const edge = qOf(i) === 0 || rOf(i) === 0 || qOf(i) === W - 1 || rOf(i) === H - 1;
+      const edge = rOf(i) === 0 || rOf(i) === H - 1 || (!WRAP && (qOf(i) === 0 || qOf(i) === W - 1));
       if (this.elev[i] < 0 || edge) { filled[i] = this.elev[i]; done[i] = 1; heap.push(i, filled[i]); }
     }
     const order = [];
@@ -282,7 +326,7 @@ export class World {
     const cands = [];
     for (let i = 0; i < N; i++) {
       const q = qOf(i), r = rOf(i);
-      if (q < 10 || r < 10 || q > W - 11 || r > H - 11) continue;
+      if (r < 10 || r > H - 11 || (!WRAP && (q < 10 || q > W - 11))) continue;
       if ((q + r) % 2) continue;
       const s = this.siteScore(i); if (s > 12) cands.push([i, s]);
     }
@@ -316,8 +360,23 @@ export class World {
       if (!disk(s, 6).some((t) => this.res[t] === RES.OIL) && wide.length) this.res[rng.pick(wide)] = RES.OIL;
       const far = disk(s, 10).filter((t) => dist(t, s) >= 6 && (this.terr[t] === T.HILLS || this.terr[t] === T.MOUNTAIN) && !this.res[t]);
       if (!disk(s, 10).some((t) => this.res[t] === RES.RARE) && far.length) this.res[rng.pick(far)] = RES.RARE;
+      // food: at least four open farm hexes near the city (a start on bare hills is a dead end)
+      const farmable = (t) => t !== s && (this.terr[t] === T.GRASS || this.terr[t] === T.PLAINS || this.terr[t] === T.ASH);
+      let fields = disk(s, 3).filter(farmable).length;
+      for (const t of disk(s, 3)) {
+        if (fields >= 4) break;
+        if (t === s || farmable(t) || isWater(this.terr[t]) || this.terr[t] === T.PEAK || this.res[t]) continue;
+        this.elev[t] = Math.min(this.elev[t], 0.18); this.moist[t] = Math.max(0.45, Math.min(this.moist[t], 0.55)); this.temp[t] = Math.max(this.temp[t], 0.45); this.classify(t);
+        if (farmable(t)) fields++;
+      }
       for (const t of disk(s, 2)) { this.stab[t] = Math.max(this.stab[t], 0.6); this.rate[t] = Math.max(-0.00002, Math.min(this.rate[t], 0.00002)); }
     }
+    // fairness report: every start has a path to food, materials, metals, fuel and rare earths
+    this.fairness = best.map((s) => {
+      const near = (rad, test) => disk(s, rad).filter(test).length;
+      return { start: s, food: near(3, (t) => [T.GRASS, T.PLAINS, T.ASH].includes(this.terr[t])), materials: near(3, (t) => this.terr[t] === T.FOREST || this.res[t] === RES.STONE),
+        metals: near(6, (t) => this.res[t] === RES.IRON || this.res[t] === RES.COAL), fuel: near(8, (t) => this.res[t] === RES.OIL), rare: near(12, (t) => this.res[t] === RES.RARE) };
+    });
     return best;
   }
 }

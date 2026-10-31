@@ -306,15 +306,60 @@ const ART = {
   },
 };
 
-// Simplified silhouette for the strategic zoom band.
+// Strategic zoom: a distinct pictogram per building type on a category disc (readable without
+// colour), larger and ringed for military production and other key facilities.
 const CAT_COL = { civic: 0xd9b44a, residential: 0xb08a5a, agri: 0x7da04a, industry: 0x8a6a4a, power: 0xe0c040, commerce: 0xd08a3a, science: 0x5a90c8, logistics: 0x4aa0a0, military: 0xb5432f };
+export const KEY_FACILITY = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'power_plant', 'fusion_plant', 'steel_mill', 'electronics_plant', 'university', 'fort', 'wonder', 'comms_tower', 'town']);
+const W1 = 0xffffff;
+const ICON = {
+  town: (g) => { g.poly([-3.4, 0, 0, -3.4, 3.4, 0, 3.4, 3, -3.4, 3]).fill({ color: W1 }); },
+  house: (g) => { g.poly([-2.6, 0, 0, -2.6, 2.6, 0]).fill({ color: W1 }).rect(-2, 0, 4, 2.4).fill({ color: W1 }); },
+  farm: (g) => { g.moveTo(0, 3).lineTo(0, -3).stroke({ width: 0.9, color: W1 }); for (let k = 0; k < 3; k++) g.moveTo(0, -1.8 + k * 1.4).lineTo(-1.6, -2.8 + k * 1.4).moveTo(0, -1.8 + k * 1.4).lineTo(1.6, -2.8 + k * 1.4).stroke({ width: 0.8, color: W1 }); },
+  lumber: (g) => { g.poly([0, -3.2, 2.6, 1.6, -2.6, 1.6]).fill({ color: W1 }).rect(-0.5, 1.6, 1, 1.6).fill({ color: W1 }); },
+  quarry: (g) => { g.poly([-3, 2.5, -1, -1, 1.2, 0.4, 3, 2.5]).fill({ color: W1 }); },
+  mine: (g) => { g.moveTo(-2.6, 2.6).lineTo(2.2, -2.2).stroke({ width: 1, color: W1 }).arc(1.6, -1.6, 2.4, Math.PI * 0.75, Math.PI * 1.75).stroke({ width: 1, color: W1 }); },
+  salvage: (g) => { g.circle(0, 0, 2).stroke({ width: 1.2, color: W1 }); for (let k = 0; k < 6; k++) { const a = k * 1.047; g.rect(Math.cos(a) * 2.8 - 0.6, Math.sin(a) * 2.8 - 0.6, 1.2, 1.2).fill({ color: W1 }); } },
+  barracks: (g) => { g.moveTo(-1.8, 3).lineTo(-1.8, -3).stroke({ width: 0.9, color: W1 }).poly([-1.8, -3, 2.8, -1.8, -1.8, -0.6]).fill({ color: W1 }); },
+  market: (g) => { g.circle(0, 0, 2.8).stroke({ width: 1, color: W1 }).moveTo(0, -1.8).lineTo(0, 1.8).stroke({ width: 0.9, color: W1 }); },
+  academy: (g) => { g.rect(-2.8, -2, 2.6, 4).fill({ color: W1 }).rect(0.2, -2, 2.6, 4).fill({ color: W1 }); },
+  university: (g) => { g.poly([-3.4, -1, 0, -2.8, 3.4, -1, 0, 0.8]).fill({ color: W1 }).rect(-1.8, 0, 3.6, 2).fill({ color: W1 }); },
+  port: (g) => { g.circle(0, -2.2, 0.9).stroke({ width: 0.8, color: W1 }).moveTo(0, -1.3).lineTo(0, 2.6).stroke({ width: 0.9, color: W1 }).arc(0, 0.6, 2.4, 0.2, Math.PI - 0.2).stroke({ width: 0.9, color: W1 }); },
+  bunker: (g) => { g.poly([0, -3, 2.6, -2, 2.4, 0.8, 0, 3, -2.4, 0.8, -2.6, -2]).fill({ color: W1 }); },
+  fort: (g) => { const p = []; for (let k = 0; k < 10; k++) { const a = (k * Math.PI) / 5 - Math.PI / 2, r = k % 2 ? 1.5 : 3.4; p.push(Math.cos(a) * r, Math.sin(a) * r); } g.poly(p).fill({ color: W1 }); },
+  steel_mill: (g) => { g.rect(-2.8, -0.5, 5.6, 3).fill({ color: W1 }).rect(-2, -3.2, 1.3, 2.8).fill({ color: W1 }).rect(0.4, -2.6, 1.3, 2.2).fill({ color: W1 }); },
+  power_plant: (g) => { g.poly([0.8, -3.2, -2, 0.4, -0.2, 0.4, -0.8, 3.2, 2, -0.6, 0.2, -0.6]).fill({ color: W1 }); },
+  fusion_plant: (g) => { g.circle(0, 0, 2.6).stroke({ width: 1.2, color: W1 }).circle(0, 0, 0.9).fill({ color: W1 }); },
+  oil_well: (g) => { g.poly([0, -3.2, 2.2, 0.6, 1.3, 2.6, -1.3, 2.6, -2.2, 0.6]).fill({ color: W1 }); },
+  munitions_plant: (g) => { g.roundRect(-1.3, -3, 2.6, 6, 1.3).fill({ color: W1 }); },
+  motor_works: (g) => { g.circle(0, 0, 2.8).stroke({ width: 1.3, color: W1 }).circle(0, 0, 0.9).fill({ color: W1 }); },
+  depot: (g) => { g.rect(-2.6, -2.6, 5.2, 5.2).stroke({ width: 1, color: W1 }).moveTo(-2.6, -2.6).lineTo(2.6, 2.6).moveTo(2.6, -2.6).lineTo(-2.6, 2.6).stroke({ width: 0.8, color: W1 }); },
+  seismic: (g) => { g.arc(0, -0.5, 2.8, Math.PI * 0.15, Math.PI * 0.85).stroke({ width: 1, color: W1 }).moveTo(0, 0).lineTo(0, 3).stroke({ width: 0.9, color: W1 }); },
+  heavy_assembly: (g) => { g.rect(-3, -0.6, 5, 2.6).fill({ color: W1 }).rect(-1.4, -2, 2.4, 1.6).fill({ color: W1 }).moveTo(1, -1.3).lineTo(3.6, -1.3).stroke({ width: 0.9, color: W1 }); },
+  airfield: (g) => { g.poly([0, -3.4, 0.7, -0.8, 3.4, 0.6, 3.4, 1.2, 0.7, 0.6, 0.5, 2.4, 1.4, 3, -1.4, 3, -0.5, 2.4, -0.7, 0.6, -3.4, 1.2, -3.4, 0.6, -0.7, -0.8]).fill({ color: W1 }); },
+  stabilizer: (g) => { g.ellipse(0, -1.5, 2.8, 1).stroke({ width: 0.9, color: W1 }).ellipse(0, 1.2, 2.2, 0.8).stroke({ width: 0.9, color: W1 }).moveTo(0, -3).lineTo(0, 3).stroke({ width: 0.8, color: W1 }); },
+  electronics_plant: (g) => { g.rect(-2, -2, 4, 4).fill({ color: W1 }); for (let k = -1; k <= 1; k++) g.moveTo(-3, k * 1.3).lineTo(3, k * 1.3).stroke({ width: 0.6, color: W1 }); },
+  comms_tower: (g) => { g.poly([0, -3.2, 2, 3, -2, 3]).stroke({ width: 0.9, color: W1 }).arc(0, -3.2, 1.6, Math.PI * 1.2, Math.PI * 1.8).stroke({ width: 0.7, color: W1 }); },
+  drone_works: (g) => { g.moveTo(-2.4, -2.4).lineTo(2.4, 2.4).moveTo(2.4, -2.4).lineTo(-2.4, 2.4).stroke({ width: 0.9, color: W1 }); for (const [x, y] of [[-2.4, -2.4], [2.4, -2.4], [-2.4, 2.4], [2.4, 2.4]]) g.circle(x, y, 0.9).fill({ color: W1 }); },
+  robotics_complex: (g) => { g.rect(-2.6, -2.2, 5.2, 4.4).fill({ color: W1 }); g.circle(-1.1, -0.4, 0.7).fill({ color: 0x222222 }).circle(1.1, -0.4, 0.7).fill({ color: 0x222222 }); },
+  camp: (g) => { g.poly([-3, 2.6, 0, -3, 3, 2.6]).fill({ color: W1 }); },
+  wonder: (g) => { g.poly([-1, 3, -0.6, -3.4, 0.6, -3.4, 1, 3]).fill({ color: W1 }).rect(-3, 1.5, 6, 1.5).fill({ color: W1 }); },
+};
+
+export function drawStrategicIcon(g, type, cat, civ, o = {}) {
+  const key = KEY_FACILITY.has(type);
+  const r = type === 'town' ? 7 : key ? 6.2 : 4.6;
+  g.circle(0, 0, r).fill({ color: CAT_COL[cat] || 0x888888, alpha: o.ghost ? 0.3 : 0.95 }).stroke({ width: key ? 2 : 1.2, color: civ, alpha: 0.95 });
+  if (key && !o.ghost) g.circle(0, 0, r + 1.8).stroke({ width: 0.8, color: 0xf3eedf, alpha: 0.55 });
+  const icon = ICON[type]; if (icon) icon(g);
+}
 
 export function drawBuildingArt(g, b, def, o) {
   g.clear();
   if (o.lod === 'strategic') {
-    const r = b.ty === 'town' ? 7 : 5;
-    g.roundRect(-r, -r, r * 2, r * 2, 1.5).fill({ color: CAT_COL[def.cat] || 0x888888, alpha: o.ghost ? 0.25 : 0.95 * o.alpha }).stroke({ width: 1.6, color: o.civ, alpha: 0.95 });
-    if (o.damaged) g.moveTo(-r, -r).lineTo(r, r).stroke({ width: 1.2, color: 0x2a1a14 });
+    // housing and fields read as districts at this zoom; facilities keep a pictogram
+    if (b.ty === 'house') return;
+    drawStrategicIcon(g, b.ty, def.cat, o.civ, o);
+    if (o.damaged) g.moveTo(-5, -5).lineTo(5, 5).stroke({ width: 1.4, color: 0x2a1a14 });
     return;
   }
   const C = ctx(g, o);

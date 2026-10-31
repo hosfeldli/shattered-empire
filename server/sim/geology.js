@@ -35,13 +35,18 @@ export class Geology {
 
   step(dt, now) {
     const w = this.w, g = this.g;
+    // Peaceful world (the default): no quakes, eruptions, droughts, shifting rivers or moving
+    // mountains. Volcanoes are landmarks; lava and ash from before simply cool.
+    if (!g.cataclysm) { this.coolOnly(dt); return; }
+    const freq = g.cataclysm.freq, sev = g.cataclysm.sev;
+    dt *= freq;                                   // Cataclysm frequency scales every geological clock
     if (Math.floor(now) % 5 === 0) this.recomputeStabilizers();
     // --- Slow tectonics: uplift & subsidence
     let terrainChanged = false;
     for (const i of this.moving) {
       const damp = 1 - this.stabilizers[i];
       const before = w.elev[i];
-      w.elev[i] += w.rate[i] * dt * damp;
+      w.elev[i] += w.rate[i] * dt * damp * sev;
       const t0 = w.terr[i];
       if (w.classify(i)) {
         w.touch(i); terrainChanged = true;
@@ -93,12 +98,21 @@ export class Geology {
       if (v.pressure >= 1) { this.erupt(v); terrainChanged = true; }
     }
     // --- Drought
-    if (now > this.nextDrought) { this.droughtEvent(); this.nextDrought = now + 220 + this.rng.range(0, 160); }
+    if (now > this.nextDrought) { this.droughtEvent(); this.nextDrought = now + (220 + this.rng.range(0, 160)) / freq; }
     // --- River avulsion
-    if (now > this.nextAvulsion) { if (this.avulsion()) terrainChanged = true; this.nextAvulsion = now + 260 + this.rng.range(0, 160); }
+    if (now > this.nextAvulsion) { if (this.avulsion()) terrainChanged = true; this.nextAvulsion = now + (260 + this.rng.range(0, 160)) / freq; }
     // --- Hydrology refresh (rivers follow the changing land)
     this.hydroTimer += dt;
     if (this.hydroTimer > (terrainChanged ? 3 : 20)) { this.hydroTimer = 0; this.refreshRivers(); }
+  }
+
+  coolOnly(dt) {
+    const w = this.w;
+    for (let i = 0; i < N; i++) {
+      if (w.lava[i] > 0) { w.lava[i] -= dt; if (w.lava[i] <= 0) { w.lava[i] = 0; w.soil[i] = 1; w.classify(i); w.touch(i); } }
+      if (w.ash[i] > 0) { w.ash[i] -= dt; if (w.ash[i] <= 0) { w.ash[i] = 0; w.touch(i); } }
+      if (w.drought[i] > 0) { w.drought[i] -= dt; if (w.drought[i] <= 0) { w.drought[i] = 0; w.touch(i); } }
+    }
   }
 
   warn(key, tile, text, kind) {

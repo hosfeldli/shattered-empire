@@ -1,7 +1,7 @@
 // Server-side navigation: per-movement-class step costs, A*, shared flow fields for
 // large groups, and road routing. Clients never path-find.
 import { N, W, H, T, MOVE, UNITS, TERRAIN, isWater } from './constants.js';
-import { NB, dist } from './hex.js';
+import { NB, dist, dqWrap, inBounds, idx } from './hex.js';
 import { MinHeap } from './world.js';
 import { riverSize } from './roads.js';
 import { scarCost } from './battlefield.js';
@@ -126,7 +126,9 @@ export function formationSlots(game, civ, units, goal, shape = 'line', line = nu
   const sorted = units.slice().sort((a, b) => role(a) - role(b) || a.id - b.id);
   // facing: from the group's centre toward the goal
   let cx = 0, cy = 0;
-  const pos = (t) => [Math.sqrt(3) * ((t % W) + 0.5 * (((t / W) | 0) & 1)), 1.5 * ((t / W) | 0)];
+  // positions are unwrapped around the goal so a formation straddling the seam stays whole
+  const gq = goal % W;
+  const pos = (t) => { const q = gq + dqWrap(gq, t % W); return [Math.sqrt(3) * (q + 0.5 * (((t / W) | 0) & 1)), 1.5 * ((t / W) | 0)]; };
   for (const u of units) { const [x, y] = pos(u.tile); cx += x; cy += y; }
   cx /= units.length; cy /= units.length;
   let [gx, gy] = pos(goal);
@@ -152,8 +154,8 @@ export function formationSlots(game, civ, units, goal, shape = 'line', line = nu
       if (r < 0 || r >= H) continue;
       const q0 = Math.round(x / Math.sqrt(3) - 0.5 * (r & 1));
       for (let q = q0 - 2; q <= q0 + 2; q++) {
-        if (q < 0 || q >= W) continue;
-        const t = r * W + q; if (taken.has(t)) continue;
+        if (!inBounds(q, r)) continue;
+        const t = idx(q, r); if (taken.has(t)) continue;
         const ter = w.terr[t]; if (isWater(ter) || !Number.isFinite(TERRAIN[ter].move)) continue;
         const [px, py] = pos(t); const d = (px - x) ** 2 + (py - y) ** 2;
         if (d < bd) { bd = d; best = t; }

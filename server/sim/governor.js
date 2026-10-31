@@ -142,7 +142,7 @@ function develop(g, civ, c, gv, level) {
     }
     const may = level === 'autonomous' || (level === 'managed' && routine);
     const t = pickTile(g, civ, c, cand.type, gv);
-    if (t < 0) continue;
+    if (t < 0) { const d = `${BUILDINGS[cand.type].name}: no suitable free hex inside the city's borders`; if (!gv.deferred.includes(d)) gv.deferred.unshift(d); continue; }
     if (!may) { propose(g, civ, c, gv, { action: 'build', type: cand.type, tile: t, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: Math.min(0.95, 0.5 + cand.u / 200) }); return false; }
     if (!governorCanSpend(civ, gv, cand.cost, c)) {
       // a national project the empire cannot yet afford: reserve for it so other automation waits

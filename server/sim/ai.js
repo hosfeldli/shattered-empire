@@ -4,7 +4,7 @@
 //   warlord  - militarized industrial state that seeks conquest
 // City development runs through the same governor code that players can enable.
 import { MilitaryPlanner } from './missions.js';
-import { N, UNITS, TECHS, AGES, isWater } from './constants.js';
+import { N, UNITS, TECHS, AGES, isWater, DIFFICULTY } from './constants.js';
 import { dist } from './hex.js';
 import { defaultGovernor, steerColonist } from './governor.js';
 import { nationalRoles } from './planner.js';
@@ -71,6 +71,7 @@ export class AI {
       if (civ.saving && civ.res.credits > (civ.saving.credits || 0) + 400) for (const [k, v] of Object.entries(civ.saving)) {
         if (k === 'credits' || (civ.res[k] || 0) >= v || (civ.gross?.[k] || 0) * 60 > v - (civ.res[k] || 0)) continue;
         const q = this.g.importQuote(civ, k, Math.ceil(v - (civ.res[k] || 0)));
+        if (q.error && /market/.test(q.error)) civ.needsMarket = k; else civ.needsMarket = null;
         if (!q.error && civ.res.credits - q.credits > (civ.saving.credits || 0) + 200) this.g.command(civ.id, { c: 'import', good: k, amount: q.amount });
       }
     } else civ.saving = null;
@@ -181,6 +182,7 @@ export class AI {
     // size the army by need and by what the treasury can sustain, not by population
     let desired = 4 + 3 * civ.age + 2 * Math.min(8, this.cities.length);
     if (this.p === 'warlord') desired = Math.round(desired * 1.4);
+    desired = Math.round(desired * (DIFFICULTY[civ.difficulty]?.army || 1));
     if (enemies.length) desired += 6;
     desired += Math.min(12, threats.length);
     const income = Math.max(1, (civ.gross?.credits || 0));
@@ -190,13 +192,13 @@ export class AI {
     if (army.length >= desired * 0.6) this.refits(army);
     civ.armyCap = Math.round(desired * 1.2);
     if (tier < desired * (1 + civ.age * 0.6) && army.length < desired * 1.2 && civ.res.food > 50) {
-      for (const b of g.buildings.values()) {
-        if (b.owner !== civ.id || !b.done || b.queue.length >= 2) continue;
-        if (!['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'].includes(b.type)) continue;
-        if ((g.cities.get(b.cityId)?.pop || 0) < 6) continue;
-        const u = this.trainChoice(b);
-        if (u) this.cmd({ c: 'train', building: b.id, unit: u });
-      }
+      // recruitment goes through the same production manager players use: the choice of unit
+      // comes from the role mix, the batch is spread over every facility that can make it
+      const facs = [...g.buildings.values()].filter((b) => b.owner === civ.id && b.done && b.queue.length < 2 && ['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'].includes(b.type) && (g.cities.get(b.cityId)?.pop || 0) >= 6);
+      const wanted = new Map();
+      for (const b of facs) { const u = this.trainChoice(b); if (u) wanted.set(u, [...(wanted.get(u) || []), b.id]); }
+      const gap = Math.max(1, Math.min(4, Math.ceil((desired - army.length) / 2)));
+      for (const [u, ids] of wanted) this.cmd({ c: 'batchTrain', buildings: ids, unit: u, count: Math.min(gap, ids.length * 2) });
     }
     const queuedType = (t) => [...g.buildings.values()].some((b) => b.owner === civ.id && b.queue.some((q) => q.unit === t));
     if (civ.techs.has('motorization') && this.campaign && !queuedType('supply_truck') && !this.myUnits.some((u) => u.type === 'supply_truck')) { const h = this.hub(); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'supply_truck' }); }

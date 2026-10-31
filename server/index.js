@@ -30,6 +30,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   // Note: Cloud Run reserves paths ending in 'z' (e.g. /healthz), so production checks use /api/health.
   if (url.pathname === '/api/health' || url.pathname === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, version: VERSION, ...manager.stats() })); }
+  if (url.pathname === '/api/metrics') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(manager.metrics())); }
   if (url.pathname === '/api/matches') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(manager.list())); }
   if (url.pathname === '/api/preview') {
     const seed = (+url.searchParams.get('seed') || 1) % 1000000;
