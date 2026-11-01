@@ -6,7 +6,15 @@ name: Desktop builds
 on:
   push:
     tags: ['v*', 'desktop-v*']
+    # every change to the game client or the app rebuilds the installers, so the download page
+    # always offers a build that matches the deployed server
+    branches: [main]
+    paths: ['client/**', 'desktop/**', 'server/sim/deploy.js', 'package.json', '.github/workflows/desktop.yml']
   workflow_dispatch:
+
+concurrency:
+  group: desktop-builds
+  cancel-in-progress: true
 
 env:
   BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
