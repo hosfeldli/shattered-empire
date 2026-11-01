@@ -707,7 +707,7 @@ function bindInput() {
     if (k === '-') view.zoomAt(0.87, view.app.screen.width / 2, view.app.screen.height / 2);
     if (k === 'k') hud.toggleKey();
     if (k === 'm') $('btnSound').click();
-    if (k === 'l') { const order = ['terrain', 'territory', 'supply', 'stability', 'traffic', 'front', 'tactical']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
+    if (k === 'l') { const order = ['terrain', 'territory', 'stability', 'traffic', 'front', 'tactical']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
     if (k === 'backspace' && S.mode?.kind === 'road') actions.road('undo');
     if (k === 'enter' && S.mode?.kind === 'road') actions.road('commit');
     if (k === 'backspace' && S.mode?.kind === 'trench') actions.trench('undo');

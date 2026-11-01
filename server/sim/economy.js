@@ -1,5 +1,6 @@
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
+import { jobSlots, outMul, cityTier, CITY_TIERS } from './levels.js';
 import { revoltBlocked, noteRevolt, afterCapture } from './cities.js';
 import { ACTIVITY } from './logistics.js';
 import { book, ledgerStep } from './ledger.js';
@@ -42,6 +43,14 @@ export function recomputeTerritory(g) {
 // The logistics network: cities linked to the capital over intact road/rail edges (or by sea between
 // own ports) share the national stockpile, limited by the freight capacity of the weakest link.
 // Cities that are cut off live on their own local reserves until a route is restored.
+// people eat this much food per second; farms feed several people per farmer
+export const FOOD_PER_POP = 0.085;
+// freight over our own land without a road (cart tracks): enough to share food and some goods
+export const OVERLAND_FREIGHT = 6;
+// housing blocks: homes per level grow with the era (taller blocks, then apartment towers)
+export const HOUSE_LEVEL = [1, 2.4, 4.2];
+export function houseCapacity(civ, b) { return Math.round((6 + 2 * Math.min(4, civ.age)) * HOUSE_LEVEL[Math.max(0, Math.min(2, (b.level || 1) - 1))]); }
+
 export function recomputeTradeNetwork(g) {
   const roads = g.roads;
   for (const civ of g.civs) {
@@ -70,9 +79,14 @@ export function recomputeTradeNetwork(g) {
         for (const o of ports) { const nw = Math.min(wd, PORT_FREIGHT); if (nw > width[o.tile]) { width[o.tile] = nw; parent[o.tile] = i; heap.push([nw, o.tile]); } }
       }
     }
+    // overland link: cities inside one unbroken stretch of our territory reach the capital by cart
+    // tracks even without a road (low freight); only enemy land or open water cuts a city off
+    const land = new Uint8Array(N); { const q = [cap.tile]; land[cap.tile] = 1; for (let qi = 0; qi < q.length; qi++) { const i = q[qi]; for (let d = 0; d < 6; d++) { const n = NB[i * 6 + d]; if (n >= 0 && !land[n] && g.world.owner[n] === civ.id && !isWater(g.world.terr[n])) { land[n] = 1; q.push(n); } } } }
     for (const c of g.cityOf(civ)) {
       let t = width[c.tile] >= 0 ? c.tile : -1;
       if (t < 0) for (let d = 0; d < 6; d++) { const n = NB[c.tile * 6 + d]; if (n >= 0 && width[n] > (t >= 0 ? width[t] : -1)) t = n; }
+      if (t < 0 && land[c.tile]) { width[c.tile] = Math.max(width[c.tile], OVERLAND_FREIGHT); t = c.tile; }
+      else if (t >= 0 && land[c.tile] && width[t] < OVERLAND_FREIGHT) width[t] = OVERLAND_FREIGHT;
       const was = c.isolated;
       c.tradeConnected = !c.capital && t >= 0;
       c.isolated = !c.capital && t < 0;
@@ -106,7 +120,7 @@ function farmYield(g, civ, b) {
 }
 function farmPer(g, civ, b) {
   const def = BUILDINGS[b.type];
-  let v = def.produce.food * (b.type === 'farm' ? farmYield(g, civ, b) : 1);
+  let v = def.produce.food * outMul(b) * (b.type === 'farm' ? farmYield(g, civ, b) : 1);
   if (civ.policies.has('rationing')) v *= 1.2;
   return v;
 }
@@ -167,9 +181,10 @@ function shipGoods(civ, c, cd, delta, dt) {
       const m = Math.min(f, budget); delta[k] += m; budget -= m; shipped += m;
       st[k] = Math.min(LOCAL_STORE, f - m);
     } else {
-      // a deficit: import from the nation as far as freight allows, then go short
+      // a deficit: import from the nation as far as freight allows, then go short. Food always gets
+      // through to a connected city (relief has priority over every other cargo)
       const need = -f;
-      const m = Math.min(need, budget, Math.max(0, civ.res[k] + delta[k]));
+      const m = Math.min(need, k === 'food' ? Infinity : budget, Math.max(0, civ.res[k] + delta[k]));
       delta[k] -= m; budget -= m; shipped += m;
       if (need - m > 1e-6 && k === 'food') c.localShort = true;
     }
@@ -231,15 +246,23 @@ export function economyStep(g, dt) {
       if (!c.stock) c.stock = {};
       const cd = {}; for (const k of GOODS) cd[k] = 0;
       const pool = (k) => (c.isolated && k !== 'credits' ? c.stock[k] || 0 : civ.res[k] || 0);
-      let housing = 8 + 4 * Math.min(2, civ.age) + (civ.techs.has('mechanized_agriculture') ? 4 : 0);
-      for (const b of blds) if (b.type === 'house' && b.done) housing += (4 + civ.age) * (b.level || 1);   // upgraded blocks hold more
+      // development tier (Town -> City -> Metropolis -> Megacity): set on the hub building too
+      const tier = cityTier(civ, c);
+      if (tier !== (c.tier || 0)) {
+        if (tier > (c.tier || 0) && !civ.isRebel) g.notify(civ.id, `${c.name} has grown into a ${CITY_TIERS[tier].toLowerCase()}: more homes, jobs and output at its centre.`, { kind: 'city', tile: c.tile, level: 'minor' });
+        c.tier = tier;
+      }
+      { const hub = c.buildingId != null ? g.buildings.get(c.buildingId) : null; if (hub) hub.tier = c.tier; }
+      // the hub houses more as the city develops; blocks gain storeys (see HOUSE_LEVEL)
+      let housing = 10 + 5 * Math.min(3, civ.age) + 6 * (c.tier || 0) + (civ.techs.has('mechanized_agriculture') ? 4 : 0);
+      for (const b of blds) if (b.type === 'house' && b.done) housing += houseCapacity(civ, b);
       c.housing = housing;
       // jobs: the shared labor allocator (food first, player locks, crews, priorities, runnable only)
       const prio = FOCUS_BONUS[civ.focus] || {};
       const jobs = { worker: 0, merchant: 0, specialist: 0 };
       const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
       const govMul = (gov === 'federal' ? 1.1 : 1) * (civ.isAI && !civ.isRebel ? aiProfile(civ).adv.econ : 1);
-      const foodTarget = (0.12 * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
+      const foodTarget = (FOOD_PER_POP * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
       const sites = blds.filter((b) => !b.done && b.funded).length;
       const alloc = allocate(c, blds, {
         labor: labor(c), foodTarget, sites, foodLow: pool('food') < 1500,
@@ -253,7 +276,7 @@ export function economyStep(g, dt) {
       });
       for (const b of blds) if (BUILDINGS[b.type].jobs) { b.staffed = alloc.plan.get(b.id) || 0; b.why = alloc.why.get(b.id) || ''; if (b.why.startsWith('input:')) shortNext.add(b.why.slice(6)); }
       c.unassigned = alloc.unassigned;
-      c.jobsOpen = blds.reduce((s2, b) => s2 + (b.done && BUILDINGS[b.type].jobs ? BUILDINGS[b.type].jobs[1] - (b.staffed || 0) : 0), 0);
+      c.jobsOpen = blds.reduce((s2, b) => s2 + (b.done && BUILDINGS[b.type].jobs ? jobSlots(b) - (b.staffed || 0) : 0), 0);
       for (const b of blds) {
         const def = BUILDINGS[b.type];
         const damaged = b.hp < b.maxHp * 0.5 ? 0.5 : 1;          // damaged buildings work at half capacity
@@ -266,10 +289,11 @@ export function economyStep(g, dt) {
         if (def.power > 0) {
           let ok = 1;
           let short = '';
-          if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / need); if (r < ok) { ok = r; short = k; } } }
+          const pm = outMul(b);
+          if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * pm * dt; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / need); if (r < ok) { ok = r; short = k; } } }
           if (ok < 0.5) b.why = 'input:' + short;
-          if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * dt * ok; cd[k] -= v; book(civ, 'operations', k, -v); }
-          powerGen += def.power * n * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
+          if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * pm * dt * ok; cd[k] -= v; book(civ, 'operations', k, -v); }
+          powerGen += def.power * n * outMul(b) * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
           if (b.type === 'fusion_plant') research += 0.1 * n;
           continue;
         }
@@ -279,16 +303,18 @@ export function economyStep(g, dt) {
         if (def.needs === 'rare' && !rareAccess(g, civ)) { ratio = 0; b.why = 'rare'; }
         const before = ratio;
         let short = '';
-        if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * dt)); if (r < ratio) { ratio = r; short = k; } } }
+        const lm = outMul(b);
+        if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * lm * dt * ratio; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * lm * dt)); if (r < ratio) { ratio = r; short = k; } } }
         if (before > 0 && ratio < before * 0.5) b.why = 'input:' + short;
-        if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * dt * ratio; cd[k] -= v; book(civ, 'operations', k, -v); }
+        if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * lm * dt * ratio; cd[k] -= v; book(civ, 'operations', k, -v); }
         if (!def.produce) continue;
         for (const k in def.produce) {
-          let v = def.produce[k] * n * dt * eff * govMul * ratio;
+          let v = def.produce[k] * n * lm * dt * eff * govMul * ratio;
           if (b.type === 'farm') v *= farmYield(g, civ, b);
           if (k === 'food') { if (P.has('rationing')) v *= 1.2; if (P.has('total_war')) v *= 0.8; }
           if (k === 'materials') { if (P.has('rationing')) v *= 0.9; if (P.has('extraction_quotas')) v *= 1.3; }
           if (b.type === 'quarry' && w.res[b.tile] === RES.STONE) v *= 1.5;
+          if (b.type === 'mine' && w.res[b.tile] !== RES.IRON && w.res[b.tile] !== RES.COAL) v *= 0.45;   // a shaft into bare hills: poor ore
           if ((b.type === 'mine' || b.type === 'quarry' || b.type === 'oil_well') && surveyed(g, civ, b.tile)) v *= 1.15;   // survey stations
           if ((k === 'ore' || k === 'fuel') && P.has('extraction_quotas')) v *= 1.3;
           if (k === 'credits') { if (gov === 'corporate') v *= 1.3; if (P.has('research_grants')) v *= 0.9; if (P.has('martial_law')) v *= 0.85; if (b.type === 'market' && P.has('free_markets')) v *= 1.3; }
@@ -306,7 +332,7 @@ export function economyStep(g, dt) {
       // the settlement hub itself always yields a little (scavengers, artisans)
       cd.food += 0.4 * dt; cd.materials += 0.4 * dt; cd.credits += 0.3 * dt;
       book(civ, 'production', 'food', 0.4 * dt); book(civ, 'production', 'materials', 0.4 * dt); book(civ, 'production', 'credits', 0.3 * dt);
-      cd.food -= 0.12 * c.pop * dt; book(civ, 'population', 'food', -0.12 * c.pop * dt);
+      cd.food -= FOOD_PER_POP * c.pop * dt; book(civ, 'population', 'food', -FOOD_PER_POP * c.pop * dt);
       c.foodBal = cd.food / dt;
       const tax = c.pop * TAX[civ.tax].credits * dt * (gov === 'corporate' ? 1.3 : 1) * (P.has('martial_law') ? 0.85 : 1);
       cd.credits += tax; book(civ, 'taxes', 'credits', tax);
@@ -386,6 +412,7 @@ export function economyStep(g, dt) {
       target -= c.occupied * 0.5;
       if (enemyNear) target -= 8;
       if ((c.jobs.merchant || 0) > 0) target += 3;
+      target += 3 * (c.tier || 0);                          // developed cities have services, policing, pride
       target = Math.max(0, Math.min(100, target));
       c.stability += (target - c.stability) * 0.06 * dt;
       c.disaster = Math.max(0, c.disaster - 0.35 * dt);
@@ -452,7 +479,7 @@ export function allocationFor(g, civ, c, wf = c.wf) {
   const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
   const prio = FOCUS_BONUS[civ.focus] || {};
   const pr = civ.techs.has('electrification') ? civ.powerRatio ?? 1 : 0.7;
-  const foodTarget = 0.12 * c.pop * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
+  const foodTarget = FOOD_PER_POP * c.pop * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
   const saved = c.wf, savedFw = c.foodWorkers; c.wf = wf;
   const res = allocate(c, blds, {
     labor: labor(c), foodTarget, sites: blds.filter((b) => !b.done && b.funded).length, foodLow: pool('food') < 1500,

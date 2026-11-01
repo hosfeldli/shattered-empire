@@ -270,7 +270,11 @@ function flyMission(g, u, m, dt) {
         return;
       }
       const tg = m.target && m.target.kind !== 'tile' ? m.target : pickAreaTarget(g, u, tt);
-      if (!tg) { a.mission = { kind: 'return', done: true }; setReturning(g, u); return; }
+      if (!tg) {
+        // nothing seen yet: fly on over the target area and look before calling the strike off
+        if (dist(u.tile, tt) > 1) { if (!u.path.length || u.goal !== tt) routeTo(u, tt); return; }
+        a.mission = { kind: 'return', done: true }; setReturning(g, u); return;
+      }
       if (d.role === 'bomber') {
         // bombing passes: release over the target, overfly, come round again
         if (dist(u.tile, tt) <= d.range && u.cooldown <= 0 && a.ammo > 0) {

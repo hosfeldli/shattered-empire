@@ -5,9 +5,10 @@
 //                 B benefit (value of output it can actually staff), R urgency of a shortage,
 //                 S fit with the city's specialization or goal, C cost, D dependency/risk
 // A project wins only if it beats doing nothing; deferrals are explained, not hidden.
-import { BUILDINGS, AGES, RES, TECHS, UNITS } from './constants.js';
+import { BUILDINGS, AGES, RES, TECHS, UNITS, isWater } from './constants.js';
 import { disk, dist } from './hex.js';
 import { rareAccess } from './economy.js';
+import { upgradable, upgradeCost as levelCost, upgradeProblem, jobSlots, LEVEL_OUT, LEVEL_JOBS } from './levels.js';
 
 const VALUE = { food: 1, materials: 1.2, ore: 1.6, steel: 3, fuel: 2.6, electronics: 6, munitions: 2.6, credits: 0.7, research: 2.5 };
 export const SPEC_FIT = {
@@ -58,10 +59,10 @@ export function assess(g, civ, c) {
   const blds = cityBlds(g, c);
   const idle = {}, open = { n: 0 }, pending = {};
   for (const b of blds) {
-    if (!b.done) { pending[b.type] = (pending[b.type] || 0) + 1; if (BUILDINGS[b.type].jobs) open.n += BUILDINGS[b.type].jobs[1]; continue; }
+    if (!b.done) { pending[b.type] = (pending[b.type] || 0) + 1; if (BUILDINGS[b.type].jobs) open.n += jobSlots(b); continue; }
     const d = BUILDINGS[b.type]; if (!b.done || !d.jobs) continue;
     if (!b.staffed) idle[b.type] = (idle[b.type] || 0) + 1;
-    if (b.why === 'staff' || b.why === 'under' || (b.why || '').startsWith('prio:')) open.n += d.jobs[1] - (b.staffed || 0);
+    if (b.why === 'staff' || b.why === 'under' || (b.why || '').startsWith('prio:')) open.n += jobSlots(b) - (b.staffed || 0);
   }
   const foodBal = c.isolated ? c.foodBal ?? 0 : (civ.rates?.food || 0) / Math.max(1, g.cityOf(civ).length);
   return {
@@ -80,6 +81,8 @@ export function assess(g, civ, c) {
     // a settlement near a rival's known cities is on the frontier
     frontier: [...civ.knownCities.values()].some((k) => k.owner !== civ.id && !g.civs[k.owner]?.isRebel && dist(k.tile, c.tile) <= 14),
     isolated: !!c.isolated,
+    // free buildable land around the city: when it runs out, cities grow by upgrading instead
+    freeLand: (() => { let n = 0; for (const t of disk(c.tile, Math.max(3, c.radius || 3))) if (g.world.owner[t] === civ.id && g.tileB[t] < 0 && !g.urban?.[t] && !isWater(g.world.terr[t])) n++; return n; })(),
   };
 }
 
@@ -112,7 +115,7 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
   const has = (type) => a.blds.filter((b) => b.type === type).length;
   const nationHas = (type) => { let n = 0; for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === type) n++; return n; };
   for (const type of Object.keys(BUILDINGS)) {
-    if (!unlocked(civ, type)) continue;
+    if (!unlocked(civ, type) || BUILDINGS[type].obsolete) continue;
     const d = BUILDINGS[type];
     if (d.needs === 'rare' && !rareAccess(g, civ)) { if (fit[type]) deferred.push(`${d.name}: no access to rare earths (deposit, trade partner or recycling)`); continue; }
     let B = 0, R = 0, D = 0; const why = [];
@@ -149,7 +152,13 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
         if (a.idle.farm || a.idle.port) continue;                  // surplus farms already exist
         if (a.foodLow || (a.foodBal < 0 && pool('food') < 600)) { R = 45; why.push(`food balance ${a.foodBal.toFixed(1)}/s, ${Math.floor(pool('food'))} in store`); } else continue;
         break;
-      case 'port': if (a.isolated) { R += 25; why.push('cut off: a port opens a sea lane'); } break;
+      case 'port': {
+        if (a.isolated) { R += 25; why.push('cut off: a port opens a sea lane'); break; }
+        // a sea lane needs a port at both ends: a connected city builds one when others are cut off
+        const cutOff = g.cityOf(civ).some((x) => x.isolated);
+        if (cutOff && ![...g.buildings.values()].some((o) => o.type === 'port' && o.owner === civ.id && !g.cities.get(o.cityId)?.isolated)) { R += 30; why.push('cities are cut off overseas: this end of the sea lane'); }
+        break;
+      }
       case 'power_plant': case 'fusion_plant':
         // demand counts idle consumers too: a mill without power never shows up as load
         if (a.power.grid && a.power.potential > a.power.gen * 0.95) { R = Math.min(160, 50 + 1.2 * (a.power.potential - a.power.gen));   // urgency grows with the industry it would unblock
@@ -224,6 +233,27 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
       const costV = Object.entries(cost).reduce((s2, [k, v]) => s2 + v * (VALUE[k] || 1), 0);
       out.push({ kind: 'upgrade', type: 'house', id: h.id, u: 40 + (a.crowd > 1 ? 15 : 0) - costV * 0.12 + (fit.house || 0), cost, reason: `population ${Math.floor(a.pop)} over housing ${a.housing}: add storeys to a housing block` });
     }
+  }
+  // production upgrades: the same land, more output. Preferred once free land runs short, and for
+  // buildings that are fully staffed and whose output is wanted
+  {
+    const scarce = a.freeLand < 4 ? 1 : a.freeLand < 9 ? 0.5 : 0;
+    let best = null;
+    for (const b of a.blds) {
+      if (!b.done || !upgradable(b.type) || upgradeProblem(civ, b)) continue;
+      const L = b.level || 1, slots = jobSlots(b), staffed = b.staffed || 0;
+      if (staffed < slots * 0.8 && !scarce) continue;                     // fill it before growing it
+      const gain = LEVEL_OUT[L] / LEVEL_OUT[L - 1] - 1;
+      const extraJobs = Math.max(0, Math.round(BUILDINGS[b.type].jobs[1] * (LEVEL_JOBS[L] - LEVEL_JOBS[L - 1])));
+      const workers = staffed * gain + Math.min(extraJobs, Math.max(0, a.laborFree)) * LEVEL_OUT[L];
+      const v = produceValue(g, civ, c, b.type, workers) + (BUILDINGS[b.type].power > 0 && a.power.grid && a.power.gen < a.power.potential ? 10 : 0);
+      if (v <= 0) continue;
+      const cost = levelCost(b.type, L);
+      const costV = Object.entries(cost).reduce((s2, [k, x]) => s2 + x * (VALUE[k] || 1), 0);
+      const u = v * 40 + 25 * scarce - costV * 0.06 + (fit[b.type] || 0) * 0.5;
+      if (!best || u > best.u) best = { kind: 'upgrade', type: b.type, id: b.id, u, cost, reason: `${scarce ? 'little free land left: ' : ''}expand the ${BUILDINGS[b.type].name} to level ${L + 1} (more jobs, more output per worker)` };
+    }
+    if (best) out.push(best);
   }
   out.sort((x, y) => y.u - x.u);
   return { list: out, deferred };

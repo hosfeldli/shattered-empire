@@ -173,7 +173,7 @@ export class EconomyWorkspace {
     let h = '<div class="ws-cols">';
     for (const c of cities) {
       const blds = [...S.buildings.values()].filter((b) => b.c === c.id && b.d && D.BUILDINGS[b.ty].produce);
-      const out = {}; for (const b of blds) { const d = D.BUILDINGS[b.ty]; const share = d.jobs ? (b.s || 0) / d.jobs[1] : 1; for (const [k, v] of Object.entries(d.produce)) if (k !== 'research') out[k] = (out[k] || 0) + v * (d.jobs ? d.jobs[1] : 1) * share; }
+      const out = {}; for (const b of blds) { const d = D.BUILDINGS[b.ty]; const share = d.jobs ? (b.s || 0) / Math.max(1, Math.round(d.jobs[1] * (D.LEVELS?.jobs[(b.lv || 1) - 1] || 1))) : 1; for (const [k, v] of Object.entries(d.produce)) if (k !== 'research') out[k] = (out[k] || 0) + v * (d.jobs ? d.jobs[1] : 1) * share; }
       const p = this.plans[c.id];
       h += `<div class="ws-card"><h4><button type="button" class="rlink" data-jump="${c.t}" data-city="${c.id}">${esc(c.n)}</button>${c.cap ? ' ★' : ''} <small class="muted">pop ${Math.floor(c.pop)}/${c.h}</small></h4>
         <div class="opind"><span class="ind"><b>${c.lab ?? 0}</b>labour free</span><span class="ind ${c.un > 3 ? 'mid' : ''}"><b>${c.un ?? 0}</b>without work</span><span class="ind ${c.st < 35 ? 'bad' : ''}"><b>${c.st}</b>stability</span><span class="ind ${c.iso ? 'bad' : ''}"><b>${c.cap ? 'capital' : c.iso ? 'cut off' : c.fr < 0 ? '∞' : c.fr + '/s'}</b>freight</span></div>

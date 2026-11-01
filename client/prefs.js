@@ -2,13 +2,15 @@
 // motion and shake, particle density, faction markings, labels, notifications, overlays, layout.
 const KEY = 'se.prefs';
 export const DEFAULT_PREFS = {
-  uiScale: 1, graphics: 'medium', shake: true, reducedMotion: false, particles: 1, factionPattern: false,
+  // the desktop app has a real GPU budget and no browser throttling: it starts on High
+  uiScale: 1, graphics: typeof window !== 'undefined' && window.desktop ? 'high' : 'medium', shake: true, reducedMotion: false, particles: 1, factionPattern: false,
   labels: 'normal', notify: 'normal', tactical: false, minimap: 'compact', rail: 'compact', inspectorWidth: 340, highContrast: false,
 };
 export const GRAPHICS = {
   low: { particles: 0.35, decor: false, ambient: false, label: 'Low: essential effects and readable markers' },
   medium: { particles: 1, decor: true, ambient: true, label: 'Medium: smoke, movement and settlement activity' },
   high: { particles: 1.6, decor: true, ambient: true, label: 'High: denser particles and extra decoration' },
+  ultra: { particles: 2.4, decor: true, ambient: true, sharp: true, label: 'Ultra: the densest battles and full-resolution rendering (desktop GPUs)' },
 };
 
 export function loadPrefs() {

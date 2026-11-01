@@ -5,14 +5,14 @@ import { h, frac, atLeast } from './VisualLOD.js';
 export function drawEnvironment(g, view, S, t) {
   for (const b of S.buildings.values()) {
     if (!b.f) continue;
-    const x = view.cx[b.t], y = view.cy[b.t]; if (!view.inView(x, y, 40)) continue;
+    const x = view.cx[b.t], y = view.cy[b.t]; if (!view.inView(x, y, 40) || !S.vis[b.t]) continue;   // fires and smoke only where we can see
     for (let k = 0; k < 6; k++) { const j = Math.sin(t * 9 + k * 2.1 + b.id) * 1.5; g.circle(x - 5 + k * 2 + j * 0.4, y - 2 - Math.abs(j) * 2, 2.2 + (k % 3)).fill({ color: k % 2 ? 0xffb02e : 0xff6a1a, alpha: 0.85 }); }
     smoke(g, x, y - 6, b.id, t, 0x2a2420, 7);
     S.lightsList.push([x, y, 12, 0xff7a2a]);
   }
   for (const [tile, r] of S.ruins) {
     if (!(r.flags & 2)) continue;
-    const x = view.cx[tile], y = view.cy[tile]; if (!view.inView(x, y, 40)) continue;
+    const x = view.cx[tile], y = view.cy[tile]; if (!view.inView(x, y, 40) || !S.vis[tile]) continue;
     smoke(g, x, y - 2, tile, t, 0x4a4440, 4);
   }
   if (!atLeast(S, 'city')) return;
@@ -34,6 +34,7 @@ export function drawEnvironment(g, view, S, t) {
     bx += Math.round((cxm - bx) / P) * P;                     // nearest copy on a wrapping world
     const by = h(f, 2) * WH + Math.sin(t * 0.13 + f) * 30;
     if (bx < x0 - 30 || bx > x1 + 30 || by < y0 - 30 || by > y1 + 30) continue;
+    { const bt = view.tileAt(bx, by); if (bt < 0 || S.terr[bt] === 255) continue; }     // never over unexplored land
     for (let k = 0; k < 5; k++) { const ox = -k * 3, oy = (k % 2 ? 1 : -1) * k * 1.6; const wing = Math.sin(t * 8 + k + f) * 1.2; g.moveTo(bx + ox - 1.5, by + oy).lineTo(bx + ox, by + oy - 0.6 - wing).lineTo(bx + ox + 1.5, by + oy).stroke({ width: 0.7, color: 0x22282a, alpha: 0.7 }); }
   }
 }

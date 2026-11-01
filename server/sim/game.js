@@ -12,6 +12,7 @@ import { RoadNet } from './roads.js';
 import { economyStep, recomputeTerritory, recomputeTradeNetwork, migrationStep, allocationFor } from './economy.js';
 import { MODES, PRIORITY, CATEGORIES, defaultWorkforce } from './workforce.js';
 import { missilesInit, missilesStep, siloStep, startMissile, launchMissile, interceptors, interceptOdds, inventory, missilesSnapshot, MISSILE } from './missiles.js';
+import { upgradable, upgradeCost as levelUpgradeCost, upgradeProblem, jobSlots, outMul, MAX_LEVEL, LEVEL_JOBS, LEVEL_OUT, LEVEL_AGE, CITY_TIERS } from './levels.js';
 import { cityState, CITY_STATES, rebuildSettlement, rebuildProblem, cityDiagnostics, REBUILD_COST } from './cities.js';
 import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding, hardened, resolveDeadlocks } from './military.js';
 import { Diplomacy } from './diplomacy.js';
@@ -97,7 +98,7 @@ export class Game {
     this.cataclysm = cataclysm && cataclysm.on ? { on: true, freq: Math.max(0.25, Math.min(3, +cataclysm.freq || 1)), sev: Math.max(0.25, Math.min(2, +cataclysm.sev || 1)) } : null;
     this.worldStyle = style || null;
     this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay }));
-    this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, CITY_STATES, REBUILD_COST, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
+    this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, LEVELS: { max: MAX_LEVEL, jobs: LEVEL_JOBS, out: LEVEL_OUT, age: LEVEL_AGE, tiers: CITY_TIERS }, CITY_STATES, REBUILD_COST, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
     this.rng = mulberry32(seed ^ 0x9e3779b9);
     this.world = new World(seed, { style });
     this.world.generate(slots.length);
@@ -311,7 +312,7 @@ export class Game {
       case 'farm': return [T.GRASS, T.PLAINS, T.ASH, T.MARSH, T.TUNDRA, T.HILLS, T.FOREST].includes(ter) || (ter === T.DESERT && !!w.river[t]);   // hills are terraced, forest cleared (lower yield)
       case 'forest': return ter === T.FOREST;
       case 'quarry': return ter === T.HILLS || ter === T.MOUNTAIN || w.res[t] === RES.STONE;
-      case 'mine': return [RES.IRON, RES.COAL].includes(w.res[t]);
+      case 'mine': return [RES.IRON, RES.COAL].includes(w.res[t]) || ((ter === T.HILLS || ter === T.MOUNTAIN) && !w.res[t]);   // a shaft into bare rock yields less (see economy)
       case 'oil': return w.res[t] === RES.OIL;
       case 'ruins': return w.res[t] === RES.RUINS;
       case 'coast': { for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && isWater(w.terr[n]) && !w.lake[n]) return true; } return false; }
@@ -327,7 +328,7 @@ export class Game {
     if (m !== 1) for (const k in c) c[k] = Math.round(c[k] * m);
     return c;
   }
-  upgradeCost(civ, b) { const lv = b.level || 1; return civ.age >= 1 ? { materials: 40 * lv, steel: 10 * lv } : { materials: 45 * lv }; }
+  upgradeCost(civ, b) { const lv = b.level || 1; if (b.type !== 'house') return levelUpgradeCost(b.type, lv); return civ.age >= 1 ? { materials: 55 * lv, steel: 12 * lv } : { materials: 60 * lv }; }
   // a refit pays the difference in equipment; a conversion pays most of a new unit
   refitCost(civ, from, to, conv) {
     const a = this.unitCost(civ, to), b = this.unitCost(civ, from), out = {};
@@ -750,14 +751,14 @@ export class Game {
       const own = b.owner === civ.id || god;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2),
-        lv: b.level > 1 ? b.level : undefined, ug: b.upgraded ? 1 : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
+        lv: b.level > 1 ? b.level : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
     const cities = [];
     for (const c of this.cities.values()) {
       if (c.owner !== civ.id && !vis[c.tile]) continue;
       const own = c.owner === civ.id || god;
       cities.push({ id: c.id, o: c.owner, n: c.name, t: c.tile, pop: +c.pop.toFixed(1), cap: c.capital ? 1 : 0, r: c.radius,
-        dmg: this.cityDamage(c), ...this.cityStateWire(c, own),
+        dmg: this.cityDamage(c), ...this.cityStateWire(c, own), ti: c.tier || 0,
         ...(own ? { h: c.housing, st: Math.round(c.stability), jobs: c.jobs, un: Math.round(c.unemployed), fs: c.foodShort ? 1 : 0, dis: Math.round(c.disaster), occ: Math.round(c.occupied), unrest: c.stability < 20 ? 1 : 0, trade: c.tradeConnected ? 1 : 0,
           mil: Math.round(c.mil || 0), rsv: c.reserved || 0, lab: labor(c), rec: recruitable(civ.id === c.owner ? civ : this.civs[c.owner], c), gr: +((c.growth || 0) * 60).toFixed(1), recov: c.recovering ? 1 : 0, ua: c.unassigned || 0, mig: +(c.inMig || 0).toFixed(1), fw: c.foodWorkers || 0, wf: c.wf || null, back: c.returning ? 1 : 0,
           iso: c.isolated ? 1 : 0, fr: c.freight === Infinity ? -1 : +(c.freight || 0).toFixed(1), stock: roundObj(c.stock || {}), ship: +(c.shipped || 0).toFixed(1),
@@ -952,7 +953,8 @@ export class Game {
           if (r.error) return { error: r.error };
           return { reply: { t: 'ack', fortify: { placed: r.placed, skipped: r.skipped, cost: r.cost, seconds: r.seconds, type: r.type } } };
         }
-        case 'supplyRun': {
+        case 'supplyRun': return { error: 'Troops are supplied automatically: there are no supply runs to send.' };
+        case 'supplyRunLegacy': {
           // one click: pick a truck and a source, load a package by need, deliver behind the force
           const target = cmd.formation ? { kind: 'formation', id: cmd.formation } : cmd.army ? { kind: 'army', id: cmd.army } : { kind: 'units', units: (cmd.units || []).slice(0, 80) };
           if (target.kind === 'formation' && this.formations.get(target.id)?.owner !== civ.id) return { error: 'not your formation' };
@@ -1006,6 +1008,7 @@ export class Game {
         case 'engage': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['balanced', 'focus', 'threat', 'antiArmor', 'counterBattery', 'defensive'].includes(cmd.policy)) u.policy = cmd.policy; } return null;
         case 'stance': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['aggressive', 'defensive', 'hold'].includes(cmd.stance) && !UNITS[u.type].civilian) u.stance = cmd.stance; } return null;
         case 'build': {
+          if (BUILDINGS[cmd.type]?.obsolete) return { error: `${BUILDINGS[cmd.type].name} is no longer needed: troops are always supplied` };
           if (!this.canPlace(civ, cmd.type, cmd.tile, true)) return { error: 'Cannot build there' };
           if (this.isAutomated(civ, cmd) && !ESSENTIAL.has(cmd.type) && !cmd.national && !this.enablesSavings(civ, cmd.type) && this.breaksSavings(civ, this.buildingCost(civ, cmd.type, cmd.tile))) return { error: 'saving for the next era' };
           const affordable = this.canAfford(civ, this.buildingCost(civ, cmd.type, cmd.tile), cmd.tile);
@@ -1234,9 +1237,21 @@ export class Game {
           return { reply: { t: 'ack', refitted: done } };
         }
         case 'upgrade': {
-          // housing upgrades: a block gains storeys (more homes on the same hex)
+          // housing upgrades: a block gains storeys (more homes on the same hex); production buildings
+          // gain a level (more jobs, every worker more productive: more output from the same land)
           const b = this.buildings.get(cmd.id);
-          if (!b || b.owner !== civ.id || b.type !== 'house' || !b.done) return { error: 'only finished housing can be upgraded' };
+          if (b && b.owner === civ.id && b.type !== 'house') {
+            const why = upgradeProblem(civ, b); if (why) return { error: why };
+            const cost = levelUpgradeCost(b.type, b.level || 1);
+            if (this.isAutomated(civ, cmd) && this.breaksSavings(civ, cost)) return { error: 'saving for the next era' };
+            if (!this.canAfford(civ, cost, b.tile)) return { error: 'cannot afford the upgrade: ' + Object.entries(cost).map(([k, v]) => `${v} ${k}`).join(', ') };
+            this.pay(civ, cost, b.tile);
+            const lv = b.level || 1;
+            b.level = lv + 1; b.maxHp = Math.round(BUILDINGS[b.type].hp * (1 + 0.4 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS[b.type].hp * 0.4);
+            b.upgradedAt = this.time; this.world.touch(b.tile);
+            return { reply: { t: 'ack', level: b.level, cost } };
+          }
+          if (!b || b.owner !== civ.id || b.type !== 'house' || !b.done) return { error: 'only finished buildings can be upgraded' };
           const lv = b.level || 1;
           if (lv >= 3) return { error: 'already at the highest density' };
           const cost = this.upgradeCost(civ, b);

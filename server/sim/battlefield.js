@@ -173,7 +173,8 @@ export function battlefieldSnapshot(g, vis, explored) {
   const c = [], w = [], s = [];
   for (const [t, cr] of g.craters) if (vis[t] || explored[t]) c.push([t, cr.d]);
   for (const [t, list] of g.wrecks) if (vis[t] || explored[t]) for (const wr of list) w.push([t, wr.type, wr.burn > 0 ? 1 : 0, wr.owner]);
-  for (const [t, sm] of g.smoke) if (vis[t] || sm.d >= 0.6) s.push([t, Math.round(sm.d * 10)]);
+  // smoke is seen where we can see; a dense screen also at the edge of what we see (it hides what is in it)
+  for (const [t, sm] of g.smoke) if (vis[t] || (sm.d >= 0.6 && disk(t, 1).some((n) => vis[n]))) s.push([t, Math.round(sm.d * 10)]);
   const i = [], fp = [];
   for (const [t, e] of g.intensity) if (e.st && (vis[t] || explored[t])) i.push([t, e.st]);
   for (const [t, f] of g.fieldPos) if (vis[t]) fp.push([t, f.o]);

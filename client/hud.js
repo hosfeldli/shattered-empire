@@ -315,7 +315,7 @@ export class Hud {
     const D = S.defs, techs = new Set(e.techs);
     const unlocked = ([k, d]) => d.age <= e.age && (!d.tech || techs.has(d.tech));
     const DEF = ['guard_post', 'bunker', 'fort', 'aa_battery'];
-    const items = Object.entries(D.BUILDINGS).filter(([k, d]) => k !== 'town' && !d.rebelOnly && !DEF.includes(k) && unlocked([k, d]))
+    const items = Object.entries(D.BUILDINGS).filter(([k, d]) => k !== 'town' && !d.rebelOnly && !d.obsolete && !DEF.includes(k) && unlocked([k, d]))
       .sort((a, b) => CAT_ORDER.indexOf(a[1].cat) - CAT_ORDER.indexOf(b[1].cat));
     const afford = (c) => Object.entries(c).every(([k, v]) => (e.res[k] || 0) >= v);
     const cost = (c) => Object.entries(c).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ') || 'free';
@@ -480,8 +480,7 @@ export class Hud {
       if (own && allAir) html += `<p class="muted">Aircraft fly missions from their airfield: Patrol, Strike or Return in the command bar, or right-click (enemy: strike · ground: patrol · own airfield: return).</p>`;
       if (own && !allAir) {
         const outs = units.filter((u) => u.flags & 4).length, waiting = units.filter((u) => u.flags & 8).length, blocked = units.filter((u) => u.flags & 16).length;
-        html += `<div>Supply ${avg('sup')}%</div><div class="bar sup"><i style="width:${avg('sup')}%"></i></div>`;
-        if (outs) html += `<div class="bad">${outs} out of supply: weakening. Bring them within range of a city, depot, port, fortress or supply truck${units.some((u) => D.UNITS[u.type].air) ? ' (aircraft need an airfield)' : ''}.</div>`;
+        void outs;
         if (waiting) html += `<div class="warn">${waiting} waiting for a congested road or bridge.</div>`;
         // the standardized reason, not just "blocked"
         const fails = {}; for (const u of units) if (u.pf && u.pf !== 'deadlock') fails[u.pf] = (fails[u.pf] || 0) + 1;
@@ -556,22 +555,6 @@ export class Hud {
     // reinforce: some selected units are in a formation, others are not
     const outside = units.filter((u) => !u.form);
     if (fs.length === 1 && outside.length && outside.length < units.length) h += `<div class="actions"><button class="btn small primary" data-fop="reinforce" data-fid="${fs[0].id}">Reinforce formation with ${outside.length}</button></div>`;
-    // logistics: one-click supply runs and an optional standing resupply policy
-    const combat = units.filter((u) => !D.UNITS[u.type].civilian);
-    const trucks = units.filter((u) => u.type === 'supply_truck');
-    if (combat.length && !S.spectator) {
-      const avg = Math.round(combat.reduce((s2, u) => s2 + u.sup, 0) / combat.length);
-      const pol = fs.length === 1 ? (e.logPolicies || []).find((p) => p.key === 'f:' + fs[0].id) : null;
-      const inbound = (e.convoys || []).filter((c) => c.state !== 'available' && (fs.length === 1 ? c.target === 'formation:' + fs[0].id : c.target.startsWith('units')));
-      h += `<div class="logi"><div class="actions"><select data-sel="preset" title="Supply package">${[['auto', 'Automatic'], ['infantry', 'Infantry'], ['armored', 'Armored'], ['fortification', 'Fortification'], ['emergency', 'Emergency']].map(([k, n]) => `<option value="${k}" ${this.preset === k ? 'selected' : ''}>${n}</option>`).join('')}</select><button class="btn small ${avg < 50 ? 'primary' : ''}" data-act="supply" title="A truck loads real goods at a city or depot, drives to a safe point behind these units and unloads">Send supplies</button></div>`;
-      if (fs.length === 1) h += `<label class="field inline check"><input type="checkbox" data-logauto="${fs[0].id}" ${pol?.auto ? 'checked' : ''}><span>Automatically resupply this line below 40%</span></label>${pol?.note ? `<div class="muted small">${esc(pol.note)}</div>` : ''}`;
-      if (inbound.length) h += `<div class="muted small">${inbound.map((c) => `Convoy ${esc(c.state)}${c.eta ? `, about ${c.eta}s out` : ''} (${c.cargo} cargo)`).join(' · ')}</div>`;
-      h += '</div>';
-    }
-    if (trucks.length && !S.spectator) {
-      const cv = (e.convoys || []).filter((c) => trucks.some((t) => t.id === c.truck));
-      h += `<div class="logi"><b>Supply trucks</b><ul class="log">${cv.map((c) => `<li>${esc({ available: 'Available', toSource: 'Going to load', loading: 'Loading', outbound: 'Delivering', unloading: 'Unloading', returning: 'Returning', blocked: 'Route blocked' }[c.state] || c.state)} · ${c.cargo} cargo${c.eta ? ` · ${c.eta}s` : ''}${c.note ? ` <span class="muted">— ${esc(c.note)}</span>` : ''}${c.state !== 'available' && c.state !== 'returning' ? ` <button class="btn tiny ghost" data-truckback="${c.truck}">Return</button>` : ''}</li>`).join('')}</ul><p class="muted small">Trucks no longer supply by being nearby: select troops and press Send supplies.</p></div>`;
-    }
     const diggers = units.filter((u) => { const d = D.UNITS[u.type]; return d.engineer || (d.move === 'infantry' && !d.civilian && d.cat !== 'artillery' && d.atk > 0); });
     void diggers;
     // a stack: several units on one hex
@@ -641,7 +624,7 @@ export class Hud {
   housingBatchPanel(houses) {
     const S = this.S, D = S.defs, e = S.econ;
     const elig = houses.filter((b) => b.d && (b.lv || 1) < 3), maxed = houses.filter((b) => b.d && (b.lv || 1) >= 3), unfinished = houses.filter((b) => !b.d);
-    const cost = {}; for (const b of elig) { const lv = b.lv || 1; const c = (e.age || 0) >= 1 ? { materials: 40 * lv, steel: 10 * lv } : { materials: 45 * lv }; for (const [k, v] of Object.entries(c)) cost[k] = (cost[k] || 0) + v; }
+    const cost = {}; for (const b of elig) { const lv = b.lv || 1; const c = (e.age || 0) >= 1 ? { materials: 55 * lv, steel: 12 * lv } : { materials: 60 * lv }; for (const [k, v] of Object.entries(c)) cost[k] = (cost[k] || 0) + v; }
     const afford = Object.entries(cost).every(([k, v]) => (e.res[k] || 0) >= v);
     const homes = elig.length * (4 + (e.age || 0));
     let h = `<ul class="log"><li>${elig.length} eligible for upgrade</li>${maxed.length ? `<li class="muted">${maxed.length} already at maximum density</li>` : ''}${unfinished.length ? `<li class="muted">${unfinished.length} unfinished</li>` : ''}</ul>`;
@@ -781,7 +764,16 @@ export class Hud {
     if (b.st === 'damaged' && own) html += `<div class="bad">Damaged buildings work at half capacity and do not recover by themselves.</div>`;
     if (city) html += `<div>Population ${Math.floor(city.pop)}</div>`;
     if (own && d.jobs && b.d) html += `<div class="${b.w && !['under', 'surplus', 'locked'].includes(b.w) ? 'warn' : 'muted'}">${esc(staffText(b, D))}</div>`;
-    if (own && b.ty === 'house' && b.d && !S.spectator) html += `<div class="muted">Density level ${b.lv || 1} of 3.</div>${(b.lv || 1) < 3 ? `<div class="actions"><button class="btn small" data-upgrade="${b.id}" title="Add storeys: more homes on the same hex">Upgrade housing (${(S.econ?.age || 0) >= 1 ? `${40 * (b.lv || 1)} materials, ${10 * (b.lv || 1)} steel` : `${45 * (b.lv || 1)} materials`})</button></div>` : ''}`;
+    if (own && b.ty === 'house' && b.d && !S.spectator) { const lv = b.lv || 1, a = S.econ?.age || 0, cost = a >= 1 ? `${55 * lv} materials, ${12 * lv} steel` : `${60 * lv} materials`; html += `<div class="muted">Density level ${lv} of 3.</div>${lv < 3 ? `<div class="actions"><button class="btn small" data-upgrade="${b.id}" title="Add storeys: more homes on the same hex">Add storeys (${cost})</button></div>` : ''}`; }
+    // production buildings grow in place: more jobs and more output per worker on the same hex
+    if (own && d.jobs && b.ty !== 'town' && b.d && D.LEVELS) {
+      const lv = b.lv || 1, L = D.LEVELS;
+      html += `<div class="lvl"><b>Level ${lv}</b> of ${L.max} <span class="muted">· ${slotsOf(b, D)} jobs · output ×${(L.out[lv - 1] * L.jobs[lv - 1]).toFixed(1)} at full staff</span></div>`;
+      if (b.uc && !S.spectator) {
+        const ok = (S.econ?.age || 0) >= L.age[lv], short = Object.entries(b.uc).some(([k, v]) => (S.econ?.res[k] || 0) < v);
+        html += `<div class="actions"><button class="btn small${ok && !short ? ' primary' : ''}" data-upgrade="${b.id}" ${ok ? '' : 'disabled'} title="${ok ? `Level ${lv + 1}: ${Math.round(d.jobs[1] * L.jobs[lv])} jobs, each ${Math.round((L.out[lv] / L.out[lv - 1] - 1) * 100)}% more productive` : `Needs the ${['Reclamation', 'Industrial', 'Mechanized'][L.age[lv]]} era`}">Expand to level ${lv + 1} (${Object.entries(b.uc).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k].toLowerCase())}`).join(', ')})</button></div>`;
+      }
+    }
     if (own && b.w) {
       const g = b.w.startsWith('input:') ? b.w.slice(6) : null;
       const msg = g ? `Short of ${esc((D.GOOD_NAMES[g] || g).toLowerCase())}: output is limited until supply improves.` : { staff: 'No workers: the city needs more people (housing and food) or fewer job buildings.', power: 'Brownout: power demand exceeds generation. Build or staff a power plant.', rare: 'Needs a rare-earth deposit inside your territory.' }[b.w];
@@ -850,7 +842,9 @@ export class Hud {
   cityOverview(city, b, d) {
     const gr = city.gr || 0;
     const prod = this.cityProduction(city);
-    let html = this.cityStateTag(city) + prod + (this.S.sandbox || this.S.dev ? `<details class="diag" data-cdiag="${city.id}" ${this.diagOpen ? 'open' : ''}><summary>City diagnostics</summary><pre>${esc(this.diagText || 'loading…')}</pre></details>` : '') + `<div class="ledger">
+    const tiers = this.S.defs.LEVELS?.tiers || ['Town', 'City', 'Metropolis', 'Megacity'], ti = city.ti || 0;
+    const tierHtml = `<div class="ctier"><span class="tag ${ti >= 2 ? 'good' : ''}">${esc(tiers[ti] || 'Town')}</span> <span class="muted">${ti < 3 ? 'grows into a ' + esc((tiers[ti + 1] || '').toLowerCase()) + ' with more people and a later era: more homes, jobs and output at its centre' : 'the largest a city can grow'}</span></div>`;
+    let html = tierHtml + this.cityStateTag(city) + prod + (this.S.sandbox || this.S.dev ? `<details class="diag" data-cdiag="${city.id}" ${this.diagOpen ? 'open' : ''}><summary>City diagnostics</summary><pre>${esc(this.diagText || 'loading…')}</pre></details>` : '') + `<div class="ledger">
       <div><b>${Math.floor(city.pop)}</b><span>civilians</span></div><div><b>${city.lab ?? '–'}</b><span>labor</span></div>
       <div><b>${city.rsv || 0}</b><span>in training</span></div><div><b>${city.mil || 0}</b><span>serving</span></div><div><b>${city.rec ?? 0}</b><span>recruitable</span></div></div>
       <div class="muted">Growth ${gr >= 0 ? '+' : ''}${gr.toFixed(1)}/min · housing ${city.h}${city.pop > city.h ? ' <span class="warn">(overcrowded)</span>' : ''}${city.recov ? ' · <span class="good">post-war recovery</span>' : ''}${city.mig > 0.05 ? ` · migrants +${city.mig}` : ''}${city.back ? ' · demobilised soldiers returning' : ''}</div>
@@ -880,7 +874,7 @@ export class Hud {
     const catOf = (t) => (t === 'port' ? 'food' : CAT[D.BUILDINGS[t].cat] || 'industry');
     const blds = [...S.buildings.values()].filter((b) => b.c === city.id && b.d && D.BUILDINGS[b.ty].jobs);
     const sum = {}; for (const k of ['food', 'industry', 'research', 'commerce']) sum[k] = { s: 0, n: 0, list: [] };
-    for (const b of blds) { const k = catOf(b.ty); sum[k].s += b.s || 0; sum[k].n += D.BUILDINGS[b.ty].jobs[1]; sum[k].list.push(b); }
+    for (const b of blds) { const k = catOf(b.ty); sum[k].s += b.s || 0; sum[k].n += slotsOf(b, D); sum[k].list.push(b); }
     const assigned = blds.reduce((s2, b) => s2 + (b.s || 0), 0);
     let h = `<div class="ledger"><div><b>${Math.floor(city.pop)}</b><span>population</span></div><div><b>${city.lab ?? 0}</b><span>available</span></div><div><b>${assigned}</b><span>assigned</span></div><div><b>${city.ua ?? 0}</b><span>unassigned</span></div></div>`;
     const levels = ['critical', 'high', 'normal', 'low', 'off'];
@@ -890,7 +884,7 @@ export class Hud {
       h += `<div class="wfcat"><button class="wfhd" data-wf="toggle" data-cat="${k}"><b>${names[k]}</b><span>${v.s} / ${v.n} positions staffed</span></button>
         <select data-wfprio="${k}" title="Priority for ${names[k].toLowerCase()} jobs">${levels.map((l) => `<option value="${l}" ${wf.prio?.[k] === l ? 'selected' : ''}>${l[0].toUpperCase() + l.slice(1)}</option>`).join('')}</select></div>`;
       if (open) h += `<ul class="log wfb">${v.list.map((b) => {
-        const n = D.BUILDINGS[b.ty].jobs[1];
+        const n = slotsOf(b, D);
         return `<li><span>${esc(D.BUILDINGS[b.ty].name)}</span> <span class="muted">${esc(staffText(b, D))}</span>
           <span class="wfctl"><button class="btn small ghost" data-wf="lock" data-id="${b.id}" data-n="${Math.max(0, (b.lk ?? b.s ?? 0) - 1)}" title="Lock one fewer worker">−</button><button class="btn small ghost" data-wf="lock" data-id="${b.id}" data-n="${Math.min(n, (b.lk ?? b.s ?? 0) + 1)}" title="Lock one more worker">+</button>${b.lk != null ? `<button class="btn small ghost" data-wf="lock" data-id="${b.id}" data-n="null" title="Let the allocator decide again">unlock</button>` : ''}<button class="btn small ghost" data-wf="off" data-id="${b.id}" data-on="${b.off ? '0' : '1'}">${b.off ? 'enable' : 'disable'}</button></span></li>`;
       }).join('') || '<li class="muted">No workplaces.</li>'}</ul>`;
@@ -1291,7 +1285,6 @@ export class Hud {
     const tr = S.trafficTile.get(tile); if (tr) parts.push(`Traffic: ${tr > 6 ? 'heavy' : tr > 2 ? 'moderate' : 'light'}`);
     if (S.stab[tile] >= 0) parts.push(`Structural stability ${S.stab[tile]}%`);
     if (S.owner[tile] >= 0) parts.push('Territory of ' + esc(S.civInfo[S.owner[tile]]?.name || ''));
-    if (S.owner[tile] === S.civId || S.supply[tile]) parts.push(S.supply[tile] ? '<span class="good">In your supply network</span>' : '<span class="bad">Outside supply</span>');
     if (!S.vis[tile]) parts.push('<span class="muted">Last seen; may have changed</span>');
     tip.innerHTML = parts.join('<br>');
     tip.hidden = false; tip.style.left = Math.min(window.innerWidth - 270, x + 16) + 'px'; tip.style.top = y + 16 + 'px';
@@ -1307,9 +1300,11 @@ function hexDist(S, a, b) {
 function mix(a, b, t) { const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255, br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255; return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t); }
 
 // One building's staffing in plain words (mirrors server/sim/workforce.js staffingText).
+// job slots of a building, with its level (and the hub's development tier)
+export function slotsOf(b, D) { const d = D.BUILDINGS[b.ty]; if (!d?.jobs) return 0; return b.ty === 'town' ? d.jobs[1] + (b.ti || 0) : Math.round(d.jobs[1] * (D.LEVELS?.jobs[(b.lv || 1) - 1] || 1)); }
 function staffText(b, D) {
   const d = D.BUILDINGS[b.ty]; if (!d.jobs) return '';
-  const head = `${b.s || 0}/${d.jobs[1]} ${d.jobs[0]}s`, w = b.w || '';
+  const head = `${b.s || 0}/${slotsOf(b, D)} ${d.jobs[0]}s`, w = b.w || '';
   const cat = { food: 'agriculture', industry: 'industry', research: 'research', commerce: 'commerce' };
   if (b.off || w === 'off') return `${head} — disabled by player`;
   if (w === 'locked') return `${head} — locked by player`;

@@ -62,7 +62,7 @@ export function pickTile(g, civ, c, type, gv) {
     if (w.owner[t] !== civ.id || (gv && gv.blocked.includes(t)) || !g.canPlace(civ, type, t, true)) continue;
     let s = -dist(c.tile, t);
     if (type === 'farm') { s = TERRAIN[w.terr[t]].fert * 4 + (w.river[t] ? 1 : 0) - dist(c.tile, t) * 0.3; if (w.res[t]) s -= 3; }
-    else if (type === 'mine') s = (w.res[t] === RES.IRON ? 3 : 2) - dist(c.tile, t) * 0.2;
+    else if (type === 'mine') s = (w.res[t] === RES.IRON ? 3 : w.res[t] === RES.COAL ? 2 : -1) - dist(c.tile, t) * 0.2;
     else if (BUILDINGS[type].place === 'flat' && (w.res[t] || w.terr[t] === T.FOREST || TERRAIN[w.terr[t]].fert > 0.8)) s -= 2;
     // defenses face the threat: toward the nearest known hostile city or army, never behind the town
     if (BUILDINGS[type].attack) { const th = threatTile(g, civ, c.tile); if (th >= 0) s = -dist(t, th) * 1.5 - Math.abs(dist(c.tile, t) - (type === 'aa_battery' ? 1 : 2)) * 2; if (w.terr[t] === T.HILLS) s += 1; }
@@ -142,12 +142,12 @@ function develop(g, civ, c, gv, level) {
     if (gv.rejected?.[cand.type] && g.time < gv.rejected[cand.type]) continue;
     const routine = isRoutine(cand.type);
     if (cand.kind === 'upgrade') {
-      if (!(level === 'autonomous' || level === 'managed')) { propose(g, civ, c, gv, { action: 'upgrade', type: 'house', id: cand.id, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: 0.8 }); return false; }
+      if (!(level === 'autonomous' || level === 'managed')) { propose(g, civ, c, gv, { action: 'upgrade', type: cand.type, id: cand.id, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: 0.8 }); return false; }
       if (!governorCanSpend(civ, gv, cand.cost, c)) continue;
       const r = g.command(civ.id, { c: 'upgrade', id: cand.id, by: 'governor:' + c.name });
       if (r && r.error) continue;
       gv.cooldown = g.time + (civ.isAI ? 8 : 20);
-      log(g, c, `Upgrading a housing block: ${cand.reason}.`);
+      log(g, c, `${cand.type === 'house' ? 'Upgrading a housing block' : `Expanding the ${BUILDINGS[cand.type].name}`}: ${cand.reason}.`);
       return true;
     }
     const may = level === 'autonomous' || (level === 'managed' && routine);
@@ -195,7 +195,7 @@ export function answerProposal(g, civ, c, id, answer) {
     const b = g.buildingAtTile(t); if (b) gv.queue.push(b.id);
     log(g, c, `Approved and started: ${BUILDINGS[p.type].name}.`);
   } else if (p.action === 'road') { const r = roads(g, civ, c, gv, 'autonomous'); if (!r) return { error: 'the route is no longer buildable' }; }
-  else if (p.action === 'upgrade') { const r = g.command(civ.id, { c: 'upgrade', id: p.id, by: 'governor:' + c.name }); if (r && r.error) return r; log(g, c, 'Approved: upgrading a housing block.'); }
+  else if (p.action === 'upgrade') { const r = g.command(civ.id, { c: 'upgrade', id: p.id, by: 'governor:' + c.name }); if (r && r.error) return r; log(g, c, `Approved: ${p.type === 'house' || !p.type ? 'upgrading a housing block' : `expanding the ${BUILDINGS[p.type].name}`}.`); }
   else if (p.action === 'settle') { const r = settle(g, civ, c, gv, 'autonomous', true); if (!r) return { error: 'cannot train a convoy now' }; }
   return null;
 }

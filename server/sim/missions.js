@@ -69,6 +69,8 @@ export class MilitaryPlanner {
     // drop the dead; find who is free
     const alive = new Set(army.map((u) => u.id));
     for (const m of this.missions.values()) for (const id of m.units) if (!alive.has(id)) m.units.delete(id);
+    // missions whose units are all gone end (scouts that died used to leave empty missions behind forever)
+    for (const m of [...this.missions.values()]) if (!m.units.size && ['scout', 'screen', 'raid', 'regroup', 'front'].includes(m.kind)) this.missions.delete(m.id);
     const assigned = new Set(); for (const m of this.missions.values()) for (const id of m.units) assigned.add(id);
     const reserve = () => army.filter((u) => !assigned.has(u.id));
     const take = (m, units) => { for (const u of units) { m.units.add(u.id); assigned.add(u.id); } };
@@ -113,6 +115,9 @@ export class MilitaryPlanner {
       if (strays.length) this.ai.cmd({ c: 'move', units: strays, tile: m.zone, attackMove: true, auth: 'mission' });
     }
 
+    // ---------------------------------------------------------------- battle lines
+    this.fronts(reserve, take, release, enemies);
+
     // ---------------------------------------------------------------- offensive
     let off = [...this.missions.values()].find((x) => x.kind === 'offensive');
     if (!enemies.length) { if (off) { this.order(off, [...off.units], this.home(), false, 'column'); release(off); } this.support(army, reserve, take, release, enemies); return; }
@@ -133,6 +138,8 @@ export class MilitaryPlanner {
       const tOwner = g.cities.get(target.id)?.owner;
       const final = tOwner != null && !g.civs[tOwner]?.isRebel && g.cityOf(g.civs[tOwner]).length <= 2;
       // a deliberate reserve stays home (skill): not every unit joins every offensive
+      // the line facing this enemy goes forward with the offensive (a push, not a separate army)
+      for (const fm of [...this.missions.values()].filter((x) => x.kind === 'front' && x.enemy === tOwner)) release(fm);
       const all = reserve();
       const free = final ? all : all.slice(0, Math.max(0, Math.ceil(all.length * (1 - T.reserve))));
       if (free.length < Math.max(4, desired * (final ? 0.4 : 0.7))) { this.support(army, reserve, take, release, enemies); return; }
@@ -178,6 +185,26 @@ export class MilitaryPlanner {
       }
       off.suppressing = defenses.length;
     } else off.suppressing = 0;
+    // execute, the way a player pushes: the force advances as a deployed line in bounds of a few
+    // hexes (artillery behind), consolidates, then bounds again; the assault on the town comes last
+    const broken = (() => { const t = off.buildingId >= 0 ? g.buildings.get(off.buildingId) : null; return t && t.hp <= t.maxHp * 0.25; })();
+    if ((off.state === 'execute' || off.state === 'advance') && !broken) {
+      const toObj = dist(units.length ? units[Math.floor(units.length / 2)].tile : off.staging, off.tile);
+      if (toObj > 4 && (off.boundAt == null || g.time - off.boundAt > 22)) {
+        const from = off.lineAt ?? off.staging;
+        const step = hexLine(from, off.tile); const next = step[Math.min(step.length - 1, 4)];
+        const line = lineAcross({ W, H, wrap: WRAP }, next, off.tile, Math.max(3, Math.min(9, Math.ceil(units.length / 2))), 0);
+        if (line) {
+          const front = units.filter((u) => UNITS[u.type].cat !== 'artillery').map((u) => u.id);
+          const guns = units.filter((u) => UNITS[u.type].cat === 'artillery' && u.order.kind !== 'attack').map((u) => u.id);
+          if (front.length) this.ai.cmd({ c: 'deploy', units: front, line, mode: 'line', behavior: 'attackMove', density: 'auto', auth: 'mission' });
+          if (guns.length) { const back = hexLine(next, off.staging)[2] ?? next; this.order(off, guns, back, false, 'line'); }
+          off.lineAt = next; off.boundAt = g.time; this.setState(off, 'advance', `bounding forward (${toObj} hexes to go)`);
+        }
+        return;
+      }
+      if (toObj > 4) return;     // consolidating on the current line
+    }
     const town = off.buildingId >= 0 ? g.buildings.get(off.buildingId) : null;
     // siege termination: once the town is broken, troops walk in to take it (a capture needs ground
     // troops next to the town); shelling alone would only end in ruins
@@ -195,6 +222,52 @@ export class MilitaryPlanner {
     if (off.state === 'capture' && town && town.hp > town.maxHp * 0.5) this.setState(off, 'execute', 'the town recovered');
     this.order(off, ids.filter((id) => { const u = g.units.get(id); return u && u.order.kind !== 'attack' && !(off.state === 'capture' && dist(u.tile, off.tile) <= 2); }), off.tile, true, 'line');
     this.support(army, reserve, take, release, enemies);
+  }
+
+  // Battle lines: against each enemy within reach the AI holds a deployed, entrenched line across
+  // the approach between its nearest city and the enemy's, like a player would, and moves the line
+  // when the front moves. Units on the line belong to the 'front' mission (not the reserve).
+  fronts(reserve, take, release, enemies) {
+    const g = this.g, civ = this.civ, T = this.tune;
+    if ((this.frontAt || 0) > g.time) return;
+    this.frontAt = g.time + 20;
+    const mine = this.ai.cities; if (!mine.length) return;
+    const W2 = { W, H, wrap: WRAP };
+    for (const e of enemies) {
+      // the closest pair of (our city, their known city): the axis of this front
+      let best = null;
+      for (const [, k] of civ.knownCities) if (k.owner === e.id) for (const c of mine) { const d = dist(c.tile, k.tile); if (d < 40 && (!best || d < best.d)) best = { d, ours: c, theirs: k }; }
+      let m = [...this.missions.values()].find((x) => x.kind === 'front' && x.enemy === e.id);
+      if (!best) { if (m) release(m); continue; }
+      // the line stands a third of the way out from our city (never beyond our side of the middle)
+      const ahead = Math.max(2, Math.min(Math.floor(best.d * 0.35), 7));
+      const want = Math.max(3, Math.min(10, Math.round(reserve().length * (0.35 + 0.1 * T.level))));
+      if (!m) {
+        const free = reserve().filter((u) => UNITS[u.type].cat !== 'artillery').slice(0, want);
+        if (free.length < 3) continue;
+        m = { id: this.nextId++, kind: 'front', enemy: e.id, city: best.ours.id, toward: best.theirs.tile, units: new Set(), state: 'deploy', created: g.time, commitUntil: g.time + 120 };
+        this.missions.set(m.id, m); take(m, free);
+      }
+      const ids = [...m.units].filter((id) => g.units.has(id));
+      if (!ids.length) { release(m); continue; }
+      const moved = m.anchor == null || dist(m.anchor, best.ours.tile) > 0 || dist(m.toward, best.theirs.tile) > 3;
+      if (moved || g.time - (m.deployedAt || -999) > 240) {
+        const line = lineAcross(W2, best.ours.tile, best.theirs.tile, Math.max(3, Math.min(8, Math.ceil(ids.length / 1.5) + 1)), ahead);
+        if (!line) continue;
+        m.anchor = best.ours.tile; m.toward = best.theirs.tile; m.line = line; m.deployedAt = g.time;
+        this.ai.cmd({ c: 'deploy', units: ids, line, mode: 'depth', behavior: 'defend', density: 'auto', auth: 'mission' });
+        this.setState(m, 'holding', 'line deployed toward ' + (g.civs[e.id]?.name || 'the enemy'));
+        m.dug = false;
+      }
+      // dig the line in once the troops are on it (every difficulty; better ones reinforce it)
+      if (!m.dug && m.line && g.time - m.deployedAt > 15 && civ.res.materials > (T.level >= 1 ? 80 : 160)) {
+        const r = this.ai.cmd({ c: 'trenchPlan', points: m.line, type: civ.techs.has('fortification') && T.level >= 1 ? 'reinforced' : 'basic', commit: true, by: 'mission' });
+        if (!(r && r.error)) { m.dug = true; this.setState(m, 'entrenched', 'trench line dug'); }
+      }
+      // keep the line manned: reinforce from the reserve up to the wanted strength
+      if (ids.length < want) { const more = reserve().slice(0, want - ids.length); if (more.length) { take(m, more); m.deployedAt = -999; } }
+    }
+    for (const m of [...this.missions.values()]) if (m.kind === 'front' && !enemies.some((e) => e.id === m.enemy)) release(m);
   }
 
   // Secondary missions, by skill: regroup the battered, fortify held defensive lines, spread out
@@ -243,14 +316,6 @@ export class MilitaryPlanner {
         if (line) this.ai.cmd({ c: 'deploy', units: ids, line, density: 'spread', behavior: 'defend', auth: 'mission' });
         void us;
       }
-    }
-    // keep forces in the field supplied: one convoy at a time per mission, same rules as players
-    if (T.level >= 0) for (const m of [...mission('offensive'), ...mission('defend')]) {
-      const us = [...m.units].map((id) => g.units.get(id)).filter(Boolean); if (!us.length) continue;
-      const avg = us.reduce((s, u) => s + u.supply, 0) / us.length;
-      if (avg >= (T.level >= 1 ? 45 : 30) || (m.convoyAt || 0) > g.time) continue;
-      const r = this.ai.cmd({ c: 'supplyRun', units: us.map((u) => u.id) });
-      m.convoyAt = g.time + (r && r.error ? 60 : 90);
     }
     if (!enemies.length) return;
     // screen: one fast unit watches the most likely approach

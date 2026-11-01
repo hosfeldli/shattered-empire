@@ -24,7 +24,7 @@ export class CityVisuals {
     for (const [id, rec] of this.cities) if (!S.cities.has(id)) { rec.g.destroy(); this.cities.delete(id); }
     for (const c of S.cities.values()) {
       const era = this.eraOf(c.o);
-      const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, S.buildingsVersion, S.ruinsVersion, S.urbanVersion || 0].join('|');
+      const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, c.ti || 0, S.buildingsVersion, S.ruinsVersion, S.urbanVersion || 0, S.bordersVersion || 0].join('|');
       let rec = this.cities.get(c.id);
       if (rec && rec.key === key) continue;
       if (!rec) { rec = { g: new PIXI.Graphics() }; v.districtLayer.addChild(rec.g); v.mirrorOf?.(rec.g); this.cities.set(c.id, rec); }
@@ -37,16 +37,17 @@ export class CityVisuals {
     const S = this.S, v = this.view, g = rec.g; g.clear();
     const base = v.cx0 || v.cx, X = (t) => (v.near ? v.near(base[t], base[c.t]) : base[t]);
     const st = STYLE[Math.min(4, era)];
-    const rad = Math.min(3, c.r || 3);
-    const cand = [];
-    for (let q = -rad - 1; q <= rad + 1; q++) for (let r = -rad; r <= rad; r++) {
+    const tier = c.ti || 0;                                  // Town 0, City 1, Metropolis 2, Megacity 3
+    const rad = Math.min(4, (c.r || 3) + (tier >= 2 ? 1 : 0));
+    const cand = [], rural = [];
+    for (let q = -rad - 1; q <= rad + 1; q++) for (let r = -rad - 1; r <= rad + 1; r++) {
       const r0 = (c.t / v.W) | 0, rr2 = r0 + r; if (rr2 < 0 || rr2 >= v.H) continue;
       let q2 = (c.t % v.W) + q; if (v.wrap) q2 = (q2 + v.W) % v.W; else if (q2 < 0 || q2 >= v.W) continue;
       const t = rr2 * v.W + q2;
-      const d = hexDist(v, c.t, t); if (d < 1 || d > rad) continue;
+      const d = hexDist(v, c.t, t); if (d < 1 || d > rad + 1) continue;
       const ter = S.terr[t];
       if (ter === 255 || ter <= 1 || ter >= 9 || S.owner[t] !== c.o || S.buildingTiles.has(t) || S.ruins.has(t)) continue;
-      cand.push([t, d + h(c.id, t) * 0.6]);
+      if (d <= rad) cand.push([t, d + h(c.id, t) * 0.6]); else rural.push(t);
     }
     cand.sort((a, b) => a[1] - b[1]);
     // the server's developed footprint is authoritative (trenches cannot exist there); draw
@@ -55,34 +56,77 @@ export class CityVisuals {
     const nHex = Math.max(1, Math.min(cand.length, Math.round(c.pop / 5)));
     const hexes = urban.length ? urban : cand.slice(0, nHex).map((x) => x[0]);
     const set = new Set(hexes);
+    for (const [t] of cand) if (!set.has(t)) rural.push(t);
     rec.blocks = []; rec.streets = []; rec.hexes = hexes;
-    // streets: between developed hexes and from the town centre; they reuse real road directions where present
+    const dmg = (c.dmg || 0) / 100;
+    const GROUND = [0x6b5a44, 0x6a5a4c, 0x77756f, 0x5d6266, 0x8a9396];
+    const ROAD = [0x8a7656, 0x6e655a, 0x56585a, 0x45494c, 0x9aa3a6];
+    // the urban ground: a paved or trodden plate on every developed hex, so a district reads as one
+    // continuous place rather than houses floating on fields
+    for (const t of hexes) {
+      const pts = []; const x = X(t), y = v.cy[t];
+      for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3; pts.push(x + Math.cos(a) * 11.2, y + Math.sin(a) * 11.2); }
+      g.poly(pts).fill({ color: GROUND[Math.min(4, era)], alpha: 0.55 + 0.1 * Math.min(3, tier) });
+    }
+    // streets: between developed hexes and to the town centre, then a small grid inside each hex
     for (const t of [c.t, ...hexes]) for (let d = 0; d < 3; d++) {
       const n = v.nb(t, d); if (n < 0 || !(set.has(n) || n === c.t) || !(set.has(t) || t === c.t)) continue;
       rec.streets.push([X(t), v.cy[t], X(n), v.cy[n]]);
     }
-    for (const s of rec.streets) g.moveTo(s[0], s[1]).lineTo(s[2], s[3]);
-    if (rec.streets.length) g.stroke({ width: 1.6, color: 0x5d5a52, alpha: 0.75 });
-    const dens = Math.min(7, 2 + Math.floor(c.pop / 18));
-    const dmg = (c.dmg || 0) / 100;
+    const inner = [];
+    for (const t of hexes) {
+      const x = X(t), y = v.cy[t], a = Math.floor(h(c.id, t, 70) * 3) * (Math.PI / 3), ca = Math.cos(a), sa = Math.sin(a);
+      inner.push([x - ca * 8, y - sa * 8, x + ca * 8, y + sa * 8], [x + sa * 7, y - ca * 7, x - sa * 7, y + ca * 7]);
+    }
+    rec.streets.push(...inner);
+    for (const sx of rec.streets) g.moveTo(sx[0], sx[1]).lineTo(sx[2], sx[3]);
+    if (rec.streets.length) g.stroke({ width: era >= 2 ? 2 : 1.6, color: ROAD[Math.min(4, era)], alpha: 0.9 });
+    // blocks: rows of buildings in the four quarters between the streets, taller toward the centre
+    // and as the city climbs tiers; industry hugs factories, shops ring the centre
+    const per = Math.min(4, 1 + Math.floor(c.pop / 40) + tier);
     for (const t of hexes) {
       let ind = false;
       for (let d = 0; d < 6; d++) { const n = v.nb(t, d); const b = n >= 0 ? S.buildingAtTile.get(n) : null; if (b && INDUSTRIAL.has(b.ty)) ind = true; }
       const dist = hexDist(v, c.t, t);
-      const type = ind ? 'ind' : dist === 1 && era >= 1 ? 'com' : 'res';
+      const type = ind ? 'ind' : dist === 1 && (era >= 1 || tier >= 1) ? 'com' : 'res';
       const pal = st[type];
-      for (let k = 0; k < dens; k++) {
-        const a = h(c.id, t, k) * Math.PI * 2, rr = 2.5 + h(t, k, 7) * 6.5;
-        const x = X(t) + Math.cos(a) * rr, y = v.cy[t] + Math.sin(a) * rr;
-        const w = (type === 'ind' ? 4 : 2.6) + h(t, k, 3) * 2, hh = (type === 'ind' ? 3 : 2.2) + h(t, k, 5) * 1.6;
-        const ruined = h(c.id, t, k + 99) < dmg;
-        const tall = st.tall * (type === 'com' ? 1.4 : 1) * (0.7 + h(t, k, 9) * 0.6);
-        if (ruined) { g.rect(x - w / 2, y - hh / 2, w, hh).fill({ color: 0x3a3430 }); g.circle(x + 0.6, y, 0.8).fill({ color: 0x7c7062 }); rec.blocks.push({ x, y, w, h: hh, ruined: true }); continue; }
-        g.rect(x - w / 2 + tall, y - hh / 2 + tall, w, hh).fill({ color: 0x000000, alpha: 0.25 });          // shadow grows with height
-        g.rect(x - w / 2, y - hh / 2, w, hh).fill({ color: pal[(k + t) % pal.length] }).stroke({ width: 0.4, color: 0x1b1b1b, alpha: 0.6 });
-        rec.blocks.push({ x, y, w, h: hh, type, tall });
+      const x = X(t), y = v.cy[t], a = Math.floor(h(c.id, t, 70) * 3) * (Math.PI / 3), ca = Math.cos(a), sa = Math.sin(a);
+      if (era >= 1 && type === 'res' && h(c.id, t, 51) < 0.22) {      // a park with trees
+        g.circle(x + ca * 4 + sa * 4, y + sa * 4 - ca * 4, 3.4).fill({ color: 0x4f7a3a, alpha: 0.95 });
+        for (let k = 0; k < 3; k++) g.circle(x + ca * 4 + sa * 4 + (h(t, k, 52) - 0.5) * 4, y + sa * 4 - ca * 4 + (h(t, k, 53) - 0.5) * 4, 1.1).fill({ color: 0x2f5a2a });
       }
-      if (era >= 2 && type === 'res' && h(c.id, t, 51) < 0.35) g.circle(X(t) + 4, v.cy[t] + 4, 2.2).fill({ color: 0x4f7a3a, alpha: 0.9 }); // a park
+      for (let qd = 0; qd < 4; qd++) {
+        const su = qd & 1 ? 1 : -1, sv = qd & 2 ? 1 : -1;
+        const qx = x + ca * su * 4.2 + sa * sv * 3.8, qy = y + sa * su * 4.2 - ca * sv * 3.8;
+        for (let k = 0; k < per; k++) {
+          const off = (k - (per - 1) / 2) * (6 / per);
+          const bx = qx + ca * off, by = qy + sa * off;
+          const w = Math.max(1.5, (type === 'ind' ? 4.4 : 5.6) / per + 0.6 + h(t, k, qd) * 0.8), hh2 = type === 'ind' ? 2.8 : 2.2 + h(t, k, qd + 9) * 0.8;
+          const ruined = h(c.id, t, k * 4 + qd + 99) < dmg;
+          if (ruined) { g.rect(bx - w / 2, by - hh2 / 2, w, hh2).fill({ color: 0x3a3430 }); g.circle(bx + 0.5, by, 0.7).fill({ color: 0x7c7062 }); rec.blocks.push({ x: bx, y: by, w, h: hh2, ruined: true }); continue; }
+          const tall = st.tall * (1 + tier * 0.45) * (type === 'com' ? 1.35 : 1) * (dist <= 1 ? 1.25 : 1) * (0.7 + h(t, k, qd + 5) * 0.6);
+          g.rect(bx - w / 2 + tall * 0.7, by - hh2 / 2 + tall * 0.5, w, hh2).fill({ color: 0x000000, alpha: 0.22 });   // shadow: longer for taller blocks
+          const col = pal[(k + qd + t) % pal.length];
+          g.rect(bx - w / 2, by - hh2 / 2, w, hh2).fill({ color: col }).stroke({ width: 0.35, color: 0x1b1b1b, alpha: 0.55 });
+          g.rect(bx - w / 2, by - hh2 / 2, w, Math.min(0.8, hh2 * 0.3)).fill({ color: 0xffffff, alpha: 0.16 });     // lit roof edge
+          if (tall > 3.2) g.rect(bx - w / 2 + 0.5, by - hh2 / 2 + 0.6, Math.max(0.6, w - 1), 0.5).fill({ color: era >= 3 ? 0x9fd4e8 : 0x2a2a2a, alpha: 0.55 });   // rooftop plant / glazing
+          rec.blocks.push({ x: bx, y: by, w, h: hh2, type, tall });
+        }
+      }
+    }
+    // the countryside the city feeds on: farmsteads and small fields on owned land around it
+    if (rural.length) for (const t of rural) {
+      if (h(c.id, t, 81) > 0.35 + 0.1 * tier) continue;
+      const ter = S.terr[t]; if (![2, 3, 6, 12].includes(ter)) continue;     // open farmland only: grass, plains, tundra, volcanic soil
+      const x = X(t) + (h(t, 82) - 0.5) * 8, y = v.cy[t] + (h(t, 83) - 0.5) * 6;
+      const fa = h(t, 84) * Math.PI;
+      const fc = [0xa9a24f, 0x8fa548, 0xb59a52][Math.floor(h(t, 85) * 3)];
+      const cf = Math.cos(fa), sf = Math.sin(fa), fx = x - 3, fy = y + 0.5;
+      g.poly([[-4, -2.4], [4, -2.4], [4, 2.4], [-4, 2.4]].flatMap(([px, py]) => [fx + px * cf - py * sf, fy + px * sf + py * cf])).fill({ color: fc, alpha: 0.55 });
+      for (let k = -1; k <= 1; k++) g.moveTo(fx - 3.6 * cf - k * 1.4 * sf, fy - 3.6 * sf + k * 1.4 * cf).lineTo(fx + 3.6 * cf - k * 1.4 * sf, fy + 3.6 * sf + k * 1.4 * cf);
+      g.stroke({ width: 0.4, color: 0x5a5a2a, alpha: 0.5 });
+      g.rect(x + 2, y - 1.5, 2.6, 2).fill({ color: era >= 2 ? 0xb8b0a0 : 0x8a6a48 }).stroke({ width: 0.3, color: 0x1b1b1b, alpha: 0.5 });
+      g.rect(x + 2, y - 1.5, 2.6, 0.7).fill({ color: era >= 2 ? 0x6a6a70 : 0x6a3a2a });
     }
   }
 }

@@ -92,17 +92,19 @@ export function casualty(g, u) {
 export function growthRate(g, civ, c, ctx) {
   const pop = Math.max(0.5, c.pop);
   const h = pop / Math.max(1, c.housing);
-  // housing is a soft cap: growth slows towards it, crawls past it, stops at 125%
-  const housing = h < 0.8 ? 1 : h < 1 ? 1 - (h - 0.8) * 2 : h < 1.25 ? 0.6 - (h - 1) * 2.4 : 0;
-  // food security over time: reserves and a sustainable balance, not one good tick
-  const food = ctx.starving ? 0 : ctx.foodBalance >= 0 ? (ctx.foodStock > 300 ? 1.25 : 1) : ctx.foodStock > 120 ? 0.6 : 0.25;
+  // housing is a hard cap: growth slows as homes fill and stops when they are full (people do not
+  // move into a city with nowhere to live; build or densify housing to grow)
+  const housing = h < 0.85 ? 1 : h < 1 ? (1 - h) / 0.15 : 0;
+  // food security: growth needs a surplus; a nation eating into its reserves stops growing before
+  // it starves (so population never outruns the farms)
+  const food = ctx.starving ? 0 : ctx.foodBalance >= 0 ? (ctx.foodStock > 300 ? 1.25 : 1) : ctx.foodStock > 400 ? 0.4 : 0;
   const stab = c.stability < 15 ? 0.15 : 0.5 + Math.min(1, c.stability / 100);
   let dev = 1 + 0.08 * Math.min(4, civ.age) + (c.tradeConnected ? 0.1 : 0) + (ctx.services ? 0.12 : 0);
   if (civ.policies?.has('martial_law')) dev *= 0.75;
   if (civ.policies?.has('homesteading') && g.time - (c.founded || 0) < 300) dev *= 1.5;
   let rate = (0.010 * pop + 0.025) * food * stab * housing * dev;
   // small settlements recover: a town of three with food and room grows steadily
-  if (pop < 8 && food > 0 && h < 1) rate += 0.05 * Math.min(1, food) * stab;
+  if (pop < 8 && food > 0 && h < 0.95) rate += 0.05 * Math.min(1, food) * stab;
   // after a war: severely depopulated cities with food, room and peace rebuild faster
   c.peak = Math.max(c.peak || 0, c.pop);
   c.recovering = !ctx.enemyNear && food > 0 && h < 1 && c.pop < c.peak * 0.6 && c.peak > 6;

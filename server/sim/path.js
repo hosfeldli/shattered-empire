@@ -59,7 +59,7 @@ export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avo
   heap.push(start, 0);
   let expanded = 0, best = start, bestH = dist(start, goal);
   const air = MOVE[(UNITS[unitType] || UNITS.militia).move].air;
-  const hw = air ? 1 : 0.25;
+  const hw = air ? 1 : 0.5;            // a mild bias toward the goal keeps routes direct and searches short
   // what this empire can see of enemy lines: held hexes are closed (except an attack's goal),
   // controlled ground costs more, so routes go around a front instead of into it
   const known = air || !civ || !civ.visible ? null : knownSets(game, civ);

@@ -18,7 +18,3 @@ test('artillery punishes a concentrated stack far more than a dispersed force', 
   const stack = avg('artilleryVsStack', (r) => r.lossB), spread = avg('artilleryVsDispersed', (r) => r.lossB);
   assert.ok(stack > spread * 1.8, `stacked losses ${stack}, dispersed ${spread}`);
 });
-test('a supplied force beats an equal force that has run out of supply', () => {
-  const r = SEEDS.map((s) => battle(s, SCENARIOS.suppliedVsIsolated));
-  assert.ok(r.every((x) => x.lossB > x.lossA), r.map((x) => `${x.lossA}/${x.lossB}`).join(' '));
-});

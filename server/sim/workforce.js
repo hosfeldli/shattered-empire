@@ -7,6 +7,7 @@
 //     the labor stays available instead
 //  6. leftovers go to food when reserves are low, otherwise stay unemployed (and build)
 // It is a pure function of the city, so the client can preview an auto-balance before applying it.
+import { jobSlots, outMul } from './levels.js';
 import { BUILDINGS } from './constants.js';
 
 export const CATEGORIES = ['food', 'industry', 'research', 'commerce'];
@@ -30,12 +31,12 @@ export function allocate(c, blds, ctx) {
   let avail = Math.max(0, ctx.labor | 0);
   const jobB = blds.filter((b) => b.done && BUILDINGS[b.type].jobs && b.state !== 'ruined');
   for (const b of jobB) plan.set(b.id, 0);
-  const slots = (b) => BUILDINGS[b.type].jobs[1];
+  const slots = (b) => jobSlots(b);
   const runnable = (b) => {
     const d = BUILDINGS[b.type];
     if (d.needs === 'rare' && !ctx.rareOk) return 'rare';
     if (d.power < 0 && ctx.powerOk === false) return 'power';
-    if (d.consume) for (const k in d.consume) if (ctx.pool(k) < d.consume[k] * slots(b) * 3 && !(ctx.gross(k) > 0)) return 'input:' + k;
+    if (d.consume) for (const k in d.consume) if (ctx.pool(k) < d.consume[k] * slots(b) * outMul(b) * 3 && !(ctx.gross(k) > 0)) return 'input:' + k;
     // storage full for everything it makes: workers are worth more elsewhere
     if (d.produce && ctx.full && Object.keys(d.produce).every((k) => ctx.full(k))) return 'full';
     return '';
@@ -95,7 +96,7 @@ export function categorySummary(c, blds, plan) {
   for (const k of CATEGORIES) out[k] = { staffed: 0, slots: 0, prio: (c.wf?.prio || MODES.balanced)[k] };
   for (const b of blds) {
     const d = BUILDINGS[b.type]; if (!b.done || !d.jobs) continue;
-    const s = out[catOf(b.type)]; s.slots += d.jobs[1]; s.staffed += plan ? plan.get(b.id) || 0 : b.staffed || 0;
+    const s = out[catOf(b.type)]; s.slots += jobSlots(b); s.staffed += plan ? plan.get(b.id) || 0 : b.staffed || 0;
   }
   return out;
 }
@@ -103,7 +104,7 @@ export function categorySummary(c, blds, plan) {
 // Plain-language state of one building's staffing, as shown in its panel and tooltip.
 export function staffingText(b, why, defs = BUILDINGS, goodNames = {}) {
   const d = defs[b.type]; if (!d.jobs) return '';
-  const n = b.staffed || 0, s = d.jobs[1];
+  const n = b.staffed || 0, s = b.type ? jobSlots(b) : d.jobs[1];
   const head = `${n}/${s} ${d.jobs[0]}s`;
   const catName = { food: 'agriculture', industry: 'industry', research: 'research', commerce: 'commerce' };
   if (why === 'off') return `${head} — disabled by player`;

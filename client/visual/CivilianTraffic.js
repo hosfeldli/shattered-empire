@@ -10,6 +10,7 @@ export function drawTraffic(g, view, S, t) {
     if (budget <= 0) break;
     const ax = view.cx[a], ay = view.cy[a], bx = view.nx ? view.nx(b, ax) : view.cx[b], by = view.cy[b];
     if (!view.inView(ax, ay) && !view.inView(bx, by)) continue;
+    if (!S.vis[a] && !S.vis[b]) continue;              // traffic is live: only where we can see
     const d = view.dirTo(a, b); const ty = d >= 0 ? view.roadType(a, d) : 1;
     const n = Math.min(4, Math.ceil(lvl / 2.5));
     if (ty === 4) {

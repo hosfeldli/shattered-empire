@@ -1,5 +1,4 @@
-// Front-line warfare and logistics: occupancy, zones of control, activity-based supply,
-// finite-cargo convoys and field caches.
+// Front-line warfare: occupancy and zones of control; troops are always supplied.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Game } from '../server/sim/game.js';
@@ -66,87 +65,21 @@ test('aircraft overfly enemy-held ground', () => {
   assert.ok(closest <= 2, `the drone crossed the enemy line to its scouting area (closest ${closest})`);
 });
 
-test('cut-off units last longer standing still, and far longer in a finished trench', () => {
-  const g = sandbox(); g.sandbox = false;
-  const c = field(g, 4, 2);
-  g.civs[0].supply.fill(0); g.civs[0].supply.fill(0);
-  const still = place(g, 0, 'rifle_squad', at(c, -3)), dug = place(g, 0, 'rifle_squad', at(c, 3)), walker = place(g, 0, 'rifle_squad', at(c, 0, 2));
-  for (const u of [still, dug, walker]) { u.supply = 100; u.stance = 'passive'; }
-  g.fieldworks.set(dug.tile, { tile: dug.tile, owner: 0, type: 'basic', fx: 0, fy: -1, dir: 4, progress: 1, hp: 100, paid: true, state: 'complete', group: 0, at: 0, lastSeen: 0 });
-  // keep the walker marching back and forth
-  const legs = [at(c, -2, 2), at(c, 2, 2)]; let leg = 0;
-  const recompute = g.sched; void recompute;
-  run(g, 300, (i) => { g.civs[0].supply.fill(0); if (!walker.path.length) { leg ^= 1; g.orderMove(g.civs[0], [walker.id], legs[leg], false, 'line', { auth: 'player' }); } });
-  assert.ok(walker.supply < still.supply, `marching ${walker.supply.toFixed(0)} < standing ${still.supply.toFixed(0)}`);
-  assert.ok(still.supply < dug.supply - 10, `standing ${still.supply.toFixed(0)} < entrenched ${dug.supply.toFixed(0)}`);
-});
-
-test('a convoy loads real goods once, delivers by need, leaves a finite cache and returns', () => {
-  const g = new Game({ id: 'cv' + Math.random(), seed: 7, slots: [{ human: true }, { personality: 'builder' }], rebels: false });
-  const civ = g.civs[0], cap = g.capital(civ);
-  for (const k of Object.keys(civ.res)) civ.res[k] = 800;
-  civ.techs.add('motorization');
-  const ring = disk(cap.tile, 7).filter((t) => dist(t, cap.tile) >= 5 && open(g, t));
-  const front = ring[0];
-  const troops = []; for (let k = 0; k < 3; k++) { const u = place(g, 0, 'rifle_squad', front); u.supply = 10; troops.push(u); }
-  const truck = place(g, 0, 'supply_truck', cap.tile);
-  const food0 = civ.res.food, mun0 = civ.res.munitions;
-  const r = g.command(0, { c: 'supplyRun', units: troops.map((u) => u.id) });
-  assert.ok(r.reply && r.reply.supplyRun, r.error);
-  // loading: goods leave the stockpile exactly once and live only in the truck
-  let loaded = false, prev = { ...civ.res };
-  run(g, 900, () => {
-    if (!loaded && truck.convoy?.state === 'outbound') {
-      loaded = true; assert.ok(cargoTotal(truck.cargo) > 5);
-      // the loading tick changes the stockpile by exactly what went aboard
-      for (const k of ['food', 'munitions', 'fuel']) assert.ok(Math.abs((prev[k] - civ.res[k]) - (truck.cargo[k] || 0)) < 0.01, `${k} deducted once`);
-    }
-    prev = { ...civ.res };
-  });
-  assert.ok(loaded, 'the truck loaded and left');
-  assert.ok(troops.every((u) => u.supply > 30), `resupplied: ${troops.map((u) => Math.round(u.supply))}`);
-  assert.equal(truck.convoy.state, 'available', 'and came back');
-  assert.ok(cargoTotal(truck.cargo) < 0.5, 'unloaded');
-  void mun0;
-});
-
-test('a destroyed truck loses its cargo; trucks no longer supply by aura; save/restore keeps cargo in transit', () => {
-  const g = new Game({ id: 'cv2' + Math.random(), seed: 7, slots: [{ human: true }, { personality: 'builder' }], rebels: false });
-  const civ = g.civs[0], cap = g.capital(civ);
-  for (const k of Object.keys(civ.res)) civ.res[k] = 800;
-  const far = disk(cap.tile, 14).filter((t) => dist(t, cap.tile) >= 12 && open(g, t))[0];
-  const u = place(g, 0, 'rifle_squad', far); u.supply = 5;
-  const truck = place(g, 0, 'supply_truck', far);
-  run(g, 50);
-  assert.ok(!civ.supply[far] || u.supply > 5, 'sanity');
-  if (!civ.supply[far]) assert.ok(u.supply <= 5, 'a parked truck alone does not supply anyone');
-  truck.tile = cap.tile; truck.path = []; g.rebuildTileUnits();
-  g.command(0, { c: 'supplyRun', units: [u.id] });
-  run(g, 120, () => {});
-  const snap = serializeGame(g);
-  const g2 = restoreGame(snap);
-  const t2 = g2.units.get(truck.id);
-  assert.deepEqual(t2.cargo, truck.cargo, 'cargo survives save/restore');
-  assert.equal(t2.convoy?.state, truck.convoy?.state);
-  // destroy it: the goods are gone (not refunded)
-  const before = Object.values(civ.res).reduce((a, b) => a + b, 0);
-  g.units.delete(truck.id); g.rebuildTileUnits();
-  run(g, 20);
-  assert.ok(Object.values(civ.res).reduce((a, b) => a + b, 0) < before + 50, 'no refund of lost cargo');
-});
-
-test('automatic resupply sends one delivery at a time', () => {
-  const g = new Game({ id: 'cv3' + Math.random(), seed: 7, slots: [{ human: true }, { personality: 'builder' }], rebels: false });
-  const civ = g.civs[0], cap = g.capital(civ);
-  for (const k of Object.keys(civ.res)) civ.res[k] = 800;
-  const front = disk(cap.tile, 7).filter((t) => dist(t, cap.tile) >= 5 && open(g, t))[0];
-  const troops = []; for (let k = 0; k < 3; k++) { const u = place(g, 0, 'rifle_squad', front); troops.push(u); }
-  const r = g.command(0, { c: 'deploy', units: troops.map((u) => u.id), line: [front, at(front, 2)], behavior: 'hold' }).reply.deploy;
-  for (let k = 0; k < 3; k++) place(g, 0, 'supply_truck', cap.tile);
-  g.command(0, { c: 'supplyPolicy', formation: r.formation, auto: true, threshold: 50 });
-  let maxBusy = 0;
-  run(g, 600, () => { for (const u of troops) u.supply = Math.min(u.supply, 20); const busy = [...g.units.values()].filter((t) => t.type === 'supply_truck' && t.convoy && t.convoy.state !== 'available').length; maxBusy = Math.max(maxBusy, busy); });
-  assert.equal(maxBusy, 1, 'never more than one convoy for the same formation at once');
+test('troops are always supplied: no attrition deep in enemy land, recovery out of combat, no supply runs', () => {
+  const g = sandbox();
+  // far from any friendly territory, out of reach of anyone's guns
+  const cap = g.capital(g.civs[0]);
+  const away = [...Array(g.world.owner.length).keys()].find((t) => g.world.owner[t] < 0 && open(g, t) && dist(t, cap.tile) > 15 && ![...g.buildings.values()].some((b) => dist(b.tile, t) < 7) && ![...g.units.values()].some((x) => dist(x.tile, t) < 7));
+  const u = place(g, 0, 'rifle_squad', away);
+  u.stance = 'passive'; u.hp = u.maxHp * 0.5; u.lastCombat = -999;
+  const hp0 = u.hp;
+  run(g, 300, () => { u.lastCombat = -999; });
+  assert.ok(g.units.has(u.id), 'no attrition far from home');
+  assert.equal(u.supply, 100); assert.equal(u.outOfSupply, false);
+  assert.ok(u.hp > hp0, 'recovering out of combat');
+  assert.match(g.command(0, { c: 'supplyRun', units: [u.id] }).error, /supplied automatically/);
+  assert.ok(!g.defs.BUILDINGS.town.trains.includes('supply_truck'), 'no supply trucks to raise');
+  void serializeGame; void restoreGame; void cargoTotal; void H; void dist;
 });
 
 test('zones of control: no sliding along an enemy line, but stepping away is allowed', async () => {

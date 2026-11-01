@@ -19,6 +19,7 @@ function world(seed = 11) {
   civ.age = 3;
   // war with the other empire so targets are hostile
   g.diplomacy.rel(0, 1).state = 'war';
+  g.civs[1].ai = null;          // a passive target nation: its troops stay where the test puts them
   return g;
 }
 const land = (g, t) => !isWater(g.world.terr[t]) && Number.isFinite(TERRAIN[g.world.terr[t]].move) && g.tileB[t] < 0;
@@ -81,9 +82,10 @@ test('a bomber strike: passes over the target, drops its finite load, returns to
   const hp0 = stack.map((e) => e.hp);
   g.command(0, { c: 'airMission', units: [bomber.id], kind: 'strike', tile: tgtTile });
   let returned = false;
-  run(g, 900, () => { if (bomber.air.state === 'returning' || bomber.air.state === 'servicing') returned = true; });
+  const low = hp0.slice();   // troops recover out of combat, so track the worst each one took
+  run(g, 900, () => { if (bomber.air.state === 'returning' || bomber.air.state === 'servicing') returned = true; stack.forEach((e, i) => { low[i] = Math.min(low[i], g.units.has(e.id) ? e.hp : 0); }); });
   assert.ok(returned, 'came home after the load was spent');
-  const hit = stack.filter((e, i) => !g.units.has(e.id) || e.hp < hp0[i]).length;
+  const hit = stack.filter((e, i) => low[i] < hp0[i]).length;
   assert.ok(hit >= 3, `bombs hit the stacked squads (${hit} of 4)`);
 });
 

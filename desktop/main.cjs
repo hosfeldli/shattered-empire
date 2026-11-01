@@ -8,6 +8,16 @@ const { app, BrowserWindow, ipcMain, Menu, shell, protocol, net } = require('ele
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
+// performance: use the GPU even where Chromium's blocklist is cautious, rasterise on it, prefer the
+// discrete GPU on dual-GPU Macs, and never throttle the game when the window is in the background
+// (the match keeps running on the server; the client must keep up with its snapshots)
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('force_high_performance_gpu');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+
 const SERVER = (process.env.SE_SERVER || 'https://game.liamhosfeld.com').replace(/\/$/, '');
 const CLIENT_DIR = path.join(__dirname, 'app', 'client');
 let win = null, steam = null, pendingJoin = null;
@@ -28,7 +38,7 @@ function serveClient() {
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 1024, minHeight: 640, backgroundColor: '#122025', title: 'Shattered Empires', show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, additionalArguments: ['--se-server=' + SERVER] },
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, spellcheck: false, additionalArguments: ['--se-server=' + SERVER] },
   });
   win.once('ready-to-show', () => win.show());
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });

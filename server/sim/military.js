@@ -157,7 +157,7 @@ export function unitsStep(g, dt) {
           const n = NB[u.tile * 6 + d]; if (n < 0 || !Number.isFinite(field[n])) continue;
           const c = stepCost(g, civ, u.tile, n, u.type); if (!Number.isFinite(c)) continue;
           if (stepBlock(g, u, n)) continue;          // enemy-held or controlled ground: steer around
-          const v = field[n] + (isAir(u) ? 0 : (g.tileLoad.get(n) || 0) * 0.35);
+          const v = field[n] + (isAir(u) ? 0 : (g.tileLoad.get(n) || 0) * 0.15);
           if (v < bv) { bv = v; best = n; }
         }
         if (best >= 0) u.path = [best];
@@ -418,33 +418,24 @@ export function recomputeSupply(g) {
   }
 }
 
+// Troops are always supplied: there is no supply radius, attrition or convoy micro-management.
+// The army is fed and maintained from the national stockpile (army upkeep in the economy), and
+// units out of combat slowly recover strength, faster in their own territory and next to a fortress.
 export function supplyStep(g, dt) {
   for (const u of g.units.values()) {
     u.activity = activityOf(g, u);
     const civ = g.civs[u.owner];
     const def = UNITS[u.type];
-    const air = !!def.air;
-    // aircraft carry their own fuel and ammunition and are only replenished by servicing at a base
-    if (air) { u.outOfSupply = false; continue; }
-    const inSup = g.sandbox || (air ? civ.airSupply[u.tile] === 1 : civ.supply[u.tile] === 1);
-    const fed = civ.res.food > 0 && (!air || civ.res.fuel > 0);
-    u.outOfSupply = !inSup || !fed;
-    if (inSup && fed) {
-      u.supply = Math.min(100, u.supply + (air ? 25 : 15) * dt);
-      if (air) civ.res.fuel = Math.max(0, civ.res.fuel - 0.03 * dt);
-      if (g.time - u.lastCombat > 5 && u.hp < u.maxHp) {
-        let heal = u.maxHp * 0.03 * dt * (u.supply >= 80 ? 1 : u.supply >= 50 ? 0.6 : 0.3);
-        const nearFort = disk(u.tile, 1).some((t) => { const b = g.buildingAtTile(t); return b && b.owner === u.owner && BUILDINGS[b.type].heals; });
-        if (nearFort) heal *= 2;
-        const part = def.move === 'infantry' ? 'food' : 'steel';
-        if (def.age >= 1) { if (civ.res[part] >= 0.05) { civ.res[part] -= 0.05 * dt; book(civ, 'army', part, -0.05 * dt); } else heal *= 0.4; }
-        u.hp = Math.min(u.maxHp, u.hp + heal);
-      }
-    } else {
-      // cut off: reserves drain by what the unit is doing (entrenched troops last far longer)
-      u.supply = Math.max(0, u.supply - (air ? 6 : ACTIVITY[u.activity]?.loss ?? 2.5) * dt);
-      if (u.supply <= 0 && air) damageUnit(g, u, u.maxHp * 0.06 * dt, null, 'fuel');
-      else if (u.supply <= 0 && !def.civilian) damageUnit(g, u, u.maxHp * 0.015 * dt, null, 'attrition');
+    u.outOfSupply = false;
+    if (def.air) continue;                     // aircraft are refuelled and rearmed at their base
+    u.supply = 100;
+    if (g.time - u.lastCombat > 6 && u.hp < u.maxHp) {
+      const home = g.world.owner[u.tile] === u.owner;
+      let heal = u.maxHp * (home ? 0.03 : 0.012) * dt;
+      if (disk(u.tile, 1).some((t) => { const b = g.buildingAtTile(t); return b && b.owner === u.owner && BUILDINGS[b.type].heals; })) heal *= 2;
+      const part = def.move === 'infantry' ? 'food' : 'steel';
+      if (def.age >= 1) { if (civ.res[part] >= 0.05) { civ.res[part] -= 0.05 * dt; book(civ, 'army', part, -0.05 * dt); } else heal *= 0.4; }
+      u.hp = Math.min(u.maxHp, u.hp + heal);
     }
   }
 }

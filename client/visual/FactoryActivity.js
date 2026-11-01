@@ -9,7 +9,7 @@ export function drawFactories(g, view, S, t) {
   for (const b of S.buildings.values()) {
     if (!b.d || b.st === 'planned') continue;
     const x = view.cx[b.t], y = view.cy[b.t];
-    if (!view.inView(x, y, 40)) continue;
+    if (!view.inView(x, y, 40) || !S.vis[b.t]) continue;      // a remembered building does not smoke for us
     const active = b.a && b.st !== 'damaged';
     if (SMOKE[b.ty] !== undefined && active) {
       for (let k = 0; k < 5; k++) {

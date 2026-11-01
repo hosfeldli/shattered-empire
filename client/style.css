@@ -631,3 +631,5 @@ ul.cons li { margin-bottom: 6px; }
 .steam-friends li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .steam-friends li.empty { color: var(--chalk-dim); border: 0; }
 #btnSteamInvite { margin: 4px 0 10px; }
+.lvl { margin: 4px 0; } .lvl b { color: var(--ochre); }
+.ctier { margin: 2px 0 6px; font-size: 12px; } .ctier .muted { font-size: 11px; }

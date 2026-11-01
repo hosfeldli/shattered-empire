@@ -2,7 +2,7 @@
 // units, server-computed paths and placements) plus purely decorative ambient life (client/visual).
 /* global PIXI */
 import { AmbientWorld } from './visual/AmbientWorld.js';
-import { lodFor } from './visual/VisualLOD.js';
+import { lodFor, h as hh } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
 import { UnitAtlas, attachArt, updateArt } from './visual/UnitSpriteManager.js';
 import { drawFieldworks } from './visual/FieldworksVisuals.js';
@@ -44,7 +44,9 @@ export class View {
 
   async init() {
     const app = new PIXI.Application();
-    await app.init({ resizeTo: this.host, background: 0x0d1416, antialias: true, autoDensity: true, resolution: Math.min(2, window.devicePixelRatio || 1) });
+    // the desktop app renders at the display's full density on the discrete GPU; browsers stay at <=2x
+    const desk = !!window.desktop;
+    await app.init({ resizeTo: this.host, background: 0x0d1416, antialias: true, autoDensity: true, powerPreference: 'high-performance', resolution: Math.min(desk ? 3 : 2, window.devicePixelRatio || 1) });
     this.app = app;
     this.host.appendChild(app.canvas);
     this.atlas = new UnitAtlas(); await this.atlas.load();
@@ -77,7 +79,7 @@ export class View {
       for (const k of [-1, 1]) { const m = new PIXI.Graphics(g.context); m.x = (top ? this.period + k : k) * this.P; g.parent.addChildAt(m, i + 1); if (top) this.periodic.push({ o: m, k }); }
     };
     if (this.wrap) for (const o of [this.terrainLayer, this.overlayLayer, this.districtLayer]) this.periodic.push({ o, k: 0 });
-    for (const g of [this.borders, this.front, this.ruinsG, this.fwG]) this.mirrorOf(g);
+    for (const g of [this.borders, this.front, this.ruinsG, this.fwG, this.decalG, this.wreckG]) this.mirrorOf(g);
     this.chunks = [];
     const ccols = Math.ceil(this.W / CH), crows = Math.ceil(this.H / CH);
     for (let cr = 0; cr < crows; cr++) for (let cc = 0; cc < ccols; cc++) {
@@ -231,6 +233,40 @@ export class View {
     for (const ch of touched) this.paintChunkTiles(ch, all);
     for (const ch of touched) ch.tTex.source.update();
   }
+  // Rivers meander: each river hex carries a gently offset bend point; the channel runs as a smooth
+  // curve from the edge it enters by, round that point, to the edge it leaves by, widening
+  // downstream. Painted as a damp bank, the water, then a glint of light along it. Every curve ends
+  // on a hex edge, so repainting one hex never leaves a gap in its neighbours' rivers.
+  paintRivers(ctx, tiles) {
+    const S = this.S;
+    const riv = (t) => t >= 0 && S.terr[t] !== 255 && (S.flags[t] & 1) && S.fdir[t] >= 0;
+    const bend = (t, ax) => { const x = this.near(this.cx0[t], ax); return [x + (hh(t, 1) - 0.5) * 6, this.cy[t] + (hh(t, 2) - 0.5) * 5]; };
+    const segs = [];
+    for (const i of tiles) {
+      if (!riv(i)) continue;
+      const x0 = this.cx0[i], n = this.nb(i, S.fdir[i]); if (n < 0) continue;
+      const P = bend(i, x0), Pn = riv(n) ? bend(n, x0) : [this.near(this.cx0[n], x0), this.cy[n]];
+      const out = [(P[0] + Pn[0]) / 2, (P[1] + Pn[1]) / 2];
+      const w = (1.3 + S.fb[i] * 0.95) * (S.flags[i] & 16 ? 0.55 : 1);
+      const ups = [];
+      for (let d = 0; d < 6; d++) { const u = this.nb(i, d); if (riv(u) && this.nb(u, S.fdir[u]) === i) { const Pu = bend(u, x0); ups.push([(P[0] + Pu[0]) / 2, (P[1] + Pu[1]) / 2, (1.3 + S.fb[u] * 0.95) * (S.flags[u] & 16 ? 0.55 : 1)]); } }
+      if (!ups.length) ups.push([P[0] - (out[0] - P[0]) * 0.4, P[1] - (out[1] - P[1]) * 0.4, w * 0.6]);   // a spring
+      for (const u of ups) segs.push({ a: u, c: P, b: out, w0: u[2], w1: w, dry: S.flags[i] & 16, sea: !riv(n), end: Pn });
+    }
+    if (!segs.length) return;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const stroke = (sg, wd, style, alpha) => {
+      ctx.globalAlpha = alpha; ctx.strokeStyle = style;
+      // two halves so the width can grow along the curve
+      const m = [(sg.a[0] + 2 * sg.c[0] + sg.b[0]) / 4, (sg.a[1] + 2 * sg.c[1] + sg.b[1]) / 4];
+      ctx.lineWidth = wd(sg.w0 * 0.5 + sg.w1 * 0.5 - (sg.w1 - sg.w0) * 0.25); ctx.beginPath(); ctx.moveTo(sg.a[0], sg.a[1]); ctx.quadraticCurveTo((sg.a[0] + sg.c[0]) / 2, (sg.a[1] + sg.c[1]) / 2, m[0], m[1]); ctx.stroke();
+      ctx.lineWidth = wd(sg.w1); ctx.beginPath(); ctx.moveTo(m[0], m[1]); ctx.quadraticCurveTo((sg.c[0] + sg.b[0]) / 2, (sg.c[1] + sg.b[1]) / 2, sg.b[0], sg.b[1]); if (sg.sea) ctx.lineTo(sg.b[0] + (sg.end[0] - sg.b[0]) * 0.6, sg.b[1] + (sg.end[1] - sg.b[1]) * 0.6); ctx.stroke();
+    };
+    for (const sg of segs) stroke(sg, (w) => w + 2.6, sg.dry ? '#6a6450' : '#3e5a34', 0.35);                 // damp, darker banks
+    for (const sg of segs) stroke(sg, (w) => w, sg.dry ? '#7d98aa' : sg.w1 > 3.5 ? '#2f6fae' : '#3a82c0', 1);
+    for (const sg of segs) if (sg.w1 > 1.8) stroke(sg, (w) => Math.max(0.5, w * 0.28), '#9cccef', 0.45);   // light on the water
+    ctx.globalAlpha = 1;
+  }
   paintChunkTiles(ch, tiles) {
     const S = this.S, ctx = ch.tctx;
     const mine = [...tiles].filter((i) => { const x = this.cx0[i], y = this.cy[i]; return x + R + 1 > ch.x0 && x - R - 1 < ch.x1 && y + R + 1 > ch.y0 && y - R - 1 < ch.y1; });
@@ -242,12 +278,7 @@ export class View {
     }
     for (const i of mine) paintTerrainDetail(ctx, this, S, i, R, CORNERS);
     ctx.lineCap = 'round';
-    for (const i of mine) {
-      if (S.terr[i] === 255 || !(S.flags[i] & 1) || S.fdir[i] < 0) continue;
-      const n = this.nb(i, S.fdir[i]); if (n < 0) continue;
-      ctx.strokeStyle = S.flags[i] & 16 ? '#6f8fa8' : '#3f86c4'; ctx.lineWidth = (1.4 + S.fb[i] * 0.8) * (S.flags[i] & 16 ? 0.5 : 1);
-      ctx.beginPath(); ctx.moveTo(this.cx0[i], this.cy[i]); ctx.lineTo(this.near(this.cx0[n], this.cx0[i]), this.cy[n]); ctx.stroke();
-    }
+    this.paintRivers(ctx, mine);
     for (const i of mine) {
       if (S.terr[i] === 255 || !S.road[i]) continue;
       const x = this.cx0[i], y = this.cy[i];
@@ -658,8 +689,21 @@ export class View {
         }
         if (this.wrap && Math.abs(tx - s.dx) > this.P / 2) s.dx += Math.round((tx - s.dx) / this.P) * this.P;   // crossed the seam
         const ox = s.dx, oy = s.dy;
-        s.dx += (tx - s.dx) * k1; s.dy += (ty - s.dy) * k1;
-        if (Math.hypot(s.dx - ox, s.dy - oy) > 0.05) s.heading = Math.atan2(s.dy - oy, s.dx - ox);
+        if (adef.air && !(u.air && u.air.grounded) && u.type !== 'helicopter' && Math.hypot(tx - s.dx, ty - s.dy) < 260) {
+          // fixed-wing flight: always moving forward at the type's speed and turning at its rate,
+          // chasing the point the server puts it at — so it banks into turns, overshoots and comes
+          // round in a loiter orbit, and makes straight runs over a target instead of sliding
+          const sp0 = FLY[adef.role] || FLY.strike, d = Math.hypot(tx - s.dx, ty - s.dy);
+          let hd = s.heading ?? Math.atan2(ty - s.dy, tx - s.dx);
+          const want = Math.atan2(ty - s.dy, tx - s.dx), dh = Math.atan2(Math.sin(want - hd), Math.cos(want - hd));
+          hd += Math.max(-sp0[1] * dt, Math.min(sp0[1] * dt, dh));
+          const v = Math.min(sp0[0] * 2.6, Math.max(sp0[0], d * 1.3));
+          s.dx += Math.cos(hd) * v * dt; s.dy += Math.sin(hd) * v * dt; s.heading = hd;
+        } else {
+          const kk = adef.air && u.type === 'helicopter' ? Math.min(1, dt * 3) : k1;   // helicopters drift, they do not snap
+          s.dx += (tx - s.dx) * kk; s.dy += (ty - s.dy) * kk;
+          if (Math.hypot(s.dx - ox, s.dy - oy) > 0.05) s.heading = Math.atan2(s.dy - oy, s.dx - ox);
+        }
         const def = S.defs.UNITS[u.type];
         const aloft = def.air && !(u.air && u.air.grounded);
         // altitude: jets fly high (long shadow offset), helicopters and drones low; parked aircraft sit on the ground
@@ -1005,6 +1049,8 @@ export function findMatch(S, type, key) {
 
 // Chain directed border edges (all taken from hexes of one owner, so the land is always on the same
 // side) into polylines and offset them a little toward the land. Returns arrays of [x, y] points.
+// fixed-wing flight model: [cruise speed in world units per second, turn rate in radians per second]
+const FLY = { fighter: [80, 2.6], bomber: [46, 1.0], recon: [38, 1.4], oneway: [62, 2.2], strike: [52, 2.0], support: [40, 1.8] };
 function chainBorder(segs, inset = 1.3) {
   const key = (x, y) => Math.round(x * 4) + ',' + Math.round(y * 4);
   const from = new Map();

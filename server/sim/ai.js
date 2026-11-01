@@ -256,7 +256,7 @@ export class AI {
       for (const [u, ids] of wanted) this.cmd({ c: 'batchTrain', buildings: ids, unit: u, count: Math.min(gap, ids.length * 2) });
     }
     const queuedType = (t) => [...g.buildings.values()].some((b) => b.owner === civ.id && b.queue.some((q) => q.unit === t));
-    if (civ.techs.has('motorization') && this.campaign && !queuedType('supply_truck') && !this.myUnits.some((u) => u.type === 'supply_truck')) { const h = this.hub(); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'supply_truck' }); }
+    // (troops are always supplied: no supply trucks to raise)
     if (!this.myUnits.some((u) => u.type === 'engineer') && !queuedType('engineer') && civ.res.materials > 80) { const h = this.hub(); if (h) this.cmd({ c: 'train', building: h.buildingId, unit: 'engineer' }); }
     const scouts = this.myUnits.filter((u) => u.type === 'scout_buggy');
     const unmet = g.civs.some((o) => o !== civ && o.alive && !o.isRebel && g.diplomacy.rel(civ.id, o.id).state === 'unmet');

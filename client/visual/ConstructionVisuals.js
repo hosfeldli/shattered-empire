@@ -7,7 +7,7 @@ export function drawConstruction(g, view, S, t) {
   for (const b of S.buildings.values()) {
     if (b.d) continue;
     const x = view.cx[b.t], y = view.cy[b.t];
-    if (!view.inView(x, y, 40)) continue;
+    if (!view.inView(x, y, 40) || !S.vis[b.t]) continue;
     if (b.st === 'planned') { for (const [dx, dy] of [[-8, -8], [8, -8], [-8, 8], [8, 8]]) g.rect(x + dx - 0.6, y + dy - 0.6, 1.2, 1.2).fill({ color: 0xf1c75b }); continue; }
     const p = (b.p || 0) / 100;
     const top = y + 8 - 16 * p;

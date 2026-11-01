@@ -7,7 +7,6 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 export function unitKind(D, type) {
   const d = D.UNITS[type];
   if (d.air) return d.role === 'recon' ? 'recon' : d.role === 'oneway' ? 'oneway' : 'air';
-  if (type === 'supply_truck') return 'truck';
   if (type === 'colonist') return 'colonist';
   if (d.civilian) return 'civil';
   return 'ground';
@@ -33,7 +32,7 @@ export function canFly(def, kind) {
   return kind === 'patrol' || kind === 'strike' || kind === 'support';
 }
 const CMD_MISSION = { patrolMode: 'patrol', strikeMode: 'strike', scoutMode: 'scout', supportMode: 'support' };
-const MORE = [['stop', 'Stop'], ['withdraw', 'Withdraw (X)'], ['engageMode', 'Engage'], ['focusMode', 'Focus fire'], ['defendMode', 'Defend area'], ['army', 'Form army'], ['spread', 'Spread out'], ['supply', 'Request supply'], ['disband', 'Disband']];
+const MORE = [['stop', 'Stop'], ['withdraw', 'Withdraw (X)'], ['engageMode', 'Engage'], ['focusMode', 'Focus fire'], ['defendMode', 'Defend area'], ['army', 'Form army'], ['spread', 'Spread out'], ['disband', 'Disband']];
 
 export class CommandBar {
   constructor(S, el, act) { this.S = S; this.el = el; this.act = act; this.more = false; this.html = ''; el.addEventListener('click', (e) => this.onClick(e)); }
