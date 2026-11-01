@@ -19,6 +19,7 @@ try {
   await page.fill('#playerName', 'Vis');
   await page.click('.advanced summary').catch(() => {});
   await page.fill('#seed', seed).catch(() => {});
+  await page.click('[data-mode=watch]');
   await page.selectOption('#watchCount', '3').catch(() => {});
   await page.click('#btnWatch');
   await page.waitForFunction(() => window.__S && window.__S.ready, null, { timeout: 60000 });

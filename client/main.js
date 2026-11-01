@@ -31,10 +31,30 @@ function lobbyStatus(t) { $('lobbyStatus').textContent = t || ''; }
 function playerName() { const n = $('playerName').value.trim() || 'Founder'; store.set('se.name', n); return n; }
 $('playerName').value = store.get('se.name') || '';
 
+// The menu backdrop: a freshly generated continent drawn as a hex map (the server sends a tiny
+// preview, one colour per hex; the hexes, relief shading and coastlines are drawn here).
 function lobbyArt() {
   const c = $('lobbyCanvas'); const img = new Image();
-  img.onload = () => { c.width = img.width; c.height = img.height; c.getContext('2d').drawImage(img, 0, 0); c.style.objectFit = 'cover'; };
-  img.src = api('/api/preview?seed=') + ((Math.random() * 1e6) | 0);
+  img.onload = () => {
+    const sc = 2, W = Math.round((img.width - sc / 2) / sc), H = Math.round(img.height / sc);
+    const src = document.createElement('canvas'); src.width = img.width; src.height = img.height;
+    const sx = src.getContext('2d'); sx.drawImage(img, 0, 0); const px = sx.getImageData(0, 0, img.width, img.height).data;
+    const R = 9, SQ = Math.sqrt(3);
+    c.width = Math.ceil(W * R * SQ + R * SQ / 2); c.height = Math.ceil(H * R * 1.5 + R / 2);
+    const g = c.getContext('2d');
+    const col = (q, r) => { const x = Math.min(img.width - 1, q * sc + (r & 1) * (sc / 2)), y = r * sc, o = (y * img.width + x) * 4; return [px[o], px[o + 1], px[o + 2]]; };
+    const lum = (k) => 0.3 * k[0] + 0.59 * k[1] + 0.11 * k[2];
+    for (let r = 0; r < H; r++) for (let q = 0; q < W; q++) {
+      const k = col(q, r), cx = R * SQ * (q + 0.5 * (r & 1)) + R * SQ / 2, cy = R * 1.5 * r + R;
+      // light from the north-west: a hex brighter than its south-east neighbour stands up
+      const ne = col(Math.min(W - 1, q + (r & 1)), Math.min(H - 1, r + 1)), d = Math.max(-26, Math.min(26, (lum(k) - lum(ne)) * 0.6));
+      g.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + (i * Math.PI) / 3; g.lineTo(cx + Math.cos(a) * (R + 0.6), cy + Math.sin(a) * (R + 0.6)); }
+      g.fillStyle = `rgb(${k[0] + d | 0},${k[1] + d | 0},${k[2] + d | 0})`; g.fill();
+      g.strokeStyle = 'rgba(0,0,0,0.07)'; g.lineWidth = 1; g.stroke();
+    }
+    c.classList.add('ready');
+  };
+  img.src = api('/api/preview?scale=2&seed=') + ((Math.random() * 1e6) | 0);
 }
 async function refreshMatches() {
   try {
@@ -74,7 +94,7 @@ function renderDifficulty() {
   const d = $('aiDifficulty').value, fair = $('fairPlay').checked, t = DIFF_TEXT[d] || DIFF_TEXT.normal;
   const adv = d === 'brutal' && !fair ? 'Economy +15%, research +10%, army +20% (disclosed to every player)' : 'None';
   $('diffName').textContent = { easy: 'Relaxed', normal: 'Standard', hard: 'Hard', expert: 'Expert', brutal: 'Brutal' }[d];
-  $('diffFair').textContent = adv === 'None' ? '· fair play' : '· with economic help';
+  $('diffFair').textContent = adv === 'None' ? '(fair play)' : '(with economic help)';
   $('diffInfo').innerHTML = `<dl class="kv"><dt>Challenge</dt><dd>${t[0]}</dd><dt>Strategic planning</dt><dd>${t[1]}</dd><dt>Army composition</dt><dd>${t[2]}</dd><dt>Military coordination</dt><dd>${t[3]}</dd><dt>Economic advantages</dt><dd class="${adv === 'None' ? 'good' : 'warn'}">${adv}</dd></dl>`;
   for (const b of document.querySelectorAll('#diffSeg button')) b.classList.toggle('on', b.dataset.diff === d);
   const n = +$('aiCount').value || 1, rows = $('rivalRows'), cur = rows.children.length;
@@ -97,6 +117,8 @@ async function steamInit() {
   $('steamFriends').hidden = false;
   if (!st.available) { $('steamNote').textContent = st.error || 'Steam is not running: start Steam to play with friends.'; $('btnSteamRefresh').hidden = true; return; }
   $('steamNote').textContent = `Signed in to Steam as ${st.name}. Host a multiplayer match and invite friends from the waiting room, or join a friend's match.`;
+  // your Steam name is who you play as
+  if (st.name) { const n = $('playerName'); n.value = st.name.slice(0, 24); n.readOnly = true; n.title = 'Your Steam name'; n.closest('.field')?.classList.add('steam'); }
   $('btnSteamInvite').hidden = false;
 }
 async function steamLobbies() {
@@ -116,6 +138,32 @@ $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }
 $('btnStartNow').addEventListener('click', () => net.send({ t: 'start' }));
 $('btnLeaveRoom').addEventListener('click', () => location.reload());
+// main menu: one mode at a time; its settings and its one action button show on the right
+function setLobbyMode(mode) {
+  for (const b of document.querySelectorAll('.modes [data-mode]')) { const on = b.dataset.mode === mode; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); }
+  for (const p of document.querySelectorAll('.mode-panel')) p.hidden = p.dataset.panel !== mode;
+  for (const b of document.querySelectorAll('.go [data-for]')) b.hidden = b.dataset.for !== mode;
+  for (const f of document.querySelectorAll('.advanced .world-only')) f.hidden = mode === 'sandbox';
+  if (mode === 'mp') refreshMatches();
+  store.set('se.mode', mode); lobbyStatus('');
+}
+document.querySelector('.modes').addEventListener('click', (e) => { const b = e.target.closest('[data-mode]'); if (b) setLobbyMode(b.dataset.mode); });
+setLobbyMode(['ai', 'mp', 'watch', 'sandbox'].includes(store.get('se.mode')) ? store.get('se.mode') : 'ai');
+// desktop app: version and self-update (the app downloads updates in the background)
+const upd = window.desktop?.update || null;
+function showUpdate(st) {
+  const pill = $('updatePill'); if (!st) return;
+  if (st.current) $('appVersion').textContent = 'Version ' + st.current;
+  const txt = { downloading: `Downloading update ${st.version}${st.progress ? ` (${st.progress}%)` : ''}`, ready: `Update ${st.version} ready: restart to install`, installing: 'Installing the update…', manual: `Version ${st.version} is out: ${st.note}`, error: 'Update check failed: try again' }[st.state];
+  pill.hidden = !txt; if (txt) pill.textContent = txt;
+  pill.className = 'pill ' + (st.state === 'ready' ? 'go' : st.state === 'error' ? 'bad' : '');
+  pill.disabled = st.state === 'downloading' || st.state === 'installing';
+  if (st.state === 'ready' && S.ready && !showUpdate.told) { showUpdate.told = true; hud?.toast({ text: `Update ${st.version} is ready. It installs when you restart the game (main menu).`, kind: 'info', level: 'minor' }); }
+}
+if (upd) {
+  upd.status().then(showUpdate); upd.onStatus(showUpdate);
+  $('updatePill').addEventListener('click', async () => { const st = await upd.status(); if (st.state === 'ready') { const r = await upd.install(); if (!r?.ok) lobbyStatus(r?.error || 'Could not install the update.'); } else if (st.state === 'error' || st.state === 'manual') upd.check(); });
+} else window.desktop?.info?.().then((i) => { if (i?.version) $('appVersion').textContent = 'Version ' + i.version; });
 const last = JSON.parse(store.get('se.session') || 'null');
 if (last) { $('btnRejoin').hidden = false; $('btnRejoin').addEventListener('click', async () => { await ensureNet(); net.session = last; net.send({ t: 'rejoin', ...last }); }); }
 

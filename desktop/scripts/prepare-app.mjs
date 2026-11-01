@@ -16,10 +16,14 @@ fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
 const pixi = [desktop, root].map((d) => path.join(d, 'node_modules', 'pixi.js', 'dist', 'pixi.min.js')).find((f) => fs.existsSync(f));
 if (!pixi) throw new Error('pixi.js is not installed: run npm install in desktop/');
 fs.copyFileSync(pixi, path.join(out, 'vendor', 'pixi.min.js'));
-// keep the app's version in step with the game
+// keep the app's version in step with the game. Release builds set SE_VERSION (the game's
+// major.minor plus the CI run number) so every published build is newer than the last one and
+// installed apps update themselves to it.
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const dpkg = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8'));
-if (dpkg.version !== pkg.version) { dpkg.version = pkg.version; fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify(dpkg, null, 2) + '\n'); }
+const version = process.env.SE_VERSION || pkg.version;
+if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('SE_VERSION must look like 1.2.3, got ' + version);
+if (dpkg.version !== version) { dpkg.version = version; fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify(dpkg, null, 2) + '\n'); }
 fs.mkdirSync(path.join(desktop, 'build'), { recursive: true });
 fs.writeFileSync(path.join(desktop, 'build', 'steam_appid.txt'), '480\n');   // Spacewar: Valve's public test app
-console.log('client bundled into', out, 'version', pkg.version);
+console.log('client bundled into', out, 'version', version);

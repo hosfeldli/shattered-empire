@@ -8,6 +8,12 @@ const server = arg ? arg.slice('--se-server='.length) : 'https://game.liamhosfel
 contextBridge.exposeInMainWorld('desktop', {
   server,
   info: () => ipcRenderer.invoke('se:info'),
+  update: {
+    status: () => ipcRenderer.invoke('se:update-status'),
+    check: () => ipcRenderer.invoke('se:update-check'),
+    install: () => ipcRenderer.invoke('se:update-install'),
+    onStatus: (fn) => ipcRenderer.on('se-update', (_e, s) => fn(s)),
+  },
   steam: {
     status: () => ipcRenderer.invoke('se:steam-status'),
     host: (matchCode, name) => ipcRenderer.invoke('se:steam-host', matchCode, name),

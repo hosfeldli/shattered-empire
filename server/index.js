@@ -48,9 +48,9 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/downloads') { downloads.manifest().then((m) => { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-cache' }); res.end(JSON.stringify(m)); }); return; }
   if (url.pathname.startsWith('/download/file/')) { downloads.file(decodeURIComponent(url.pathname.slice(15)), res).catch((e) => { log.error('download', e); if (!res.headersSent) res.writeHead(502); res.end(); }); return; }
   if (url.pathname === '/api/preview') {
-    const seed = (+url.searchParams.get('seed') || 1) % 1000000;
+    const seed = (+url.searchParams.get('seed') || 1) % 1000000, scale = Math.max(2, Math.min(12, +url.searchParams.get('scale') || 6));
     res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600' });
-    return res.end(continentPreview(seed));
+    return res.end(continentPreview(seed, scale));
   }
   if (!SERVE_CLIENT) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('Shattered Empires is played in the desktop app: https://game.liamhosfeld.com/'); }
   // ---- development and tests only: the client, served the way the desktop app bundles it

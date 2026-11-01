@@ -193,6 +193,7 @@ test('spectator: AI-only match without fog, follow another empire, pause, orders
   const p = await ctx.newPage();
   p.on('pageerror', (e) => { pageErrors.push('spectator: ' + String(e && e.stack || e)); });
   await p.goto(`http://127.0.0.1:${PORT}/`);
+  await p.click('[data-mode=watch]');
   await p.selectOption('#watchCount', '3');
   await p.click('#btnWatch');
   await p.waitForFunction(() => window.__S && window.__S.ready && window.__S.spectator && window.__S.econ, null, { timeout: 30000 });

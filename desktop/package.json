@@ -35,6 +35,8 @@
       "main.cjs",
       "preload.cjs",
       "steam.cjs",
+      "updater.cjs",
+      "update-core.cjs",
       "app/**",
       "node_modules/**",
       "package.json"
@@ -50,6 +52,13 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "arm64",
             "x64"
@@ -72,8 +81,15 @@
       "artifactName": "ShatteredEmpires-${version}-win-${arch}-setup.${ext}"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Shattered Empires",
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false
     },
     "afterPack": "scripts/adhoc-sign.cjs"
   }

@@ -18,6 +18,9 @@ concurrency:
 
 env:
   BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
+  # every published build gets a higher version (game major.minor + run number), so installed
+  # apps see it and update themselves; the run number is shared by the build and publish jobs
+  RUN_NUMBER: ${{ github.run_number }}
 
 jobs:
   build:
@@ -32,6 +35,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Version
+        shell: bash
+        run: echo "SE_VERSION=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").$RUN_NUMBER" >> "$GITHUB_ENV"
       - name: Install
         working-directory: desktop
         run: npm install --no-audit --no-fund
@@ -46,6 +52,7 @@ jobs:
           name: desktop-${{ matrix.os }}
           path: |
             desktop/dist/*.dmg
+            desktop/dist/*.zip
             desktop/dist/*.exe
           if-no-files-found: error
 
@@ -72,6 +79,6 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
       - name: Publish to game.liamhosfeld.com/download
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").$RUN_NUMBER"
           DOWNLOAD_BUCKET="$BUCKET" bash desktop/scripts/publish.sh dist-all "$VERSION"
           echo "### Desktop $VERSION published: https://game.liamhosfeld.com/download" >> "$GITHUB_STEP_SUMMARY"

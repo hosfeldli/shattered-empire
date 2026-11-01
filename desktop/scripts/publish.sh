@@ -12,7 +12,7 @@ VERSION="${2:-$(node -p "require('$here/package.json').version")}"
 BUCKET="${DOWNLOAD_BUCKET:-${SNAPSHOT_BUCKET:-stem-471602-se-snapshots}}"
 tmp="$(mktemp -d)"
 node "$here/scripts/manifest.mjs" "$DIST" "$VERSION" > "$tmp/new.json"
-for f in "$DIST"/*.dmg "$DIST"/*.exe "$DIST"/*.AppImage; do
+for f in "$DIST"/*.dmg "$DIST"/*.zip "$DIST"/*.exe "$DIST"/*.AppImage; do
   [ -f "$f" ] || continue
   gcloud storage cp "$f" "gs://$BUCKET/downloads/$VERSION/$(basename "$f")"
 done

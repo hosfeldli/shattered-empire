@@ -20,7 +20,7 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 
 const SERVER = (process.env.SE_SERVER || 'https://game.liamhosfeld.com').replace(/\/$/, '');
 const CLIENT_DIR = path.join(__dirname, 'app', 'client');
-let win = null, steam = null, pendingJoin = null;
+let win = null, steam = null, pendingJoin = null, updater = null;
 
 // app://game/... -> the bundled client (standard + secure so ES modules, fetch and WebSockets work)
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -68,12 +68,17 @@ ipcMain.handle('se:steam-lobbies', async () => { try { return await getSteam().f
 ipcMain.handle('se:steam-join', async (_e, id) => { try { return { ok: true, match: await getSteam().joinLobby(BigInt(id)) }; } catch (e) { return { ok: false, error: e.message }; } });
 ipcMain.handle('se:steam-leave', () => { steam?.leave(); return true; });
 ipcMain.handle('se:info', () => ({ version: app.getVersion(), server: SERVER, platform: process.platform }));
+// self-update (see updater.cjs)
+ipcMain.handle('se:update-status', () => updater?.status() || { state: 'idle' });
+ipcMain.handle('se:update-check', () => updater?.check());
+ipcMain.handle('se:update-install', () => updater?.install() || { ok: false, error: 'updater not running' });
 
 function menu() {
   const tpl = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: 'Game', submenu: [
       { label: 'Invite Steam friends', click: () => steam?.invite() },
+      { label: 'Check for updates', click: () => updater?.check() },
       { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => win?.reload() },
       { type: 'separator' }, process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
     ] },
@@ -93,6 +98,9 @@ else {
   app.on('second-instance', (_e, argv) => { const id = lobbyArg(argv); if (id) getSteam().joinLobby(id).catch(() => {}); win?.show(); win?.focus(); });
   app.whenReady().then(() => {
     serveClient(); menu(); createWindow();
+    const { Updater } = require('./updater.cjs');
+    updater = new Updater({ server: SERVER, send: (s) => { if (win && !win.isDestroyed()) win.webContents.send('se-update', s); }, log: (...a) => console.log('[update]', ...a) });
+    updater.start();
     const id = lobbyArg(process.argv); if (id) getSteam().joinLobby(id).catch(() => {});
     else try { getSteam(); } catch { /* steam optional */ }
     app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });

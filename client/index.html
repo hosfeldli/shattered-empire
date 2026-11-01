@@ -16,66 +16,103 @@
   <!-- Lobby -->
   <section id="lobby" class="screen">
     <div class="lobby-map" aria-hidden="true"><canvas id="lobbyCanvas"></canvas></div>
-    <div class="lobby-panel">
-      <h1 class="title"><span>Shattered</span><span>Empires</span></h1>
-      <p class="tagline">Rebuild civilization on a continent that is still tearing itself apart. Mountains rise, rivers wander, the Great Rift floods. Grow from salvaged ruins to autonomous war machines — the land remains your oldest enemy.</p>
-      <label class="field"><span>Your name</span><input id="playerName" maxlength="24" autocomplete="nickname" placeholder="Founder"></label>
-      <div class="lobby-actions">
-        <fieldset class="plate">
-          <legend>Play against the AI</legend>
-          <label class="field inline"><span>Rival empires</span>
-            <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="11">11</option></select></label>
-          <label class="field inline"><span>Rival temperament</span>
-            <select id="aiPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
-          <details class="difficulty" id="difficultyBox"><summary>Rival difficulty: <b id="diffName">Standard</b> <span class="muted" id="diffFair">· fair play</span></summary>
+    <div class="lobby-shade" aria-hidden="true"></div>
+    <div class="lobby-grid">
+      <header class="lobby-head">
+        <h1 class="title"><span>Shattered</span><span>Empires</span></h1>
+        <p class="tagline">Rebuild civilization on a continent that is still tearing itself apart. Grow from salvaged ruins to autonomous war machines — the land remains your oldest enemy.</p>
+      </header>
+
+      <nav class="modes" aria-label="Game modes">
+        <button type="button" class="mode on" data-mode="ai" aria-pressed="true"><b>Play against the AI</b><small>Your empire against rival nations</small></button>
+        <button type="button" class="mode" data-mode="mp" aria-pressed="false"><b>Multiplayer</b><small>Host, join, or play with Steam friends</small></button>
+        <button type="button" class="mode" data-mode="watch" aria-pressed="false"><b>Watch the AI</b><small>An AI-only match, no fog of war</small></button>
+        <button type="button" class="mode" data-mode="sandbox" aria-pressed="false"><b>Combat sandbox</b><small>Stage battles, test units and weapons</small></button>
+        <button id="btnRejoin" type="button" class="mode rejoin" hidden><b>Return to your last match</b><small>Pick up where you left off</small></button>
+      </nav>
+
+      <div class="orders">
+        <section class="mode-panel" data-panel="ai">
+          <h2>Play against the AI</h2>
+          <div class="pair">
+            <label class="field"><span>Rival empires</span>
+              <select id="aiCount"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="7">7</option><option value="11">11</option></select></label>
+            <label class="field"><span>Rival temperament</span>
+              <select id="aiPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
+          </div>
+          <div class="field"><span>Rival difficulty</span>
             <div class="seg" id="diffSeg"><button data-diff="easy">Relaxed</button><button data-diff="normal" class="on">Standard</button><button data-diff="hard">Hard</button><button data-diff="expert">Expert</button><button data-diff="brutal">Brutal</button></div>
+          </div>
+          <details class="difficulty" id="difficultyBox"><summary>What <b id="diffName">Standard</b> rivals do <span class="muted" id="diffFair">(fair play)</span></summary>
             <input type="hidden" id="aiDifficulty" value="normal">
             <div id="diffInfo" class="diff-info"></div>
             <label class="field inline check"><input type="checkbox" id="fairPlay" checked><span>Fair Play: no economic or research bonuses for any AI</span></label>
             <details><summary>Configure each rival</summary><div id="rivalRows"></div></details>
           </details>
-          <button id="btnPlayAI" class="btn primary">Found your empire</button>
-        </fieldset>
-        <fieldset class="plate">
-          <legend>Multiplayer</legend>
-          <label class="field inline"><span>Human players</span>
-            <select id="humanCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="12">12</option></select></label>
-          <label class="field inline"><span>AI empires</span>
-            <select id="pvpAi"><option value="0" selected>0</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="6">6</option></select></label>
-          <button id="btnHost" class="btn">Host a match</button>
-        </fieldset>
-        <fieldset class="plate watch">
-          <legend>Watch the AI</legend>
-          <p class="muted small">An AI-only match with no fog of war: follow any empire, pause or run it at up to 8× speed. Handy for testing and for learning how empires grow.</p>
-          <label class="field inline"><span>Empires</span>
-            <select id="watchCount"><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option><option value="6">6</option><option value="8">8</option><option value="12">12</option></select></label>
-          <label class="field inline"><span>Temperament</span>
-            <select id="watchPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
-          <button id="btnWatch" class="btn">Watch an AI match</button>
-        </fieldset>
+        </section>
+
+        <section class="mode-panel" data-panel="mp" hidden>
+          <h2>Multiplayer</h2>
+          <div class="pair">
+            <label class="field"><span>Human players</span>
+              <select id="humanCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="12">12</option></select></label>
+            <label class="field"><span>AI empires</span>
+              <select id="pvpAi"><option value="0" selected>0</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="6">6</option></select></label>
+          </div>
+          <div class="open-matches">
+            <h3>Matches on the server</h3>
+            <ul id="matchList"><li class="empty">No open matches. Host one and share its code.</li></ul>
+            <form id="joinForm" class="join"><input id="joinCode" placeholder="Match code" maxlength="8" aria-label="Match code"><button class="btn">Join</button></form>
+          </div>
+          <div class="steam-friends" id="steamFriends" hidden>
+            <h3>Steam friends</h3>
+            <p class="muted small" id="steamNote">Host a match and invite friends from the waiting room, or join a friend's match here.</p>
+            <ul id="steamLobbies" class="matchlist"></ul>
+            <button id="btnSteamRefresh" class="btn small ghost" type="button">Find friends' matches</button>
+          </div>
+        </section>
+
+        <section class="mode-panel" data-panel="watch" hidden>
+          <h2>Watch the AI</h2>
+          <p class="muted small">Every empire is AI. Follow any of them, switch to its fog of war, pause, or run the match at up to 8× speed — a quick way to learn how empires grow and fight.</p>
+          <div class="pair">
+            <label class="field"><span>Empires</span>
+              <select id="watchCount"><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option><option value="6">6</option><option value="8">8</option><option value="12">12</option></select></label>
+            <label class="field"><span>Temperament</span>
+              <select id="watchPersonality"><option value="random">Mixed</option><option value="warlord">Warlord</option><option value="merchant">Merchant</option><option value="builder">Builder</option></select></label>
+          </div>
+        </section>
+
+        <section class="mode-panel" data-panel="sandbox" hidden>
+          <h2>Combat sandbox</h2>
+          <p class="muted small">A small map with one passive opponent. Spawn units, stage battles and see how weapons, cover and terrain play out. Nothing here counts.</p>
+        </section>
+
+        <details class="advanced"><summary>World options</summary>
+          <label class="field inline world-only"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
+          <label class="field inline world-only"><span>World</span><select id="worldStyle"><option value="">Any</option><option value="continents">Continents</option><option value="pangaea">Pangaea</option><option value="archipelago">Archipelago</option><option value="inlandSea">Inland sea</option></select></label>
+          <label class="field inline world-only"><span>Rebel Free Companies</span><input id="rebels" type="checkbox" checked></label>
+          <label class="field inline world-only" title="Earthquakes, eruptions, droughts, wandering rivers and rising mountains. Off by default: the world evolves peacefully."><span>Cataclysm mode</span><input id="cataclysm" type="checkbox"></label>
+          <label class="field inline world-only"><span>Cataclysm frequency</span><select id="cataclysmFreq"><option value="rare">Rare</option><option value="normal" selected>Normal</option><option value="frequent">Frequent</option></select></label>
+          <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
+        </details>
+
+        <div class="go">
+          <button id="btnPlayAI" class="btn primary big" data-for="ai">Found your empire</button>
+          <button id="btnHost" class="btn primary big" data-for="mp" hidden>Host a match</button>
+          <button id="btnWatch" class="btn primary big" data-for="watch" hidden>Watch an AI match</button>
+          <button id="btnSandbox" class="btn primary big" type="button" data-for="sandbox" hidden>Open the sandbox</button>
+          <p id="lobbyStatus" class="status" role="status"></p>
+        </div>
       </div>
-      <details class="advanced"><summary>World options</summary>
-        <label class="field inline"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
-        <label class="field inline"><span>World</span><select id="worldStyle"><option value="">Any</option><option value="continents">Continents</option><option value="pangaea">Pangaea</option><option value="archipelago">Archipelago</option><option value="inlandSea">Inland sea</option></select></label>
-        <label class="field inline"><span>Rebel Free Companies</span><input id="rebels" type="checkbox" checked></label>
-        <label class="field inline" title="Earthquakes, eruptions, droughts, wandering rivers and rising mountains. Off by default: the world evolves peacefully."><span>Cataclysm mode</span><input id="cataclysm" type="checkbox"></label>
-        <label class="field inline"><span>Cataclysm frequency</span><select id="cataclysmFreq"><option value="rare">Rare</option><option value="normal" selected>Normal</option><option value="frequent">Frequent</option></select></label>
-        <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
-        <button id="btnSandbox" class="btn ghost small" type="button" title="A small map with one passive opponent: stage battles and test units and weapons">Open the combat sandbox</button>
-      </details>
-      <div class="open-matches">
-        <h2>Open matches</h2>
-        <ul id="matchList"><li class="empty">No open matches. Host one and share the code.</li></ul>
-        <form id="joinForm" class="join"><input id="joinCode" placeholder="Match code" maxlength="8" aria-label="Match code"><button class="btn">Join</button></form>
-      </div>
-      <button id="btnRejoin" class="btn ghost" hidden>Return to your last match</button>
-      <div class="steam-friends" id="steamFriends" hidden>
-        <h2>Steam friends</h2>
-        <p class="muted small" id="steamNote">Host a multiplayer match and invite friends from the waiting room, or join a friend's match here.</p>
-        <ul id="steamLobbies" class="matchlist"></ul>
-        <button id="btnSteamRefresh" class="btn small ghost" type="button">Find friends' matches</button>
-      </div>
-      <p id="lobbyStatus" class="status" role="status"></p>
+
+      <footer class="lobby-foot">
+        <label class="field name"><span>Playing as</span><input id="playerName" maxlength="24" autocomplete="nickname" placeholder="Founder"></label>
+        <div class="build" id="buildInfo">
+          <span id="appVersion"></span>
+          <button id="updatePill" class="pill" type="button" hidden></button>
+        </div>
+      </footer>
     </div>
   </section>
 
