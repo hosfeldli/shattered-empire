@@ -11,6 +11,7 @@ import { MatchManager } from './matches.js';
 import { makeStore } from './storage.js';
 import { continentPreview } from './png.js';
 import { makeDownloads } from './downloads.js';
+import { Admin } from './admin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -74,7 +75,10 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server, path: '/ws', perMessageDeflate: { threshold: 1024 } });
-wss.on('connection', (ws) => {
+manager.admin = new Admin(manager, log);
+wss.on('connection', (ws, req) => {
+  // the client's address (behind the load balancer: the first X-Forwarded-For hop) for admin rate limits
+  ws.addr = String(req?.headers?.['x-forwarded-for'] || '').split(',')[0].trim() || req?.socket?.remoteAddress || 'unknown';
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   manager.attach(ws);

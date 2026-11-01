@@ -228,6 +228,7 @@ export class MatchManager {
         else this.toWorker(m, { t: 'cmd', civId: ctx.slot.civId, cmd: msg.cmd || {}, rid: msg.rid });
         return;
       }
+      case 'admin': if (!this.admin) throw new Error('Administration is not available'); return this.admin.handle(ws, msg);
       default: throw new Error('Unknown message');
     }
   }

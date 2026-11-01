@@ -109,12 +109,30 @@
       <footer class="lobby-foot">
         <label class="field name"><span>Playing as</span><input id="playerName" maxlength="24" autocomplete="nickname" placeholder="Founder"></label>
         <div class="build" id="buildInfo">
+          <button id="btnAdmin" class="pill" type="button" hidden>Server admin</button>
           <span id="appVersion"></span>
           <button id="updatePill" class="pill" type="button" hidden></button>
         </div>
       </footer>
     </div>
   </section>
+
+  <!-- Server administration (shown for the administrator's name; the server checks name and PIN) -->
+  <div id="admin" class="modal admin" hidden role="dialog" aria-labelledby="adminTitle">
+    <div class="plate">
+      <h2 id="adminTitle">Server admin</h2>
+      <form id="adminLogin" class="admin-login">
+        <label class="field"><span>PIN</span><input id="adminPin" type="password" inputmode="numeric" autocomplete="off" maxlength="12"></label>
+        <button class="btn primary">Sign in</button>
+      </form>
+      <div id="adminBody" hidden>
+        <div class="admin-bar"><span id="adminCount" class="muted"></span><span><button id="adminRefresh" class="btn small" type="button">Refresh</button> <button id="adminCloseAll" class="btn small danger" type="button">Close every match</button></span></div>
+        <ul id="adminList" class="admin-list"></ul>
+      </div>
+      <p id="adminStatus" class="status" role="status"></p>
+      <button id="adminDone" class="btn ghost" type="button">Done</button>
+    </div>
+  </div>
 
   <!-- Waiting room -->
   <section id="room" class="screen" hidden>
@@ -198,7 +216,12 @@
       <div class="plate">
         <h2 id="menuTitle">Menu</h2>
         <p class="muted" id="menuNote"></p>
-        <p class="muted">Shortcuts: right-click move (aircraft: patrol; enemy: strike; own airfield: return), right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), WASD or arrows pan, Ctrl/Cmd+A attack-move, H hold, X withdraw, P pause (single player), T research, B build (Defenses → Trench Line to dig in), / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, F cycle formation (found a city with colonists), R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <div class="menu-actions">
+          <button id="btnResume" class="btn primary">Back to the map</button>
+          <button id="btnQuit" class="btn">Leave match</button>
+          <button id="btnSurrender" class="btn danger">Surrender</button>
+        </div>
+        <details class="shortcuts"><summary>Keyboard and mouse shortcuts</summary><p class="muted">Right-click move (aircraft: patrol; enemy: strike; own airfield: return), right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), WASD or arrows pan, Ctrl/Cmd+A attack-move, H hold, X withdraw, P pause (single player), T research, B build (Defenses → Trench Line to dig in), / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, F cycle formation (found a city with colonists), R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p></details>
         <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
         <div class="sound-settings" id="soundSettings">
           <h4>Sound</h4>
@@ -221,9 +244,6 @@
           <label class="field inline"><span>Notifications</span><select data-pref="notify"><option value="quiet">Critical only</option><option value="normal">Normal</option><option value="verbose">Everything</option></select></label>
           <label class="field inline"><span>Inspector width</span><input type="range" min="280" max="520" step="20" data-pref="inspectorWidth"></label>
         </details>
-        <button id="btnResume" class="btn primary">Back to the map</button>
-        <button id="btnSurrender" class="btn danger">Surrender</button>
-        <button id="btnQuit" class="btn ghost">Leave match</button>
       </div>
     </div>
     <div id="gameover" class="modal" hidden><div class="plate"><h2 id="goTitle"></h2><p id="goText"></p><table id="goStats"></table><button id="btnLobby" class="btn primary">Back to lobby</button></div></div>

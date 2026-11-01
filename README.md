@@ -77,6 +77,9 @@ Four world styles (continents, pangaea, archipelago, inland sea) on a seamless e
 ### Server performance
 Each tick runs through a scheduler: every system has a cadence, a phase (the once-a-second systems are spread over the second) and a time budget, and records p50/p95/p99/max timings and overruns (`/api/metrics`; the slowest systems also appear in `/api/health`). Autosaves are captured on the tick and compressed off it. On live servers AI planning may slide a tick when one runs long; tests and replays stay deterministic. New matches are refused with a clear message when the running ones already use most of the CPU or memory.
 
+### Server administration
+With the player name **Liam6642**, the main menu shows *Server admin*. Enter the PIN to see every match on the server — mode, status, players and who is connected, spectators, game time and tick cost — and close any one of them, or all of them. Closing ends the match for everyone in it (they are returned to the menu with the reason) and deletes its save. Name and PIN are checked by the server only (`ADMIN_NAME`, `ADMIN_PIN` in the service environment override the defaults); after five wrong PINs from one address, or 25 across the server, sign-in is locked for 15 minutes.
+
 ### Watching AI matches (testing)
 **Watch an AI match** in the lobby starts an AI-only game with no fog of war: every empire's units, cities and buildings are visible, with full city detail. Follow any empire to see its economy, research and cities in the panels, switch to its fog of war to check what it can see, run the match at 1×, 2×, 4× or 8× speed or pause it, and see AI offensives as arrows to the city they are marching on. Running matches also appear in the lobby with a **Watch** button. Spectators cannot give orders. Keys: `[` `]` follow previous/next, `P` pause, `,` `.` slower/faster, `V` fog.
 

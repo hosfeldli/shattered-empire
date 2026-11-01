@@ -138,6 +138,45 @@ $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }
 $('btnStartNow').addEventListener('click', () => net.send({ t: 'start' }));
 $('btnLeaveRoom').addEventListener('click', () => location.reload());
+// server administration: offered for the administrator's name; the server checks name and PIN
+const ADMIN_NAME = 'Liam6642';
+function adminOffer() { $('btnAdmin').hidden = $('playerName').value.trim() !== ADMIN_NAME; }
+$('playerName').addEventListener('input', adminOffer); adminOffer();
+let adminSignedIn = false, adminArmed = null;
+$('btnAdmin').addEventListener('click', () => { $('admin').hidden = false; $('adminStatus').textContent = ''; if (adminSignedIn) net?.send({ t: 'admin', action: 'list' }); else $('adminPin').focus(); });
+$('adminDone').addEventListener('click', () => { $('admin').hidden = true; });
+$('admin').addEventListener('keydown', (e) => { if (e.key === 'Escape') $('admin').hidden = true; });
+$('adminLogin').addEventListener('submit', async (e) => {
+  e.preventDefault(); $('adminStatus').textContent = 'Signing in…';
+  try { await ensureNet(); } catch { $('adminStatus').textContent = 'Cannot reach the game server.'; return; }
+  net.send({ t: 'admin', action: 'login', name: $('playerName').value.trim(), pin: $('adminPin').value }); $('adminPin').value = '';
+});
+$('adminRefresh').addEventListener('click', () => net?.send({ t: 'admin', action: 'list' }));
+// closing is final for everyone in the match: each close button asks once more before it acts
+function adminConfirm(btn, label, send) {
+  if (adminArmed === btn) { adminArmed = null; send(); btn.disabled = true; return; }
+  if (adminArmed) adminArmed.textContent = adminArmed.dataset.label;
+  adminArmed = btn; btn.dataset.label = btn.textContent; btn.textContent = label;
+}
+$('adminCloseAll').addEventListener('click', (e) => adminConfirm(e.currentTarget, 'Click again to close all', () => net.send({ t: 'admin', action: 'closeAll' })));
+$('adminList').addEventListener('click', (e) => { const b = e.target.closest('[data-close]'); if (b) adminConfirm(b, 'Click again to close', () => net.send({ t: 'admin', action: 'close', match: b.dataset.close })); });
+function adminResult(m) {
+  if (m.error) { $('adminStatus').textContent = m.error; return; }
+  adminSignedIn = true; adminArmed = null;
+  $('adminLogin').hidden = true; $('adminBody').hidden = false;
+  $('adminStatus').textContent = m.closed ? `Closed ${m.closed.length === 1 ? 'match ' + m.closed[0] : m.closed.length + ' matches'}.` : '';
+  const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const list = m.matches || [];
+  $('adminCount').textContent = list.length === 1 ? '1 match on this server' : `${list.length} matches on this server`;
+  $('adminCloseAll').disabled = !list.length; $('adminCloseAll').textContent = 'Close every match';
+  const mode = { ai: 'vs AI', pvp: 'multiplayer', observe: 'AI exhibition', sandbox: 'sandbox' };
+  $('adminList').innerHTML = list.length ? list.map((x) => {
+    const on = x.players.filter((p) => p.connected).length;
+    const who = x.players.map((p) => esc(p.name || 'open seat') + (p.connected ? '' : ' (away)')).join(', ') || 'no players';
+    return `<li><div><b>${esc(x.name)}</b><small>${esc(x.id)}, ${mode[x.mode] || esc(x.mode)}, ${esc(x.status)}, ${Math.floor(x.time / 60)} min in, ${on} connected${x.watchers ? `, ${x.watchers} watching` : ''}${x.tickMs != null ? `, ${x.tickMs} ms per tick` : ''}</small><small>${who}</small></div><button class="btn small danger" data-close="${esc(x.id)}">Close</button></li>`;
+  }).join('') : '<li class="empty">No matches are running.</li>';
+}
+{ const msg = store.get('se.closedMsg'); if (msg) { store.del('se.closedMsg'); setTimeout(() => lobbyStatus(msg), 0); } }
 // main menu: one mode at a time; its settings and its one action button show on the right
 function setLobbyMode(mode) {
   for (const b of document.querySelectorAll('.modes [data-mode]')) { const on = b.dataset.mode === mode; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); }
@@ -178,6 +217,8 @@ function onMessage(m) {
     case 'note': onNote(m); break;
     case 'paused': setPaused(!!m.on); break;
     case 'over': gameOver(m); break;
+    case 'admin': adminResult(m); break;
+    case 'closed': store.del('se.session'); store.set('se.closedMsg', m.reason || 'This match was closed.'); location.reload(); break;
     default: break;
   }
 }
