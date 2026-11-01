@@ -59,10 +59,11 @@ test('aircraft overfly enemy-held ground', () => {
   const g = sandbox();
   const c = field(g, 3, 1);
   for (let k = -1; k <= 1; k++) place(g, 1, 'rifle_squad', at(c, k)).stance = 'hold';
-  const h = place(g, 0, 'helicopter', at(c, -3)); h.stance = 'passive';
+  const h = place(g, 0, 'recon_drone', at(c, -3));        // unarmed: it simply flies over the line
   g.orderMove(g.civs[0], [h.id], at(c, 3), false, 'line', { auth: 'player' });
-  run(g, 200);
-  assert.ok(dist(h.tile, at(c, 3)) <= 1, 'helicopter crossed the line');
+  let closest = Infinity;
+  for (let i = 0; i < 200; i++) { g.tick(); g.outbox.length = 0; if (g.units.has(h.id)) closest = Math.min(closest, dist(h.tile, at(c, 3))); }
+  assert.ok(closest <= 2, `the drone crossed the enemy line to its scouting area (closest ${closest})`);
 });
 
 test('cut-off units last longer standing still, and far longer in a finished trench', () => {

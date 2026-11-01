@@ -275,7 +275,7 @@ test('research workspace: full-screen graph, inspect without researching, queue 
   assert.deepEqual(await selected(), selBefore, 'the unit selection survived');
 });
 
-test('line deployment: right-drag shows the plan, release commits a formation; Fortify digs in', { skip }, async () => {
+test('line deployment: right-drag shows the plan, release commits a formation; Fortify opens the trench tool', { skip }, async () => {
   const units = (await myUnits()).filter((u) => ['militia', 'rifle_squad'].includes(u.type));
   await page.evaluate((ids) => { const S = window.__S; S.selUnits.clear(); for (const id of ids) S.selUnits.add(id); S.selBuilding = null; }, units.map((u) => u.id));
   const cap = await page.evaluate(() => [...window.__S.cities.values()].find((x) => x.o === window.__S.civId).t);
@@ -293,13 +293,49 @@ test('line deployment: right-drag shows the plan, release commits a formation; F
   const f = await page.evaluate(() => window.__S.econ.formations[0]);
   const same = preview.filter(([id, t]) => f.slots[id] === t).length;
   assert.ok(same >= preview.length - 1, `the server agreed with the preview (${same}/${preview.length})`);
-  // fortify: preview, then dig
-  await page.waitForSelector('#selection [data-act=fortify]', { timeout: 10000 });
-  await page.click('#selection [data-act=fortify]');
-  await page.waitForSelector('#fortifyPanel:not([hidden]) [data-fz=go]', { timeout: 10000 });
-  assert.match(await page.textContent('#fortifyPanel'), /Valid segments/);
-  await page.click('[data-fz=go]');
+  // fortify: the command bar opens the Trench Line tool (national crews dig; no troops on the line)
+  await page.waitForSelector('#cmdbar [data-cb=fortify]', { timeout: 10000 });
+  await page.click('#cmdbar [data-cb=fortify]');
+  await page.waitForFunction(() => window.__S.mode?.kind === 'trench', null, { timeout: 5000 });
+  const [tx, ty] = await tilePos(cap);
+  for (const [dx, dy] of [[-1.5, -1.2], [1.4, 1.3], [-1.4, 1.3], [1.5, -1.2]]) {
+    await page.mouse.move(tx + dx * 40, ty + dy * 40); await page.mouse.down();
+    await page.mouse.move(tx + dx * 40 + 90, ty + dy * 40, { steps: 10 }); await page.mouse.up();
+    await page.waitForFunction(() => window.__S.mode?.preview, null, { timeout: 15000 });
+    if (await page.evaluate(() => window.__S.mode.preview.build > 0)) break;
+    await page.evaluate(() => { window.__S.mode.points = []; window.__S.mode.preview = null; });
+  }
+  assert.match(await page.textContent('#roadPanel'), /To build/);
+  await page.click('[data-trench=commit]');
   await page.waitForFunction(() => window.__S.fw && window.__S.fw.size > 0, null, { timeout: 20000 });
+  await page.keyboard.press('Escape');
+});
+
+test('pause (single player), stacked panels, settled tooltips, one alerts button', { skip }, async () => {
+  // pause stops the clock; P toggles it
+  await page.click('#btnPause');
+  await page.waitForFunction(() => window.__S.paused === true, null, { timeout: 5000 });
+  const t0 = await page.evaluate(() => window.__S.time);
+  await page.waitForTimeout(1500);
+  assert.equal(await page.evaluate(() => window.__S.time), t0, 'the clock stands still');
+  assert.equal(await page.isVisible('#pausedBanner'), true);
+  await page.keyboard.press('p');
+  await page.waitForFunction((t) => !window.__S.paused && window.__S.time > t, t0, { timeout: 5000 });
+  // opening alerts pushes the inspector down instead of covering it
+  await page.evaluate(() => { const S = window.__S; const c = [...S.cities.values()].find((x) => x.o === S.civId); window.__actions().selectCity(c.id); });
+  await page.click('#alertsBtn'); await page.waitForTimeout(400);
+  const [a, sel] = await page.evaluate(() => ['alerts', 'selection'].map((id) => document.getElementById(id).getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
+  assert.ok(sel.top >= a.bottom, `the inspector sits below the alerts (${sel.top} vs ${a.bottom})`);
+  await page.click('#alertsBtn');
+  assert.equal(await page.locator('#alertsBtn .badge, #alertsBtn .dot').count(), 1, 'a single alerts badge');
+  // the map tooltip waits for the pointer to settle
+  const cap = await page.evaluate(() => [...window.__S.cities.values()].find((x) => x.o === window.__S.civId).t);
+  const [x, y] = await tilePos(cap);
+  await page.mouse.move(x + 30, y + 30);
+  await page.waitForTimeout(80);
+  assert.equal(await page.isVisible('#tooltip'), false, 'not instantly');
+  await page.waitForTimeout(400);
+  assert.equal(await page.isVisible('#tooltip'), true, 'after a short pause');
 });
 
 test('no uncaught page errors during the session', { skip }, () => {

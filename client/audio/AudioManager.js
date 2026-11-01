@@ -126,10 +126,10 @@ export class AudioManager {
     for (const e of evs) {
       const tile = e.b >= 0 ? e.b : e.a;
       if (tile == null || tile < 0) continue;
-      if (!S.spectator && !S.vis[tile] && !(e.a >= 0 && S.vis[e.a])) continue;     // fog: never hear what you cannot see
+      if (!S.spectator && e.k !== 'mimpact' && e.k !== 'mlaunch' && !S.vis[tile] && !(e.a >= 0 && S.vis[e.a])) continue;     // fog: never hear what you cannot see (strategic strikes excepted)
       const at = e.k === 'fire' || e.k === 'launch' ? (e.a >= 0 && S.vis[e.a] ? e.a : tile) : tile;
       const x = v.cx[at], y = v.cy[at];
-      const pl = this.place(x, y); if (!pl) continue;
+      const pl = this.place(x, y) || (e.k === 'mimpact' || e.k === 'mlaunch' ? { gain: 0.35, pan: 0, muffle: 0.5 } : null); if (!pl) continue;
       const wk = e.w != null ? W[e.w] : null, wpn = wk ? S.defs.WEAPONS[wk] : null;
       // cluster per screen cell so a firefight is a volley, not a hundred clicks
       const key = e.k + ':' + Math.round(x / 60) + ':' + Math.round(y / 60);
@@ -153,15 +153,41 @@ export class AudioManager {
           for (let i = 0; i < k; i++) this.voice({ noise: 'white', filter: 'bandpass', fq: (heavy ? 900 : 2200) * m + 300, q: 1.2, d: heavy ? 0.12 : 0.05, gain: g * (heavy ? 0.5 : 0.32) * (1 + Math.min(1, n / 12)), pan: pan + (Math.random() - 0.5) * 0.1, delay: i * (0.05 + Math.random() * 0.05) });
           break;
         }
+        case 'mlaunch': {
+          // a strategic launch: a long, rising roar
+          this.voice({ noise: 'brown', fq: 300, d: 3.5, gain: g * 0.9 + 0.15, pan });
+          this.voice({ src: 'osc', type: 'sawtooth', f0: 60, f1: 160, d: 3, gain: g * 0.25 + 0.05, pan });
+          break;
+        }
+        case 'mimpact': {
+          // heard everywhere: a deep blast and a long rumble
+          this.voice({ src: 'osc', type: 'sine', f0: 70, f1: 18, d: 4, gain: 0.9, pan });
+          this.voice({ noise: 'brown', fq: 220, d: 6, gain: 0.8, pan });
+          break;
+        }
+        case 'mintercept': {
+          this.voice({ noise: 'pink', filter: 'bandpass', fq: 1200, q: 0.8, d: 0.4, gain: g * 0.6, pan });
+          break;
+        }
         case 'launch': {
           if (!this.allow('launch')) break;
           const kind = wpn?.impact || 'cannon';
+          if (kind === 'airburst') {
+            // AA guns: a rapid series of sharp, hollow thumps
+            for (let i = 0; i < 3; i++) { this.voice({ src: 'osc', type: 'square', f0: 180, f1: 60, d: 0.07, gain: g * 0.3, pan, delay: i * 0.11 }); this.voice({ noise: 'white', filter: 'bandpass', fq: 1400 * m + 300, q: 1.6, d: 0.06, gain: g * 0.35, pan, delay: i * 0.11 }); }
+            break;
+          }
           this.voice({ src: 'osc', type: 'sine', f0: kind === 'missile' || kind === 'rocket' ? 220 : 120, f1: 45, d: 0.25, gain: g * 0.6, pan });
           this.voice({ noise: kind === 'missile' || kind === 'rocket' ? 'pink' : 'brown', fq: 600 * m + 200, d: kind === 'missile' || kind === 'rocket' ? 0.7 : 0.3, gain: g * 0.45, pan });
           break;
         }
         case 'impact': case 'kill': case 'bkill': {
           if (!this.allow(e.k === 'impact' ? 'impact' : 'kill')) break;
+          if (e.ab) {
+            // airbursts overhead: a dry crack with a short, high rumble — never the ground thud
+            for (let i = 0; i < 3; i++) this.voice({ noise: 'pink', filter: 'bandpass', fq: 900 * m + 400, q: 0.9, d: 0.22, gain: g * 0.42, pan: pan + (Math.random() - 0.5) * 0.2, delay: i * 0.11 + Math.random() * 0.04 });
+            break;
+          }
           const big = e.k === 'bkill' ? 1.6 : e.k === 'kill' ? 1.2 : wpn?.impact === 'artillery' || wpn?.impact === 'missile' ? 1.3 : 1;
           this.voice({ noise: 'brown', fq: 380 * m + 120, d: 0.5 * big, gain: g * 0.8 * Math.min(1.4, big), pan });
           this.voice({ src: 'osc', type: 'sine', f0: 70, f1: 30, d: 0.4 * big, gain: g * 0.55 * big, pan });

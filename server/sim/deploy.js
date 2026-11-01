@@ -56,6 +56,30 @@ function nearestFree(env, x, y, ok) {
   return best;
 }
 
+// Orientation frame for a force at `center` facing `toward` (both tiles), wrap-aware:
+// forward = unit vector toward the threat, right = forward turned clockwise on screen (y down).
+// A deployment drag from (mid - right) to (mid + right) faces `forward` (the drag turned left).
+export function facingFrame(env, center, toward) {
+  const { W } = env;
+  const [ax, ay] = hexXY(center, W); let [bx, by] = hexXY(toward, W);
+  if (env.wrap) { const P = SQ3 * W; bx += Math.round((ax - bx) / P) * P; }
+  const l = Math.hypot(bx - ax, by - ay);
+  const forward = l > 1e-6 ? [(bx - ax) / l, (by - ay) / l] : [0, -1];
+  return { ax, ay, bx, by, len: l, forward, right: [-forward[1], forward[0]] };
+}
+// A line of about n hexes across the approach, `ahead` hexes out from center toward the threat,
+// oriented so that the planner's facing points at the threat. Returns [a, b] tiles or null.
+export function lineAcross(env, center, toward, n, ahead = 3) {
+  if (toward < 0 || center < 0 || n < 2 || toward === center) return null;
+  const f = facingFrame(env, center, toward);
+  const step = Math.min(ahead * SQ3, Math.max(0, f.len - SQ3));
+  const mx = f.ax + f.forward[0] * step, my = f.ay + f.forward[1] * step;
+  const half = ((n - 1) * SQ3) / 2;
+  const a = snap(env, mx - f.right[0] * half, my - f.right[1] * half), b = snap(env, mx + f.right[0] * half, my + f.right[1] * half);
+  if (a < 0 || b < 0 || a === b) return null;
+  return [a, b];
+}
+
 export function planDeployment(env, units, line, opts = {}) {
   const { W } = env;
   const mode = opts.mode || 'line';

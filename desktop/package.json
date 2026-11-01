@@ -1,0 +1,93 @@
+{
+  "name": "shattered-empires-desktop",
+  "productName": "Shattered Empires",
+  "version": "0.1.0",
+  "description": "Shattered Empires desktop edition: the same game server and client, run locally, online, or over Steam.",
+  "private": true,
+  "main": "main.cjs",
+  "author": "Liam Hosfeld",
+  "scripts": {
+    "prepare-app": "node scripts/prepare-app.mjs",
+    "start": "npm run prepare-app && electron .",
+    "dist": "npm run prepare-app && electron-builder --publish never",
+    "dist:mac": "npm run prepare-app && electron-builder --mac --publish never",
+    "dist:win": "npm run prepare-app && electron-builder --win --publish never",
+    "dist:linux": "npm run prepare-app && electron-builder --linux --publish never",
+    "manifest": "node scripts/manifest.mjs"
+  },
+  "dependencies": {
+    "pixi.js": "8.6.6",
+    "steamworks.js": "^0.4.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.liamhosfeld.shatteredempires",
+    "productName": "Shattered Empires",
+    "asar": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "steam.cjs",
+      "launcher.html",
+      "app/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "build/steam_appid.txt",
+        "to": "steam_appid.txt"
+      }
+    ],
+    "artifactName": "ShatteredEmpires-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.strategy-games",
+      "artifactName": "ShatteredEmpires-${version}-mac-${arch}.${ext}",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "ShatteredEmpires-${version}-win-${arch}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Game"
+    },
+    "afterPack": "scripts/adhoc-sign.cjs"
+  }
+}

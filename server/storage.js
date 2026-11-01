@@ -22,15 +22,18 @@ function fileStore(dir) {
   };
 }
 
+// Cloud Run service-account token from the metadata server (shared by snapshots and downloads).
+let token = null, expires = 0;
+export async function gcsToken() {
+  if (token && Date.now() < expires - 60_000) return token;
+  const r = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', { headers: { 'Metadata-Flavor': 'Google' } });
+  if (!r.ok) throw new Error('metadata token ' + r.status);
+  const j = await r.json(); token = j.access_token; expires = Date.now() + j.expires_in * 1000;
+  return token;
+}
+
 function gcsStore(bucket, log) {
-  let token = null, expires = 0;
-  async function auth() {
-    if (token && Date.now() < expires - 60_000) return token;
-    const r = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', { headers: { 'Metadata-Flavor': 'Google' } });
-    if (!r.ok) throw new Error('metadata token ' + r.status);
-    const j = await r.json(); token = j.access_token; expires = Date.now() + j.expires_in * 1000;
-    return token;
-  }
+  const auth = gcsToken;
   const obj = (id) => encodeURIComponent('matches/' + id + '.json.gz');
   const api = 'https://storage.googleapis.com';
   return {

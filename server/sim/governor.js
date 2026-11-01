@@ -64,11 +64,21 @@ export function pickTile(g, civ, c, type, gv) {
     if (type === 'farm') { s = TERRAIN[w.terr[t]].fert * 4 + (w.river[t] ? 1 : 0) - dist(c.tile, t) * 0.3; if (w.res[t]) s -= 3; }
     else if (type === 'mine') s = (w.res[t] === RES.IRON ? 3 : 2) - dist(c.tile, t) * 0.2;
     else if (BUILDINGS[type].place === 'flat' && (w.res[t] || w.terr[t] === T.FOREST || TERRAIN[w.terr[t]].fert > 0.8)) s -= 2;
+    // defenses face the threat: toward the nearest known hostile city or army, never behind the town
+    if (BUILDINGS[type].attack) { const th = threatTile(g, civ, c.tile); if (th >= 0) s = -dist(t, th) * 1.5 - Math.abs(dist(c.tile, t) - (type === 'aa_battery' ? 1 : 2)) * 2; if (w.terr[t] === T.HILLS) s += 1; }
     if (w.stab[t] < 0.3) s -= 3;
     if (w.ash[t] > 0 || w.lava[t] > 0) s -= 5;
     if (g.ruins.has(t) && g.ruins.get(t).type === type) s += 4;      // rebuilding a ruin is cheaper
     if (s > bs) { bs = s; best = t; }
   }
+  return best;
+}
+
+// where an attack would come from: the nearest known hostile army or city
+function threatTile(g, civ, from) {
+  let best = -1, bd = Infinity;
+  for (const u of g.units.values()) if (g.hostile(civ.id, u.owner) && civ.visible[u.tile]) { const d = dist(u.tile, from); if (d < bd) { bd = d; best = u.tile; } }
+  if (best < 0) for (const k of civ.knownCities.values()) if (k.owner !== civ.id) { const d = dist(k.tile, from); if (d < bd) { bd = d; best = k.tile; } }
   return best;
 }
 
@@ -195,7 +205,7 @@ function repair(g, civ, c, gv, level = 'autonomous') {
     if (b.cityId !== c.id || b.owner !== civ.id || !b.done || b.hp >= b.maxHp * 0.7 || g.time - (b.lastHit || -99) < 8) continue;
     const cost = { materials: Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) };
     if (!governorCanSpend(civ, gv, cost, c)) return false;
-    g.pay(civ, cost, b.tile); b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4);
+    g.pay(civ, cost, b.tile, 'maintenance'); b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4);
     log(g, c, `Repaired ${BUILDINGS[b.type].name} (${Math.round((100 * b.hp) / b.maxHp)}%) for ${cost.materials} materials.`);
     return true;
   }
@@ -314,9 +324,14 @@ export function steerColonist(g, civ, u, goals) {
     goal = undefined;
   }
   if (goal !== undefined && (u.path.length || u.field)) return false;
+  // sites already claimed by our other colonists are off limits (and so is the ground around them):
+  // several auto-settlers fan out instead of racing to the same spot
+  for (const [id] of goals) if (!g.units.has(id)) goals.delete(id);
+  const claimed = [...goals.entries()].filter(([id]) => id !== u.id).map(([, t]) => t);
   let best = -1, bs = 3;
   for (const c of g.cityOf(civ)) for (const t of disk(c.tile, 20)) {
     if (dist(c.tile, t) < 6 || !civ.explored[t]) continue;
+    if (claimed.some((x) => dist(x, t) < 6)) continue;
     const sc = siteScore(g, civ, t) - dist(u.tile, t) * 0.15; if (sc > bs) { bs = sc; best = t; }
   }
   if (best >= 0) { goals.set(u.id, best); g.command(civ.id, { c: 'move', units: [u.id], tile: best }); }

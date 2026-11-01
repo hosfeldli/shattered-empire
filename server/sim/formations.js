@@ -7,7 +7,6 @@ import { WRAP, dist } from './hex.js';
 import { findPath } from './path.js';
 import { tileCapacity } from './military.js';
 import { planDeployment, deployRole, shiftFormation } from './deploy.js';
-import { fortify, canDig } from './fieldworks.js';
 
 export const BEHAVIORS = ['hold', 'defend', 'attackMove'];
 export const MODES = ['line', 'compact', 'depth', 'preserve'];
@@ -90,7 +89,7 @@ export function deployOrder(g, civ, cmd, auth = '') {
   release(g, units.map((u) => u.id));
   const id = g.nextFormationId = (g.nextFormationId || 0) + 1;
   const f = { id, owner: civ.id, units: [], mode, density, depth, behavior, line: plan.line?.length ? [plan.line[0], plan.line[plan.line.length - 1]] : line, reverse: !!cmd.reverse,
-    slots: {}, status: 'moving', auth, since: g.time, fortify: cmd.fortify ? (cmd.fortify === 'reinforced' ? 'reinforced' : 'basic') : false, facing: plan.facing || null };
+    slots: {}, status: 'moving', auth, since: g.time, facing: plan.facing || null };      // deploying never creates a construction job
   g.formations.set(id, f);
   const ground = units.filter((u) => !UNITS[u.type].air);
   const groupSpeed = ground.length >= 3 ? Math.min(...ground.map((u) => UNITS[u.type].speed)) : 0;
@@ -188,18 +187,12 @@ export function formationsStep(g) {
     if (f.status === 'moving' && n && arrived >= Math.ceil(n * 0.8)) {
       f.status = 'deployed';
       for (const id of f.units) { const u = g.units.get(id); if (u && !u.detached && u.tile === f.slots[id]) { u.order = { kind: 'idle' }; if (f.behavior === 'hold') u.stance = 'hold'; } }
-      // Deploy & Fortify: dig in on the slots the infantry now hold
-      if (f.fortify && !f.dug) {
-        f.dug = true;
-        const tiles = [...new Set(f.units.map((id) => g.units.get(id)).filter((u) => u && !u.detached && canDig(u)).map((u) => f.slots[u.id]))];
-        if (tiles.length) fortify(g, civ, tiles, { type: f.fortify === 'reinforced' ? 'reinforced' : 'basic', facing: f.facing || [0, -1], group: f.id });
-      }
     }
   }
 }
 
 export function formationsSnapshot(g, civId) {
   const out = [];
-  for (const f of g.formations.values()) if (f.owner === civId) out.push({ id: f.id, units: f.units, mode: f.mode, density: f.density, behavior: f.behavior, line: f.line, status: f.status, fortify: f.fortify, slots: f.slots, detached: f.units.filter((id) => g.units.get(id)?.detached) });
+  for (const f of g.formations.values()) if (f.owner === civId) out.push({ id: f.id, units: f.units, mode: f.mode, density: f.density, behavior: f.behavior, line: f.line, status: f.status, slots: f.slots, detached: f.units.filter((id) => g.units.get(id)?.detached) });
   return out;
 }

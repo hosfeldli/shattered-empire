@@ -50,6 +50,8 @@ for ROLE in roles/run.admin roles/artifactregistry.writer; do
   gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$DEPLOY_SA" --role "$ROLE" --condition=None --quiet >/dev/null
 done
 gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" --member "serviceAccount:$DEPLOY_SA" --role roles/iam.serviceAccountUser --quiet >/dev/null
+# the desktop release workflow publishes installers to downloads/ in the game's bucket
+gcloud storage buckets add-iam-policy-binding "gs://${SNAPSHOT_BUCKET:-stem-471602-se-snapshots}" --member "serviceAccount:$DEPLOY_SA" --role roles/storage.objectAdmin --quiet >/dev/null 2>&1 || echo "  (could not grant bucket access for desktop publishing; publish from a machine with access instead)"
 
 say "Workload Identity Federation for GitHub repo $GH_REPO"
 gcloud iam workload-identity-pools describe "$POOL" --location global >/dev/null 2>&1 || \

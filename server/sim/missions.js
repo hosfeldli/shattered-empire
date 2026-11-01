@@ -3,7 +3,8 @@
 // completes, fails or is invalidated; a commitment period and hysteresis stop armies reversing on
 // every planning tick; local threats change targeting inside a zone, not strategic destinations.
 import { UNITS, TERRAIN, isWater, N, W, H, aiProfile } from './constants.js';
-import { dist, disk, hexLine } from './hex.js';
+import { dist, disk, hexLine, WRAP } from './hex.js';
+import { lineAcross } from './deploy.js';
 
 const COMMIT = { defend: 15, offensive: 90, scout: 60 };
 
@@ -48,6 +49,19 @@ export class MilitaryPlanner {
     this.ai.cmd({ c: 'move', units: ids, tile, attackMove, formation, auth: 'mission' });
   }
 
+  // Mission state machine: every transition is recorded with its reason (diagnostics), and a flip
+  // straight back to the state just left counts as an oscillation (tracked; the planner's commitment
+  // periods and hysteresis exist to keep this near zero).
+  setState(m, state, why = '') {
+    if (m.state === state) return false;
+    const g = this.g, h = m.history || (m.history = []);
+    const prev = h[h.length - 1];
+    if (prev && prev[2] === m.state && prev[1] === state && g.time - prev[0] < 15) { this.oscillations = (this.oscillations || 0) + 1; g.stats.oscillations = (g.stats.oscillations || 0) + 1; }
+    h.push([+g.time.toFixed(1), m.state || 'new', state, why]); if (h.length > 8) h.shift();
+    m.state = state; m.stateAt = g.time;
+    return true;
+  }
+
   strength(ids) { let s = 0; for (const id of ids) { const u = this.g.units.get(id); if (u) s += (UNITS[u.type].atk + UNITS[u.type].def) * (u.hp / u.maxHp); } return s; }
 
   step(army, threats, enemies, desired, opts = {}) {
@@ -89,9 +103,9 @@ export class MilitaryPlanner {
         const tile = r.tiles.slice().sort((a, b) => dist(a, city.tile) - dist(b, city.tile))[0];
         const aim = dist(tile, city.tile) <= m.radius ? tile : clampToward(city.tile, tile, m.radius);
         this.order(m, ids, aim, true, 'line');
-        m.state = 'respond';
+        this.setState(m, 'respond', 'threat in the zone');
       } else if (g.time > m.commitUntil && g.time - (m.lastThreat || 0) > 12) {
-        if (m.state !== 'consolidate') { m.state = 'consolidate'; m.consolidateAt = g.time; this.order(m, ids, city.tile, false, 'line'); }
+        if (m.state !== 'consolidate') { this.setState(m, 'consolidate', 'zone quiet'); m.consolidateAt = g.time; this.order(m, ids, city.tile, false, 'line'); }
         else if (g.time - m.consolidateAt > 10) release(m);
       }
       // anyone who wandered past the zone comes back
@@ -111,16 +125,20 @@ export class MilitaryPlanner {
     }
     if (off) {
       const tc = g.cities.get(off.target);
-      if (!tc || tc.owner === civ.id || !g.hostile(civ.id, tc.owner)) { off.state = 'done'; this.order(off, [...off.units], tc ? tc.tile : this.home(), false, 'line'); release(off); off = null; }
+      if (!tc || tc.owner === civ.id || !g.hostile(civ.id, tc.owner)) { this.setState(off, 'done', tc && tc.owner === civ.id ? 'objective taken' : 'objective no longer valid'); this.order(off, [...off.units], tc ? tc.tile : this.home(), false, 'line'); release(off); off = null; }
     }
     if (!off) {
       if (!target || (this.cooldown[target.id] || 0) > g.time || opts.allowOffensive === false) { this.support(army, reserve, take, release, enemies); return; }
+      // Final Campaign: an enemy down to its last cities gets everything (no home reserve, longer commitment)
+      const tOwner = g.cities.get(target.id)?.owner;
+      const final = tOwner != null && !g.civs[tOwner]?.isRebel && g.cityOf(g.civs[tOwner]).length <= 2;
       // a deliberate reserve stays home (skill): not every unit joins every offensive
       const all = reserve();
-      const free = all.slice(0, Math.max(0, Math.ceil(all.length * (1 - T.reserve))));
-      if (free.length < Math.max(4, desired * 0.7)) { this.support(army, reserve, take, release, enemies); return; }
+      const free = final ? all : all.slice(0, Math.max(0, Math.ceil(all.length * (1 - T.reserve))));
+      if (free.length < Math.max(4, desired * (final ? 0.4 : 0.7))) { this.support(army, reserve, take, release, enemies); return; }
       const staging = stagingTile(g, civ, target.tile);
-      off = { id: this.nextId++, kind: 'offensive', target: target.id, tile: target.tile, buildingId: target.buildingId, staging, units: new Set(), state: 'assemble', commitUntil: g.time + COMMIT.offensive * T.commit, created: g.time };
+      off = { id: this.nextId++, kind: 'offensive', target: target.id, tile: target.tile, buildingId: target.buildingId, staging, units: new Set(), state: 'assemble', commitUntil: g.time + COMMIT.offensive * T.commit * (final ? 2 : 1), created: g.time, final };
+      if (final) g.notify(-1, `${civ.name} launches its final campaign against ${g.civs[tOwner].name}.`, { kind: 'war', tile: target.tile, quiet: true });
       take(off, free);
       off.start = this.strength(off.units);
       this.missions.set(off.id, off);
@@ -134,9 +152,9 @@ export class MilitaryPlanner {
     // retreat judgment (skill): losses, supply, and the visible enemy strength near the objective
     const seenNear = T.level >= 1 ? [...g.units.values()].filter((e) => g.hostile(civ.id, e.owner) && civ.visible[e.tile] && dist(e.tile, off.tile) <= 6 && !UNITS[e.type].civilian) : [];
     const odds = seenNear.length ? this.strength(ids) / Math.max(1, this.strength(seenNear.map((e) => e.id))) : 9;
-    if (off.state !== 'regroup' && (this.strength(ids) < off.start * T.retreat || supply < 15 || (off.state === 'execute' && T.level >= 2 && odds < 0.6))) {
-      off.state = 'regroup'; off.regroupAt = g.time;
-      this.cooldown[off.target] = g.time + 180;          // do not throw the same failed attack straight back
+    if (off.state !== 'regroup' && (this.strength(ids) < off.start * T.retreat * (off.final ? 0.6 : 1) || supply < 15 || (off.state === 'execute' && T.level >= 2 && odds < 0.6))) {
+      this.setState(off, 'regroup', supply < 15 ? 'out of supply' : odds < 0.6 && off.state === 'execute' ? 'outmatched at the objective' : 'heavy losses'); off.regroupAt = g.time;
+      this.cooldown[off.target] = g.time + (off.final ? 90 : 180);          // do not throw the same failed attack straight back
       this.order(off, ids, off.staging >= 0 ? off.staging : this.home(), false, 'column');
       return;
     }
@@ -146,14 +164,36 @@ export class MilitaryPlanner {
       // reinforcements join while assembling
       const extra = reserve().filter((u) => dist(u.tile, off.staging) < 30).slice(0, 4);
       if (extra.length) { take(off, extra); this.ai.cmd({ c: 'move', units: extra.map((u) => u.id), tile: off.staging, formation: 'column', auth: 'mission' }); }
-      if (near >= units.length * 0.8 || g.time - off.created > 120) { off.state = 'execute'; off.startedAt = g.time; this.order(off, ids, off.tile, true, 'line'); }
+      if (near >= units.length * 0.8 || g.time - off.created > 120) { this.setState(off, 'execute', near >= units.length * 0.8 ? 'assembled' : 'assembly timed out'); off.startedAt = g.time; this.order(off, ids, off.tile, true, 'line'); }
       return;
     }
-    // execute: hold the objective; local targeting is left to the units and the server
+    // execute: first suppress the defenses covering the objective with the guns (bunkers, forts,
+    // guard posts, AA), then the assault; local targeting is otherwise left to the units and the server
+    const defenses = [...g.buildings.values()].filter((b) => g.hostile(civ.id, b.owner) && b.done && civ.visible[b.tile] && g.defs.BUILDINGS[b.type].attack && b.type !== 'town' && dist(b.tile, off.tile) <= 6);
+    if (defenses.length) {
+      const guns = units.filter((u) => UNITS[u.type].cat === 'artillery' && u.order.kind !== 'attack');
+      for (const u of guns) {
+        const d = defenses.slice().sort((a, b) => dist(a.tile, u.tile) - dist(b.tile, u.tile))[0];
+        this.ai.cmd({ c: 'attack', units: [u.id], target: { kind: 'building', id: d.id }, auth: 'mission' });
+      }
+      off.suppressing = defenses.length;
+    } else off.suppressing = 0;
     const town = off.buildingId >= 0 ? g.buildings.get(off.buildingId) : null;
-    const close = units.filter((u) => dist(u.tile, off.tile) <= 5 && u.order.kind !== 'attack');
+    // siege termination: once the town is broken, troops walk in to take it (a capture needs ground
+    // troops next to the town); shelling alone would only end in ruins
+    if (town && town.hp <= town.maxHp * 0.25) {
+      const adjacent = units.filter((u) => dist(u.tile, off.tile) <= 1 && UNITS[u.type].cat !== 'artillery').length;
+      if (!adjacent) {
+        const takers = units.filter((u) => UNITS[u.type].cat !== 'artillery' && !UNITS[u.type].civilian).sort((a, b) => dist(a.tile, off.tile) - dist(b.tile, off.tile)).slice(0, 3);
+        const spot = disk(off.tile, 1).find((t) => t !== off.tile && !isWater(g.world.terr[t]) && Number.isFinite(TERRAIN[g.world.terr[t]].move));
+        if (takers.length && spot >= 0 && (off.captureAt ?? -1) <= g.time) { off.captureAt = g.time + 8; this.ai.cmd({ c: 'move', units: takers.map((u) => u.id), tile: spot, attackMove: false, auth: 'mission' }); this.setState(off, 'capture', 'town broken: moving in'); }
+      }
+    }
+    const close = units.filter((u) => dist(u.tile, off.tile) <= 5 && u.order.kind !== 'attack' && !(off.state === 'capture' && dist(u.tile, off.tile) <= 2));
     if (town && close.length) this.ai.cmd({ c: 'attack', units: close.map((u) => u.id), target: { kind: 'building', id: town.id }, auth: 'mission' });
-    this.order(off, ids, off.tile, true, 'line');
+    // units with a target of their own (guns on defenses, troops on the town) keep it
+    if (off.state === 'capture' && town && town.hp > town.maxHp * 0.5) this.setState(off, 'execute', 'the town recovered');
+    this.order(off, ids.filter((id) => { const u = g.units.get(id); return u && u.order.kind !== 'attack' && !(off.state === 'capture' && dist(u.tile, off.tile) <= 2); }), off.tile, true, 'line');
     this.support(army, reserve, take, release, enemies);
   }
 
@@ -185,7 +225,9 @@ export class MilitaryPlanner {
       const line = perpendicularLine(g, city.tile, r, Math.min(6, Math.ceil(us.length / 2) + 1));
       if (!line) continue;
       const artillery = [...this.memory.values()].some((x) => x.art);
-      this.ai.cmd({ c: 'deploy', units: us.map((u) => u.id), line, mode: 'depth', behavior: 'defend', density: artillery ? 'spread' : 'auto', fortify: civ.res.materials > 120 ? (civ.techs.has('fortification') ? 'reinforced' : 'basic') : false, auth: 'mission' });
+      this.ai.cmd({ c: 'deploy', units: us.map((u) => u.id), line, mode: 'depth', behavior: 'defend', density: artillery ? 'spread' : 'auto', auth: 'mission' });
+      // the line is entrenched through the same trench planner players use (cost, crews, rules)
+      if (civ.res.materials > 120) this.ai.cmd({ c: 'trenchPlan', points: line, type: civ.techs.has('fortification') ? 'reinforced' : 'basic', commit: true, by: 'mission' });
       m.fortified = g.time;
     }
     // under artillery: spread out a stacked group that keeps getting shelled
@@ -272,25 +314,14 @@ export class MilitaryPlanner {
 
   home() { const c = this.g.capital(this.civ); return c ? c.tile : -1; }
   assignedIds() { const s = new Set(); for (const m of this.missions.values()) for (const id of m.units) s.add(id); return s; }
-  summary() { return [...this.missions.values()].map((m) => ({ id: m.id, kind: m.kind, state: m.state, units: m.units.size, tile: m.kind === 'defend' ? m.zone : m.tile, staging: m.staging })); }
+  summary() { return [...this.missions.values()].map((m) => ({ id: m.id, kind: m.kind, state: m.state, units: m.units.size, tile: m.kind === 'defend' ? m.zone : m.tile, staging: m.staging, since: m.stateAt ?? m.created, history: m.history || [], suppressing: m.suppressing || 0 })); }
+  missionOf(unitId) { for (const m of this.missions.values()) if (m.units.has(unitId)) return m; return null; }
 }
 
-// a defensive line of n hexes across the approach from `toward`, a few hexes out from `center`
+// a defensive line of n hexes across the approach from `toward`, a few hexes out from `center`,
+// facing the threat (shared orientation frame with the deployment planner; seam-safe)
 function perpendicularLine(g, center, toward, n) {
-  if (toward < 0 || n < 2) return null;
-  const path = hexLine(center, toward);
-  const mid = path[Math.min(path.length - 1, 3)];
-  const xy = (t) => { const r = (t / W) | 0, q = t % W; return [Math.sqrt(3) * (q + 0.5 * (r & 1)), 1.5 * r]; };
-  const [ax, ay] = xy(center); let [bx, by] = xy(toward); const P = Math.sqrt(3) * W; bx += Math.round((ax - bx) / P) * P;
-  const l = Math.hypot(bx - ax, by - ay) || 1, px = -(by - ay) / l, py = (bx - ax) / l;
-  const [mx, my] = xy(mid);
-  const half = (n - 1) * Math.sqrt(3) / 2;
-  const at = (x, y) => { const r = Math.max(0, Math.min(H - 1, Math.round(y / 1.5))); const q = ((Math.round(x / Math.sqrt(3) - 0.5 * (r & 1)) % W) + W) % W; return r * W + q; };
-  // the drag direction is chosen so the line's facing (drag turned left) points at the threat
-  let a = at(mx - px * half, my - py * half), b = at(mx + px * half, my + py * half);
-  const fx = (xy(b)[1] - xy(a)[1]), fy = -(xy(b)[0] - xy(a)[0]);
-  if (fx * (bx - ax) + fy * (by - ay) < 0) [a, b] = [b, a];
-  return [a, b];
+  return lineAcross({ W, H, wrap: WRAP }, center, toward, n, 3);
 }
 
 function clampToward(from, to, r) { const line = hexLine(from, to); return line[Math.min(line.length - 1, r)]; }

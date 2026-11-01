@@ -8,6 +8,8 @@ import { N, UNITS, TECHS, AGES, isWater, aiProfile } from './constants.js';
 import { dist } from './hex.js';
 import { defaultGovernor, steerColonist } from './governor.js';
 import { nationalRoles } from './planner.js';
+import { aiAirStep } from './airPlanner.js';
+import { aiMissiles } from './missiles.js';
 
 const TECH_PREF = {
   builder: ['agronomy', 'salvage_engineering', 'schooling', 'surveying', 'trade_networks', 'fortification', 'small_arms', 'seafaring',
@@ -225,7 +227,8 @@ export class AI {
 
   military() {
     const g = this.g, civ = this.civ;
-    const army = this.myUnits.filter((u) => !UNITS[u.type].civilian && !UNITS[u.type].engineer && u.type !== 'scout_buggy');
+    // aircraft are run by the air planner (missions from their bases), not by ground missions
+    const army = this.myUnits.filter((u) => !UNITS[u.type].civilian && !UNITS[u.type].engineer && u.type !== 'scout_buggy' && !UNITS[u.type].air);
     const enemies = this.enemies();
     const threats = this.enemiesNear();
     this.enemyAir = threats.some((u) => UNITS[u.type].air);
@@ -246,7 +249,7 @@ export class AI {
     if (tier < desired * (1 + civ.age * 0.6) && army.length < desired * 1.2 && civ.res.food > 50) {
       // recruitment goes through the same production manager players use: the choice of unit
       // comes from the role mix, the batch is spread over every facility that can make it
-      const facs = [...g.buildings.values()].filter((b) => b.owner === civ.id && b.done && b.queue.length < 2 && ['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'].includes(b.type) && (g.cities.get(b.cityId)?.pop || 0) >= 6);
+      const facs = [...g.buildings.values()].filter((b) => b.owner === civ.id && b.done && b.queue.length < 2 && ['barracks', 'motor_works', 'heavy_assembly', 'robotics_complex'].includes(b.type) && (g.cities.get(b.cityId)?.pop || 0) >= 6);
       const wanted = new Map();
       for (const b of facs) { const u = this.trainChoice(b); if (u) wanted.set(u, [...(wanted.get(u) || []), b.id]); }
       const gap = Math.max(1, Math.min(4, Math.ceil((desired - army.length) / 2)));
@@ -284,6 +287,8 @@ export class AI {
     const reserve = army.filter((u) => !assigned.has(u.id));
     this.rally(reserve);
     if (!enemies.length && !threats.length) this.huntRebels(reserve);
+    aiAirStep(this);
+    aiMissiles(this);
   }
 
   huntRebels(army) {

@@ -49,7 +49,7 @@ export function serializeGame(g) {
     slots: g.slotsDef, world, roads: { ...g.roads.serialize(), traffic: mapOut(g.roads.traffic) },
     fieldworks: serializeFieldworks(g), logistics: { caches: [...(g.caches || new Map())], seq: g.convoySeq || 0 },
     formations: { list: [...(g.formations || new Map()).values()], nextId: g.nextFormationId || 0 },
-    combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g) },
+    combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g), missiles: g.missiles || [], fallout: [...(g.fallout || new Map())], missileSeq: g.missileSeq || 1 },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
     civs, diplomacy: { pairs: diplo, nextProposal: g.diplomacy.nextProposal },
     geology: { lastQuake: geo.lastQuake, nextDrought: geo.nextDrought, nextAvulsion: geo.nextAvulsion, hydroTimer: geo.hydroTimer, warned: mapOut(geo.warned),
@@ -84,6 +84,7 @@ export function restoreGame(data) {
   g.projectiles = new Map((cb.projectiles || []).map((p) => [p.id, p])); g.pending = new Map(cb.pending || []);
   g.eventSeq = cb.eventSeq || 0; g.events = [];
   restoreBattlefield(g, cb.battlefield);
+  g.missiles = cb.missiles || []; g.fallout = new Map(cb.fallout || []); g.missileSeq = cb.missileSeq || 1;
   restoreFieldworks(g, data.fieldworks);
   g.caches = new Map(data.logistics?.caches || []); g.convoySeq = data.logistics?.seq || 0;
   g.formations = new Map((data.formations?.list || []).map((f) => [f.id, f])); g.nextFormationId = data.formations?.nextId || 0;

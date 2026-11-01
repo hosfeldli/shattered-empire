@@ -154,7 +154,7 @@ test('buildings go operational -> damaged -> ruined, ruins can be rebuilt at hal
   // planned buildings wait for funds
   civ.res.materials = 0;
   const spot = [...disk(g.capital(civ).tile, 3)].find((t) => g.canPlace(civ, 'house', t, true));
-  assert.equal(g.command(0, { c: 'build', type: 'house', tile: spot, plan: true }), null);
+  { const r = g.command(0, { c: 'build', type: 'house', tile: spot, plan: true }); assert.ok(r && !r.error && r.reply.built.type === 'house'); }
   const planned = g.buildingAtTile(spot);
   assert.equal(planned.state, 'planned');
   civ.res.materials = 500; run(g, 20);

@@ -1,12 +1,13 @@
 // Combat resolution: weapons fire (hitscan volleys or authoritative projectiles that damage on
 // impact), area blasts, suppression and morale, cover and line of fire, target choice with
 // overkill avoidance, and a sequenced combat-event stream that clients replay.
+import { book } from './ledger.js';
 import { trenchCover, damageFieldworks } from './fieldworks.js';
 import { UNITS, BUILDINGS, TERRAIN, T, isWater } from './constants.js';
-import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ARMORED } from './weapons.js';
+import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ARMORED, weaponVs } from './weapons.js';
 import { disk, dist, hexLine } from './hex.js';
 import { damageUnit, damageBuilding, canHit } from './military.js';
-import { addCrater, addSmoke, smokeAt, scarCover } from './battlefield.js';
+import { addCrater, addSmoke, smokeAt, scarCover, fieldPosCover, addIntensity } from './battlefield.js';
 
 export const CSTAT = ['idle', 'moving', 'engaging', 'repositioning', 'suppressed', 'out_of_range', 'no_los', 'reloading', 'low_ammo', 'retreating', 'pinned'];
 export const CS = Object.fromEntries(CSTAT.map((k, i) => [k, i]));
@@ -52,6 +53,9 @@ export function coverAt(g, u, from = -1, indirect = false) {
   c = Math.max(c, scarCover(g, t));
   if (w.terr[t] === T.FOREST) c = Math.max(c, 0.15);
   if (g.urban?.[t]) c = Math.max(c, 0.3);                // built-up districts: strong infantry positions
+  // troops beside their own bunker or fortress shelter behind it (one source, never stacked)
+  for (const n of disk(t, 1)) { if (n === t) continue; const o = g.buildingAtTile(n); if (o && o.owner === u.owner && o.done && BUILDINGS[o.type].shelter) c = Math.max(c, BUILDINGS[o.type].shelter * 2 * (o.hp / o.maxHp)); }
+  c = Math.max(c, fieldPosCover(g, u));                   // a scraped foxhole
   c = def.move === 'infantry' ? c : c * 0.5;
   // field trenches: directional, and the best cover counts (sources never add up past a cap)
   if (g.fieldworks?.size) c = Math.max(c, trenchCover(g, u, from, indirect));
@@ -115,7 +119,7 @@ function unitStrength(g, u) {
   a *= 1 + combinedArms(g, u);
   a *= 0.5 + 0.5 * (u.hp / u.maxHp);
   u.lowAmmo = false;
-  if (def.age >= 1) { const need = 0.05 * (def.cat === 'artillery' ? 3 : 1); if (civ.res.munitions >= need) civ.res.munitions -= need; else { a *= 0.6; u.lowAmmo = true; } }
+  if (def.age >= 1) { const need = 0.05 * (def.cat === 'artillery' ? 3 : 1); if (civ.res.munitions >= need) { civ.res.munitions -= need; book(civ, 'army', 'munitions', -need); } else { a *= 0.6; u.lowAmmo = true; } }
   if (!def.air && w.river[u.tile] && !w.road[u.tile] && def.range <= 1) a *= 0.75;
   if (isWater(w.terr[u.tile]) && !def.air) a *= 0.6;
   // suppressed and shaken soldiers shoot worse
@@ -127,23 +131,42 @@ function unitStrength(g, u) {
 export function fireUnit(g, u, tg, tt) {
   const def = UNITS[u.type];
   const wk = UNIT_WEAPON[u.type] || 'carbine', wpn = WEAPONS[wk];
+  if (u.air && def.ammo && u.air.ammo <= 0) return false;          // aircraft carry finite ammunition per sortie
+  if (u.grounded) return false;
   const lof = lineOfFire(g, u.tile, tt, !!wpn.arc, !!def.air || (tg.kind === 'unit' && !!UNITS[g.units.get(tg.id)?.type]?.air));
   if (!lof.ok) return false;
   const strength = unitStrength(g, u);
-  release(g, { kind: 'unit', obj: u, owner: u.owner, tile: u.tile, def, vsBuildings: def.vsBuildings || 1, bonus: def.bonus, aa: def.aa || 0 }, wk, wpn, strength, lof.acc, tg, tt);
+  release(g, { kind: 'unit', obj: u, owner: u.owner, tile: u.tile, def, vsBuildings: def.vsBuildings || 1, bonus: def.bonus, wk }, wk, wpn, strength, lof.acc, tg, tt);
   u.cooldown = wpn.cooldown * (def.cat === 'artillery' && wk === 'howitzer' ? 1 : 1);
   u.lastCombat = g.time;
+  if (u.air && def.ammo) u.air.ammo = Math.max(0, u.air.ammo - 1);
   return true;
 }
 
+// a one-way drone reaches its target: one warhead impact (same path as any real impact)
+export function detonate(g, u, tile) {
+  const def = UNITS[u.type], wk = UNIT_WEAPON[u.type] || 'warhead';
+  const str = def.atk * (0.6 + 0.4 * (u.hp / u.maxHp)) * supplyFire(100, false);
+  emit(g, { k: 'launch', s: u.id, sb: 0, t: 0, tb: 0, a: tile, b: tile, w: WIDX[wk], f: 0.1, x: 1, p: -u.id });
+  impact(g, { id: g.id_(), owner: u.owner, src: u.id, sb: 0, w: wk, from: tile, to: tile, aim: tile, tg: { kind: 'tile', id: 0 }, at: g.time, launched: g.time, str, acc: 1, vsB: def.vsBuildings || 1, bonus: def.bonus || null });
+}
+
 export function fireBuilding(g, b, target) {
-  const bd = BUILDINGS[b.type];
+  const bd = BUILDINGS[b.type], civ = g.civs[b.owner];
   const wk = BUILDING_WEAPON[b.type] || 'mg', wpn = WEAPONS[wk];
+  if (!weaponVs(wk, UNITS[target.type])) return false;
   const lof = lineOfFire(g, b.tile, target.tile, !!wpn.arc, !!UNITS[target.type].air);
   if (!lof.ok) return false;
-  const a = bd.attack * (g.civs[b.owner].policies.has('fortification') && b.type !== 'town' ? 1.5 : 1) * (0.4 + 0.6 * b.hp / b.maxHp);
-  release(g, { kind: 'building', obj: b, owner: b.owner, tile: b.tile, def: null, vsBuildings: 1, bonus: null, aa: bd.aa || 0 }, wk, wpn, a, lof.acc, { kind: 'unit', id: target.id }, target.tile);
+  // installations that fire munitions (AA batteries) stop when the stockpile is empty
+  if (bd.ammo) { if ((civ.res.munitions || 0) < bd.ammo) { b.noAmmo = true; return false; } civ.res.munitions -= bd.ammo; book(civ, 'army', 'munitions', -bd.ammo); b.noAmmo = false; }
+  let a = bd.attack * (civ.policies.has('fortification') && b.type !== 'town' && bd.defense === 'ground' ? 1.5 : 1) * (0.4 + 0.6 * b.hp / b.maxHp);
+  if (b.upgraded) a *= 1.25;          // upgraded fire control (Air Defense)
+  // diminishing returns when many static defenses pour fire on one target in the same moment
+  const df = g.defFire || (g.defFire = new Map()), k = 'd' + target.id, n = (df.get(k) || 0) + 1; df.set(k, n);
+  if (n > 2) a *= 1 / (1 + 0.35 * (n - 2));
+  release(g, { kind: 'building', obj: b, owner: b.owner, tile: b.tile, def: null, vsBuildings: 1, bonus: null, wk }, wk, wpn, a, lof.acc * (b.upgraded ? 1.15 : 1), { kind: 'unit', id: target.id }, target.tile);
   b.cooldown = Math.max(2, wpn.cooldown);
+  b.lastFire = g.time; b.aimAt = target.tile;
   return true;
 }
 
@@ -163,14 +186,14 @@ function release(g, src, wk, wpn, strength, acc, tg, tt) {
   let impact = tt;
   if (wpn.arc && g.rng() > 0.55 + 0.45 * acc) { const ring = disk(tt, 1).filter((t) => t !== tt); impact = ring[Math.floor(g.rng() * ring.length)] ?? tt; }
   const p = { id: g.id_(), owner: src.owner, src: sid, sb, w: wk, from: src.tile, to: impact, aim: tt, tg, at: g.time + flight, launched: g.time,
-    str: strength / salvo, acc, vsB: src.vsBuildings, bonus: src.bonus || null, aa: src.aa };
+    str: strength / salvo, acc, vsB: src.vsBuildings, bonus: src.bonus || null, wk };
   for (let s = 0; s < salvo; s++) {
     const q = s ? { ...p, id: g.id_(), at: p.at + s * 0.12 } : p;
     g.projectiles.set(q.id, q);
     const key = targetKey(tg);
     g.pending.set(key, (g.pending.get(key) || 0) + expectedDamage(g, q.str, tg));
   }
-  emit(g, { k: 'launch', s: sid, sb, t: tg.id, tb: tg.kind === 'building' ? 1 : 0, a: src.tile, b: impact, w: WIDX[wk], f: +flight.toFixed(2), x: salvo, p: p.id });
+  emit(g, { k: 'launch', s: sid, sb, t: tg.id, tb: tg.kind === 'building' ? 1 : 0, a: src.tile, b: impact, w: WIDX[wk], f: +flight.toFixed(2), x: wpn.airburst ? wpn.burst : salvo, p: p.id });
 }
 
 function expectedDamage(g, str, tg) {
@@ -186,8 +209,10 @@ function resolveHit(g, src, wpn, strength, acc, tg, tt, factor) {
   if (tg.kind === 'unit') {
     const e = g.units.get(tg.id); if (!e) return 0;
     const ed = UNITS[e.type];
-    let a = strength;
-    if (ed.air) { if (!src.aa) return 0; a *= src.aa; }
+    // the weapon's target classes decide: a ground-only gun never touches an aircraft
+    const vs = weaponVs(src.wk, ed);
+    if (!vs) return 0;
+    let a = strength * vs;
     if (src.bonus && src.bonus[ed.cat]) a *= src.bonus[ed.cat];
     if (ARMORED.has(ed.cat)) a *= wpn.vsArmor;
     let d = ed.def * (ed.air ? 1 : 1 + TERRAIN[w.terr[e.tile]].def) * (1 + 0.08 * vetLevel(e));
@@ -206,6 +231,7 @@ function resolveHit(g, src, wpn, strength, acc, tg, tt, factor) {
     return dmg;
   }
   const b = g.buildings.get(tg.id); if (!b) return 0;
+  if (!WEAPONS[src.wk]?.targets.includes('ground')) return 0;      // anti-air guns cannot hit structures
   const bd = BUILDINGS[b.type];
   let d = bd.attack ? 12 : 6;
   if ((b.type === 'fort' || b.type === 'bunker') && g.civs[b.owner].policies.has('fortification')) d *= 1.5;
@@ -231,7 +257,8 @@ export function projectilesStep(g) {
 
 function impact(g, p) {
   const wpn = WEAPONS[p.w];
-  const src = { kind: p.sb ? 'building' : 'unit', obj: { id: p.src }, owner: p.owner, tile: p.from, vsBuildings: p.vsB, bonus: p.bonus, aa: p.aa };
+  const src = { kind: p.sb ? 'building' : 'unit', obj: { id: p.src }, owner: p.owner, tile: p.from, vsBuildings: p.vsB, bonus: p.bonus, wk: p.w };
+  if (wpn.airburst) return airburst(g, p, src, wpn);
   let to = p.to;
   // guided munitions follow a target that moved a little; unguided direct fire misses it
   const tgt = p.tg.kind === 'unit' ? g.units.get(p.tg.id) : g.buildings.get(p.tg.id);
@@ -248,6 +275,7 @@ function impact(g, p) {
   }
   // high explosives scar the ground, the roads and the air
   if (wpn.he >= 0.5 && g.fieldworks?.size) for (const t of disk(to, wpn.blast || 0)) if (g.fieldworks.has(t)) damageFieldworks(g, t, (t === to ? 14 : 6) * wpn.he);
+  if (wpn.he >= 0.5) addIntensity(g, to, 0.8 * wpn.he);     // every explosion adds to the battlefield's wear
   if (wpn.he >= 1 && !isWater(g.world.terr[to])) {
     if (g.rng() < 0.35 * wpn.he) addCrater(g, to, wpn.he >= 1.5 ? 2 : 1);
     if (g.rng() < 0.3) g.roads.damageTile(to, 10 * wpn.he, g.rng, 0.5);
@@ -255,9 +283,19 @@ function impact(g, p) {
   } else if (wpn.he >= 0.5) addSmoke(g, to, 0.15, 5);
 }
 
+// An anti-aircraft round bursts in the air where its target was aimed. It hits only if the aircraft
+// is still close to that point; a burst never scars the ground, damages trenches or reveals anything.
+function airburst(g, p, src, wpn) {
+  const tgt = p.tg.kind === 'unit' ? g.units.get(p.tg.id) : null;
+  const close = tgt && UNITS[tgt.type].air && dist(tgt.tile, p.aim) <= 1;
+  let d = 0;
+  if (close) d = resolveHit(g, src, wpn, p.str, p.acc * (tgt.tile === p.aim ? 1 : 0.6), p.tg, tgt.tile, 1);
+  emit(g, { k: 'impact', a: p.from, b: tgt ? tgt.tile : p.to, w: WIDX[p.w], o: d > 0 ? 'hit' : 'miss', p: p.id, t: p.tg.id, ab: 1 });
+}
+
 // tests and the sandbox: one shell of a weapon lands on a hex (same path as a real impact)
 export function testImpact(g, owner, tile, wk, str = 20) {
-  impact(g, { id: g.id_(), owner, src: 0, sb: 0, w: wk, from: tile, to: tile, aim: tile, tg: { kind: 'tile', id: 0 }, at: g.time, launched: g.time, str, acc: 1, vsB: 1, bonus: null, aa: 0 });
+  impact(g, { id: g.id_(), owner, src: 0, sb: 0, w: wk, from: tile, to: tile, aim: tile, tg: { kind: 'tile', id: 0 }, at: g.time, launched: g.time, str, acc: 1, vsB: 1, bonus: null });
 }
 
 function blast(g, src, wpn, str, acc, center, tg) {
@@ -267,7 +305,7 @@ function blast(g, src, wpn, str, acc, center, tg) {
     if (ids) for (const id of [...ids]) {
       const e = g.units.get(id);
       if (!e || !g.hostile(src.owner, e.owner)) continue;
-      if (UNITS[e.type].air && !src.aa) continue;
+      if (!weaponVs(src.wk, UNITS[e.type]) || e.grounded) continue;           // bombs and shells do not hit aircraft overhead
       e.blastAt = g.time;
       resolveHit(g, src, wpn, str, acc, { kind: 'unit', id }, t, f);
     }
@@ -332,7 +370,9 @@ export function chooseTarget(g, u, radius, policy) {
       if (policy === 'antiArmor' && ARMORED.has(ed.cat)) s += 5;
       if (policy === 'counterBattery' && ed.cat === 'artillery') s += 7;
       if (policy === 'defensive' && d > def.range) s -= 6;
-      if (ed.air && (def.aa || 0) >= 2) s += 6;
+      const vs = weaponVs(wk, ed);
+      if (ed.air && vs >= 1.4) s += 6;
+      if (!ed.air && vs < 0.5) s -= 4;                // a fighter's guns are wasted on ground targets
       if (ed.civilian) s -= 2;
       if (ARMORED.has(ed.cat) && wpn.vsArmor < 0.6) s -= 2;
       s += 2 * (1 - e.hp / e.maxHp);

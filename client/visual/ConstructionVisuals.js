@@ -23,9 +23,10 @@ export function drawConstruction(g, view, S, t) {
   }
   for (const pr of S.econ?.roads || []) {
     if (pr.status !== 'constructing' || !pr.tiles || pr.tiles.length < 2) continue;
-    const [a, b2] = pr.tiles; const x = (view.cx[a] + view.cx[b2]) / 2, y = (view.cy[a] + view.cy[b2]) / 2;
+    const pts = view.tilePts ? view.tilePts(pr.tiles.slice(0, 5)) : pr.tiles.slice(0, 5).map((k) => [view.cx[k], view.cy[k]]);
+    const x = (pts[0][0] + pts[1][0]) / 2, y = (pts[0][1] + pts[1][1]) / 2;
     if (!view.inView(x, y)) continue;
     const p = frac(t * 0.5); g.rect(x - 2 + Math.sin(p * 6.28) * 2, y - 1.5, 3.4, 2.4).fill({ color: 0xe0a020 });
-    for (let k = 1; k < Math.min(5, pr.tiles.length); k++) g.circle(view.cx[pr.tiles[k]], view.cy[pr.tiles[k]], 0.9).fill({ color: 0xf1c75b });
+    for (let k = 1; k < pts.length; k++) g.circle(pts[k][0], pts[k][1], 0.9).fill({ color: 0xf1c75b });
   }
 }

@@ -80,7 +80,7 @@ export const TECHS = {
   agronomy: { name: 'Agronomy', age: 0, cost: 60, req: [], desc: '+25% farm output; Rationing policy.' },
   salvage_engineering: { name: 'Salvage Engineering', age: 0, cost: 60, req: [], desc: 'Salvage yards on old-world ruins (materials + steel).' },
   small_arms: { name: 'Small Arms', age: 0, cost: 60, req: [], desc: 'Rifle squads.' },
-  fortification: { name: 'Fortification', age: 0, cost: 70, req: ['salvage_engineering'], desc: 'Bunkers; Fortification Doctrine policy.' },
+  fortification: { name: 'Fortification', age: 0, cost: 70, req: ['salvage_engineering'], desc: 'Bunkers and reinforced trench lines; Fortification Doctrine policy.' },
   trade_networks: { name: 'Trade Networks', age: 0, cost: 70, req: [], desc: 'Markets (merchants), Free Markets policy.' },
   schooling: { name: 'Schooling', age: 0, cost: 60, req: [], desc: 'Academies (specialists produce research); Research Grants policy.' },
   seafaring: { name: 'Seafaring', age: 0, cost: 70, req: ['salvage_engineering'], desc: 'Ports: fishing, embarking at ports, sea supply.' },
@@ -98,7 +98,7 @@ export const TECHS = {
   higher_education: { name: 'Higher Education', age: 1, cost: 300, req: ['schooling'], desc: 'Universities; Technocracy.' },
   // Mechanization
   mechanization: { name: 'Mechanization', age: 2, cost: 700, req: ['motorization'], desc: 'Heavy assembly: tanks, mechanized infantry.' },
-  aviation: { name: 'Aviation', age: 2, cost: 720, req: ['petroleum'], desc: 'Airfields and attack helicopters.' },
+  aviation: { name: 'Aviation', age: 2, cost: 720, req: ['petroleum'], desc: 'Airfields, attack helicopters and basic fighters; AA batteries to defend against aircraft.' },
   highways: { name: 'Highways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Highways: fastest road movement and supply.' },
   railways: { name: 'Railways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Railways for bulk supply and transport.' },
   mechanized_agriculture: { name: 'Mechanized Agriculture', age: 2, cost: 650, req: ['agronomy'], desc: '+50% farm output, +housing.' },
@@ -109,9 +109,10 @@ export const TECHS = {
   computing: { name: 'Computing', age: 3, cost: 1200, req: ['electrification', 'higher_education'], desc: 'Electronics plants (rare earths from a deposit, a trade partner, imports or recycling).' },
   materials_recycling: { name: 'Materials Recycling', age: 3, cost: 900, req: ['computing', 'salvage_engineering'], desc: 'Recover rare earths from salvage: electronics plants run without a deposit.' },
   networked_command: { name: 'Networked Command', age: 3, cost: 1200, req: ['computing'], desc: 'Comms towers: long-range vision, +1 supply range.' },
-  drones: { name: 'Drones', age: 3, cost: 1250, req: ['computing', 'aviation'], desc: 'Drone works: recon drones.' },
+  drones: { name: 'Drones', age: 3, cost: 1250, req: ['computing', 'aviation'], desc: 'Drone works: recon drones that scout a region, and expendable one-way strike drones.' },
+  air_operations: { name: 'Air Operations', age: 3, cost: 1200, req: ['aviation'], desc: 'Tactical bombers for strikes on troop concentrations and infrastructure; faster launches and landings.' },
   precision_missiles: { name: 'Precision Missiles', age: 3, cost: 1300, req: ['drones'], desc: 'Missile batteries.' },
-  air_defense: { name: 'Air Defense', age: 3, cost: 1150, req: ['aviation'], desc: 'Air-defense vehicles.' },
+  air_defense: { name: 'Air Defense', age: 3, cost: 1150, req: ['aviation'], desc: 'Air-defense vehicles; AA batteries can be upgraded for better detection, range and accuracy.' },
   special_operations: { name: 'Special Operations', age: 3, cost: 1150, req: ['small_arms'], desc: 'Special forces (hidden beyond 2 hexes).' },
   federal_union: { name: 'Federal Union', age: 3, cost: 1150, req: ['higher_education'], desc: 'Federal Republic government.' },
   // Advanced Systems
@@ -120,6 +121,9 @@ export const TECHS = {
   strike_swarms: { name: 'Strike Swarms', age: 4, cost: 2100, req: ['drones', 'robotics'], desc: 'Strike drone swarms.' },
   exo_armor: { name: 'Exo Armor', age: 4, cost: 2000, req: ['robotics'], desc: 'Exo-armored infantry.' },
   climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['geoengineering'], desc: 'Engineered climate: +20% farm yields in your territory; in Cataclysm mode droughts and quakes there are suppressed.' },
+  improved_servicing: { name: 'Improved Servicing', age: 4, cost: 1900, req: ['air_operations', 'robotics'], desc: 'Aircraft refuel, rearm and repair a third faster; airfields gain two servicing slots.' },
+  missile_defense: { name: 'Missile Defense', age: 4, cost: 2000, req: ['air_defense', 'computing'], desc: 'Upgraded AA batteries and air-defense vehicles can intercept strategic missiles.' },
+  strategic_missiles: { name: 'Strategic Missiles', age: 4, cost: 2300, req: ['precision_missiles', 'fusion_power'], desc: 'Missile silos: a long, costly project yields one strategic missile at a time.' },
   continental_arcology: { name: 'Continental Arcology', age: 4, cost: 2400, req: ['fusion_power'], desc: 'The Arcology wonder (victory project).' },
 };
 
@@ -158,7 +162,7 @@ export const TAX = [
 // place: 'city' | 'flat' | 'farm' | 'forest' | 'quarry' | 'mine' | 'oil' | 'ruins' | 'coast' | 'any'
 export const BUILDINGS = {
   town: { name: 'Settlement Hub', glyph: '\u{1F3D8}', age: 0, cost: {}, time: 0, hp: 1000, place: 'city', cat: 'civic',
-    jobs: ['worker', 2], produce: { food: 0.3, materials: 0.35, credits: 0.15 }, housing: 8, vision: 5, attack: 8, range: 3, aa: 0.5,
+    jobs: ['worker', 2], produce: { food: 0.3, materials: 0.35, credits: 0.15 }, housing: 8, vision: 5, attack: 8, range: 3,
     trains: ['colonist', 'engineer', 'scout_buggy', 'supply_truck'] },
   house: { name: 'Housing Block', glyph: '\u{1F3E2}', age: 0, cost: { materials: 30 }, time: 10, hp: 160, place: 'flat', housing: 4, cat: 'residential' },
   farm: { name: 'Farm', glyph: '\u{1F33E}', age: 0, cost: { materials: 25 }, time: 10, hp: 120, place: 'farm', jobs: ['worker', 3], produce: { food: 0.45 }, cat: 'agri' },
@@ -170,7 +174,9 @@ export const BUILDINGS = {
   market: { name: 'Market', glyph: '\u{1F4B0}', age: 0, tech: 'trade_networks', cost: { materials: 70 }, time: 18, hp: 200, place: 'flat', jobs: ['merchant', 3], produce: { credits: 0.45 }, cat: 'commerce' },
   academy: { name: 'Academy', glyph: '\u{1F4DA}', age: 0, tech: 'schooling', cost: { materials: 80, credits: 20 }, time: 20, hp: 200, place: 'flat', jobs: ['specialist', 3], produce: { research: 0.25 }, cat: 'science' },
   port: { name: 'Port', glyph: '⚓', age: 0, tech: 'seafaring', cost: { materials: 90 }, time: 20, hp: 260, place: 'coast', jobs: ['worker', 2], produce: { food: 0.45, credits: 0.15 }, vision: 4, supply: 4, cat: 'logistics' },
-  bunker: { name: 'Bunker', glyph: '\u{1F6E1}', age: 0, tech: 'fortification', cost: { materials: 90 }, time: 18, hp: 450, place: 'any', vision: 5, attack: 8, range: 3, aa: 0.4, anywhere: true, cat: 'military' },
+  guard_post: { name: 'Guard Post', glyph: '\u{1F5FC}', age: 0, cost: { materials: 35 }, time: 9, hp: 180, place: 'any', vision: 4, attack: 6, range: 2, anywhere: true, cat: 'military', defense: 'ground', desc: 'Cheap early defense: a light machine gun against small raids.' },
+  bunker: { name: 'Bunker', glyph: '\u{1F6E1}', age: 0, tech: 'fortification', cost: { materials: 90 }, time: 18, hp: 450, place: 'any', vision: 5, attack: 10, range: 3, anywhere: true, cat: 'military', defense: 'ground', shelter: 0.1, desc: 'Durable ground defense: strong against infantry, limited against light vehicles; shelters troops beside it.' },
+  aa_battery: { name: 'AA Battery', glyph: '\u{1F3AF}', age: 2, tech: 'aviation', cost: { materials: 90, steel: 40, munitions: 20 }, time: 20, hp: 300, place: 'any', vision: 5, attack: 14, range: 4, anywhere: true, cat: 'military', defense: 'air', ammo: 0.4, desc: 'Stationary anti-aircraft guns: fires airburst volleys at detected aircraft; cannot target ground units. Uses munitions.' },
   mine: { name: 'Mine', glyph: '⛏', age: 1, tech: 'metallurgy', cost: { materials: 80 }, time: 18, hp: 180, place: 'mine', jobs: ['worker', 3], produce: { ore: 0.3 }, cat: 'industry' },
   steel_mill: { name: 'Steel Mill', glyph: '\u{1F3ED}', age: 1, tech: 'metallurgy', cost: { materials: 140 }, time: 26, hp: 360, place: 'flat', jobs: ['worker', 3], produce: { steel: 0.4 }, consume: { ore: 0.26 }, power: -2, cat: 'industry' },
   power_plant: { name: 'Power Plant', glyph: '⚡', age: 1, tech: 'electrification', cost: { materials: 160, steel: 40 }, time: 28, hp: 380, place: 'flat', jobs: ['worker', 2], consume: { ore: 0.08 }, power: 9, cat: 'power' },
@@ -179,50 +185,60 @@ export const BUILDINGS = {
   motor_works: { name: 'Motor Works', glyph: '\u{1F69A}', age: 1, tech: 'motorization', cost: { materials: 150, steel: 60 }, time: 28, hp: 380, place: 'flat', power: -2, cat: 'military',
     trains: ['armored_car', 'supply_truck', 'field_gun', 'missile_battery', 'air_defense'] },
   depot: { name: 'Supply Depot', glyph: '\u{1F4E6}', age: 1, tech: 'logistics', cost: { materials: 90, steel: 20 }, time: 20, hp: 300, place: 'any', supply: 5, vision: 3, anywhere: true, cat: 'logistics', trains: ['supply_truck'] },
-  fort: { name: 'Fortress', glyph: '\u{1F3EF}', age: 1, tech: 'civil_engineering', cost: { materials: 200, steel: 60 }, time: 30, hp: 1300, place: 'any', vision: 4, attack: 14, range: 4, aa: 0.6, anywhere: true, blocksSupply: 2, heals: true, cat: 'military' },
+  fort: { name: 'Fortress', glyph: '\u{1F3EF}', age: 1, tech: 'civil_engineering', cost: { materials: 200, steel: 60 }, time: 30, hp: 1300, place: 'any', vision: 4, attack: 14, range: 4, anywhere: true, blocksSupply: 2, heals: true, cat: 'military', defense: 'ground', shelter: 0.15, desc: 'Major strongpoint: engages infantry and armor, anchors an area, heals troops beside it. No anti-air.' },
   seismic: { name: 'Seismic Station', glyph: '\u{1F4E1}', age: 1, tech: 'seismology', cost: { materials: 100, credits: 60 }, time: 24, hp: 200, place: 'flat', jobs: ['specialist', 1], produce: { research: 0.2 }, stabilize: 0.15, cat: 'science' },
   university: { name: 'University', glyph: '\u{1F393}', age: 1, tech: 'higher_education', cost: { materials: 160, credits: 120 }, time: 32, hp: 300, place: 'flat', jobs: ['specialist', 3], produce: { research: 0.45 }, power: -1, cat: 'science' },
   heavy_assembly: { name: 'Heavy Assembly', glyph: '\u{1F3D7}', age: 2, tech: 'mechanization', cost: { materials: 220, steel: 160 }, time: 36, hp: 520, place: 'flat', power: -4, cat: 'military',
     trains: ['mech_infantry', 'tank', 'sp_artillery', 'autonomous_tank'] },
-  airfield: { name: 'Airfield', glyph: '\u{1F6EB}', age: 2, tech: 'aviation', cost: { materials: 200, steel: 120, fuel: 60 }, time: 34, hp: 450, place: 'flat', power: -2, supply: 3, airSupply: 7, vision: 5, cat: 'military',
-    trains: ['helicopter', 'recon_drone', 'strike_swarm'] },
+  airfield: { name: 'Airfield', glyph: '\u{1F6EB}', age: 2, tech: 'aviation', cost: { materials: 200, steel: 120, fuel: 60 }, time: 34, hp: 450, place: 'flat', power: -2, supply: 3, vision: 5, cat: 'military', slots: 4, airbase: true,
+    trains: ['fighter', 'helicopter', 'bomber', 'recon_drone', 'strike_swarm'] },
   stabilizer: { name: 'Crustal Stabilizer', glyph: '\u{1F9F1}', age: 2, tech: 'geoengineering', cost: { materials: 180, steel: 80 }, time: 26, hp: 400, place: 'any', stabilize: 0.35, anywhere: true, power: -2, cat: 'science' },
   electronics_plant: { name: 'Electronics Plant', glyph: '\u{1F4BB}', age: 3, tech: 'computing', needs: 'rare', cost: { materials: 200, steel: 150 }, time: 36, hp: 400, place: 'flat', jobs: ['worker', 3], produce: { electronics: 0.3 }, consume: { steel: 0.08 }, power: -3, cat: 'industry' },
   comms_tower: { name: 'Comms Tower', glyph: '\u{1F4E1}', age: 3, tech: 'networked_command', cost: { steel: 120, electronics: 40 }, time: 26, hp: 260, place: 'any', vision: 9, anywhere: true, power: -1, cat: 'logistics' },
-  drone_works: { name: 'Drone Works', glyph: '\u{1F6F8}', age: 3, tech: 'drones', cost: { steel: 200, electronics: 80 }, time: 36, hp: 420, place: 'flat', power: -3, cat: 'military',
-    trains: ['recon_drone', 'strike_swarm', 'missile_battery', 'air_defense'] },
+  drone_works: { name: 'Drone Works', glyph: '\u{1F6F8}', age: 3, tech: 'drones', cost: { steel: 200, electronics: 80 }, time: 36, hp: 420, place: 'flat', power: -3, cat: 'military', slots: 2, airbase: true, droneOnly: true,
+    trains: ['recon_drone', 'oneway_drone', 'strike_swarm', 'missile_battery', 'air_defense'] },
   fusion_plant: { name: 'Fusion Plant', glyph: '☢', age: 4, tech: 'fusion_power', cost: { steel: 400, electronics: 200 }, time: 45, hp: 700, place: 'flat', jobs: ['specialist', 2], power: 30, cat: 'power' },
   robotics_complex: { name: 'Robotics Complex', glyph: '\u{1F916}', age: 4, tech: 'robotics', cost: { steel: 400, electronics: 250 }, time: 45, hp: 600, place: 'flat', power: -5, cat: 'military',
     trains: ['autonomous_tank', 'exo_infantry', 'strike_swarm'] },
-  camp: { name: 'Rebel Camp', glyph: '⛺', age: 0, rebelOnly: true, cost: {}, time: 0, hp: 450, place: 'any', vision: 5, attack: 6, range: 2, aa: 0.3, supply: 5, cat: 'military' },
+  missile_silo: { name: 'Missile Silo', glyph: '\u{1F680}', age: 4, tech: 'strategic_missiles', cost: { materials: 400, steel: 600, electronics: 300, credits: 1500 }, time: 60, hp: 900, place: 'flat', power: -4, cat: 'military', silo: true, desc: 'Builds one strategic missile at a time through a long, expensive project.' },
+  camp: { name: 'Rebel Camp', glyph: '⛺', age: 0, rebelOnly: true, cost: {}, time: 0, hp: 450, place: 'any', vision: 5, attack: 6, range: 2, supply: 5, cat: 'military' },
   wonder: { name: 'Continental Arcology', glyph: '\u{1F3D9}', age: 4, tech: 'continental_arcology', cost: { steel: 2500, electronics: 900, credits: 4000, materials: 3000 }, time: 180, hp: 3000, place: 'flat', wonder: true, power: -10, cat: 'civic' },
 };
 
 import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS } from './weapons.js';
 // ---- Units ----------------------------------------------------------------
-// move: movement class; cat: combat category (for bonuses); aa: multiplier vs aircraft (0 = cannot hit air).
+// move: movement class; cat: combat category (for bonuses). What a unit can shoot at (ground, air,
+// low-flying aircraft only) comes from its weapon's target classes (weapons.js), never from the unit.
+// Aircraft: fuel = seconds aloft, ammo = engagements per sortie, svc = base servicing seconds, alt = low/high.
 export const UNITS = {
   colonist: { name: 'Colonist Convoy', glyph: 'Co', men: 0, age: 0, move: 'infantry', cat: 'civilian', cost: { food: 80, materials: 50, credits: 20 }, pop: 3, time: 12, hp: 50, atk: 0, def: 1, range: 0, speed: 0.6, vision: 2, civilian: true },
   engineer: { name: 'Engineer Team', glyph: 'En', men: 8, age: 0, move: 'infantry', cat: 'support', cost: { food: 30, materials: 40 }, pop: 1, time: 10, hp: 70, atk: 2, def: 3, range: 1, speed: 0.7, vision: 2, engineer: true },
-  scout_buggy: { name: 'Scout Buggy', glyph: 'Sc', men: 3, age: 0, move: 'wheeled', cat: 'wheeled', cost: { food: 20, materials: 25 }, pop: 1, time: 8, hp: 60, atk: 3, def: 2, range: 1, speed: 1.7, vision: 5, aa: 0.2 },
-  militia: { name: 'Militia', glyph: 'Mi', men: 12, age: 0, move: 'infantry', cat: 'infantry', cost: { food: 30, materials: 15 }, pop: 1, time: 9, hp: 90, atk: 6, def: 5, range: 1, speed: 0.7, vision: 2, aa: 0.2 },
-  rifle_squad: { name: 'Rifle Squad', glyph: 'Ri', men: 10, age: 0, tech: 'small_arms', move: 'infantry', cat: 'infantry', cost: { food: 40, materials: 30, credits: 10 }, pop: 1, time: 11, hp: 100, atk: 9, def: 6, range: 2, speed: 0.7, vision: 3, aa: 0.3 },
+  scout_buggy: { name: 'Scout Buggy', glyph: 'Sc', men: 3, age: 0, move: 'wheeled', cat: 'wheeled', cost: { food: 20, materials: 25 }, pop: 1, time: 8, hp: 60, atk: 3, def: 2, range: 1, speed: 1.7, vision: 5 },
+  militia: { name: 'Militia', glyph: 'Mi', men: 12, age: 0, move: 'infantry', cat: 'infantry', cost: { food: 30, materials: 15 }, pop: 1, time: 9, hp: 90, atk: 6, def: 5, range: 1, speed: 0.7, vision: 2 },
+  rifle_squad: { name: 'Rifle Squad', glyph: 'Ri', men: 10, age: 0, tech: 'small_arms', move: 'infantry', cat: 'infantry', cost: { food: 40, materials: 30, credits: 10 }, pop: 1, time: 11, hp: 100, atk: 9, def: 6, range: 2, speed: 0.7, vision: 3 },
   mortar_team: { name: 'Mortar Team', glyph: 'Mo', men: 6, age: 1, tech: 'munitions_industry', move: 'infantry', cat: 'artillery', cost: { food: 40, steel: 15, munitions: 15 }, pop: 1, time: 13, hp: 80, atk: 13, def: 3, range: 4, speed: 0.6, vision: 2, bonus: { infantry: 1.4 }, vsBuildings: 1.5 },
-  armored_car: { name: 'Armored Car', glyph: 'AC', men: 4, age: 1, tech: 'motorization', move: 'wheeled', cat: 'wheeled', cost: { steel: 35, fuel: 20, credits: 20 }, pop: 1, time: 14, hp: 150, atk: 12, def: 9, range: 2, speed: 1.4, vision: 4, aa: 0.3, bonus: { infantry: 1.3 } },
+  armored_car: { name: 'Armored Car', glyph: 'AC', men: 4, age: 1, tech: 'motorization', move: 'wheeled', cat: 'wheeled', cost: { steel: 35, fuel: 20, credits: 20 }, pop: 1, time: 14, hp: 150, atk: 12, def: 9, range: 2, speed: 1.4, vision: 4, bonus: { infantry: 1.3 } },
   supply_truck: { name: 'Supply Truck', glyph: 'Tr', men: 2, age: 1, tech: 'motorization', move: 'wheeled', cat: 'support', cost: { materials: 50, steel: 15, fuel: 15 }, pop: 1, time: 12, hp: 70, atk: 0, def: 2, range: 0, speed: 1.2, vision: 2, civilian: true, supplyRadius: 4 },
   field_gun: { name: 'Field Gun', glyph: 'FG', men: 6, age: 1, tech: 'field_artillery', move: 'wheeled', cat: 'artillery', cost: { steel: 50, munitions: 30 }, pop: 2, time: 18, hp: 90, atk: 24, def: 2, range: 5, speed: 0.6, vision: 2, vsBuildings: 2.5 },
-  mech_infantry: { name: 'Mechanized Infantry', glyph: 'MI', men: 10, age: 2, tech: 'mechanization', move: 'tracked', cat: 'tracked', cost: { food: 40, steel: 60, fuel: 25 }, pop: 1, time: 16, hp: 190, atk: 17, def: 13, range: 2, speed: 1.1, vision: 3, aa: 0.5 },
+  mech_infantry: { name: 'Mechanized Infantry', glyph: 'MI', men: 10, age: 2, tech: 'mechanization', move: 'tracked', cat: 'tracked', cost: { food: 40, steel: 60, fuel: 25 }, pop: 1, time: 16, hp: 190, atk: 17, def: 13, range: 2, speed: 1.1, vision: 3 },
   tank: { name: 'Main Battle Tank', glyph: 'Tk', men: 4, age: 2, tech: 'mechanization', move: 'tracked', cat: 'tracked', cost: { steel: 110, fuel: 40, munitions: 20 }, pop: 1, time: 20, hp: 280, atk: 28, def: 18, range: 2, speed: 1.0, vision: 3, bonus: { wheeled: 1.5, infantry: 1.2 } },
   sp_artillery: { name: 'Self-Propelled Gun', glyph: 'SP', men: 5, age: 2, tech: 'self_propelled_guns', move: 'tracked', cat: 'artillery', cost: { steel: 100, fuel: 30, munitions: 40 }, pop: 2, time: 20, hp: 150, atk: 34, def: 6, range: 6, speed: 0.8, vision: 3, vsBuildings: 2.5 },
-  helicopter: { name: 'Attack Helicopter', glyph: 'He', men: 2, age: 2, tech: 'aviation', move: 'aircraft', cat: 'air', air: true, cost: { steel: 80, fuel: 60, munitions: 30 }, pop: 1, time: 20, hp: 150, atk: 22, def: 6, range: 2, speed: 2.0, vision: 4, aa: 0.5, bonus: { tracked: 1.6, wheeled: 1.4 } },
-  recon_drone: { name: 'Recon Drone', glyph: 'RD', men: 0, age: 3, tech: 'drones', move: 'aircraft', cat: 'air', air: true, civilian: true, cost: { steel: 20, electronics: 15, fuel: 10 }, pop: 0, time: 10, hp: 40, atk: 0, def: 2, range: 0, speed: 2.4, vision: 8 },
+  helicopter: { name: 'Attack Helicopter', glyph: 'He', men: 2, age: 2, tech: 'aviation', move: 'aircraft', cat: 'air', air: true, role: 'support', alt: 'low', fuel: 55, ammo: 6, svc: 16, cost: { steel: 80, fuel: 60, munitions: 30 }, pop: 1, time: 20, hp: 150, atk: 22, def: 6, range: 2, speed: 2.0, vision: 4, bonus: { tracked: 1.6, wheeled: 1.4 } },
+  recon_drone: { name: 'Recon Drone', glyph: 'RD', men: 0, age: 3, tech: 'drones', move: 'aircraft', cat: 'air', air: true, civilian: true, role: 'recon', alt: 'low', fuel: 90, ammo: 0, svc: 10, cost: { steel: 20, electronics: 15, fuel: 10 }, pop: 0, time: 10, hp: 40, atk: 0, def: 2, range: 0, speed: 2.4, vision: 8 },
   missile_battery: { name: 'Missile Battery', glyph: 'MB', men: 6, age: 3, tech: 'precision_missiles', move: 'wheeled', cat: 'artillery', cost: { steel: 90, electronics: 40, munitions: 60 }, pop: 2, time: 22, hp: 130, atk: 42, def: 5, range: 8, speed: 0.9, vision: 3, vsBuildings: 3 },
-  air_defense: { name: 'Air Defense Vehicle', glyph: 'AA', men: 4, age: 3, tech: 'air_defense', move: 'wheeled', cat: 'wheeled', cost: { steel: 70, electronics: 25, munitions: 30 }, pop: 1, time: 18, hp: 140, atk: 5, def: 8, range: 5, speed: 1.1, vision: 5, aa: 4.5 },
-  special_forces: { name: 'Special Forces', glyph: 'SF', men: 8, age: 3, tech: 'special_operations', move: 'infantry', cat: 'infantry', cost: { food: 50, munitions: 30, electronics: 10 }, pop: 1, time: 16, hp: 140, atk: 19, def: 11, range: 2, speed: 0.9, vision: 4, aa: 0.5, stealth: true },
-  autonomous_tank: { name: 'Autonomous Tank', glyph: 'AT', men: 0, age: 4, tech: 'robotics', move: 'tracked', cat: 'tracked', cost: { steel: 160, electronics: 60, fuel: 30 }, pop: 0, time: 22, hp: 340, atk: 40, def: 26, range: 3, speed: 1.15, vision: 4, aa: 0.6, bonus: { wheeled: 1.5, tracked: 1.2 } },
-  strike_swarm: { name: 'Strike Drone Swarm', glyph: 'SS', men: 0, age: 4, tech: 'strike_swarms', move: 'aircraft', cat: 'air', air: true, cost: { electronics: 60, steel: 40, munitions: 40 }, pop: 0, time: 16, hp: 120, atk: 30, def: 5, range: 2, speed: 2.6, vision: 4, aa: 0.8, bonus: { tracked: 1.5, artillery: 1.5 } },
-  exo_infantry: { name: 'Exo-Armored Infantry', glyph: 'EX', men: 8, age: 4, tech: 'exo_armor', move: 'infantry', cat: 'infantry', cost: { food: 50, steel: 60, electronics: 30 }, pop: 1, time: 18, hp: 230, atk: 27, def: 19, range: 2, speed: 0.95, vision: 3, aa: 0.8 },
+  fighter: { name: 'Fighter', glyph: 'Fi', men: 1, age: 2, tech: 'aviation', move: 'aircraft', cat: 'air', air: true, role: 'fighter', alt: 'high', fuel: 60, ammo: 8, svc: 15, cost: { steel: 90, fuel: 50, credits: 40 }, pop: 1, time: 20, hp: 120, atk: 16, def: 8, range: 2, speed: 3.2, vision: 5 },
+  bomber: { name: 'Tactical Bomber', glyph: 'Bo', men: 3, age: 3, tech: 'air_operations', move: 'aircraft', cat: 'air', air: true, role: 'bomber', alt: 'high', fuel: 80, ammo: 2, svc: 25, cost: { steel: 160, fuel: 80, munitions: 60, credits: 80 }, pop: 1, time: 28, hp: 200, atk: 34, def: 6, range: 1, speed: 2.2, vision: 4, vsBuildings: 2.5 },
+  oneway_drone: { name: 'One-Way Strike Drone', glyph: 'OW', men: 0, age: 3, tech: 'drones', move: 'aircraft', cat: 'air', air: true, role: 'oneway', alt: 'low', oneWay: true, fuel: 45, ammo: 1, svc: 0, cost: { steel: 25, electronics: 10, munitions: 20 }, pop: 0, time: 10, hp: 30, atk: 26, def: 1, range: 0, speed: 2.8, vision: 3, vsBuildings: 2 },
+  air_defense: { name: 'Air Defense Vehicle', glyph: 'AA', men: 4, age: 3, tech: 'air_defense', move: 'wheeled', cat: 'wheeled', cost: { steel: 70, electronics: 25, munitions: 30 }, pop: 1, time: 18, hp: 140, atk: 5, def: 8, range: 5, speed: 1.1, vision: 5 },
+  special_forces: { name: 'Special Forces', glyph: 'SF', men: 8, age: 3, tech: 'special_operations', move: 'infantry', cat: 'infantry', cost: { food: 50, munitions: 30, electronics: 10 }, pop: 1, time: 16, hp: 140, atk: 19, def: 11, range: 2, speed: 0.9, vision: 4, stealth: true },
+  autonomous_tank: { name: 'Autonomous Tank', glyph: 'AT', men: 0, age: 4, tech: 'robotics', move: 'tracked', cat: 'tracked', cost: { steel: 160, electronics: 60, fuel: 30 }, pop: 0, time: 22, hp: 340, atk: 40, def: 26, range: 3, speed: 1.15, vision: 4, bonus: { wheeled: 1.5, tracked: 1.2 } },
+  strike_swarm: { name: 'Strike Drone Swarm', glyph: 'SS', men: 0, age: 4, tech: 'strike_swarms', move: 'aircraft', cat: 'air', air: true, role: 'strike', alt: 'low', fuel: 60, ammo: 4, svc: 20, cost: { electronics: 60, steel: 40, munitions: 40 }, pop: 0, time: 16, hp: 120, atk: 30, def: 5, range: 2, speed: 2.6, vision: 4, bonus: { tracked: 1.5, artillery: 1.5 } },
+  exo_infantry: { name: 'Exo-Armored Infantry', glyph: 'EX', men: 8, age: 4, tech: 'exo_armor', move: 'infantry', cat: 'infantry', cost: { food: 50, steel: 60, electronics: 30 }, pop: 1, time: 18, hp: 230, atk: 27, def: 19, range: 2, speed: 0.95, vision: 3 },
 };
+
+for (const [k, u] of Object.entries(UNITS)) u.key = k;
+// derived, for display and the AI: multiplier this unit's weapon applies against aircraft (0 = cannot)
+for (const [k, u] of Object.entries(UNITS)) { const w = WEAPONS[UNIT_WEAPON[k]]; u.aa = w ? (w.targets.includes('air') ? w.airMul || 1 : w.targets.includes('lowair') ? (w.airMul || 1) * 0.5 : 0) : 0; }
 
 export const CIV_COLORS = [0x3b82f6, 0xef4444, 0x22c55e, 0xeab308, 0xa855f7, 0x06b6d4, 0xf97316, 0xec4899, 0x84cc16, 0xf43f5e, 0x14b8a6, 0xd4a373];
 export const CIV_NAMES = ['Azure Dominion', 'Crimson Directorate', 'Verdant League', 'Golden Compact', 'Violet Syndicate', 'Cyan Federation', 'Ember Republic', 'Rose Assembly', 'Lime Concord', 'Scarlet Union', 'Teal Commonwealth', 'Umber Protectorate'];

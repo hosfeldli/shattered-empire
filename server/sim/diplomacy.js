@@ -1,9 +1,10 @@
 // Diplomacy: contact, war & peace, trade agreements, open borders, alliances, tribute.
+import { book } from './ledger.js';
 import { N } from './constants.js';
 
 const ACTIONS = {
   war: 'Declare war', peace: 'Propose peace', trade: 'Propose trade agreement', cancel_trade: 'Cancel trade agreement',
-  borders: 'Propose open borders', alliance: 'Propose alliance', tribute: 'Send 100 gold', demand: 'Demand 150 gold tribute',
+  borders: 'Propose open borders', alliance: 'Propose alliance', tribute: 'Send 100 credits', demand: 'Demand 150 credits tribute',
 };
 export { ACTIONS };
 
@@ -58,7 +59,7 @@ export class Diplomacy {
     if (other.isRebel) {
       if (action === 'payoff') {
         if (civ.res.credits < 250) return { error: 'not enough credits' };
-        civ.res.credits -= 250; r.state = 'peace'; r.until = g.time + 300;
+        civ.res.credits -= 250; book(civ, 'diplomacy', 'credits', -250); r.state = 'peace'; r.until = g.time + 300;
         for (const u of g.units.values()) if (u.owner === to && u.order.kind === 'attack') { const tt = u.order.target; const own = tt.kind === 'unit' ? g.units.get(tt.id)?.owner : g.buildings.get(tt.id)?.owner; if (own === civ.id) u.order = { kind: 'idle' }; }
         g.notify(civ.id, 'The Free Companies accept your payment: a five-minute truce.', { kind: 'peace' });
         return null;
@@ -83,9 +84,9 @@ export class Diplomacy {
       }
       case 'cancel_trade': r.trade = false; g.notify(to, `${civ.name} has cancelled your trade agreement.`, { kind: 'diplo' }); return null;
       case 'tribute': {
-        if (civ.res.gold < 100) return { error: 'not enough gold' };
-        civ.res.gold -= 100; other.res.gold += 100; r.attitude += 15;
-        g.notify(to, `${civ.name} sends you 100 gold as a gift.`, { kind: 'diplo' }); return null;
+        if ((civ.res.credits || 0) < 100) return { error: 'not enough credits' };
+        civ.res.credits -= 100; other.res.credits += 100; book(civ, 'diplomacy', 'credits', -100); book(other, 'diplomacy', 'credits', 100); r.attitude += 15;
+        g.notify(to, `${civ.name} sends you 100 credits as a gift.`, { kind: 'diplo' }); return null;
       }
       case 'peace': if (r.state !== 'war') return { error: 'not at war' }; break;
       case 'trade': if (r.state === 'war' || r.trade) return { error: 'not possible now' }; break;
@@ -122,9 +123,9 @@ export class Diplomacy {
       case 'borders': r.borders = true; g.notify(from.id, `${target.name} opened their borders.`, { kind: 'diplo' }); g.notify(target.id, `Open borders with ${from.name}.`, { kind: 'diplo' }); break;
       case 'alliance': r.state = 'alliance'; r.borders = true; r.since = g.time; g.notify(-1, `${from.name} and ${target.name} have formed an alliance.`, { kind: 'diplo' }); break;
       case 'demand': {
-        const amt = Math.min(150, Math.floor(target.res.gold));
-        target.res.gold -= amt; from.res.gold += amt; r.attitude -= 20;
-        g.notify(from.id, `${target.name} paid ${amt} gold in tribute.`, { kind: 'diplo' }); g.notify(target.id, `You paid ${amt} gold to ${from.name}.`, { kind: 'diplo' });
+        const amt = Math.max(0, Math.min(150, Math.floor(target.res.credits || 0)));
+        target.res.credits -= amt; from.res.credits += amt; book(target, 'diplomacy', 'credits', -amt); book(from, 'diplomacy', 'credits', amt); r.attitude -= 20;
+        g.notify(from.id, `${target.name} paid ${amt} credits in tribute.`, { kind: 'diplo' }); g.notify(target.id, `You paid ${amt} credits to ${from.name}.`, { kind: 'diplo' });
         break;
       }
       default: break;

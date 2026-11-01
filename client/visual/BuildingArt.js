@@ -96,12 +96,16 @@ const ART = {
     // stockpile crates beside the hall (more goods, more crates)
     for (let i = 0; i < Math.min(5, o.stockCrates || 0); i++) { C.g.rect(-8 + (i % 3) * 2.2, 5.2 - Math.floor(i / 3) * 2, 2, 1.8); C.fill(0x9a7448); }
   },
+  // density level 1-3: each upgrade adds storeys (and at level 3 a taller block), so raised housing reads at a glance
   house(C, o) {
-    const e = C.era, era = o.era;
-    if (era === 0) { C.gable(-4, -1, 5, 4, 2.5, e.roof, e.wall); C.gable(3.5, -3, 5, 4, 2.5, shade(e.roof, 1.1), e.wall); C.gable(0, 4.5, 6, 4, 2.6, e.roof, shade(e.wall, 0.9)); }
-    else if (era === 1) { C.gable(0, -2, 12, 4, 3.4, e.roof, e.wall); C.windows(0, 0, 12, 3.4); C.gable(0, 4.5, 12, 4, 3.4, shade(e.roof, 1.08), shade(e.wall, 0.94)); C.windows(0, 6.5, 12, 3.4); }
-    else if (era === 2) { C.box(0, 2, 11, 6, 7, e.roof, e.wall); C.windows(0, 5, 11, 7, 3); }
-    else { const t = era === 3 ? 1 : 1.25; C.box(-3, 3, 5, 5, 11 * t, e.roof, e.glass); C.windows(-3, 5.5, 5, 11 * t, 5, 0xfff2c8); C.box(3.5, 4, 5, 4, 8 * t, shade(e.roof, 1.1), e.glass); C.windows(3.5, 6, 5, 8 * t, 4, 0xfff2c8); }
+    const e = C.era, era = o.era, lv = Math.max(1, Math.min(3, o.level || 1)), k = 1 + 0.55 * (lv - 1);
+    if (era === 0) {
+      if (lv === 1) { C.gable(-4, -1, 5, 4, 2.5, e.roof, e.wall); C.gable(3.5, -3, 5, 4, 2.5, shade(e.roof, 1.1), e.wall); C.gable(0, 4.5, 6, 4, 2.6, e.roof, shade(e.wall, 0.9)); }
+      else { C.box(-3.5, 0, 5, 4, 3.2 * k, shade(e.roof, 0.9), e.wall); C.windows(-3.5, 2, 5, 3.2 * k, 2); C.gable(3.5, -3, 5, 4, 2.5 * k, shade(e.roof, 1.1), e.wall); C.box(0, 5, 6, 3.6, 2.6 * k, e.roof, shade(e.wall, 0.9)); }
+    } else if (era === 1) { C.gable(0, -2, 12, 4, 3.4 * k, e.roof, e.wall); C.windows(0, 0, 12, 3.4 * k, lv); C.gable(0, 4.5, 12, 4, 3.4 * k, shade(e.roof, 1.08), shade(e.wall, 0.94)); C.windows(0, 6.5, 12, 3.4 * k, lv); }
+    else if (era === 2) { C.box(0, 2, 11, 6, 7 * k, e.roof, e.wall); C.windows(0, 5, 11, 7 * k, 2 + lv); }
+    else { const t = (era === 3 ? 1 : 1.25) * k; C.box(-3, 3, 5, 5, 11 * t, e.roof, e.glass); C.windows(-3, 5.5, 5, 11 * t, 4 + lv, 0xfff2c8); C.box(3.5, 4, 5, 4, 8 * t, shade(e.roof, 1.1), e.glass); C.windows(3.5, 6, 5, 8 * t, 3 + lv, 0xfff2c8); }
+    if (lv === 3 && era <= 1) { C.box(5.5, 5.5, 3.2, 3.2, 6, shade(e.roof, 1.15), shade(e.wall, 1.05)); }
   },
   farm(C, o) {
     const crops = [0x6f8f3c, 0x9fae4c, 0x7d9b40, 0xb7a54a];
@@ -221,6 +225,36 @@ const ART = {
     for (let i = 0; i < 4; i++) { C.g.circle(3.5 + (i % 2) * 2, 3.5 + Math.floor(i / 2) * 2.2, 0.95); C.fill(0x3d5a3a); }
     C.flag(7.5, 2, 9, o.civ);
   },
+  // timber (later salvaged metal) watchtower, a low barricade and a sandbagged firing position
+  guard_post(C, o) {
+    const g = C.g, metal = o.era >= 2;
+    for (let k = 0; k < 7; k++) { const a = -0.4 + k * 0.45; g.ellipse(Math.cos(a) * 7.5, Math.sin(a) * 5 + 3, 1.6, 1); C.fill(0xb59f6e); }   // sandbags facing out
+    g.rect(-7, -3.5, 5, 1.2); C.fill(metal ? 0x6d7275 : 0x7a5a36); g.rect(-6.5, -2.3, 1, 2); C.fill(DARK);                                      // barricade
+    for (const x of [-1.8, 1.8]) { g.moveTo(x, 2).lineTo(x * 0.6, -9); C.line(metal ? 0x5b6064 : 0x5e4426, 1); }                             // tower legs
+    g.moveTo(-1.8, -2).lineTo(1.8, -5).moveTo(1.8, -2).lineTo(-1.8, -5); C.line(metal ? 0x5b6064 : 0x5e4426, 0.5);
+    C.box(0, -9, 5, 4, 2.6, metal ? 0x80868a : 0x8a6a40, metal ? 0x5d6266 : 0x6b4f2c);                                                       // lookout
+    if (!o.ghost) g.rect(-1.2, -11.2, 2.4, 0.7).fill({ color: DARK, alpha: 0.7 * o.alpha });
+    C.flag(2.6, -12, 5, o.civ);
+  },
+  // anti-aircraft emplacement: a sandbagged gun pit, an elevated twin barrel, ammunition crates
+  aa_battery(C, o) {
+    const g = C.g, conc = o.era >= 3 ? 0x8f9294 : 0x7d7866;
+    const ring = []; for (let k = 0; k < 12; k++) { const a = (Math.PI / 6) * k; ring.push(Math.cos(a) * 7.2, Math.sin(a) * 5.6); }
+    if (!o.ghost) g.poly(ring.map((v, i) => v + (i % 2 ? 1 : 0.8))).fill({ color: 0, alpha: 0.22 * o.alpha });
+    g.poly(ring); C.fill(conc);
+    const inner = ring.map((v) => v * 0.7); g.poly(inner); C.fill(shade(conc, 0.68));
+    C.cyl(0, 0.5, 2.2, 1.6, 0x55605a);                                                    // gun mount
+    if (!o.aimed) { g.moveTo(-0.5, -1).lineTo(3.5, -7.5).moveTo(0.6, -0.6).lineTo(4.6, -7.1); C.line(0x2f3632, 1.1); }   // barrels, elevated (re-aimed while firing)
+    for (const [x, y] of [[-5, 2.5], [-3.6, 3.6]]) { g.rect(x - 1, y - 0.8, 2, 1.6); C.fill(0x5a6a3a); }                       // ammunition
+    if (o.upgraded) { g.circle(-4.5, -3.5, 1.4); C.fill(0xb8c0c4); g.moveTo(-4.5, -3.5).lineTo(-4.5, -6); C.line(0x3a3f42, 0.5); }   // fire-control radar
+  },
+  missile_silo(C, o) {
+    const g = C.g, conc = 0x8e9192;
+    C.box(0, 3, 14, 8, 2, shade(conc, 1.05), shade(conc, 0.8));
+    g.circle(-2.5, 2, 3); C.fill(shade(conc, 0.6)); g.circle(-2.5, 2, 2.1); C.fill(o.active ? 0xd8b04a : 0x3b4042);   // hatch: gold when a missile is ready
+    C.box(4.5, 1.5, 3.5, 3.5, 5, shade(conc, 1.15), shade(conc, 0.85));
+    if (!o.ghost) for (let k = 0; k < 6; k++) g.rect(-7 + k * 2.6, 7.2, 1.4, 0.5).fill({ color: 0xd8b04a, alpha: 0.8 * o.alpha });   // hazard striping
+  },
   fort(C, o) {
     const stone = o.era >= 2 ? 0x9a9c9c : 0x8c8676;
     const pts = []; for (let k = 0; k < 10; k++) { const a = (Math.PI / 5) * k - Math.PI / 2; const r = k % 2 ? 6 : 10; pts.push(Math.cos(a) * r, Math.sin(a) * r * 0.85); }
@@ -308,10 +342,13 @@ const ART = {
 
 // Strategic zoom: a distinct pictogram per building type on a category disc (readable without
 // colour), larger and ringed for military production and other key facilities.
-const CAT_COL = { civic: 0xd9b44a, residential: 0xb08a5a, agri: 0x7da04a, industry: 0x8a6a4a, power: 0xe0c040, commerce: 0xd08a3a, science: 0x5a90c8, logistics: 0x4aa0a0, military: 0xb5432f };
-export const KEY_FACILITY = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'power_plant', 'fusion_plant', 'steel_mill', 'electronics_plant', 'university', 'fort', 'wonder', 'comms_tower', 'town']);
+export const CAT_COL = { civic: 0xd9b44a, residential: 0xb08a5a, agri: 0x7da04a, industry: 0x8a6a4a, power: 0xe0c040, commerce: 0xd08a3a, science: 0x5a90c8, logistics: 0x4aa0a0, military: 0xb5432f };
+export const KEY_FACILITY = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'power_plant', 'fusion_plant', 'steel_mill', 'electronics_plant', 'university', 'fort', 'wonder', 'comms_tower', 'town', 'missile_silo', 'aa_battery']);
 const W1 = 0xffffff;
 const ICON = {
+  guard_post: (g) => { g.moveTo(-1.6, 3).lineTo(-0.8, -1.5).moveTo(1.6, 3).lineTo(0.8, -1.5).stroke({ width: 0.8, color: W1 }).rect(-1.8, -3.2, 3.6, 1.8).fill({ color: W1 }); },
+  aa_battery: (g) => { g.circle(0, 1.5, 1.6).fill({ color: W1 }).moveTo(0, 1).lineTo(2.6, -3).moveTo(-1, 1).lineTo(1.6, -3.2).stroke({ width: 0.9, color: W1 }); },
+  missile_silo: (g) => { g.poly([0, -3.6, 1.4, -1, 1.4, 2.4, -1.4, 2.4, -1.4, -1]).fill({ color: W1 }); },
   town: (g) => { g.poly([-3.4, 0, 0, -3.4, 3.4, 0, 3.4, 3, -3.4, 3]).fill({ color: W1 }); },
   house: (g) => { g.poly([-2.6, 0, 0, -2.6, 2.6, 0]).fill({ color: W1 }).rect(-2, 0, 4, 2.4).fill({ color: W1 }); },
   farm: (g) => { g.moveTo(0, 3).lineTo(0, -3).stroke({ width: 0.9, color: W1 }); for (let k = 0; k < 3; k++) g.moveTo(0, -1.8 + k * 1.4).lineTo(-1.6, -2.8 + k * 1.4).moveTo(0, -1.8 + k * 1.4).lineTo(1.6, -2.8 + k * 1.4).stroke({ width: 0.8, color: W1 }); },

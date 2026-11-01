@@ -7,3 +7,7 @@ node_modules/
 *-key.json
 sa.json
 .snapshots/
+desktop/app/
+desktop/dist/
+desktop/node_modules/
+desktop/build/steam_appid.txt

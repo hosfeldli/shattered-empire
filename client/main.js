@@ -3,6 +3,7 @@
 import { Net } from './net.js';
 import { View } from './view.js';
 import { Hud } from './hud.js';
+import { unitKind } from './commandBar.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { planDeployment, deployRole } from '/shared/deploy.js';
 import { loadPrefs, savePrefs, applyPrefs, GRAPHICS } from './prefs.js';
@@ -14,7 +15,7 @@ const store = { get(k) { try { return localStorage.getItem(k); } catch { return 
 let audio;
 const S = {
   ready: false, defs: null, civId: -1, civInfo: [], W: 128, H: 128, lens: 'terrain', mode: null, hover: -1, formation: 'line', lod: 'city', night: 0,
-  selUnits: new Set(), selBuilding: null, selBuildings: new Set(), batchCount: 4, batchMode: 'total', deploy: null, deployOpts: { mode: 'line', density: 'auto', depth: 'auto', behavior: 'defend', reverse: false, fortify: false }, prefs: loadPrefs(), units: new Map(), paths: {}, buildings: new Map(), cities: new Map(), ruins: new Map(), traffic: [], trafficTile: new Map(),
+  selUnits: new Set(), selBuilding: null, selBuildings: new Set(), batchCount: 4, batchMode: 'total', deploy: null, deployOpts: { mode: 'line', density: 'auto', depth: 'auto', behavior: 'defend', reverse: false }, prefs: loadPrefs(), units: new Map(), paths: {}, buildings: new Map(), cities: new Map(), ruins: new Map(), traffic: [], trafficTile: new Map(),
   cityAt: new Map(), buildingAtTile: new Map(), buildingTiles: new Set(), buildingsVersion: 0, ruinsVersion: 0, econ: null, log: [], time: 0, lightsList: [],
   civColor(id) { return (this.civInfo[id] && this.civInfo[id].color) ?? 0x888888; },
 };
@@ -86,6 +87,8 @@ renderDifficulty();
 
 $('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, rivals: rivalSettings(), name: playerName(), ...worldOpts() }); });
 $('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
+// desktop edition: the launcher replaces the download link
+if (window.desktop) { $('desktopLink').hidden = true; $('btnLauncher').hidden = false; $('btnLauncher').addEventListener('click', () => window.desktop.launcher()); }
 $('btnSandbox').addEventListener('click', async () => { lobbyStatus('Preparing the combat sandbox…'); await ensureNet(); net.send({ t: 'create', mode: 'sandbox', name: playerName(), seed: seedVal() }); });
 $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, name: playerName(), ...worldOpts() }); });
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }
@@ -103,9 +106,40 @@ function onMessage(m) {
     case 'welcome': startGame(m); break;
     case 's': if (!S.ready) (S.early || (S.early = [])).push(m); else applySnapshot(m); break;   // snapshots that arrive while the renderer loads are applied once it is ready
     case 'note': onNote(m); break;
+    case 'paused': setPaused(!!m.on); break;
     case 'over': gameOver(m); break;
     default: break;
   }
+}
+
+// Map tooltips wait until the pointer settles: 0.25 s without moving faster than ~150 px/s.
+// Once shown, a tooltip follows the pointer within the same hex; a new hex waits again.
+const tipGate = { t: 0, x: 0, y: 0, tile: -1, timer: 0 };
+function gateTooltip(tile, x, y) {
+  const now = performance.now(), v = Math.hypot(x - tipGate.x, y - tipGate.y) / Math.max(1, now - tipGate.t);
+  tipGate.x = x; tipGate.y = y; tipGate.t = now;
+  if (tile < 0) { clearTimeout(tipGate.timer); tipGate.timer = 0; tipGate.tile = -1; hud.tooltip(-1); return; }
+  const shown = !$('tooltip').hidden;
+  if (shown && tile === tipGate.tile) { hud.tooltip(tile, x, y); return; }
+  if (shown) hud.tooltip(-1);
+  if (tile !== tipGate.tile || v > 0.15 || !tipGate.timer) {
+    tipGate.tile = tile; clearTimeout(tipGate.timer);
+    tipGate.timer = setTimeout(() => { tipGate.timer = 0; if (S.hover === tipGate.tile) hud.tooltip(tipGate.tile, tipGate.x, tipGate.y); }, 250);
+  }
+}
+
+// Pause (single-player): the server stops the clock; the map, inspector and orders still work.
+function setPaused(on) {
+  S.paused = on;
+  $('pausedBanner').hidden = !on;
+  $('btnPause').innerHTML = on ? '&#9654;' : '&#10074;&#10074;';
+  $('btnPause').title = on ? 'Resume (P)' : 'Pause the match (P)';
+  $('btnPause').classList.toggle('on', on);
+}
+function togglePause(force) {
+  if (!S.canPause) return false;
+  actions.cmd({ c: 'pause', on: force == null ? !S.paused : force }).then((r) => { if (r.error) hud.toast({ text: r.error, kind: 'error', level: 'minor' }); else setPaused(!!r.paused); });
+  return true;
 }
 
 async function startGame(m) {
@@ -113,6 +147,7 @@ async function startGame(m) {
   S.defs = m.defs; S.civId = m.civId; S.W = m.defs.W; S.H = m.defs.H;
   S.wrap = m.world ? m.world.wrap !== false : false; S.cataclysm = !!m.world?.cataclysm; S.worldStyle = m.world?.style || '';
   document.querySelector('.seismo').hidden = !S.cataclysm;     // a peaceful world has nothing to measure
+  S.canPause = !!m.canPause && !m.spectator; $('btnPause').hidden = !S.canPause; setPaused(!!m.paused);
   S.spectator = !!m.spectator; S.sandbox = !!m.sandbox; S.obs = m.spectator ? { follow: m.civId, fog: false, speed: 1 } : null;
   document.body.classList.toggle('spectating', S.spectator);
   document.body.classList.toggle('sandbox-on', S.sandbox);
@@ -175,14 +210,19 @@ function applySnapshot(m) {
   if (m.vis) for (const i of decodeBits(m.vis, S.vis)) view.dirtyOverlay.add(i);
   const seen = new Set();
   for (const a of m.units) {
-    const [id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit, form, det] = a;
+    const [id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit, form, det, ar, pfc] = a;
+    const pf = pfc >= 0 ? S.defs.PATH_FAIL_CODES[pfc] : null;
     seen.add(id);
+    // aircraft: full operational state for our own, only aloft/grounded for others
+    const air = ar ? (ar.length > 1 ? { st: S.defs.AIR_STATES[ar[0]], fuel: ar[1], ammo: ar[2], mis: ar[3] >= 0 ? S.defs.MISSIONS[ar[3]] : null, mt: ar[4], svc: ar[5], rad: ar[6] || 0, grounded: ['ready', 'servicing', 'awaiting', 'landing', 'launching'].includes(S.defs.AIR_STATES[ar[0]]) } : { grounded: ar[0] === 0 }) : null;
     const u = S.units.get(id);
-    if (u) Object.assign(u, { type, tile, next, prog, hp, sup, flags, owner, stance, cstat, tgt, supp, morale, vet, refit, form, det });
-    else S.units.set(id, { id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit, form, det });
+    if (u) Object.assign(u, { type, tile, next, prog, hp, sup, flags, owner, stance, cstat, tgt, supp, morale, vet, refit, form, det, air, pf });
+    else S.units.set(id, { id, owner, type, tile, next, prog, hp, sup, flags, stance, cstat, tgt, supp, morale, vet, refit, form, det, air, pf });
   }
   for (const id of S.units.keys()) if (!seen.has(id)) { S.units.delete(id); S.selUnits.delete(id); }
   S.paths = m.paths || {};
+  S.timeAt = performance.now();
+  if (m.ms) { const was = S.ms?.m?.length || 0; S.ms = m.ms; if (S.ms.m.length !== was) hud.missileBanner(); }
   if (m.ev) { view.combat.ingest(m.ev, m.tick); if (!S.spectator || !S.obs || S.obs.speed !== 0) audio.combat(m.ev); }
   if (m.econ) applyEcon(m);
 }
@@ -272,9 +312,18 @@ const actions = {
     const r = await actions.cmd({ c: 'train', building: S.selBuilding, unit, army: b?.rallyArmy || undefined });
     if (!r.error) hud.toast({ text: `Training ${S.defs.UNITS[unit].name}.`, kind: 'build', level: 'info' });
   },
-  act(a) {
-    const ids = mineSel();
-    if (a === 'fortify') return actions.fortifyPreview(ids);
+  act(a, kind) {
+    // from the command bar a command applies to one kind of unit in a mixed selection
+    const ids = kind ? mineSel().filter((id) => { const u = S.units.get(id); return u && unitKind(S.defs, u.type) === kind; }) : mineSel();
+    if (a === 'fortify') return startTrenchMode();
+    if (a === 'rebuildRuin') return actions.rebuildRuin();
+    if (a === 'missileBuild' && S.selBuilding != null) return actions.cmd({ c: 'missileBuild', silo: S.selBuilding }).then((r) => { if (!r.error) hud.toast({ text: `Missile project started: ready in ${r.missile.eta} s.`, kind: 'build', level: 'info' }); });
+    if (a === 'missileMode') return setMode({ kind: 'missile', preview: null }, 'Strategic strike: hover a target to see the flight time and interception odds, click to launch (Escape cancels).');
+    if (a === 'patrolMode') return setMode({ kind: 'airPatrol', ids }, 'Click the area to patrol: aircraft orbit it, engage what they can, and rotate home to refuel.');
+    if (a === 'scoutMode') return setMode({ kind: 'airScout', ids }, 'Click the area to scout.');
+    if (a === 'strikeMode') return setMode({ kind: 'airStrike', ids }, 'Click a target (unit, building or ground) to strike.');
+    if (a === 'supportMode') return setMode({ kind: 'airSupport', ids }, 'Click the troops or area to support.');
+    if (a === 'airReturn') return airOrder(ids, 'return');      // trenches are a construction tool now (Build -> Defenses)
     if (a === 'supply') {
       const forms = new Set(ids.map((id) => S.units.get(id)?.form).filter(Boolean));
       const c = forms.size === 1 ? { c: 'supplyRun', formation: [...forms][0], preset: hud.preset || 'auto' } : { c: 'supplyRun', units: ids.filter((id) => !S.defs.UNITS[S.units.get(id)?.type]?.civilian), preset: hud.preset || 'auto' };
@@ -292,9 +341,9 @@ const actions = {
     if (a === 'withdraw') { actions.cmd({ c: 'withdraw', units: ids }).then((r) => { if (!r.error) hud.toast({ text: 'Withdrawing toward the nearest friendly city.', kind: 'unit', level: 'info' }); }); }
     if (a === 'engageMode') setMode({ kind: 'engage' }, 'Click an enemy: fire is spread over the threats around it. Click ground to advance and engage.');
     if (a === 'focusMode') setMode({ kind: 'focus' }, 'Click an enemy: every selected weapon fires on it.');
-    if (a === 'moveMode') setMode({ kind: 'move' }, 'Click where to reposition (drag with the right button to set a battle line and facing).');
+    if (a === 'moveMode') setMode({ kind: 'move', ids: kind ? ids : null }, 'Click where to reposition (drag with the right button to set a battle line and facing).');
     if (a === 'defendMode') setMode({ kind: 'defendZone' }, 'Click the centre of the area to defend: the group becomes an army that holds that zone.');
-    if (a === 'amove') setMode({ kind: 'attackMove' }, 'Left-click a destination: units will fight anything they meet on the way.');
+    if (a === 'amove') setMode({ kind: 'attackMove', ids: kind ? ids : null }, 'Left-click a destination: units will fight anything they meet on the way.');
     if (a === 'found' || a === 'autoSettle') {
       const cols = ids.map((id) => S.units.get(id)).filter((u) => u.type === 'colonist');
       if (a === 'found') cols.slice(0, 1).forEach((s) => actions.cmd({ c: 'found', unit: s.id }));
@@ -303,6 +352,7 @@ const actions = {
     if (a === 'army') actions.formArmy();
     if (a === 'demolish' && S.selBuilding != null) { actions.cmd({ c: 'demolish', id: S.selBuilding }); S.selBuilding = null; }
     if (a === 'repair' && S.selBuilding != null) actions.cmd({ c: 'repair', id: S.selBuilding });
+    if (a === 'upgradeDefense' && S.selBuilding != null) actions.cmd({ c: 'upgradeDefense', id: S.selBuilding }).then((r) => { if (!r.error) hud.toast({ text: 'AA battery upgraded.', kind: 'build', level: 'info' }); });
     if (a === 'disband') actions.cmd({ c: 'disband', units: ids }).then((r) => { if (r.men) { hud.toast({ text: `${ids.length} unit${ids.length > 1 ? 's' : ''} disbanded: ${Math.round(r.back)} of ${r.men} soldiers return home as civilians.`, kind: 'city', level: 'minor' }); S.selUnits.clear(); hud.selection(); } });
   },
   async formArmy() {
@@ -314,7 +364,7 @@ const actions = {
   // ---- deployment, formations, fortification
   deploy(line, { queue, attackMove } = {}) {
     const o = S.deployOpts, units = mineSel();
-    actions.cmd({ c: 'deploy', units, line, mode: o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, behavior: attackMove ? 'attackMove' : o.behavior, reverse: o.reverse, queue: !!queue, fortify: o.fortify ? (S.econ?.fortifyTypes?.includes('reinforced') ? 'reinforced' : 'basic') : false })
+    actions.cmd({ c: 'deploy', units, line, mode: o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, behavior: attackMove ? 'attackMove' : o.behavior, reverse: o.reverse, queue: !!queue })
       .then((r) => {
         const d = r.deploy; if (!d) return;
         if (d.queued) return hud.toast({ text: `Deployment queued for ${d.queued} units.`, kind: 'unit', level: 'info' });
@@ -328,11 +378,35 @@ const actions = {
     return actions.cmd({ c: 'formation', id, op });
   },
   selectFormation(id) { const f = (S.econ?.formations || []).find((x) => x.id === id); if (!f) return; S.selUnits.clear(); for (const u of f.units) S.selUnits.add(u); S.selBuilding = null; hud.closeWorkspace(); hud.selection(); const u = S.units.get(f.units[0]); if (u) view.centerOn(u.tile); },
+  // airfield inspector: missions with automatic aircraft choice, or select what is based here
+  airbase(op, base) {
+    if (op === 'select') { const ids = (S.econ?.air?.craft || []).filter((c) => c.home === base).map((c) => c.id); S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear(); for (const id of ids) S.selUnits.add(id); hud.selHtml = ''; hud.selection(); return; }
+    const kind = { patrol: 'airPatrol', strike: 'airStrike', scout: 'airScout' }[op];
+    setMode({ kind, ids: null, base }, op === 'strike' ? 'Click a target: the airfield sends suitable ready aircraft (Shift-click for more strikes).' : `Click the area to ${op}: the airfield sends its best ready aircraft.`);
+  },
+  async rebuildRuin() {
+    const t = S.selRuin?.tile; if (t == null) return;
+    const r = await actions.cmd({ c: 'rebuild', tile: t, commit: true });
+    if (r.error) return hud.toast({ text: r.error, kind: 'error', level: 'minor' });
+    hud.toast({ text: `${r.name} has been resettled.`, kind: 'city', level: 'major' }); S.selRuin = null; hud.selHtml = ''; hud.selection();
+  },
   pickUnit(id) { S.selUnits.clear(); S.selUnits.add(id); hud.selHtml = ''; hud.selection(); },
-  async fortifyPreview(ids) {
-    const r = await actions.cmd({ c: 'fortifyPreview', units: ids, type: S.econ?.fortifyTypes?.includes('reinforced') ? 'reinforced' : 'basic' });
-    if (!r.fortify) return;
-    hud.fortifyPanel(r.fortify, () => actions.cmd({ c: 'fortify', units: ids, type: S.econ?.fortifyTypes?.includes('reinforced') ? 'reinforced' : 'basic' }).then((x) => { if (x.fortify) hud.toast({ text: `Digging ${x.fortify.placed} trench segment${x.fortify.placed === 1 ? '' : 's'} (${x.fortify.type === 'reinforced' ? 'reinforced' : 'earthworks'}): about ${x.fortify.seconds}s each.`, kind: 'build', level: 'info' }); }));
+  // trench line tool (Build -> Defenses -> Trench Line)
+  trench(op, id) {
+    const m = S.mode;
+    if (op === 'cancel') return actions.cmd({ c: 'trenchCancel', id });
+    if (!m || m.kind !== 'trench') return;
+    if (op === 'close') return setMode(null);
+    if (op === 'clear') { m.points = []; m.preview = null; }
+    if (op === 'undo') { m.points.pop(); requestPreview(); }
+    if (op === 'reverse') { m.reverse = !m.reverse; requestPreview(); }
+    if (op === 'type') { m.type = id; requestPreview(); }
+    if (op === 'commit' && m.preview && m.preview.build) {
+      actions.cmd({ c: 'trenchPlan', points: m.points, type: m.type, reverse: m.reverse, commit: true }).then((r) => {
+        if (r.started) { hud.toast({ text: `${r.trench.name}: ${r.started.placed} segment${r.started.placed === 1 ? '' : 's'} queued for construction · ${Object.entries(r.started.cost).map(([k, v]) => `${v} ${S.defs.GOOD_NAMES[k].toLowerCase()}`).join(', ')} · about ${r.started.seconds}s.`, kind: 'build', level: 'minor' }); m.points = []; m.preview = null; hud.roadPanel(); }
+      });
+    }
+    hud.roadPanel();
   },
   // ---- preferences
   prefs() { return S.prefs; },
@@ -345,7 +419,7 @@ const actions = {
     const r = await actions.cmd({ c: 'batchTrain', buildings: ids, unit, count: n, each: per ? Math.max(1, Math.min(60, S.batchCount | 0)) : 0, policy: 'partial', requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` });
     if (r.batch) hud.toast({ text: r.batch.text, kind: r.batch.queued < r.batch.requested ? 'warning' : 'build', level: 'minor' });
   },
-  repeat(unit) { const ids = [...S.selBuildings].filter((id) => S.buildings.get(id)?.o === S.civId); actions.cmd({ c: 'repeat', buildings: ids, unit }); hud.toast({ text: unit ? `Repeat production: ${S.defs.UNITS[unit].name} whenever a queue empties (pauses when resources or manpower run low).` : 'Repeat production off.', kind: 'build', level: 'info' }); },
+  repeat(unit, only) { const ids = only || [...S.selBuildings].filter((id) => S.buildings.get(id)?.o === S.civId); actions.cmd({ c: 'repeat', buildings: ids, unit }); hud.toast({ text: unit ? `Repeat production: ${S.defs.UNITS[unit].name} whenever a queue empties (pauses when resources or manpower run low).` : 'Repeat production off.', kind: 'build', level: 'info' }); },
   async refit(type, to) {
     const ids = mineSel().filter((id) => S.units.get(id)?.type === type);
     const r = await actions.cmd({ c: 'refit', units: ids, to });
@@ -402,11 +476,13 @@ const actions = {
   },
   async buildMode(type, tool) {
     if (tool === 'road') return startRoadMode();
+    if (tool === 'trench') return S.mode?.kind === 'trench' ? setMode(null) : startTrenchMode();
     if (tool === 'clearPass') return setMode({ kind: 'clearPass' }, 'Click an impassable peak next to an engineer team or your supply network.');
-    if (S.mode && S.mode.type === type) return setMode(null);
-    setMode({ kind: 'build', type, tiles: null }, `Place ${S.defs.BUILDINGS[type].name}: highlighted hexes are valid. Shift-click to place several.`);
-    const r = await net.cmd({ c: 'placement', type });
-    if (S.mode && S.mode.type === type) { S.mode.tiles = new Set(r.tiles || []); S.mode.afford = r.afford; if (!r.tiles?.length) $('hint').textContent = `No valid place for ${S.defs.BUILDINGS[type].name} in explored territory.`; else if (!r.afford) $('hint').textContent += ' Not enough resources: it will be planned and built once funded.'; }
+    if (S.mode && S.mode.kind === 'build' && S.mode.type === type) return setMode(null);    // the palette button toggles the tool
+    const m = { kind: 'build', type, tiles: null, session: { n: 0, planned: 0, cost: {} }, multi: false };
+    setMode(m, `Placing: ${S.defs.BUILDINGS[type].name} — Shift-click to place multiple · Escape to finish.`);
+    await refreshPlacement(m);
+    if (S.mode === m && !m.tiles.size) $('hint').textContent = `No valid place for ${S.defs.BUILDINGS[type].name} in explored territory. Escape to finish.`;
   },
   road(op, id) {
     const m = S.mode;
@@ -420,10 +496,74 @@ const actions = {
     }
     hud.roadPanel();
   },
+  // ---- resource explanations: every button in a resource panel or shortage alert lands here
+  resourceAction(a) {
+    const D = S.defs;
+    switch (a.a) {
+      case 'research': hud.openWorkspace('research'); hud.research.sel = a.tech; hud.research.refresh(); setTimeout(() => hud.research.focus(a.tech), 60); return;
+      case 'build': hud.closeWorkspace(); return actions.buildMode(a.type);
+      case 'housing': hud.closeWorkspace(); return actions.buildMode('house');
+      case 'find': hud.closeWorkspace(); return actions.findSites(a.type);
+      case 'locate': return actions.findBuildings({ type: a.type || '', state: a.filter || 'all' });
+      case 'inspect': return hud.openResource(a.good);
+      case 'import': return actions.cmd({ c: 'importQuote', good: a.good, amount: 50 }).then((r) => { const q = r.quote; if (!q || q.error) return hud.toast({ text: q?.error || 'Cannot import now.', kind: 'error', level: 'minor' }); actions.cmd({ c: 'import', good: a.good, amount: q.amount }).then((x) => { if (x.bought) hud.toast({ text: `Imported ${x.bought.amount} ${D.GOOD_NAMES[a.good].toLowerCase()} for ${x.bought.credits} credits.`, kind: 'build', level: 'minor' }); }); });
+      case 'expand': hud.toast({ text: 'Train a Colonist Convoy at a settlement hub and found a city next to the deposit: its territory makes the deposit yours.', kind: 'city', level: 'minor' }); return hud.openWorkspace('cities');
+      case 'tax': return hud.openWorkspace('government');
+      case 'diplomacy': return hud.openWorkspace('diplomacy');
+      case 'road': hud.closeWorkspace(); return startRoadMode();
+      case 'jump': hud.closeWorkspace(); return actions.jump(a.tile);
+      case 'selectType': hud.closeWorkspace(); return selectBuildingType(a.type, false);
+      case 'tab': hud.econ.tab = a.tab; return hud.drawer(true);
+      default: break;
+    }
+  },
+  // highlight where a building could go: deposits and suitable terrain (explored hexes only)
+  findSites(type) {
+    const D = S.defs, hint = D.SITE_HINT?.[type], tiles = [];
+    for (let t = 0; t < S.W * S.H; t++) {
+      if (S.terr[t] === 255 || S.buildingAtTile.has(t)) continue;
+      if (hint) { if ((hint.res && hint.res.includes(S.res[t])) || (hint.terr && hint.terr.includes(S.terr[t]))) tiles.push(t); }
+    }
+    const own = tiles.filter((t) => S.owner[t] === S.civId), free = tiles.filter((t) => S.owner[t] < 0);
+    const show = own.length ? own : free;
+    S.deposits = { tiles: new Set(show), type, until: S.time + 45 };
+    const name = D.BUILDINGS[type]?.name || type;
+    if (!show.length) { hud.toast({ text: `No ${D.PLACE_INFO?.[D.BUILDINGS[type]?.place] || 'suitable site'} found in explored land. Explore further with scouts.`, kind: 'warning', level: 'minor' }); return; }
+    const ref = view.camCenterX();
+    let best = show[0], bd = Infinity; for (const t of show) { const d = Math.abs(view.near(view.cx0[t], ref) - ref) + Math.abs(view.cy[t] - (view.cam.y + view.app.screen.height / 2 / view.cam.z)); if (d < bd) { bd = d; best = t; } }
+    view.centerOn(best);
+    $('hint').textContent = `${show.length} ${own.length ? 'site' : 'site beyond your border'}${show.length > 1 ? 's' : ''} for a ${name} highlighted${own.length ? '' : ' (expand your territory to build there)'}. Press B to build, Esc to clear.`;
+    hud.minimap(view);
+  },
+  findBuildings(opts) { hud.closeWorkspace(); hud.finder.open(opts); },
+  refreshMinimap() { hud.minimap(view); },
+  openResource(k) { hud.openResource(k); },
+  placeProblem(type, t) { return placeProblemC(type, t); },
   roadType(t) { if (S.mode?.kind === 'road') { S.mode.type = t; requestPreview(); } },
   roadAuto(on) { if (S.mode?.kind === 'road') { S.mode.auto = on; requestPreview(); } },
 };
-function setMode(m, hint) { S.mode = m; $('hint').textContent = m ? (hint || '') + ' Esc to cancel.' : ''; hud.bbKey = ''; hud.buildbar(); hud.roadPanel(); }
+function setMode(m, hint) {
+  const prev = S.mode;
+  if (prev && prev.kind === 'build' && prev !== m) placementSummary(prev);     // leaving (or switching) ends the placement session
+  S.mode = m; $('hint').textContent = m ? (hint || '') + (m.kind === 'build' ? '' : ' Esc to cancel.') : ''; hud.bbKey = ''; hud.buildbar(); hud.roadPanel(); hud.placePanel();
+}
+// one compact summary for a placement session, from the server's placement outcomes
+function placementSummary(m) {
+  const s = m.session; if (!s || !s.n) return;
+  const D = S.defs, name = D.BUILDINGS[m.type].name;
+  const cost = Object.entries(s.cost).map(([k, v]) => `${v} ${D.GOOD_NAMES[k]}`).join(', ');
+  const funded = s.n - s.planned;
+  hud.toast({ text: `${s.n} ${name}${s.n > 1 ? 's' : ''} ${funded ? 'placed' : 'planned'}${cost ? ` · ${cost} committed` : ''}${s.planned ? ` · ${s.planned} awaiting funds` : ''}.`, kind: 'build', level: 'minor' });
+}
+async function refreshPlacement(m) {
+  const r = await net.cmd({ c: 'placement', type: m.type });
+  if (S.mode !== m) return;
+  m.tiles = new Set(r.tiles || []); m.afford = r.afford; hud.placePanel();
+}
+function startTrenchMode() {
+  const techs = new Set(S.econ?.techs || []);
+  setMode({ kind: 'trench', points: [], preview: null, type: techs.has('fortification') ? 'reinforced' : 'basic', reverse: false }, 'Trench Line: drag across the map or click waypoints. Enter builds, Backspace undoes a point.');
+}
 function startRoadMode() {
   const techs = new Set(S.econ?.techs || []);
   const best = [3, 2, 1].find((t) => !S.defs.ROAD_TYPES[t].tech || techs.has(S.defs.ROAD_TYPES[t].tech)) || 1;
@@ -431,10 +571,11 @@ function startRoadMode() {
 }
 let previewTimer = null;
 function requestPreview() {
-  const m = S.mode; if (!m || m.kind !== 'road') return;
+  const m = S.mode; if (!m || (m.kind !== 'road' && m.kind !== 'trench')) return;
   clearTimeout(previewTimer);
-  if (m.points.length < 2) { m.preview = null; hud.roadPanel(); return; }
+  if (m.points.length < (m.kind === 'trench' ? 1 : 2)) { m.preview = null; hud.roadPanel(); return; }
   previewTimer = setTimeout(async () => {
+    if (m.kind === 'trench') { const r = await net.cmd({ c: 'trenchPlan', points: m.points, type: m.type, reverse: m.reverse }); if (S.mode === m && r.trench) { m.preview = r.trench; hud.roadPanel(); } return; }
     const r = await net.cmd({ c: 'roadPlan', tiles: m.points, type: m.type, auto: m.auto });
     if (S.mode === m && r.plan) { m.preview = r.plan; hud.roadPanel(); }
   }, 120);
@@ -445,21 +586,25 @@ function bindInput() {
   const cv = view.app.canvas;
   let drag = null, pan = null, stroke = null, rdrag = null;
   const keys = new Set();
+  // a precision recentre moved the camera by whole world periods: keep drag anchors on the same copy
+  view.onRecenter = (shift) => { if (S.deploy?.anchorX != null) S.deploy.anchorX -= shift; if (rdrag) rdrag.wx -= shift; if (pan) pan.cx -= shift; };
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
   cv.addEventListener('pointerdown', (e) => {
     cv.setPointerCapture(e.pointerId);
-    if (e.button === 1) { pan = { x: e.clientX, y: e.clientY, cx: view.cam.x, cy: view.cam.y }; return; }   // Alt-drag now box-selects buildings
-    if (e.button === 0 && S.mode?.kind === 'road') { stroke = { x: e.offsetX, y: e.offsetY, moved: false, start: S.mode.points.length }; return; }
-    if (e.button === 0) drag = { x: e.offsetX, y: e.offsetY, x1: e.offsetX, y1: e.offsetY };
+    const ae = document.activeElement; if (ae && ae !== document.body && ae.blur) ae.blur();   // the map keeps keyboard focus after a click on it
+    if (e.button === 1) { pan = { x: e.clientX, y: e.clientY, cx: view.cam.x, cy: view.cam.y }; view.panning = true; return; }   // Alt-drag now box-selects buildings
+    if (e.button === 0 && (S.mode?.kind === 'road' || S.mode?.kind === 'trench')) { stroke = { x: e.offsetX, y: e.offsetY, moved: false, start: S.mode.points.length }; return; }
+    if (e.button === 0) { drag = { x: e.offsetX, y: e.offsetY, x1: e.offsetX, y1: e.offsetY }; lastDown = { x: e.offsetX, y: e.offsetY, u: view.unitAtScreen(e.offsetX, e.offsetY) }; }
     if (e.button === 2) { const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY); rdrag = { x: e.offsetX, y: e.offsetY, wx, wy, tile: view.tileAt(wx, wy), moved: false }; }
   });
   cv.addEventListener('pointermove', (e) => {
     if (pan) { view.cam.x = pan.cx - (e.clientX - pan.x) / view.cam.z; view.cam.y = pan.cy - (e.clientY - pan.y) / view.cam.z; view.clamp(); return; }
     const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
-    S.hover = view.tileAt(wx, wy);
+    const hv = view.tileAt(wx, wy);
+    if (hv !== S.hover) { S.hover = hv; if (S.mode?.kind === 'build') hud.placePanel(); }
     if (rdrag) {
       if (Math.hypot(e.offsetX - rdrag.x, e.offsetY - rdrag.y) > 14 && mineSel().length && !S.spectator) rdrag.moved = true;
-      if (rdrag.moved) { rdrag.end = view.tileAt(wx, wy); updateDeployPreview(rdrag.tile, rdrag.end, e.altKey); }
+      if (rdrag.moved) { rdrag.end = view.tileAt(wx, wy); updateDeployPreview(rdrag.tile, rdrag.end, e.altKey, rdrag.wx); }   // continuous drag coordinates: the preview stays anchored where the drag began
       return;
     }
     if (!drag && !stroke) { const hu = view.unitAtScreen(e.offsetX, e.offsetY); S.hoverUnit = hu ? hu.id : null; }
@@ -467,14 +612,14 @@ function bindInput() {
       // freehand road sketch: every hex the cursor crosses becomes a waypoint
       if (Math.hypot(e.offsetX - stroke.x, e.offsetY - stroke.y) > 6) stroke.moved = true;
       const pts = S.mode.points;
-      if (stroke.moved && pts[pts.length - 1] !== S.hover) { pts.push(S.hover); S.mode.auto = false; requestPreview(); }
+      if (stroke.moved && pts[pts.length - 1] !== S.hover) { pts.push(S.hover); if (S.mode.kind === 'road') S.mode.auto = false; requestPreview(); }
     }
-    hud.tooltip(drag || stroke ? -1 : S.hover, e.offsetX, e.offsetY);
+    gateTooltip(drag || stroke ? -1 : S.hover, e.offsetX, e.offsetY);
     if (drag) { drag.x1 = e.offsetX; drag.y1 = e.offsetY; drawBox(drag); }
   });
-  cv.addEventListener('pointerleave', () => { S.hover = -1; hud.tooltip(-1); });
+  cv.addEventListener('pointerleave', () => { S.hover = -1; gateTooltip(-1); });
   cv.addEventListener('pointerup', (e) => {
-    if (pan) { pan = null; return; }
+    if (pan) { pan = null; view.panning = false; return; }
     if (rdrag && e.button === 2) {
       const r = rdrag; rdrag = null;
       if (r.moved && S.deploy) {
@@ -501,7 +646,8 @@ function bindInput() {
     else { view.cam.x += e.deltaX / view.cam.z; view.cam.y += e.deltaY / view.cam.z; view.clamp(); }
   }, { passive: false });
   window.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const tg = e.target;
+    if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'SELECT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;   // typing never triggers shortcuts
     if (S.spectator) {
       const k0 = e.key;
       if (k0 === '[' || k0 === ']') { actions.cycleFollow(k0 === ']' ? 1 : -1); return; }
@@ -510,23 +656,25 @@ function bindInput() {
       if (k0.toLowerCase() === 'v') { actions.fog(!S.obs?.fog); return; }
     }
     if (controlGroupKey(e)) return;
-    keys.add(e.key.toLowerCase());
     const k = e.key.toLowerCase();
-    if (S.spectator && ['a', 's', 'f', 'g', 'r'].includes(k)) return;   // WASD only pans while spectating
-    if (k === 'tab' && rdrag && S.deploy) { e.preventDefault(); S.deployOpts.reverse = !S.deployOpts.reverse; updateDeployPreview(rdrag.tile, rdrag.end, false); return; }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) keys.add(k);   // held keys pan the camera
+    if (['w', 'a', 's', 'd'].includes(k) && !e.ctrlKey && !e.metaKey) return;   // WASD always pans the camera, whatever is selected
+    if (e.repeat && !['=', '+', '-'].includes(k)) return;   // a held key never repeats an order
+    if (S.spectator && ['f', 'g', 'r'].includes(k)) return;
+    if (k === 'p' && !e.ctrlKey && !e.metaKey && togglePause()) return;
+    if (k === 'tab' && rdrag && S.deploy) { e.preventDefault(); S.deployOpts.reverse = !S.deployOpts.reverse; updateDeployPreview(rdrag.tile, rdrag.end, false, rdrag.wx); return; }
     if (k === 'escape') {
       if (rdrag && S.deploy) { rdrag.cancelled = true; S.deploy = null; hud.deployBar(); return; }
-      if (!$('menu').hidden) { $('menu').hidden = true; return; }
+      if (!$('menu').hidden) { $('menu').hidden = true; if (S.menuPaused) { S.menuPaused = false; togglePause(false); } return; }
       if (S.mode) { setMode(null); return; }
+      if (S.deposits || S.findIds) { S.deposits = null; S.findIds = null; $('hint').textContent = ''; hud.minimap(view); return; }
       if (hud.escape()) return;
       if (S.selUnits.size || S.selBuilding != null) { S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear(); hud.selection(); return; }
     }
     if ((k === '/' || (k === 'k' && (e.ctrlKey || e.metaKey)))) { e.preventDefault(); openSearch(); return; }
     if (k === 't' && !e.ctrlKey && !e.metaKey) { hud.ws === 'research' ? hud.closeWorkspace() : hud.openWorkspace('research'); return; }
     if (k === 'b' && !e.ctrlKey && !e.metaKey && !S.spectator) { hud.toggleBuild(); return; }
-    if (k === 'f' && e.shiftKey && S.selUnits.size) { actions.act('fortify'); return; }
-    if (k === 'a' && S.selUnits.size) actions.act('amove');
-    if (k === 's' && S.selUnits.size) actions.act('stop');
+    if (k === 'a' && (e.ctrlKey || e.metaKey) && S.selUnits.size) { e.preventDefault(); actions.act('amove'); return; }   // Ctrl/Cmd+A: attack-move
     if (k === 'f') { if (mineSel().some((id) => S.units.get(id)?.type === 'colonist')) actions.act('found'); else if (S.selUnits.size) actions.cycleFormation(); }
     if (k === 'h' && S.selUnits.size) actions.act('hold');
     if (k === 'x' && S.selUnits.size) actions.act('withdraw');
@@ -540,22 +688,26 @@ function bindInput() {
     if (k === 'l') { const order = ['terrain', 'territory', 'supply', 'stability', 'traffic', 'front', 'tactical']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
     if (k === 'backspace' && S.mode?.kind === 'road') actions.road('undo');
     if (k === 'enter' && S.mode?.kind === 'road') actions.road('commit');
+    if (k === 'backspace' && S.mode?.kind === 'trench') actions.trench('undo');
+    if (k === 'enter' && S.mode?.kind === 'trench') actions.trench('commit');
   });
   window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
-  let uiTick = 0, mmTick = 0;
+  window.addEventListener('blur', () => keys.clear());   // never keep panning after the window loses focus
+  let layoutT = 0, uiTick = 0, mmTick = 0;
   S.onFrame = (dt) => {
     const sp = (600 * dt) / view.cam.z;
-    if (keys.has('arrowleft') || (keys.has('a') && (!S.selUnits.size || S.spectator))) view.cam.x -= sp;
+    if (keys.has('arrowleft') || keys.has('a')) view.cam.x -= sp;
     if (keys.has('arrowright') || keys.has('d')) view.cam.x += sp;
     if (keys.has('arrowup') || keys.has('w')) view.cam.y -= sp;
-    if (keys.has('arrowdown') || (keys.has('s') && (!S.selUnits.size || S.spectator))) view.cam.y += sp;
+    if (keys.has('arrowdown') || keys.has('s')) view.cam.y += sp;
     view.clamp();
     hud.seismo(dt);
     hud.clock(S.time, net?.rtt);
-    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); if (Math.random() < 0.25) hud.checkTips(); }
+    layoutT += dt; if (layoutT > 0.1) { layoutT = 0; hud.layoutPanels(); }
+    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); if (Math.random() < 0.25) hud.checkTips(); pollDiagnostics(); }
     mmTick += dt; if (mmTick > 1) { mmTick = 0; hud.minimap(view); }
   };
-  $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const cvs = $('minimap'), x = (ev.offsetX / cvs.clientWidth) * view.pw, y = (ev.offsetY / cvs.clientHeight) * view.ph; view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
+  $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const cvs = $('minimap'); let x = (ev.offsetX / cvs.clientWidth) * view.pw; const y = (ev.offsetY / cvs.clientHeight) * view.ph; if (view.wrap) x = view.near(x, view.camCenterX()); view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
   document.querySelectorAll('.lenses button').forEach((b) => b.addEventListener('click', () => { setLens(b.dataset.lens); $('lensPop').hidden = true; }));
   $('lensBtn').addEventListener('click', () => { $('lensPop').hidden = !$('lensPop').hidden; });
   // minimap: compact -> expanded -> hidden (a small button brings it back)
@@ -578,7 +730,7 @@ function bindInput() {
   $('deployBar').addEventListener('click', (e) => {
     const b = e.target.closest('[data-dopt]'); if (!b) return;
     const k = b.dataset.dopt, v = b.dataset.v;
-    if (k === 'reverse' || k === 'fortify') S.deployOpts[k] = !S.deployOpts[k]; else S.deployOpts[k] = v;
+    if (k === 'reverse') S.deployOpts[k] = !S.deployOpts[k]; else S.deployOpts[k] = v;
     hud.deployBar(true);
   });
   applyPrefs(S.prefs); syncPrefs();
@@ -587,17 +739,37 @@ function bindInput() {
   const classes = { 'class:milprod': 'Military production', 'class:defense': 'Defenses', 'class:power': 'Power', 'class:research': 'Research', 'class:industry': 'Industry', 'class:food': 'Food', 'class:logistics': 'Logistics' };
   fsel.innerHTML = '<option value="">Find…</option>' + Object.entries(classes).map(([k, n]) => `<option value="${k}">${n}</option>`).join('') + '<option disabled>──────────</option>' + Object.entries(S.defs.BUILDINGS).filter(([k, d]) => !d.rebelOnly && k !== 'town').map(([k, d]) => `<option value="${k}">${d.name}</option>`).join('');
   fsel.addEventListener('change', () => { S.find = fsel.value || null; hud.minimap(view); fsel.blur(); });
-  $('btnMenu').addEventListener('click', () => { $('menu').hidden = false; });
+  $('btnMenu').addEventListener('click', () => {
+    $('menu').hidden = false;
+    // in single player the menu really pauses; elsewhere the world keeps moving
+    $('menuTitle').textContent = S.canPause ? 'Paused' : 'Menu';
+    $('menuNote').textContent = S.canPause ? 'The match is paused while this menu is open.' : 'The world keeps moving while this menu is open.';
+    if (S.canPause && !S.paused) { S.menuPaused = true; togglePause(true); }
+  });
+  $('btnPause').addEventListener('click', () => togglePause());
   const syncSound = () => { for (const el of document.querySelectorAll('[data-vol]')) { const k = el.dataset.vol; if (k === 'muted') el.checked = audio.settings.muted; else el.value = audio.settings[k]; } $('btnSound').classList.toggle('off', audio.settings.muted); };
   for (const el of document.querySelectorAll('[data-vol]')) el.addEventListener('input', () => { const k = el.dataset.vol; audio.set(k, k === 'muted' ? el.checked : el.value); syncSound(); });
   $('btnSound').addEventListener('click', () => { audio.unlock(); audio.set('muted', !audio.settings.muted); syncSound(); });
   syncSound();
-  $('btnResume').addEventListener('click', () => { $('menu').hidden = true; });
+  $('btnResume').addEventListener('click', () => { $('menu').hidden = true; if (S.menuPaused) { S.menuPaused = false; togglePause(false); } });
   $('btnSurrender').addEventListener('click', () => { actions.cmd({ c: 'surrender' }); $('menu').hidden = true; });
   $('btnQuit').addEventListener('click', () => { store.del('se.session'); location.reload(); });
 }
 
 function setLens(l) { S.lens = l; view.overlayAll = true; document.querySelectorAll('.lenses button').forEach((b) => b.classList.toggle('on', b.dataset.lens === l)); $('lensName').textContent = { terrain: 'Terrain', territory: 'Borders', supply: 'Supply', stability: 'Stability', traffic: 'Traffic', tactical: 'Tactical', front: 'Front lines' }[l] || l; hud.minimap(view); }
+// why a hex cannot take a building (client-side mirror of the server's placement rules, for the hint)
+function placeProblemC(type, t) {
+  const D = S.defs, def = D.BUILDINGS[type];
+  if (S.terr[t] === 255) return 'unexplored';
+  if (D.TERRAIN[S.terr[t]]?.water) return 'water';
+  const b = S.buildingAtTile.get(t); if (b) return `occupied by a ${D.BUILDINGS[b.ty]?.name || 'building'}`;
+  const r = S.ruins.get(t); if (r && r.type !== type) return 'ruins must be cleared first';
+  if (!def.anywhere && S.owner[t] !== S.civId) return 'outside your territory';
+  if (def.anywhere && S.owner[t] >= 0 && S.owner[t] !== S.civId) return 'foreign territory';
+  if (!Number.isFinite(D.TERRAIN[S.terr[t]]?.move)) return 'impassable terrain';
+  if (type === 'house') return 'needs flat ground (or the city has reached its housing-block limit)';
+  return `needs ${D.PLACE_INFO?.[def.place] || 'a suitable hex'}`;
+}
 function drawBox(d) { const g = view.selG; g.clear(); g.rect(Math.min(d.x, d.x1), Math.min(d.y, d.y1), Math.abs(d.x1 - d.x), Math.abs(d.y1 - d.y)).fill({ color: 0xf1c75b, alpha: 0.08 }).stroke({ width: 1, color: 0xf1c75b, alpha: 0.8 }); }
 
 // Selected buildings: S.selBuildings holds them all; S.selBuilding stays the primary one so every
@@ -644,14 +816,44 @@ async function leftClick(e) {
   if (m) {
     if (tile < 0) return;
     if (m.kind === 'build') {
-      if (m.tiles && !m.tiles.has(tile)) return hud.toast({ text: 'That hex is not valid for this building.', kind: 'error', level: 'minor' });
+      // invalid hexes never end the tool: say why and stay in placement
+      if (m.tiles && !m.tiles.has(tile)) { const why = placeProblemC(m.type, tile); $('hint').textContent = `Cannot place here: ${why}. Shift-click to place multiple · Escape to finish.`; audio.ui('error'); return; }
+      if (e.shiftKey) m.multi = true;          // once several are being placed, releasing Shift does not end the session
       const r = await actions.cmd({ c: 'build', type: m.type, tile, plan: true });
-      if (!r.error) { if (e.shiftKey) actions.buildMode(m.type); else setMode(null); }
+      if (!r.error && r.built) { m.session.n++; if (r.built.planned) m.session.planned++; for (const [k, v] of Object.entries(r.built.cost || {})) m.session.cost[k] = (m.session.cost[k] || 0) + v; }
+      if (S.mode !== m) return;
+      if (m.multi) { refreshPlacement(m); $('hint').textContent = `Placing: ${S.defs.BUILDINGS[m.type].name} — ${m.session.n} placed · Shift-click to place more · Escape to finish.`; }
+      else if (!r.error) setMode(null);
       return;
     }
+    if (m.kind === 'missile') {
+      // two-step: the first click previews (odds, flight), a second click on the same hex launches
+      if (m.armed !== tile) {
+        const r = await actions.cmd({ c: 'missileLaunch', tile });
+        const p = r.missile; if (!p) return hud.toast({ text: r.error, kind: 'error', level: 'minor' });
+        m.armed = tile;
+        $('hint').textContent = !p.inRange ? 'Out of range of any stocked silo.' : `Flight ${p.eta} s · ${p.interceptors ? `${p.interceptors} known interceptors: about ${Math.round(p.odds * 100)}% chance it is stopped` : 'no known missile defenses'}${p.war && p.war !== 'war' ? ' · NOT AT WAR with this nation' : ''} — click the same hex again to LAUNCH.`;
+        view.ping(tile, 2, 0xff5a3c); return;
+      }
+      const r = await actions.cmd({ c: 'missileLaunch', tile, commit: true });
+      if (r.error) hud.toast({ text: r.error, kind: 'error', level: 'minor' });
+      setMode(null); return;
+    }
     if (m.kind === 'clearPass') { await actions.cmd({ c: 'clearPass', tile }); setMode(null); return; }
-    if (m.kind === 'attackMove') { orderMove(mineSel(), tile, true); setMode(null); return; }
-    if (m.kind === 'move') { orderMove(mineSel(), tile, false); setMode(null); return; }
+    if (m.kind === 'attackMove') { orderMove(m.ids || mineSel(), tile, true); setMode(null); return; }
+    if (m.kind === 'move') { orderMove(m.ids || mineSel(), tile, false); setMode(null); return; }
+    if (m.kind === 'airPatrol' || m.kind === 'airScout' || m.kind === 'airStrike' || m.kind === 'airSupport') {
+      const mk = { airPatrol: 'patrol', airScout: 'scout', airStrike: 'strike', airSupport: 'support' }[m.kind];
+      let target = null;
+      if (mk === 'strike' || mk === 'support') {
+        const tu = view.unitAtScreen(e.offsetX, e.offsetY, (u) => (mk === 'strike' ? u.owner !== S.civId : u.owner === S.civId));
+        const tb = S.buildingAtTile.get(tile);
+        target = tu ? { kind: 'unit', id: tu.id } : mk === 'strike' && tb && tb.o !== S.civId ? { kind: 'building', id: tb.id } : null;
+      }
+      airOrder(m.ids, mk, tile, target, m.base);
+      if (!(e.shiftKey && m.base != null)) setMode(null);
+      return;
+    }
     if (m.kind === 'spawn') { actions.cmd({ c: 'sandbox', op: 'spawn', civ: m.civ, type: m.type, n: m.n, tile }); if (!e.shiftKey) setMode(null); return; }
     if (m.kind === 'sbAdvance') { actions.cmd({ c: 'sandbox', op: 'advance', tile }); view.ping(tile, 1, 0xd0533b); setMode(null); return; }
     if (m.kind === 'engage' || m.kind === 'focus') {
@@ -671,7 +873,17 @@ async function leftClick(e) {
     if (m.kind === 'armyOrder') { actions.cmd({ c: 'army', op: 'order', id: m.id, kind: m.op, tile, radius: 4 }); view.ping(tile, m.op === 'defend' ? 4 : 1, 0xf1c75b); setMode(null); return; }
     if (m.kind === 'rallyAll') { actions.cmd({ c: 'rallyAll', tile }); view.ping(tile, 1, 0x8fe0a8); setMode(null); return; }
   }
-  const u = view.unitAtScreen(e.offsetX, e.offsetY);
+  // units first (a unit standing on a building is selected, not the building); a moving unit is also
+  // found where it was when the button went down
+  let u = (lastDown?.u && S.units.has(lastDown.u.id) ? lastDown.u : null) || view.unitAtScreen(e.offsetX, e.offsetY);
+  // a stack badge selects the whole stack of our units on that hex
+  const badge = !u ? view.badgeAtScreen(e.offsetX, e.offsetY) : null;
+  if (badge && badge.owner === S.civId && !S.spectator) {
+    if (!e.shiftKey) { S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear(); }
+    for (const x of S.units.values()) if (x.owner === S.civId && (x.tile === badge.tile || x.next === badge.tile) && !S.defs.UNITS[x.type].air) S.selUnits.add(x.id);
+    hud.selHtml = ''; hud.selection(); return;
+  }
+  if (!u && badge) u = [...S.units.values()].find((x) => x.tile === badge.tile) || null;
   // pointerup carries no reliable click count, so double-clicks are tracked explicitly
   const now = performance.now();
   const hb = !u && tile >= 0 ? S.buildingAtTile.get(tile) : null;
@@ -689,11 +901,20 @@ async function leftClick(e) {
   if (u) {
     if (dbl && u.owner === S.civId) { if (!e.shiftKey) S.selUnits.clear(); selectType(u.type, !(e.ctrlKey || e.metaKey)); lastClick = null; }
     else S.selUnits.add(u.id);
-  } else if (tile >= 0) { const b = S.buildingAtTile.get(tile); if (b) { S.selBuildings.clear(); S.selBuildings.add(b.id); S.selBuilding = b.id; hud.cityTab = 'overview'; } }
+  } else if (tile >= 0) {
+    const b = S.buildingAtTile.get(tile);
+    if (b) { S.selBuildings.clear(); S.selBuildings.add(b.id); S.selBuilding = b.id; hud.cityTab = 'overview'; }
+    else if (S.ruins.get(tile)?.type === 'town' && !S.spectator) {
+      // town ruins: offer to resettle them
+      S.selRuin = { tile, preview: null };
+      actions.cmd({ c: 'rebuild', tile }).then((r) => { if (S.selRuin && S.selRuin.tile === tile) { S.selRuin.preview = r.rebuild || { ok: false, why: r.error }; hud.selHtml = ''; hud.selection(); } });
+    }
+  }
+  if (!(tile >= 0 && S.ruins.get(tile)?.type === 'town' && !S.buildingAtTile.get(tile))) S.selRuin = null;
   hud.selHtml = ''; hud.selection();
   view.syncBuildings();
 }
-let lastClick = null;
+let lastClick = null, lastDown = null;
 
 function selectType(type, onScreenOnly) {
   const sw = view.app.screen.width, sh = view.app.screen.height;
@@ -746,14 +967,72 @@ function rightClick(e) {
   const rel = (o) => S.civInfo[o]?.rel?.state;
   const target = view.unitAtScreen(e.offsetX, e.offsetY, (u) => u.owner !== S.civId);
   const focus = e.ctrlKey || e.metaKey;
+  // aircraft: right-click picks the obvious mission (own airfield: go home; enemy: strike; ground: patrol / scout / one-way strike)
+  const D = S.defs, airIds = mine.filter((id) => D.UNITS[S.units.get(id)?.type]?.air);
+  if (airIds.length) {
+    const ob = S.buildingAtTile.get(tile);
+    const hostileU = target && rel(target.owner) === 'war' ? target : null;
+    const hostileB = ob && ob.o !== S.civId && rel(ob.o) === 'war' ? ob : null;
+    const tgt = hostileU ? { kind: 'unit', id: hostileU.id } : hostileB ? { kind: 'building', id: hostileB.id } : null;
+    if (ob && ob.o === S.civId && D.BUILDINGS[ob.ty].airbase) { actions.cmd({ c: 'airHome', base: ob.id, units: airIds }); airOrder(airIds, 'return'); view.ping(tile, 0.6, 0x8fe0a8); }
+    else {
+      const by = { strike: [], patrol: [], scout: [] };
+      for (const id of airIds) {
+        const k = unitKind(D, S.units.get(id).type);
+        if (tgt) (k === 'recon' ? by.scout : by.strike).push(id);
+        else (k === 'oneway' ? by.strike : k === 'recon' ? by.scout : by.patrol).push(id);
+      }
+      for (const [k, ids] of Object.entries(by)) if (ids.length) airOrder(ids, k, tgt ? (hostileU ? hostileU.tile : tile) : tile, k === 'strike' ? tgt : null);
+    }
+    const rest = mine.filter((id) => !airIds.includes(id));
+    if (!rest.length) return;
+    if (target && rel(target.owner) === 'war') return attackTarget({ kind: 'unit', id: target.id }, focus, target.tile, rest);
+    return orderMove(rest, tile, e.altKey, e.shiftKey);
+  }
   if (target && rel(target.owner) === 'war') return attackTarget({ kind: 'unit', id: target.id }, focus, target.tile);
   const b = S.buildingAtTile.get(tile);
   if (b && b.o !== S.civId && rel(b.o) === 'war') return attackTarget({ kind: 'building', id: b.id }, focus, tile);
   orderMove(mine, tile, e.altKey, e.shiftKey);
 }
 
-function attackTarget(target, focus, tile) {
-  const units = mineSel();
+// Developer inspector: while the Diagnostics section is open, ask the server why the unit does what it does.
+async function pollDiagnostics() {
+  const d = document.querySelector('#selection details.diag');
+  hud.diagOpen = !!(d && d.open);
+  if (!d || !d.open || pollDiagnostics.busy) return;
+  pollDiagnostics.busy = true;
+  try {
+    if (d.dataset.cdiag) {
+      const r = await actions.cmd({ c: 'cityDiag', city: +d.dataset.cdiag }); const x = r.city;
+      hud.diagText = x ? [`state ${x.state}${x.why ? ': ' + x.why : ''}`, `town ${x.hpAbs} HP · siege damage ${x.siegeDamage} / ${x.ruinAt} before ruin`, `stability ${x.stability} · unrest ${x.unrest}s · revolt: ${x.revolt}`, `cooldowns: city ${x.cityCooldown}s · nation ${x.empireCooldown}s`].join('\n') : r.error || '';
+      hud.selHtml = ''; return;
+    }
+    const r = await actions.cmd({ c: 'diagnose', unit: +d.dataset.diag });
+    const x = r.diag; if (!x) { hud.diagText = r.error || ''; return; }
+    const lines = [`order ${x.order} (by ${x.auth}) · status ${x.status}${x.wait ? ` waiting ${x.wait}s` : ''}`, `tile ${x.tile} → goal ${x.goal} slot ${x.slot} · path ${x.path}${x.flowField ? ' (flow field)' : ''}`, `stance ${x.stance} · supply ${x.supply}% · morale ${x.morale}%${x.formation ? ` · formation ${x.formation}` : ''}`];
+    if (x.pathFail) lines.push(`last failure: ${x.pathFail.code} (${x.pathFail.ago}s ago) — ${x.pathFail.text}`);
+    if (x.air) lines.push(`air: ${x.air.state} · fuel ${x.air.fuel}s · ammo ${x.air.ammo} · base ${x.air.home}${x.air.mission ? ` · ${x.air.mission.kind} → ${x.air.mission.tile} (by ${x.air.mission.auth})${x.air.mission.suspended ? ' suspended' : ''}` : ''}${x.air.note ? ' · ' + x.air.note : ''}`);
+    if (x.mission) { lines.push(`AI mission #${x.mission.id} ${x.mission.kind}: ${x.mission.state} for ${x.mission.since}s (${x.mission.units} units)`); for (const h of x.mission.history.slice(-4)) lines.push(`  ${h[0]}s ${h[1]} → ${h[2]}${h[3] ? ': ' + h[3] : ''}`); }
+    lines.push(`game: ${x.stats.pathFail || 0} path failures · ${x.stats.deadlocks || 0} deadlocks cleared · ${x.stats.oscillations || 0} AI oscillations`);
+    hud.diagText = lines.join('\n'); hud.selHtml = '';
+  } finally { pollDiagnostics.busy = false; }
+}
+
+// One air order: a mission for chosen aircraft, or (from an airfield) for aircraft the server picks.
+async function airOrder(ids, kind, tile = -1, target = null, base = null) {
+  const c = { c: 'airMission', kind, tile, target };
+  if (ids && ids.length) c.units = ids; else if (base != null) c.base = base; else return;
+  const r = await actions.cmd(c);
+  if (r.error) return hud.toast({ text: r.error, kind: 'error', level: 'minor' });
+  const a = r.air || {};
+  const verb = { patrol: 'patrolling', scout: 'scouting', strike: 'striking', support: 'supporting troops', return: 'returning to base' }[kind];
+  if (a.assigned) hud.toast({ text: `${a.assigned} aircraft ${verb}${a.refused?.length ? ` · ${a.refused.length} refused: ${a.refused[0][1]}` : ''}.`, kind: 'unit', level: 'info' });
+  else if (a.refused?.length) hud.toast({ text: a.refused[0][1], kind: 'error', level: 'minor' });
+  if (tile >= 0 && kind !== 'return') view.ping(tile, kind === 'strike' ? 0.6 : 2, kind === 'strike' ? 0xd0533b : 0x7fb8e0);
+}
+actions.airOrder = airOrder;
+
+function attackTarget(target, focus, tile, units = mineSel()) {
   S.focusSet = S.focusSet || new Set();
   const key = target.kind === 'unit' ? target.id : -target.id;
   if (focus) S.focusSet.add(key); else S.focusSet.delete(key);
@@ -781,14 +1060,14 @@ function deployEnv(sel) {
     occupied: (t) => { let n = 0; for (const u of S.units.values()) if (u.tile === t && u.owner === S.civId && !selSet.has(u.id) && !D.UNITS[u.type].air && !S.paths[u.id]) n++; return n; },
   };
 }
-function updateDeployPreview(a, b, attackMove) {
+function updateDeployPreview(a, b, attackMove, anchorX) {
   if (!(a >= 0) || !(b >= 0)) return;
   const D = S.defs;
   const sel = mineSel().map((id) => S.units.get(id)).filter((u) => u && !D.UNITS[u.type].civilian);
   if (!sel.length) return;
   const o = S.deployOpts;
   const plan = planDeployment(deployEnv(sel), sel.map((u) => ({ id: u.id, tile: u.tile, type: u.type, role: deployRole(D.UNITS[u.type]), air: !!D.UNITS[u.type].air })), [a, b], { mode: o.mode === 'preserve' ? 'line' : o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, reverse: o.reverse });
-  S.deploy = { line: [a, b], plan, attackMove, n: sel.length };
+  S.deploy = { line: [a, b], plan, attackMove, n: sel.length, anchorX: anchorX ?? S.deploy?.anchorX };
   hud.deployBar();
 }
 function openSearch() {
@@ -799,7 +1078,9 @@ function searchItems(q) {
   for (const c of S.cities.values()) if (c.n.toLowerCase().includes(q)) out.push({ label: c.n, hint: c.o === S.civId ? 'your city' : 'city', go: () => { actions.jump(c.t); actions.selectCity(c.id); } });
   const types = new Map(); for (const u of S.units.values()) if (u.owner === S.civId) types.set(u.type, (types.get(u.type) || 0) + 1);
   for (const [t, n] of types) if (D.UNITS[t].name.toLowerCase().includes(q)) out.push({ label: D.UNITS[t].name, hint: `${n} unit${n > 1 ? 's' : ''}: select all`, go: () => actions.selectType(t, false) });
-  for (const [k, b] of Object.entries(D.BUILDINGS)) if (b.name.toLowerCase().includes(q)) { const n = [...S.buildings.values()].filter((x) => x.o === S.civId && x.ty === k).length; out.push({ label: b.name, hint: n ? `${n} built: find` : 'building: open build palette', go: () => { if (n) { $('findType').value = k; $('findType').dispatchEvent(new Event('change')); } else hud.toggleBuild(true); } }); }
+  for (const [k, b] of Object.entries(D.BUILDINGS)) if (b.name.toLowerCase().includes(q)) { const n = [...S.buildings.values()].filter((x) => x.o === S.civId && x.ty === k).length; out.push({ label: b.name, hint: n ? `${n} built: find` : 'building: open build palette', go: () => { if (n) actions.findBuildings({ type: k }); else hud.toggleBuild(true); } }); }
+  if ('find buildings'.includes(q) || 'finder'.includes(q) || 'unfinished'.includes(q) || 'inactive'.includes(q) || 'idle'.includes(q)) out.push({ label: 'Find buildings', hint: 'search, filter by type, city and state', go: () => actions.findBuildings({ state: 'unfinished'.includes(q) ? 'unfinished' : 'inactive'.includes(q) || 'idle'.includes(q) ? 'idle' : 'all' }) });
+  for (const k of D.GOODS) if ((D.GOOD_NAMES[k] || '').toLowerCase().includes(q)) out.push({ label: D.GOOD_NAMES[k], hint: 'resource: what makes it and why it moves', go: () => hud.openResource(k) });
   for (const [k, t] of Object.entries(D.TECHS)) if (t.name.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q)) out.push({ label: t.name, hint: 'technology', go: () => { hud.openWorkspace('research'); hud.research.sel = k; hud.research.refresh(); setTimeout(() => hud.research.focus(k), 60); } });
   const cmds = [['Research', 'research'], ['Economy', 'economy'], ['Military', 'military'], ['Cities', 'cities'], ['Government', 'government'], ['Diplomacy', 'diplomacy'], ['Chronicle', 'chronicle']];
   for (const [n, w] of cmds) if (n.toLowerCase().includes(q)) out.push({ label: n, hint: 'open workspace', go: () => hud.openWorkspace(w) });
@@ -842,6 +1123,7 @@ lobbyArt();
 refreshMatches();
 setInterval(() => { if (!S.ready) refreshMatches(); }, 4000);
 window.__S = S;
+S.dev = /[?&]dev(=1)?\b/.test(location.search);
 window.__view = () => view;
 window.__hud = () => hud;
 window.__actions = () => actions;

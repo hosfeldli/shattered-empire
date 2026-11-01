@@ -211,3 +211,18 @@ export function findRoadRoute(game, civ, a, b, type = 1) {
   while (c >= 0) { out.push(c); c = came[c]; }
   return out.reverse();
 }
+
+// Standardized movement failure reasons: every order that cannot be carried out says why, the same
+// way for players, the AI and diagnostics. Index = wire code.
+export const PATH_FAIL_CODES = ['no_route', 'partial', 'terrain', 'border', 'contact', 'congestion', 'deadlock'];
+export const PATH_FAIL = {
+  no_route: 'no passable route to the destination',
+  partial: 'the destination cannot be reached: stopping at the closest reachable point',
+  terrain: 'the route became impassable (terrain, a destroyed bridge or a closed pass)',
+  border: 'the route crosses borders that are closed to us',
+  contact: 'enemy troops block the way',
+  congestion: 'the route is jammed with traffic',
+  deadlock: 'units were blocking each other (cleared by letting them pass)',
+};
+export function pathFail(g, u, code) { u.pathFail = { code, at: g.time }; if (g.stats) g.stats.pathFail = (g.stats.pathFail || 0) + 1; }
+

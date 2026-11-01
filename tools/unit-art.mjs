@@ -88,6 +88,19 @@ const ART = {
     base: `<ellipse cx="34" cy="38" rx="10" ry="4" fill="#000" opacity="0.15"/><path d="M22 32 L40 30 L46 32 L40 34 Z" fill="${C.light}" stroke="${C.dark}" stroke-width="0.8"/><path d="M28 31 L33 16 L36 16 L35 31 Z M28 33 L33 48 L36 48 L35 33 Z" fill="#9aa38e" stroke="${C.dark}" stroke-width="0.7"/><path d="M20 31.5 L22 26 L24 26 L23 31.5 Z M20 32.5 L22 38 L24 38 L23 32.5 Z" fill="#9aa38e" stroke="${C.dark}" stroke-width="0.5"/><circle cx="44" cy="32" r="1.6" fill="${C.glass}"/>`,
     acc: `<path d="M28 31 L33 16 L36 16 L35 31 Z" fill="#fff"/>`,
   }),
+  // fixed-wing aircraft: no baked-in shadow (the game draws one on the ground, offset by altitude)
+  fighter: () => ({
+    base: `<path d="M58 32 L50 29.6 L40 29 L26 14 L21 14 L27 29 L14 29.4 L8 22 L5 22 L7 32 L5 42 L8 42 L14 34.6 L27 35 L21 50 L26 50 L40 35 L50 34.4 Z" fill="#7c8486" stroke="${C.dark}" stroke-width="1"/><path d="M58 32 L50 30.4 L16 30.6 L16 33.4 L50 33.6 Z" fill="#8f9799"/><path d="M50 30.6 C46 30.2 42 30.6 40 32 C42 33.4 46 33.8 50 33.4 Z" fill="${C.glass}" stroke="${C.dark}" stroke-width="0.5"/><rect x="5" y="30.4" width="4" height="3.2" fill="#3a3d3a"/><line x1="31" y1="22" x2="37" y2="22" stroke="${C.dark}" stroke-width="1"/><line x1="31" y1="42" x2="37" y2="42" stroke="${C.dark}" stroke-width="1"/>`,
+    acc: `<path d="M26 14 L21 14 L24.5 22 L29 22 Z M26 50 L21 50 L24.5 42 L29 42 Z" fill="#fff"/><path d="M8 22 L5 22 L6.2 27 L9.5 27 Z" fill="#fff"/>`,
+  }),
+  bomber: () => ({
+    base: `<path d="M38 30 L30 6 L25 6 L27 30 Z M38 34 L30 58 L25 58 L27 34 Z" fill="#6f7769" stroke="${C.dark}" stroke-width="1"/><rect x="28" y="11" width="7" height="4" rx="1.6" fill="#3d423a"/><rect x="29" y="19" width="7" height="4" rx="1.6" fill="#3d423a"/><rect x="28" y="49" width="7" height="4" rx="1.6" fill="#3d423a"/><rect x="29" y="41" width="7" height="4" rx="1.6" fill="#3d423a"/><path d="M60 32 C60 29.6 57 28.6 52 28.6 L10 29 L10 35 L52 35.4 C57 35.4 60 34.4 60 32 Z" fill="#7c8473" stroke="${C.dark}" stroke-width="1"/><path d="M14 29.4 L8 21 L5 21 L7 30 Z M14 34.6 L8 43 L5 43 L7 34 Z" fill="#6f7769" stroke="${C.dark}" stroke-width="0.8"/><path d="M58 30.4 C56 29.6 54 29.6 52.5 30.4 L52.5 33.6 C54 34.4 56 34.4 58 33.6 Z" fill="${C.glass}"/><rect x="34" y="30.6" width="12" height="2.8" fill="#4c5246"/>`,
+    acc: `<path d="M30 6 L25 6 L25.8 13 L32 13 Z M30 58 L25 58 L25.8 51 L32 51 Z" fill="#fff"/><path d="M8 21 L5 21 L6 26 L10 26 Z M8 43 L5 43 L6 38 L10 38 Z" fill="#fff"/>`,
+  }),
+  oneway_drone: () => ({
+    base: `<path d="M50 32 L24 18 L20 18 L26 32 L20 46 L24 46 Z" fill="#8a8f84" stroke="${C.dark}" stroke-width="0.9"/><path d="M50 32 L44 30.4 L22 30.8 L22 33.2 L44 33.6 Z" fill="#a1a699" stroke="${C.dark}" stroke-width="0.6"/><circle cx="47" cy="32" r="1.4" fill="${C.red}"/><line x1="20" y1="26" x2="20" y2="38" stroke="${C.dark}" stroke-width="1.4" opacity="0.7"/><rect x="20" y="30.8" width="3" height="2.4" fill="#3a3d3a"/>`,
+    acc: `<path d="M24 18 L20 18 L22.5 24 L27 24 Z M24 46 L20 46 L22.5 40 L27 40 Z" fill="#fff"/>`,
+  }),
   strike_swarm: () => {
     let base = '', acc = '';
     for (const [x, y, s] of [[44, 32, 1], [34, 22, 0.85], [34, 42, 0.85], [24, 28, 0.75], [24, 38, 0.75]]) {

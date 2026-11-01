@@ -1,8 +1,12 @@
 // DOM HUD: resources & alerts, seismograph, selection & city management (incl. governors),
 // build bar, road planner, and the drawer (tech graph, realm, empire overview, armies,
 // diplomacy, chronicle + command history). The HUD only ever sends intents to the server.
+import { wrappedIntervals } from './visual/WorldWrapGeometry.js';
 import { findMatch } from './view.js';
 import { ResearchWorkspace } from './research/ResearchWorkspace.js';
+import { EconomyWorkspace } from './economy/EconomyWorkspace.js';
+import { Finder } from './finder.js';
+import { CommandBar } from './commandBar.js';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 export const fmt = (n) => (Math.abs(n) >= 10000 ? (n / 1000).toFixed(0) + 'k' : Math.abs(n) >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.floor(n).toString());
@@ -17,7 +21,12 @@ export class Hud {
     this.sctx = $('seismo').getContext('2d');
     this.mctx = $('minimap').getContext('2d');
     // management workspaces open from the command rail; the map stays the primary surface
+    this.cmdbar = new CommandBar(S, $('cmdbar'), (c, kind) => actions.act(c, kind));
     this.ws = null; this.research = new ResearchWorkspace(S, actions); this.alertFilter = 'all'; this.toastGroups = new Map();
+    this.econ = new EconomyWorkspace(S, actions); this.finder = new Finder(S, actions);
+    // a resource name anywhere (top bar, costs, alerts) opens its explanation
+    $('resources').addEventListener('click', (e) => { const li = e.target.closest('[data-res]'); if (li) this.openResource(li.dataset.res); });
+    $('resources').addEventListener('keydown', (e) => { const li = e.target.closest('[data-res]'); if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); this.openResource(li.dataset.res); } });
     $('rail').addEventListener('click', (e) => {
       const b = e.target.closest('[data-ws],[data-rail]'); if (!b) return;
       if (b.dataset.rail) { this.A.pref('rail', document.body.classList.contains('rail-expanded') ? 'compact' : 'expanded'); return; }
@@ -34,8 +43,12 @@ export class Hud {
     $('selection').addEventListener('click', (e) => this.onSelClick(e));
     $('selection').addEventListener('dblclick', (e) => { const c = e.target.closest('[data-card]'); if (c) this.A.selectType(c.dataset.card, !(e.ctrlKey || e.metaKey)); });
     $('selection').addEventListener('change', (e) => this.onSelChange(e));
-    $('buildbar').addEventListener('click', (e) => { const b = e.target.closest('[data-build],[data-tool]'); if (b) this.A.buildMode(b.dataset.build || null, b.dataset.tool || null); });
+    $('buildbar').addEventListener('click', (e) => {
+      if (e.target.closest('[data-showlocked]')) { this.showLocked = !this.showLocked; this.bbKey = ''; this.buildbar(); return; }
+      const b = e.target.closest('[data-build],[data-tool]'); if (b && !b.disabled) this.A.buildMode(b.dataset.build || null, b.dataset.tool || null);
+    });
     $('roadPanel').addEventListener('click', (e) => this.onRoadClick(e));
+    $('placePanel').addEventListener('click', (e) => { const r = e.target.closest('[data-res]'); if (r) this.openResource(r.dataset.res); });
     $('specbar').addEventListener('click', (e) => {
       const b = e.target.closest('[data-follow],[data-speed],[data-fog]'); if (!b) return;
       if (b.dataset.follow) this.A.follow(+b.dataset.follow);
@@ -43,9 +56,14 @@ export class Hud {
       else if (b.dataset.fog) this.A.fog(b.dataset.fog === '1');
     });
     $('roadPanel').addEventListener('change', (e) => { if (e.target.id === 'roadType') this.A.roadType(+e.target.value); if (e.target.id === 'roadAuto') this.A.roadAuto(e.target.checked); });
-    $('alertsBtn').addEventListener('click', () => { const a = $('alerts'); a.hidden = !a.hidden; this.unseen = { critical: 0, major: 0 }; this.alertBadges(); this.renderAlerts(); });
+    $('alertsBtn').addEventListener('click', () => { const a = $('alerts'); a.hidden = !a.hidden; this.unseen = { critical: 0, major: 0 }; this.alertBadges(); this.renderAlerts(); this.layoutPanels(); });
     $('alertsClear').addEventListener('click', () => { this.alerts = []; this.renderAlerts(); });
-    $('alertList').addEventListener('click', (e) => { const li = e.target.closest('[data-jump]'); if (li) this.A.jump(+li.dataset.jump); });
+    $('missileBanner').addEventListener('click', (e) => { const b = e.target.closest('[data-jump]'); if (b) this.A.jump(+b.dataset.jump); });
+    $('alertList').addEventListener('click', (e) => {
+      const a = e.target.closest('[data-ract]'); if (a) { try { this.A.resourceAction(JSON.parse(a.dataset.ract)); } catch { /* ignore */ } return; }
+      const r = e.target.closest('[data-res]'); if (r) return this.openResource(r.dataset.res);
+      const li = e.target.closest('[data-jump]'); if (li) this.A.jump(+li.dataset.jump);
+    });
     this.drawerKey = '';
     $('btnKey').addEventListener('click', () => this.toggleKey());
     $('battle').addEventListener('click', (e) => { const b = e.target.closest('[data-battle]'); if (b) this.A.battle(b.dataset.battle, this.battleId); });
@@ -57,7 +75,7 @@ export class Hud {
     if (!S.sandbox) { el.hidden = true; return; }
     el.hidden = false;
     if (el.innerHTML) return;
-    const sc = [['rifles', '10 v 10 rifle squads'], ['mixed', '20 mixed vs 12 defenders'], ['armor', 'Tanks vs fortified position'], ['artillery', 'Artillery bombardment'], ['large', '30 v 30 combined arms']];
+    const sc = [['rifles', '10 v 10 rifle squads'], ['mixed', '20 mixed vs 12 defenders'], ['armor', 'Tanks vs fortified position'], ['artillery', 'Artillery bombardment'], ['large', '30 v 30 combined arms'], ['air', 'Air operations vs troops and AA'], ['strategic', 'Strategic missile strike']];
     const types = Object.entries(D.UNITS).filter(([, u]) => !u.civilian || u.supplyRadius).map(([k, u]) => `<option value="${k}">${esc(u.name)}</option>`).join('');
     el.innerHTML = `<div class="hd"><b>Combat sandbox</b><button class="btn small ghost" data-sb="toggle" title="Show or hide the sandbox tools">▾</button></div><p class="muted">Stage a battle, then command your side. The enemy fights back but does not plan.</p>
       <div class="sbsc">${sc.map(([k, n]) => `<button class="btn small" data-sb="scenario" data-key="${k}">${esc(n)}</button>`).join('')}</div>
@@ -130,15 +148,34 @@ export class Hud {
     $('civName').style.color = cssColor(S.civColor(S.civId));
     $('ageName').textContent = D.AGES[e.age].name + (e.advancing ? ` → advancing (${e.advancing}s)` : '');
     // condensed: amount and trend; the detail lives in the tooltip and the Economy workspace
-    const items = D.GOODS.filter((k) => k === 'food' || k === 'materials' || k === 'credits' || (e.res[k] || 0) > 0 || (e.rates[k] || 0) !== 0).map((k) => {
-      const r = e.rates[k] || 0, v = e.res[k] || 0;
-      const tr = Math.abs(r) < 0.05 ? ['flat', '▸'] : r > 0 ? ['up', '▲'] : ['down', '▼'];
-      const endure = r < -0.05 ? ` — runs out in ${Math.round(v / -r / 60)} min` : '';
-      return `<li class="${r < -0.05 && v / -r < 180 ? 'short' : ''}" title="${esc(D.GOOD_NAMES[k])}: ${fmt(v)}${k !== 'credits' ? ` of ${e.storage}` : ''}, ${r >= 0 ? '+' : ''}${r.toFixed(1)}/s${endure}. Details: Economy."><span class="k">${esc(D.GOOD_NAMES[k])}</span><b>${fmt(v)}</b><span class="tr ${tr[0]}">${tr[1]}</span></li>`;
+    // persistent items updated in place: hovering, focus and clicks are never interrupted by a refresh
+    const rows = D.GOODS.filter((k) => k === 'food' || k === 'materials' || k === 'credits' || (e.res[k] || 0) > 0 || (e.rates[k] || 0) !== 0).map((k) => {
+      const r = e.rates[k] || 0, v = e.res[k] || 0, rep = e.resources?.[k];
+      const net = rep ? rep.net : r;
+      const tr = Math.abs(net) < 0.05 ? ['flat', '▸'] : net > 0 ? ['up', '▲'] : ['down', '▼'];
+      const endure = rep && rep.lasts != null ? ` — runs out in ${rep.lasts >= 120 ? Math.round(rep.lasts / 60) + ' min' : rep.lasts + ' s'}` : '';
+      const bad = rep ? rep.status === 'deficit' || rep.status === 'empty' : r < -0.05 && v / -r < 180;
+      return { key: k, label: D.GOOD_NAMES[k], value: fmt(v), tr, cls: bad ? 'short' : '', res: k, title: `${D.GOOD_NAMES[k]}: ${fmt(v)}${k !== 'credits' ? ` of ${e.storage}` : ''}, ${net >= 0 ? '+' : ''}${net.toFixed(1)}/s${endure}. Click: what it is, what makes it and what to do.` };
     });
-    if (e.power && (e.power.gen || e.power.use)) items.push(`<li title="Power grid: generation / demand" class="${e.power.gen < e.power.use ? 'short' : ''}"><span class="k">Power</span><b>${e.power.gen}/${e.power.use}</b></li>`);
-    items.push(`<li title="Soldiers represented by your units${e.command ? `; command: ${e.command.organised} organised, ${e.command.loose} loose of ${e.command.cap} capacity` : ''}"><span class="k">Forces</span><b>${fmt(e.men || 0)}</b></li>`);
-    const html = items.join(''); if (html !== this.resHtml) { this.resHtml = html; $('resources').innerHTML = html; }
+    if (e.power && (e.power.gen || e.power.use)) rows.push({ key: 'power', label: 'Power', value: `${e.power.gen}/${e.power.use}`, cls: e.power.gen < e.power.use ? 'short' : '', title: 'Power grid: generation / demand' });
+    rows.push({ key: 'forces', label: 'Forces', value: fmt(e.men || 0), cls: '', title: `Soldiers represented by your units${e.command ? `; command: ${e.command.organised} organised, ${e.command.loose} loose of ${e.command.cap} capacity` : ''}` });
+    const ul = $('resources'), ord = rows.map((r) => r.key).join();
+    if (ord !== this.resOrder) {
+      this.resOrder = ord; ul.textContent = '';
+      for (const r of rows) {
+        const li = document.createElement('li'); li.dataset.key = r.key;
+        if (r.res) { li.dataset.res = r.res; li.tabIndex = 0; li.setAttribute('role', 'button'); }
+        li.innerHTML = `<span class="k"></span><b></b>${r.tr ? '<span class="tr"></span>' : ''}`; li.querySelector('.k').textContent = r.label;
+        ul.appendChild(li);
+      }
+    }
+    for (const r of rows) {
+      const li = ul.querySelector(`li[data-key="${r.key}"]`); if (!li) continue;
+      const b2 = li.querySelector('b'); if (b2.textContent !== r.value) b2.textContent = r.value;
+      if (li.className !== r.cls) li.className = r.cls;
+      if (li.title !== r.title) li.title = r.title;
+      const t = li.querySelector('.tr'); if (t && r.tr) { if (t.textContent !== r.tr[1]) t.textContent = r.tr[1]; const c = 'tr ' + r.tr[0]; if (t.className !== c) t.className = c; }
+    }
     // research chip
     const cur = e.research ? D.TECHS[e.research] : null;
     $('rcName').textContent = cur ? cur.name : 'No research — choose one';
@@ -198,7 +235,8 @@ export class Hud {
   openAlertTarget(m) {
     if (m.kind === 'proposal' || m.kind === 'diplo') return this.openWorkspace('diplomacy');
     if (m.kind === 'tech' || m.kind === 'age') return this.openWorkspace('research');
-    if (m.kind === 'famine' || m.kind === 'shortage') { if (m.tile >= 0) this.A.jump(m.tile); return this.openWorkspace('economy'); }
+    if (m.good) return this.openResource(m.good);
+    if (m.kind === 'famine' || m.kind === 'shortage') { if (m.tile >= 0) this.A.jump(m.tile); return this.openResource('food'); }
     if (m.tile >= 0) this.A.jump(m.tile);
   }
   // critical: survival / essential activity; actionable: something the player can fix; info: news
@@ -216,8 +254,19 @@ export class Hud {
     if (m.level === 'critical' || m.level === 'major') this.unseen[m.level]++;
     this.alertBadges(); if (!$('alerts').hidden) this.renderAlerts();
   }
-  alertBadges() { for (const [id, k] of [['alC', 'critical'], ['alM', 'major']]) { const el = $(id); el.textContent = this.unseen[k]; el.classList.toggle('on', this.unseen[k] > 0); } }
-  renderAlerts() { const list = this.alerts.filter((m) => this.alertFilter === 'all' || this.alertCategory(m) === this.alertFilter); $('alertList').innerHTML = list.map((m) => `<li class="lv-${m.level} cat-${this.alertCategory(m)}" ${m.tile >= 0 ? `data-jump="${m.tile}"` : ''}><time>${Math.floor(m.time / 60)}:${String(m.time % 60).padStart(2, '0')}</time>${esc(m.text)}${m.n > 1 ? ` <span class="muted">×${m.n}</span>` : ''}</li>`).join('') || '<li class="lv-info">No alerts.</li>'; }
+  // one alerts button: a bell, and a single badge (red when anything critical is unseen)
+  alertBadges() {
+    const c = this.unseen.critical, m = this.unseen.major, n = c + m, el = $('alN');
+    el.textContent = n > 99 ? '99+' : String(n); el.hidden = !n; el.classList.toggle('critical', c > 0);
+    $('alertsBtn').title = n ? `Alerts: ${c ? `${c} critical` : ''}${c && m ? ', ' : ''}${m ? `${m} important` : ''} since you last looked` : 'Alerts: nothing new';
+  }
+  renderAlerts() {
+    const list = this.alerts.filter((m) => this.alertFilter === 'all' || this.alertCategory(m) === this.alertFilter);
+    // a shortage alert carries its valid actions (from the live resource report)
+    const acts = (m) => { const r = m.good && this.S.econ?.resources?.[m.good]; return r ? `<div class="actions">${[{ a: 'inspect', good: m.good, label: 'Explain' }, ...r.actions.slice(0, 3)].map((a) => `<button type="button" class="btn tiny" data-ract='${esc(JSON.stringify({ ...a, good: a.good || m.good }))}' ${a.disabled ? 'disabled' : ''} title="${esc(a.why || '')}">${esc(a.label)}</button>`).join('')}</div>` : ''; };
+    $('alertList').innerHTML = list.map((m) => `<li class="lv-${m.level} cat-${this.alertCategory(m)}" ${m.tile >= 0 ? `data-jump="${m.tile}"` : ''}><time>${Math.floor(m.time / 60)}:${String(m.time % 60).padStart(2, '0')}</time>${esc(m.text)}${m.n > 1 ? ` <span class="muted">×${m.n}</span>` : ''}${acts(m)}</li>`).join('') || '<li class="lv-info">No alerts.</li>';
+  }
+  openResource(k) { this.openWorkspace('economy'); this.econ.tab = 'resources'; this.econ.good = k; this.drawerKey = ''; this.drawer(true); }
 
   // ------------------------------------------------------------ minimap
   minimap(view) {
@@ -238,30 +287,49 @@ export class Hud {
     }
     c.putImageData(img, 0, 0);
     for (const u of S.units.values()) { c.fillStyle = cssColor(S.civColor(u.owner)); const q = u.tile % W, r = (u.tile / W) | 0; c.fillRect((q + 0.5 * (r & 1)) * sx - 1, r * sy - 1, 2.5, 2.5); }
-    if (S.find) for (const b of S.buildings.values()) if (b.o === S.civId && findMatch(S, b.ty, S.find)) { const q = b.t % W, r = (b.t / W) | 0; c.fillStyle = '#f1c75b'; c.strokeStyle = '#0b1518'; c.beginPath(); c.arc((q + 0.5 * (r & 1)) * sx, r * sy, 3.2, 0, 7); c.fill(); c.stroke(); }
+    if (S.deposits) { c.fillStyle = '#6fc3ff'; for (const t of S.deposits.tiles) { const q = t % W, r = (t / W) | 0; c.fillRect((q + 0.5 * (r & 1)) * sx - 1.5, r * sy - 1.5, 3, 3); } }
+    if (S.find || S.findIds) for (const b of S.buildings.values()) if (b.o === S.civId && (S.findIds ? S.findIds.has(b.id) : findMatch(S, b.ty, S.find))) { const q = b.t % W, r = (b.t / W) | 0; c.fillStyle = '#f1c75b'; c.strokeStyle = '#0b1518'; c.beginPath(); c.arc((q + 0.5 * (r & 1)) * sx, r * sy, 3.2, 0, 7); c.fill(); c.stroke(); }
     for (const city of S.cities.values()) { c.fillStyle = cssColor(S.civColor(city.o)); c.strokeStyle = '#f3eedf'; const q = city.t % W, r = (city.t / W) | 0; c.fillRect((q + 0.5 * (r & 1)) * sx - 3, r * sy - 3, 6, 6); c.strokeRect((q + 0.5 * (r & 1)) * sx - 3, r * sy - 3, 6, 6); }
     const v = view; const [x0, y0] = v.screenToWorld(0, 0); const [x1, y1] = v.screenToWorld(v.app.screen.width, v.app.screen.height);
     const kx = MW / v.pw, ky = MH / v.ph;
     c.strokeStyle = '#f1c75b'; c.lineWidth = 1;
     if (v.wrap) {
-      // the viewport wraps around the cylinder: draw it on both sides of the seam
-      const P = v.P * kx, ax = (((x0 * kx) % P) + P) % P, w2 = (x1 - x0) * kx;
-      c.strokeRect(ax, y0 * ky, w2, (y1 - y0) * ky); if (ax + w2 > MW) c.strokeRect(ax - P, y0 * ky, w2, (y1 - y0) * ky);
+      // one canonical world: a viewport across the seam is two pieces of one rectangle, open at the seam
+      const P = v.P * kx, ya = y0 * ky, yb = y1 * ky, parts = wrappedIntervals(x0 * kx, x1 * kx, P);
+      c.beginPath();
+      if (parts.length === 1) c.rect(parts[0][0], ya, parts[0][1] - parts[0][0], yb - ya);
+      else {
+        const [[a, pe], [, b]] = parts;
+        c.moveTo(pe, ya); c.lineTo(a, ya); c.lineTo(a, yb); c.lineTo(pe, yb);   // east piece, open toward the seam
+        c.moveTo(0, ya); c.lineTo(b, ya); c.lineTo(b, yb); c.lineTo(0, yb);     // west piece
+      }
+      c.stroke();
     } else c.strokeRect(x0 * kx, y0 * ky, (x1 - x0) * kx, (y1 - y0) * ky);
   }
 
   // ------------------------------------------------------------ build bar
+  // Build palette, grouped. Defenses: trench lines (drawn like roads), then the four installations,
+  // each with one sentence on its role; "Show locked" reveals future defenses and what they need.
   buildbar() {
     const S = this.S, e = S.econ; if (!e) return;
     const D = S.defs, techs = new Set(e.techs);
-    const items = Object.entries(D.BUILDINGS).filter(([k, d]) => k !== 'town' && !d.rebelOnly && d.age <= e.age && (!d.tech || techs.has(d.tech)))
+    const unlocked = ([k, d]) => d.age <= e.age && (!d.tech || techs.has(d.tech));
+    const DEF = ['guard_post', 'bunker', 'fort', 'aa_battery'];
+    const items = Object.entries(D.BUILDINGS).filter(([k, d]) => k !== 'town' && !d.rebelOnly && !DEF.includes(k) && unlocked([k, d]))
       .sort((a, b) => CAT_ORDER.indexOf(a[1].cat) - CAT_ORDER.indexOf(b[1].cat));
     const afford = (c) => Object.entries(c).every(([k, v]) => (e.res[k] || 0) >= v);
     const cost = (c) => Object.entries(c).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ') || 'free';
-    let html = items.map(([k, d]) => `<button class="buildbtn${S.mode?.type === k ? ' active' : ''}${afford(d.cost) ? '' : ' poor'}" data-build="${k}" title="${esc(d.name)} (${CAT_NAME[d.cat] || ''}): ${esc(cost(d.cost))}${afford(d.cost) ? '' : '. Not enough now: placing it plans it, and building starts when funded.'}"><span class="g">${d.glyph}</span><span class="n">${esc(d.name)}</span><small>${esc(cost(d.cost))}</small></button>`).join('');
-    html += `<button class="buildbtn tool${S.mode?.kind === 'road' ? ' active' : ''}" data-tool="road" title="Road planner: drag or click waypoints, preview cost, then commission (R)"><span class="g">\u{1F6E4}</span><span class="n">Plan road</span><small>dirt / paved / highway / rail</small></button>`;
+    const btn = ([k, d], locked) => `<button class="buildbtn${S.mode?.type === k ? ' active' : ''}${afford(d.cost) ? '' : ' poor'}${locked ? ' locked' : ''}" data-build="${k}" ${locked ? 'disabled' : ''} title="${esc(d.name)} (${CAT_NAME[d.cat] || ''}): ${esc(cost(d.cost))}${d.desc ? '. ' + esc(d.desc) : ''}${locked ? `. Needs ${esc(d.tech ? D.TECHS[d.tech].name : D.AGES[d.age].name)}.` : afford(d.cost) ? '' : '. Not enough now: placing it plans it, and building starts when funded.'}"><span class="g">${d.glyph}</span><span class="n">${esc(d.name)}</span><small>${locked ? 'needs ' + esc(d.tech ? D.TECHS[d.tech].name : D.AGES[d.age].name) : esc(cost(d.cost))}</small></button>`;
+    let html = '';
+    let cat = null;
+    for (const it of items) { if (it[1].cat !== cat) { cat = it[1].cat; html += `<span class="bb-hd">${esc(CAT_NAME[cat] || cat)}</span>`; } html += btn(it, false); }
+    html += `<span class="bb-hd">Infrastructure</span><button class="buildbtn tool${S.mode?.kind === 'road' ? ' active' : ''}" data-tool="road" title="Road planner: drag or click waypoints, preview cost, then commission (R)"><span class="g">\u{1F6E4}</span><span class="n">Plan road</span><small>dirt / paved / highway / rail</small></button>`;
     if (techs.has('civil_engineering')) html += `<button class="buildbtn tool${S.mode?.kind === 'clearPass' ? ' active' : ''}" data-tool="clearPass" title="Blast a passage through impassable peaks"><span class="g">\u{1F9E8}</span><span class="n">Clear peak</span><small>120 materials, 40 munitions</small></button>`;
-    const key = html.length + '|' + JSON.stringify(Object.values(e.res).map((v) => Math.floor(v / 10))) + S.mode?.kind + S.mode?.type;
+    // defenses
+    html += `<span class="bb-hd">Defenses</span><button class="bb-toggle${this.showLocked ? ' on' : ''}" data-showlocked="1" title="Show defenses you have not unlocked yet, and what they need">${this.showLocked ? 'Hide' : 'Show'} locked</button>`;
+    html += `<button class="buildbtn tool${S.mode?.kind === 'trench' ? ' active' : ''}" data-tool="trench" title="Trench Line: draw a connected defensive line across the map; crews build it without troops. Cover and low supply use for infantry holding it."><span class="g">\u{26CF}</span><span class="n">Trench Line</span><small>${techs.has('fortification') ? '6–10' : '6'} materials per hex</small></button>`;
+    for (const k of DEF) { const d = D.BUILDINGS[k]; const ok = unlocked([k, d]); if (ok || this.showLocked) html += btn([k, d], !ok); }
+    const key = html.length + '|' + JSON.stringify(Object.values(e.res).map((v) => Math.floor(v / 10))) + S.mode?.kind + S.mode?.type + this.showLocked;
     if (key !== this.bbKey) { this.bbKey = key; $('buildbar').innerHTML = html; }
   }
 
@@ -288,6 +356,7 @@ export class Hud {
   // ------------------------------------------------------------ road planner
   roadPanel() {
     const S = this.S, m = S.mode, el = $('roadPanel');
+    if (m && m.kind === 'trench') return this.trenchPanel();
     if (!m || m.kind !== 'road') { el.hidden = true; return; }
     el.hidden = false;
     const D = S.defs, techs = new Set(S.econ?.techs || []);
@@ -305,7 +374,74 @@ export class Hud {
     if (projects.length) h += `<h4 style="margin:8px 0 2px">Projects</h4><ul class="log">${projects.map((r) => `<li><span class="tag ${r.status === 'blocked' || r.status === 'paused' ? 'warn' : r.status === 'complete' ? 'good' : ''}">${esc(r.status)}</span> ${esc(D.ROAD_TYPES[r.type].name)} ${r.done}/${r.total}${r.by && r.by !== 'player' ? ` <span class="muted">(${esc(r.by.replace('governor:', 'governor '))})</span>` : ''} ${r.status !== 'complete' ? `<button class="btn small ghost" data-road="cancel" data-id="${r.id}">Cancel</button>` : ''}</li>`).join('')}</ul>`;
     if (h !== this.roadHtml) { this.roadHtml = h; el.innerHTML = h; }
   }
-  onRoadClick(e) { const b = e.target.closest('[data-road]'); if (!b) return; this.A.road(b.dataset.road, +b.dataset.id); }
+  // Placement preview: what it costs against what you have, what it needs, where it can go, what it
+  // would produce (and what would stop it), whether the hovered hex works, and the session so far.
+  placePanel() {
+    const S = this.S, m = S.mode, el = $('placePanel');
+    if (!m || m.kind !== 'build' || !S.econ) { if (!el.hidden) el.hidden = true; return; }
+    const D = S.defs, e = S.econ, d = D.BUILDINGS[m.type], t = S.hover;
+    const rl = (k, n) => `<button type="button" class="rlink" data-res="${k}">${esc(n)}</button>`;
+    const cost = Object.entries(d.cost).map(([k, v]) => { const have = e.res[k] || 0; return `<span class="${have < v ? 'bad' : ''}">${v} ${rl(k, D.GOOD_NAMES[k].toLowerCase())} <small class="muted">(${fmt(have)})</small></span>`; }).join(', ') || 'free';
+    const short = Object.entries(d.cost).some(([k, v]) => (e.res[k] || 0) < v);
+    let h = `<div class="hd"><b>${esc(d.name)}</b><span class="muted">${esc(CAT_NAME[d.cat] || '')}</span></div>`;
+    h += `<div>Cost: ${cost}${short ? '<br><small class="warn">Not enough now: it will be planned and start automatically when funded.</small>' : ''}</div>`;
+    h += `<div class="muted small">Built on ${esc(D.PLACE_INFO?.[d.place] || 'any suitable hex')}${d.tech ? ` · ${esc(D.TECHS[d.tech].name)}` : ''} · ${d.time}s to build</div>`;
+    // output and what it depends on: never imply full output without workers, power or inputs
+    if (d.produce) {
+      const per = d.jobs ? d.jobs[1] : 1;
+      const out = Object.entries(d.produce).filter(([k]) => k !== 'research').map(([k, v]) => `${(v * per).toFixed(2)} ${rl(k, D.GOOD_NAMES[k].toLowerCase())}/s`).join(', ');
+      if (out) h += `<div class="small">Up to ${out} with ${per} ${d.jobs ? d.jobs[0] + 's' : 'staff'}${m.type === 'farm' && t >= 0 && S.terr[t] !== 255 ? ` · soil ${Math.round((D.TERRAIN[S.terr[t]].fert || 0.5) * 100)}%` : ''}.</div>`;
+      if (d.produce.research) h += `<div class="small">Research +${(d.produce.research * per).toFixed(2)}/s when staffed.</div>`;
+    }
+    const needs = [];
+    if (d.jobs) { const c = this.nearestCity(t); if (c) needs.push(`${d.jobs[1]} workers (${esc(c.n)} has ${c.lab ?? 0} free)`); }
+    if (d.power < 0) needs.push(`${-d.power} power (grid ${e.power?.gen || 0}/${e.power?.use || 0})`);
+    if (d.consume) needs.push(...Object.entries(d.consume).map(([k, v]) => `${(v * (d.jobs ? d.jobs[1] : 1)).toFixed(2)} ${rl(k, D.GOOD_NAMES[k].toLowerCase())}/s`));
+    if (d.needs === 'rare') needs.push('access to rare earths');
+    if (needs.length) h += `<div class="small">Needs ${needs.join(', ')}.</div>`;
+    if (d.attack) {
+      const near = [...S.buildings.values()].filter((b) => b.o === S.civId && D.BUILDINGS[b.ty].attack && (D.BUILDINGS[b.ty].defense === 'air') === (d.defense === 'air') && t >= 0 && hexDist(S, b.t, t) <= d.range).length;
+      h += `<div class="small">${d.defense === 'air' ? 'Engages detected aircraft only' : 'Engages ground units only (cannot target aircraft)'} within ${d.range} hexes${d.ammo ? `; uses ${d.ammo} munitions a shot` : ''}.${near ? ` <span class="warn">Overlaps ${near} existing defense${near > 1 ? 's' : ''}: concentrated fire has diminishing returns.</span>` : ''}</div>`;
+      if (d.desc) h += `<div class="muted small">${esc(d.desc)}</div>`;
+    }
+    // the hovered hex
+    if (t >= 0) {
+      const ok = m.tiles ? m.tiles.has(t) : null;
+      h += ok == null ? '<div class="muted small">Checking valid sites…</div>' : ok ? '<div class="good small">✓ This hex is valid.</div>' : `<div class="bad small">✗ ${esc(this.A.placeProblem ? this.A.placeProblem(m.type, t) : 'not valid here')}</div>`;
+    }
+    h += `<div class="muted small">${m.tiles ? `${m.tiles.size} valid hex${m.tiles.size === 1 ? '' : 'es'} highlighted.` : ''} Shift-click to place multiple · Escape to finish.</div>`;
+    const s = m.session;
+    if (s && s.n) h += `<div class="small"><b>${s.n} ${esc(d.name)}${s.n > 1 ? 's' : ''} placed</b> · ${Object.entries(s.cost).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k])}`).join(', ') || 'free'} committed${s.planned ? ` · ${s.planned} awaiting funds` : ''}</div>`;
+    if (h !== this.placeHtml) { this.placeHtml = h; el.innerHTML = h; }
+    el.hidden = false;
+  }
+  nearestCity(t) { const S = this.S; let best = null, bd = 1e9; if (!(t >= 0)) return [...S.cities.values()].find((c) => c.o === S.civId && c.cap) || null; for (const c of S.cities.values()) if (c.o === S.civId) { const d = hexDist(S, c.t, t); if (d < bd) { bd = d; best = c; } } return best; }
+  onRoadClick(e) {
+    const tr = e.target.closest('[data-trench]'); if (tr) return this.A.trench(tr.dataset.trench, tr.dataset.v ?? +tr.dataset.id);
+    const r = e.target.closest('[data-res]'); if (r) return this.openResource(r.dataset.res);
+    const b = e.target.closest('[data-road]'); if (!b) return; this.A.road(b.dataset.road, +b.dataset.id);
+  }
+
+  // Trench Line planner: route, valid and invalid segments, facing (reversible), cost, completion.
+  trenchPanel() {
+    const S = this.S, m = S.mode, el = $('roadPanel'), D = S.defs, e = S.econ;
+    el.hidden = false;
+    const techs = new Set(e?.techs || []), p = m.preview;
+    const types = [['basic', 'Earthworks', '6 materials · 10 s a hex'], ['reinforced', 'Reinforced trench', techs.has('fortification') ? '10 materials · 18 s (4 more to reinforce earthworks)' : 'needs Fortification']];
+    let h = `<h3>Trench Line</h3><p class="muted">Drag across the map or click waypoints. Construction crews build it; troops do not need to stand on the line. Infantry holding it get directional cover and use little supply.</p>`;
+    h += `<div class="seg">${types.map(([k, n, t]) => `<button class="${m.type === k ? 'on' : ''}" data-trench="type" data-v="${k}" ${k === 'reinforced' && !techs.has('fortification') ? 'disabled' : ''} title="${esc(t)}">${n}</button>`).join('')}</div>`;
+    if (p) {
+      const reasons = {}; for (const s2 of p.segments) if (!s2.ok) reasons[s2.reason] = (reasons[s2.reason] || 0) + 1;
+      h += `<dl class="kv"><dt>Route</dt><dd>${p.tiles.length} hex${p.tiles.length === 1 ? '' : 'es'}</dd><dt>To build</dt><dd>${p.build}${p.segments.some((s2) => s2.upgrade) ? ` (${p.segments.filter((s2) => s2.upgrade).length} reinforced from earthworks)` : ''}${p.segments.some((s2) => s2.skip) ? `, ${p.segments.filter((s2) => s2.skip).length} already there` : ''}</dd>
+        <dt>Cost</dt><dd>${Object.entries(p.cost).map(([k, v]) => `<span class="${(e.res[k] || 0) < v ? 'bad' : ''}">${v} <button type="button" class="rlink" data-res="${k}">${esc(D.GOOD_NAMES[k].toLowerCase())}</button></span>`).join(', ') || '—'}</dd>
+        <dt>Completion</dt><dd>about ${p.seconds}s with ${p.crews} crews</dd><dt>Protected side</dt><dd>${['east', 'south-east', 'south-west', 'west', 'north-west', 'north-east'][p.dir] || '—'} <button class="btn tiny" data-trench="reverse" title="Protect the other side">⇅ Reverse facing</button></dd></dl>`;
+      if (p.invalid) h += `<div class="bad">${p.invalid} segment${p.invalid > 1 ? 's' : ''} cannot be built: ${esc(Object.entries(reasons).map(([r, n]) => `${r} (${n})`).join('; '))}</div>`;
+    } else h += `<p class="muted">${m.points.length ? 'Checking the line…' : 'Pick a starting point.'}</p>`;
+    h += `<div class="actions"><button class="btn primary" data-trench="commit" ${p && p.build ? '' : 'disabled'}>Build trench line</button><button class="btn small" data-trench="undo" ${m.points.length ? '' : 'disabled'}>Undo point</button><button class="btn small ghost" data-trench="clear">Clear</button><button class="btn small ghost" data-trench="close">Close</button></div>`;
+    const pr = e?.trenches?.projects || [];
+    if (pr.length) h += `<h4 style="margin:8px 0 2px">Trench projects</h4><ul class="log">${pr.map((x) => `<li><span class="tag ${x.status === 'materials' ? 'warn' : x.status === 'complete' ? 'good' : ''}">${x.status === 'materials' ? 'awaiting materials' : esc(x.status)}</span> ${x.type === 'reinforced' ? 'Reinforced' : 'Earthworks'} ${x.done}/${x.total}${x.eta ? ` · ~${x.eta}s` : ''}${x.by && x.by !== 'player' ? ` <span class="muted">(${esc(x.by)})</span>` : ''} ${x.status !== 'complete' ? `<button class="btn small ghost" data-trench="cancel" data-id="${x.id}">Cancel</button>` : ''}</li>`).join('')}</ul>`;
+    if (h !== this.roadHtml) { this.roadHtml = h; el.innerHTML = h; }
+  }
 
   // ------------------------------------------------------------ selection & city management
   selection() {
@@ -331,7 +467,7 @@ export class Hud {
       } else if (own) html += `<div class="cards">${[...types].map(([t, n]) => `<span class="ucard" data-card="${t}" title="Click: keep only these. Double-click: every ${esc(D.UNITS[t].name)} on screen (Ctrl/Cmd: whole map)"><b>${n}×</b>${esc(D.UNITS[t].name)}</span>`).join('')}</div>`;
       if (own && D.COMBAT_STATUS) {
         // what the group is doing, from the server's combat state
-        const st = {}; for (const u of units) if (!D.UNITS[u.type].civilian) { const k = u.cstat || 0; st[k] = (st[k] || 0) + 1; }
+        const st = {}; for (const u of units) if (!D.UNITS[u.type].civilian && !D.UNITS[u.type].air) { const k = u.cstat || 0; st[k] = (st[k] || 0) + 1; }
         const tone = { 2: 'good', 4: 'bad', 10: 'bad', 9: 'warn', 5: 'warn', 6: 'warn', 8: 'warn' };
         const chips = Object.entries(st).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="tag ${tone[k] || ''}" title="${esc(D.COMBAT_STATUS[k])}">${esc(D.COMBAT_STATUS[k])} ${n}</span>`).join('');
         if (chips) html += `<div class="cstat">${chips}</div>`;
@@ -339,12 +475,19 @@ export class Hud {
         if (mor < 70 || sup > 15) html += `<div class="${mor < 35 ? 'bad' : 'warn'}">Morale ${mor}%${sup > 15 ? ` · suppression ${sup}%` : ''}${mor < 35 ? ' — units not under your direct orders may fall back' : ''}</div>`;
       }
       html += `<div>Strength ${avg('hp')}%</div><div class="bar hp"><i style="width:${avg('hp')}%"></i></div>`;
-      if (own) {
+      const allAir = units.every((u) => D.UNITS[u.type].air);
+      if (own) html += this.aircraftStatus(units);
+      if (own && allAir) html += `<p class="muted">Aircraft fly missions from their airfield: Patrol, Strike or Return in the command bar, or right-click (enemy: strike · ground: patrol · own airfield: return).</p>`;
+      if (own && !allAir) {
         const outs = units.filter((u) => u.flags & 4).length, waiting = units.filter((u) => u.flags & 8).length, blocked = units.filter((u) => u.flags & 16).length;
         html += `<div>Supply ${avg('sup')}%</div><div class="bar sup"><i style="width:${avg('sup')}%"></i></div>`;
         if (outs) html += `<div class="bad">${outs} out of supply: weakening. Bring them within range of a city, depot, port, fortress or supply truck${units.some((u) => D.UNITS[u.type].air) ? ' (aircraft need an airfield)' : ''}.</div>`;
         if (waiting) html += `<div class="warn">${waiting} waiting for a congested road or bridge.</div>`;
-        if (blocked) html += `<div class="bad">${blocked} cannot reach their destination: the route is blocked.</div>`;
+        // the standardized reason, not just "blocked"
+        const fails = {}; for (const u of units) if (u.pf && u.pf !== 'deadlock') fails[u.pf] = (fails[u.pf] || 0) + 1;
+        const fk = Object.keys(fails).sort((a, b) => fails[b] - fails[a]);
+        if (fk.length) html += `<div class="${fk[0] === 'partial' ? 'warn' : 'bad'}">${fk.map((k) => `${fails[k]} ${units.length > 1 ? 'units: ' : ''}${esc(D.PATH_FAIL[k])}`).join('<br>')}.</div>`;
+        else if (blocked) html += `<div class="bad">${blocked} cannot reach their destination: the route is blocked.</div>`;
         // veterancy: experienced units are worth keeping (and refitting rather than replacing)
         const vets = units.filter((u) => u.vet > 0);
         if (vets.length) html += `<div class="muted">${D.VET_NAMES.slice(1).map((n, i) => [n, vets.filter((u) => u.vet === i + 1).length]).filter(([, k]) => k).map(([n, k]) => `${k} ${n.toLowerCase()}`).join(', ')} — +${10 * Math.max(...vets.map((u) => u.vet))}% attack</div>`;
@@ -355,14 +498,24 @@ export class Hud {
         const stance = units.find((u) => u.stance)?.stance || 'defensive';
         html += `<div class="actions"><select data-sel="stance" title="Stance">${Object.entries(D.STANCES).map(([k, n]) => `<option value="${k}" ${k === stance ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><select data-sel="formation" title="Formation for the next order">${Object.entries(D.FORMATIONS).map(([k, n]) => `<option value="${k}" ${k === S.formation ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>`;
         if (units.length >= 3) {
-          html += `<div class="gcmds">${[['amove', 'Advance', 'Attack-move: advance and engage on the way (A)'], ['engageMode', 'Engage', 'Click an enemy: fire is spread over nearby threats (right-click)'], ['focusMode', 'Focus fire', 'Click an enemy: every weapon on one target (Ctrl+right-click)'], ['defendMode', 'Defend', 'Hold a zone as an army'], ['withdraw', 'Withdraw', 'Fall back to the nearest friendly city, firing only in passing (X)'], ['moveMode', 'Reposition', 'Move without engaging (right-drag for a battle line)'], ['hold', 'Hold', 'Stop and hold this ground (H)']].map(([a, n, t]) => `<button class="btn small${a === 'withdraw' ? ' ghost' : ''}" data-act="${a}" title="${t}">${n}</button>`).join('')}</div>`;
+          html += `<div class="gcmds">${[['amove', 'Advance', 'Attack-move: advance and engage on the way (Ctrl/Cmd+A)'], ['engageMode', 'Engage', 'Click an enemy: fire is spread over nearby threats (right-click)'], ['focusMode', 'Focus fire', 'Click an enemy: every weapon on one target (Ctrl+right-click)'], ['defendMode', 'Defend', 'Hold a zone as an army'], ['withdraw', 'Withdraw', 'Fall back to the nearest friendly city, firing only in passing (X)'], ['moveMode', 'Reposition', 'Move without engaging (right-drag for a battle line)'], ['hold', 'Hold', 'Stop and hold this ground (H)']].map(([a, n, t]) => `<button class="btn small${a === 'withdraw' ? ' ghost' : ''}" data-act="${a}" title="${t}">${n}</button>`).join('')}</div>`;
           html += `<div class="actions"><label class="field inline"><span>Engagement</span><select data-sel="policy">${Object.entries(D.ENGAGE_POLICIES).map(([k, n]) => `<option value="${k}" ${S.policy === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label></div>`;
         }
-        html += `<div class="actions"><button class="btn small" data-act="stop">Stop (S)</button>${units.length < 3 ? '<button class="btn small" data-act="amove">Attack-move (A)</button><button class="btn small" data-act="hold">Hold (H)</button><button class="btn small ghost" data-act="withdraw">Withdraw (X)</button>' : ''}<button class="btn small" data-act="army">Form army (G)</button>`;
+        html += `<div class="actions"><button class="btn small" data-act="stop">Stop</button>${units.length < 3 ? '<button class="btn small" data-act="amove" title="Ctrl/Cmd+A">Attack-move</button><button class="btn small" data-act="hold">Hold (H)</button><button class="btn small ghost" data-act="withdraw">Withdraw (X)</button>' : ''}<button class="btn small" data-act="army">Form army (G)</button>`;
         if (units.some((u) => u.type === 'colonist')) html += `<button class="btn small primary" data-act="found">Found city (F)</button><button class="btn small" data-act="autoSettle">Auto-settle</button>`;
         html += `</div>`;
         if (units.some((u) => D.UNITS[u.type].engineer)) html += `<p class="muted">Idle engineers repair roads and buildings, fight fires and clear rubble next to them, and speed up nearby construction.</p>`;
         html += this.formationHtml(units);
+        if (units.length === 1 && (S.sandbox || S.dev)) html += `<details class="diag" data-diag="${units[0].id}" ${this.diagOpen ? 'open' : ''}><summary>Diagnostics</summary><pre>${esc(this.diagText || 'loading…')}</pre></details>`;
+      }
+    } else if (S.selRuin && S.selBuilding == null) {
+      const p = S.selRuin.preview, D2 = S.defs;
+      html += `<h3>${esc(p?.name ? `Ruins of ${p.name}` : 'Town ruins')}</h3><div class="sub">A destroyed settlement</div>`;
+      if (!p) html += `<p class="muted">Checking…</p>`;
+      else {
+        html += `<p class="muted">Resettling brings the town back with a few families; it is shielded from unrest while it recovers.</p><dl class="kv"><dt>Cost</dt><dd>${Object.entries(D2.REBUILD_COST || {}).map(([k, v]) => `${v} ${esc(D2.GOOD_NAMES[k].toLowerCase())}`).join(', ')}</dd></dl>`;
+        if (!p.ok) html += `<div class="warn">${esc(p.why)}</div>`;
+        html += `<div class="actions"><button class="btn primary small" data-act="rebuildRuin" ${p.ok ? '' : 'disabled'}>Rebuild settlement</button></div>`;
       }
     } else if (S.selBuildings && S.selBuildings.size > 1) {
       html += this.multiBuildingPanel([...S.selBuildings].map((id) => S.buildings.get(id)).filter(Boolean));
@@ -386,6 +539,7 @@ export class Hud {
     // nothing selected: the inspector gets out of the way of the map
     el.classList.toggle('empty', !html);
     if (html !== this.selHtml) { this.selHtml = html; patchHtml(el, html); }
+    this.cmdbar.render();
   }
 
   // formation membership, deployment, fortification and stacks for the selected units
@@ -395,7 +549,7 @@ export class Hud {
     const fs = (e?.formations || []).filter((f) => fids.has(f.id));
     if (fs.length === 1) {
       const f = fs[0], det = units.filter((u) => u.det).length;
-      h += `<div class="formation"><b>${esc({ line: 'Line', compact: 'Compact line', depth: 'Defense in depth', preserve: 'Formation' }[f.mode] || 'Formation')}</b> <span class="muted">${f.units.length} units · ${esc(f.status)}${f.fortify ? ' · dug in' : ''}</span>
+      h += `<div class="formation"><b>${esc({ line: 'Line', compact: 'Compact line', depth: 'Defense in depth', preserve: 'Formation' }[f.mode] || 'Formation')}</b> <span class="muted">${f.units.length} units · ${esc(f.status)}</span>
         <div class="seg">${[['hold', 'Hold line', 'Stay in place and fire at what is in range'], ['defend', 'Defend line', 'Engage nearby threats, then return'], ['attackMove', 'Advance', 'Advance the line and engage']].map(([k, n, t]) => `<button class="${f.behavior === k ? 'on' : ''}" data-fbeh="${k}" data-fid="${f.id}" title="${t}">${n}</button>`).join('')}</div>
         <div class="actions">${det ? `<button class="btn small" data-fop="rejoin" data-fid="${f.id}">Return to formation (${det})</button>` : ''}<button class="btn small ghost" data-fop="dissolve" data-fid="${f.id}">Release formation</button></div></div>`;
     }
@@ -419,7 +573,7 @@ export class Hud {
       h += `<div class="logi"><b>Supply trucks</b><ul class="log">${cv.map((c) => `<li>${esc({ available: 'Available', toSource: 'Going to load', loading: 'Loading', outbound: 'Delivering', unloading: 'Unloading', returning: 'Returning', blocked: 'Route blocked' }[c.state] || c.state)} · ${c.cargo} cargo${c.eta ? ` · ${c.eta}s` : ''}${c.note ? ` <span class="muted">— ${esc(c.note)}</span>` : ''}${c.state !== 'available' && c.state !== 'returning' ? ` <button class="btn tiny ghost" data-truckback="${c.truck}">Return</button>` : ''}</li>`).join('')}</ul><p class="muted small">Trucks no longer supply by being nearby: select troops and press Send supplies.</p></div>`;
     }
     const diggers = units.filter((u) => { const d = D.UNITS[u.type]; return d.engineer || (d.move === 'infantry' && !d.civilian && d.cat !== 'artillery' && d.atk > 0); });
-    if (diggers.length && !S.spectator) h += `<div class="actions"><button class="btn small" data-act="fortify" title="Dig trenches where these troops stand (Shift+F)">Fortify position (Shift+F)</button></div>`;
+    void diggers;
     // a stack: several units on one hex
     const tiles = new Set(units.map((u) => u.tile));
     if (tiles.size === 1 && units.length > 1) {
@@ -432,8 +586,8 @@ export class Hud {
   // selected (so density, depth and behaviour can be chosen before the drag).
   deployBar(force) {
     const S = this.S, D = S.defs, el = $('deployBar'); if (!D) return;
-    const units = [...S.selUnits].map((id) => S.units.get(id)).filter((u) => u && u.owner === S.civId && !D.UNITS[u.type].civilian);
-    const show = !S.spectator && (S.deploy || units.length >= 2);
+    const units = [...S.selUnits].map((id) => S.units.get(id)).filter((u) => u && u.owner === S.civId && !D.UNITS[u.type].civilian && !D.UNITS[u.type].air);
+    const show = !S.spectator && (S.deploy || units.length >= 2) && !(S.mode && ['build', 'road', 'trench', 'missile'].includes(S.mode.kind));
     if (!show) { if (!el.hidden) el.hidden = true; return; }
     const o = S.deployOpts, p = S.deploy?.plan;
     const seg = (k, opts) => `<div class="seg">${opts.map(([v, n, t]) => `<button class="${String(o[k]) === String(v) ? 'on' : ''}" data-dopt="${k}" data-v="${v}" title="${t}">${n}</button>`).join('')}</div>`;
@@ -441,7 +595,7 @@ export class Hud {
     h += `${seg('density', [['auto', 'Auto', 'Line length decides: shorter concentrates'], ['spread', 'Spread', 'At most one unit per hex'], ['balanced', 'Balanced', 'Up to three per hex'], ['tight', 'Tight', 'Up to hex capacity']])}`;
     h += `${seg('depth', [['auto', 'Ranks: auto', 'Ranks as needed'], ['1', '1', 'One rank'], ['2', '2', 'Two ranks'], ['3', '3', 'Three ranks']])}`;
     h += `${seg('behavior', [['hold', 'Hold', 'Stay on the line, fire at what is in range'], ['defend', 'Defend', 'Engage nearby threats, then return'], ['attackMove', 'Advance', 'Advance and engage (or Alt+right-drag)']])}`;
-    h += `<button class="btn tiny ${o.reverse ? 'primary' : 'ghost'}" data-dopt="reverse" title="Reverse the facing (Tab while dragging)">⇅ Facing</button><button class="btn tiny ${o.fortify ? 'primary' : 'ghost'}" data-dopt="fortify" title="Deploy & Fortify: infantry dig trenches once in position">⛏ Fortify</button>`;
+    h += `<button class="btn tiny ${o.reverse ? 'primary' : 'ghost'}" data-dopt="reverse" title="Reverse the facing (Tab while dragging)">⇅ Facing</button>`;
     if (p) {
       const over = p.overflow.length, inv = p.invalid.length;
       h += `<span class="exposure ${p.label}" title="${p.label === 'dense' ? 'Several units share the same few hexes: one shell can hit them all' : p.label === 'concentrated' ? 'Some hexes hold several units' : 'Most units stand on their own hex'}">${{ dispersed: 'Dispersed', concentrated: 'Concentrated', dense: 'Dense — artillery risk', none: '—' }[p.label]}</span>`;
@@ -451,25 +605,21 @@ export class Hud {
     el.hidden = false;
   }
   // Fortify preview: what will be dug, what it costs and how long it takes, before committing.
-  fortifyPanel(f, confirm) {
-    const S = this.S, D = S.defs, el = $('fortifyPanel');
-    const reasons = {}; for (const [, r] of f.skipped) reasons[r] = (reasons[r] || 0) + 1;
-    el.innerHTML = `<h3>Fortify position</h3><div class="sub">${f.diggers} unit${f.diggers === 1 ? '' : 's'} can dig · ${esc(f.type)}</div>
-      <dl class="kv"><dt>Valid segments</dt><dd>${f.valid} of ${f.total}</dd><dt>Materials</dt><dd>${Object.entries(f.cost).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k].toLowerCase())}`).join(', ') || '—'}</dd><dt>Estimated time</dt><dd>${f.seconds}s</dd></dl>
-      ${Object.keys(reasons).length ? `<p class="warn">${Object.entries(reasons).map(([r, n]) => `${n} skipped: ${esc(r)}`).join('; ')}.</p>` : ''}
-      <p class="muted small">Trenches give infantry directional cover (strongest to the front), little to vehicles, and do not stop artillery hitting everyone on a stacked hex. Moving or pinned diggers pause the work.</p>
-      <div class="actions"><button class="btn primary" data-fz="go" ${f.valid ? '' : 'disabled'}>Dig in</button><button class="btn ghost" data-fz="no">Cancel</button></div>`;
-    el.hidden = false;
-    el.onclick = (e) => { const b = e.target.closest('[data-fz]'); if (!b) return; el.hidden = true; if (b.dataset.fz === 'go') confirm(); };
-  }
+
 
   // Several buildings selected: one production interface for all of them.
   multiBuildingPanel(blds) {
     const S = this.S, D = S.defs, e = S.econ;
     const byType = {}; for (const b of blds) byType[b.ty] = (byType[b.ty] || 0) + 1;
-    let html = `<h3>${blds.length} buildings selected</h3><div class="sub">${Object.entries(byType).map(([t, n]) => `${n} ${esc(D.BUILDINGS[t].name)}`).join(', ')}</div>`;
-    const queued = blds.reduce((s2, b) => s2 + (b.q?.length || 0), 0), longest = Math.max(0, ...blds.map((b) => (b.q || []).reduce((s2, q) => s2 + q[1], 0)));
+    const onlyHouses = blds.every((b) => b.ty === 'house');
+    let html = `<h3>${onlyHouses ? `${blds.length} Housing Blocks selected` : `${blds.length} buildings selected`}</h3><div class="sub">${onlyHouses ? '' : Object.entries(byType).map(([t, n]) => `${n} ${esc(D.BUILDINGS[t].name)}`).join(', ')}</div>`;
+    if (byType.house && !S.spectator) html += this.housingBatchPanel(blds.filter((b) => b.ty === 'house'));
+    const fac = blds.filter((b) => b.d && b.o === S.civId && D.BUILDINGS[b.ty].trains);
+    if (!fac.length) return html;
+    const queued = fac.reduce((s2, b) => s2 + (b.q?.length || 0), 0), longest = Math.max(0, ...fac.map((b) => (b.q || []).reduce((s2, q) => s2 + q[1], 0)));
     html += `<div class="muted">${queued} in training${queued ? ` · last finishes in about ${longest}s` : ''}. Right-click the map to set one rally point for all of them.</div>`;
+    // consolidated queue: each facility's current unit and progress
+    if (queued) html += `<ul class="log cqueue">${fac.filter((b) => b.q?.length).map((b) => { const [u, left] = b.q[0], ud = D.UNITS[u]; const p = Math.max(0, Math.min(100, Math.round(100 * (1 - left / Math.max(1, ud.time))))); return `<li><button type="button" class="rlink" data-jump="${b.t}">${esc(D.BUILDINGS[b.ty].name)}</button> ${esc(ud.name)} ${left}s${b.q.length > 1 ? ` <span class="muted">+${b.q.length - 1} queued</span>` : ''}${b.rp ? ' <span class="tag good">repeat</span>' : ''}<div class="bar sup"><i style="width:${p}%"></i></div></li>`; }).join('')}</ul><div class="actions"><button class="btn small ghost" data-clearq="${fac.map((b) => b.id).join(',')}" title="Cancel everything still queued in these facilities (refunds as for single cancellations; finished units are untouched)">Clear these queues</button></div>`;
     const units = new Map();
     for (const b of blds) if (b.d && b.o === S.civId) for (const u of D.BUILDINGS[b.ty].trains || []) if (D.UNITS[u].age <= (e?.age || 0)) units.set(u, (units.get(u) || 0) + 1);
     if (!units.size || S.spectator) return html;
@@ -487,6 +637,38 @@ export class Hud {
     return html;
   }
 
+  // Batch housing upgrades: what is eligible, what it costs, what it adds, then one order.
+  housingBatchPanel(houses) {
+    const S = this.S, D = S.defs, e = S.econ;
+    const elig = houses.filter((b) => b.d && (b.lv || 1) < 3), maxed = houses.filter((b) => b.d && (b.lv || 1) >= 3), unfinished = houses.filter((b) => !b.d);
+    const cost = {}; for (const b of elig) { const lv = b.lv || 1; const c = (e.age || 0) >= 1 ? { materials: 40 * lv, steel: 10 * lv } : { materials: 45 * lv }; for (const [k, v] of Object.entries(c)) cost[k] = (cost[k] || 0) + v; }
+    const afford = Object.entries(cost).every(([k, v]) => (e.res[k] || 0) >= v);
+    const homes = elig.length * (4 + (e.age || 0));
+    let h = `<ul class="log"><li>${elig.length} eligible for upgrade</li>${maxed.length ? `<li class="muted">${maxed.length} already at maximum density</li>` : ''}${unfinished.length ? `<li class="muted">${unfinished.length} unfinished</li>` : ''}</ul>`;
+    if (elig.length) {
+      h += `<dl class="kv"><dt>Total cost</dt><dd>${Object.entries(cost).map(([k, v]) => `<span class="${(e.res[k] || 0) < v ? 'bad' : ''}">${v} <button type="button" class="rlink" data-res="${k}">${esc(D.GOOD_NAMES[k].toLowerCase())}</button></span>`).join(', ')}</dd><dt>Housing gained</dt><dd>+${homes} homes</dd></dl>`;
+      h += `<div class="actions"><button class="btn small primary" data-hup="all" ${afford ? '' : 'disabled'} title="${afford ? 'Upgrade every eligible block in one order' : 'Not enough for all of them: upgrade what is affordable instead'}">Upgrade all eligible</button><button class="btn small" data-hup="affordable" title="Upgrade as many as the stockpile allows, lowest density first; the rest are reported">Upgrade what is affordable</button><button class="btn small ghost" data-hup="preview">Preview costs</button>${elig.length < houses.length ? '<button class="btn small ghost" data-hup="eligible">Select eligible only</button>' : ''}</div>`;
+    } else h += '<p class="muted small">Nothing here can be upgraded.</p>';
+    if (this.hupResult) h += `<div class="preview small">${esc(this.hupResult)}</div>`;
+    return h;
+  }
+
+  housingAction(op) {
+    const S = this.S, D = S.defs;
+    const ids = [...S.selBuildings].filter((id) => S.buildings.get(id)?.ty === 'house');
+    if (op === 'eligible') { const el = ids.filter((id) => { const b = S.buildings.get(id); return b.d && (b.lv || 1) < 3; }); S.selBuildings = new Set(el); S.selBuilding = el[0] ?? null; this.selHtml = ''; this.selection(); return; }
+    const preview = op === 'preview';
+    const costTxt = (c) => Object.entries(c || {}).map(([k, v]) => `${v} ${(D.GOOD_NAMES[k] || k).toLowerCase()}`).join(', ') || 'nothing';
+    this.A.cmd({ c: 'batchUpgrade', ids, policy: op === 'all' ? 'all' : 'affordable', preview, requestId: preview ? undefined : `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }).then((r) => {
+      const u = r.upgrade; if (!u) return;
+      const why = {}; for (const s2 of u.skipped || []) why[s2.reason] = (why[s2.reason] || 0) + 1;
+      const skipped = Object.entries(why).map(([w, n]) => `${n} ${w}`).join(', ');
+      this.hupResult = preview ? `Preview: ${u.eligible.length} eligible · ${costTxt(u.cost)} · +${u.capacity} homes${skipped ? ` · not eligible: ${skipped}` : ''}.` : `${u.upgraded.length} upgraded for ${costTxt(u.cost)} · +${u.capacity} homes${skipped ? ` · skipped: ${skipped}` : ''}.`;
+      if (!preview) this.toast({ text: this.hupResult, kind: 'build', level: 'minor' });
+      this.selHtml = ''; this.selection();
+    });
+  }
+
   // Refit options for the selected units: one button per available upgrade path.
   refitPanel(units) {
     const S = this.S, D = S.defs, e = S.econ; if (!e) return '';
@@ -499,6 +681,96 @@ export class Hud {
     }
     btns.push(`<button class="btn small ghost" data-act="disband" title="Demobilise: about 80% of the soldiers return home as civilians">Disband</button>`);
     return `<div class="actions refits">${btns.join('')}</div>`;
+  }
+
+  // Floating panels never cover each other: the right column (alerts, finder, side drawer, inspector)
+  // and the bottom-centre stack (command/build bar, deployment bar, placement panel) are laid out in
+  // order, so opening one moves the others aside instead of hiding them. Positions animate (CSS).
+  layoutPanels() {
+    const vis = (el) => el && !el.hidden && el.offsetParent !== null && !el.classList.contains('empty') && el.offsetHeight > 0;
+    const top0 = 56, gap = 8;
+    let top = top0;
+    for (const id of ['alerts', 'finder', 'drawer', 'selection']) {
+      const el = document.getElementById(id); if (!el) continue;
+      if (id === 'drawer' && el.classList.contains('workspace')) continue;
+      if (!vis(el)) continue;
+      if (el.dataset.top !== String(top)) { el.style.top = top + 'px'; el.dataset.top = String(top); }
+      if (id === 'selection' || id === 'drawer') el.style.maxHeight = `calc(100vh - ${top}px - 236px)`;
+      top += el.offsetHeight + gap;
+    }
+    // top centre: urgent banners (missiles, pause) first, the toast column below them
+    let tc = 52;
+    for (const id of ['missileBanner', 'pausedBanner']) { const el = document.getElementById(id); if (!vis(el)) continue; el.style.top = tc + 'px'; tc += el.offsetHeight + 6; }
+    const toasts = document.getElementById('toasts'); if (toasts) toasts.style.top = Math.max(56, tc) + 'px';
+    let bottom = 10;
+    for (const id of [['cmdbar', 'buildbar', 'specbar'], 'deployBar', 'placePanel', 'roadPanelBottom']) {
+      const ids = Array.isArray(id) ? id : [id];
+      const els = ids.map((x) => document.getElementById(x)).filter(vis);
+      if (!els.length) continue;
+      if (!Array.isArray(id)) for (const el of els) if (el.dataset.bottom !== String(bottom)) { el.style.bottom = bottom + 'px'; el.dataset.bottom = String(bottom); }
+      bottom += Math.max(...els.map((e) => e.offsetHeight)) + gap;
+    }
+  }
+
+  // Missile warning banner: every strategic missile in flight that this nation can see, with countdowns.
+  missileBanner() {
+    const S = this.S, el = document.getElementById('missileBanner'); if (!el) return;
+    const list = S.ms?.m || [];
+    if (!list.length) { el.hidden = true; clearInterval(this.mbT); this.mbT = 0; return; }
+    const draw = () => {
+      const now = S.time + (performance.now() - (S.timeAt || performance.now())) / 1000;
+      el.innerHTML = (S.ms?.m || []).map(([id, , to, , arrive, owner]) => `<button type="button" class="mb ${owner === S.civId ? 'own' : 'hostile'}" data-jump="${to}">${owner === S.civId ? 'Our missile' : 'INCOMING MISSILE'} · impact in ${Math.max(0, Math.ceil(arrive - now))} s</button>`).join('');
+    };
+    el.hidden = false; draw();
+    if (!this.mbT) this.mbT = setInterval(() => { if (!(S.ms?.m || []).length) { el.hidden = true; clearInterval(this.mbT); this.mbT = 0; return; } draw(); }, 250);
+  }
+
+  // Missile silo: inventory, the project in progress, build and launch.
+  siloPanel(b) {
+    const S = this.S, D = S.defs, M = D.MISSILE;
+    let h = `<div class="airstats"><div><b>${b.mi || 0}</b><span>missiles</span></div><div><b>${M.store}</b><span>capacity</span></div><div><b>${b.mp != null ? b.mp + '%' : '—'}</b><span>project</span></div><div><b>${S.econ?.missiles?.ready ?? 0}</b><span>nation</span></div></div>`;
+    if (b.mp != null) h += `<div class="bar"><i style="width:${b.mp}%"></i></div><div class="muted">Building a strategic missile (${Math.round(M.build * (1 - b.mp / 100))} s left).</div>`;
+    const cost = Object.entries(M.cost).map(([k, v]) => `<span class="${(S.econ?.res[k] || 0) < v ? 'bad' : ''}">${v} ${esc(D.GOOD_NAMES[k].toLowerCase())}</span>`).join(', ');
+    if (!S.spectator) h += `<div class="actions"><button class="btn small" data-act="missileBuild" ${b.mp != null || (b.mi || 0) >= M.store ? 'disabled' : ''} title="Paid up front: ${esc(Object.entries(M.cost).map(([k, v]) => v + ' ' + D.GOOD_NAMES[k].toLowerCase()).join(', '))}">Build missile</button><button class="btn small danger" data-act="missileMode" ${S.econ?.missiles?.ready ? '' : 'disabled'}>Launch…</button></div><div class="muted small">Cost per missile: ${cost} · ${M.build} s · range ${M.range} hexes. Every nation sees a launch coming; upgraded AA with Missile Defense can intercept it; striking anyone turns world opinion against you.</div>`;
+    return h;
+  }
+
+  // Airfield inspector: what is based here and what it is doing; one-click missions with automatic aircraft choice.
+  airfieldPanel(b, d) {
+    const S = this.S, D = S.defs, air = S.econ?.air;
+    const s = air?.bases.find((x) => x.id === b.id);
+    if (!s) return '';
+    const craft = (air.craft || []).filter((c) => c.home === b.id);
+    let h = `<div class="airstats"><div><b>${s.ready}</b><span>ready</span></div><div><b>${s.patrol + s.mission}</b><span>aloft</span></div><div><b>${s.servicing + s.awaiting}</b><span>servicing</span></div><div><b>${s.returning + s.holding}</b><span>inbound</span></div></div>`;
+    h += `<div class="muted">${s.slots} servicing slot${s.slots > 1 ? 's' : ''}${d.droneOnly ? ' · drones only' : ''}${s.holding ? ` · <span class="warn">${s.holding} holding for a slot</span>` : ''}${s.awaiting ? ` · <span class="bad">${s.awaiting} waiting for fuel or munitions</span>` : ''}</div>`;
+    if (!S.spectator) {
+      const has = (k) => craft.some((c) => k(D.UNITS[c.type]));
+      h += `<div class="actions">${has((u) => u.role !== 'recon' && u.role !== 'oneway' && u.role !== 'bomber') ? `<button class="btn small" data-airbase="patrol" data-base="${b.id}" title="Click an area: the best ready aircraft go">Patrol</button>` : ''}${has((u) => u.role !== 'recon') ? `<button class="btn small" data-airbase="strike" data-base="${b.id}" title="Click a target: suitable aircraft are chosen for you">Strike</button>` : ''}${has((u) => u.role === 'recon') ? `<button class="btn small" data-airbase="scout" data-base="${b.id}">Scout</button>` : ''}${craft.length ? `<button class="btn small ghost" data-airbase="select" data-base="${b.id}" title="Select every aircraft based here">Select aircraft</button>` : ''}</div>`;
+    }
+    if (craft.length) h += `<ul class="airlist">${craft.slice(0, 16).map((c) => `<li data-pick="${c.id}" title="${esc(c.note || '')}"><span>${esc(D.UNITS[c.type].name)}</span><span class="${c.state === 'awaiting' ? 'bad' : c.state === 'holding' || c.state === 'diverting' ? 'warn' : 'muted'}">${esc(this.airStateText(c.state, c.mission?.kind))}${c.svc != null ? ` ${c.svc}%` : ''}</span><span class="mini" title="Fuel ${c.fuel}%"><i style="width:${c.fuel}%;background:${c.fuel < 30 ? '#d0533b' : '#e2b84c'}"></i></span><span class="muted">${c.ammoMax ? `${c.ammo}/${c.ammoMax}` : ''}</span></li>`).join('')}</ul>`;
+    else h += `<p class="muted">No aircraft based here yet${(d.trains || []).length ? ': train them below' : ''}.</p>`;
+    return h;
+  }
+  airStateText(st, mis) {
+    return { ready: 'ready', launching: 'launching', outbound: 'outbound', mission: { patrol: 'on patrol', scout: 'scouting', strike: 'striking', support: 'supporting' }[mis] || 'on mission', returning: 'returning', landing: 'landing', holding: 'holding', servicing: 'servicing', awaiting: 'needs supplies', diverting: 'diverting' }[st] || st;
+  }
+  // selected aircraft: state, fuel, ammunition, servicing and why they are waiting
+  aircraftStatus(units) {
+    const S = this.S, D = S.defs;
+    const air = units.filter((u) => u.air && u.air.st);
+    if (!air.length) return '';
+    const avg = (f) => Math.round(air.reduce((s2, u) => s2 + u.air[f], 0) / air.length);
+    const st = {}; for (const u of air) { const k = this.airStateText(u.air.st, u.air.mis); st[k] = (st[k] || 0) + 1; }
+    let h = `<div class="cstat">${Object.entries(st).map(([k, n]) => `<span class="tag">${esc(k)}${air.length > 1 ? ' ' + n : ''}</span>`).join('')}</div>`;
+    h += `<div>Fuel ${avg('fuel')}%</div><div class="bar"><i style="width:${avg('fuel')}%;background:${avg('fuel') < 30 ? '#d0533b' : '#e2b84c'}"></i></div>`;
+    const armed = air.filter((u) => D.UNITS[u.type].ammo);
+    if (armed.length) { const a = armed.reduce((s2, u) => s2 + u.air.ammo, 0), m = armed.reduce((s2, u) => s2 + D.UNITS[u.type].ammo, 0); h += `<div>Ammunition ${a} / ${m}</div>`; }
+    const svc = air.filter((u) => u.air.st === 'servicing' && u.air.svc >= 0);
+    if (svc.length) h += `<div class="muted">Servicing ${Math.round(svc.reduce((s2, u) => s2 + u.air.svc, 0) / svc.length)}% — refuelling, rearming and repairing from national stock.</div>`;
+    const crafts = (S.econ?.air?.craft || []).filter((c) => air.some((u) => u.id === c.id) && c.note);
+    if (crafts.length) h += `<div class="bad">${esc(crafts[0].note)}</div>`;
+    if (air.some((u) => u.air.st === 'diverting')) h += `<div class="warn">Diverting: the home airfield is lost or full; looking for another base.</div>`;
+    return h;
   }
 
   buildingPanel(b, d, own, city) {
@@ -516,6 +788,18 @@ export class Hud {
       if (msg) html += `<div class="warn">${msg}</div>`;
     }
     if (own && b.gov) html += `<div class="muted">Built by the city governor.</div>`;
+    // defensive installations: role, reach and (AA) ammunition and upgrade
+    if (d.attack && b.ty !== 'town') {
+      const air = d.defense === 'air', rng = d.range + (b.ug ? 1 : 0);
+      html += `<div class="defrole"><b>${air ? 'Air defense' : 'Ground defense'}</b> <span class="muted">· range ${rng} hexes · ${air ? 'targets detected aircraft only' : 'cannot target aircraft'}</span>${d.desc ? `<div class="muted small">${esc(d.desc)}</div>` : ''}</div>`;
+      if (b.na) html += `<div class="bad">Needs munitions: it cannot fire until the munitions stockpile recovers. <button type="button" class="rlink" data-res="munitions">Why?</button></div>`;
+      if (b.ty === 'aa_battery' && own && !S.spectator) {
+        if (b.ug) html += `<div class="good small">Upgraded: better detection, +1 range, improved fire control.</div>`;
+        else { const ok = S.econ?.techs.includes('air_defense'); html += `<div class="actions"><button class="btn small" data-act="upgradeDefense" ${ok ? '' : 'disabled'} title="${ok ? 'Better detection, +1 range, improved fire control' : 'Requires Air Defense'}">Upgrade (30 steel, 10 electronics)</button>${ok ? '' : ' <small class="muted">needs Air Defense</small>'}</div>`; }
+      }
+    }
+    if (own && d.airbase && b.d) html += this.airfieldPanel(b, d);
+    if (own && d.silo && b.d) html += this.siloPanel(b);
     html += this.trainPanel(b, d, own);
     if (own) html += `<div class="actions">${b.hp < 100 && b.d ? '<button class="btn small" data-act="repair">Repair</button>' : ''}${b.ty !== 'town' ? '<button class="btn small ghost" data-act="demolish">Demolish</button>' : ''}</div>`;
     void D;
@@ -525,20 +809,48 @@ export class Hud {
   trainPanel(b, d, own) {
     const S = this.S, D = S.defs, e = S.econ;
     if (!own || !d.trains || !b.d) return '';
+    // the production queue at a glance: current unit and progress, what follows, free slots, repeat, rally
+    let qh = '';
+    if (b.q?.length) {
+      const [u0, left0] = b.q[0], ud0 = D.UNITS[u0], p0 = Math.max(0, Math.min(100, Math.round(100 * (1 - left0 / Math.max(1, ud0.time)))));
+      qh += `<div class="pq"><b>Training ${esc(ud0.name)}</b> <span class="muted">${left0}s left</span><div class="bar sup"><i style="width:${p0}%"></i></div></div>`;
+    } else qh += `<div class="muted small">Idle: nothing in training.</div>`;
+    const slots = 8 - (b.q?.length || 0);
+    const army = b.ra ? (e.armies || []).find((a) => a.id === b.ra) : null;
+    qh += `<div class="muted small">${slots} of 8 queue slots free${b.rp ? ` · repeating ${esc(D.UNITS[b.rp]?.name || b.rp)}` : ''}${b.r >= 0 ? ' · rally point set' : ''}${army ? ` · joins ${esc(army.name)}` : ''}</div>`;
     const cost = (c) => Object.entries(c).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ');
     let html = `<div class="actions">` + d.trains.filter((u) => D.UNITS[u].age <= e.age).map((u) => {
       const ud = D.UNITS[u]; const locked = ud.tech && !e.techs.includes(ud.tech);
       return `<button class="btn trainbtn" data-train="${u}" ${locked ? 'disabled' : ''} title="${esc(ud.name)}: ${esc(cost(ud.cost))}${ud.pop ? `, ${ud.pop} pop` : ''}${ud.men ? `, ${ud.men} soldiers` : ''}"><span>${esc(ud.name)}</span><small>${locked ? 'needs ' + esc(D.TECHS[ud.tech].name) : esc(cost(ud.cost))}</small></button>`;
     }).join('') + `</div>`;
-    if (b.q?.length) html += `<div class="queue">${b.q.map(([u, t], i) => `<span>${esc(D.UNITS[u].name)} ${t}s <button class="x" data-qcancel="${i}" title="Cancel: ${i === 0 ? 'half the cost back once training has started' : 'full refund'}; the reserved manpower returns to work">×</button></span>`).join('')}</div>`;
+    // the whole queue sits right under the current item, before the train buttons, so it is never missed
+    if (b.q?.length) qh += `<div class="queue">${b.q.map(([u, t], i) => `<span>${esc(D.UNITS[u].name)} ${t}s <button class="x" data-qcancel="${i}" title="Cancel: ${i === 0 ? 'half the cost back once training has started' : 'full refund'}; the reserved manpower returns to work">×</button></span>`).join('')}</div><div class="actions"><button class="btn small ghost" data-clearq="${b.id}">Clear queue</button></div>`;
+    html = qh + html;
+    html += `<div class="actions"><label class="field inline"><span>Repeat</span><select data-batch="repeat" data-bid="${b.id}"><option value="">Off</option>${d.trains.filter((u) => D.UNITS[u].age <= e.age && (!D.UNITS[u].tech || e.techs.includes(D.UNITS[u].tech))).map((u) => `<option value="${u}" ${b.rp === u ? 'selected' : ''}>${esc(D.UNITS[u].name)}</option>`).join('')}</select></label></div>`;
     const armies = e.armies || [];
     html += `<div class="muted">Right-click the map to set a rally point${armies.length ? `; new units join <select data-sel="rallyArmy"><option value="0">no army</option>${armies.map((a) => `<option value="${a.id}" ${b.rallyArmy === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}.</div>`;
     return html;
   }
 
+  // Everything this city's facilities are training, in one place (town, barracks, works, airfields).
+  cityProduction(city) {
+    const S = this.S, D = S.defs;
+    const fac = [...S.buildings.values()].filter((b) => b.o === S.civId && b.c === city.id && b.q?.length);
+    if (!fac.length) return '';
+    const items = fac.flatMap((b) => b.q.map(([u, left], i) => ({ b, u, left, i })));
+    return `<div class="cprod"><b>In training (${items.length})</b><ul class="log">${fac.map((b) => b.q.map(([u, left], i) => { const ud = D.UNITS[u]; const p = i === 0 ? Math.max(0, Math.min(100, Math.round(100 * (1 - left / Math.max(1, ud.time))))) : 0; return `<li><button type="button" class="rlink" data-selb="${b.id}">${esc(D.BUILDINGS[b.ty].name)}</button> ${esc(ud.name)} <span class="muted">${i === 0 ? `${left}s` : `queued #${i + 1}`}</span>${i === 0 ? `<div class="bar sup"><i style="width:${p}%"></i></div>` : ''}</li>`; }).join('')).join('')}</ul></div>`;
+  }
+  // the city lifecycle state, as a tag with its reason
+  cityStateTag(city) {
+    const D = this.S.defs, st = D.CITY_STATES?.[city.cs];
+    if (!st || st === 'operational') return '';
+    const tone = { damaged: 'warn', besieged: 'bad', defenseless: 'bad', captured: 'warn', rebuilding: 'good' }[st] || '';
+    return `<div class="cstate"><span class="tag ${tone}">${esc({ damaged: 'Damaged', besieged: 'Under siege', defenseless: 'Defenseless', captured: 'Recently captured', rebuilding: 'Resettling' }[st])}</span>${city.csw ? ` <span class="muted">${esc(city.csw)}</span>` : ''}</div>`;
+  }
   cityOverview(city, b, d) {
     const gr = city.gr || 0;
-    let html = `<div class="ledger">
+    const prod = this.cityProduction(city);
+    let html = this.cityStateTag(city) + prod + (this.S.sandbox || this.S.dev ? `<details class="diag" data-cdiag="${city.id}" ${this.diagOpen ? 'open' : ''}><summary>City diagnostics</summary><pre>${esc(this.diagText || 'loading…')}</pre></details>` : '') + `<div class="ledger">
       <div><b>${Math.floor(city.pop)}</b><span>civilians</span></div><div><b>${city.lab ?? '–'}</b><span>labor</span></div>
       <div><b>${city.rsv || 0}</b><span>in training</span></div><div><b>${city.mil || 0}</b><span>serving</span></div><div><b>${city.rec ?? 0}</b><span>recruitable</span></div></div>
       <div class="muted">Growth ${gr >= 0 ? '+' : ''}${gr.toFixed(1)}/min · housing ${city.h}${city.pop > city.h ? ' <span class="warn">(overcrowded)</span>' : ''}${city.recov ? ' · <span class="good">post-war recovery</span>' : ''}${city.mig > 0.05 ? ` · migrants +${city.mig}` : ''}${city.back ? ' · demobilised soldiers returning' : ''}</div>
@@ -618,11 +930,16 @@ export class Hud {
   }
 
   onSelClick(e) {
-    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ],[data-refit],[data-wf],[data-prop],[data-qcancel],[data-upgrade],[data-import],[data-govlevel],[data-batchtrain],[data-batchmode],[data-fbeh],[data-fop],[data-pick],[data-truckback]'); if (!t) return;
+    { const hu = e.target.closest('[data-hup]'); if (hu) return this.housingAction(hu.dataset.hup); }
+    { const cq = e.target.closest('[data-clearq]'); if (cq) return this.A.cmd({ c: 'clearQueue', buildings: cq.dataset.clearq.split(',').map(Number) }).then((r) => { if (r.cleared) this.toast({ text: `${r.cleared.n} queued unit${r.cleared.n === 1 ? '' : 's'} cancelled; resources refunded.`, kind: 'build', level: 'info' }); }); }
+    { const rr = e.target.closest('[data-res]'); if (rr) return this.openResource(rr.dataset.res); }
+    const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ],[data-refit],[data-wf],[data-prop],[data-qcancel],[data-upgrade],[data-import],[data-govlevel],[data-batchtrain],[data-batchmode],[data-fbeh],[data-fop],[data-pick],[data-truckback],[data-airbase],[data-selb]'); if (!t) return;
     if (t.dataset.truckback) return this.A.cmd({ c: 'returnSupplyTruck', truck: +t.dataset.truckback });
     if (t.dataset.fbeh) return this.A.cmd({ c: 'formation', id: +t.dataset.fid, op: 'behavior', behavior: t.dataset.fbeh });
     if (t.dataset.fop) return this.A.formationOp(t.dataset.fop, +t.dataset.fid);
     if (t.dataset.pick) return this.A.pickUnit(+t.dataset.pick);
+    if (t.dataset.airbase) return this.A.airbase(t.dataset.airbase, +t.dataset.base);
+    if (t.dataset.selb) { const b = this.S.buildings.get(+t.dataset.selb); if (b) { this.S.selUnits.clear(); this.S.selBuildings.clear(); this.S.selBuildings.add(b.id); this.S.selBuilding = b.id; this.selHtml = ''; this.selection(); this.A.jump?.(b.t); } return; }
     if (t.dataset.batchtrain) return this.A.batchTrain(t.dataset.batchtrain);
     if (t.dataset.batchmode) { this.S.batchMode = t.dataset.batchmode; this.selHtml = ''; return this.selection(); }
     if (t.dataset.refit) return this.A.refit(t.dataset.refit, t.dataset.to);
@@ -653,7 +970,7 @@ export class Hud {
     else if (t.dataset.gov === 'spec') this.A.governor({ spec: t.value });
     else if (t.dataset.gov === 'goal') this.A.governor({ goal: t.value });
     else if (t.dataset.batch === 'count') { this.S.batchCount = Math.max(1, Math.min(60, +t.value || 1)); this.selHtml = ''; this.selection(); }
-    else if (t.dataset.batch === 'repeat') this.A.repeat(t.value || null);
+    else if (t.dataset.batch === 'repeat') this.A.repeat(t.value || null, t.dataset.bid ? [+t.dataset.bid] : null);
     else if (t.dataset.gov === 'budget') this.A.governor({ budget: +t.value / 100 });
     else if (t.dataset.gov === 'emergency') this.A.governor({ emergency: t.checked });
     else if (t.dataset.wfprio) this.A.workforce({ wf: 'prio', cat: t.dataset.wfprio, level: t.value });
@@ -678,7 +995,7 @@ export class Hud {
     if (this.ws === 'research') this.tip('research', 'Selecting a technology only inspects it. Use Research now or Add to queue; queued research continues automatically and switching never loses progress.');
     const sel = [...S.selUnits].map((id) => S.units.get(id)).filter((u) => u && u.owner === S.civId);
     if (sel.length >= 3) this.tip('army', 'Right-drag to draw a deployment line: a longer line spreads troops out, a shorter one concentrates them (and makes them an artillery target). Units cut off from supply live on their reserves; dug-in infantry last longest.');
-    if (Object.entries(e.rates || {}).some(([k, r]) => r < -0.05 && (e.res[k] || 0) / -r < 180)) this.tip('shortage', 'A stockpile is running down. Open Economy (rail) to see the production chain and what blocks it.');
+    if (Object.values(e.resources || {}).some((r) => r.status === 'deficit' || r.status === 'empty')) this.tip('shortage', 'A stockpile is running down. Click it in the top bar: the panel says what makes it, why it is short and offers the next step.');
     if ((S.battles || []).some((b) => b.mine?.n > 0)) this.tip('battle', 'A battle is under way. Click the battle marker for forces, losses and quick orders; minor notifications are held back while you fight.');
     if (this.cityTab === 'governor' && S.selBuilding != null) this.tip('governor', 'Advisor governors only suggest. Managed handles routine upkeep; Autonomous may build within the budget you set. Locks and manual choices are always respected.');
   }
@@ -709,7 +1026,7 @@ export class Hud {
   escape() {
     if (!$('lensPop').hidden) { $('lensPop').hidden = true; return true; }
     if (!$('search').hidden) { $('search').hidden = true; return true; }
-    if (!$('fortifyPanel').hidden) { $('fortifyPanel').hidden = true; return true; }
+    if (this.finder.isOpen) { this.finder.close(); return true; }
     if (!$('alerts').hidden) { $('alerts').hidden = true; return true; }
     if (!$('mapkey').hidden) { this.toggleKey(false); return true; }
     if (this.ws) return this.closeWorkspace();
@@ -726,11 +1043,12 @@ export class Hud {
       S.civInfo.map((c) => [c.rel, c.alive, c.age, c.known]), this.tab === 'chronicle' ? [S.log.length, e.cmdlog?.length, e.cmdlog?.[0]?.t, this.chronTab] : 0,
       this.tab === 'empire' ? [[...S.cities.values()].filter((c) => c.o === S.civId).map((c) => [Math.round(c.pop / 4), Math.round(c.st / 5), c.fs, c.iso, c.unrest, c.gov?.enabled, c.gov?.spec]), this.empireSort, this.empireFilter] : 0,
       this.tab === 'armies' ? (e.armies || []).map((a) => [a.id, a.name, a.units.length, a.status, a.formation, a.stance, a.note, Math.round((a.hp || 0) / 5), Math.round((a.supply || 0) / 5)]) : 0,
-      this.tab === 'economy' || this.tab === 'military' ? [Math.floor(S.time / 2), this.chainGood, JSON.stringify(this.plans || {}).length] : 0]);
+      this.tab === 'economy' ? this.econ.key() : 0,
+      this.tab === 'military' ? [Math.floor(S.time / 2)] : 0]);
     if (!force && key === this.drawerKey) return;
     this.drawerKey = key;
     const body = $('drawerBody'); const scroll = body.scrollTop;
-    patchHtml(body, this['tab_' + this.tab]?.() || '');
+    morph(body, this['tab_' + this.tab]?.() || '');
     body.scrollTop = scroll;
   }
 
@@ -788,64 +1106,7 @@ export class Hud {
   }
 
   // ------------------------------------------------------------ economy & logistics workspace
-  tab_economy() {
-    const S = this.S, e = S.econ, D = S.defs;
-    const mine = [...S.buildings.values()].filter((b) => b.o === S.civId);
-    const work = mine.filter((b) => b.d && D.BUILDINGS[b.ty].jobs);
-    const staffed = work.filter((b) => b.s > 0).length;
-    const WHY = { staff: 'no workers', power: 'no power', full: 'storage full', rare: 'no rare earths', off: 'switched off', locked: 'locked by you' };
-    const why = (w) => (!w ? '' : w.startsWith('input:') ? 'missing ' + w.slice(6) : w.startsWith('prio:') ? 'lower labour priority' : WHY[w] || w);
-    let h = '<div class="ws-cols">';
-    // national overview
-    h += `<div class="ws-card"><h4>National overview</h4><table class="grid"><tr><th>Good</th><th>Stock</th><th>Made</th><th>Used</th><th>Net</th><th>Lasts</th></tr>`;
-    for (const k of D.GOODS) {
-      const v = e.res[k] || 0, net = e.rates[k] || 0, made = e.gross?.[k] || Math.max(0, net), used = Math.max(0, made - net);
-      if (!v && !made && !net) continue;
-      const lasts = net < -0.05 ? `${Math.round(v / -net / 60)} min` : '—';
-      h += `<tr class="${net < -0.05 && v / -net < 300 ? 'short' : ''}"><td><a href="#" data-chain="${k}">${esc(D.GOOD_NAMES[k])}</a></td><td>${fmt(v)}</td><td>${made.toFixed(1)}</td><td>${used.toFixed(1)}</td><td class="${net < 0 ? 'neg' : 'pos'}">${net >= 0 ? '+' : ''}${net.toFixed(1)}</td><td>${lasts}</td></tr>`;
-    }
-    h += `</table><p class="muted small">Per second. Click a good for its production chain.</p>`;
-    h += `<div><span class="ind ${staffed < work.length * 0.7 ? 'mid' : ''}"><b>${work.length ? Math.round((100 * staffed) / work.length) : 100}%</b>industry staffed</span><span class="ind"><b>${e.power ? `${e.power.gen}/${e.power.use}` : '—'}</b>power</span><span class="ind"><b>${e.upkeep ? e.upkeep.credits.toFixed(1) : 0}</b>army credits/s</span><span class="ind"><b>${e.upkeep ? e.upkeep.fuel.toFixed(2) : 0}</b>army fuel/s</span></div>`;
-    if (e.saving) h += `<p class="muted">Reserved for the next era: ${Object.entries(e.saving).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k].toLowerCase())}`).join(', ')}.</p>`;
-    if (e.natReserve) h += `<p class="muted">Reserved for a national project: ${esc(D.BUILDINGS[e.natReserve]?.name || e.natReserve)}.</p>`;
-    h += '</div>';
-    // production chain explorer
-    const good = this.chainGood || (e.saving ? Object.keys(e.saving).find((k) => (e.res[k] || 0) < e.saving[k]) : null) || 'steel';
-    h += `<div class="ws-card"><h4>Production chain: <select data-chainsel="1">${D.GOODS.filter((k) => k !== 'credits').map((k) => `<option value="${k}" ${k === good ? 'selected' : ''}>${esc(D.GOOD_NAMES[k])}</option>`).join('')}</select></h4>`;
-    const makers = Object.entries(D.BUILDINGS).filter(([, d]) => d.produce && d.produce[good]);
-    const users = Object.entries(D.BUILDINGS).filter(([, d]) => d.consume && d.consume[good]);
-    const stage = (type) => {
-      const list = mine.filter((b) => b.ty === type && b.d); const run = list.filter((b) => b.s > 0).length;
-      const reasons = {}; for (const b of list) if (b.w && b.w !== 'surplus' && b.w !== 'under') reasons[why(b.w)] = (reasons[why(b.w)] || 0) + 1;
-      const d = D.BUILDINGS[type]; const locked = d.tech && !e.techs.includes(d.tech);
-      return `<div class="stage ${!list.length ? '' : run < list.length ? 'bad' : 'ok'}"><b>${esc(d.name)}</b><br><small>${locked ? `needs ${esc(D.TECHS[d.tech].name)}` : list.length ? `${run}/${list.length} working${Object.keys(reasons).length ? ' — ' + Object.entries(reasons).map(([r, n]) => `${n} ${r}`).join(', ') : ''}` : 'none built'}</small>${d.consume ? `<br><small class="muted">uses ${Object.keys(d.consume).map((k) => esc(D.GOOD_NAMES[k].toLowerCase())).join(', ')}${d.power < 0 ? ', power' : ''}</small>` : d.power < 0 ? '<br><small class="muted">uses power</small>' : ''}</div>`;
-    };
-    const inputs = [...new Set(makers.flatMap(([, d]) => Object.keys(d.consume || {})))];
-    h += `<div class="chain">${inputs.length ? `${inputs.map((k) => `<div class="stage"><b>${esc(D.GOOD_NAMES[k])}</b><br><small>${fmt(e.res[k] || 0)} in stock, ${(e.rates[k] || 0).toFixed(1)}/s</small></div>`).join('')}<span class="arrow">→</span>` : ''}${makers.map(([t]) => stage(t)).join('') || '<div class="stage">No producer</div>'}<span class="arrow">→</span><div class="stage ${(e.rates[good] || 0) < 0 ? 'bad' : 'ok'}"><b>${esc(D.GOOD_NAMES[good])}</b><br><small>${fmt(e.res[good] || 0)} · ${(e.rates[good] || 0) >= 0 ? '+' : ''}${(e.rates[good] || 0).toFixed(1)}/s</small></div>${users.length ? `<span class="arrow">→</span>${users.map(([t]) => stage(t)).join('')}` : ''}</div>`;
-    const imp = e.market && D.IMPORT_PRICE[good] ? `<p class="muted">Can be imported: ${D.IMPORT_PRICE[good]} credits each at the world market (Government).</p>` : '';
-    h += imp + '</div>';
-    // facilities that are not running, and disconnected cities
-    const idle = work.filter((b) => !b.s && b.w && b.w !== 'surplus');
-    h += `<div class="ws-card"><h4>Not running (${idle.length})</h4>${idle.length ? `<ul class="log">${idle.slice(0, 14).map((b) => `<li data-jump="${b.t}"><b>${esc(D.BUILDINGS[b.ty].name)}</b> <span class="warn">${esc(why(b.w))}</span></li>`).join('')}</ul>` : '<p class="muted">Every workplace is running.</p>'}`;
-    const cut = [...S.cities.values()].filter((c) => c.o === S.civId && (c.iso || (c.fr >= 0 && c.ship >= c.fr * 0.95)));
-    h += `<h4>Logistics</h4>${cut.length ? `<ul class="log">${cut.map((c) => `<li data-jump="${c.t}"><b>${esc(c.n)}</b> ${c.iso ? '<span class="bad">cut off: living on local stock</span>' : `<span class="warn">freight full (${c.fr}/s)</span>`}</li>`).join('')}</ul>` : '<p class="muted">Every city is connected with spare freight capacity.</p>'}</div>`;
-    // city development planner
-    const cities = [...S.cities.values()].filter((c) => c.o === S.civId);
-    this.plans = this.plans || {};
-    if (!this.planAt || S.time - this.planAt > 8) { this.planAt = S.time; for (const c of cities.slice(0, 8)) this.A.cmd({ c: 'cityPlan', city: c.id }).then((r) => { if (r.plan) { this.plans[c.id] = r.plan; } }); }
-    h += `<div class="ws-card"><h4>City development planner</h4><p class="muted small">From the same rules the simulation and governors use.</p>`;
-    for (const c of cities.slice(0, 8)) {
-      const p = this.plans[c.id];
-      h += `<h5 data-jump="${c.t}">${esc(c.n)} <small class="muted">pop ${Math.floor(c.pop)}/${c.h}</small></h5>`;
-      if (!p) { h += '<p class="muted">…</p>'; continue; }
-      for (const i of p.issues) h += `<div class="rec alt">${esc(i)}</div>`;
-      p.recs.forEach((r, i) => { h += `<div class="rec ${i ? 'alt' : ''}"><b>${i ? 'Alternative' : 'Recommended'}:</b> ${r.kind === 'upgrade' ? 'raise a housing block' : esc(D.BUILDINGS[r.type]?.name || r.type)} <span class="muted">— ${esc(r.reason)}</span></div>`; });
-      for (const a of p.avoid.slice(0, 2)) h += `<div class="rec no"><b>Not recommended:</b> <span class="muted">${esc(a)}</span></div>`;
-      if (!p.recs.length && !p.issues.length) h += '<p class="muted">Nothing would clearly improve it right now.</p>';
-    }
-    return h + '</div></div>';
-  }
-
+  tab_economy() { return this.econ.render(); }
   // ------------------------------------------------------------ military workspace
   tab_military() {
     const S = this.S, e = S.econ, D = S.defs;
@@ -858,7 +1119,7 @@ export class Hud {
     h += `<div class="ws-card"><h4>Formations (${fs.length})</h4>${fs.length ? `<ul class="log">${fs.map((f) => `<li><b>${esc({ line: 'Line', compact: 'Compact line', depth: 'Defense in depth', preserve: 'Formation' }[f.mode] || f.mode)}</b> · ${f.units.length} units · ${esc({ hold: 'hold line', defend: 'defend line', attackMove: 'advance' }[f.behavior] || f.behavior)} · <span class="${f.status === 'deployed' ? 'good' : 'muted'}">${f.status}</span>${f.detached.length ? ` · ${f.detached.length} detached` : ''} <button class="btn tiny" data-fsel="${f.id}">Select</button></li>`).join('')}</ul>` : '<p class="muted">Right-drag with units selected to draw a deployment line.</p>'}</div>`;
     const cv = e.convoys || [];
     h += `<div class="ws-card"><h4>Logistics (${cv.length} truck${cv.length === 1 ? '' : 's'})</h4>${cv.length ? `<table class="grid"><tr><th>Truck</th><th>Status</th><th>Cargo</th><th>ETA</th></tr>${cv.map((c) => `<tr><td>#${c.truck}</td><td>${esc(c.state)}${c.note ? ` <small class="muted">${esc(c.note)}</small>` : ''}</td><td>${c.cargo}</td><td>${c.eta != null ? c.eta + 's' : '—'}</td></tr>`).join('')}</table>` : '<p class="muted">No supply trucks. Train them at a settlement hub or motor works (needs Motorization).</p>'}
-      ${(e.caches || []).length ? `<p class="muted">${e.caches.length} field cache${e.caches.length > 1 ? 's' : ''}: ${e.caches.map((c) => `<a href="#" data-jump="${c.t}">${c.cargo} cargo</a>`).join(', ')}</p>` : ''}
+      ${(e.caches || []).length ? `<p class="muted">${e.caches.length} field cache${e.caches.length > 1 ? 's' : ''}: ${e.caches.map((c) => `<button type="button" class="rlink" data-jump="${c.t}">${c.cargo} cargo</button>`).join(', ')}</p>` : ''}
       <p class="muted small">Units cut off from the network live on their own reserves: entrenched infantry last longest, marching troops the shortest. Trucks carry finite cargo from a city or depot.</p></div>`;
     h += `<div class="ws-card"><h4>Armies</h4>${this.tab_armies()}</div>`;
     return h + '</div>';
@@ -966,6 +1227,8 @@ export class Hud {
 
   onDrawerClick(ev) {
     if (this.ws === 'research') return;              // the research workspace handles its own clicks
+    if (this.tab === 'economy' && this.econ.onClick(ev)) { this.drawerKey = ''; this.drawer(true); return; }
+    { const r = ev.target.closest('[data-res]'); if (r) return this.openResource(r.dataset.res); }
     const t = ev.target.closest('button,[data-jump],[data-efilter],[data-esort],[data-chron],[data-chain],[data-fsel]'); if (!t) return;
     const d = t.dataset;
     if (d.chain) { ev.preventDefault(); this.chainGood = d.chain; this.drawerKey = ''; this.drawer(true); return; }
@@ -983,12 +1246,13 @@ export class Hud {
     else if (d.efilter) { this.empireFilter = d.efilter; }
     else if (d.esort) { this.empireSort = [d.esort === 'name' ? 'name' : d.esort, this.empireSort[0] === d.esort ? -this.empireSort[1] : -1]; }
     else if (d.chron) { this.chronTab = d.chron; }
-    else if (d.jump) { if (d.city) this.A.selectCity(+d.city); this.A.jump(+d.jump); }
+    else if (d.jump) { if (d.city) this.A.selectCity(+d.city); if (d.pulse) { this.S.pulse = { id: +d.pulse, until: this.S.time + 4 }; this.closeWorkspace(); } this.A.jump(+d.jump); }
     this.drawer(true);
     setTimeout(() => this.A.refresh(), 200);
   }
   onDrawerChange(ev) {
     const t = ev.target;
+    if (this.tab === 'economy' && this.econ.onChange(ev)) { this.drawerKey = ''; this.drawer(true); return; }
     if (t.dataset.chainsel) { this.chainGood = t.value; this.drawerKey = ''; this.drawer(true); return; }
     if (t.dataset.armyFormation) this.A.cmd({ c: 'army', op: 'formation', id: +t.dataset.armyFormation, formation: t.value });
     if (t.dataset.armyStance) this.A.cmd({ c: 'army', op: 'stance', id: +t.dataset.armyStance, stance: t.value });
@@ -1017,6 +1281,10 @@ export class Hud {
     if (S.flags[tile] & 32) parts.push('Ashfall: harvests ruined for now');
     if (S.res[tile]) parts.push('Resource: ' + esc(D.RESOURCE[S.res[tile]].name));
     const r = S.ruins.get(tile); if (r) parts.push(`Ruins of ${esc(D.BUILDINGS[r.type]?.name || 'a building')}${r.flags & 4 ? ' (overgrown)' : ''}${r.flags & 2 ? ' — still smouldering' : ''}. Clear them (engineers or governor) or rebuild the same building at half cost.`);
+    const ist = (S.bf?.i || []).find((x) => x[0] === tile)?.[1] || 0;
+    if (ist) parts.push(`<span class="warn">${['', 'Churned ground — fighting has worn the land here', 'No man\'s land — cratered mud: vehicles bog down, infantry find shell holes', 'Devastated — wire, debris and mud: slow going for everyone'][ist]}</span>`);
+    if ((S.bf?.fp || []).some((x) => x[0] === tile)) parts.push('Field positions: foxholes scraped out by infantry (light cover, collapse when abandoned)');
+    if (r && r.type === 'town' && !S.buildingAtTile.get(tile)) parts.push('<span class="muted">Click to consider resettling these ruins.</span>');
     if (Number.isFinite(t.move)) parts.push(`Infantry move cost ${t.move}${t.def ? `, defense ${t.def > 0 ? '+' : ''}${Math.round(t.def * 100)}%` : ''}`);
     else if (!t.water) parts.push('Impassable');
     if (S.road[tile]) { const best = Math.max(...[0, 1, 2, 3, 4, 5].map((d) => (S.road[tile] >> (d * 4)) & 7)); const ruined = [0, 1, 2, 3, 4, 5].some((d) => (S.road[tile] >> (d * 4)) & 8); parts.push(esc(D.ROAD_TYPES[best]?.name || 'Road') + (ruined ? ' — some segments wrecked' : '')); }
@@ -1057,6 +1325,31 @@ function staffText(b, D) {
   return `${head} — operating`;
 }
 const D_name = (S, k) => (S.defs.GOOD_NAMES[k] || k).toLowerCase();
+
+// Morph an element's content into new HTML, node by node: elements of the same tag are kept and
+// only their attributes and text change, so the button under the pointer (or the field being typed
+// in) survives a refresh. Used by the panels that update every second.
+export function morph(el, html) {
+  const t = document.createElement('template'); t.innerHTML = html;
+  morphChildren(el, t.content);
+}
+function morphChildren(a, b) {
+  const an = [...a.childNodes], bn = [...b.childNodes];
+  for (let i = 0; i < bn.length; i++) {
+    const x = an[i], y = bn[i];
+    if (!x) { a.appendChild(y); continue; }
+    if (x.nodeType !== y.nodeType || (x.nodeType === 1 && x.tagName !== y.tagName)) { a.replaceChild(y, x); continue; }
+    if (x.nodeType === 3 || x.nodeType === 8) { if (x.nodeValue !== y.nodeValue) x.nodeValue = y.nodeValue; continue; }
+    // attributes
+    for (const at of [...x.attributes]) if (!y.hasAttribute(at.name)) x.removeAttribute(at.name);
+    for (const at of [...y.attributes]) if (x.getAttribute(at.name) !== at.value) x.setAttribute(at.name, at.value);
+    if (x.tagName === 'INPUT' && x !== document.activeElement) { if ('value' in y && x.value !== y.getAttribute('value') && y.hasAttribute('value')) x.value = y.getAttribute('value'); x.checked = y.hasAttribute('checked'); }
+    if (x.tagName === 'SELECT' && x === document.activeElement) continue;      // never disturb an open dropdown
+    morphChildren(x, y);
+    if (x.tagName === 'SELECT') { const sel = [...y.querySelectorAll('option')].findIndex((o) => o.hasAttribute('selected')); if (sel >= 0 && x.selectedIndex !== sel) x.selectedIndex = sel; }
+  }
+  for (let i = an.length - 1; i >= bn.length; i--) a.removeChild(an[i]);
+}
 
 // Replace only the top-level children that changed, so buttons the player is about to click
 // are not swapped out underneath the pointer every time a number updates.

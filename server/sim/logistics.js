@@ -9,10 +9,10 @@
 // source (a connected city's national stock, an isolated city's local stock, or a depot), drives
 // to a safe point behind the force, hands out supplies by need, leaves the rest as a small
 // field cache, and comes back. Cargo exists in exactly one place: source, truck, cache or units.
+import { book } from './ledger.js';
 import { UNITS, N, isWater, TERRAIN } from './constants.js';
 import { dist, disk, centroid } from './hex.js';
 import { findPath } from './path.js';
-import { canDig } from './fieldworks.js';
 import { hostileGroundAt, zocAt } from './tacticalOccupancy.js';
 
 // ------------------------------------------------------------------ activity
@@ -33,8 +33,8 @@ export function activityOf(g, u) {
   const fighting = g.time - (u.lastCombat ?? -99) < 3;
   if (moving) return fighting ? 'movingFight' : 'moving';
   const fw = g.fieldworks?.get(u.tile);
-  if (fw && canDig(u) && fw.progress < 1) return 'construct';
-  if (fw && d.move === 'infantry' && !d.civilian && fw.progress >= 1 && fw.hp >= 50) return fighting ? 'trenchFight' : 'trench';
+  // troops no longer dig: an occupied (finished or reinforcing) trench is what conserves supply
+  if (fw && d.move === 'infantry' && !d.civilian && (fw.progress >= 1 || fw.upgrading) && fw.hp >= 50) return fighting ? 'trenchFight' : 'trench';
   if (fighting) return 'stationaryFight';
   return d.move === 'infantry' ? 'stationary' : 'parked';
 }
@@ -187,6 +187,7 @@ export function logisticsStep(g, dt) {
         for (const [k, v] of Object.entries(cv.plan)) {
           const take = Math.max(0, Math.min(v, stock[k] || 0, room / (CARGO_WEIGHT[k] || 1)));
           stock[k] = (stock[k] || 0) - take; u.cargo[k] = (u.cargo[k] || 0) + take; room -= take * (CARGO_WEIGHT[k] || 1);
+          if (stock === civ.res) book(civ, 'convoys', k, -take);    // a transfer out of the stockpile, not consumption
         }
         cv.loaded = cargoTotal(u.cargo);
         if (cv.loaded < 0.5) { cv.state = 'available'; cv.note = 'source had nothing to load'; continue; }
@@ -208,7 +209,7 @@ export function logisticsStep(g, dt) {
       if (arrived(cv.src.tile) || (dist(u.tile, cv.src.tile) <= 1 && !u.path.length)) {
         // anything still aboard goes back into the source it came from
         const stock = stockOf(g, civ, cv.src);
-        for (const [k, v] of Object.entries(u.cargo || {})) if (v > 0) stock[k] = (stock[k] || 0) + v;
+        for (const [k, v] of Object.entries(u.cargo || {})) if (v > 0) { stock[k] = (stock[k] || 0) + v; if (stock === civ.res) book(civ, 'convoys', k, v); }
         u.cargo = {};
         u.convoy = { state: 'available', last: cv.id, note: cv.note || 'delivered' };
         u.order = { kind: 'idle' }; u.auth = '';
@@ -223,7 +224,7 @@ export function logisticsStep(g, dt) {
     const enemy = (g.tileUnits.get(t) || []).map((id) => g.units.get(id)).find((e) => e && g.hostile(c.owner, e.owner) && !UNITS[e.type].air);
     if (enemy) {
       const cap = g.civs[enemy.owner];
-      for (const [k, v] of Object.entries(c.cargo)) cap.res[k] = (cap.res[k] || 0) + v * 0.5;      // half is salvaged, half spoiled
+      for (const [k, v] of Object.entries(c.cargo)) { cap.res[k] = (cap.res[k] || 0) + v * 0.5; book(cap, 'salvage', k, v * 0.5); }      // half is salvaged, half spoiled
       g.caches.delete(t); if (civ.human) g.notify(c.owner, 'A field supply cache was captured.', { kind: 'loss', tile: t, level: 'minor' }); continue;
     }
     for (const n of disk(t, 2)) for (const id of g.tileUnits.get(n) || []) {

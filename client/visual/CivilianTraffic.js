@@ -8,7 +8,7 @@ export function drawTraffic(g, view, S, t) {
   let budget = 900;
   for (const [a, b, lvl] of S.traffic) {
     if (budget <= 0) break;
-    const ax = view.cx[a], ay = view.cy[a], bx = view.cx[b], by = view.cy[b];
+    const ax = view.cx[a], ay = view.cy[a], bx = view.nx ? view.nx(b, ax) : view.cx[b], by = view.cy[b];
     if (!view.inView(ax, ay) && !view.inView(bx, by)) continue;
     const d = view.dirTo(a, b); const ty = d >= 0 ? view.roadType(a, d) : 1;
     const n = Math.min(4, Math.ceil(lvl / 2.5));

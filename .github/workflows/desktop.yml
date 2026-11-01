@@ -1,0 +1,69 @@
+name: Desktop builds
+
+# Builds the Electron desktop edition for macOS, Windows and Linux and publishes the installers to
+# game.liamhosfeld.com/download (Cloud Storage downloads/ in the game's bucket, served by the game
+# server through the same load balancer -> Cloud Run path). Runs for version tags or on demand.
+on:
+  push:
+    tags: ['v*', 'desktop-v*']
+  workflow_dispatch:
+
+env:
+  BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # the desktop edition targets macOS (Apple Silicon and Intel) and Windows (x64)
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+      - name: Build installers
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # unsigned builds unless signing secrets are configured
+        shell: bash
+        run: if [ "$RUNNER_OS" = macOS ]; then npm run dist:mac; else npm run dist:win; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+          merge-multiple: true
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Publish to game.liamhosfeld.com/download
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          DOWNLOAD_BUCKET="$BUCKET" bash desktop/scripts/publish.sh dist-all "$VERSION"
+          echo "### Desktop $VERSION published: https://game.liamhosfeld.com/download" >> "$GITHUB_STEP_SUMMARY"

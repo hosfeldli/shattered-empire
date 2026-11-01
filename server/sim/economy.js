@@ -1,6 +1,8 @@
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
+import { revoltBlocked, noteRevolt, afterCapture } from './cities.js';
 import { ACTIVITY } from './logistics.js';
+import { book, ledgerStep } from './ledger.js';
 import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, aiProfile } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { allocate } from './workforce.js';
@@ -85,6 +87,8 @@ export function recomputeTradeNetwork(g) {
 
 function farmYield(g, civ, b) {
   const w = g.world, t = b.tile;
+  if ((g.fallout?.get(t) || 0) > g.time) return 0;                     // fallout: nothing can be grown
+  const scar = g.intensity?.get(t)?.st || 0; if (scar >= 2) return 0.15;   // fields turned to no man's land
   let y = TERRAIN[w.terr[t]].fert;
   if (w.terr[t] === T.HILLS) y = Math.max(y, 0.55);       // terraced fields
   if (w.terr[t] === T.FOREST) y = Math.max(y, 0.5);       // cleared woodland
@@ -220,7 +224,7 @@ export function economyStep(g, dt) {
     // before Electrification, industry runs on furnaces and steam: no grid, but only 70% output
     const pr = civ.techs.has('electrification') ? civ.powerRatio ?? 1 : 0.7;
     let powerGen = 0, powerUse = 0;
-    const grossNext = {}, shortNext = new Set();
+    const grossNext = {}, shortNext = new Set(), grossByType = {};
     const researchOpen = researchOpenFor(civ);
     for (const c of cities) {
       const blds = byCity.get(c.id) || [];
@@ -264,7 +268,7 @@ export function economyStep(g, dt) {
           let short = '';
           if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / need); if (r < ok) { ok = r; short = k; } } }
           if (ok < 0.5) b.why = 'input:' + short;
-          if (def.consume) for (const k in def.consume) cd[k] -= def.consume[k] * n * dt * ok;
+          if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * dt * ok; cd[k] -= v; book(civ, 'operations', k, -v); }
           powerGen += def.power * n * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
           if (b.type === 'fusion_plant') research += 0.1 * n;
           continue;
@@ -277,7 +281,7 @@ export function economyStep(g, dt) {
         let short = '';
         if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * dt * ratio; if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / (def.consume[k] * n * dt)); if (r < ratio) { ratio = r; short = k; } } }
         if (before > 0 && ratio < before * 0.5) b.why = 'input:' + short;
-        if (def.consume) for (const k in def.consume) cd[k] -= def.consume[k] * n * dt * ratio;
+        if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * dt * ratio; cd[k] -= v; book(civ, 'operations', k, -v); }
         if (!def.produce) continue;
         for (const k in def.produce) {
           let v = def.produce[k] * n * dt * eff * govMul * ratio;
@@ -293,34 +297,41 @@ export function economyStep(g, dt) {
           if (gov === 'corporate' && (k === 'steel' || k === 'munitions' || k === 'electronics')) v *= 1.1;
           if (k === 'research') { research += v; continue; }
           cd[k] += v; grossNext[k] = (grossNext[k] || 0) + v / dt;
+          book(civ, k === 'credits' && b.type !== 'town' ? 'commerce' : 'production', k, v);
+          const gt = grossByType[b.type] || (grossByType[b.type] = {}); gt[k] = (gt[k] || 0) + v / dt;
         }
       }
       c.jobs = jobs;
       c.unemployed = Math.max(0, c.pop - jobs.worker - jobs.merchant - jobs.specialist);
       // the settlement hub itself always yields a little (scavengers, artisans)
       cd.food += 0.4 * dt; cd.materials += 0.4 * dt; cd.credits += 0.3 * dt;
-      cd.food -= 0.12 * c.pop * dt;
+      book(civ, 'production', 'food', 0.4 * dt); book(civ, 'production', 'materials', 0.4 * dt); book(civ, 'production', 'credits', 0.3 * dt);
+      cd.food -= 0.12 * c.pop * dt; book(civ, 'population', 'food', -0.12 * c.pop * dt);
       c.foodBal = cd.food / dt;
-      cd.credits += c.pop * TAX[civ.tax].credits * dt * (gov === 'corporate' ? 1.3 : 1) * (P.has('martial_law') ? 0.85 : 1);
-      if (c.tradeConnected) cd.credits += (1 + (gov === 'corporate' ? 1 : 0)) * dt;
-      // route this city's surplus and needs through its link to the network
+      const tax = c.pop * TAX[civ.tax].credits * dt * (gov === 'corporate' ? 1.3 : 1) * (P.has('martial_law') ? 0.85 : 1);
+      cd.credits += tax; book(civ, 'taxes', 'credits', tax);
+      if (c.tradeConnected) { const tr = (1 + (gov === 'corporate' ? 1 : 0)) * dt; cd.credits += tr; book(civ, 'trade', 'credits', tr); }
+      // route this city's surplus and needs through its link to the network; what does not reach
+      // the national stockpile (freight limits, cut-off cities) is booked as held in city warehouses
+      const before = { ...delta };
       shipGoods(civ, c, cd, delta, dt);
+      for (const k of GOODS) if (k !== 'credits') { const held = (delta[k] - before[k]) - cd[k]; if (Math.abs(held) > 1e-9) book(civ, 'warehouses', k, held); }
       totalPop += c.pop;
     }
-    civ.powerGen = powerGen; civ.powerUse = powerUse; civ.gross = grossNext; civ.short = shortNext;
+    civ.powerGen = powerGen; civ.powerUse = powerUse; civ.gross = grossNext; civ.short = shortNext; civ.grossByType = grossByType;
     // what the grid would carry if every consumer were staffed (planners size plants on this)
     let potential = 0; for (const c2 of cities) for (const b of byCity.get(c2.id) || []) { const d = BUILDINGS[b.type]; if (b.done && d.power < 0) potential += -d.power * (d.jobs ? d.jobs[1] : 1); }
     civ.powerPotential = potential;
     civ.powerRatio = powerUse > 0 ? Math.min(1, powerGen / powerUse) : 1;
     let nb = 0; for (const c of cities) nb += (byCity.get(c.id) || []).length;
-    delta.credits -= nb * (0.01 + 0.008 * civ.age) * dt;
+    { const m = nb * (0.01 + 0.008 * civ.age) * dt; delta.credits -= m; book(civ, 'maintenance', 'credits', -m); }
     const uc = unitCount.get(civ.id) || 0;
-    delta.food -= (upkeepByCiv(g).get(civ.id)?.food || 0) * dt;      // field rations by activity
-    delta.credits -= (civ.age >= 1 ? 0.03 : 0.01) * uc * dt;
+    { const f = (upkeepByCiv(g).get(civ.id)?.food || 0) * dt; delta.food -= f; book(civ, 'army', 'food', -f); }      // field rations by activity
+    { const p = (civ.age >= 1 ? 0.03 : 0.01) * uc * dt; delta.credits -= p; book(civ, 'army', 'credits', -p); }
     for (const o of g.civs) {
       if (o === civ || !o.alive || o.isRebel) continue;
       const rel = g.diplomacy.rel(civ.id, o.id);
-      if (rel.trade) delta.credits += (1.5 + 0.5 * Math.min(cities.length, g.cityOf(o).length)) * (P.has('free_markets') ? 1.5 : 1) * dt;
+      if (rel.trade) { const v = (1.5 + 0.5 * Math.min(cities.length, g.cityOf(o).length)) * (P.has('free_markets') ? 1.5 : 1) * dt; delta.credits += v; book(civ, 'trade', 'credits', v); }
     }
     // army maintenance grows faster than the army: pay, spares and fuel (logistics, not a hard cap)
     const tierUpkeep = upkeepByCiv(g);
@@ -329,8 +340,8 @@ export function economyStep(g, dt) {
     // are needed and expensive to keep in unnecessary numbers
     const tierCost = tierUpkeep.get(civ.id) || { credits: 0, fuel: 0 };
     civ.upkeep = { credits: +(tierCost.credits * (1 + nArmy / 60)).toFixed(2), fuel: +tierCost.fuel.toFixed(3) };
-    delta.credits -= civ.upkeep.credits * dt;
-    if (civ.upkeep.fuel) delta.fuel -= Math.min(civ.res.fuel || 0, civ.upkeep.fuel * dt);
+    delta.credits -= civ.upkeep.credits * dt; book(civ, 'army', 'credits', -civ.upkeep.credits * dt);
+    if (civ.upkeep.fuel) { const f = Math.min(civ.res.fuel || 0, civ.upkeep.fuel * dt); delta.fuel -= f; book(civ, 'army', 'fuel', -f); }
     if (P.has('research_grants')) research *= 1.3;
     if (gov === 'technocracy') research *= 1.2;
     if (gov === 'junta') research *= 0.85;
@@ -339,8 +350,14 @@ export function economyStep(g, dt) {
     // storage capacity: warehouses in each city plus depots; credits are a treasury and uncapped
     let depots = 0; for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === 'depot' && b.done) depots++;
     civ.storage = 1500 + 800 * cities.length + 500 * depots;
-    for (const k of GOODS) civ.res[k] = Math.max(0, k === 'credits' ? civ.res[k] + delta[k] : Math.min(civ.storage, civ.res[k] + delta[k]));
+    for (const k of GOODS) {
+      const raw = civ.res[k] + delta[k];
+      const v = Math.max(0, k === 'credits' ? raw : Math.min(civ.storage, raw));
+      if (v < raw) book(civ, 'waste', k, v - raw); else if (v > raw) book(civ, 'unmet', k, v - raw);
+      civ.res[k] = v;
+    }
     civ.rates = delta;
+    ledgerStep(civ, dt);
     const starvingNational = civ.res.food <= 0 && delta.food < 0;
     civ.popTotal = totalPop;
     civ.weariness = Math.max(0, civ.weariness - 0.08 * dt * (atWar ? 0.5 : 1.5));
@@ -374,7 +391,9 @@ export function economyStep(g, dt) {
       c.disaster = Math.max(0, c.disaster - 0.35 * dt);
       c.occupied = Math.max(0, c.occupied - 0.4 * dt);
       populationStep(g, civ, c, { starving, enemyNear, foodBalance: c.isolated ? c.foodBal ?? 0 : delta.food / dt, foodStock: c.isolated ? c.stock?.food || 0 : civ.res.food, services: hasServices(g, c) }, dt);
-      if (c.stability < 8 && !c.capital) {
+      // post-capture stabilization keeps an occupied city from falling apart at once
+      if (c.capturedAt != null && g.time - c.capturedAt < 240) c.stability = Math.max(c.stability, 22);
+      if (c.stability < 8 && !c.capital && !revoltBlocked(g, c)) {
         c.unrestT += dt;
         if (c.unrestT > 45) defect(g, c);
       } else c.unrestT = Math.max(0, c.unrestT - dt);
@@ -394,6 +413,7 @@ function defect(g, c) {
     if (avg > bs) { bs = avg; best = o; }
   }
   c.unrestT = 0;
+  noteRevolt(g, c, from.id);          // cooldowns: this city ~300 s, the nation ~120 s
   if (!best || bs < 40) {
     const rebels = g.rebelCiv();
     if (rebels) {
@@ -414,6 +434,7 @@ export function transferCity(g, c, to) {
   if (c.governor) { c.governor.enabled = !!to.isAI; c.governor.level = to.isAI ? 'autonomous' : 'off'; c.governor.log = []; c.governor.queue = []; c.governor.proposals = []; }
   for (const b of g.buildings.values()) if (b.cityId === c.id && b.owner === fromId) { b.owner = to.id; b.queue = []; b.rally = -1; }
   recomputeTerritory(g);
+  afterCapture(g, c, fromId);
   const fromCiv = g.civs[fromId];
   if (fromCiv.isRebel) return;
   if (!g.cityOf(fromCiv).length) g.eliminate(fromCiv);

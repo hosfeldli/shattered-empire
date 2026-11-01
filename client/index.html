@@ -69,6 +69,8 @@
         <form id="joinForm" class="join"><input id="joinCode" placeholder="Match code" maxlength="8" aria-label="Match code"><button class="btn">Join</button></form>
       </div>
       <button id="btnRejoin" class="btn ghost" hidden>Return to your last match</button>
+      <p class="muted small desktop-link" id="desktopLink"><a href="/download" target="_blank" rel="noopener">Get the desktop app for Windows and macOS</a>: offline play, saves on your disk, and Steam matches with friends.</p>
+      <button id="btnLauncher" class="btn ghost small" type="button" hidden>Back to the desktop launcher</button>
       <p id="lobbyStatus" class="status" role="status"></p>
     </div>
   </section>
@@ -92,7 +94,8 @@
       <button id="researchChip" class="research-chip" title="Research (T): open the technology tree"><span class="rc-name" id="rcName">Research</span><span class="rc-bar"><i id="rcBar"></i></span><small id="rcEta"></small></button>
       <ul id="resources" class="resources"></ul>
       <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
-      <button id="alertsBtn" class="alerts-btn" aria-label="Alerts" title="Alerts: critical and actionable problems"><span class="dot critical" id="alC">0</span><span class="dot major" id="alM">0</span></button>
+      <button id="alertsBtn" class="alerts-btn" aria-label="Alerts" title="Alerts: nothing new"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6zm-2 15a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span class="badge" id="alN" hidden>0</span></button>
+      <button id="btnPause" class="btn icon pause-btn" hidden aria-label="Pause" title="Pause the match (P)">&#10074;&#10074;</button>
       <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
       <button id="btnSearch" class="btn icon" aria-label="Search" title="Search cities, units, buildings, technologies and commands (/ or Ctrl+K)">&#9906;</button>
       <button id="btnSound" class="btn icon" aria-label="Sound on or off" title="Sound (M to mute; volumes in the menu)">&#9835;</button>
@@ -116,8 +119,10 @@
     <aside id="roadPanel" class="plate" hidden></aside>
     <aside id="selection" class="plate" aria-label="Inspector"></aside>
     <div id="deployBar" class="plate" hidden aria-label="Deployment"></div>
-    <aside id="fortifyPanel" class="plate" hidden aria-label="Fortify position"></aside>
     <nav id="buildbar" class="plate" hidden></nav>
+    <nav id="cmdbar" class="plate" hidden aria-label="Commands"></nav>
+    <div id="missileBanner" hidden aria-live="assertive"></div>
+    <div id="pausedBanner" hidden>Paused — orders you give now run when you resume (P)</div>
     <nav id="specbar" class="plate" hidden aria-label="Spectator controls"></nav>
     <section id="drawer" class="plate workspace" hidden aria-label="Management">
       <div class="tabs" role="tablist" hidden>
@@ -140,6 +145,8 @@
     </div>
     <button id="mmShow" class="btn small" hidden>Map ▴</button>
     <aside id="mapkey" class="plate" hidden aria-label="Map key"></aside>
+    <aside id="finder" class="plate" hidden aria-label="Find buildings"></aside>
+    <aside id="placePanel" class="plate" hidden aria-live="polite" aria-label="Placement preview"></aside>
     <aside id="battle" class="plate" hidden aria-label="Battle summary"></aside>
     <aside id="sandbox" class="plate" hidden aria-label="Combat sandbox"></aside>
     <div id="search" class="modal" hidden><div class="plate search-box"><input id="searchInput" type="search" placeholder="Search cities, units, buildings, technologies, commands…" aria-label="Search"><ul id="searchResults" class="log"></ul></div></div>
@@ -147,8 +154,9 @@
     <div id="tooltip" class="tooltip" hidden></div>
     <div id="menu" class="modal" hidden>
       <div class="plate">
-        <h2>Paused view</h2>
-        <p class="muted">The world keeps moving. Shortcuts: right-click move, right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), Shift+F fortify where the troops stand, T research, B build, / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, A attack-move, S stop, H hold, X withdraw, F cycle formation (found a city with colonists), F found city, R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
+        <h2 id="menuTitle">Menu</h2>
+        <p class="muted" id="menuNote"></p>
+        <p class="muted">Shortcuts: right-click move (aircraft: patrol; enemy: strike; own airfield: return), right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), WASD or arrows pan, Ctrl/Cmd+A attack-move, H hold, X withdraw, P pause (single player), T research, B build (Defenses → Trench Line to dig in), / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, F cycle formation (found a city with colonists), R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p>
         <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
         <div class="sound-settings" id="soundSettings">
           <h4>Sound</h4>

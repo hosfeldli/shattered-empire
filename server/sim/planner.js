@@ -28,7 +28,7 @@ export const GOALS = {
   research: { name: 'Become a research centre', fit: { academy: 25, university: 25 } },
 };
 // buildings whose purpose is national (one copy serves the empire) and so are coordinated
-const NATIONAL = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'comms_tower', 'wonder', 'fusion_plant']);
+const NATIONAL = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'comms_tower', 'wonder', 'fusion_plant', 'missile_silo']);
 const ROUTINE = new Set(['farm', 'house']);
 export const isRoutine = (type) => ROUTINE.has(type);
 
@@ -76,6 +76,9 @@ export function assess(g, civ, c) {
     sites: blds.filter((b) => !b.done).length,
     damaged: blds.filter((b) => b.done && b.hp < b.maxHp * 0.7).length,
     enemyNear: [...g.units.values()].some((u) => g.hostile(u.owner, civ.id) && dist(u.tile, c.tile) <= 6),
+    enemyAirNear: [...g.units.values()].some((u) => g.hostile(u.owner, civ.id) && UNITS[u.type].air && !UNITS[u.type].civilian && dist(u.tile, c.tile) <= 8),
+    // a settlement near a rival's known cities is on the frontier
+    frontier: [...civ.knownCities.values()].some((k) => k.owner !== civ.id && !g.civs[k.owner]?.isRebel && dist(k.tile, c.tile) <= 14),
     isolated: !!c.isolated,
   };
 }
@@ -164,6 +167,21 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
         if (civ.needsMarket && !nationHas('market')) { B = 75; why.push(`buy ${civ.needsMarket} on the world market (no deposit to extract it)`); break; }
         if (pool('credits') > 3000) continue; break;
       case 'bunker': case 'fort': if (a.enemyNear) { R = 30; why.push('enemies within reach'); } else if (!S) continue; if (has(type) >= 2 + (type === 'bunker' ? 2 : 0)) continue; B = 10; break;
+      case 'guard_post': {
+        // cheap early defense for exposed settlements: limited, never the whole starting stockpile
+        const exposed = a.enemyNear || a.frontier;
+        if (!exposed || has('guard_post') >= (a.enemyNear ? 2 : 1) || nationHas('guard_post') >= g.cityOf(civ).length + 1) continue;
+        if (pool('materials') < 90) { deferred.push('Guard Post: keeping materials for the economy first'); continue; }
+        R = a.enemyNear ? 28 : 12; why.push(a.enemyNear ? 'enemies within reach of a lightly defended city' : 'an exposed frontier settlement'); break;
+      }
+      case 'aa_battery': {
+        // only against a real aviation threat, around what matters: the capital, airfields, industry
+        const air = (civ.seenComp?.air || 0) > 0.05 || a.enemyAirNear;
+        if (!air) { if (S) deferred.push('AA Battery: no enemy aircraft seen yet'); continue; }
+        const valuable = c.capital || a.blds.some((b) => b.type === 'airfield' || b.type === 'steel_mill' || b.type === 'heavy_assembly' || b.type === 'electronics_plant');
+        if (has('aa_battery') >= (valuable ? 2 : 1)) continue;
+        R = a.enemyAirNear ? 40 : valuable ? 24 : 10; why.push(a.enemyAirNear ? 'enemy aircraft over the city' : 'protect valuable targets from air attack'); break;
+      }
       case 'depot': if (a.isolated || has('depot')) continue; B = c.capital ? 0 : 8; break;
       case 'seismic': {
         // a survey station pays off where extraction is concentrated
@@ -172,6 +190,13 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
       }
       case 'stabilizer': if (!g.cataclysm && !a.enemyNear && a.damaged < 2) continue; B += 20; why.push(g.cataclysm ? 'the ground here is unstable' : 'harden infrastructure against attack'); break;
       case 'wonder': if (!civ.isAI || civ.age < 4 || g.cityOf(civ).length < 4) continue; B = 120; break;
+      case 'missile_silo': {
+        // an endgame project: only for an AI at war (or under threat) with a strong economy, far from the front
+        if (!civ.isAI || !c.capital || a.enemyNear) continue;
+        const atWar = g.civs.some((o) => o !== civ && o.alive && !o.isRebel && g.hostile(civ.id, o.id));
+        if (!atWar || pool('steel') < 900 || pool('credits') < 2500) { if (S) deferred.push('Missile Silo: needs a war and a strong treasury'); continue; }
+        B = 40; why.push('strategic deterrent'); break;
+      }
       default: break;
     }
     if (NATIONAL.has(type)) {

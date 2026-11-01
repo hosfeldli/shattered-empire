@@ -102,7 +102,7 @@ export class ResearchWorkspace {
       body.innerHTML = `<div class="rw">
         <header class="rw-hd" id="rwHead"></header>
         <div class="rw-main">
-          <div class="rw-graph" id="rwGraph" tabindex="0" aria-label="Technology graph: drag to pan, wheel to zoom">
+          <div class="rw-graph" id="rwGraph" tabindex="0" aria-label="Technology graph: drag or scroll to move, Ctrl+wheel to zoom">
             <svg id="rwSvg" xmlns="http://www.w3.org/2000/svg"><g id="rwG"></g></svg>
             <div class="rw-tools"><button class="btn small" data-rw="fit" title="Fit the whole tree">Fit</button><button class="btn small" data-rw="center" title="Centre on current research">Current</button><button class="btn small" data-rw="zin" aria-label="Zoom in">+</button><button class="btn small" data-rw="zout" aria-label="Zoom out">−</button></div>
           </div>
@@ -174,7 +174,7 @@ export class ResearchWorkspace {
     const key = JSON.stringify([e.research, Math.floor(e.progress / 5), e.researchRate, e.age, have, e.advancing, this.search, this.filter]);
     if (key === this.hdKey) return; this.hdKey = key;
     $('rwHead').innerHTML = `<div class="rw-now"><h2>Research</h2><div><b>${cur ? esc(cur.name) : 'Nothing under research'}</b> <span class="muted">${e.researchRate.toFixed(1)}/s${eta != null ? ` · ${fmtT(eta)} left` : ''}</span></div>${cur ? `<div class="era-bar"><i style="width:${Math.min(100, (100 * e.progress) / cur.cost)}%"></i></div>` : ''}</div>
-      <div class="rw-era">${next ? `<b>${esc(next.name)}</b> <span class="muted">${have}/${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies · ${Object.entries(next.cost).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k].toLowerCase())}`).join(', ')}</span> ${e.advancing ? `<span class="warn">advancing ${e.advancing}s</span>` : `<button class="btn small primary" data-rw="advance" ${have < next.techsNeeded ? 'disabled' : ''}>Advance</button>`}` : '<b>Final era reached</b>'}</div>
+      <div class="rw-era">${next ? `<b>${esc(next.name)}</b> <span class="muted">${have}/${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies · ${Object.entries(next.cost).map(([k, v]) => `<span class="${(e.res[k] || 0) < v ? 'bad' : ''}">${v} <button type="button" class="rlink" data-res="${k}">${esc(D.GOOD_NAMES[k].toLowerCase())}</button></span>`).join(', ')}</span> ${e.advancing ? `<span class="warn">advancing ${e.advancing}s</span>` : `<button class="btn small primary" data-rw="advance" ${have < next.techsNeeded ? 'disabled' : ''}>Advance</button>`}` : '<b>Final era reached</b>'}</div>
       <div class="rw-filters"><input id="rwSearch" type="search" placeholder="Search technologies or unlocks…" value="${esc(this.search)}" aria-label="Search technologies">
         <select id="rwCat" aria-label="Category"><option value="">All categories</option>${CATEGORIES.map(([k, n]) => `<option value="${k}" ${this.filter.cat === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
         <select id="rwEra" aria-label="Era"><option value="">All eras</option>${D.AGES.map((a, i) => `<option value="${i}" ${this.filter.era === String(i) ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
@@ -185,7 +185,7 @@ export class ResearchWorkspace {
 
   inspector() {
     const S = this.S, D = S.defs, e = S.econ, k = this.sel, el = $('rwInsp');
-    if (!k) { const key = 'none'; if (this.inKey === key) return; this.inKey = key; el.innerHTML = '<p class="muted">Select a technology to see what it needs and what it unlocks. Selecting never starts research: use the buttons here.</p><p class="muted small">Drag the canvas to pan, scroll to zoom, double-click a node to centre it.</p>'; return; }
+    if (!k) { const key = 'none'; if (this.inKey === key) return; this.inKey = key; el.innerHTML = '<p class="muted">Select a technology to see what it needs and what it unlocks. Selecting never starts research: use the buttons here.</p><p class="muted small">Drag or scroll to move around, Ctrl/Cmd+scroll or pinch to zoom, double-click a node to centre it.</p>'; return; }
     const t = D.TECHS[k], st = this.state(k), eta = this.eta(k), miss = this.missing(k), unl = this.unlocks(k);
     const prog = e.techProgress?.[k] || (e.research === k ? e.progress : 0) || 0;
     const key = JSON.stringify([k, st, Math.floor(prog / 5), e.queue, e.researchGoal, e.researchRate.toFixed(1), e.age]);
@@ -221,10 +221,19 @@ export class ResearchWorkspace {
   }
 
   // ------------------------------------------------------------------ pan & zoom
-  applyView() { const v = this.view; if (!v) return; $('rwG').setAttribute('transform', `translate(${v.x} ${v.y}) scale(${v.z})`); }
+  // the tree never drifts away: zoom stops where the whole height fits (or a legible minimum), and
+  // panning keeps the tree on screen
+  minZ() { const host = $('rwGraph'), L = this.layout; if (!host || !L) return 0.45; const r = host.getBoundingClientRect(); return Math.max(0.45, Math.min(1, r.height / L.height)); }
+  clampView() {
+    const v = this.view, host = $('rwGraph'), L = this.layout; if (!v || !host || !L) return;
+    const r = host.getBoundingClientRect(), w = L.width * v.z, h = L.height * v.z, m = 40;
+    v.x = w + 2 * m <= r.width ? (r.width - w) / 2 : Math.min(m, Math.max(r.width - w - m, v.x));
+    v.y = h + 2 * m <= r.height ? Math.min(Math.max(4, v.y), r.height - h) : Math.min(m, Math.max(r.height - h - m, v.y));
+  }
+  applyView() { const v = this.view; if (!v) return; this.clampView(); $('rwG').setAttribute('transform', `translate(${v.x} ${v.y}) scale(${v.z})`); }
   fit() {
     const host = $('rwGraph'); if (!host) return; const L = this.layout;
-    const r = host.getBoundingClientRect(); const z = Math.max(0.25, Math.min(1, Math.min(r.width / L.width, r.height / L.height)));
+    const r = host.getBoundingClientRect(); const z = Math.max(this.minZ(), Math.min(1, Math.min(r.width / L.width, r.height / L.height)));
     this.view = { x: (r.width - L.width * z) / 2, y: 4, z }; this.applyView();
   }
   // a readable starting view: the current era at the left edge, nodes at a legible size
@@ -241,30 +250,52 @@ export class ResearchWorkspace {
     this.view = { x: r.width / 2 - (p.x + NODE_W / 2) * z, y: r.height / 2 - (p.y + NODE_H / 2) * z, z }; this.applyView();
   }
   zoomAt(f, cx, cy) {
-    const v = this.view; if (!v) return; const z = Math.max(0.2, Math.min(2.2, v.z * f));
+    const v = this.view; if (!v) return; const z = Math.max(this.minZ(), Math.min(2.2, v.z * f));
     v.x = cx - (cx - v.x) * (z / v.z); v.y = cy - (cy - v.y) * (z / v.z); v.z = z; this.applyView();
   }
 
   bind(body) {
     const graph = body.querySelector('#rwGraph');
-    graph.addEventListener('wheel', (e) => { e.preventDefault(); const r = graph.getBoundingClientRect(); this.zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+    // the wheel scrolls the tree like a page (Shift: sideways); Ctrl/Cmd+wheel or a pinch zooms
+    graph.addEventListener('wheel', (e) => {
+      e.preventDefault(); const r = graph.getBoundingClientRect();
+      if (e.ctrlKey || e.metaKey) { this.zoomAt(Math.exp(-e.deltaY * 0.004), e.clientX - r.left, e.clientY - r.top); return; }
+      const v = this.view; if (!v) return;
+      const dx = e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX, dy = e.shiftKey && !e.deltaX ? 0 : e.deltaY;
+      // a mostly vertical wheel over a wide, short tree pans sideways: there is little to scroll vertically
+      const L = this.layout, tall = L.height * v.z > r.height;
+      v.x -= tall ? dx : dx + dy; v.y -= tall ? dy : 0; this.applyView();
+    }, { passive: false });
+    // Panning: one pointer owns the gesture; text is never selected; a drag never selects a node.
+    const end = (e, commit) => {
+      const d = this.dragging; if (!d || (e && e.pointerId !== d.id)) return;
+      this.dragging = null; graph.classList.remove('is-dragging');
+      try { graph.releasePointerCapture(d.id); } catch { /* already released */ }
+      if (commit && !d.moved) { const n = document.elementFromPoint(e.clientX, e.clientY)?.closest('.node'); this.sel = n ? n.dataset.tech : null; this.refresh(); }
+    };
     graph.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.rw-tools')) return;
-      this.dragging = { x: e.clientX, y: e.clientY, vx: this.view?.x || 0, vy: this.view?.y || 0, moved: false };
+      if (e.target.closest('.rw-tools') || e.button > 0 || this.dragging) return;
+      e.preventDefault();   // no native text selection or image drag
+      window.getSelection?.()?.removeAllRanges();
+      this.dragging = { id: e.pointerId, x: e.clientX, y: e.clientY, vx: this.view?.x || 0, vy: this.view?.y || 0, moved: false };
+      graph.classList.add('is-dragging');
       try { graph.setPointerCapture(e.pointerId); } catch { /* synthetic or already released */ }
+      graph.focus({ preventScroll: true });
     });
     graph.addEventListener('pointermove', (e) => {
-      const d = this.dragging; if (!d) return;
+      const d = this.dragging; if (!d || e.pointerId !== d.id) return;
       const dx = e.clientX - d.x, dy = e.clientY - d.y; if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
       if (d.moved && this.view) { this.view.x = d.vx + dx; this.view.y = d.vy + dy; this.applyView(); }
     });
-    graph.addEventListener('pointerup', (e) => {
-      const d = this.dragging; this.dragging = null;
-      if (d && !d.moved) { const n = document.elementFromPoint(e.clientX, e.clientY)?.closest('.node'); this.sel = n ? n.dataset.tech : null; this.refresh(); }
-    });
+    graph.addEventListener('pointerup', (e) => end(e, true));
+    graph.addEventListener('pointercancel', (e) => end(e, false));
+    graph.addEventListener('lostpointercapture', (e) => { if (this.dragging && e.pointerId === this.dragging.id) end(e, false); });
+    graph.addEventListener('selectstart', (e) => e.preventDefault());
+    graph.addEventListener('dragstart', (e) => e.preventDefault());
     graph.addEventListener('dblclick', (e) => { const n = e.target.closest('.node'); if (n) this.focus(n.dataset.tech); });
     graph.addEventListener('keydown', (e) => { const n = e.target.closest?.('.node'); if (n && (e.key === 'Enter' || e.key === ' ')) { this.sel = n.dataset.tech; this.refresh(); e.preventDefault(); } });
     body.addEventListener('click', (e) => {
+      const rl = e.target.closest('[data-res]'); if (rl) { this.A.openResource?.(rl.dataset.res); return; }
       const s = e.target.closest('[data-rwsel]'); if (s && !e.target.closest('[data-rw]')) { this.sel = s.dataset.rwsel; this.refresh(); this.focus(this.sel); return; }
       const b = e.target.closest('[data-rw]'); if (!b) return;
       const k = b.dataset.k, op = b.dataset.rw, e2 = this.S.econ;
