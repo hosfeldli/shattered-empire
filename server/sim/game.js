@@ -12,6 +12,8 @@ import { RoadNet } from './roads.js';
 import { economyStep, recomputeTerritory, recomputeTradeNetwork, migrationStep, allocationFor } from './economy.js';
 import { MODES, PRIORITY, CATEGORIES, defaultWorkforce } from './workforce.js';
 import { missilesInit, missilesStep, siloStep, startMissile, launchMissile, interceptors, interceptOdds, inventory, missilesSnapshot, MISSILE } from './missiles.js';
+import { BRIDGE_CLASSES, planBridge } from './bridges.js';
+import { Weather } from './weather.js';
 import { upgradable, upgradeCost as levelUpgradeCost, upgradeProblem, jobSlots, outMul, MAX_LEVEL, LEVEL_JOBS, LEVEL_OUT, LEVEL_AGE, CITY_TIERS } from './levels.js';
 import { cityState, CITY_STATES, rebuildSettlement, rebuildProblem, cityDiagnostics, REBUILD_COST } from './cities.js';
 import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding, hardened, resolveDeadlocks } from './military.js';
@@ -59,6 +61,7 @@ function makeScheduler(g) {
     { name: 'construction', every: 10, fn: () => { g.constructionStep(1); g.roads.step(g, 1); }, budget: 5 },
     { name: 'economy', every: 10, phase: 8, fn: () => { economyStep(g, 1); supplyStep(g, 1); g.researchStep(1); }, budget: 20 },
     { name: 'geology', every: 10, phase: 6, fn: () => { g.geology.step(1, g.time); for (const tile of g.world.wiped) g.roads.obliterate(tile); g.world.wiped.clear(); }, budget: 5 },
+    { name: 'weather', every: 10, phase: 1, fn: () => g.weather.step(1, (g.time / 600) % 1), budget: 2 },
     { name: 'diplomacy', every: 10, phase: 4, fn: () => g.diplomacy.step(1), budget: 2 },
     { name: 'governors', every: 10, phase: 2, fn: () => governorStep(g, 1), budget: 10 },
     { name: 'victory', every: 10, fn: () => g.checkVictory(), budget: 2 },
@@ -90,6 +93,8 @@ function researchChain(civ, k) { const chain = []; const add = (x) => { if (civ.
 const prereqCache = new Map();
 function researchPrereqsAll(k) { let s = prereqCache.get(k); if (s) return s; s = new Set(); const walk = (x) => { for (const r of TECHS[x].req) if (!s.has(r)) { s.add(r); walk(r); } }; walk(k); prereqCache.set(k, s); return s; }
 
+const bestBridgeClass = (civ) => (civ.techs.has('civil_engineering') ? 'road' : 'timber');
+
 export class Game {
   constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, cataclysm = null, style = null }) {
     this.id = id;
@@ -98,7 +103,7 @@ export class Game {
     this.cataclysm = cataclysm && cataclysm.on ? { on: true, freq: Math.max(0.25, Math.min(3, +cataclysm.freq || 1)), sev: Math.max(0.25, Math.min(2, +cataclysm.sev || 1)) } : null;
     this.worldStyle = style || null;
     this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay }));
-    this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, LEVELS: { max: MAX_LEVEL, jobs: LEVEL_JOBS, out: LEVEL_OUT, age: LEVEL_AGE, tiers: CITY_TIERS }, CITY_STATES, REBUILD_COST, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
+    this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, LEVELS: { max: MAX_LEVEL, jobs: LEVEL_JOBS, out: LEVEL_OUT, age: LEVEL_AGE, tiers: CITY_TIERS }, CITY_STATES, REBUILD_COST, BRIDGE_CLASSES, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
     this.rng = mulberry32(seed ^ 0x9e3779b9);
     this.world = new World(seed, { style });
     this.world.generate(slots.length);
@@ -120,6 +125,7 @@ export class Game {
     if (rebels) { const r = this.makeCiv(this.civs.length, { human: false, name: REBEL.name }); r.isRebel = true; r.color = REBEL.color; r.personality = 'rebel'; this.civs.push(r); }
     this.diplomacy = new Diplomacy(this);
     this.geology = new Geology(this);
+    this.weather = new Weather(this.world, this.seed ?? 1);
     if (restore) return;                      // persistence fills in the rest
     for (const civ of this.civs) if (!civ.isRebel) this.setupStart(civ, this.world.starts[civ.id]);
     recomputeTerritory(this);
@@ -574,7 +580,8 @@ export class Game {
   civSummary(c) {
     const cities = this.cityOf(c);
     const pop = cities.reduce((s, x) => s + x.pop, 0);
-    return { id: c.id, name: c.name, alive: c.alive, cities: cities.length, pop: Math.round(pop), techs: c.techs.size, age: c.age, kills: c.kills, casualties: c.casualties,
+    // posture: what an AI nation is visibly doing (Expanding, Defending, Preparing…), never its plan
+    return { id: c.id, name: c.name, alive: c.alive, cities: cities.length, pop: Math.round(pop), techs: c.techs.size, age: c.age, kills: c.kills, casualties: c.casualties, posture: c.ai && !c.isRebel ? c.posture : undefined,
       score: Math.round(pop + c.techs.size * 10 + cities.length * 25 + c.age * 60 + c.kills * 2) };
   }
 
@@ -590,6 +597,7 @@ export class Game {
       const def = UNITS[u.type];
       let v = def.vision;
       if (!def.air) { const tt = w.terr[u.tile]; if (tt === T.HILLS) v += 1; else if (tt === T.MOUNTAIN) v += 2; }
+      if (this.weather && this.weather.fogAt(u.tile) > 0.55) v = Math.max(1, v - 1);     // dense fog: one hex less
       stamp(o.v, u.tile, v);
       stamp(o.d, u.tile, def.cat === 'air' && def.civilian ? 4 : 2);
     }
@@ -606,7 +614,7 @@ export class Game {
       const allies = civs.filter((o) => o.alive && this.allied(civ.id, o.id)).map((o) => o.id);
       vis.set(own[civ.id].v); det.set(own[civ.id].d);
       for (const a of allies) if (a !== civ.id) { const ov = own[a].v, od = own[a].d; for (let i = 0; i < N; i++) { vis[i] |= ov[i]; det[i] |= od[i]; } }
-      if (this.smoke.size) concealBySmoke(this, civ, vis, allies);
+      if (this.smoke.size) concealBySmoke(this, civ, vis, allies); else civ.smokeHide?.fill(0);
       if (this.sandboxReveal && civ.human) vis.fill(1);      // developer sandbox matches see the whole field
       const ex = civ.explored, lo = civ.lastOwner, seenOwners = new Set();
       for (let i = 0; i < N; i++) if (vis[i]) { ex[i] = 1; const o = w.owner[i]; lo[i] = o; if (o >= 0) seenOwners.add(o); }
@@ -624,7 +632,7 @@ export class Game {
     const comp = civ.seenComp || (civ.seenComp = { inf: 0, armor: 0, art: 0, air: 0 });
     for (const k of Object.keys(comp)) comp[k] *= 0.999;
     for (const u of this.units.values()) {
-      if (u.owner === civ.id || !vis[u.tile] || !this.detects(civ.id, u)) continue;
+      if (u.owner === civ.id || !vis[u.tile] || civ.smokeHide?.[u.tile] || !this.detects(civ.id, u)) continue;
       const d = UNITS[u.type]; if (d.civilian) continue;
       seen[u.owner] = (seen[u.owner] || 0) + (d.atk + d.def) * (u.hp / u.maxHp);
       if (this.hostile(civ.id, u.owner)) comp[d.air ? 'air' : d.cat === 'artillery' ? 'art' : d.move === 'infantry' ? 'inf' : 'armor'] += 0.02;
@@ -709,9 +717,9 @@ export class Game {
     if (stabOK) k.knownStab = true;
     const units = [];
     for (const u of this.units.values()) {
-      if (!view.god && u.owner !== civ.id && (!vis[u.tile] || !this.detects(civ.id, u))) continue;
+      if (!view.god && u.owner !== civ.id && (!vis[u.tile] || civ.smokeHide?.[u.tile] || !this.detects(civ.id, u))) continue;   // smoke over our own land hides what is in it
       units.push([u.id, u.owner, u.type, u.tile, u.next ?? -1, Math.round(u.prog * 100), Math.round((100 * u.hp) / u.maxHp), Math.round(u.supply),
-        (this.time - u.lastCombat < 1.5 ? 1 : 0) | (isWater(w.terr[u.tile]) && !UNITS[u.type].air ? 2 : 0) | (u.outOfSupply ? 4 : 0) | (u.status === 'waiting' ? 8 : 0) | (u.status === 'blocked' ? 16 : 0) | (u.field ? 32 : 0),
+        (this.time - u.lastCombat < 1.5 ? 1 : 0) | (isWater(w.terr[u.tile]) && !UNITS[u.type].air && !this.roads.edgesOf(u.tile).some((e) => e.cond > 0) ? 2 : 0) | (u.outOfSupply ? 4 : 0) | (u.status === 'waiting' ? 8 : 0) | (u.status === 'blocked' ? 16 : 0) | (u.field ? 32 : 0),
         u.owner === civ.id || view.god ? u.stance : undefined,
         u.owner === civ.id || view.god ? u.cstat || 0 : undefined, u.owner === civ.id || view.god ? u.tgt || 0 : undefined,
         Math.round(u.supp || 0), u.owner === civ.id || view.god ? Math.round(u.morale ?? 100) : undefined,
@@ -734,6 +742,8 @@ export class Game {
     const msg = { t: 's', time: +this.time.toFixed(1), tick: this.tickN, units, paths };
     if (ev.length) msg.ev = ev;
     if (tiles.length) msg.tiles = tiles;
+    // regional weather (whole map: the sky is seen from anywhere), sent when it changes
+    if (this.weather && (full || k.wxVer !== this.weather.ver)) { k.wxVer = this.weather.ver; msg.wx = this.weather.snapshot(); }
     if (visB64) msg.vis = visB64;
     if (view.observer) msg.obs = { follow: civ.id, fog: !view.god, speed: this.speed ?? 1 };
     if (econ) {
@@ -800,7 +810,8 @@ export class Game {
       if (rel.state === 'unmet' && !god) return { ...base, rel: { state: 'unmet' } };
       const knownCities = [...civ.knownCities.values()].filter((k) => k.owner === c.id).length;
       if (god && !c.isRebel) base.summary = this.civSummary(c);
-      return { ...base, age: c.isRebel ? undefined : c.age, rel: { state: rel.state, trade: rel.trade, borders: rel.borders, until: rel.until ? Math.round(rel.until - this.time) : undefined }, known: { cities: knownCities } };
+      // a met AI nation's posture is public (what it is visibly doing); its plans are not
+      return { ...base, age: c.isRebel ? undefined : c.age, posture: c.ai && !c.isRebel ? c.posture : undefined, rel: { state: rel.state, trade: rel.trade, borders: rel.borders, until: rel.until ? Math.round(rel.until - this.time) : undefined }, known: { cities: knownCities } };
     });
     const out = { econ: me, buildings, cities, civs, ruins, traffic, supply: packBits(civ.supply).toString('base64'),
       bf: battlefieldSnapshot(this, vis, god ? vis : civ.explored), battles: battlesFor(this, civ, vis, god), ms: missilesSnapshot(this, civ, vis) };
@@ -859,6 +870,7 @@ export class Game {
       case 'demolish': return 'Demolish building';
       case 'found': return 'Found a city';
       case 'roadPlan': return cmd.commit ? `Commission road (${(cmd.tiles || []).length} waypoints)` : null;
+      case 'bridgePlan': return cmd.commit ? 'Build a bridge' : null;
       case 'governor': return `Governor settings for ${this.cities.get(cmd.city)?.name}`;
       case 'clearPass': return 'Blast a pass through the peaks';
       default: return null;
@@ -1033,6 +1045,17 @@ export class Game {
           const plan = this.roads.plan(this, civ, tiles, type);
           if (cmd.commit) { const r = this.roads.startProject(this, civ, plan); if (r.error) return { error: r.error }; return { reply: { t: 'roadPlan', plan, started: r.project } }; }
           return { reply: { t: 'roadPlan', plan } };
+        }
+        case 'bridgePlan': {
+          // the Bridge tool: two banks and a class; the bridge is built as road segments (one source
+          // of truth with the road planner) by the same construction crews
+          const cls = BRIDGE_CLASSES[cmd.cls] ? cmd.cls : bestBridgeClass(civ);
+          const b = planBridge(this, civ, cmd.from | 0, cmd.to | 0, cls);
+          if (b.error) return cmd.commit ? { error: b.error } : { reply: { t: 'bridgePlan', error: b.error, cls } };
+          const plan = this.roads.plan(this, civ, b.tiles, BRIDGE_CLASSES[cls].roadType, true);
+          plan.cls = cls; plan.water = b.water; plan.major = b.major;
+          if (cmd.commit) { if (!plan.buildable) return { error: plan.segments.find((s) => s.reason && !s.skip)?.reason || 'That bridge is already built' }; const r = this.roads.startProject(this, civ, plan); if (r.error) return { error: r.error }; return { reply: { t: 'bridgePlan', plan, started: r.project } }; }
+          return { reply: { t: 'bridgePlan', plan } };
         }
         case 'roadCancel': return this.roads.cancel(civ, cmd.id);
         case 'demolish': {
@@ -1481,7 +1504,9 @@ export class Game {
   breaksSavings(civ, cost) {
     if (civ.natReserve && this.time - civ.natReserve.since > 240) civ.natReserve = null;   // never wait forever
     const res = civ.natReserve?.cost;
-    for (const sv of [civ.saving, res]) {
+    // an AI's blackboard reservations for planned works (the era itself is civ.saving)
+    const board = civ.ai?.brain ? civ.ai.brain.board.reserved(this.time, ['era']) : null;
+    for (const sv of [civ.saving, res, board && Object.keys(board).length ? board : null]) {
       if (!sv) continue;
       for (const [k, v] of Object.entries(cost)) if (sv[k] && (civ.res[k] || 0) - v < sv[k]) return true;
     }

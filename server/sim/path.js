@@ -22,6 +22,14 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
   if (own >= 0 && own !== civ.id && w.owner[a] !== own && !game.canEnter(civ.id, own)) return Infinity;
   if (mc.air) return w.terr[b] === T.LAVA ? 1.5 : 1;
   const tb = w.terr[b], ta = w.terr[a];
+  // a bridge over shallow water carries the units its class allows (checked before the sea rules)
+  if (isWater(tb) || isWater(ta)) {
+    const be = game.roads.usable(a, b);
+    if (be) {
+      if (mc.heavy && be.type < 2) return Infinity;
+      return mc.road[be.type] * (be.cond < 50 ? 1.6 : 1) + (avoid && avoid.has(b) ? 6 : 0);
+    }
+  }
   if (isWater(tb)) {
     if (!civ.techs.has('seafaring')) return Infinity;
     if (!isWater(ta)) {
@@ -38,7 +46,7 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
   if (edge && !(mc.heavy && riverHere && edge.type < 2)) {
     c = mc.road[edge.type] * (edge.cond < 50 ? 1.6 : 1);
   } else {
-    c = base;
+    c = base * (game.weather ? game.weather.moveMul(b) : 1);     // heavy rain and snow: off-road ground is slower (capped)
     if (w.river[b]) {
       const major = riverSize(w, b) >= 2;
       const f = w.river[a] ? (major ? mc.majorFord : mc.ford) * 0.4 : (major ? mc.majorFord : mc.ford);

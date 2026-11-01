@@ -50,6 +50,7 @@ export class Hud {
     $('roadPanel').addEventListener('click', (e) => this.onRoadClick(e));
     $('placePanel').addEventListener('click', (e) => { const r = e.target.closest('[data-res]'); if (r) this.openResource(r.dataset.res); });
     $('specbar').addEventListener('click', (e) => {
+      if (e.target.closest('[data-aidiag]')) return this.aiDiag();
       const b = e.target.closest('[data-follow],[data-speed],[data-fog]'); if (!b) return;
       if (b.dataset.follow) this.A.follow(+b.dataset.follow);
       else if (b.dataset.speed) this.A.speed(+b.dataset.speed);
@@ -323,7 +324,7 @@ export class Hud {
     let html = '';
     let cat = null;
     for (const it of items) { if (it[1].cat !== cat) { cat = it[1].cat; html += `<span class="bb-hd">${esc(CAT_NAME[cat] || cat)}</span>`; } html += btn(it, false); }
-    html += `<span class="bb-hd">Infrastructure</span><button class="buildbtn tool${S.mode?.kind === 'road' ? ' active' : ''}" data-tool="road" title="Road planner: drag or click waypoints, preview cost, then commission (R)"><span class="g">\u{1F6E4}</span><span class="n">Plan road</span><small>dirt / paved / highway / rail</small></button>`;
+    html += `<span class="bb-hd">Infrastructure</span><button class="buildbtn tool${S.mode?.kind === 'road' ? ' active' : ''}" data-tool="road" title="Road planner: drag or click waypoints, preview cost, then commission (R)"><span class="g">\u{1F6E4}</span><span class="n">Plan road</span><small>dirt / paved / highway / rail</small></button><button class="buildbtn tool${S.mode?.kind === 'bridge' ? ' active' : ''}" data-tool="bridge" title="Bridge: click both banks of a river or narrow strait; timber, reinforced or rail"><span class="g">\u{1F309}</span><span class="n">Bridge</span><small>timber / reinforced / rail</small></button>`;
     if (techs.has('civil_engineering')) html += `<button class="buildbtn tool${S.mode?.kind === 'clearPass' ? ' active' : ''}" data-tool="clearPass" title="Blast a passage through impassable peaks"><span class="g">\u{1F9E8}</span><span class="n">Clear peak</span><small>120 materials, 40 munitions</small></button>`;
     // defenses
     html += `<span class="bb-hd">Defenses</span><button class="bb-toggle${this.showLocked ? ' on' : ''}" data-showlocked="1" title="Show defenses you have not unlocked yet, and what they need">${this.showLocked ? 'Hide' : 'Show'} locked</button>`;
@@ -346,17 +347,36 @@ export class Hud {
       const dead = c.alive === false;
       return `<button class="civchip${c.id === S.civId ? ' on' : ''}${dead ? ' dead' : ''}" data-follow="${c.id}" title="Follow ${esc(c.name)}: see its economy, research and cities in the panels">`
         + `<span class="swatch" style="background:${cssColor(c.color)}"></span><span class="nm">${esc(c.name)}</span>`
-        + `<small>${dead ? 'fallen' : `${sm.cities ?? '?'} ${sm.cities === 1 ? 'city' : 'cities'} · ${sm.pop ?? '?'} pop · era ${(c.age ?? 0) + 1}`}</small></button>`;
+        + `<small>${dead ? 'fallen' : `${sm.cities ?? '?'} ${sm.cities === 1 ? 'city' : 'cities'} · ${sm.pop ?? '?'} pop · era ${(c.age ?? 0) + 1}${sm.posture ? ' · ' + esc(sm.posture) : ''}`}</small></button>`;
     }).join('')}</div>`;
     h += `<div class="seg spec-speed" role="group" aria-label="Match speed">${[[0, 'Pause'], [1, '1×'], [2, '2×'], [4, '4×'], [8, '8×']].map(([v, n]) => `<button class="${o.speed === v ? 'on' : ''}" data-speed="${v}" title="${v ? `Run at ${v}× speed` : 'Pause the match'} (P pause, , and . step)">${n}</button>`).join('')}</div>`;
+    h += `<button class="btn small ghost" data-aidiag="1" title="The followed AI's plan, objectives, memory and decision record">AI plan</button>`;
     h += `<div class="seg spec-fog" role="group" aria-label="Fog of war"><button class="${o.fog ? '' : 'on'}" data-fog="0" title="Reveal the whole continent (V toggles)">No fog</button><button class="${o.fog ? 'on' : ''}" data-fog="1" title="See only what the followed empire sees (V toggles)">Their fog</button></div>`;
     if (h !== this.specHtml) { this.specHtml = h; el.innerHTML = h; }
+  }
+
+  // the developer inspector for spectators: the followed AI's full plan and decision record
+  async aiDiag() {
+    const S = this.S, r = await this.A.cmd({ c: 'aiDiag', civ: S.civId });
+    const d = r?.diag; const el = $('aiDiagPanel');
+    if (!d) { this.toast({ text: 'That empire is not run by the AI.', kind: 'info', level: 'minor' }); return; }
+    const q = d.quality || {};
+    el.hidden = false;
+    el.innerHTML = `<div class="hd"><b>${esc(S.civInfo[S.civId]?.name || '')}: ${esc(d.posture || '')}</b><button class="btn small ghost" data-close-diag>Close</button></div>
+      <p class="muted">Goal: <b>${esc(d.goal || '')}</b>${d.why ? ` (${esc(d.why)})` : ''}</p>
+      ${(d.objectives || []).map((o) => `<div class="small">Objective: take hex ${o.target}: stage <b>${esc(o.stage || '')}</b>, ${esc(o.status)}, ${o.units} units</div>`).join('') || '<div class="small muted">No campaign under way.</div>'}
+      <dl class="kv small"><dt>Orders</dt><dd>${q.orders} sent, ${q.refused} refused (${q.duplicates} duplicate, ${q.ownershipConflicts} not owner, ${q.jitter} jitter), ${q.failed} failed</dd><dt>Plans</dt><dd>${q.stalls} stalls, ${q.recovered} recovered, ${q.abandoned} abandoned, ${q.reversals} reversals, ${q.oscillations} oscillations</dd>
+      <dt>Memory</dt><dd>${d.memory.sightings} sightings, ${d.memory.battles} losses, ${d.memory.raids} raided regions, ${d.memory.routes} failed routes</dd><dt>Reserved</dt><dd>${esc(Object.entries(d.reserved || {}).map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing')}</dd>
+      <dt>Traits</dt><dd>${esc(Object.entries(d.traits || {}).map(([k, v]) => `${k} ${v}`).join(', '))}</dd></dl>
+      <ul class="log small">${(d.log || []).slice().reverse().map((l) => `<li><span class="muted">${Math.floor(l.at / 60)}:${String(Math.floor(l.at % 60)).padStart(2, '0')}</span> <b>${esc(l.kind)}</b> ${esc(l.text)}${l.by ? ` <span class="muted">(${esc(l.by)})</span>` : ''}</li>`).join('')}</ul>`;
+    el.onclick = (e) => { if (e.target.closest('[data-close-diag]')) el.hidden = true; };
   }
 
   // ------------------------------------------------------------ road planner
   roadPanel() {
     const S = this.S, m = S.mode, el = $('roadPanel');
     if (m && m.kind === 'trench') return this.trenchPanel();
+    if (m && m.kind === 'bridge') return this.bridgePanel();
     if (!m || m.kind !== 'road') { el.hidden = true; return; }
     el.hidden = false;
     const D = S.defs, techs = new Set(S.econ?.techs || []);
@@ -372,6 +392,21 @@ export class Hud {
     h += `<div class="actions"><button class="btn primary" data-road="commit" ${p && p.buildable ? '' : 'disabled'}>Commission road</button><button class="btn small" data-road="undo" ${m.points.length ? '' : 'disabled'}>Undo point</button><button class="btn small ghost" data-road="clear">Clear</button><button class="btn small ghost" data-road="close">Close</button></div>`;
     const projects = S.econ?.roads || [];
     if (projects.length) h += `<h4 style="margin:8px 0 2px">Projects</h4><ul class="log">${projects.map((r) => `<li><span class="tag ${r.status === 'blocked' || r.status === 'paused' ? 'warn' : r.status === 'complete' ? 'good' : ''}">${esc(r.status)}</span> ${esc(D.ROAD_TYPES[r.type].name)} ${r.done}/${r.total}${r.by && r.by !== 'player' ? ` <span class="muted">(${esc(r.by.replace('governor:', 'governor '))})</span>` : ''} ${r.status !== 'complete' ? `<button class="btn small ghost" data-road="cancel" data-id="${r.id}">Cancel</button>` : ''}</li>`).join('')}</ul>`;
+    if (h !== this.roadHtml) { this.roadHtml = h; el.innerHTML = h; }
+  }
+  bridgePanel() {
+    const S = this.S, m = S.mode, el = $('roadPanel'), D = S.defs, techs = new Set(S.econ?.techs || []);
+    el.hidden = false;
+    const C = D.BRIDGE_CLASSES || {};
+    const seg = Object.values(C).map((c) => { const ok = !c.tech || techs.has(c.tech); return `<button class="${m.cls === c.key ? 'on' : ''}" data-bridgecls="${c.key}" ${ok ? '' : 'disabled'} title="${esc(c.desc)}${ok ? '' : ' Needs ' + esc(D.TECHS[c.tech]?.name || c.tech) + '.'}">${esc(c.name.replace(' Bridge', ''))}</button>`; }).join('');
+    let h = `<h3>Bridge</h3><p class="muted">Click one bank, then the other. A bridge crosses a river or up to ${C[m.cls]?.span || 2} hexes of shallow water; deep sea cannot be bridged.</p><div class="seg">${seg}</div><p class="muted small">${esc(C[m.cls]?.desc || '')}</p>`;
+    const p = m.preview;
+    if (p) {
+      h += `<dl class="kv"><dt>Crossing</dt><dd>${p.water ? `${p.water} hex${p.water > 1 ? 'es' : ''} of water` : 'river'}${p.major ? ' (major river)' : ''}</dd><dt>Cost</dt><dd>${Object.entries(p.cost).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ') || 'already built'}</dd><dt>Build time</dt><dd>~${p.time}s</dd><dt>Carries</dt><dd>${C[p.cls]?.heavy ? 'every unit, tanks included' : 'infantry and light vehicles'}</dd></dl>`;
+      if (p.blocked) h += `<div class="bad">${esc(p.segments.find((s) => s.reason && !s.skip)?.reason || 'part of it cannot be built')}</div>`;
+    } else if (m.error) h += `<div class="bad">${esc(m.error)}</div>`;
+    else h += `<p class="muted">${m.from < 0 ? 'Pick the first bank.' : 'Now pick the far bank.'}</p>`;
+    h += `<div class="actions"><button class="btn primary" data-bridge="commit" ${p && p.buildable ? '' : 'disabled'}>Build bridge</button><button class="btn small ghost" data-bridge="clear">Clear</button><button class="btn small ghost" data-bridge="close">Close</button></div>`;
     if (h !== this.roadHtml) { this.roadHtml = h; el.innerHTML = h; }
   }
   // Placement preview: what it costs against what you have, what it needs, where it can go, what it
@@ -419,6 +454,8 @@ export class Hud {
   onRoadClick(e) {
     const tr = e.target.closest('[data-trench]'); if (tr) return this.A.trench(tr.dataset.trench, tr.dataset.v ?? +tr.dataset.id);
     const r = e.target.closest('[data-res]'); if (r) return this.openResource(r.dataset.res);
+    const bc = e.target.closest('[data-bridgecls]'); if (bc) return this.A.bridge('cls', bc.dataset.bridgecls);
+    const bb = e.target.closest('[data-bridge]'); if (bb) return this.A.bridge(bb.dataset.bridge);
     const b = e.target.closest('[data-road]'); if (!b) return; this.A.road(b.dataset.road, +b.dataset.id);
   }
 
@@ -1192,7 +1229,7 @@ export class Hud {
       const r = c.rel || { state: 'unmet' };
       h += `<div class="civrow"><div class="hd"><span class="swatch" style="background:${cssColor(c.color)}"></span><b>${esc(c.name)}</b>${c.rebel ? ' <span class="tag">rebels</span>' : ''}${c.ai ? ` <span class="tag" title="AI rules: ${c.ai.advantages && c.ai.advantages.econ !== 1 ? `economy ×${c.ai.advantages.econ}, research ×${c.ai.advantages.research}, army ×${c.ai.advantages.army}` : 'no numerical advantages (fair play)'}${c.ai.profile === 'legacy' ? ' — legacy settings from an older save' : ''}">AI ${esc(({ easy: 'Relaxed', normal: 'Standard', hard: 'Hard', expert: 'Expert', brutal: 'Brutal' })[c.ai.difficulty] || '')}${c.ai.advantages && c.ai.advantages.econ !== 1 ? ' +bonus' : ''}${c.ai.profile === 'legacy' ? ' (legacy)' : ''}</span>` : ''}<span class="state ${r.state}">${c.alive ? r.state : 'fallen'}</span></div>`;
       if (r.state !== 'unmet' && c.alive) {
-        h += `<div class="muted">${c.age != null ? esc(D.AGES[c.age]?.name || '') + ', ' : ''}${c.known?.cities ?? 0} cities seen${r.trade ? ', trade agreement' : ''}${r.borders ? ', open borders' : ''}${r.until > 0 ? `, truce ${r.until}s` : ''}</div><div class="actions">`;
+        h += `<div class="muted">${c.posture ? `<span class="tag" title="What this nation is visibly doing">${esc(c.posture)}</span> ` : ''}${c.age != null ? esc(D.AGES[c.age]?.name || '') + ', ' : ''}${c.known?.cities ?? 0} cities seen${r.trade ? ', trade agreement' : ''}${r.borders ? ', open borders' : ''}${r.until > 0 ? `, truce ${r.until}s` : ''}</div><div class="actions">`;
         const btn = (a, label, cls = '') => `<button class="btn small ${cls}" data-diplo="${a}" data-to="${c.id}">${label}</button>`;
         if (c.rebel) h += btn('tribute', 'Pay off (truce)', 'ghost');
         else if (r.state === 'war') h += btn('peace', 'Propose peace', 'primary');

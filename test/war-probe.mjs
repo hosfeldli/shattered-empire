@@ -19,4 +19,5 @@ for (let i = 1; i <= minutes * 600; i++) {
     }
   }
 }
+for (const c of g.civs.filter((x) => x.ai && !x.isRebel)) console.log(c.name, c.posture, JSON.stringify(c.ai.brain.diag.quality()), JSON.stringify(c.ai.brain.monitor.counts));
 console.log(`${((performance.now() - t0) / (minutes * 600)).toFixed(1)} ms/tick`);

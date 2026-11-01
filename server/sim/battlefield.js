@@ -154,8 +154,12 @@ export function engineerClear(g, u, dt) {
   return false;
 }
 
-// Smoke conceals: a hex inside dense smoke is only seen by someone right next to it.
+// Smoke conceals: a hex inside dense smoke is only seen by someone right next to it. In our own (or
+// an ally's) territory the land itself stays in view — a nation never loses sight of its own ground,
+// which otherwise showed as our colour under fog after a battle — but what stands in the smoke is
+// hidden (civ.smokeHide; see Game.detects).
 export function concealBySmoke(g, civ, vis, allies) {
+  const hide = civ.smokeHide || (civ.smokeHide = new Uint8Array(vis.length)); hide.fill(0);
   for (const [t, s] of g.smoke) {
     if (s.d < 0.6 || !vis[t]) continue;
     let near = false;
@@ -165,7 +169,8 @@ export function concealBySmoke(g, civ, vis, allies) {
       if (near) break;
       const b = g.buildingAtTile(n); if (b && allies.includes(b.owner)) { near = true; break; }
     }
-    if (!near) vis[t] = 0;
+    if (near) continue;
+    if (allies.includes(g.world.owner[t])) hide[t] = 1; else vis[t] = 0;
   }
 }
 

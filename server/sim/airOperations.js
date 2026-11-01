@@ -163,6 +163,8 @@ export function airStep(g, dt) {
       }
       case 'launching':
         if (!homeOk) { a.state = 'diverting'; break; }
+        if (g.weather && g.weather.stormAt(u.tile) > 0.5) { a.at = g.time + 2; a.held = 'storm'; break; }     // nobody takes off into a storm
+        a.held = null;
         if (g.time >= a.at) { if (!m || m.kind === 'return' || m.suspended) { a.state = 'ready'; break; } a.state = 'outbound'; u.grounded = false; routeTo(u, targetTile(g, m) >= 0 ? targetTile(g, m) : m.tile); }
         break;
       case 'outbound': case 'mission': {

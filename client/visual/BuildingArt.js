@@ -69,11 +69,16 @@ function ctx(g, o) {
 }
 
 // Footprint pad: ground the building sits on, edged in the owner's colour so ownership reads at a glance.
+// A building on its own sits on a soft natural foundation with a faint owner's edge; inside a merged
+// district the district's shared ground replaces it (no hexagonal tokens in a city). The strong
+// owner's outline appears when the building is selected or hovered (drawn by the view).
 function pad(C, r, civ) {
   const pts = []; for (let k = 0; k < 6; k++) { const a = (Math.PI / 180) * (60 * k - 30); pts.push(Math.cos(a) * r, Math.sin(a) * r); }
   const { g, o } = C;
   if (o.ghost) { g.poly(pts).stroke({ width: 0.8, color: 0xf1c75b, alpha: 0.7 }); return; }
-  g.poly(pts).fill({ color: C.era.ground, alpha: 0.42 * o.alpha }).stroke({ width: 1.1, color: civ, alpha: 0.75 * o.alpha });
+  if (o.merged) return;
+  g.ellipse(0, 0.6, r * 0.95, r * 0.8).fill({ color: C.era.ground, alpha: 0.34 * o.alpha });
+  g.poly(pts).stroke({ width: 0.8, color: civ, alpha: 0.32 * o.alpha });
 }
 
 const ART = {
@@ -104,12 +109,14 @@ const ART = {
       else { C.box(-3.5, 0, 5, 4, 3.2 * k, shade(e.roof, 0.9), e.wall); C.windows(-3.5, 2, 5, 3.2 * k, 2); C.gable(3.5, -3, 5, 4, 2.5 * k, shade(e.roof, 1.1), e.wall); C.box(0, 5, 6, 3.6, 2.6 * k, e.roof, shade(e.wall, 0.9)); }
     } else if (era === 1) { C.gable(0, -2, 12, 4, 3.4 * k, e.roof, e.wall); C.windows(0, 0, 12, 3.4 * k, lv); C.gable(0, 4.5, 12, 4, 3.4 * k, shade(e.roof, 1.08), shade(e.wall, 0.94)); C.windows(0, 6.5, 12, 3.4 * k, lv); }
     else if (era === 2) { C.box(0, 2, 11, 6, 7 * k, e.roof, e.wall); C.windows(0, 5, 11, 7 * k, 2 + lv); }
-    else { const t = (era === 3 ? 1 : 1.25) * k; C.box(-3, 3, 5, 5, 11 * t, e.roof, e.glass); C.windows(-3, 5.5, 5, 11 * t, 4 + lv, 0xfff2c8); C.box(3.5, 4, 5, 4, 8 * t, shade(e.roof, 1.1), e.glass); C.windows(3.5, 6, 5, 8 * t, 3 + lv, 0xfff2c8); }
+    // apartment towers: tall, but never taller than about a hex (a forest of bright bars reads as noise)
+    else { const t = (era === 3 ? 1 : 1.12) * Math.min(1.5, k); C.box(-3, 3, 5, 5, 8.5 * t, e.roof, shade(e.glass, 0.62)); C.windows(-3, 5.5, 5, 8.5 * t, 3 + lv, 0xfff2c8); C.box(3.5, 4, 5, 4, 6.5 * t, shade(e.roof, 1.1), shade(e.glass, 0.7)); C.windows(3.5, 6, 5, 6.5 * t, 2 + lv, 0xfff2c8); }
     if (lv === 3 && era <= 1) { C.box(5.5, 5.5, 3.2, 3.2, 6, shade(e.roof, 1.15), shade(e.wall, 1.05)); }
   },
   farm(C, o) {
     const crops = [0x6f8f3c, 0x9fae4c, 0x7d9b40, 0xb7a54a];
     for (let i = 0; i < 4; i++) { const x = (i % 2) * 8 - 8, y = Math.floor(i / 2) * 7 - 6; C.g.rect(x, y, 7.4, 6.4); C.fill(crops[(i + o.id) % 4], 0.85); }
+    if (o.noBarn) return;                    // one farmstead per estate of joined farms
     C.gable(5, -3, 5, 3.6, 3, 0x7a2f22, 0xa0402c);
     C.cyl(8, -1, 1.4, 6, o.era >= 2 ? 0xb8bcbf : 0x9b8b70);
   },

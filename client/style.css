@@ -700,3 +700,10 @@ ul.cons li { margin-bottom: 6px; }
 .ctier { margin: 2px 0 6px; font-size: 12px; } .ctier .muted { font-size: 11px; }
 .lobby-foot .field.name.steam > span::after { content: ' (your Steam name)'; }
 .lobby-foot .field.name.steam input { border-color: rgba(102, 160, 200, 0.5); color: #dce9f2; }
+/* the resource bar's names: larger and brighter, whole-pixel sizes so they rasterise sharply */
+.resources .k { font-size: 12.5px; font-weight: 600; color: #c9cec6; letter-spacing: 0.01em; -webkit-font-smoothing: antialiased; }
+.resources small { font-size: 12px; }
+.resources b { font-size: 17px; }
+.ai-diag { position: absolute; right: 12px; top: 64px; width: min(420px, 92vw); max-height: calc(100vh - 200px); overflow: auto; padding: 12px 14px; z-index: 6; font-size: 13px; }
+.ai-diag .hd { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ai-diag .log { max-height: 260px; overflow: auto; }

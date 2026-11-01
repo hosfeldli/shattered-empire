@@ -46,7 +46,7 @@ export class MilitaryPlanner {
       ids = idle;
     } else if (m.lastTile >= 0 && m.lastTile !== undefined && dist(m.lastTile, tile) > 8 && this.g.time - (m.lastAt || 0) < 10) this.reversals++;
     m.lastTile = tile; m.lastKind = attackMove ? 'a' : 'm'; m.lastAt = this.g.time;
-    this.ai.cmd({ c: 'move', units: ids, tile, attackMove, formation, auth: 'mission' });
+    this.ai.cmd({ c: 'move', units: ids, tile, attackMove, formation, auth: 'mission', by: 'mission:' + m.id });
   }
 
   // Mission state machine: every transition is recorded with its reason (diagnostics), and a flip
@@ -112,7 +112,7 @@ export class MilitaryPlanner {
       }
       // anyone who wandered past the zone comes back
       const strays = ids.filter((id) => { const u = g.units.get(id); return u && dist(u.tile, m.zone) > m.radius + 3 && u.order.kind !== 'attack'; });
-      if (strays.length) this.ai.cmd({ c: 'move', units: strays, tile: m.zone, attackMove: true, auth: 'mission' });
+      if (strays.length) this.ai.cmd({ c: 'move', units: strays, tile: m.zone, attackMove: true, auth: 'mission', by: 'mission:' + m.id });
     }
 
     // ---------------------------------------------------------------- battle lines
@@ -170,7 +170,7 @@ export class MilitaryPlanner {
       const near = units.filter((u) => dist(u.tile, off.staging) <= 3).length;
       // reinforcements join while assembling
       const extra = reserve().filter((u) => dist(u.tile, off.staging) < 30).slice(0, 4);
-      if (extra.length) { take(off, extra); this.ai.cmd({ c: 'move', units: extra.map((u) => u.id), tile: off.staging, formation: 'column', auth: 'mission' }); }
+      if (extra.length) { take(off, extra); this.ai.cmd({ c: 'move', units: extra.map((u) => u.id), tile: off.staging, formation: 'column', auth: 'mission', by: 'mission:' + off.id }); }
       if (near >= units.length * 0.8 || g.time - off.created > 120) { this.setState(off, 'execute', near >= units.length * 0.8 ? 'assembled' : 'assembly timed out'); off.startedAt = g.time; this.order(off, ids, off.tile, true, 'line'); }
       return;
     }

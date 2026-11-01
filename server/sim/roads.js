@@ -83,12 +83,12 @@ export class RoadNet {
     return out;
   }
 
-  validateSegment(g, civ, a, b, type) {
+  validateSegment(g, civ, a, b, type, bridge = false) {
     const w = this.w;
     if (this.dirOf(a, b) < 0) return 'not adjacent';
     for (const t of [a, b]) {
       const ter = w.terr[t];
-      if (isWater(ter)) return 'water';
+      if (isWater(ter) && !(bridge && ter === T.SHALLOW)) return bridge ? 'deep water: no bridge can stand there' : 'water';
       if (ter === T.PEAK) return 'impassable peaks';
       if (ter === T.LAVA) return 'lava';
       if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return 'foreign territory';
@@ -110,22 +110,23 @@ export class RoadNet {
     const w = this.w;
     const rt = ROAD_TYPES[type];
     const e = this.get(a, b);
-    let mult = (w.river[a] || w.river[b] ? BRIDGE_MULT : 1) * (w.terr[a] === T.MOUNTAIN || w.terr[b] === T.MOUNTAIN ? 2 : 1);
+    const span = isWater(w.terr[a]) || isWater(w.terr[b]);
+    let mult = (span ? BRIDGE_MULT * 1.6 : w.river[a] || w.river[b] ? BRIDGE_MULT : 1) * (w.terr[a] === T.MOUNTAIN || w.terr[b] === T.MOUNTAIN ? 2 : 1);
     if (e && e.type >= type) mult *= 0.4;              // repair of a damaged/ruined segment
     else if (e && e.cond > 0) mult *= 0.7;             // upgrade
     if (civ.policies.has('public_works')) mult *= 0.5;
     const cost = {}; for (const k in rt.cost) cost[k] = Math.ceil(rt.cost[k] * mult);
-    return { cost, time: rt.time * (w.river[a] || w.river[b] ? 2 : 1) };
+    return { cost, time: rt.time * (span ? 3 : w.river[a] || w.river[b] ? 2 : 1) };
   }
 
-  plan(g, civ, tiles, type) {
+  plan(g, civ, tiles, type, bridge = false) {
     const path = RoadNet.densify(tiles);
     const segs = [];
     const total = {}; let time = 0, bridges = 0, ok = 0;
     for (let i = 1; i < path.length; i++) {
       const a = path[i - 1], b = path[i];
-      const why = this.validateSegment(g, civ, a, b, type);
-      const s = { a, b, ok: !why || why === 'already built', reason: why, bridge: !!(this.w.river[a] || this.w.river[b]), skip: why === 'already built' };
+      const why = this.validateSegment(g, civ, a, b, type, bridge);
+      const s = { a, b, ok: !why || why === 'already built', reason: why, bridge: !!(this.w.river[a] || this.w.river[b] || isWater(this.w.terr[a]) || isWater(this.w.terr[b])), skip: why === 'already built' };
       if (!why) {
         const { cost, time: t } = this.segmentCost(civ, a, b, type);
         for (const k in cost) total[k] = (total[k] || 0) + cost[k];
@@ -133,14 +134,14 @@ export class RoadNet {
       }
       segs.push(s);
     }
-    return { tiles: path, type, segments: segs, cost: total, time: Math.round(time * (civ.policies.has('public_works') ? 0.5 : 1)), bridges, buildable: ok, blocked: segs.filter((s) => !s.ok).length, length: path.length - 1 };
+    return { tiles: path, type, bridge, segments: segs, cost: total, time: Math.round(time * (civ.policies.has('public_works') ? 0.5 : 1)), bridges, buildable: ok, blocked: segs.filter((s) => !s.ok).length, length: path.length - 1 };
   }
 
   startProject(g, civ, plan) {
     const segs = plan.segments.filter((s) => s.ok && !s.skip).map((s) => ({ a: s.a, b: s.b }));
     if (!segs.length) return { error: 'Nothing to build on that route' };
     if (this.projects.filter((p) => p.owner === civ.id && p.status !== 'complete').length >= 6) return { error: 'Too many road projects; finish or cancel some first' };
-    const p = { id: this.nextPid++, owner: civ.id, type: plan.type, segs, i: 0, t: 0, status: 'funded', paid: false, by: plan.by || 'player', tiles: plan.tiles };
+    const p = { id: this.nextPid++, owner: civ.id, type: plan.type, segs, i: 0, t: 0, status: 'funded', paid: false, by: plan.by || 'player', tiles: plan.tiles, bridge: !!plan.bridge };
     this.projects.push(p);
     return { project: p.id };
   }
@@ -160,7 +161,7 @@ export class RoadNet {
       const seg = p.segs[p.i];
       if (!seg) { p.status = 'complete'; continue; }
       if (!p.paid) {
-        const why = this.validateSegment(g, civ, seg.a, seg.b, p.type);
+        const why = this.validateSegment(g, civ, seg.a, seg.b, p.type, p.bridge);
         if (why === 'already built') { p.i++; continue; }
         if (why) { seg.blocked = why; p.blockedCount = (p.blockedCount || 0) + 1; p.i++; p.status = 'blocked'; continue; }
         const { cost, time } = this.segmentCost(civ, seg.a, seg.b, p.type);
@@ -174,7 +175,7 @@ export class RoadNet {
         if (p.i >= p.segs.length) {
           p.status = p.blockedCount ? 'blocked' : 'complete';
           p.done = true;
-          g.notify(p.owner, `${ROAD_TYPES[p.type].name} finished (${p.segs.length - (p.blockedCount || 0)} segments${p.blockedCount ? `, ${p.blockedCount} blocked` : ''}).`, { kind: 'build', tile: seg.b, quiet: p.by !== 'player' });
+          g.notify(p.owner, `${p.bridge ? (p.type >= 4 ? 'Rail Bridge' : p.type >= 2 ? 'Reinforced Road Bridge' : 'Timber Bridge') : ROAD_TYPES[p.type].name} finished (${p.segs.length - (p.blockedCount || 0)} segments${p.blockedCount ? `, ${p.blockedCount} blocked` : ''}).`, { kind: 'build', tile: seg.b, quiet: p.by !== 'player' });
         }
       }
     }
@@ -182,7 +183,7 @@ export class RoadNet {
   }
 
   projectsFor(civId) {
-    return this.projects.filter((p) => p.owner === civId).map((p) => ({ id: p.id, type: p.type, status: p.done ? (p.blockedCount ? 'blocked' : 'complete') : p.status, done: p.i, total: p.segs.length, tiles: p.segs.slice(p.i).flatMap((s, k) => (k === 0 ? [s.a, s.b] : [s.b])), by: p.by }));
+    return this.projects.filter((p) => p.owner === civId).map((p) => ({ id: p.id, type: p.type, bridge: p.bridge ? 1 : undefined, status: p.done ? (p.blockedCount ? 'blocked' : 'complete') : p.status, done: p.i, total: p.segs.length, tiles: p.segs.slice(p.i).flatMap((s, k) => (k === 0 ? [s.a, s.b] : [s.b])), by: p.by }));
   }
 
   serialize() { return { edges: [...this.edges.values()].map((e) => [e.a, e.b, e.type, Math.round(e.cond)]), projects: this.projects, nextPid: this.nextPid }; }

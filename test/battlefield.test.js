@@ -47,3 +47,17 @@ test('infantry holding under fire dig temporary field positions (capped), which 
   run(g, 10 * (FIELD_POS.abandon + 5));
   assert.equal([...g.fieldPos.values()].filter((f) => f.o === 0).length, 0, 'abandoned positions collapse');
 });
+
+test('smoke over our own land keeps the land in view but hides what stands in it', () => {
+  const g = new Game({ id: 'sm' + Math.random(), seed: 7, slots: [{ human: true }, { personality: 'builder' }], rebels: false });
+  const me = g.civs[0], cap = g.cityOf(me)[0];
+  // an own hex with nothing of ours next to it, and an enemy unit standing in thick smoke there
+  const t = [...g.world.owner.keys()].find((i) => g.world.owner[i] === me.id && i !== cap.tile && ![...g.units.values()].some((u) => u.owner === me.id && Math.abs(u.tile - i) < 3 * 128) && !g.buildingAtTile(i));
+  assert.ok(t >= 0);
+  g.smoke.set(t, { d: 1 });
+  g.refreshVisibility(false);
+  assert.equal(me.visible[t], 1, 'our own ground stays visible (no fog drawn over our territory)');
+  assert.equal(me.smokeHide[t], 1, 'but what stands in the smoke is hidden from us');
+  g.smoke.delete(t); g.refreshVisibility(false);
+  assert.equal(me.smokeHide[t], 0, 'and shown again once it clears');
+});

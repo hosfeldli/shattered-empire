@@ -73,6 +73,9 @@ export class CityVisuals {
       const n = v.nb(t, d); if (n < 0 || !(set.has(n) || n === c.t) || !(set.has(t) || t === c.t)) continue;
       rec.streets.push([X(t), v.cy[t], X(n), v.cy[n]]);
     }
+    // the civic centre: a paved square round the town hall, with market stalls on market days
+    { const cx = X(c.t), cy = v.cy[c.t]; g.ellipse(cx, cy + 1, 13.5, 11.5).fill({ color: [0x8a7a62, 0x9a8e7c, 0xa8a49a, 0x9aa4aa, 0xd2d8d8][Math.min(4, era)], alpha: 0.75 });
+      if (c.pop > 12) for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2 + h(c.id, 9), r = 11; g.rect(cx + Math.cos(a) * r - 1, cy + Math.sin(a) * r * 0.82 - 0.8, 2, 1.6).fill({ color: [0xc0503a, 0xd8b04a, 0x3a7ab0][k % 3] }); } }
     const inner = [];
     for (const t of hexes) {
       const x = X(t), y = v.cy[t], a = Math.floor(h(c.id, t, 70) * 3) * (Math.PI / 3), ca = Math.cos(a), sa = Math.sin(a);
@@ -89,7 +92,6 @@ export class CityVisuals {
       for (let d = 0; d < 6; d++) { const n = v.nb(t, d); const b = n >= 0 ? S.buildingAtTile.get(n) : null; if (b && INDUSTRIAL.has(b.ty)) ind = true; }
       const dist = hexDist(v, c.t, t);
       const type = ind ? 'ind' : dist === 1 && (era >= 1 || tier >= 1) ? 'com' : 'res';
-      const pal = st[type];
       const x = X(t), y = v.cy[t], a = Math.floor(h(c.id, t, 70) * 3) * (Math.PI / 3), ca = Math.cos(a), sa = Math.sin(a);
       if (era >= 1 && type === 'res' && h(c.id, t, 51) < 0.22) {      // a park with trees
         g.circle(x + ca * 4 + sa * 4, y + sa * 4 - ca * 4, 3.4).fill({ color: 0x4f7a3a, alpha: 0.95 });
@@ -104,9 +106,14 @@ export class CityVisuals {
           const w = Math.max(1.5, (type === 'ind' ? 4.4 : 5.6) / per + 0.6 + h(t, k, qd) * 0.8), hh2 = type === 'ind' ? 2.8 : 2.2 + h(t, k, qd + 9) * 0.8;
           const ruined = h(c.id, t, k * 4 + qd + 99) < dmg;
           if (ruined) { g.rect(bx - w / 2, by - hh2 / 2, w, hh2).fill({ color: 0x3a3430 }); g.circle(bx + 0.5, by, 0.7).fill({ color: 0x7c7062 }); rec.blocks.push({ x: bx, y: by, w, h: hh2, ruined: true }); continue; }
-          const tall = st.tall * (1 + tier * 0.45) * (type === 'com' ? 1.35 : 1) * (dist <= 1 ? 1.25 : 1) * (0.7 + h(t, k, qd + 5) * 0.6);
+          // history: not every block is rebuilt when an era turns — older streets keep their brick or
+          // timber until they are redeveloped (the centre redevelops first)
+          const old = era > 0 && h(c.id, t, k * 4 + qd + 300) < (dist <= 1 ? 0.15 : 0.4) ? 1 + Math.floor(h(c.id, t, k + 301) * Math.min(2, era)) : 0;
+          const bs = STYLE[Math.min(4, Math.max(0, era - old))], pal = bs[type];
+          const tall = bs.tall * (1 + tier * 0.45) * (type === 'com' ? 1.35 : 1) * (dist <= 1 ? 1.25 : 1) * (0.7 + h(t, k, qd + 5) * 0.6);
           g.rect(bx - w / 2 + tall * 0.7, by - hh2 / 2 + tall * 0.5, w, hh2).fill({ color: 0x000000, alpha: 0.22 });   // shadow: longer for taller blocks
           const col = pal[(k + qd + t) % pal.length];
+          void st;
           g.rect(bx - w / 2, by - hh2 / 2, w, hh2).fill({ color: col }).stroke({ width: 0.35, color: 0x1b1b1b, alpha: 0.55 });
           g.rect(bx - w / 2, by - hh2 / 2, w, Math.min(0.8, hh2 * 0.3)).fill({ color: 0xffffff, alpha: 0.16 });     // lit roof edge
           if (tall > 3.2) g.rect(bx - w / 2 + 0.5, by - hh2 / 2 + 0.6, Math.max(0.6, w - 1), 0.5).fill({ color: era >= 3 ? 0x9fd4e8 : 0x2a2a2a, alpha: 0.55 });   // rooftop plant / glazing

@@ -119,6 +119,10 @@ parentPort.on('message', (m) => {
         const o = game.setObserver(c.c === 'follow' ? { follow: c.civ } : { fog: c.on });
         send(-2, { t: 'ack', rid: m.rid, follow: o.follow, fog: o.fog });
         if (c.c === 'fog' || before !== o.follow) send(-2, { ...game.observerSnapshot(true), reset: 1 });
+      } else if (c.c === 'aiDiag') {
+        // the developer inspector: a spectator may read any AI's full plan and decision record
+        const civ = game.civs[c.civ | 0];
+        send(-2, { t: 'ack', rid: m.rid, diag: civ?.ai?.brain ? civ.ai.brain.report(true) : null });
       } else if (c.c === 'speed') {
         if (!OBSERVE) error = 'Speed control is only available when spectating an AI match';
         else { game.speed = [0, 1, 2, 4, 8].includes(+c.speed) ? +c.speed : 1; send(-2, { t: 'ack', rid: m.rid, speed: game.speed }); }

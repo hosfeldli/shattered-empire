@@ -10,6 +10,12 @@ import { drawBuildingArt, waterDir, shade, CAT_COL } from './visual/BuildingArt.
 import { paintTerrainDetail, smoothColor } from './visual/TerrainMaterials.js';
 import { CombatEffects } from './visual/combat/CombatEffects.js';
 import { nearestCopy, tilePolyline } from './visual/WorldWrapGeometry.js';
+import { ResourceMarkers } from './visual/ResourceMarkers.js';
+import { WeatherField } from './visual/WeatherField.js';
+import { CloudSystem } from './visual/CloudSystem.js';
+import { WeatherEffects } from './visual/WeatherEffects.js';
+import { OceanSurface } from './visual/OceanSurface.js';
+import { DistrictMerge } from './visual/DistrictMerge.js';
 
 export const R = 12;
 export const SQ3 = Math.sqrt(3);
@@ -20,6 +26,8 @@ const DIRS_EVEN = [[1, 0], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1]];
 const DIRS_ODD = [[1, 0], [1, -1], [0, -1], [-1, 0], [0, 1], [1, 1]];
 const UNKNOWN = '#10181b';
 const RES_COLORS = { 1: '#1c1c1c', 2: '#d7d9dc', 3: '#3a3a3a', 4: '#c6f', 5: '#e8e1d0', 6: '#bfe6ff', 7: '#c9a26b' };
+// how a deposit looks in the ground (terrain texture), before anyone mines it
+const DEPOSIT = { 1: ['rgba(20,18,16,0.55)', 'rgba(40,34,28,0.45)'], 2: ['rgba(150,72,48,0.6)', 'rgba(120,96,88,0.55)', 'rgba(170,90,60,0.5)'], 3: ['rgba(26,24,22,0.65)', 'rgba(50,46,42,0.55)'], 4: ['rgba(150,100,200,0.55)', 'rgba(120,90,150,0.5)'], 5: ['rgba(226,218,198,0.6)', 'rgba(190,182,164,0.55)'], 7: ['rgba(140,110,80,0.5)', 'rgba(90,80,70,0.55)'] };
 const ROAD_STYLE = { 1: { w: 2.2, c: '#8c6a3c' }, 2: { w: 2.8, c: '#5f6266' }, 3: { w: 3.6, c: '#3b3e42' }, 4: { w: 3, c: '#2a2724' } };
 const CH = 32; // tiles per chunk side
 
@@ -48,6 +56,9 @@ export class View {
     const desk = !!window.desktop;
     await app.init({ resizeTo: this.host, background: 0x0d1416, antialias: true, autoDensity: true, powerPreference: 'high-performance', resolution: Math.min(desk ? 3 : 2, window.devicePixelRatio || 1) });
     this.app = app;
+    // no real GPU (software rendering): soft, overlapping weather sprites cost far too much fill rate
+    // there, so weather draws in its reduced form (no high cloud, lighter fog and wet ground)
+    try { const gl = app.renderer.gl, ext = gl && gl.getExtension('WEBGL_debug_renderer_info'); const name = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : ''; this.S.softwareGpu = /swiftshader|llvmpipe|software|microsoft basic/i.test(String(name)); } catch { this.S.softwareGpu = false; }
     this.host.appendChild(app.canvas);
     this.atlas = new UnitAtlas(); await this.atlas.load();
     const L = (name) => { const c = name === 'g' ? new PIXI.Graphics() : new PIXI.Container(); return c; };
@@ -63,6 +74,18 @@ export class View {
     // aircraft: ground shadows under the units, operational markers (patrol orbits, fuel, AA threat) over them
     this.airShadowG = L('g'); this.airG = L('g');
     this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.fwG, this.decalG, this.underG, this.bLayer, this.wreckG, this.ambientG, this.airShadowG, this.uLayer, this.cfxG, this.smokeG, this.fxG, this.engageG, this.tacG, this.airG, this.overlay, this.ghost, this.campG, this.overlayTags);
+    this.resLayer = L(); this.world.addChildAt(this.resLayer, this.world.getChildIndex(this.tacG));
+    // weather and sea: animated water and soaked ground under the fog overlay; cloud shadows over the
+    // units; rain, snow and lightning, fog banks and high wisps above everything but the map's markers
+    this.oceanG = L('g'); this.wetLayer = L(); this.world.addChildAt(this.oceanG, this.world.getChildIndex(this.overlayLayer)); this.world.addChildAt(this.wetLayer, this.world.getChildIndex(this.overlayLayer));
+    this.cloudShadow = L(); this.world.addChildAt(this.cloudShadow, this.world.getChildIndex(this.cfxG));
+    this.precipG = L('g'); this.fogLayer = L(); this.skyLayer = L();
+    for (const o of [this.fogLayer, this.precipG, this.skyLayer]) this.world.addChildAt(o, this.world.getChildIndex(this.overlay));
+    this.wxField = new WeatherField(this, this.S);
+    this.clouds = new CloudSystem(this, this.S, this.wxField, this.cloudShadow, this.skyLayer);
+    this.weatherFx = new WeatherEffects(this, this.S, this.wxField, this.wetLayer, this.precipG, this.fogLayer);
+    this.ocean = new OceanSurface(this, this.S, this.wxField, this.oceanG);
+    this.resMarkers = new ResourceMarkers(this, this.S, this.resLayer);
     this.combat = new CombatEffects(this, this.S);
     this.combat.attach({ decal: this.decalG, wreck: this.wreckG, fx: this.cfxG, smoke: this.smokeG, engage: this.engageG });
     // night: a screen tint, then additive lights in world space above it
@@ -79,7 +102,10 @@ export class View {
       for (const k of [-1, 1]) { const m = new PIXI.Graphics(g.context); m.x = (top ? this.period + k : k) * this.P; g.parent.addChildAt(m, i + 1); if (top) this.periodic.push({ o: m, k }); }
     };
     if (this.wrap) for (const o of [this.terrainLayer, this.overlayLayer, this.districtLayer]) this.periodic.push({ o, k: 0 });
-    for (const g of [this.borders, this.front, this.ruinsG, this.fwG, this.decalG, this.wreckG]) this.mirrorOf(g);
+    // merged districts: the ground and links shared by neighbouring buildings, under the buildings
+    this.mergeG = L('g'); this.world.addChildAt(this.mergeG, this.world.getChildIndex(this.bLayer));
+    this.merge = new DistrictMerge(this, this.S, this.mergeG);
+    for (const g of [this.borders, this.front, this.ruinsG, this.fwG, this.decalG, this.wreckG, this.mergeG]) this.mirrorOf(g);
     this.chunks = [];
     const ccols = Math.ceil(this.W / CH), crows = Math.ceil(this.H / CH);
     for (let cr = 0; cr < crows; cr++) for (let cc = 0; cc < ccols; cc++) {
@@ -287,9 +313,9 @@ export class View {
         const n = this.nb(i, d); if (n < 0) continue;
         const mx = (x + this.near(this.cx0[n], x)) / 2, my = (y + this.cy[n]) / 2;
         const ruined = this.roadRuined(i, d);
-        const bridge = (S.flags[i] & 1) || (S.flags[n] & 1);
+        const bridge = (S.flags[i] & 1) || (S.flags[n] & 1) || S.terr[i] <= 1 || S.terr[n] <= 1;
         const st = ROAD_STYLE[ty];
-        if (bridge && !ruined) { ctx.strokeStyle = '#2b2620'; ctx.lineWidth = st.w + 2.4; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(mx, my); ctx.stroke(); }
+        if (bridge) { paintBridge(ctx, x, y, mx, my, ty, ruined, S.terr[i] <= 1, hh(i, d, 77)); continue; }
         if (ruined) {
           // wrecked segment: broken dashes and rubble
           ctx.setLineDash([2, 3]); ctx.strokeStyle = '#6b5d4c'; ctx.lineWidth = st.w; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(mx, my); ctx.stroke(); ctx.setLineDash([]);
@@ -301,11 +327,15 @@ export class View {
         if (ty === 3) { ctx.strokeStyle = 'rgba(240,220,120,0.7)'; ctx.lineWidth = 0.6; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(mx, my); ctx.stroke(); ctx.setLineDash([]); }
       }
     }
-    ctx.font = 'bold 7px "Barlow Semi Condensed", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    // deposits show in the land itself (exposed rust-red rock, a black seam, pale stone, an oily
+    // slick, violet crystal); their readable markers are a separate, sharp layer (ResourceMarkers)
     for (const i of mine) {
-      const r = S.res[i]; if (!r || S.terr[i] === 255) continue;
-      ctx.fillStyle = 'rgba(10,16,18,0.42)'; ctx.beginPath(); ctx.arc(this.cx0[i] + 5, this.cy[i] - 5, 4.6, 0, 7); ctx.fill();
-      ctx.fillStyle = RES_COLORS[r] === '#1c1c1c' ? '#e9d36b' : RES_COLORS[r]; ctx.fillText(S.defs.RESOURCE[r].glyph, this.cx0[i] + 5, this.cy[i] - 4.6);
+      const r = S.res[i]; if (!r || S.terr[i] === 255 || r === 6) continue;
+      const x = this.cx0[i], y = this.cy[i], col = DEPOSIT[r]; if (!col) continue;
+      for (let k = 0; k < 5; k++) {
+        const a = hh(i, k, 91) * 6.283, d = 2 + hh(i, k, 92) * 6, rr = 1.2 + hh(i, k, 93) * 1.8;
+        ctx.fillStyle = col[k % col.length]; ctx.beginPath(); ctx.ellipse(x + Math.cos(a) * d - 2, y + Math.sin(a) * d * 0.8 + 2, rr * 1.3, rr, a, 0, 7); ctx.fill();
+      }
     }
   }
 
@@ -475,17 +505,19 @@ export class View {
     const planned = b.st === 'planned', building = !b.d && !planned;
     const stock = city && city.stock ? Object.values(city.stock).reduce((a, v) => a + v, 0) : 0;
     const aiming = b.ty === 'aa_battery' && b.af >= 0;
-    const key = [b.ty, b.o, b.st, era, building ? Math.round(b.p / 10) : 0, b.a, S.lod, b.lv || 1, b.ug, aiming, city ? (city.cap ? 'c' : '') + Math.min(5, Math.floor(stock / 150)) : ''].join('|');
+    const mi = this.merge?.info(b.id);
+    const key = [b.ty, b.o, b.st, era, building ? Math.round(b.p / 10) : 0, b.a, S.lod, b.lv || 1, b.ug, aiming, city ? (city.cap ? 'c' : '') + Math.min(5, Math.floor(stock / 150)) : '', mi ? (mi.leader ? 'L' : 'm') : ''].join('|');
     if (key !== s.key) {
       // a brief burst when a site completes or a housing block gains storeys
       if (s.key && ((s.wasDone === false && b.d) || (s.lv && (b.lv || 1) > s.lv))) { this.ping(b.t, 0.8, 0x8fe0a8); this.combat?.dust?.(this.cx[b.t], this.cy[b.t], 6, 1.6, 0); }
       s.key = key; s.wasDone = !!b.d; s.lv = b.lv || 1;
-      drawBuildingArt(s.body, b, def, { id: b.id, era, civ: S.civColor(b.o), lod: S.lod, ghost: planned, building, damaged: b.st === 'damaged', active: !!b.a, level: b.lv || 1, upgraded: !!b.ug, aimed: aiming,
+      drawBuildingArt(s.body, b, def, { id: b.id, era, civ: S.civColor(b.o), lod: S.lod, ghost: planned, building, damaged: b.st === 'damaged', active: !!b.a, level: b.lv || 1, upgraded: !!b.ug, aimed: aiming, merged: !!mi, noBarn: !!mi && !mi.leader,
         alpha: building ? 0.3 + 0.7 * (b.p / 100) : 1, capital: city?.cap, stockCrates: Math.floor(stock / 150), water: b.ty === 'port' ? waterDir(this, S, b.t) : null });
     }
     // progress, condition, training and selection marks
     const sel = S.selBuilding === b.id || !!S.selBuildings?.has(b.id);
-    const mkey = [b.hp, b.p, b.d, b.tr ?? -1, sel, S.lod, planned, b.af ?? -1].join('|');
+    const hov = S.hover === b.t && !sel;
+    const mkey = [b.hp, b.p, b.d, b.tr ?? -1, sel, hov, S.lod, planned, b.af ?? -1].join('|');
     if (mkey !== s.mkey) {
       s.mkey = mkey;
       const g = s.marks; g.clear();
@@ -494,6 +526,7 @@ export class View {
       if (b.hp < 100 && b.d) g.rect(-8, -R0 - 3, 16, 2).fill({ color: 0x220d09, alpha: 0.85 }).rect(-8, -R0 - 3, (16 * b.hp) / 100, 2).fill({ color: b.hp > 50 ? 0x6db36a : 0xd0533b });
       if (b.tr != null && b.d) g.arc(0, 0, R0, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * b.tr) / 100).stroke({ width: 1.8, color: 0x8fe0a8, alpha: 0.95 });
       if (sel) g.poly(this.hexLocal(R0 + 1.5)).stroke({ width: 1.8, color: 0xf1c75b });
+      else if (hov) g.poly(this.hexLocal(R0 + 1)).stroke({ width: 1.4, color: S.civColor(b.o), alpha: 0.95 });     // whose it is, when you point at it
       // an AA battery in action swings its barrels toward the aircraft it is engaging
       if (b.ty === 'aa_battery' && b.af >= 0 && S.lod !== 'strategic') {
         const dx = this.nx(b.af, this.cx[b.t]) - this.cx[b.t], dy = this.cy[b.af] - this.cy[b.t], l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
@@ -530,6 +563,7 @@ export class View {
 
   syncBuildings() {
     const S = this.S;
+    this.merge?.update();
     this.consCount = new Map(); for (const b of S.buildings.values()) if (b.o === S.civId && !b.d) this.consCount.set(b.c, (this.consCount.get(b.c) || 0) + 1);
     for (const [id, s] of this.buildingSprites) if (!S.buildings.has(id)) { s.labels?.destroy({ children: true }); s.destroy({ children: true }); this.buildingSprites.delete(id); }
     for (const b of S.buildings.values()) this.buildingSprite(b);
@@ -734,6 +768,8 @@ export class View {
     this.drawAir(dt);
     this.ambient.frame(dt, this.t);
     this.combat.frame(dt, this.t);
+    this.resMarkers.frame(this.t);
+    this.ocean.frame(this.t); this.clouds.frame(this.t); this.weatherFx.frame(this.t, dt);
     this.audio?.frame(dt);
     this.drawOverlay();
     this.tacT = (this.tacT || 0) + dt; if (this.tacT > 0.25) { this.tacT = 0; this.drawTactical(); }
@@ -911,6 +947,12 @@ export class View {
         g.moveTo(this.cx[sgm.a], this.cy[sgm.a]).lineTo(this.nx(sgm.b, this.cx[sgm.a]), this.cy[sgm.b]).stroke({ width: 4, color: col, alpha: 0.85 });
       }
     }
+    // bridge tool: the chosen banks and the crossing the server found
+    if (m && m.kind === 'bridge') {
+      for (const t of [m.from, m.to]) if (t >= 0) g.circle(this.cx[t], this.cy[t], 5).stroke({ width: 2, color: 0xf1c75b });
+      if (m.preview) { const pts = this.tilePts(m.preview.tiles); for (let i = 1; i < pts.length; i++) g.moveTo(pts[i - 1][0], pts[i - 1][1]).lineTo(pts[i][0], pts[i][1]); g.stroke({ width: 5, color: m.preview.blocked ? 0xe0533b : 0x6fc3ff, alpha: 0.85 }); }
+      if (m.from >= 0 && m.to < 0 && S.hover >= 0) g.moveTo(this.cx[m.from], this.cy[m.from]).lineTo(this.nx(S.hover, this.cx[m.from]), this.cy[S.hover]).stroke({ width: 1.5, color: 0xf1c75b, alpha: 0.6 });
+    }
     // trench line planner: the route (green valid, red invalid, grey existing, blue reinforcing) and
     // small direction markers on the protected side; existing trench projects outlined
     if (m && m.kind === 'trench') {
@@ -1049,6 +1091,41 @@ export function findMatch(S, type, key) {
 
 // Chain directed border edges (all taken from hexes of one owner, so the land is always on the same
 // side) into polylines and offset them a little toward the land. Returns arrays of [x, y] points.
+// Bridge decks drawn along a road edge (centre of the hex to the edge midpoint), by class:
+// timber planking with rails, a reinforced concrete deck with parapets, or a steel rail truss.
+// A destroyed bridge leaves broken stubs and its piers; a pier stands in water hexes.
+function paintBridge(ctx, x, y, mx, my, ty, ruined, onWater, seed) {
+  const dx = mx - x, dy = my - y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, px = -uy, py = ux;
+  const cls = ty >= 4 ? 'rail' : ty >= 2 ? 'road' : 'timber';
+  const W = cls === 'timber' ? 3.4 : cls === 'road' ? 4.6 : 4.2;
+  const end = ruined ? 0.35 + seed * 0.2 : 1;
+  const ex = x + dx * end, ey = y + dy * end;
+  const line = (ox, oy, w, col, a = 1, to = 1) => { ctx.globalAlpha = a; ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x + ox, y + oy); ctx.lineTo(x + dx * to + ox, y + dy * to + oy); ctx.stroke(); ctx.globalAlpha = 1; };
+  ctx.lineCap = 'butt';
+  if (onWater) { ctx.fillStyle = 'rgba(30,30,30,0.7)'; ctx.fillRect(x - 1.6, y - 1.6, 3.2, 3.2); }      // the pier
+  line(1.4, 1.8, W + 1.6, 'rgba(0,0,0,0.35)', 1, end);                                                      // shadow on the water
+  if (cls === 'timber') {
+    line(0, 0, W, '#7a5634', 1, end);
+    ctx.strokeStyle = '#5a3d22'; ctx.lineWidth = 0.6; ctx.beginPath();
+    for (let s = 1; s < L * end; s += 1.6) { const cx = x + ux * s, cy = y + uy * s; ctx.moveTo(cx - px * W / 2, cy - py * W / 2); ctx.lineTo(cx + px * W / 2, cy + py * W / 2); }
+    ctx.stroke();
+    line(px * (W / 2 + 0.3), py * (W / 2 + 0.3), 0.6, '#3e2a18', 1, end); line(-px * (W / 2 + 0.3), -py * (W / 2 + 0.3), 0.6, '#3e2a18', 1, end);
+  } else if (cls === 'road') {
+    line(0, 0, W, '#8e8c86', 1, end); line(0, 0, W - 1.8, ty >= 3 ? '#4a4d52' : '#6a6d72', 1, end);
+    line(px * (W / 2), py * (W / 2), 0.8, '#d2cec4', 1, end); line(-px * (W / 2), -py * (W / 2), 0.8, '#d2cec4', 1, end);
+  } else {
+    line(0, 0, W, '#3c3c40', 1, end);
+    ctx.strokeStyle = '#8a8a90'; ctx.lineWidth = 0.6; ctx.beginPath();   // truss
+    for (let s = 0, k = 0; s < L * end; s += 1.8, k++) { const cx = x + ux * s, cy = y + uy * s, side = k % 2 ? 1 : -1; ctx.moveTo(cx + px * W / 2, cy + py * W / 2); ctx.lineTo(cx + ux * 1.8 - px * W / 2 * side * -1, cy + uy * 1.8 - py * W / 2 * side * -1); }
+    ctx.stroke();
+    line(px * 0.8, py * 0.8, 0.5, '#c8c2b4', 1, end); line(-px * 0.8, -py * 0.8, 0.5, '#c8c2b4', 1, end);
+  }
+  if (ruined) {      // splintered end and debris in the water
+    ctx.fillStyle = '#3a3029'; for (let k = 0; k < 3; k++) ctx.fillRect(ex + ux * (1 + k * 1.6) + px * (k - 1) * 1.2 - 0.8, ey + uy * (1 + k * 1.6) + py * (k - 1) * 1.2 - 0.8, 1.6, 1.6);
+  }
+  ctx.lineCap = 'round';
+}
+
 // fixed-wing flight model: [cruise speed in world units per second, turn rate in radians per second]
 const FLY = { fighter: [80, 2.6], bomber: [46, 1.0], recon: [38, 1.4], oneway: [62, 2.2], strike: [52, 2.0], support: [40, 1.8] };
 function chainBorder(segs, inset = 1.3) {

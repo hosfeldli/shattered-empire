@@ -252,7 +252,7 @@ export function economyStep(g, dt) {
         if (tier > (c.tier || 0) && !civ.isRebel) g.notify(civ.id, `${c.name} has grown into a ${CITY_TIERS[tier].toLowerCase()}: more homes, jobs and output at its centre.`, { kind: 'city', tile: c.tile, level: 'minor' });
         c.tier = tier;
       }
-      { const hub = c.buildingId != null ? g.buildings.get(c.buildingId) : null; if (hub) hub.tier = c.tier; }
+      { const hub = c.buildingId != null ? g.buildings.get(c.buildingId) : null; if (hub) hub.tier = c.tier || 0; }   // never undefined: saves must restore the same object shape
       // the hub houses more as the city develops; blocks gain storeys (see HOUSE_LEVEL)
       let housing = 10 + 5 * Math.min(3, civ.age) + 6 * (c.tier || 0) + (civ.techs.has('mechanized_agriculture') ? 4 : 0);
       for (const b of blds) if (b.type === 'house' && b.done) housing += houseCapacity(civ, b);

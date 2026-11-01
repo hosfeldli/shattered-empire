@@ -316,6 +316,7 @@ function applySnapshot(m) {
       view.dirtyTiles.add(i); view.dirtyOverlay.add(i);
     }
     if (ownerChanged || m.tiles.length > 300) view.bordersDirty = true;
+    S.tilesVersion = (S.tilesVersion || 0) + 1;
     if (m.tiles.length > 600) view.overlayAll = true;
   }
   if (m.vis) for (const i of decodeBits(m.vis, S.vis)) view.dirtyOverlay.add(i);
@@ -334,6 +335,7 @@ function applySnapshot(m) {
   S.paths = m.paths || {};
   S.timeAt = performance.now();
   if (m.ms) { const was = S.ms?.m?.length || 0; S.ms = m.ms; if (S.ms.m.length !== was) hud.missileBanner(); }
+  if (m.wx) view.wxField.ingest(m.wx);
   if (m.ev) { view.combat.ingest(m.ev, m.tick); if (!S.spectator || !S.obs || S.obs.speed !== 0) audio.combat(m.ev); }
   if (m.econ) applyEcon(m);
 }
@@ -397,7 +399,7 @@ $('btnLobby').addEventListener('click', () => location.reload());
 const mineSel = () => [...S.selUnits].filter((id) => S.units.get(id)?.owner === S.civId);
 const actions = {
   async cmd(c) {
-    if (S.spectator && !['follow', 'fog', 'speed'].includes(c.c)) { hud.toast({ text: 'You are spectating: orders are disabled. Pick an empire to follow in the bar below.', kind: 'error', level: 'minor' }); return { error: 'spectating' }; }
+    if (S.spectator && !['follow', 'fog', 'speed', 'aiDiag'].includes(c.c)) { hud.toast({ text: 'You are spectating: orders are disabled. Pick an empire to follow in the bar below.', kind: 'error', level: 'minor' }); return { error: 'spectating' }; }
     const r = await net.cmd(c); if (r && r.error) { hud.toast({ text: r.error, kind: 'error', level: 'minor' }); audio.ui('error'); } else if (!['workforcePreview', 'importQuote', 'roadPreview', 'follow', 'fog', 'speed'].includes(c.c)) audio.ui(c.c === 'build' || c.c === 'batchTrain' || c.c === 'train' ? 'build' : ['move', 'attack', 'withdraw', 'army'].includes(c.c) ? 'order' : 'click'); return r || {};
   },
   // spectator controls
@@ -587,6 +589,7 @@ const actions = {
   },
   async buildMode(type, tool) {
     if (tool === 'road') return startRoadMode();
+    if (tool === 'bridge') return S.mode?.kind === 'bridge' ? setMode(null) : startBridgeMode();
     if (tool === 'trench') return S.mode?.kind === 'trench' ? setMode(null) : startTrenchMode();
     if (tool === 'clearPass') return setMode({ kind: 'clearPass' }, 'Click an impassable peak next to an engineer team or your supply network.');
     if (S.mode && S.mode.kind === 'build' && S.mode.type === type) return setMode(null);    // the palette button toggles the tool
@@ -651,6 +654,14 @@ const actions = {
   openResource(k) { hud.openResource(k); },
   placeProblem(type, t) { return placeProblemC(type, t); },
   roadType(t) { if (S.mode?.kind === 'road') { S.mode.type = t; requestPreview(); } },
+  bridge(op, v) {
+    const m = S.mode; if (!m || m.kind !== 'bridge') return;
+    if (op === 'close') return setMode(null);
+    if (op === 'cls') { m.cls = v; bridgePreview(); }
+    if (op === 'clear') { m.from = -1; m.to = -1; m.preview = null; m.error = ''; }
+    if (op === 'commit' && m.preview) actions.cmd({ c: 'bridgePlan', from: m.from, to: m.to, cls: m.cls, commit: true }).then((r) => { if (!r.error) { hud.toast({ text: `${S.defs.BRIDGE_CLASSES[m.cls].name} commissioned: crews start when it is funded.`, kind: 'build', level: 'minor' }); m.from = -1; m.to = -1; m.preview = null; hud.roadPanel(); } });
+    hud.roadPanel();
+  },
   roadAuto(on) { if (S.mode?.kind === 'road') { S.mode.auto = on; requestPreview(); } },
 };
 function setMode(m, hint) {
@@ -679,6 +690,18 @@ function startRoadMode() {
   const techs = new Set(S.econ?.techs || []);
   const best = [3, 2, 1].find((t) => !S.defs.ROAD_TYPES[t].tech || techs.has(S.defs.ROAD_TYPES[t].tech)) || 1;
   setMode({ kind: 'road', points: [], preview: null, type: best, auto: true }, 'Drag to sketch a road or click waypoints.');
+}
+// Bridge tool: click one bank, then the other; the server finds the crossing and prices it
+function startBridgeMode() {
+  const techs = new Set(S.econ?.techs || []);
+  const cls = techs.has('civil_engineering') ? 'road' : 'timber';
+  setMode({ kind: 'bridge', from: -1, to: -1, cls, preview: null }, 'Bridge: click one bank of the river or strait, then the other. Enter builds.');
+}
+async function bridgePreview() {
+  const m = S.mode; if (!m || m.kind !== 'bridge' || m.from < 0 || m.to < 0) return;
+  const r = await net.cmd({ c: 'bridgePlan', from: m.from, to: m.to, cls: m.cls });
+  if (S.mode !== m) return;
+  m.preview = r.plan || null; m.error = r.plan ? '' : r.error || ''; hud.roadPanel();
 }
 let previewTimer = null;
 function requestPreview() {
@@ -712,7 +735,7 @@ function bindInput() {
     if (pan) { view.cam.x = pan.cx - (e.clientX - pan.x) / view.cam.z; view.cam.y = pan.cy - (e.clientY - pan.y) / view.cam.z; view.clamp(); return; }
     const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
     const hv = view.tileAt(wx, wy);
-    if (hv !== S.hover) { S.hover = hv; if (S.mode?.kind === 'build') hud.placePanel(); }
+    if (hv !== S.hover) { const was = S.hover; S.hover = hv; if (S.mode?.kind === 'build') hud.placePanel(); for (const t of [was, hv]) { const b = S.buildingAtTile.get(t); if (b) view.buildingSprite(b); } }
     if (rdrag) {
       if (Math.hypot(e.offsetX - rdrag.x, e.offsetY - rdrag.y) > 14 && mineSel().length && !S.spectator) rdrag.moved = true;
       if (rdrag.moved) { rdrag.end = view.tileAt(wx, wy); updateDeployPreview(rdrag.tile, rdrag.end, e.altKey, rdrag.wx); }   // continuous drag coordinates: the preview stays anchored where the drag began
@@ -799,6 +822,7 @@ function bindInput() {
     if (k === 'l') { const order = ['terrain', 'territory', 'stability', 'traffic', 'front', 'tactical']; setLens(order[(order.indexOf(S.lens) + 1) % order.length]); }
     if (k === 'backspace' && S.mode?.kind === 'road') actions.road('undo');
     if (k === 'enter' && S.mode?.kind === 'road') actions.road('commit');
+    if (k === 'enter' && S.mode?.kind === 'bridge') actions.bridge('commit');
     if (k === 'backspace' && S.mode?.kind === 'trench') actions.trench('undo');
     if (k === 'enter' && S.mode?.kind === 'trench') actions.trench('commit');
   });
@@ -951,6 +975,7 @@ async function leftClick(e) {
       setMode(null); return;
     }
     if (m.kind === 'clearPass') { await actions.cmd({ c: 'clearPass', tile }); setMode(null); return; }
+    if (m.kind === 'bridge') { if (m.from < 0 || m.to >= 0) { m.from = tile; m.to = -1; m.preview = null; } else { m.to = tile; bridgePreview(); } hud.roadPanel(); return; }
     if (m.kind === 'attackMove') { orderMove(m.ids || mineSel(), tile, true); setMode(null); return; }
     if (m.kind === 'move') { orderMove(m.ids || mineSel(), tile, false); setMode(null); return; }
     if (m.kind === 'airPatrol' || m.kind === 'airScout' || m.kind === 'airStrike' || m.kind === 'airSupport') {

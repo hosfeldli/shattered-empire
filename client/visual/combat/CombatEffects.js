@@ -11,6 +11,7 @@
 // rises and drifts with the wind.
 /* global PIXI */
 import { h, frac, atLeast } from '../VisualLOD.js';
+import { drawBattlefieldTerrain, hole } from '../BattlefieldTerrain.js';
 
 const TRACER = { light: 0xffe9a8, heavy: 0xffc46a, flak: 0xfff0d0 };
 const BLAST = { cannon: 0.8, rocket: 1, mortar: 1.15, missile: 1.4, artillery: 1.7 };
@@ -135,7 +136,7 @@ export class CombatEffects {
       if (p.t < 0) continue;
       const k = p.t / p.ttl;
       if (p.kind === 'smoke') {
-        p.x += (p.vx + WIND[0] * k) * dt; p.y += (p.vy + WIND[1] * k) * dt; p.z += p.vz * dt; p.vx *= 0.97; p.vy *= 0.97;
+        const wd = S.wind || WIND; p.x += (p.vx + wd[0] * k) * dt; p.y += (p.vy + wd[1] * k) * dt; p.z += p.vz * dt; p.vx *= 0.97; p.vy *= 0.97;
         if (lodStrategic && p.r < 4) continue;
         const r = p.r * (1 + k * p.grow);
         g.circle(p.x, p.y - p.z, r).fill({ color: p.col, alpha: (1 - k) * (1 - k) * p.a });
@@ -385,38 +386,17 @@ export class CombatEffects {
   syncBattlefield(bf) {
     const S = this.S, v = this.v;
     S.bf = bf || { c: [], w: [], s: [], i: [], fp: [] };
-    const key = JSON.stringify([S.bf.c, (S.bf.w || []).map((x) => [x[0], x[1], x[2]]), S.bf.i || [], S.bf.fp || [], S.ms?.fo || []]);
+    // standing water in craters follows the weather: redraw when the ground near them gets wetter or dries
+    const wf = v.wxField, wetAt = (x, y) => (wf && wf.ready ? wf.at('wet', x, y) : 0);
+    const wetKey = (S.bf.c || []).concat(S.bf.i || []).map(([t]) => Math.round(wetAt(v.cx[t], v.cy[t]) * 3)).join('');
+    const key = JSON.stringify([S.bf.c, (S.bf.w || []).map((x) => [x[0], x[1], x[2]]), S.bf.i || [], S.bf.fp || [], S.ms?.fo || [], wetKey]);
     if (key === this.bfKey) return;
     this.bfKey = key;
     const X = v.cx0 || v.cx, N = v.N || X.length;
     const ok = (t) => Number.isInteger(t) && t >= 0 && t < N;
     const g = this.decalG; g.clear();
-    // battlefield intensity: churned earth (1), shell-pocked mud with shattered trees (2), a waste of
-    // overlapping craters, wire and debris (3)
-    for (const [t, st] of S.bf.i || []) {
-      if (!ok(t)) continue;
-      const x = X[t], y = v.cy[t], hp = v.hexPoints ? v.hexPoints(t, 0).map((c, k) => (k % 2 ? c : c - v.cx[t] + x)) : null;
-      if (hp && hp.every(Number.isFinite)) g.poly(hp).fill({ color: st >= 2 ? 0x3d3227 : 0x5a4a36, alpha: st === 1 ? 0.16 : st === 2 ? 0.3 : 0.42 });
-      // mud patches
-      for (let k = 0; k < st * 2; k++) { const ox = (h(t, k, 61) - 0.5) * 15, oy = (h(t, k, 62) - 0.5) * 12; g.ellipse(x + ox, y + oy, 3 + h(t, k, 63) * 3, 2 + h(t, k, 64) * 2).fill({ color: 0x2e261e, alpha: 0.22 }); }
-      // small shell holes: a lighter rim of thrown earth, a dark bowl, a lit inner edge
-      for (let k = 0; k < st * 3; k++) {
-        const ox = (h(t, k, 11) - 0.5) * 16, oy = (h(t, k, 12) - 0.5) * 13, r = 0.9 + h(t, k, 13) * (st >= 2 ? 1.8 : 1.1);
-        g.ellipse(x + ox, y + oy, r * 1.6, r * 1.2).fill({ color: 0x6e5d48, alpha: 0.5 });
-        g.ellipse(x + ox, y + oy + 0.2, r, r * 0.72).fill({ color: 0x1f1913, alpha: 0.8 });
-      }
-      // shattered trees: short broken stumps (stubby, never long strokes)
-      if (st >= 2) for (let k = 0; k < st + 1; k++) { const ox = (h(t, k, 21) - 0.5) * 14, oy = (h(t, k, 22) - 0.5) * 11; g.rect(x + ox - 0.5, y + oy - 1.8, 1, 1.8).fill({ color: 0x2a2219, alpha: 0.9 }); g.rect(x + ox + 0.4, y + oy - 0.3, 1.6, 0.6).fill({ color: 0x3a2e22, alpha: 0.8 }); }
-      if (st >= 3) {
-        // a run of barbed wire on pickets, and scattered debris
-        const a = h(t, 7, 31) * Math.PI, c = Math.cos(a), sn = Math.sin(a), L = 7;
-        g.moveTo(x - c * L, y - sn * L);
-        for (let k = 1; k <= 10; k++) { const f = -L + (2 * L * k) / 10, off = k % 2 ? 1 : -1; g.lineTo(x + c * f - sn * off, y + sn * f + c * off); }
-        g.stroke({ width: 0.6, color: 0x8a8378, alpha: 0.8 });
-        for (let k = 0; k <= 2; k++) { const f = -L + L * k; g.rect(x + c * f - 0.5, y + sn * f - 1.4, 1, 1.6).fill({ color: 0x3a3029 }); }
-        for (let k = 0; k < 4; k++) g.rect(x + (h(t, k, 41) - 0.5) * 14, y + (h(t, k, 42) - 0.5) * 10, 1.6, 1.1).fill({ color: k % 2 ? 0x6b6258 : 0x4a4038 });
-      }
-    }
+    // no man's land: connected scarred ground, crater fields, shattered woods, wire along the front
+    drawBattlefieldTerrain(g, v, S, X, ok, wetAt);
     // fallout: a sickly hatched tint where nothing can be farmed and troops sicken
     for (const t of S.ms?.fo || []) {
       if (!ok(t)) continue;
@@ -440,13 +420,10 @@ export class CombatEffects {
     for (const [t, d0] of S.bf.c) {
       if (!ok(t)) continue;
       const d = Math.max(1, Math.min(4, d0 | 0)), x = X[t], y = v.cy[t];
+      const wet = wetAt(x, y);
       for (let k = 0; k < d + 1; k++) {
         const ox = (h(t, k) - 0.5) * 11, oy = (h(t, k, 2) - 0.5) * 8, r = 1.6 + d * 0.55 + h(t, k, 3) * 1.1;
-        const cx = x + ox, cy = y + oy;
-        g.ellipse(cx, cy, r * 1.75, r * 1.3).fill({ color: 0x7a6650, alpha: 0.45 });                  // ejecta
-        g.ellipse(cx, cy, r * 1.15, r * 0.85).fill({ color: 0x3a2f25, alpha: 0.95 });                 // bowl
-        g.ellipse(cx + r * 0.18, cy + r * 0.14, r * 0.8, r * 0.55).fill({ color: 0x1c1712, alpha: 0.9 });   // shadowed depth
-        g.ellipse(cx - r * 0.45, cy - r * 0.35, r * 0.45, r * 0.22).fill({ color: 0x9a8668, alpha: 0.45 });  // lit lip
+        hole(g, x + ox, y + oy, r, wet, true);
       }
     }
     const w = this.wreckG; w.clear();

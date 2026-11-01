@@ -4,6 +4,7 @@ const KEY = 'se.prefs';
 export const DEFAULT_PREFS = {
   // the desktop app has a real GPU budget and no browser throttling: it starts on High
   uiScale: 1, graphics: typeof window !== 'undefined' && window.desktop ? 'high' : 'medium', shake: true, reducedMotion: false, particles: 1, factionPattern: false,
+  weather: 'full', resourceMarkers: true,
   labels: 'normal', notify: 'normal', tactical: false, minimap: 'compact', rail: 'compact', inspectorWidth: 340, highContrast: false,
 };
 export const GRAPHICS = {

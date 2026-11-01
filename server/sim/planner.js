@@ -5,6 +5,7 @@
 //                 B benefit (value of output it can actually staff), R urgency of a shortage,
 //                 S fit with the city's specialization or goal, C cost, D dependency/risk
 // A project wins only if it beats doing nothing; deferrals are explained, not hidden.
+import { hostilesNear } from './ai2/Perception.js';
 import { BUILDINGS, AGES, RES, TECHS, UNITS, isWater } from './constants.js';
 import { disk, dist } from './hex.js';
 import { rareAccess } from './economy.js';
@@ -76,8 +77,9 @@ export function assess(g, civ, c) {
     short: civ.short || new Set(),
     sites: blds.filter((b) => !b.done).length,
     damaged: blds.filter((b) => b.done && b.hp < b.maxHp * 0.7).length,
-    enemyNear: [...g.units.values()].some((u) => g.hostile(u.owner, civ.id) && dist(u.tile, c.tile) <= 6),
-    enemyAirNear: [...g.units.values()].some((u) => g.hostile(u.owner, civ.id) && UNITS[u.type].air && !UNITS[u.type].civilian && dist(u.tile, c.tile) <= 8),
+    // only what this nation can see (it does not know where enemies are under the fog)
+    enemyNear: hostilesNear(g, civ, c.tile, 6).length > 0,
+    enemyAirNear: hostilesNear(g, civ, c.tile, 8, { air: true }).length > 0,
     // a settlement near a rival's known cities is on the frontier
     frontier: [...civ.knownCities.values()].some((k) => k.owner !== civ.id && !g.civs[k.owner]?.isRebel && dist(k.tile, c.tile) <= 14),
     isolated: !!c.isolated,

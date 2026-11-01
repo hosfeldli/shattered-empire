@@ -10,6 +10,8 @@ import { defaultGovernor, steerColonist } from './governor.js';
 import { nationalRoles } from './planner.js';
 import { aiAirStep } from './airPlanner.js';
 import { aiMissiles } from './missiles.js';
+import { Brain } from './ai2/index.js';
+import { visibleHostiles } from './ai2/Perception.js';
 
 const TECH_PREF = {
   builder: ['agronomy', 'salvage_engineering', 'schooling', 'surveying', 'trade_networks', 'fortification', 'small_arms', 'seafaring',
@@ -42,8 +44,10 @@ export class AI {
     this.g = g; this.civ = civ; this.p = civ.personality;
     this.campaign = null; this.lastTrade = 0; this.colonists = new Map();
     this.mil = new MilitaryPlanner(this);
+    this.brain = new Brain(this);
   }
-  cmd(c) { return this.g.command(this.civ.id, c); }
+  // every order goes through the command arbiter (ownership, duplicates, jitter, reservations)
+  cmd(c) { return this.brain.arbiter.submit(c); }
   // civilian units come from the most populous town, never from a city that can't spare people
   hub(minPop = 10) { const c = this.g.cityOf(this.civ).filter((x) => x.pop >= minPop).sort((a, b) => b.pop - a.pop)[0]; return c || null; }
 
@@ -53,6 +57,7 @@ export class AI {
     this.cities = g.cityOf(civ);
     if (!this.cities.length) return;
     this.myUnits = [...g.units.values()].filter((u) => u.owner === civ.id);
+    this.brain.begin();
     this.strategy();
     this.research();
     this.government();
@@ -60,6 +65,7 @@ export class AI {
     this.expand();
     this.military();
     this.diplomacy();
+    this.brain.end();
   }
 
   // ---------------------------------------------------------------- strategic layer
@@ -175,8 +181,9 @@ export class AI {
   strength(units) { return units.reduce((s, u) => s + (UNITS[u.type].civilian ? 0 : (UNITS[u.type].atk + UNITS[u.type].def) * (u.hp / u.maxHp)), 0); }
   enemies() { return this.g.civs.filter((o) => o.alive && this.g.hostile(this.civ.id, o.id) && !o.isRebel); }
   enemiesNear() {
-    const g = this.g, w = g.world, vis = this.civ.visible;
-    return [...g.units.values()].filter((u) => vis[u.tile] && g.hostile(this.civ.id, u.owner) && !UNITS[u.type].civilian && g.detects(this.civ.id, u) && (w.owner[u.tile] === this.civ.id || this.cities.some((c) => dist(c.tile, u.tile) <= 6)));
+    // only what this empire can see (perception), never the live map
+    const g = this.g, w = g.world;
+    return visibleHostiles(g, this.civ, (u) => !UNITS[u.type].civilian && (w.owner[u.tile] === this.civ.id || this.cities.some((c) => dist(c.tile, u.tile) <= 6)));
   }
   observed(o) { const i = this.civ.intel[o.id]; return i ? i.peak : 0; }
 
@@ -348,7 +355,7 @@ export class AI {
 
   evaluate(from, action) {
     const g = this.g, civ = this.civ, r = g.diplomacy.rel(civ.id, from.id);
-    const mine = this.strength([...g.units.values()].filter((u) => u.owner === civ.id));
+    const mine = this.strength(this.myUnits || [...g.units.values()].filter((u) => u.owner === civ.id));
     const theirs = this.observed(from);
     switch (action) {
       case 'peace': return mine < theirs * 0.9 || civ.weariness > 25 || (g.time - r.since > 600 && mine < theirs * 1.3) || this.p === 'merchant';

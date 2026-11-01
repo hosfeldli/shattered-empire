@@ -31,7 +31,7 @@ export function serializeGame(g) {
     o.$arrays = {}; for (const k of CIV_ARRAYS) o.$arrays[k] = b64(c[k]);
     if (c.ai) {
       const a = c.ai;
-      o.$ai = c.isRebel ? { kind: 'rebel', nextCamp: a.nextCamp, nextSpawn: a.nextSpawn, raid: a.raid } : { kind: 'ai', campaign: a.campaign, lastTrade: a.lastTrade, colonists: mapOut(a.colonists), mil: a.mil.serialize(), econ: a.econ ? a.econ.serialize() : null };
+      o.$ai = c.isRebel ? { kind: 'rebel', nextCamp: a.nextCamp, nextSpawn: a.nextSpawn, raid: a.raid } : { kind: 'ai', campaign: a.campaign, lastTrade: a.lastTrade, colonists: mapOut(a.colonists), mil: a.mil.serialize(), econ: a.econ ? a.econ.serialize() : null, brain: a.brain ? a.brain.serialize() : null };
     }
     o.$token = c.token;
     o.armies = { $map: [...(c.armies || new Map()).entries()] };
@@ -49,6 +49,7 @@ export function serializeGame(g) {
     slots: g.slotsDef, world, roads: { ...g.roads.serialize(), traffic: mapOut(g.roads.traffic) },
     fieldworks: serializeFieldworks(g), logistics: { caches: [...(g.caches || new Map())], seq: g.convoySeq || 0 },
     formations: { list: [...(g.formations || new Map()).values()], nextId: g.nextFormationId || 0 },
+    weather: g.weather ? g.weather.serialize() : null,
     combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g), missiles: g.missiles || [], fallout: [...(g.fallout || new Map())], missileSeq: g.missileSeq || 1 },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
     civs, diplomacy: { pairs: diplo, nextProposal: g.diplomacy.nextProposal },
@@ -84,6 +85,7 @@ export function restoreGame(data) {
   g.projectiles = new Map((cb.projectiles || []).map((p) => [p.id, p])); g.pending = new Map(cb.pending || []);
   g.eventSeq = cb.eventSeq || 0; g.events = [];
   restoreBattlefield(g, cb.battlefield);
+  if (g.weather) { g.weather.climate(); if (data.weather) g.weather.load(data.weather); }
   g.missiles = cb.missiles || []; g.fallout = new Map(cb.fallout || []); g.missileSeq = cb.missileSeq || 1;
   restoreFieldworks(g, data.fieldworks);
   g.caches = new Map(data.logistics?.caches || []); g.convoySeq = data.logistics?.seq || 0;
@@ -101,7 +103,7 @@ export function restoreGame(data) {
     c.knownVer.fill(0); c.knownOwner.fill(-2); c.visKey = ''; c.knownStab = false; c.connected = false; c.token = o.$token || null;
     if (o.$ai) {
       if (o.$ai.kind === 'rebel') { c.ai = new RebelAI(g, c); Object.assign(c.ai, { nextCamp: o.$ai.nextCamp, nextSpawn: o.$ai.nextSpawn, raid: o.$ai.raid }); }
-      else { c.ai = new AI(g, c); Object.assign(c.ai, { campaign: o.$ai.campaign, lastTrade: o.$ai.lastTrade, colonists: new Map(o.$ai.colonists) }); c.ai.mil.load(o.$ai.mil); if (c.ai.econ && o.$ai.econ) c.ai.econ.load(o.$ai.econ); }
+      else { c.ai = new AI(g, c); Object.assign(c.ai, { campaign: o.$ai.campaign, lastTrade: o.$ai.lastTrade, colonists: new Map(o.$ai.colonists) }); c.ai.mil.load(o.$ai.mil); if (o.$ai.brain) c.ai.brain.load(o.$ai.brain); if (c.ai.econ && o.$ai.econ) c.ai.econ.load(o.$ai.econ); }
     }
   });
   for (const [a, b, r] of data.diplomacy.pairs) { g.diplomacy.m[a][b] = r; g.diplomacy.m[b][a] = r; }
