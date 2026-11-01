@@ -3,7 +3,6 @@
 // network. Games themselves always run on the game server.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -13,9 +12,9 @@ fs.cpSync(path.join(root, 'client'), out, { recursive: true, filter: (src) => !s
 fs.mkdirSync(path.join(out, 'shared'), { recursive: true });
 fs.copyFileSync(path.join(root, 'server', 'sim', 'deploy.js'), path.join(out, 'shared', 'deploy.js'));
 fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
-const require = createRequire(path.join(desktop, 'package.json'));
-let pixi;
-try { pixi = require.resolve('pixi.js/dist/pixi.min.js'); } catch { pixi = createRequire(path.join(root, 'package.json')).resolve('pixi.js/dist/pixi.min.js'); }
+// pixi.js does not export its dist/ files, so find the bundle on disk (the app's own copy first)
+const pixi = [desktop, root].map((d) => path.join(d, 'node_modules', 'pixi.js', 'dist', 'pixi.min.js')).find((f) => fs.existsSync(f));
+if (!pixi) throw new Error('pixi.js is not installed: run npm install in desktop/');
 fs.copyFileSync(pixi, path.join(out, 'vendor', 'pixi.min.js'));
 // keep the app's version in step with the game
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));

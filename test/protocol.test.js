@@ -24,7 +24,7 @@ function waitFor(ws, pred, ms = 15000) {
 async function connect(port) { const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`); await new Promise((r) => ws.on('open', r)); return ws; }
 const stop = (srv) => new Promise((r) => { srv.on('exit', r); srv.kill('SIGTERM'); });
 
-test('server hosts a match end-to-end and resumes it after a restart', async () => {
+test('server hosts a match end-to-end and resumes it after a restart', { timeout: 180000 }, async () => {
   const port = 18000 + Math.floor(Math.random() * 1000);
   let srv = await boot(port);
   let session;
@@ -58,8 +58,10 @@ test('server hosts a match end-to-end and resumes it after a restart', async () 
     assert.equal((await waitFor(ws, (m) => m.rid === 3)).error, undefined);
     const moved = await waitFor(ws, (m) => m.t === 's' && m.paths && m.paths[scout[0]]);
     assert.ok(moved.paths[scout[0]].length > 0, 'server-side path returned');
-    // let an autosave happen, then restart the server like a deploy would
-    await new Promise((r) => setTimeout(r, 6500));
+    // let the match run past an autosave (by game time, so a busy machine cannot fool the test),
+    // then restart the server like a deploy would (SIGTERM saves again)
+    await waitFor(ws, (m) => m.t === 's' && m.time >= 6, 90000);
+    await new Promise((r) => setTimeout(r, 1000));
     ws.close();
   } finally { await stop(srv); }
   srv = await boot(port);
