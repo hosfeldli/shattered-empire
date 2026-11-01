@@ -697,7 +697,10 @@ export class Game {
     const tiles = [];
     const stabOK = view.god || civ.techs.has('surveying');
     for (let i = 0; i < N; i++) {
-      if (!vis[i] && !(full && explored[i])) continue;
+      // land we knew as our own that changed hands is always sent, seen or not: a nation knows which
+      // of its territory it has lost (otherwise a captured city's land stays drawn in our colour)
+      const lost = k.knownOwner[i] === civ.id && w.owner[i] !== civ.id;
+      if (!vis[i] && !(full && explored[i]) && !lost) continue;
       if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
         k.knownVer[i] = w.ver[i]; k.knownOwner[i] = w.owner[i];
         tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));

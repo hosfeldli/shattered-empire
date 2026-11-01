@@ -6,7 +6,7 @@ import { Game } from '../server/sim/game.js';
 import { spawnUnit, damageBuilding } from '../server/sim/military.js';
 import { serializeGame, restoreGame } from '../server/sim/persist.js';
 import { cityState, revoltBlocked, REVOLT, SIEGE_RUIN } from '../server/sim/cities.js';
-import { recomputeTerritory } from '../server/sim/economy.js';
+import { recomputeTerritory, transferCity } from '../server/sim/economy.js';
 import { isWater, TERRAIN } from '../server/sim/constants.js';
 import { disk, dist } from '../server/sim/hex.js';
 
@@ -74,4 +74,26 @@ test('ruins can be resettled from your borders; the new city keeps the name and 
   assert.equal(c.name, name);
   assert.equal(cityState(g, c).state, 'rebuilding');
   assert.ok(!g.ruins.has(tile));
+});
+
+test('a city captured out of sight: its land stops being drawn as ours (lost territory is always sent)', () => {
+  const g = mk(); const civ0 = g.civs[0], civ1 = g.civs[1];
+  const c = second(g, civ0);
+  for (let i = 0; i < 20; i++) g.tick();
+  const view = () => ({ civ: civ0, vis: civ0.visible, explored: civ0.explored, god: false });
+  g.viewerSnapshot(civ0, view(), true, true);          // the client knows its land
+  const ours = []; for (let t = 0; t < g.world.owner.length; t++) if (g.world.owner[t] === 0 && dist(t, c.tile) <= 3) ours.push(t);
+  assert.ok(ours.length > 3);
+  for (const u of [...g.units.values()]) if (u.owner === 0 && dist(u.tile, c.tile) <= 8) g.units.delete(u.id);
+  transferCity(g, c, civ1); recomputeTerritory(g);
+  for (let i = 0; i < 20; i++) g.tick();
+  const lost = ours.filter((t) => g.world.owner[t] !== 0);
+  assert.ok(lost.length, 'the land changed hands');
+  assert.ok(lost.some((t) => !civ0.visible[t]), 'some of it is now out of sight');
+  const snap = g.viewerSnapshot(civ0, view(), false, false);
+  const sent = new Map(snap.tiles.map((r) => [r[0], r[8]]));
+  for (const t of lost) assert.equal(sent.get(t), g.world.owner[t], `tile ${t} is sent with its new owner (seen: ${!!civ0.visible[t]})`);
+  // and once sent, it is not sent again until it changes
+  const again = g.viewerSnapshot(civ0, view(), false, false);
+  assert.ok(!(again.tiles || []).some((r) => lost.includes(r[0]) && !civ0.visible[r[0]]));
 });
