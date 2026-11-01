@@ -43,8 +43,7 @@ const timer = setInterval(() => {
     if (!game.speed) {
       // paused: keep the view alive (orders given now show up and run when play resumes)
       frames++;
-      if (frames % 5 === 0 && game.observer?.connected) send(-2, game.observerSnapshot(false, frames % 10 === 0));
-      if (frames % 5 === 0) for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg);
+      if (frames % 5 === 0) for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg);   // includes the spectator
       flush(); return;
     }
     frames++;
