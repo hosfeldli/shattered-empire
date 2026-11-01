@@ -1,6 +1,7 @@
 // Shattered Empires client bootstrap: lobby, state sync, actions and input. No game rules live
 // here: every decision (paths, placements, road routes, costs, combat) is made on the server.
 import { Net } from './net.js';
+import { api } from './config.js';
 import { View } from './view.js';
 import { Hud } from './hud.js';
 import { unitKind } from './commandBar.js';
@@ -33,11 +34,11 @@ $('playerName').value = store.get('se.name') || '';
 function lobbyArt() {
   const c = $('lobbyCanvas'); const img = new Image();
   img.onload = () => { c.width = img.width; c.height = img.height; c.getContext('2d').drawImage(img, 0, 0); c.style.objectFit = 'cover'; };
-  img.src = '/api/preview?seed=' + ((Math.random() * 1e6) | 0);
+  img.src = api('/api/preview?seed=') + ((Math.random() * 1e6) | 0);
 }
 async function refreshMatches() {
   try {
-    const list = await (await fetch('/api/matches')).json();
+    const list = await (await fetch(api('/api/matches'))).json();
     const open = list.filter((m) => m.status === 'lobby' && m.slots.some((s) => s.human && !s.taken));
     const live = list.filter((m) => m.status === 'running' || m.status === 'parked').slice(0, 6);
     const esc = (t) => String(t).replace(/</g, '&lt;');
@@ -87,8 +88,29 @@ renderDifficulty();
 
 $('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, rivals: rivalSettings(), name: playerName(), ...worldOpts() }); });
 $('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
-// desktop edition: the launcher replaces the download link
-if (window.desktop) { $('desktopLink').hidden = true; $('btnLauncher').hidden = false; $('btnLauncher').addEventListener('click', () => window.desktop.launcher()); }
+// Steam (desktop app): lobbies carry the server's match code. Hosts invite from the waiting room;
+// an accepted invite (or a friend's match picked here) joins that match on the game server.
+const steamApi = window.desktop?.steam || null;
+async function steamInit() {
+  if (!steamApi) return;
+  const st = await steamApi.status();
+  $('steamFriends').hidden = false;
+  if (!st.available) { $('steamNote').textContent = st.error || 'Steam is not running: start Steam to play with friends.'; $('btnSteamRefresh').hidden = true; return; }
+  $('steamNote').textContent = `Signed in to Steam as ${st.name}. Host a multiplayer match and invite friends from the waiting room, or join a friend's match.`;
+  $('btnSteamInvite').hidden = false;
+}
+async function steamLobbies() {
+  const list = await steamApi.lobbies();
+  const esc = (t) => String(t).replace(/</g, '&lt;');
+  $('steamLobbies').innerHTML = list.length ? list.map((l) => `<li><span><b>${esc(l.name)}</b> <span class="muted">${l.members} in lobby</span></span><button class="btn small" data-steamlobby="${l.id}">Join</button></li>`).join('') : '<li class="empty">No friends\' matches found. Ask for a Steam invite.</li>';
+}
+if (steamApi) {
+  steamInit();
+  steamApi.onJoin((code) => { if (S.ready) return hud?.toast({ text: 'Finish or leave this match to join your friend\'s.', kind: 'info', level: 'minor' }); join(code); });
+  $('btnSteamRefresh').addEventListener('click', steamLobbies);
+  $('steamLobbies').addEventListener('click', async (e) => { const b = e.target.closest('[data-steamlobby]'); if (!b) return; lobbyStatus('Joining through Steam…'); const r = await steamApi.join(b.dataset.steamlobby); if (!r.ok) lobbyStatus(r.error); });
+  $('btnSteamInvite').addEventListener('click', async () => { const r = await steamApi.host($('roomCode').textContent.trim(), $('roomName').textContent.trim()); if (!r.ok) lobbyStatus(r.error); });
+}
 $('btnSandbox').addEventListener('click', async () => { lobbyStatus('Preparing the combat sandbox…'); await ensureNet(); net.send({ t: 'create', mode: 'sandbox', name: playerName(), seed: seedVal() }); });
 $('btnHost').addEventListener('click', async () => { await ensureNet(); net.send({ t: 'create', mode: 'pvp', humans: +$('humanCount').value, ais: +$('pvpAi').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, name: playerName(), ...worldOpts() }); });
 async function join(code) { lobbyStatus('Joining ' + code + '…'); await ensureNet(); net.send({ t: 'join', match: code, name: playerName() }); }

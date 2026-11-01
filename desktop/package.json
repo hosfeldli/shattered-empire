@@ -2,23 +2,22 @@
   "name": "shattered-empires-desktop",
   "productName": "Shattered Empires",
   "version": "0.1.0",
-  "description": "Shattered Empires desktop edition: the same game server and client, run locally, online, or over Steam.",
+  "description": "Shattered Empires desktop app: the bundled game client, playing on the game server; Steam friends, lobbies and invites.",
   "private": true,
   "main": "main.cjs",
   "author": "Liam Hosfeld",
   "scripts": {
     "prepare-app": "node scripts/prepare-app.mjs",
     "start": "npm run prepare-app && electron .",
+    "start:local": "npm run prepare-app && SE_SERVER=http://localhost:8080 electron .",
     "dist": "npm run prepare-app && electron-builder --publish never",
     "dist:mac": "npm run prepare-app && electron-builder --mac --publish never",
     "dist:win": "npm run prepare-app && electron-builder --win --publish never",
-    "dist:linux": "npm run prepare-app && electron-builder --linux --publish never",
     "manifest": "node scripts/manifest.mjs"
   },
   "dependencies": {
     "pixi.js": "8.6.6",
-    "steamworks.js": "^0.4.0",
-    "ws": "^8.18.0"
+    "steamworks.js": "^0.4.0"
   },
   "devDependencies": {
     "electron": "^33.2.1",
@@ -36,7 +35,6 @@
       "main.cjs",
       "preload.cjs",
       "steam.cjs",
-      "launcher.html",
       "app/**",
       "node_modules/**",
       "package.json"
@@ -76,17 +74,6 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "category": "Game"
     },
     "afterPack": "scripts/adhoc-sign.cjs"
   }

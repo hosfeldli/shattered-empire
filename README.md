@@ -5,7 +5,7 @@ A grand-scale RTS where you rebuild a civilization on a shattered world that wra
 ## Architecture: the cloud does the thinking
 
 ```
-Browser (PixiJS)                         Cloud Run (Node.js; one worker thread per match, 10 Hz)
+Desktop app (Electron + PixiJS)          Cloud Run (Node.js; one worker thread per match, 10 Hz)
  ├─ draws server-shaded hex colours  ◀──  world gen · tectonics · quakes · eruptions · hydrology
  ├─ interpolates unit positions      ◀──  A*, shared flow fields, formations, tile/bridge capacity
  ├─ ambient city life from aggregates◀──  economy · local stockpiles · freight · population · governors
@@ -14,7 +14,7 @@ Browser (PixiJS)                         Cloud Run (Node.js; one worker thread p
                                           snapshots → Cloud Storage (matches survive deploys)
 ```
 
-Everything that decides the game runs on the server. Clients never see unexplored or hidden data: tile changes only reach a player when they can see the place; foreign empires expose no economy or score; AI empires plan only from what they have observed.
+The game is played in the desktop app for Windows and macOS; the website (game.liamhosfeld.com) is only its downloader. Everything that decides the game runs on the server — there is no offline mode. Clients never see unexplored or hidden data: tile changes only reach a player when they can see the place; foreign empires expose no economy or score; AI empires plan only from what they have observed.
 
 ### Eras
 Reclamation → Industrial Recovery → Mechanization → Networked Warfare → Advanced Systems, over a branching 37-technology graph with a research queue. 20 unit types across four movement classes (infantry, wheeled, tracked, aircraft) that interact differently with roads, bridges, rivers, slopes and marshes; engineers repair, fight fires, clear rubble and blast passes.
@@ -37,7 +37,7 @@ Reclamation → Industrial Recovery → Mechanization → Networked Warfare → 
 - **Era progression** is paced (economy 2–4 min, rifles 4–8, industrial 10–15, mechanised 18–25, networked 30–45, advanced 45–60) with national savings for the next era, refits that keep veterancy, and logistics upkeep that limits unit spam. The readiness panel shows what stands between you and the next era.
 
 ### Front lines, trenches and logistics
-- **Line deployment**: with troops selected, right-drag a line. A long line spreads them one per hex; a short one concentrates them up to each hex's capacity (shown live: green / amber / red, with a *Dispersed / Concentrated / Dense* label). Modes: Line, Compact, Defense in depth (support and artillery in rear ranks), Keep shape. Behaviours: Hold, Defend (engage nearby, then return), Advance. Tab reverses the facing while dragging, Shift queues, Esc cancels. The browser runs the same planner the server validates (`server/sim/deploy.js`). Formations persist (save/restore), can be reinforced, and a unit moved by hand detaches until it rejoins.
+- **Line deployment**: with troops selected, right-drag a line. A long line spreads them one per hex; a short one concentrates them up to each hex's capacity (shown live: green / amber / red, with a *Dispersed / Concentrated / Dense* label). Modes: Line, Compact, Defense in depth (support and artillery in rear ranks), Keep shape. Behaviours: Hold, Defend (engage nearby, then return), Advance. Tab reverses the facing while dragging, Shift queues, Esc cancels. The client runs the same planner the server validates (`server/sim/deploy.js`). Formations persist (save/restore), can be reinforced, and a unit moved by hand detaches until it rejoins.
 - **Area fire hits every unit on a hex**: a mortar or howitzer shell on a stack of six squads resolves six hits. Concentration holds ground; it also invites artillery.
 - **Trench lines**: Build → Defenses → **Trench Line** (or *Fortify* in the command bar) draws a line like a road: preview shows valid segments, cost (earthworks 6 materials / 10 s per hex, reinforced 10 / 18 s; reinforcing earthworks charges only the difference), completion time and the protected side (**Reverse Facing**). National construction crews dig several segments at once; no troops stand on the line to build it. Cover is directional, weak for vehicles, degraded by explosives, repairable. Never on buildings or developed districts. Guard Posts, Bunkers (shelter adjacent troops), Fortresses and AA Batteries complete the Defenses palette (*Show locked* lists what research unlocks).
 - **No man's land**: every shell, wreck and death wears the ground down — churned, then cratered mud, then wire and debris. Vehicles bog down, infantry find shell holes, fields stop producing; it heals slowly once fighting moves on. Infantry holding under fire scrape out temporary foxholes (capped, gone when abandoned).
@@ -73,23 +73,24 @@ Each tick runs through a scheduler: every system has a cadence, a phase (the onc
 ### Watching AI matches (testing)
 **Watch an AI match** in the lobby starts an AI-only game with no fog of war: every empire's units, cities and buildings are visible, with full city detail. Follow any empire to see its economy, research and cities in the panels, switch to its fog of war to check what it can see, run the match at 1×, 2×, 4× or 8× speed or pause it, and see AI offensives as arrows to the city they are marching on. Running matches also appear in the lobby with a **Watch** button. Spectators cannot give orders. Keys: `[` `]` follow previous/next, `P` pause, `,` `.` slower/faster, `V` fog.
 
-## Desktop edition (Windows and macOS)
-`desktop/` packages the same game for the desktop with Electron, using the same architecture: the unchanged Node server runs as a child process on a private localhost port (saves in the user's data folder) and the window loads the unchanged client from it. The launcher offers **This computer** (offline, against the AI), **Online** (game.liamhosfeld.com) and **Steam**: the host's local server is shared with friends through Steam lobbies and Steam networking (Spacewar test app 480 until the game has its own app id); guests tunnel the game's WebSocket to the host, so the server stays authoritative and no ports need opening.
+## Desktop app (Windows and macOS)
+`desktop/` is the game's client: Electron with the browser client bundled inside (`npm run prepare-app` copies `client/`, the shared deployment planner and PixiJS into the app) and served from a private `app://` origin, so no game code is downloaded at run time. Every match runs on the deployed server: the app connects to `wss://game.liamhosfeld.com/ws` and reads the small JSON API (match list, map previews) cross-origin. **Steam** (Spacewar test app 480 until the game has its own app id) is the social layer: in a multiplayer waiting room, *Invite Steam friends* opens a Steam lobby that carries the server's match code; accepting the invite (overlay, Steam chat, or Steam launching the game with `+connect_lobby`) joins that match on the server. The lobby also lists friends' matches. Without Steam the app plays normally.
 
 ```bash
 cd desktop && npm install
-npm start            # run from source
+npm start            # run from source against game.liamhosfeld.com
+npm run start:local  # against a local server (npm run dev in the repo root)
 npm run dist:mac     # dmg for Apple Silicon and Intel (ad-hoc signed unless a Developer ID is configured)
 npm run dist:win     # NSIS installer (x64)
 ```
 
-Downloads are served at **game.liamhosfeld.com/download** by the game server itself (same load balancer → Cloud Run path), from `downloads/` in the game's Cloud Storage bucket. The *Desktop builds* workflow (tags `v*` or manual) builds macOS and Windows on GitHub runners and publishes them with `desktop/scripts/publish.sh`, which can also be run from a machine with bucket access.
+**The website is a downloader.** The Cloud Run service serves the download page at `/` (and `/download`), the installers from `downloads/` in the game's Cloud Storage bucket, the API and the game WebSocket — through the same load balancer → Cloud Run path as before. The container image no longer contains the client. The *Desktop builds* workflow (tags `v*` or manual) builds macOS and Windows on GitHub runners and publishes them with `desktop/scripts/publish.sh` (also runnable from any machine with bucket access).
 
 ## Develop locally
 
 ```bash
 npm install
-npm run dev          # http://localhost:8080
+npm run dev          # game server at http://localhost:8080; SERVE_CLIENT=1 also serves the client there for development
 npm test             # simulation, systems, overhaul acceptance, fairness, persistence, protocol and load tests
 node test/balance.mjs 7,11 30 4   # balance probe: era timings, armies, starvation per seed
 npm run test:e2e     # browser tests (needs: npx playwright install chromium)

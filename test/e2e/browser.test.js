@@ -17,7 +17,7 @@ const pageErrors = [];
 
 before(async () => {
   if (skip) return;
-  srv = spawn(process.execPath, ['server/index.js'], { env: { ...process.env, PORT: String(PORT), SNAPSHOT_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'se-e2e-')) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  srv = spawn(process.execPath, ['server/index.js'], { env: { ...process.env, SERVE_CLIENT: '1', PORT: String(PORT), SNAPSHOT_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'se-e2e-')) }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((r) => srv.stdout.on('data', (d) => { if (String(d).includes('listening')) r(); }));
   browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } });

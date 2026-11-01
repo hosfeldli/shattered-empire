@@ -625,4 +625,9 @@ ul.cons li { margin-bottom: 6px; }
 .cprod ul { margin: 4px 0 0; }
 #alerts:not([hidden]) { max-height: min(34vh, 320px); display: flex; flex-direction: column; }
 #alerts #alertList { flex: 1; overflow: auto; min-height: 0; }
-.desktop-link a { color: var(--ochre); }
+
+.steam-friends h2 { font-family: var(--display); font-weight: 400; font-size: 22px; margin: 20px 0 6px; }
+.steam-friends ul { list-style: none; padding: 0; margin: 0 0 8px; }
+.steam-friends li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.steam-friends li.empty { color: var(--chalk-dim); border: 0; }
+#btnSteamInvite { margin: 4px 0 10px; }

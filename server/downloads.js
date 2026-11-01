@@ -1,7 +1,7 @@
-// Desktop downloads served from the game's own host (game.liamhosfeld.com/download), through the
-// same load balancer -> Cloud Run path as the game. Builds live in Cloud Storage under downloads/
+// The public site: game.liamhosfeld.com is a downloader for the desktop app, served by the game server
+// itself (same load balancer -> Cloud Run path). Builds live in Cloud Storage under downloads/
 // (uploaded by the desktop release workflow) with a manifest.json; locally, DOWNLOAD_DIR works too.
-//   GET /download              page with the latest build for each platform
+//   GET / and /download         page with the latest build for each platform
 //   GET /api/downloads         the manifest (JSON)
 //   GET /download/file/<name>  the installer, streamed (attachment)
 import fs from 'node:fs';
@@ -57,9 +57,9 @@ export function makeDownloads(log) {
     }).join('');
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
     res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shattered Empires — Desktop</title>
-<style>body{margin:0;background:#122025;color:#e9e4d6;font:16px/1.5 'Barlow Semi Condensed',system-ui,sans-serif}main{max-width:720px;margin:0 auto;padding:40px 16px}h1{font-family:'IM Fell English SC',Georgia,serif;font-weight:400;font-size:40px;margin:0 0 8px}h2{font-size:20px;margin:0 0 8px}section{background:#1a2c32;border:1px solid #2c3d40;border-radius:6px;padding:14px 16px;margin:12px 0}section.you{border-color:#d9a43a}.btn{display:inline-block;background:#d9a43a;color:#13201f;font-weight:700;padding:8px 14px;border-radius:4px;text-decoration:none;margin:4px 8px 4px 0}.muted{color:#9fb0ab;font-size:14px}a{color:#d9a43a}small{font-weight:400;color:#9fb0ab}</style></head>
-<body><main><h1>Shattered Empires</h1><p>The desktop edition runs the same game and server on your own computer: play offline against the AI with saves on your disk, connect to this server for online matches, or host friends over Steam.${m.version ? ` Latest version <b>${esc(m.version)}</b>${m.date ? ` (${esc(m.date.slice(0, 10))})` : ''}.` : ''}</p>${rows}
-<p class="muted">macOS: open the .dmg and drag the app to Applications (first launch: right-click → Open if Gatekeeper warns about an unsigned build). Windows: run the installer.</p><p><a href="/">← Play in the browser</a></p></main></body></html>`);
+<style>body{margin:0;background:#122025;color:#e9e4d6;font:16px/1.5 'Barlow Semi Condensed',system-ui,sans-serif}main{max-width:720px;margin:0 auto;padding:40px 16px}h1{font-family:'IM Fell English SC',Georgia,serif;font-weight:400;font-size:40px;margin:0 0 8px}h2{font-size:20px;margin:0 0 8px}section{background:#1a2c32;border:1px solid #2c3d40;border-radius:6px;padding:14px 16px;margin:12px 0}section.you{border-color:#d9a43a}img.map{width:100%;max-height:240px;object-fit:cover;border-radius:6px;margin:8px 0 12px;image-rendering:pixelated}.btn{display:inline-block;background:#d9a43a;color:#13201f;font-weight:700;padding:8px 14px;border-radius:4px;text-decoration:none;margin:4px 8px 4px 0}.muted{color:#9fb0ab;font-size:14px}a{color:#d9a43a}small{font-weight:400;color:#9fb0ab}</style></head>
+<body><main><h1>Shattered Empires</h1><img class="map" src="/api/preview?seed=${Date.now() % 100000}" alt="A generated continent"><p>A grand-scale strategy game on a continent that is still tearing itself apart. Download the game for Windows or macOS; every match is played on the game servers here, against the AI or with friends (Steam invites included).${m.version ? ` Latest version <b>${esc(m.version)}</b>${m.date ? ` (${esc(m.date.slice(0, 10))})` : ''}.` : ''}</p>${rows}
+<p class="muted">macOS: open the .dmg and drag Shattered Empires to Applications (first launch of an unsigned build: right-click the app → Open). Windows: run the installer (SmartScreen may ask: More info → Run anyway). An internet connection is required to play.</p></main></body></html>`);
   }
   return { manifest, file, page };
 }

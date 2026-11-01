@@ -31,7 +31,12 @@ test('server hosts a match end-to-end and resumes it after a restart', async () 
   try {
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
     assert.equal(health.ok, true);
-    assert.match(await (await fetch(`http://127.0.0.1:${port}/`)).text(), /Shattered Empires/);
+    // the deployed site is only a downloader: no game client is served; the API allows the app's origin
+    const home = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+    assert.match(home, /Shattered Empires/); assert.match(home, /Windows/); assert.match(home, /macOS/);
+    assert.doesNotMatch(home, /id="lobby"/);
+    for (const p of ['/main.js', '/vendor/pixi.min.js', '/shared/deploy.js', '/style.css']) assert.equal((await fetch(`http://127.0.0.1:${port}${p}`)).status, 404, `${p} is not served`);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/matches`)).headers.get('access-control-allow-origin'), '*');
     const ws = await connect(port);
     ws.send(JSON.stringify({ t: 'create', mode: 'ai', ais: 1, name: 'Tester', seed: 7 }));
     const joined = await waitFor(ws, (m) => m.t === 'joined');

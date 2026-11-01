@@ -69,8 +69,12 @@
         <form id="joinForm" class="join"><input id="joinCode" placeholder="Match code" maxlength="8" aria-label="Match code"><button class="btn">Join</button></form>
       </div>
       <button id="btnRejoin" class="btn ghost" hidden>Return to your last match</button>
-      <p class="muted small desktop-link" id="desktopLink"><a href="/download" target="_blank" rel="noopener">Get the desktop app for Windows and macOS</a>: offline play, saves on your disk, and Steam matches with friends.</p>
-      <button id="btnLauncher" class="btn ghost small" type="button" hidden>Back to the desktop launcher</button>
+      <div class="steam-friends" id="steamFriends" hidden>
+        <h2>Steam friends</h2>
+        <p class="muted small" id="steamNote">Host a multiplayer match and invite friends from the waiting room, or join a friend's match here.</p>
+        <ul id="steamLobbies" class="matchlist"></ul>
+        <button id="btnSteamRefresh" class="btn small ghost" type="button">Find friends' matches</button>
+      </div>
       <p id="lobbyStatus" class="status" role="status"></p>
     </div>
   </section>
@@ -81,6 +85,7 @@
       <h2 id="roomName">Match</h2>
       <p>Share this code with the other players: <strong id="roomCode" class="code"></strong></p>
       <ul id="roomSlots"></ul>
+      <button id="btnSteamInvite" class="btn small" type="button" hidden>Invite Steam friends</button>
       <button id="btnStartNow" class="btn primary">Start now (empty seats become AI)</button>
       <button id="btnLeaveRoom" class="btn ghost">Leave</button>
     </div>
