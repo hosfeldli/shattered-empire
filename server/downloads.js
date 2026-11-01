@@ -31,19 +31,25 @@ export function makeDownloads(log) {
     return cache;
   }
 
+  // Installers are 90-120 MB. Cloud Run refuses buffered responses over 32 MiB (the client sees a
+  // 500), so the file is streamed with chunked transfer encoding and no content-length; the size is
+  // on the download page instead.
   async function file(name, res) {
     const m = await manifest();
     const f = m.files.find((x) => x.name === name);
     if (!f || name.includes('/') || name.includes('..')) { res.writeHead(404); return res.end('not found'); }
-    const head = { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${name}"`, 'cache-control': 'public, max-age=3600' };
+    const head = { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${name}"`, 'cache-control': 'public, max-age=3600', 'x-file-size': String(f.size || '') };
     if (dir) {
       const p = path.join(dir, name); if (!fs.existsSync(p)) { res.writeHead(404); return res.end('not found'); }
-      res.writeHead(200, { ...head, 'content-length': fs.statSync(p).size }); return fs.createReadStream(p).pipe(res);
+      res.writeHead(200, head); return fs.createReadStream(p).pipe(res);
     }
     const r = await fetch(`${API}/storage/v1/b/${bucket}/o/${encodeURIComponent('downloads/' + (f.path || name))}?alt=media`, { headers: { authorization: 'Bearer ' + (await gcsToken()) } });
-    if (!r.ok || !r.body) { res.writeHead(502); return res.end('download unavailable'); }
-    res.writeHead(200, { ...head, ...(r.headers.get('content-length') ? { 'content-length': r.headers.get('content-length') } : {}) });
-    Readable.fromWeb(r.body).pipe(res);
+    if (!r.ok || !r.body) { log.warn?.(`download ${name}: storage ${r.status}`); res.writeHead(502); return res.end('download unavailable'); }
+    res.writeHead(200, head);
+    const body = Readable.fromWeb(r.body);
+    body.on('error', (e) => { log.warn?.(`download ${name} interrupted: ${e.message}`); res.destroy(e); });
+    res.on('close', () => body.destroy());
+    body.pipe(res);
   }
 
   async function page(res, ua = '') {

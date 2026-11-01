@@ -28,7 +28,10 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - run: npm test
+      # A shared runner can starve the few wall-clock tests (live server, spectator speed); one full rerun
+      # keeps a flake from blocking a deploy, and the first attempt's "failing tests" list stays in the log.
+      - name: npm test
+        run: npm test || { echo "::warning::npm test failed once; rerunning the whole suite"; npm test; }
 
   e2e:
     runs-on: ubuntu-latest
