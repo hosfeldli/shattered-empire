@@ -4,6 +4,8 @@
 //   - soft edge blends between biomes, beaches and surf along coasts
 //   - relief shading lit from the north-west (hills, ranges, valleys)
 //   - biome detail: tree canopies, grass tufts, dunes, contours, ridges with snow, reeds, waves
+//   - settlement: land a town has built on is cleared and worn (trodden earth, kitchen gardens, a
+//     few kept trees), and the woods round its edge are thinned, so towns sit in the landscape
 import { h } from './VisualLOD.js';
 
 const T = { DEEP: 0, SHALLOW: 1, GRASS: 2, PLAINS: 3, FOREST: 4, DESERT: 5, TUNDRA: 6, MARSH: 7, HILLS: 8, MOUNTAIN: 9, PEAK: 10, LAVA: 11, ASH: 12 };
@@ -21,6 +23,38 @@ export function smoothColor(v, S, i) {
     const c = rgb(S.color[k]); r += c[0] * 0.6; g += c[1] * 0.6; b += c[2] * 0.6; n += 0.6;
   }
   return [r / n, g / n, b / n];
+}
+
+// built on (a district, a building or a town centre), and next to such land
+export const settledAt = (S, i) => i >= 0 && (S.urban?.[i] === 1 || !!S.buildingTiles?.has(i) || !!S.cityAt?.has(i));
+const fringeAt = (v, S, i) => { for (let d = 0; d < 6; d++) if (settledAt(S, v.nb(i, d))) return true; return false; };
+
+// cleared, lived-on ground: soft worn patches that spill a little over the hex edge, garden plots
+function paintSettled(ctx, x, y, R, base, r, t) {
+  const g = ctx.createRadialGradient(x, y, R * 0.2, x, y, R * 1.25);
+  const earth = t === T.DESERT ? [196, 172, 120] : t === T.TUNDRA ? [150, 148, 132] : [128, 118, 84];
+  const mix = (f) => [base[0] + (earth[0] - base[0]) * f, base[1] + (earth[1] - base[1]) * f, base[2] + (earth[2] - base[2]) * f];
+  const m1 = mix(0.55), m2 = mix(0.3);
+  g.addColorStop(0, css(m1[0], m1[1], m1[2], 0.75)); g.addColorStop(0.65, css(m2[0], m2[1], m2[2], 0.5)); g.addColorStop(1, css(m2[0], m2[1], m2[2], 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R * 1.25, 0, 7); ctx.fill();
+  for (let k = 0; k < 4; k++) {
+    const a = r(60 + k) * 6.283, d = r(70 + k) * R * 0.7, px = x + Math.cos(a) * d, py = y + Math.sin(a) * d * 0.9;
+    ctx.fillStyle = css(earth[0] * 0.85, earth[1] * 0.82, earth[2] * 0.78, 0.22); ctx.beginPath(); ctx.ellipse(px, py, 2.5 + r(80 + k) * 3, 1.6 + r(90 + k) * 2, r(95 + k) * 3, 0, 7); ctx.fill();
+  }
+  // kitchen gardens: little striped plots in the lighter ground
+  if (t !== T.DESERT && t !== T.TUNDRA) for (let k = 0; k < 2; k++) {
+    if (r(100 + k) < 0.4) continue;
+    const a = r(110 + k) * 6.283, d = R * (0.45 + r(120 + k) * 0.35), px = x + Math.cos(a) * d, py = y + Math.sin(a) * d * 0.9;
+    ctx.save(); ctx.translate(px, py); ctx.rotate(Math.floor(r(130 + k) * 3) * Math.PI / 3);
+    ctx.fillStyle = css(96, 112, 58, 0.55); ctx.fillRect(-2.2, -1.4, 4.4, 2.8);
+    ctx.strokeStyle = css(70, 62, 40, 0.5); ctx.lineWidth = 0.4; for (let s = -1; s <= 1; s++) { ctx.beginPath(); ctx.moveTo(-2.2, s * 0.9); ctx.lineTo(2.2, s * 0.9); ctx.stroke(); }
+    ctx.restore();
+  }
+}
+function tree(ctx, tx, ty, rad, base, rr) {
+  ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath(); ctx.ellipse(tx + 1.1, ty + 1.2, rad, rad * 0.7, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = shade(base, 0.72 + rr * 0.18); ctx.beginPath(); ctx.arc(tx, ty, rad, 0, 7); ctx.fill();
+  ctx.fillStyle = shade(base, 1.18, 0.75); ctx.beginPath(); ctx.arc(tx - rad * 0.3, ty - rad * 0.35, rad * 0.45, 0, 7); ctx.fill();
 }
 
 // Everything drawn on top of the base fills for one hex (canvas in base world coordinates).
@@ -66,15 +100,21 @@ export function paintTerrainDetail(ctx, v, S, i, R, CORNERS) {
   }
   // ---- biome detail
   const r = (k) => h(i, k, 77), inside = (k, s2 = 0.62) => { const ang = r(k) * 6.283, d = Math.sqrt(r(k + 50)) * R * s2; return [x + Math.cos(ang) * d, y + Math.sin(ang) * d * 0.9]; };
+  const settled = !isWater(t) && t < T.MOUNTAIN && settledAt(S, i);
+  if (settled) {
+    // cleared for the town: worn ground, gardens, and only a couple of kept trees near the edge
+    const meadow = t === T.FOREST ? [base[0] * 1.25 + 14, base[1] * 1.12 + 10, base[2] * 1.0 + 4] : base;
+    paintSettled(ctx, x, y, R, meadow, r, t);
+    if (t === T.FOREST || t === T.GRASS) for (let k = 0; k < (t === T.FOREST ? 2 : 1); k++) { if (r(140 + k) < 0.35) continue; const [tx, ty] = inside(150 + k, 0.95); tree(ctx, tx, ty, 1.8 + r(160 + k), base, r(170 + k)); }
+    return;
+  }
+  const fringe = t === T.FOREST && fringeAt(v, S, i);
   switch (t) {
     case T.FOREST: {
-      const n = 5 + Math.floor(r(1) * 3);
-      for (let k = 0; k < n; k++) {
-        const [tx, ty] = inside(10 + k), rad = 2.4 + r(30 + k) * 1.3;
-        ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath(); ctx.ellipse(tx + 1.1, ty + 1.2, rad, rad * 0.7, 0, 0, 7); ctx.fill();
-        ctx.fillStyle = shade(base, 0.72 + r(40 + k) * 0.18); ctx.beginPath(); ctx.arc(tx, ty, rad, 0, 7); ctx.fill();
-        ctx.fillStyle = shade(base, 1.18, 0.75); ctx.beginPath(); ctx.arc(tx - rad * 0.3, ty - rad * 0.35, rad * 0.45, 0, 7); ctx.fill();
-      }
+      // woods next to a town are thinned for timber and pasture
+      if (fringe) { const m = [base[0] * 1.18 + 10, base[1] * 1.08 + 8, base[2]]; const g = ctx.createRadialGradient(x, y, 0, x, y, R); g.addColorStop(0, css(m[0], m[1], m[2], 0.5)); g.addColorStop(1, css(m[0], m[1], m[2], 0)); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R, 0, 7); ctx.fill(); }
+      const n = fringe ? 2 + Math.floor(r(1) * 2) : 5 + Math.floor(r(1) * 3);
+      for (let k = 0; k < n; k++) { const [tx, ty] = inside(10 + k), rad = 2.4 + r(30 + k) * 1.3; tree(ctx, tx, ty, rad, base, r(40 + k)); }
       break;
     }
     case T.GRASS: case T.PLAINS: {

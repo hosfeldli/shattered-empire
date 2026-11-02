@@ -81,7 +81,7 @@ async function ensureNet() {
   return net;
 }
 const seedVal = () => { const v = $('seed').value.trim(); return v === '' ? undefined : +v; };
-const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked, style: $('worldStyle').value || undefined, cataclysm: $('cataclysm').checked, cataclysmFreq: $('cataclysmFreq').value });
+const worldOpts = () => ({ seed: seedVal(), mapSize: $('mapSize').value === 'auto' ? undefined : $('mapSize').value, rebels: $('rebels').checked, style: $('worldStyle').value || undefined });
 // ---- lobby: rival difficulty with full disclosure of what each level does
 const DIFF_TEXT = {
   easy: ['Gentle', 'Basic', 'Simple', 'Short campaigns, limited reserves, slow to adapt'],
@@ -256,8 +256,7 @@ function togglePause(force) {
 async function startGame(m) {
   const first = !S.defs || S.W !== m.defs.W || (view && view.wrap !== (m.world ? m.world.wrap !== false : false));
   S.defs = m.defs; S.civId = m.civId; S.W = m.defs.W; S.H = m.defs.H;
-  S.wrap = m.world ? m.world.wrap !== false : false; S.cataclysm = !!m.world?.cataclysm; S.worldStyle = m.world?.style || '';
-  document.querySelector('.seismo').hidden = !S.cataclysm;     // a peaceful world has nothing to measure
+  S.wrap = m.world ? m.world.wrap !== false : false; S.worldStyle = m.world?.style || '';
   S.canPause = !!m.canPause && !m.spectator; $('btnPause').hidden = !S.canPause; setPaused(!!m.paused);
   S.spectator = !!m.spectator; S.sandbox = !!m.sandbox; S.obs = m.spectator ? { follow: m.civId, fog: false, speed: 1 } : null;
   document.body.classList.toggle('spectating', S.spectator);
@@ -312,6 +311,7 @@ function applySnapshot(m) {
     for (const t of m.tiles) {
       const [i, terr, color, res, road, flags, fdir, fb, owner, stab] = t;
       if (S.owner[i] !== owner) ownerChanged = true;
+      if (S.road[i] !== road) S.roadVersion = (S.roadVersion || 0) + 1;
       S.terr[i] = terr; S.color[i] = color; S.res[i] = res; S.road[i] = road; S.flags[i] = flags; S.fdir[i] = fdir; S.fb[i] = fb; S.owner[i] = owner; S.stab[i] = stab;
       view.dirtyTiles.add(i); view.dirtyOverlay.add(i);
     }
@@ -344,13 +344,19 @@ function applyEcon(m) {
   S.econ = m.econ;
   // field trenches (authoritative) and the developed city footprint
   if (m.fw) { const k = m.fw.length + ':' + m.fw.reduce((s, f) => s + f[0] * 7 + f[4] + f[5] * 3, 0); if (k !== S.fwKey) { S.fwKey = k; S.fw = new Map(m.fw.map((f) => [f[0], { t: f[0], o: f[1], type: f[2] ? 'reinforced' : 'basic', dir: f[3], p: f[4], hp: f[5], st: f[6] }])); S.fwVersion = (S.fwVersion || 0) + 1; } }
-  if (m.urban) { decodeBits(m.urban, S.urban); S.urbanVersion = (S.urbanVersion || 0) + 1; }
+  // land that becomes (or stops being) built up is repainted: towns clear and wear their ground
+  if (m.urban) { const ch = decodeBits(m.urban, S.urban); if (ch.length) { S.urbanVersion = (S.urbanVersion || 0) + 1; for (const i of ch) view.dirtyTiles.add(i); } }
   for (const i of decodeBits(m.supply, S.supply)) if (S.lens === 'supply') view.dirtyOverlay.add(i);
   const got = new Set(m.buildings.map((b) => b.id));
   let bchg = false;
   for (const [id, b] of S.buildings) if (!got.has(id) && (b.o === S.civId || S.vis[b.t])) { S.buildings.delete(id); bchg = true; }
   for (const b of m.buildings) { const o = S.buildings.get(b.id); if (!o || o.st !== b.st || o.o !== b.o) bchg = true; S.buildings.set(b.id, { ...b, rallyArmy: o?.rallyArmy }); }
-  if (bchg) { S.buildingsVersion++; S.buildingAtTile.clear(); S.buildingTiles.clear(); for (const b of S.buildings.values()) { S.buildingAtTile.set(b.t, b); S.buildingTiles.add(b.t); } }
+  if (bchg) {
+    const before = new Set(S.buildingTiles);
+    S.buildingsVersion++; S.buildingAtTile.clear(); S.buildingTiles.clear(); for (const b of S.buildings.values()) { S.buildingAtTile.set(b.t, b); S.buildingTiles.add(b.t); }
+    for (const t of S.buildingTiles) if (!before.delete(t)) view.dirtyTiles.add(t);
+    for (const t of before) view.dirtyTiles.add(t);
+  }
   const gotC = new Set(m.cities.map((c) => c.id));
   for (const [id, c] of S.cities) if (!gotC.has(id) && (c.o === S.civId || S.vis[c.t])) S.cities.delete(id);
   for (const c of m.cities) S.cities.set(c.id, c);
@@ -376,10 +382,7 @@ function applyEcon(m) {
 function onNote(m) {
   if (!S.ready) return;
   S.log.push(m); if (S.log.length > 400) S.log.shift();
-  const geo = ['quake', 'eruption', 'rift', 'uplift', 'drought', 'river', 'rumor', 'warning'];
-  if (geo.includes(m.kind)) hud.quake(m.kind);
-  if (m.tile >= 0 && !m.quiet) view.ping(m.tile, m.radius || 2, m.kind === 'warning' ? 0xf0b54a : geo.includes(m.kind) ? 0xff7a5c : m.level === 'critical' || m.kind === 'war' ? 0xd0533b : 0x8fd19e);
-  if (m.kind === 'quake' && m.tile >= 0 && S.vis[m.tile]) view.shake = 1.2;
+  if (m.tile >= 0 && !m.quiet) view.ping(m.tile, m.radius || 2, m.level === 'critical' || m.kind === 'war' ? 0xd0533b : 0x8fd19e);
   if (!m.quiet && m.level !== 'info') { hud.toast(m); if (m.level === 'critical' || m.level === 'major') audio.ui('alert'); else if (m.kind === 'unit' || m.kind === 'build') audio.ui('done'); }
   hud.alert(m);
   if (hud.tab === 'chronicle') hud.drawer();
@@ -465,6 +468,14 @@ const actions = {
     if (a === 'army') actions.formArmy();
     if (a === 'demolish' && S.selBuilding != null) { actions.cmd({ c: 'demolish', id: S.selBuilding }); S.selBuilding = null; }
     if (a === 'repair' && S.selBuilding != null) actions.cmd({ c: 'repair', id: S.selBuilding });
+    if (a === 'modeDefend' || a === 'modeAttack') {
+      const ids = mineSel().filter((id) => !S.defs.UNITS[S.units.get(id)?.type]?.civilian);
+      const stance = a === 'modeAttack' ? 'aggressive' : 'defensive';
+      actions.cmd({ c: 'stance', units: ids, stance });
+      for (const id of ids) { const u = S.units.get(id); if (u) u.stance = stance; }
+      hud.selHtml = ''; hud.selection();
+    }
+    if (a === 'buildNext' && S.selBuilding != null) actions.cmd({ c: 'buildNext', id: S.selBuilding }).then((r) => { if (!r.error) hud.toast({ text: 'Moved to the front of the construction queue.', kind: 'build', level: 'info' }); });
     if (a === 'upgradeDefense' && S.selBuilding != null) actions.cmd({ c: 'upgradeDefense', id: S.selBuilding }).then((r) => { if (!r.error) hud.toast({ text: 'AA battery upgraded.', kind: 'build', level: 'info' }); });
     if (a === 'disband') actions.cmd({ c: 'disband', units: ids }).then((r) => { if (r.men) { hud.toast({ text: `${ids.length} unit${ids.length > 1 ? 's' : ''} disbanded: ${Math.round(r.back)} of ${r.men} soldiers return home as civilians.`, kind: 'city', level: 'minor' }); S.selUnits.clear(); hud.selection(); } });
   },
@@ -477,12 +488,13 @@ const actions = {
   // ---- deployment, formations, fortification
   deploy(line, { queue, attackMove } = {}) {
     const o = S.deployOpts, units = mineSel();
-    actions.cmd({ c: 'deploy', units, line, mode: o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, behavior: attackMove ? 'attackMove' : o.behavior, reverse: o.reverse, queue: !!queue })
+    const attackMode = attackMove || attacking(units);
+    actions.cmd({ c: 'deploy', units, line, mode: 'line', density: 'auto', depth: 'auto', behavior: attackMode ? 'attackMove' : 'defend', reverse: o.reverse, queue: !!queue })
       .then((r) => {
         const d = r.deploy; if (!d) return;
         if (d.queued) return hud.toast({ text: `Deployment queued for ${d.queued} units.`, kind: 'unit', level: 'info' });
         const parts = [`${d.placed + d.partial} deploying`]; if (d.overflow?.length) parts.push(`${d.overflow.length} did not fit (no room on that line)`); if (d.unreachable) parts.push(`${d.unreachable} cannot reach`);
-        hud.toast({ text: `Line ${d.label === 'dense' ? '(dense: vulnerable to artillery) ' : ''}— ${parts.join(', ')}.`, kind: d.overflow?.length || d.unreachable ? 'warning' : 'unit', level: d.overflow?.length ? 'minor' : 'info' });
+        if (d.overflow?.length || d.unreachable) hud.toast({ text: `Line — ${parts.join(', ')}.`, kind: 'warning', level: 'minor' });
       });
     view.ping(line[1], 0.5, 0xf1c75b);
   },
@@ -594,7 +606,7 @@ const actions = {
     if (tool === 'clearPass') return setMode({ kind: 'clearPass' }, 'Click an impassable peak next to an engineer team or your supply network.');
     if (S.mode && S.mode.kind === 'build' && S.mode.type === type) return setMode(null);    // the palette button toggles the tool
     const m = { kind: 'build', type, tiles: null, session: { n: 0, planned: 0, cost: {} }, multi: false };
-    setMode(m, `Placing: ${S.defs.BUILDINGS[type].name} — Shift-click to place multiple · Escape to finish.`);
+    setMode(m, `Placing: ${S.defs.BUILDINGS[type].name} — click to place · drag to paint several · Shift+drag for an area · Escape to finish.`);
     await refreshPlacement(m);
     if (S.mode === m && !m.tiles.size) $('hint').textContent = `No valid place for ${S.defs.BUILDINGS[type].name} in explored territory. Escape to finish.`;
   },
@@ -677,6 +689,27 @@ function placementSummary(m) {
   const funded = s.n - s.planned;
   hud.toast({ text: `${s.n} ${name}${s.n > 1 ? 's' : ''} ${funded ? 'placed' : 'planned'}${cost ? ` · ${cost} committed` : ''}${s.planned ? ` · ${s.planned} awaiting funds` : ''}.`, kind: 'build', level: 'minor' });
 }
+// hexes whose centres fall inside a screen-space box
+function boxTiles(d) {
+  const x0 = Math.min(d.x, d.x1), x1 = Math.max(d.x, d.x1), y0 = Math.min(d.y, d.y1), y1 = Math.max(d.y, d.y1);
+  const [wx0, wy0] = view.screenToWorld(x0, y0), [wx1, wy1] = view.screenToWorld(x1, y1);
+  const out = [];
+  for (let wy = wy0; wy <= wy1 + 18; wy += 6) for (let wx = wx0; wx <= wx1 + 21; wx += 6) {
+    const t = view.tileAt(Math.min(wx, wx1), Math.min(wy, wy1)); if (t < 0 || out.includes(t)) continue;
+    const [sx, sy] = view.worldToScreen(view.cx[t], view.cy[t]); if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) out.push(t);
+  }
+  return out;
+}
+// one order for every painted hex: placed, queued for funds, or refused (with the reason counted)
+async function placeMany(m) {
+  const tiles = [...m.paint]; m.paint = null;
+  const r = await actions.cmd({ c: 'buildMany', type: m.type, tiles });
+  const x = r.many; if (!x) return;
+  m.session.n += x.placed; m.session.planned += x.planned; for (const [k, v] of Object.entries(x.cost || {})) m.session.cost[k] = (m.session.cost[k] || 0) + v;
+  hud.toast({ text: `${x.placed} × ${S.defs.BUILDINGS[m.type].name} placed${x.planned ? ` (${x.planned} queued until funded)` : ''}${x.failed ? ` · ${x.failed} could not go there` : ''}.`, kind: 'build', level: 'minor' });
+  if (S.mode === m) { m.multi = true; refreshPlacement(m); $('hint').textContent = `Placing: ${S.defs.BUILDINGS[m.type].name} — ${m.session.n} placed · drag to paint more, Shift+drag for an area · Escape to finish.`; }
+}
+
 async function refreshPlacement(m) {
   const r = await net.cmd({ c: 'placement', type: m.type });
   if (S.mode !== m) return;
@@ -749,6 +782,17 @@ function bindInput() {
       if (stroke.moved && pts[pts.length - 1] !== S.hover) { pts.push(S.hover); if (S.mode.kind === 'road') S.mode.auto = false; requestPreview(); }
     }
     gateTooltip(drag || stroke ? -1 : S.hover, e.offsetX, e.offsetY);
+    if (drag && S.mode?.kind === 'build') {
+      // drag placement: paint every valid hex the cursor crosses; Shift+drag: fill the box
+      drag.x1 = e.offsetX; drag.y1 = e.offsetY;
+      if (Math.hypot(drag.x1 - drag.x, drag.y1 - drag.y) > 6) {
+        const m = S.mode; m.paint = m.paint || new Set();
+        if (e.shiftKey) { m.paint = new Set(boxTiles(drag).filter((t) => !m.tiles || m.tiles.has(t))); drawBox(drag); }
+        else { view.selG.clear(); if (hv >= 0 && (!m.tiles || m.tiles.has(hv))) m.paint.add(hv); }
+        $('hint').textContent = `${S.defs.BUILDINGS[m.type].name}: ${m.paint.size} to place · release to build`;
+      }
+      return;
+    }
     if (drag) { drag.x1 = e.offsetX; drag.y1 = e.offsetY; drawBox(drag); }
   });
   cv.addEventListener('pointerleave', () => { S.hover = -1; gateTooltip(-1); });
@@ -770,6 +814,7 @@ function bindInput() {
     if (stroke) { const s = stroke; stroke = null; if (!s.moved && S.hover >= 0) { S.mode.points.push(S.hover); requestPreview(); hud.roadPanel(); } return; }
     if (!drag || e.button !== 0) return;
     const d = drag; drag = null; view.selG.clear();
+    if (S.mode?.kind === 'build' && S.mode.paint?.size) { placeMany(S.mode); return; }
     if (Math.hypot(d.x1 - d.x, d.y1 - d.y) > 6 && !S.mode) return e.altKey ? boxSelectBuildings(d, e.shiftKey) : boxSelect(d, e.shiftKey);
     leftClick(e);
   });
@@ -810,6 +855,8 @@ function bindInput() {
     if (k === 'b' && !e.ctrlKey && !e.metaKey && !S.spectator) { hud.toggleBuild(); return; }
     if (k === 'a' && (e.ctrlKey || e.metaKey) && S.selUnits.size) { e.preventDefault(); actions.act('amove'); return; }   // Ctrl/Cmd+A: attack-move
     if (k === 'f') { if (mineSel().some((id) => S.units.get(id)?.type === 'colonist')) actions.act('found'); else if (S.selUnits.size) actions.cycleFormation(); }
+    if (k === 'q' && !e.ctrlKey && !e.metaKey && !S.spectator) { selectArmy(!e.shiftKey); return; }   // Q: every combat unit on screen (Shift: whole map)
+    if (k === 'e' && S.selUnits.size && !S.spectator) { actions.act('amove'); return; }               // E: attack-move to the next click
     if (k === 'h' && S.selUnits.size) actions.act('hold');
     if (k === 'x' && S.selUnits.size) actions.act('withdraw');
     if (k === 'g' && S.selUnits.size) actions.formArmy();
@@ -836,10 +883,9 @@ function bindInput() {
     if (keys.has('arrowup') || keys.has('w')) view.cam.y -= sp;
     if (keys.has('arrowdown') || keys.has('s')) view.cam.y += sp;
     view.clamp();
-    hud.seismo(dt);
     hud.clock(S.time, net?.rtt);
     layoutT += dt; if (layoutT > 0.1) { layoutT = 0; hud.layoutPanels(); }
-    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); if (Math.random() < 0.25) hud.checkTips(); pollDiagnostics(); }
+    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); pollDiagnostics(); }
     mmTick += dt; if (mmTick > 1) { mmTick = 0; hud.minimap(view); }
   };
   $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const cvs = $('minimap'); let x = (ev.offsetX / cvs.clientWidth) * view.pw; const y = (ev.offsetY / cvs.clientHeight) * view.ph; if (view.wrap) x = view.near(x, view.camCenterX()); view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
@@ -891,7 +937,10 @@ function bindInput() {
   $('btnQuit').addEventListener('click', () => { store.del('se.session'); location.reload(); });
 }
 
-function setLens(l) { S.lens = l; view.overlayAll = true; document.querySelectorAll('.lenses button').forEach((b) => b.classList.toggle('on', b.dataset.lens === l)); $('lensName').textContent = { terrain: 'Terrain', territory: 'Borders', supply: 'Supply', stability: 'Stability', traffic: 'Traffic', tactical: 'Tactical', front: 'Front lines' }[l] || l; hud.minimap(view); }
+function setLens(l) { S.lens = l; view.overlayAll = true; document.querySelectorAll('.lenses button').forEach((b) => b.classList.toggle('on', b.dataset.lens === l)); $('lensName').textContent = { terrain: 'Terrain', territory: 'Borders', supply: 'Supply', stability: 'Stability', traffic: 'Traffic', tactical: 'Tactical', front: 'Front lines' }[l] || l; hud.minimap(view);
+  // one line saying how to read the view (none for plain terrain)
+  const key = { territory: 'Each empire’s land in its colour.', stability: 'Red: unrest · amber: uneasy · green: content.', traffic: 'Brighter: busier roads and freight.', front: 'Red: the front · gold dashes: suggested lines (click to dig) · green/red hexes: trenches.', tactical: 'Lines: formations · circles: objectives · red rings: units in trouble.' }[l] || '';
+  const el = $('lensKey'); if (el) { el.textContent = key; el.hidden = !key; } }
 // why a hex cannot take a building (client-side mirror of the server's placement rules, for the hint)
 function placeProblemC(type, t) {
   const D = S.defs, def = D.BUILDINGS[type];
@@ -948,11 +997,16 @@ async function leftClick(e) {
   const [wx, wy] = view.screenToWorld(e.offsetX, e.offsetY);
   const tile = view.tileAt(wx, wy);
   const m = S.mode;
+  // Front Lines view: a click on a suggested defensive line opens the trench tool along it
+  if (!m && S.lens === 'front' && !S.spectator) {
+    const sg = view.suggestionAt(wx, wy);
+    if (sg) { startTrenchMode(); S.mode.points = [sg.a, sg.b]; requestPreview(); hud.roadPanel(); return; }
+  }
   if (m) {
     if (tile < 0) return;
     if (m.kind === 'build') {
       // invalid hexes never end the tool: say why and stay in placement
-      if (m.tiles && !m.tiles.has(tile)) { const why = placeProblemC(m.type, tile); $('hint').textContent = `Cannot place here: ${why}. Shift-click to place multiple · Escape to finish.`; audio.ui('error'); return; }
+      if (m.tiles && !m.tiles.has(tile)) { const why = placeProblemC(m.type, tile); $('hint').textContent = `Cannot place here: ${why}. Drag to paint several · Escape to finish.`; audio.ui('error'); return; }
       if (e.shiftKey) m.multi = true;          // once several are being placed, releasing Shift does not end the session
       const r = await actions.cmd({ c: 'build', type: m.type, tile, plan: true });
       if (!r.error && r.built) { m.session.n++; if (r.built.planned) m.session.planned++; for (const [k, v] of Object.entries(r.built.cost || {})) m.session.cost[k] = (m.session.cost[k] || 0) + v; }
@@ -1052,6 +1106,18 @@ async function leftClick(e) {
 }
 let lastClick = null, lastDown = null;
 
+// the army at a keypress: every ground combat unit of ours on screen (or everywhere)
+function selectArmy(onScreenOnly) {
+  const D = S.defs, sw = view.app.screen.width, sh = view.app.screen.height;
+  S.selUnits.clear(); S.selBuilding = null; S.selBuildings.clear();
+  for (const o of S.units.values()) {
+    const d = D.UNITS[o.type]; if (o.owner !== S.civId || d.civilian || d.air || d.engineer) continue;
+    if (onScreenOnly) { const s = view.unitSprites.get(o.id); if (!s) continue; const [x, y] = view.worldToScreen(s.dx, s.dy); if (x < 0 || y < 0 || x > sw || y > sh) continue; }
+    S.selUnits.add(o.id);
+  }
+  hud.selHtml = ''; hud.selection();
+  if (!S.selUnits.size) hud.toast({ text: onScreenOnly ? 'No combat units on screen (Shift+Q: the whole army).' : 'You have no combat units.', kind: 'info', level: 'minor' });
+}
 function selectType(type, onScreenOnly) {
   const sw = view.app.screen.width, sh = view.app.screen.height;
   for (const o of S.units.values()) {
@@ -1097,7 +1163,7 @@ function rightClick(e) {
   if (!mine.length) {
     // rally point for every selected production building
     const rb = [...S.selBuildings].map((id) => S.buildings.get(id)).filter((b) => b && b.o === S.civId && S.defs.BUILDINGS[b.ty].trains);
-    if (rb.length) { for (const b of rb) { actions.cmd({ c: 'rally', building: b.id, tile, army: b.rallyArmy || 0 }); b.r = tile; } hud.toast({ text: `Rally point set for ${rb.length} building${rb.length > 1 ? 's' : ''}.`, kind: 'build', level: 'info' }); view.ping(tile, 0.8, 0x8fe0a8); }
+    if (rb.length) { for (const b of rb) { actions.cmd({ c: 'rally', building: b.id, tile, army: b.rallyArmy || 0 }); b.r = tile; } view.rallyKey = ''; hud.toast({ text: `Rally point set for ${rb.length} building${rb.length > 1 ? 's' : ''}.`, kind: 'build', level: 'info' }); view.ping(tile, 0.8, 0x8fe0a8); }
     return;
   }
   const rel = (o) => S.civInfo[o]?.rel?.state;
@@ -1179,6 +1245,12 @@ function attackTarget(target, focus, tile, units = mineSel()) {
 
 // Battle line preview for a right-drag: where each selected unit will stand and which way it faces.
 // Live deployment preview: the same planner the server runs, fed with what this client knows.
+// our city nearest a line (the server makes the same choice): lines face away from it
+function homeTile(a, b) {
+  let best = -1, bd = Infinity;
+  for (const c of S.cities.values()) if (c.o === S.civId) for (const t of [a, b]) { const d = Math.hypot(view.near(view.cx[c.t], view.cx[t]) - view.cx[t], view.cy[c.t] - view.cy[t]); if (d < bd) { bd = d; best = c.t; } }
+  return bd <= 25 * 21 ? best : -1;
+}
 function deployEnv(sel) {
   const D = S.defs, selSet = new Set(sel.map((u) => u.id));
   return {
@@ -1202,7 +1274,7 @@ function updateDeployPreview(a, b, attackMove, anchorX) {
   const sel = mineSel().map((id) => S.units.get(id)).filter((u) => u && !D.UNITS[u.type].civilian);
   if (!sel.length) return;
   const o = S.deployOpts;
-  const plan = planDeployment(deployEnv(sel), sel.map((u) => ({ id: u.id, tile: u.tile, type: u.type, role: deployRole(D.UNITS[u.type]), air: !!D.UNITS[u.type].air })), [a, b], { mode: o.mode === 'preserve' ? 'line' : o.mode, density: o.density, depth: o.depth === 'auto' ? 'auto' : +o.depth, reverse: o.reverse });
+  const plan = planDeployment(deployEnv(sel), sel.map((u) => ({ id: u.id, tile: u.tile, type: u.type, role: deployRole(D.UNITS[u.type]), air: !!D.UNITS[u.type].air })), [a, b], { mode: 'line', density: 'auto', depth: 'auto', away: homeTile(a, b), reverse: o.reverse });
   S.deploy = { line: [a, b], plan, attackMove, n: sel.length, anchorX: anchorX ?? S.deploy?.anchorX };
   hud.deployBar();
 }
@@ -1245,7 +1317,13 @@ function hexDistC(a, b) {
   return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
 }
 
+// troops set to Attack fight their way to wherever they are sent
+function attacking(ids) {
+  const us = ids.map((id) => S.units.get(id)).filter((u) => u && !S.defs.UNITS[u.type].civilian);
+  return us.length > 0 && us.every((u) => u.stance === 'aggressive');
+}
 async function orderMove(units, tile, attackMove, queue) {
+  attackMove = attackMove || attacking(units);
   view.ping(tile, 0.5, queue ? 0x8fd19e : 0xf1c75b);
   const r = await actions.cmd({ c: 'move', units, tile, attackMove, formation: S.formation, queue });
   if (r && r.order && r.order.queued) return hud.toast({ text: `Waypoint queued for ${r.order.queued} unit${r.order.queued > 1 ? 's' : ''}.`, kind: 'unit', level: 'info' });

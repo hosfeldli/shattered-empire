@@ -8,7 +8,7 @@ import { spawnUnit } from './military.js';
 const RAIDERS = [['militia', 'rifle_squad'], ['rifle_squad', 'armored_car'], ['armored_car', 'mech_infantry'], ['mech_infantry', 'special_forces'], ['special_forces', 'exo_infantry']];
 
 export class RebelAI {
-  constructor(g, civ) { this.g = g; this.civ = civ; this.nextCamp = 360; this.nextSpawn = 60; this.raid = null; }
+  constructor(g, civ) { this.g = g; this.civ = civ; this.nextCamp = 480; this.nextSpawn = 60; this.raid = null; }
 
   static seed(g, civ, count = 3) {
     const ai = new RebelAI(g, civ);
@@ -68,7 +68,7 @@ export class RebelAI {
     if (g.time > this.nextCamp) { this.nextCamp = g.time + 300 + g.rng() * 200; if (camps.length < 6) this.newCamp(); }
     // raid: look for weakly defended targets the companies can see
     if (!this.raid || !units.some((u) => u.order.kind !== 'idle')) this.raid = null;
-    if (!this.raid && units.length >= 3) {
+    if (!this.raid && units.length >= 3 && g.time > 600) {          // no raids in the first ten minutes
       let best = null, bs = 0;
       for (const b of g.buildings.values()) {
         if (b.owner === civ.id || !civ.visible[b.tile] || !g.hostile(civ.id, b.owner) || b.type === 'town' || b.type === 'fort' || b.type === 'bunker') continue;

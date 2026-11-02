@@ -3,7 +3,7 @@
 // overkill avoidance, and a sequenced combat-event stream that clients replay.
 import { book } from './ledger.js';
 import { trenchCover, damageFieldworks } from './fieldworks.js';
-import { UNITS, BUILDINGS, TERRAIN, T, isWater } from './constants.js';
+import { UNITS, BUILDINGS, TERRAIN, T, isWater, techFx } from './constants.js';
 import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ARMORED, weaponVs } from './weapons.js';
 import { disk, dist, hexLine } from './hex.js';
 import { damageUnit, damageBuilding, canHit } from './military.js';
@@ -112,6 +112,7 @@ function unitStrength(g, u) {
   if (civ.gov === 'corporate') a *= 0.9;
   if (civ.gov === 'junta') a *= 1.1;
   if (civ.policies.has('total_war')) a *= 1.2;
+  { const fx = techFx(civ).atk; a *= 1 + (fx.all || 0) + (fx[def.cat] || 0); }      // what the nation has learned
   // supply bands: full strength above half supply, then a gradual decline (never zero: an
   // isolated defender can still resist); high-tech equipment feels it more
   a *= supplyFire(u.supply, def.age >= 2);

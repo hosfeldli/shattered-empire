@@ -96,7 +96,6 @@ export const TECHS = {
   logistics: { name: 'Logistics', age: 1, cost: 320, req: ['motorization'], desc: 'Supply depots; +2 supply range.' },
   field_artillery: { name: 'Field Artillery', age: 1, cost: 340, req: ['munitions_industry'], desc: 'Field guns.' },
   civil_engineering: { name: 'Civil Engineering', age: 1, cost: 320, req: ['electrification'], desc: 'Paved roads, heavy bridges, fortresses, blasting peaks.' },
-  seismology: { name: 'Seismology', age: 1, cost: 300, req: ['surveying'], desc: 'Survey stations: +15% output for mines, quarries and oil wells within 4 hexes, and research. In Cataclysm mode they also warn of quakes and eruptions.' },
   higher_education: { name: 'Higher Education', age: 1, cost: 300, req: ['schooling'], desc: 'Universities; Technocracy.' },
   // Mechanization
   mechanization: { name: 'Mechanization', age: 2, cost: 700, req: ['motorization'], desc: 'Heavy assembly: tanks, mechanized infantry.' },
@@ -104,7 +103,6 @@ export const TECHS = {
   highways: { name: 'Highways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Highways: fastest road movement and supply.' },
   railways: { name: 'Railways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Railways for bulk supply and transport.' },
   mechanized_agriculture: { name: 'Mechanized Agriculture', age: 2, cost: 650, req: ['agronomy'], desc: '+50% farm output, +housing.' },
-  geoengineering: { name: 'Geoengineering', age: 2, cost: 700, req: ['seismology'], desc: 'Infrastructure hardening: buildings within 4 hexes of a stabilizer take 40% less damage and repair twice as fast; Conservation policy. In Cataclysm mode terrain events do half damage.' },
   self_propelled_guns: { name: 'Self-Propelled Guns', age: 2, cost: 700, req: ['field_artillery'], desc: 'Self-propelled artillery.' },
   corporate_charter: { name: 'Corporate Charter', age: 2, cost: 650, req: ['trade_networks'], desc: 'Corporate State government.' },
   // Networked Warfare
@@ -116,13 +114,14 @@ export const TECHS = {
   precision_missiles: { name: 'Precision Missiles', age: 3, cost: 1300, req: ['drones'], desc: 'Missile batteries.' },
   air_defense: { name: 'Air Defense', age: 3, cost: 1150, req: ['aviation'], desc: 'Air-defense vehicles; AA batteries can be upgraded for better detection, range and accuracy.' },
   special_operations: { name: 'Special Operations', age: 3, cost: 1150, req: ['small_arms'], desc: 'Special forces (hidden beyond 2 hexes).' },
+  energy_shields: { name: 'Energy Shields', age: 3, cost: 1250, req: ['computing', 'electrification'], desc: 'Shield generators: a dome over everything of yours within 3 hexes soaks up incoming fire until it is worn down, then recharges once the shooting stops. Needs power.' },
   federal_union: { name: 'Federal Union', age: 3, cost: 1150, req: ['higher_education'], desc: 'Federal Republic government.' },
   // Advanced Systems
   robotics: { name: 'Robotics', age: 4, cost: 2000, req: ['computing', 'mechanization'], desc: 'Robotics complex: autonomous tanks.' },
   fusion_power: { name: 'Fusion Power', age: 4, cost: 2100, req: ['electrification', 'computing'], desc: 'Fusion plants: abundant power without fuel.' },
   strike_swarms: { name: 'Strike Swarms', age: 4, cost: 2100, req: ['drones', 'robotics'], desc: 'Strike drone swarms.' },
   exo_armor: { name: 'Exo Armor', age: 4, cost: 2000, req: ['robotics'], desc: 'Exo-armored infantry.' },
-  climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['geoengineering'], desc: 'Engineered climate: +20% farm yields in your territory; in Cataclysm mode droughts and quakes there are suppressed.' },
+  climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['mechanized_agriculture'], desc: 'Engineered climate: +20% farm yields in your territory.' },
   improved_servicing: { name: 'Improved Servicing', age: 4, cost: 1900, req: ['air_operations', 'robotics'], desc: 'Aircraft refuel, rearm and repair a third faster; airfields gain two servicing slots.' },
   missile_defense: { name: 'Missile Defense', age: 4, cost: 2000, req: ['air_defense', 'computing'], desc: 'Upgraded AA batteries and air-defense vehicles can intercept strategic missiles.' },
   strategic_missiles: { name: 'Strategic Missiles', age: 4, cost: 2300, req: ['precision_missiles', 'fusion_power'], desc: 'Missile silos: a long, costly project yields one strategic missile at a time.' },
@@ -149,7 +148,6 @@ export const POLICIES = {
   homesteading: { name: 'Homesteading', desc: 'Colonists 40% cheaper; new cities grow +50%.' },
   total_war: { name: 'Total War', tech: 'munitions_industry', desc: '+20% attack, +30% munitions, -10 stability, -20% food.' },
   industrial_planning: { name: 'Industrial Planning', tech: 'electrification', desc: '+30% steel & munitions, -5 stability.' },
-  conservation: { name: 'Conservation', tech: 'geoengineering', desc: 'Terrain events do 50% less damage; +5 stability.' },
 };
 export const FOCI = { balanced: 'Balanced', food: 'Food first', industry: 'Industry', commerce: 'Commerce', science: 'Science', military: 'War economy' };
 export const TAX = [
@@ -161,45 +159,49 @@ export const TAX = [
 
 // ---- Buildings -------------------------------------------------------------
 // jobs: [kind, slots]; produce/consume per staffed slot per second; power: + generated / - consumed per staffed slot.
+// Workplaces are large (five jobs for most), so a city needs a handful of well-staffed buildings it
+// then upgrades, rather than a sprawl of small ones. base: what an extraction site yields per second
+// on its own (the land itself: no workers needed), raised by matching land around it and by its
+// level; its workers add their produce on top.
 // place: 'city' | 'flat' | 'farm' | 'forest' | 'quarry' | 'mine' | 'oil' | 'ruins' | 'coast' | 'any'
 export const BUILDINGS = {
   town: { name: 'Settlement Hub', glyph: '\u{1F3D8}', age: 0, cost: {}, time: 0, hp: 1000, place: 'city', cat: 'civic',
     jobs: ['worker', 2], produce: { food: 0.5, materials: 0.45, credits: 0.2 }, housing: 8, vision: 5, attack: 8, range: 3,
     trains: ['colonist', 'engineer', 'scout_buggy'] },
   house: { name: 'Housing Block', glyph: '\u{1F3E2}', age: 0, cost: { materials: 45 }, time: 12, hp: 160, place: 'flat', housing: 4, cat: 'residential' },
-  farm: { name: 'Farm', glyph: '\u{1F33E}', age: 0, cost: { materials: 45 }, time: 12, hp: 140, place: 'farm', jobs: ['worker', 3], produce: { food: 0.8 }, cat: 'agri' },
-  lumber: { name: 'Timber Mill', glyph: '\u{1FAB5}', age: 0, cost: { materials: 40 }, time: 12, hp: 140, place: 'forest', jobs: ['worker', 3], produce: { materials: 0.46 }, cat: 'industry' },
-  quarry: { name: 'Quarry', glyph: '\u{1FAA8}', age: 0, cost: { materials: 60 }, time: 16, hp: 180, place: 'quarry', jobs: ['worker', 3], produce: { materials: 0.42, ore: 0.1 }, cat: 'industry' },
-  salvage: { name: 'Salvage Yard', glyph: '⚙', age: 0, tech: 'salvage_engineering', cost: { materials: 60 }, time: 16, hp: 180, place: 'ruins', jobs: ['worker', 3], produce: { materials: 0.32, steel: 0.1, ore: 0.05, credits: 0.06 }, cat: 'industry' },
+  farm: { name: 'Farm', glyph: '\u{1F33E}', age: 0, cost: { materials: 60 }, time: 14, hp: 140, place: 'farm', jobs: ['worker', 5], base: { food: 2.2 }, produce: { food: 0.8 }, cat: 'agri' },
+  lumber: { name: 'Timber Mill', glyph: '\u{1FAB5}', age: 0, cost: { materials: 55 }, time: 14, hp: 140, place: 'forest', jobs: ['worker', 5], base: { materials: 2.2 }, produce: { materials: 0.46 }, cat: 'industry' },
+  quarry: { name: 'Quarry', glyph: '\u{1FAA8}', age: 0, cost: { materials: 80 }, time: 18, hp: 180, place: 'quarry', jobs: ['worker', 5], base: { materials: 1.6, ore: 0.4 }, produce: { materials: 0.42, ore: 0.1 }, cat: 'industry' },
+  salvage: { name: 'Salvage Yard', glyph: '⚙', age: 0, tech: 'salvage_engineering', cost: { materials: 80 }, time: 18, hp: 180, place: 'ruins', jobs: ['worker', 5], base: { materials: 1.2, steel: 0.3 }, produce: { materials: 0.32, steel: 0.1, ore: 0.05, credits: 0.06 }, cat: 'industry' },
   barracks: { name: 'Barracks', glyph: '⚔', age: 0, cost: { materials: 80 }, time: 20, hp: 320, place: 'flat', cat: 'military',
     trains: ['militia', 'rifle_squad', 'mortar_team', 'special_forces', 'exo_infantry'] },
-  market: { name: 'Market', glyph: '\u{1F4B0}', age: 0, tech: 'trade_networks', cost: { materials: 110 }, time: 20, hp: 220, place: 'flat', jobs: ['merchant', 3], produce: { credits: 0.62 }, cat: 'commerce' },
-  academy: { name: 'Academy', glyph: '\u{1F4DA}', age: 0, tech: 'schooling', cost: { materials: 120, credits: 30 }, time: 22, hp: 220, place: 'flat', jobs: ['specialist', 3], produce: { research: 0.32 }, cat: 'science' },
-  port: { name: 'Port', glyph: '⚓', age: 0, tech: 'seafaring', cost: { materials: 130 }, time: 22, hp: 280, place: 'coast', jobs: ['worker', 2], produce: { food: 0.75, credits: 0.2 }, vision: 4, supply: 4, cat: 'logistics' },
+  market: { name: 'Market', glyph: '\u{1F4B0}', age: 0, tech: 'trade_networks', cost: { materials: 145 }, time: 23, hp: 220, place: 'flat', jobs: ['merchant', 5], produce: { credits: 0.62 }, cat: 'commerce' },
+  academy: { name: 'Academy', glyph: '\u{1F4DA}', age: 0, tech: 'schooling', cost: { materials: 160, credits: 40 }, time: 25, hp: 220, place: 'flat', jobs: ['specialist', 5], produce: { research: 0.32 }, cat: 'science' },
+  port: { name: 'Port', glyph: '⚓', age: 0, tech: 'seafaring', cost: { materials: 160 }, time: 25, hp: 280, place: 'coast', jobs: ['worker', 3], base: { food: 1.6, credits: 0.4 }, produce: { food: 0.75, credits: 0.2 }, vision: 4, supply: 4, cat: 'logistics' },
   guard_post: { name: 'Guard Post', glyph: '\u{1F5FC}', age: 0, cost: { materials: 35 }, time: 9, hp: 180, place: 'any', vision: 4, attack: 6, range: 2, anywhere: true, cat: 'military', defense: 'ground', desc: 'Cheap early defense: a light machine gun against small raids.' },
   bunker: { name: 'Bunker', glyph: '\u{1F6E1}', age: 0, tech: 'fortification', cost: { materials: 90 }, time: 18, hp: 450, place: 'any', vision: 5, attack: 10, range: 3, anywhere: true, cat: 'military', defense: 'ground', shelter: 0.1, desc: 'Durable ground defense: strong against infantry, limited against light vehicles; shelters troops beside it.' },
   aa_battery: { name: 'AA Battery', glyph: '\u{1F3AF}', age: 2, tech: 'aviation', cost: { materials: 90, steel: 40, munitions: 20 }, time: 20, hp: 300, place: 'any', vision: 5, attack: 14, range: 4, anywhere: true, cat: 'military', defense: 'air', ammo: 0.4, desc: 'Stationary anti-aircraft guns: fires airburst volleys at detected aircraft; cannot target ground units. Uses munitions.' },
-  mine: { name: 'Mine', glyph: '⛏', age: 1, tech: 'metallurgy', cost: { materials: 130 }, time: 22, hp: 220, place: 'mine', jobs: ['worker', 3], produce: { ore: 0.65 }, cat: 'industry', desc: 'Ore from an iron or coal deposit; dug into bare hills or mountains it yields under half as much.' },
-  steel_mill: { name: 'Steel Mill', glyph: '\u{1F3ED}', age: 1, tech: 'metallurgy', cost: { materials: 220 }, time: 30, hp: 400, place: 'flat', jobs: ['worker', 3], produce: { steel: 0.55 }, consume: { ore: 0.32 }, power: -2, cat: 'industry' },
+  mine: { name: 'Mine', glyph: '⛏', age: 1, tech: 'metallurgy', cost: { materials: 175 }, time: 25, hp: 220, place: 'mine', jobs: ['worker', 5], base: { ore: 2 }, produce: { ore: 0.65 }, cat: 'industry', desc: 'Ore from an iron or coal deposit; dug into bare hills or mountains it yields under half as much.' },
+  steel_mill: { name: 'Steel Mill', glyph: '\u{1F3ED}', age: 1, tech: 'metallurgy', cost: { materials: 295 }, time: 34, hp: 400, place: 'flat', jobs: ['worker', 5], produce: { steel: 0.55 }, consume: { ore: 0.32 }, power: -2, cat: 'industry' },
   power_plant: { name: 'Power Plant', glyph: '⚡', age: 1, tech: 'electrification', cost: { materials: 160, steel: 40 }, time: 28, hp: 380, place: 'flat', jobs: ['worker', 2], consume: { ore: 0.08 }, power: 9, cat: 'power' },
-  oil_well: { name: 'Oil Well', glyph: '\u{1F6E2}', age: 1, tech: 'petroleum', cost: { materials: 150, steel: 40 }, time: 24, hp: 240, place: 'oil', jobs: ['worker', 2], produce: { fuel: 1.0 }, cat: 'industry' },
-  refinery: { name: 'Synthetic Fuel Refinery', glyph: '\u{1F6E2}', age: 2, tech: 'petroleum', cost: { materials: 240, steel: 90 }, time: 34, hp: 380, place: 'flat', jobs: ['worker', 3], produce: { fuel: 0.42 }, consume: { ore: 0.12, materials: 0.1 }, power: -2, cat: 'industry', desc: 'Makes fuel from ore and timber where there is no oil: slower and costlier than a well, but anywhere.' },
-  munitions_plant: { name: 'Munitions Plant', glyph: '\u{1F9E8}', age: 1, tech: 'munitions_industry', cost: { materials: 180, steel: 60 }, time: 30, hp: 360, place: 'flat', jobs: ['worker', 3], produce: { munitions: 0.55 }, consume: { steel: 0.08 }, power: -2, cat: 'industry' },
+  oil_well: { name: 'Oil Well', glyph: '\u{1F6E2}', age: 1, tech: 'petroleum', cost: { materials: 190, steel: 50 }, time: 28, hp: 240, place: 'oil', jobs: ['worker', 3], base: { fuel: 2 }, produce: { fuel: 1.0 }, cat: 'industry' },
+  refinery: { name: 'Synthetic Fuel Refinery', glyph: '\u{1F6E2}', age: 2, tech: 'petroleum', cost: { materials: 320, steel: 120 }, time: 39, hp: 380, place: 'flat', jobs: ['worker', 5], produce: { fuel: 0.42 }, consume: { ore: 0.12, materials: 0.1 }, power: -2, cat: 'industry', desc: 'Makes fuel from ore and timber where there is no oil: slower and costlier than a well, but anywhere.' },
+  munitions_plant: { name: 'Munitions Plant', glyph: '\u{1F9E8}', age: 1, tech: 'munitions_industry', cost: { materials: 240, steel: 80 }, time: 34, hp: 360, place: 'flat', jobs: ['worker', 5], produce: { munitions: 0.55 }, consume: { steel: 0.08 }, power: -2, cat: 'industry' },
   motor_works: { name: 'Motor Works', glyph: '\u{1F69A}', age: 1, tech: 'motorization', cost: { materials: 150, steel: 60 }, time: 28, hp: 380, place: 'flat', power: -2, cat: 'military',
     trains: ['armored_car', 'field_gun', 'missile_battery', 'air_defense'] },
   depot: { name: 'Supply Depot', obsolete: true, glyph: '\u{1F4E6}', age: 1, tech: 'logistics', cost: { materials: 90, steel: 20 }, time: 20, hp: 300, place: 'any', supply: 5, vision: 3, anywhere: true, cat: 'logistics' },
   fort: { name: 'Fortress', glyph: '\u{1F3EF}', age: 1, tech: 'civil_engineering', cost: { materials: 200, steel: 60 }, time: 30, hp: 1300, place: 'any', vision: 4, attack: 14, range: 4, anywhere: true, blocksSupply: 2, heals: true, cat: 'military', defense: 'ground', shelter: 0.15, desc: 'Major strongpoint: engages infantry and armor, anchors an area, heals troops beside it. No anti-air.' },
-  seismic: { name: 'Seismic Station', glyph: '\u{1F4E1}', age: 1, tech: 'seismology', cost: { materials: 100, credits: 60 }, time: 24, hp: 200, place: 'flat', jobs: ['specialist', 1], produce: { research: 0.2 }, stabilize: 0.15, cat: 'science' },
-  university: { name: 'University', glyph: '\u{1F393}', age: 1, tech: 'higher_education', cost: { materials: 220, credits: 160 }, time: 34, hp: 320, place: 'flat', jobs: ['specialist', 3], produce: { research: 0.55 }, power: -1, cat: 'science' },
+  university: { name: 'University', glyph: '\u{1F393}', age: 1, tech: 'higher_education', cost: { materials: 295, credits: 215 }, time: 39, hp: 320, place: 'flat', jobs: ['specialist', 5], produce: { research: 0.55 }, power: -1, cat: 'science' },
   heavy_assembly: { name: 'Heavy Assembly', glyph: '\u{1F3D7}', age: 2, tech: 'mechanization', cost: { materials: 220, steel: 160 }, time: 36, hp: 520, place: 'flat', power: -4, cat: 'military',
     trains: ['mech_infantry', 'tank', 'sp_artillery', 'autonomous_tank'] },
   airfield: { name: 'Airfield', glyph: '\u{1F6EB}', age: 2, tech: 'aviation', cost: { materials: 200, steel: 120, fuel: 60 }, time: 34, hp: 450, place: 'flat', power: -2, supply: 3, vision: 5, cat: 'military', slots: 4, airbase: true,
     trains: ['fighter', 'helicopter', 'bomber', 'recon_drone', 'strike_swarm'] },
-  stabilizer: { name: 'Crustal Stabilizer', glyph: '\u{1F9F1}', age: 2, tech: 'geoengineering', cost: { materials: 180, steel: 80 }, time: 26, hp: 400, place: 'any', stabilize: 0.35, anywhere: true, power: -2, cat: 'science' },
-  electronics_plant: { name: 'Electronics Plant', glyph: '\u{1F4BB}', age: 3, tech: 'computing', needs: 'rare', cost: { materials: 280, steel: 200 }, time: 40, hp: 440, place: 'flat', jobs: ['worker', 3], produce: { electronics: 0.4 }, consume: { steel: 0.08 }, power: -3, cat: 'industry' },
+  electronics_plant: { name: 'Electronics Plant', glyph: '\u{1F4BB}', age: 3, tech: 'computing', needs: 'rare', cost: { materials: 375, steel: 265 }, time: 46, hp: 440, place: 'flat', jobs: ['worker', 5], produce: { electronics: 0.4 }, consume: { steel: 0.08 }, power: -3, cat: 'industry' },
   comms_tower: { name: 'Comms Tower', glyph: '\u{1F4E1}', age: 3, tech: 'networked_command', cost: { steel: 120, electronics: 40 }, time: 26, hp: 260, place: 'any', vision: 9, anywhere: true, power: -1, cat: 'logistics' },
   drone_works: { name: 'Drone Works', glyph: '\u{1F6F8}', age: 3, tech: 'drones', cost: { steel: 200, electronics: 80 }, time: 36, hp: 420, place: 'flat', power: -3, cat: 'military', slots: 2, airbase: true, droneOnly: true,
     trains: ['recon_drone', 'oneway_drone', 'strike_swarm', 'missile_battery', 'air_defense'] },
+  shield_generator: { name: 'Shield Generator', glyph: '\u{1F6E1}', age: 3, tech: 'energy_shields', cost: { steel: 220, electronics: 120 }, time: 32, hp: 520, place: 'any', anywhere: true, power: -6, cat: 'military', shield: { radius: 3, cap: 900, regen: 30, delay: 5 },
+    desc: 'Projects an energy dome over your troops and buildings within 3 hexes: incoming fire is absorbed until the dome is worn down; it recharges 5 s after the last hit. Off without power.' },
   fusion_plant: { name: 'Fusion Plant', glyph: '☢', age: 4, tech: 'fusion_power', cost: { steel: 400, electronics: 200 }, time: 45, hp: 700, place: 'flat', jobs: ['specialist', 2], power: 30, cat: 'power' },
   robotics_complex: { name: 'Robotics Complex', glyph: '\u{1F916}', age: 4, tech: 'robotics', cost: { steel: 400, electronics: 250 }, time: 45, hp: 600, place: 'flat', power: -5, cat: 'military',
     trains: ['autonomous_tank', 'exo_infantry', 'strike_swarm'] },
@@ -240,6 +242,53 @@ export const UNITS = {
 };
 
 for (const [k, u] of Object.entries(UNITS)) u.key = k;
+
+// Pace: this is a real-time strategy game, so research, construction, training and eras move
+// briskly and troops cross the map quickly. One place to tune the whole tempo.
+export const PACE = { research: 0.75, build: 0.6, train: 0.6, era: 0.5, eraCost: 0.75, move: 1.2 };
+// later eras' technologies cost far more: the whole tree is a long game, not a quarter of an hour
+const ERA_RESEARCH = [1, 2, 3.5, 5.5, 8];
+for (const t of Object.values(TECHS)) t.cost = Math.round(t.cost * PACE.research * ERA_RESEARCH[t.age]);
+
+// Every technology also makes the nation better at something, on top of what it unlocks:
+// output of a good (or 'industry': steel, munitions, electronics), construction speed, unit attack
+// by class ('all', 'infantry', 'wheeled', 'tracked', 'artillery', 'air'), movement, stability.
+export const TECH_FX = {
+  agronomy: { food: 0.1 }, salvage_engineering: { materials: 0.1 }, small_arms: { atk: { infantry: 0.1 } }, fortification: { stability: 3 },
+  trade_networks: { credits: 0.1 }, schooling: { research: 0.1 }, seafaring: { food: 0.05, credits: 0.05 }, surveying: { build: 0.1 },
+  metallurgy: { materials: 0.05, industry: 0.1 }, electrification: { industry: 0.1, research: 0.05 }, petroleum: { fuel: 0.15 }, motorization: { speed: 0.06, atk: { wheeled: 0.1 } },
+  munitions_industry: { munitions: 0.15 }, logistics: { speed: 0.06, build: 0.05 }, field_artillery: { atk: { artillery: 0.15 } }, civil_engineering: { build: 0.2 },
+  higher_education: { research: 0.15 },
+  mechanization: { atk: { tracked: 0.1 } }, aviation: { atk: { air: 0.1 } }, highways: { speed: 0.05, credits: 0.05 }, railways: { materials: 0.1, build: 0.1 },
+  mechanized_agriculture: { food: 0.2 }, self_propelled_guns: { atk: { artillery: 0.1 } }, corporate_charter: { credits: 0.2 },
+  computing: { research: 0.2, industry: 0.05 }, materials_recycling: { materials: 0.15, industry: 0.05 }, networked_command: { atk: { all: 0.08 } }, drones: { atk: { air: 0.1 } },
+  air_operations: { atk: { air: 0.1 } }, precision_missiles: { atk: { artillery: 0.1 } }, air_defense: { stability: 2 }, special_operations: { atk: { infantry: 0.1 } }, federal_union: { stability: 5, credits: 0.1 },
+  robotics: { industry: 0.2, atk: { tracked: 0.1 } }, fusion_power: { industry: 0.15, research: 0.1 }, strike_swarms: { atk: { air: 0.15 } }, exo_armor: { atk: { infantry: 0.15 } },
+  climate_engineering: { food: 0.1, stability: 3 }, energy_shields: { stability: 2 }, improved_servicing: { atk: { air: 0.05 } }, missile_defense: { stability: 3 }, strategic_missiles: { atk: { all: 0.05 } }, continental_arcology: { research: 0.2, stability: 5 },
+};
+const FX_WORD = { food: 'food', materials: 'materials', credits: 'credits', research: 'research', fuel: 'fuel', munitions: 'munitions', industry: 'steel, munitions and electronics', build: 'construction speed', speed: 'unit speed' };
+for (const [k, fx] of Object.entries(TECH_FX)) {
+  if (!TECHS[k]) continue;
+  const parts = [];
+  for (const [e, v] of Object.entries(fx)) {
+    if (e === 'atk') for (const [cat, x] of Object.entries(v)) parts.push(`+${Math.round(x * 100)}% attack (${cat === 'all' ? 'all units' : cat === 'air' ? 'aircraft' : cat === 'tracked' ? 'tracked vehicles' : cat === 'wheeled' ? 'wheeled vehicles' : cat})`);
+    else if (e === 'stability') parts.push(`+${v} stability`);
+    else parts.push(`+${Math.round(v * 100)}% ${FX_WORD[e] || e}`);
+  }
+  if (parts.length) { TECHS[k].fx = fx; TECHS[k].desc += ` Nation-wide: ${parts.join(', ')}.`; }
+}
+// a civ's combined technology bonuses (cached until its technologies change)
+export function techFx(civ) {
+  if (civ._fx && civ._fxN === civ.techs.size) return civ._fx;
+  const out = { atk: {} };
+  for (const t of civ.techs) { const fx = TECH_FX[t]; if (!fx) continue; for (const [e, v] of Object.entries(fx)) { if (e === 'atk') for (const [c, x] of Object.entries(v)) out.atk[c] = (out.atk[c] || 0) + x; else out[e] = (out[e] || 0) + v; } }
+  Object.defineProperty(civ, '_fx', { value: out, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(civ, '_fxN', { value: civ.techs.size, writable: true, configurable: true, enumerable: false });
+  return out;
+}
+for (const b of Object.values(BUILDINGS)) if (b.time) b.time = Math.max(5, Math.round(b.time * PACE.build));
+for (const u of Object.values(UNITS)) { u.time = Math.max(4, Math.round(u.time * PACE.train)); if (u.move !== 'aircraft') u.speed = +(u.speed * PACE.move).toFixed(2); }
+for (const a of AGES) { if (a.time) a.time = Math.round(a.time * PACE.era); if (a.cost) for (const k in a.cost) a.cost[k] = Math.round(a.cost[k] * PACE.eraCost); }
 // derived, for display and the AI: multiplier this unit's weapon applies against aircraft (0 = cannot)
 for (const [k, u] of Object.entries(UNITS)) { const w = WEAPONS[UNIT_WEAPON[k]]; u.aa = w ? (w.targets.includes('air') ? w.airMul || 1 : w.targets.includes('lowair') ? (w.airMul || 1) * 0.5 : 0) : 0; }
 
@@ -257,7 +306,7 @@ export const GOVERNOR_SPECS = {
   industrial: { name: 'Industrial Center', desc: 'Mines, mills, power and munitions.' },
   agrarian: { name: 'Breadbasket', desc: 'Farms and housing; feeds the empire.' },
   commercial: { name: 'Trade Hub', desc: 'Markets, ports and road links.' },
-  research: { name: 'Research Campus', desc: 'Academies, universities and seismic stations.' },
+  research: { name: 'Research Campus', desc: 'Academies and universities.' },
   fortress: { name: 'Fortress City', desc: 'Bunkers, fortresses and a standing garrison.' },
 };
 

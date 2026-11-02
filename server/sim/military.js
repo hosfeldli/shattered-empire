@@ -4,7 +4,7 @@ import { book } from './ledger.js';
 import { stepBlock, reserve } from './tacticalOccupancy.js';
 import { ACTIVITY, activityOf } from './logistics.js';
 import { casualty } from './population.js';
-import { N, T, TERRAIN, UNITS, BUILDINGS, MOVE, ROAD_TYPES, isWater } from './constants.js';
+import { N, T, TERRAIN, UNITS, BUILDINGS, MOVE, ROAD_TYPES, isWater, techFx } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { findPath, stepCost, flowField, pathFail } from './path.js';
 import { MinHeap } from './world.js';
@@ -212,7 +212,8 @@ export function unitsStep(g, dt) {
       const onWater = isWater(w.terr[nxt]);
       // low supply slows an advance gradually (fuel, spares), not all at once
       let spd = (onWater && !isAir(u) ? 1.0 : def.speed) * (u.supply >= 50 ? 1 : u.supply >= 25 ? 0.9 : u.supply >= 10 ? 0.78 : 0.7);
-      if (u.groupSpeed) spd = Math.min(spd, u.groupSpeed);   // formations move at their slowest member's pace
+      spd *= 1 + (techFx(g.civs[u.owner]).speed || 0);
+      if (u.groupSpeed) spd = Math.min(spd, u.groupSpeed * (1 + (techFx(g.civs[u.owner]).speed || 0)));   // formations move at their slowest member's pace
       if (u.supp > 30) spd *= 1 - 0.35 * (u.supp / 100);
       u.prog += (spd * dt) / c;
       if (u.prog >= 1) {
@@ -283,8 +284,34 @@ function engineerWork(g, u, dt) {
   }
 }
 
+// Energy shields: each powered, sound shield generator keeps a pool that soaks up hostile damage
+// to its owner's units and buildings within its radius; it recharges after a pause in the fire.
+export function shieldStep(g, dt) {
+  const idx = new Map();
+  for (const b of g.buildings.values()) {
+    const sd = BUILDINGS[b.type].shield; if (!sd || !b.done) continue;
+    const civ = g.civs[b.owner];
+    const up = b.hp >= b.maxHp * 0.5 && (civ.powerRatio ?? 1) >= 0.5;
+    if (b.shield == null) b.shield = 0;
+    if (!up) b.shield = Math.max(0, b.shield - sd.cap * 0.2 * dt);
+    else if (g.time - (b.shieldHitAt ?? -99) > sd.delay) b.shield = Math.min(sd.cap, b.shield + sd.regen * dt);
+    if (up) (idx.get(b.owner) || idx.set(b.owner, []).get(b.owner)).push(b);
+  }
+  g.shieldIdx = idx;
+}
+export function shieldAbsorb(g, owner, tile, amount) {
+  const list = g.shieldIdx?.get(owner); if (!list || !(amount > 0)) return amount;
+  for (const s of list) {
+    if (s.shield <= 0 || dist(s.tile, tile) > BUILDINGS[s.type].shield.radius) continue;
+    const take = Math.min(s.shield, amount); s.shield -= take; s.shieldHitAt = g.time; amount -= take;
+    if (amount <= 0) break;
+  }
+  return amount;
+}
+
 export function damageUnit(g, u, amount, attackerCivId, cause) {
   if (!g.units.has(u.id)) return;
+  if (attackerCivId != null && cause !== 'fire') { amount = shieldAbsorb(g, u.owner, u.tile, amount); if (amount <= 0) return; }
   u.hp -= amount;
   if (attackerCivId != null) u.lastCombat = g.time;
   if (u.hp <= 0) {
@@ -302,7 +329,7 @@ export function damageUnit(g, u, amount, attackerCivId, cause) {
 
 export function damageBuilding(g, b, amount, attackerCivId, cause) {
   if (!g.buildings.has(b.id)) return;
-  if (hardened(g, b)) amount *= 0.6;                  // a crustal stabilizer nearby hardens infrastructure
+  if (attackerCivId != null && cause !== 'fire') { amount = shieldAbsorb(g, b.owner, b.tile, amount); if (amount <= 0) return; }
   b.hp -= amount; b.lastHit = g.time;
   if (b.hp > 0) { if (cause === 'combat' || cause === 'quake' || cause === 'lava') g.ignite(b, cause === 'lava' ? 1 : 0.15); g.refreshState(b); return; }
   const owner = g.civs[b.owner];
@@ -441,7 +468,3 @@ export function supplyStep(g, dt) {
 }
 void MOVE;
 
-export function hardened(g, b) {
-  for (const s of g.buildings.values()) if (s.owner === b.owner && s.type === 'stabilizer' && s.done && s.state !== 'damaged' && dist(s.tile, b.tile) <= 4) return true;
-  return false;
-}

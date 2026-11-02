@@ -128,3 +128,16 @@ test('the browser planner and the server agree (pure planner, same inputs)', () 
   assert.equal(s.overflow.length, 0);
   assert.ok([...s.slots.values()].some((t) => t % 20 >= 17) && [...s.slots.values()].some((t) => t % 20 <= 3), 'a line across the seam stays whole');
 });
+
+test('a line spreads a small force evenly, guns fall in behind, and it faces away from the city', () => {
+  const W = 64, H = 64, env = { W, H, wrap: false, passable: () => true, capacity: () => 6, occupied: () => 0 };
+  const units = [...Array(5)].map((_, i) => ({ id: i + 1, tile: 30 * W + 10 + i, role: 'front' })).concat([{ id: 9, tile: 30 * W + 12, role: 'artillery' }]);
+  const city = 30 * W + 12;
+  for (const line of [[20 * W + 5, 20 * W + 20], [20 * W + 20, 20 * W + 5]]) {
+    const p = planDeployment(env, units, line, { away: city });
+    const cols = units.filter((u) => u.role === 'front').map((u) => p.slots.get(u.id) % W).sort((a, b) => a - b);
+    assert.ok(cols[0] <= 7 && cols[cols.length - 1] >= 18, `spread from end to end: ${cols}`);
+    assert.ok(p.facing[1] < 0, 'faces away from the city, whichever way the line was dragged');
+    assert.ok(((p.slots.get(9) / W) | 0) > 20, 'the gun stands behind the line');
+  }
+});

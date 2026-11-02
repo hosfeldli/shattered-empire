@@ -17,11 +17,11 @@ export const CATEGORIES = [
 const CAT_OF = {
   agronomy: 'civ', schooling: 'civ', higher_education: 'civ', mechanized_agriculture: 'civ', climate_engineering: 'civ',
   salvage_engineering: 'industry', metallurgy: 'industry', electrification: 'industry', petroleum: 'industry', munitions_industry: 'industry', computing: 'industry', materials_recycling: 'industry', fusion_power: 'industry',
-  surveying: 'infra', seafaring: 'infra', civil_engineering: 'infra', seismology: 'infra', highways: 'infra', railways: 'infra', geoengineering: 'infra',
+  surveying: 'infra', seafaring: 'infra', civil_engineering: 'infra', highways: 'infra', railways: 'infra',
   small_arms: 'military', fortification: 'military', field_artillery: 'military', mechanization: 'military', aviation: 'military', self_propelled_guns: 'military', air_defense: 'military', special_operations: 'military', precision_missiles: 'military',
   motorization: 'logistics', logistics: 'logistics', networked_command: 'logistics', drones: 'logistics',
   trade_networks: 'society', corporate_charter: 'society', federal_union: 'society',
-  robotics: 'advanced', strike_swarms: 'advanced', exo_armor: 'advanced', continental_arcology: 'advanced',
+  robotics: 'advanced', energy_shields: 'advanced', strike_swarms: 'advanced', exo_armor: 'advanced', continental_arcology: 'advanced',
 };
 export const techCategory = (k) => CAT_OF[k] || 'advanced';
 
@@ -173,7 +173,7 @@ export class ResearchWorkspace {
     const eta = e.research ? this.eta(e.research) : null;
     const key = JSON.stringify([e.research, Math.floor(e.progress / 5), e.researchRate, e.age, have, e.advancing, this.search, this.filter]);
     if (key === this.hdKey) return; this.hdKey = key;
-    $('rwHead').innerHTML = `<div class="rw-now"><h2>Research</h2><div><b>${cur ? esc(cur.name) : 'Nothing under research'}</b> <span class="muted">${e.researchRate.toFixed(1)}/s${eta != null ? ` · ${fmtT(eta)} left` : ''}</span></div>${cur ? `<div class="era-bar"><i style="width:${Math.min(100, (100 * e.progress) / cur.cost)}%"></i></div>` : ''}</div>
+    $('rwHead').innerHTML = `<div class="rw-now"><h2>Research</h2><button class="btn small ${e.autoTech ? 'primary' : 'ghost'}" data-rw="auto" title="${e.autoTech ? 'Automatic: the next useful technology is picked whenever nothing is under research, and the next era is entered as soon as it qualifies. Your own picks always come first.' : 'Manual: you pick research and advance eras yourself'}">${e.autoTech ? 'Automatic research: on' : 'Automatic research: off'}</button><div><b>${cur ? esc(cur.name) : 'Nothing under research'}</b> <span class="muted">${e.researchRate.toFixed(1)}/s${eta != null ? ` · ${fmtT(eta)} left` : ''}</span></div>${cur ? `<div class="era-bar"><i style="width:${Math.min(100, (100 * e.progress) / cur.cost)}%"></i></div>` : ''}</div>
       <div class="rw-era">${next ? `<b>${esc(next.name)}</b> <span class="muted">${have}/${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies · ${Object.entries(next.cost).map(([k, v]) => `<span class="${(e.res[k] || 0) < v ? 'bad' : ''}">${v} <button type="button" class="rlink" data-res="${k}">${esc(D.GOOD_NAMES[k].toLowerCase())}</button></span>`).join(', ')}</span> ${e.advancing ? `<span class="warn">advancing ${e.advancing}s</span>` : `<button class="btn small primary" data-rw="advance" ${have < next.techsNeeded ? 'disabled' : ''}>Advance</button>`}` : '<b>Final era reached</b>'}</div>
       <div class="rw-filters"><input id="rwSearch" type="search" placeholder="Search technologies or unlocks…" value="${esc(this.search)}" aria-label="Search technologies">
         <select id="rwCat" aria-label="Category"><option value="">All categories</option>${CATEGORIES.map(([k, n]) => `<option value="${k}" ${this.filter.cat === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
@@ -303,6 +303,7 @@ export class ResearchWorkspace {
       else if (op === 'center') this.focus(e2.research || e2.queue[0] || this.sel);
       else if (op === 'zin' || op === 'zout') { const r = $('rwGraph').getBoundingClientRect(); this.zoomAt(op === 'zin' ? 1.2 : 1 / 1.2, r.width / 2, r.height / 2); }
       else if (op === 'advance') this.A.cmd({ c: 'advance' });
+      else if (op === 'auto') this.A.cmd({ c: 'autoTech', on: !e2.autoTech });
       else if (op === 'now') this.A.cmd({ c: 'research', tech: k });
       else if (op === 'queue') this.A.cmd({ c: 'researchQueue', op: 'add', tech: k });
       else if (op === 'goal') this.A.cmd({ c: 'researchQueue', op: 'goal', tech: k });

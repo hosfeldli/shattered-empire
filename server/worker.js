@@ -13,7 +13,7 @@ let game;
 if (workerData.restore) {
   game = restoreGame(JSON.parse(zlib.gunzipSync(Buffer.from(workerData.restore)).toString()));
 } else {
-  game = new Game({ id: workerData.id, seed: workerData.seed, slots: workerData.slots, rebels: workerData.rebels !== false, cataclysm: workerData.cataclysm, style: workerData.style });
+  game = new Game({ id: workerData.id, seed: workerData.seed, slots: workerData.slots, rebels: workerData.rebels !== false, style: workerData.style });
   if (workerData.sandbox) { const { makeSandbox } = await import('./sim/sandbox.js'); makeSandbox(game); }
 }
 // live matches let AI planning slide a tick when a tick runs long (tests and replays stay strict)
@@ -96,7 +96,7 @@ parentPort.on('message', (m) => {
     } else if (m.t === 'welcome') {
       const civ = game.civs[m.civId];
       civ.connected = true;
-      send(m.civId, { t: 'welcome', match: game.id, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, cataclysm: !!game.cataclysm }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
+      send(m.civId, { t: 'welcome', match: game.id, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
       for (const [, msg] of game.snapshots(m.civId)) send(m.civId, msg);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
@@ -105,7 +105,7 @@ parentPort.on('message', (m) => {
       game.setObserver({ connected: m.on });
     } else if (m.t === 'obsWelcome') {
       const o = game.setObserver({ connected: true });
-      send(-2, { t: 'welcome', match: game.id, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, cataclysm: !!game.cataclysm },
+      send(-2, { t: 'welcome', match: game.id, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style },
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
       send(-2, game.observerSnapshot(true));
       for (const e of game.log.slice(-15)) if (e.kind) send(-2, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });

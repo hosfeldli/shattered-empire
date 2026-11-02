@@ -1,5 +1,5 @@
 // Contextual command bar: only the commands that make sense for what is selected.
-// Ground troops: Move / Attack / Hold / Fortify. Aircraft: Patrol / Strike / Return. Recon: Scout / Return.
+// Ground troops: Dig in (moving is right-click and right-drag; Defend/Attack is in the panel). Aircraft: Patrol / Strike / Return. Recon: Scout / Return.
 // One-way drones: Strike / Cancel. Trucks: Deliver / Return. Everything else lives under "More".
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -13,7 +13,7 @@ export function unitKind(D, type) {
 }
 
 const GROUPS = {
-  ground: { label: 'Troops', cmds: [['moveMode', 'Move', 'Click a destination (or right-click / right-drag for a battle line)'], ['amove', 'Attack', 'Advance and fight anything on the way (Ctrl/Cmd+A)'], ['hold', 'Hold', 'Stay and fire at what comes in range (H)'], ['fortify', 'Fortify', 'Draw a trench line for national crews to dig']] },
+  ground: { label: 'Troops', cmds: [['fortify', 'Dig in', 'Draw a trench line for national crews to dig']] },
   air: { label: 'Aircraft', cmds: [['patrolMode', 'Patrol', 'Click an area: aircraft orbit it, engage what they can, and cycle home to refuel'], ['strikeMode', 'Strike', 'Click a target: aircraft fly out, attack and return to rearm'], ['airReturn', 'Return', 'Fly home and service']] },
   recon: { label: 'Recon', cmds: [['scoutMode', 'Scout', 'Click an area to reveal: the drone orbits it and returns on fuel'], ['airReturn', 'Return', 'Fly home and service']] },
   oneway: { label: 'Strike drones', cmds: [['strikeMode', 'Strike', 'Click a target: the drone flies one way and detonates'], ['airReturn', 'Cancel', 'Abort the strike and land']] },
@@ -63,7 +63,7 @@ export class CommandBar {
       const bits = [low && `<span class="tag warn">${low} low fuel</span>`, dry && `<span class="tag warn">${dry} no ammunition</span>`, svc && `<span class="tag">${svc} servicing</span>`].filter(Boolean);
       if (bits.length) h += `<div class="cb-grp">${bits.join('')}</div>`;
     }
-    h += `<div class="cb-grp"><button type="button" class="cb ghost${this.more ? ' on' : ''}" data-more title="Stop, withdraw, engagement modes, armies and more">More ▾</button></div>`;
+    if ([...kinds.keys()].some((k) => k !== 'ground' && k !== 'colonist' && k !== 'civil')) h += `<div class="cb-grp"><button type="button" class="cb ghost${this.more ? ' on' : ''}" data-more title="Stop, withdraw, engagement modes, armies and more">More ▾</button></div>`;
     if (this.more) h += `<div class="cb-more">${MORE.filter(([c]) => c !== 'supply' || kinds.has('ground')).map(([c, l]) => `<button type="button" class="cb" data-cb="${c}">${esc(l)}</button>`).join('')}</div>`;
     this.el.hidden = false;
     if (h !== this.html) { this.html = h; this.el.innerHTML = h; }

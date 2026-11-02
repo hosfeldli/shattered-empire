@@ -3,7 +3,7 @@
 <script src="/vendor/pixi.min.js"></script>
 <script type="module">
 import { drawBuildingArt } from '/visual/BuildingArt.js';
-const types = ['town','house','farm','lumber','quarry','salvage','barracks','market','academy','port','bunker','mine','steel_mill','power_plant','oil_well','munitions_plant','motor_works','depot','fort','seismic','university','heavy_assembly','airfield','stabilizer','electronics_plant','comms_tower','drone_works','fusion_plant','robotics_complex','camp','wonder'];
+const types = ['town','house','farm','lumber','quarry','salvage','barracks','market','academy','port','bunker','mine','steel_mill','power_plant','oil_well','munitions_plant','motor_works','depot','fort','university','heavy_assembly','airfield','electronics_plant','comms_tower','drone_works','fusion_plant','robotics_complex','camp','wonder'];
 const app = new PIXI.Application(); await app.init({ width: 1500, height: 1000, background: 0x6b7f52, antialias: true, resolution: 1 });
 document.body.appendChild(app.canvas);
 const cats = { town:'civic', house:'residential', farm:'agri' };

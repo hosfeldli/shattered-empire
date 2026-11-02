@@ -1,7 +1,8 @@
-// DOM HUD: resources & alerts, seismograph, selection & city management (incl. governors),
+// DOM HUD: resources & alerts, selection & city management (incl. governors),
 // build bar, road planner, and the drawer (tech graph, realm, empire overview, armies,
 // diplomacy, chronicle + command history). The HUD only ever sends intents to the server.
 import { wrappedIntervals } from './visual/WorldWrapGeometry.js';
+import { unitIconURL } from './visual/UnitIcons.js';
 import { findMatch } from './view.js';
 import { ResearchWorkspace } from './research/ResearchWorkspace.js';
 import { EconomyWorkspace } from './economy/EconomyWorkspace.js';
@@ -17,8 +18,7 @@ const CAT_NAME = { civic: 'Civic', residential: 'Housing', agri: 'Food', industr
 export class Hud {
   constructor(S, actions) {
     this.S = S; this.A = actions; this.tab = 'research'; this.cityTab = 'overview'; this.empireSort = ['pop', -1]; this.empireFilter = 'all';
-    this.seis = new Float32Array(240); this.amp = 0; this.alertT = 0; this.shockT = 0; this.alerts = []; this.unseen = { critical: 0, major: 0 };
-    this.sctx = $('seismo').getContext('2d');
+    this.alerts = []; this.unseen = { critical: 0, major: 0 };
     this.mctx = $('minimap').getContext('2d');
     // management workspaces open from the command rail; the map stays the primary surface
     this.cmdbar = new CommandBar(S, $('cmdbar'), (c, kind) => actions.act(c, kind));
@@ -41,6 +41,8 @@ export class Hud {
     $('drawerBody').addEventListener('click', (e) => this.onDrawerClick(e));
     $('drawerBody').addEventListener('change', (e) => this.onDrawerChange(e));
     $('selection').addEventListener('click', (e) => this.onSelClick(e));
+    // remember whether the optional orders are unfolded across panel refreshes
+    $('selection').addEventListener('toggle', (e) => { if (e.target.classList?.contains('more-orders')) this.moreOpen = e.target.open; }, true);
     $('selection').addEventListener('dblclick', (e) => { const c = e.target.closest('[data-card]'); if (c) this.A.selectType(c.dataset.card, !(e.ctrlKey || e.metaKey)); });
     $('selection').addEventListener('change', (e) => this.onSelChange(e));
     $('buildbar').addEventListener('click', (e) => {
@@ -179,34 +181,13 @@ export class Hud {
     }
     // research chip
     const cur = e.research ? D.TECHS[e.research] : null;
-    $('rcName').textContent = cur ? cur.name : 'No research — choose one';
+    $('rcName').textContent = cur ? (e.autoTech ? '⟳ ' : '') + cur.name : e.autoTech ? 'Research: automatic' : 'No research — choose one';
     $('rcBar').style.width = cur ? `${Math.min(100, (100 * e.progress) / cur.cost)}%` : '0';
     $('rcEta').textContent = cur && e.researchRate > 0 ? `${Math.ceil((cur.cost - e.progress) / e.researchRate)}s · ${e.queue.length} queued` : e.queue.length ? `${e.queue.length} queued` : '';
     $('researchChip').classList.toggle('idle', !cur);
     if (this.ws === 'research') this.research.refresh();
   }
   clock(time, rtt) { const t = Math.floor(time); $('clock').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; $('net').textContent = rtt ? `${rtt} ms` : ''; }
-
-  // ------------------------------------------------------------ seismograph
-  quake(kind) {
-    const k = { quake: 16, eruption: 12, rumor: 6, rift: 5, uplift: 3, river: 3, drought: 2, warning: 0 }[kind] ?? 0;
-    if (kind === 'warning') { this.alertT = 25; return; }
-    this.amp = Math.max(this.amp, k); if (k >= 6) this.shockT = 6;
-  }
-  seismo(dt) {
-    const a = this.seis; a.copyWithin(0, 2); this.amp = Math.max(0, this.amp - dt * 3.2);
-    const base = 0.8 + (this.alertT > 0 ? 2.5 : 0);
-    for (let k = a.length - 2; k < a.length; k++) a[k] = (Math.random() - 0.5) * 2 * (base + this.amp * (0.6 + Math.random() * 0.6));
-    this.alertT = Math.max(0, this.alertT - dt); this.shockT = Math.max(0, this.shockT - dt);
-    const c = this.sctx, w = 240, h = 34; c.clearRect(0, 0, w, h);
-    c.strokeStyle = 'rgba(231,226,212,0.08)'; c.lineWidth = 1; for (let x = 0; x < w; x += 20) { c.beginPath(); c.moveTo(x + 0.5, 0); c.lineTo(x + 0.5, h); c.stroke(); }
-    c.strokeStyle = this.shockT > 0 ? '#ff7a5c' : this.alertT > 0 ? '#f0b54a' : '#8fd19e'; c.lineWidth = 1.2; c.beginPath();
-    for (let x = 0; x < w; x++) { const y = h / 2 + Math.max(-16, Math.min(16, a[x])); x ? c.lineTo(x, y) : c.moveTo(x, y); }
-    c.stroke();
-    const lbl = $('seismoLabel');
-    const txt = this.shockT > 0 ? 'Shock' : this.alertT > 0 ? 'Precursors' : 'Quiet';
-    if (lbl.textContent !== txt) { lbl.textContent = txt; lbl.className = this.shockT > 0 ? 'shock' : this.alertT > 0 ? 'alert' : ''; }
-  }
 
   // ------------------------------------------------------------ toasts & alert tray
   // Toasts: repeated messages group into one with a count; during battles minor news is held back;
@@ -228,8 +209,9 @@ export class Hud {
     el.innerHTML = `<span class="tt"></span><span class="count"></span>`; el.querySelector('.tt').textContent = m.text;
     el.addEventListener('click', () => this.openAlertTarget(m));
     const box = $('toasts'); box.prepend(el);
+    while (box.children.length > 3) box.lastElementChild.remove();      // never a wall of messages over the map
     while (box.children.length > 4) box.lastChild.remove();
-    const timer = setTimeout(() => el.remove(), lvl === 'critical' ? 15000 : m.kind === 'warning' || m.kind === 'proposal' ? 12000 : 6500);
+    const timer = setTimeout(() => el.remove(), lvl === 'critical' ? 10000 : m.kind === 'warning' || m.kind === 'proposal' ? 7000 : 4000);
     this.toastGroups.set(key, { el, n: 1, timer });
   }
   // clicking an alert opens what it is about
@@ -444,7 +426,7 @@ export class Hud {
       const ok = m.tiles ? m.tiles.has(t) : null;
       h += ok == null ? '<div class="muted small">Checking valid sites…</div>' : ok ? '<div class="good small">✓ This hex is valid.</div>' : `<div class="bad small">✗ ${esc(this.A.placeProblem ? this.A.placeProblem(m.type, t) : 'not valid here')}</div>`;
     }
-    h += `<div class="muted small">${m.tiles ? `${m.tiles.size} valid hex${m.tiles.size === 1 ? '' : 'es'} highlighted.` : ''} Shift-click to place multiple · Escape to finish.</div>`;
+    h += `<div class="muted small">${m.tiles ? `${m.tiles.size} valid hex${m.tiles.size === 1 ? '' : 'es'} highlighted.` : ''} Click to place · drag across hexes to place several · Shift+drag to fill an area · Escape to finish.</div>`;
     const s = m.session;
     if (s && s.n) h += `<div class="small"><b>${s.n} ${esc(d.name)}${s.n > 1 ? 's' : ''} placed</b> · ${Object.entries(s.cost).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k])}`).join(', ') || 'free'} committed${s.planned ? ` · ${s.planned} awaiting funds` : ''}</div>`;
     if (h !== this.placeHtml) { this.placeHtml = h; el.innerHTML = h; }
@@ -501,7 +483,7 @@ export class Hud {
         const comp = { Infantry: 0, Armour: 0, Artillery: 0, Air: 0, Support: 0 };
         for (const u of units) { const d = D.UNITS[u.type]; comp[d.air ? 'Air' : d.cat === 'artillery' ? 'Artillery' : d.civilian || d.cat === 'support' ? 'Support' : d.move === 'infantry' ? 'Infantry' : 'Armour']++; }
         html += `<div class="comp">${Object.entries(comp).filter(([, n]) => n).map(([k, n]) => `<div><b>${n}</b><span>${k}</span></div>`).join('')}</div>`;
-      } else if (own) html += `<div class="cards">${[...types].map(([t, n]) => `<span class="ucard" data-card="${t}" title="Click: keep only these. Double-click: every ${esc(D.UNITS[t].name)} on screen (Ctrl/Cmd: whole map)"><b>${n}×</b>${esc(D.UNITS[t].name)}</span>`).join('')}</div>`;
+      } else if (own) html += `<div class="cards">${[...types].map(([t, n]) => `<span class="ucard" data-card="${t}" title="Click: keep only these. Double-click: every ${esc(D.UNITS[t].name)} on screen (Ctrl/Cmd: whole map)"><img class="uicon" src="${unitIconURL(t, D.UNITS[t], S.civColor(S.civId))}" alt=""><b>${n}×</b>${esc(D.UNITS[t].name)}</span>`).join('')}</div>`;
       if (own && D.COMBAT_STATUS) {
         // what the group is doing, from the server's combat state
         const st = {}; for (const u of units) if (!D.UNITS[u.type].civilian && !D.UNITS[u.type].air) { const k = u.cstat || 0; st[k] = (st[k] || 0) + 1; }
@@ -529,19 +511,15 @@ export class Hud {
         if (vets.length) html += `<div class="muted">${D.VET_NAMES.slice(1).map((n, i) => [n, vets.filter((u) => u.vet === i + 1).length]).filter(([, k]) => k).map(([n, k]) => `${k} ${n.toLowerCase()}`).join(', ')} — +${10 * Math.max(...vets.map((u) => u.vet))}% attack</div>`;
         const inRefit = units.filter((u) => u.refit > 0).length;
         if (inRefit) html += `<div class="warn">${inRefit} in the workshop being refitted.</div>`;
-        if (!S.spectator) html += this.refitPanel(units);
         if (units.length === 1) html += `<dl class="kv"><dt>Attack / Defense</dt><dd>${first.atk} / ${first.def}</dd><dt>Range / Speed</dt><dd>${first.range} / ${first.speed}</dd><dt>Movement</dt><dd>${esc(first.move)}${first.aa ? `, anti-air ×${first.aa}` : ''}</dd></dl>`;
-        const stance = units.find((u) => u.stance)?.stance || 'defensive';
-        html += `<div class="actions"><select data-sel="stance" title="Stance">${Object.entries(D.STANCES).map(([k, n]) => `<option value="${k}" ${k === stance ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><select data-sel="formation" title="Formation for the next order">${Object.entries(D.FORMATIONS).map(([k, n]) => `<option value="${k}" ${k === S.formation ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>`;
-        if (units.length >= 3) {
-          html += `<div class="gcmds">${[['amove', 'Advance', 'Attack-move: advance and engage on the way (Ctrl/Cmd+A)'], ['engageMode', 'Engage', 'Click an enemy: fire is spread over nearby threats (right-click)'], ['focusMode', 'Focus fire', 'Click an enemy: every weapon on one target (Ctrl+right-click)'], ['defendMode', 'Defend', 'Hold a zone as an army'], ['withdraw', 'Withdraw', 'Fall back to the nearest friendly city, firing only in passing (X)'], ['moveMode', 'Reposition', 'Move without engaging (right-drag for a battle line)'], ['hold', 'Hold', 'Stop and hold this ground (H)']].map(([a, n, t]) => `<button class="btn small${a === 'withdraw' ? ' ghost' : ''}" data-act="${a}" title="${t}">${n}</button>`).join('')}</div>`;
-          html += `<div class="actions"><label class="field inline"><span>Engagement</span><select data-sel="policy">${Object.entries(D.ENGAGE_POLICIES).map(([k, n]) => `<option value="${k}" ${S.policy === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label></div>`;
-        }
-        html += `<div class="actions"><button class="btn small" data-act="stop">Stop</button>${units.length < 3 ? '<button class="btn small" data-act="amove" title="Ctrl/Cmd+A">Attack-move</button><button class="btn small" data-act="hold">Hold (H)</button><button class="btn small ghost" data-act="withdraw">Withdraw (X)</button>' : ''}<button class="btn small" data-act="army">Form army (G)</button>`;
-        if (units.some((u) => u.type === 'colonist')) html += `<button class="btn small primary" data-act="found">Found city (F)</button><button class="btn small" data-act="autoSettle">Auto-settle</button>`;
-        html += `</div>`;
+        // one choice: defend (hold where sent, fire at what comes) or attack (fight their way to
+        // wherever they are sent); everything else is right-click and right-drag on the map
+        const fighters = units.filter((u) => !D.UNITS[u.type].civilian);
+        const attack = fighters.length > 0 && fighters.every((u) => u.stance === 'aggressive');
+        if (fighters.length) html += `<div class="seg troopmode"><button class="${attack ? '' : 'on'}" data-act="modeDefend" title="Hold where you send them and fire at anything in range">Defend</button><button class="${attack ? 'on' : ''}" data-act="modeAttack" title="Fight their way to wherever you send them, and chase what they see">Attack</button></div>`;
+        html += `<div class="howto muted small">Right-click: move · right-drag: line · right-click an enemy: attack</div>`;
+        if (units.some((u) => u.type === 'colonist')) html += `<div class="actions"><button class="btn small primary" data-act="found">Found city (F)</button><button class="btn small" data-act="autoSettle">Auto-settle</button></div>`;
         if (units.some((u) => D.UNITS[u.type].engineer)) html += `<p class="muted">Idle engineers repair roads and buildings, fight fires and clear rubble next to them, and speed up nearby construction.</p>`;
-        html += this.formationHtml(units);
         if (units.length === 1 && (S.sandbox || S.dev)) html += `<details class="diag" data-diag="${units[0].id}" ${this.diagOpen ? 'open' : ''}><summary>Diagnostics</summary><pre>${esc(this.diagText || 'loading…')}</pre></details>`;
       }
     } else if (S.selRuin && S.selBuilding == null) {
@@ -604,23 +582,21 @@ export class Hud {
 
   // Deployment toolbar: visible while drawing a line and whenever several own combat units are
   // selected (so density, depth and behaviour can be chosen before the drag).
+  // While right-dragging a battle line: live feedback only. No modes to set: the line spreads units
+  // along it (a short line concentrates them), support and artillery fall in behind, and they defend
+  // it. Alt+right-drag advances instead; Tab flips the facing; Shift queues.
   deployBar(force) {
     const S = this.S, D = S.defs, el = $('deployBar'); if (!D) return;
-    const units = [...S.selUnits].map((id) => S.units.get(id)).filter((u) => u && u.owner === S.civId && !D.UNITS[u.type].civilian && !D.UNITS[u.type].air);
-    const show = !S.spectator && (S.deploy || units.length >= 2) && !(S.mode && ['build', 'road', 'trench', 'missile'].includes(S.mode.kind));
+    const show = !S.spectator && S.deploy && !(S.mode && ['build', 'road', 'trench', 'missile'].includes(S.mode.kind));
     if (!show) { if (!el.hidden) el.hidden = true; return; }
-    const o = S.deployOpts, p = S.deploy?.plan;
-    const seg = (k, opts) => `<div class="seg">${opts.map(([v, n, t]) => `<button class="${String(o[k]) === String(v) ? 'on' : ''}" data-dopt="${k}" data-v="${v}" title="${t}">${n}</button>`).join('')}</div>`;
-    let h = `<span class="lbl">Deploy</span>${seg('mode', [['line', 'Line', 'A broad front, shallow ranks'], ['compact', 'Compact', 'A deliberately dense front (up to legal capacity)'], ['depth', 'In depth', 'Front line with support and artillery behind'], ['preserve', 'Keep shape', 'Move the formation as it stands']])}`;
-    h += `${seg('density', [['auto', 'Auto', 'Line length decides: shorter concentrates'], ['spread', 'Spread', 'At most one unit per hex'], ['balanced', 'Balanced', 'Up to three per hex'], ['tight', 'Tight', 'Up to hex capacity']])}`;
-    h += `${seg('depth', [['auto', 'Ranks: auto', 'Ranks as needed'], ['1', '1', 'One rank'], ['2', '2', 'Two ranks'], ['3', '3', 'Three ranks']])}`;
-    h += `${seg('behavior', [['hold', 'Hold', 'Stay on the line, fire at what is in range'], ['defend', 'Defend', 'Engage nearby threats, then return'], ['attackMove', 'Advance', 'Advance and engage (or Alt+right-drag)']])}`;
-    h += `<button class="btn tiny ${o.reverse ? 'primary' : 'ghost'}" data-dopt="reverse" title="Reverse the facing (Tab while dragging)">⇅ Facing</button>`;
+    const p = S.deploy?.plan;
+    let h = `<span class="lbl">Battle line</span>`;
     if (p) {
       const over = p.overflow.length, inv = p.invalid.length;
-      h += `<span class="exposure ${p.label}" title="${p.label === 'dense' ? 'Several units share the same few hexes: one shell can hit them all' : p.label === 'concentrated' ? 'Some hexes hold several units' : 'Most units stand on their own hex'}">${{ dispersed: 'Dispersed', concentrated: 'Concentrated', dense: 'Dense — artillery risk', none: '—' }[p.label]}</span>`;
-      h += `<span class="lbl">${S.deploy.n - over} placed${p.ranks > 1 ? ` · ${p.ranks} ranks` : ''}${over ? ` · <b class="bad">${over} do not fit</b>` : ''}${inv ? ` · ${inv} hexes impassable` : ''}</span>`;
-    } else h += `<span class="lbl">Right-drag on the map to draw the line</span>`;
+      h += `<span class="exposure ${p.label}" title="${p.label === 'dense' ? 'Several units share the same few hexes: one shell can hit them all' : p.label === 'concentrated' ? 'Some hexes hold several units' : 'Most units stand on their own hex'}">${{ dispersed: 'Spread out', concentrated: 'Concentrated', dense: 'Packed tight' }[p.label] || ''}</span>`;
+      h += `<span class="lbl">${S.deploy.n - over} placed${p.ranks > 1 ? ` · ${p.ranks} ranks` : ''}${over ? ` · <b class="bad">${over} do not fit: draw a longer line</b>` : ''}${inv ? ` · ${inv} hexes impassable` : ''}</span>`;
+    }
+    h += `<span class="lbl muted">Release to deploy · Alt: advance · Tab: flip facing · Esc: cancel</span>`;
     if (h !== this.dbHtml || force) { this.dbHtml = h; el.innerHTML = h; }
     el.hidden = false;
   }
@@ -631,9 +607,10 @@ export class Hud {
   multiBuildingPanel(blds) {
     const S = this.S, D = S.defs, e = S.econ;
     const byType = {}; for (const b of blds) byType[b.ty] = (byType[b.ty] || 0) + 1;
-    const onlyHouses = blds.every((b) => b.ty === 'house');
-    let html = `<h3>${onlyHouses ? `${blds.length} Housing Blocks selected` : `${blds.length} buildings selected`}</h3><div class="sub">${onlyHouses ? '' : Object.entries(byType).map(([t, n]) => `${n} ${esc(D.BUILDINGS[t].name)}`).join(', ')}</div>`;
-    if (byType.house && !S.spectator) html += this.housingBatchPanel(blds.filter((b) => b.ty === 'house'));
+    const types = Object.keys(byType), one = types.length === 1 ? D.BUILDINGS[types[0]] : null;
+    let html = `<h3>${one ? `${blds.length} × ${esc(one.name)} selected` : `${blds.length} buildings selected`}</h3><div class="sub">${one ? '' : Object.entries(byType).map(([t, n]) => `${n} ${esc(D.BUILDINGS[t].name)}`).join(', ')}</div>`;
+    const upg = blds.filter((b) => b.o === S.civId && this.canLevel(b) !== null);
+    if (upg.length && !S.spectator) html += this.housingBatchPanel(upg);
     const fac = blds.filter((b) => b.d && b.o === S.civId && D.BUILDINGS[b.ty].trains);
     if (!fac.length) return html;
     const queued = fac.reduce((s2, b) => s2 + (b.q?.length || 0), 0), longest = Math.max(0, ...fac.map((b) => (b.q || []).reduce((s2, q) => s2 + q[1], 0)));
@@ -658,13 +635,24 @@ export class Hud {
   }
 
   // Batch housing upgrades: what is eligible, what it costs, what it adds, then one order.
+  // can this building gain a level (housing: storeys)? its upgrade cost, false if not now (maxed,
+  // unfinished, era too early), null if it has no levels at all
+  canLevel(b) {
+    const S = this.S, D = S.defs, e = S.econ || {}, lv = b.lv || 1;
+    if (b.ty === 'house') return b.d && lv < 3 ? ((e.age || 0) >= 1 ? { materials: 55 * lv, steel: 12 * lv } : { materials: 60 * lv }) : false;
+    const d = D.BUILDINGS[b.ty]; if (!d.jobs || !(d.produce || d.power > 0) || b.ty === 'town') return null;
+    if (!b.d || lv >= (D.LEVELS?.max || 3) || (e.age || 0) < (D.LEVELS?.age?.[lv] ?? 9)) return false;
+    return b.uc || false;
+  }
+  // batch upgrades for the selection: housing gains storeys, production buildings a level
   housingBatchPanel(houses) {
     const S = this.S, D = S.defs, e = S.econ;
-    const elig = houses.filter((b) => b.d && (b.lv || 1) < 3), maxed = houses.filter((b) => b.d && (b.lv || 1) >= 3), unfinished = houses.filter((b) => !b.d);
-    const cost = {}; for (const b of elig) { const lv = b.lv || 1; const c = (e.age || 0) >= 1 ? { materials: 55 * lv, steel: 12 * lv } : { materials: 60 * lv }; for (const [k, v] of Object.entries(c)) cost[k] = (cost[k] || 0) + v; }
+    const elig = houses.filter((b) => this.canLevel(b)), maxed = houses.filter((b) => b.d && !this.canLevel(b)), unfinished = houses.filter((b) => !b.d);
+    const cost = {}; for (const b of elig) for (const [k, v] of Object.entries(this.canLevel(b))) cost[k] = (cost[k] || 0) + v;
     const afford = Object.entries(cost).every(([k, v]) => (e.res[k] || 0) >= v);
-    const homes = elig.length * (4 + (e.age || 0));
-    let h = `<ul class="log"><li>${elig.length} eligible for upgrade</li>${maxed.length ? `<li class="muted">${maxed.length} already at maximum density</li>` : ''}${unfinished.length ? `<li class="muted">${unfinished.length} unfinished</li>` : ''}</ul>`;
+    const homes = elig.filter((b) => b.ty === 'house').length * (4 + (e.age || 0));
+    const later = maxed.filter((b) => (b.lv || 1) < (b.ty === 'house' ? 3 : D.LEVELS?.max || 3)).length;
+    let h = `<ul class="log"><li>${elig.length} ready to upgrade</li>${maxed.length - later ? `<li class="muted">${maxed.length - later} already at the top level</li>` : ''}${later ? `<li class="muted">${later} need the next era</li>` : ''}${unfinished.length ? `<li class="muted">${unfinished.length} unfinished</li>` : ''}</ul>`;
     if (elig.length) {
       h += `<dl class="kv"><dt>Total cost</dt><dd>${Object.entries(cost).map(([k, v]) => `<span class="${(e.res[k] || 0) < v ? 'bad' : ''}">${v} <button type="button" class="rlink" data-res="${k}">${esc(D.GOOD_NAMES[k].toLowerCase())}</button></span>`).join(', ')}</dd><dt>Housing gained</dt><dd>+${homes} homes</dd></dl>`;
       h += `<div class="actions"><button class="btn small primary" data-hup="all" ${afford ? '' : 'disabled'} title="${afford ? 'Upgrade every eligible block in one order' : 'Not enough for all of them: upgrade what is affordable instead'}">Upgrade all eligible</button><button class="btn small" data-hup="affordable" title="Upgrade as many as the stockpile allows, lowest density first; the rest are reported">Upgrade what is affordable</button><button class="btn small ghost" data-hup="preview">Preview costs</button>${elig.length < houses.length ? '<button class="btn small ghost" data-hup="eligible">Select eligible only</button>' : ''}</div>`;
@@ -675,8 +663,8 @@ export class Hud {
 
   housingAction(op) {
     const S = this.S, D = S.defs;
-    const ids = [...S.selBuildings].filter((id) => S.buildings.get(id)?.ty === 'house');
-    if (op === 'eligible') { const el = ids.filter((id) => { const b = S.buildings.get(id); return b.d && (b.lv || 1) < 3; }); S.selBuildings = new Set(el); S.selBuilding = el[0] ?? null; this.selHtml = ''; this.selection(); return; }
+    const ids = [...S.selBuildings].filter((id) => { const b = S.buildings.get(id); return b && b.o === S.civId && this.canLevel(b) !== null; });
+    if (op === 'eligible') { const el = ids.filter((id) => this.canLevel(S.buildings.get(id))); S.selBuildings = new Set(el); S.selBuilding = el[0] ?? null; this.selHtml = ''; this.selection(); return; }
     const preview = op === 'preview';
     const costTxt = (c) => Object.entries(c || {}).map(([k, v]) => `${v} ${(D.GOOD_NAMES[k] || k).toLowerCase()}`).join(', ') || 'nothing';
     this.A.cmd({ c: 'batchUpgrade', ids, policy: op === 'all' ? 'all' : 'affordable', preview, requestId: preview ? undefined : `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }).then((r) => {
@@ -793,11 +781,23 @@ export class Hud {
     return h;
   }
 
+  // a city's construction queue in order: what is being built, what waits for a crew, what waits for funds
+  constructionQueue(city) {
+    const S = this.S, D = S.defs;
+    const sites = [...S.buildings.values()].filter((x) => x.o === S.civId && !x.d && x.c === city.id).sort((a, b) => (a.qn ?? a.id) - (b.qn ?? b.id));
+    if (!sites.length) return '';
+    const state = (x) => (x.st === 'planned' ? '<span class="tag warn">awaiting funds</span>' : x.qw ? '<span class="tag">waiting for a crew</span>' : `<span class="tag good">${x.p}%</span>`);
+    return `<div class="cprod"><b>Construction queue (${sites.length})</b><ul class="log">${sites.slice(0, 12).map((x, i) => `<li><button type="button" class="rlink" data-jump="${x.t}">${esc(D.BUILDINGS[x.ty].name)}</button> ${state(x)}${i ? ` <button type="button" class="rlink" data-qnext="${x.id}" title="Build this next">▲ next</button>` : ''}</li>`).join('')}</ul></div>`;
+  }
+
   buildingPanel(b, d, own, city) {
     const S = this.S, D = S.defs;
     let html = `<div>Condition ${b.hp}% <span class="tag ${b.st === 'damaged' ? 'bad' : b.st === 'operational' ? 'good' : 'warn'}">${esc(b.st)}</span>${b.f ? ' <span class="tag bad">on fire</span>' : ''}</div><div class="bar hp"><i style="width:${b.hp}%"></i></div>`;
-    if (b.st === 'planned') html += `<div class="warn">Planned: construction starts once the resources are available.</div>`;
+    if (b.st === 'planned') html += `<div class="warn">In the construction queue: it is funded as soon as the resources are there, in the order you placed things (earlier orders first).</div>`;
+    else if (!b.d && b.qw) html += `<div class="warn">Funded and waiting for a crew: ${b.qw} site${b.qw > 1 ? 's' : ''} ahead of it in this city. Engineers beside it start it at once.</div>`;
     else if (!b.d) html += `<div class="warn">Under construction: ${b.p}% (crew rate ×${(b.cr || 1).toFixed(1)}; engineers nearby speed this up)</div>`;
+    if (own && !b.d && !S.spectator) html += `<div class="actions"><button class="btn small primary" data-act="buildNext" title="Move this site to the front of the construction queue: funded and built before everything else">Build next</button></div>`;
+    if (own && city && !S.spectator) html += this.constructionQueue(city);
     if (b.st === 'damaged' && own) html += `<div class="bad">Damaged buildings work at half capacity and do not recover by themselves.</div>`;
     if (city) html += `<div>Population ${Math.floor(city.pop)}</div>`;
     if (own && d.jobs && b.d) html += `<div class="${b.w && !['under', 'surplus', 'locked'].includes(b.w) ? 'warn' : 'muted'}">${esc(staffText(b, D))}</div>`;
@@ -850,7 +850,7 @@ export class Hud {
     const cost = (c) => Object.entries(c).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ');
     let html = `<div class="actions">` + d.trains.filter((u) => D.UNITS[u].age <= e.age).map((u) => {
       const ud = D.UNITS[u]; const locked = ud.tech && !e.techs.includes(ud.tech);
-      return `<button class="btn trainbtn" data-train="${u}" ${locked ? 'disabled' : ''} title="${esc(ud.name)}: ${esc(cost(ud.cost))}${ud.pop ? `, ${ud.pop} pop` : ''}${ud.men ? `, ${ud.men} soldiers` : ''}"><span>${esc(ud.name)}</span><small>${locked ? 'needs ' + esc(D.TECHS[ud.tech].name) : esc(cost(ud.cost))}</small></button>`;
+      return `<button class="btn trainbtn" data-train="${u}" ${locked ? 'disabled' : ''} title="${esc(ud.name)}: ${esc(cost(ud.cost))}${ud.pop ? `, ${ud.pop} pop` : ''}${ud.men ? `, ${ud.men} soldiers` : ''}"><span><img class="uicon" src="${unitIconURL(u, ud, S.civColor(S.civId))}" alt="">${esc(ud.name)}</span><small>${locked ? 'needs ' + esc(D.TECHS[ud.tech].name) : esc(cost(ud.cost))}</small></button>`;
     }).join('') + `</div>`;
     // the whole queue sits right under the current item, before the train buttons, so it is never missed
     if (b.q?.length) qh += `<div class="queue">${b.q.map(([u, t], i) => `<span>${esc(D.UNITS[u].name)} ${t}s <button class="x" data-qcancel="${i}" title="Cancel: ${i === 0 ? 'half the cost back once training has started' : 'full refund'}; the reserved manpower returns to work">×</button></span>`).join('')}</div><div class="actions"><button class="btn small ghost" data-clearq="${b.id}">Clear queue</button></div>`;
@@ -962,6 +962,7 @@ export class Hud {
 
   onSelClick(e) {
     { const hu = e.target.closest('[data-hup]'); if (hu) return this.housingAction(hu.dataset.hup); }
+    { const qn = e.target.closest('[data-qnext]'); if (qn) { this.A.cmd({ c: 'buildNext', id: +qn.dataset.qnext }).then(() => { this.selHtml = ''; this.selection(); }); return; } }
     { const cq = e.target.closest('[data-clearq]'); if (cq) return this.A.cmd({ c: 'clearQueue', buildings: cq.dataset.clearq.split(',').map(Number) }).then((r) => { if (r.cleared) this.toast({ text: `${r.cleared.n} queued unit${r.cleared.n === 1 ? '' : 's'} cancelled; resources refunded.`, kind: 'build', level: 'info' }); }); }
     { const rr = e.target.closest('[data-res]'); if (rr) return this.openResource(rr.dataset.res); }
     const t = e.target.closest('[data-act],[data-train],[data-jump],[data-ctab],[data-gcancel],[data-card],[data-follow-civ],[data-refit],[data-wf],[data-prop],[data-qcancel],[data-upgrade],[data-import],[data-govlevel],[data-batchtrain],[data-batchmode],[data-fbeh],[data-fop],[data-pick],[data-truckback],[data-airbase],[data-selb]'); if (!t) return;

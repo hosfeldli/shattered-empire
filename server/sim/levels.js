@@ -24,10 +24,10 @@ export function cityTier(civ, c) {
   return p >= 170 && a >= 3 ? 3 : p >= 85 && a >= 2 ? 2 : p >= 32 && a >= 1 ? 1 : 0;
 }
 
-// cost to go from level L to L+1: more than the original building, with steel for the top level
+// cost to go from level L to L+1: about the original building, with steel for the top level
 export function upgradeCost(type, level) {
   const base = BUILDINGS[type].cost || {};
-  const f = level === 1 ? 1.4 : 2.2;
+  const f = level === 1 ? 1.1 : 1.7;   // upgrading is the way to grow: cheaper than a new building's worth of output
   const cost = {};
   for (const [k, v] of Object.entries(base)) cost[k] = Math.round(v * f);
   if (level >= 2) cost.steel = (cost.steel || 0) + Math.round(30 + (base.materials || 0) * 0.25);

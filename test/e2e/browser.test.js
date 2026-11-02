@@ -282,12 +282,13 @@ test('line deployment: right-drag shows the plan, release commits a formation; F
   const cap = await page.evaluate(() => [...window.__S.cities.values()].find((x) => x.o === window.__S.civId).t);
   await page.evaluate((t) => window.__view().centerOn(t, 1.6), cap);
   await page.waitForTimeout(300);
-  await page.waitForSelector('#deployBar:not([hidden])', { timeout: 5000 });
+  assert.ok(await page.isHidden('#deployBar'), 'no deployment menu just for having troops selected');
   const [x0, y0] = await tilePos(cap);
   await page.mouse.move(x0 - 60, y0 + 60); await page.mouse.down({ button: 'right' });
   await page.mouse.move(x0 + 20, y0 + 60, { steps: 8 });
   await page.waitForFunction(() => window.__S.deploy && window.__S.deploy.plan && window.__S.deploy.plan.slots.size > 0, null, { timeout: 5000 });
-  assert.match(await page.textContent('#deployBar'), /Dispersed|Concentrated|Dense/);
+  await page.waitForSelector('#deployBar:not([hidden])', { timeout: 5000 });
+  assert.match(await page.textContent('#deployBar'), /Spread out|Concentrated|Packed tight/);
   const preview = await page.evaluate(() => [...window.__S.deploy.plan.slots.entries()]);
   await page.mouse.up({ button: 'right' });
   await page.waitForFunction(() => (window.__S.econ.formations || []).length > 0, null, { timeout: 15000 });

@@ -7,7 +7,8 @@
 // units: [{ id, tile, role: 'front'|'support'|'artillery'|'logistics', air, vehicle, slot? }]
 // line:  [startTile, endTile]   (the drag; its length sets the frontage, its direction the facing)
 // opts:  { mode: 'line'|'compact'|'depth'|'preserve', density: 'auto'|'spread'|'balanced'|'tight',
-//          depth: 1|2|3|'auto', reverse: bool, keep: Map(id -> tile) (units that keep their slot) }
+//          depth: 1|2|3|'auto', reverse: bool, keep: Map(id -> tile) (units that keep their slot),
+//          away: tile (face away from it: the nearest own city, so a line faces outward by default) }
 //
 // Rules: shortening the line concentrates the force up to each hex's legal ground capacity;
 // what does not fit spills into rear ranks; units are matched to slots along the line in order
@@ -87,10 +88,13 @@ export function planDeployment(env, units, line, opts = {}) {
   const ground = units.filter((u) => !u.air), air = units.filter((u) => u.air);
   const L = lineTiles(env, line[0], line[1]);
   const dirx = L.len > 0.01 ? (L.bx - L.ax) / L.len : 1, diry = L.len > 0.01 ? (L.by - L.ay) / L.len : 0;
-  // facing: the drag direction turned left (as before); reverse flips it
-  let fx = diry, fy = -dirx; if (opts.reverse) { fx = -fx; fy = -fy; }
   const mx = (L.ax + L.bx) / 2, my = (L.ay + L.by) / 2;
   const unwrap = (t) => { const [x, y] = hexXY(t, W); if (!env.wrap) return [x, y]; const P = SQ3 * W; return [x + Math.round((mx - x) / P) * P, y]; };
+  // facing: away from our city when we know which (a line drawn round a town faces outward),
+  // otherwise the drag direction turned left; reverse flips it
+  let fx = diry, fy = -dirx;
+  if (opts.away != null && opts.away >= 0) { const [hx, hy] = unwrap(opts.away); if ((mx - hx) * fx + (my - hy) * fy < 0) { fx = -fx; fy = -fy; } }
+  if (opts.reverse) { fx = -fx; fy = -fy; }
   const invalid = [];
   const front = [];
   for (const t of L.tiles) { if (ground.some((u) => env.passable(t, u)) || !ground.length) front.push(t); else invalid.push(t); }
@@ -144,7 +148,10 @@ export function planDeployment(env, units, line, opts = {}) {
       // even share per hex (a long line gives one each, a short line stacks)
       const share = new Array(tiles.length).fill(0);
       let left = n;
-      const per = Math.ceil(n / tiles.filter((_, i) => cap[i] > 0).length);
+      const open = tiles.map((_, i) => i).filter((i) => cap[i] > 0);
+      const per = Math.ceil(n / open.length);
+      // fewer units than hexes: spaced evenly from one end of the line to the other
+      if (n <= open.length) { for (let k = 0; k < n; k++) share[open[Math.floor(((k + 0.5) * open.length) / n)]] = 1; left = 0; }
       for (let pass = 0; pass < 8 && left > 0; pass++) {
         for (let i = 0; i < tiles.length && left > 0; i++) {
           const room = Math.min(cap[i] - share[i], pass === 0 ? per : cap[i]);

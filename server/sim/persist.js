@@ -2,6 +2,7 @@
 // so live games survive deploys, restarts and crashes, and replays can be verified.
 import { Game } from './game.js';
 import { WRAP } from './hex.js';
+import { BUILDINGS, TECHS, POLICIES } from './constants.js';
 import { AI } from './ai.js';
 import { RebelAI } from './rebels.js';
 import { getNextArmyId, setNextArmyId } from './armies.js';
@@ -38,14 +39,13 @@ export function serializeGame(g) {
     if (c.colonistGoals) o.colonistGoals = { $map: [...c.colonistGoals.entries()] };
     return o;
   });
-  const geo = g.geology;
   const diplo = [];
   for (let a = 0; a < g.civs.length; a++) for (let b = a + 1; b < g.civs.length; b++) diplo.push([a, b, g.diplomacy.m[a][b]]);
   return {
     v: 2, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
-    // v2: wrapped topology, world style, Cataclysm settings (v1 saves were bounded and always cataclysmic)
-    wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style, cataclysm: g.cataclysm,
+    // v2: wrapped topology and world style
+    wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style,
     slots: g.slotsDef, world, roads: { ...g.roads.serialize(), traffic: mapOut(g.roads.traffic) },
     fieldworks: serializeFieldworks(g), logistics: { caches: [...(g.caches || new Map())], seq: g.convoySeq || 0 },
     formations: { list: [...(g.formations || new Map()).values()], nextId: g.nextFormationId || 0 },
@@ -53,8 +53,6 @@ export function serializeGame(g) {
     combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g), missiles: g.missiles || [], fallout: [...(g.fallout || new Map())], missileSeq: g.missileSeq || 1 },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
     civs, diplomacy: { pairs: diplo, nextProposal: g.diplomacy.nextProposal },
-    geology: { lastQuake: geo.lastQuake, nextDrought: geo.nextDrought, nextAvulsion: geo.nextAvulsion, hydroTimer: geo.hydroTimer, warned: mapOut(geo.warned),
-      riftFlooded: geo.riftFlooded, lastRiftMsg: geo.lastRiftMsg, riftAnnounced: geo.riftAnnounced, upliftPending: geo.upliftPending, lastUpliftMsg: geo.lastUpliftMsg, upliftTile: geo.upliftTile, faultMul: mapOut(geo.faultMul) },
   };
 }
 
@@ -63,9 +61,7 @@ const revive = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? (v.$set
 export function restoreGame(data) {
   const savedWrap = data.wrap === undefined ? false : !!data.wrap;
   if (savedWrap !== WRAP) throw new Error(`snapshot topology (${savedWrap ? 'wrapped' : 'bounded'}) does not match this worker`);
-  // v1 saves predate the peaceful default: they keep their destructive geology
-  const cataclysm = data.v >= 2 ? data.cataclysm : { on: true, freq: 1, sev: 1 };
-  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, restore: true, rebels: data.civs.some((c) => c.isRebel), cataclysm, style: data.style || data.worldStyle || null });
+  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, restore: true, rebels: data.civs.some((c) => c.isRebel), style: data.style || data.worldStyle || null });
   g.worldStyle = data.worldStyle ?? null;
   const w = g.world;
   if (w.elev.length !== data.size) throw new Error(`snapshot map size ${data.size} does not match this worker (${w.elev.length})`);
@@ -78,7 +74,8 @@ export function restoreGame(data) {
   setNextArmyId(Math.max(getNextArmyId(), data.nextArmyId || 1));
   g.roads.load(data.roads); g.roads.traffic = new Map(data.roads.traffic || []);
   g.units = new Map(data.units.map((u) => [u.id, u]));
-  g.buildings = new Map(data.buildings.map((b) => [b.id, b]));
+  // buildings whose type has since left the game (seismic stations, stabilizers) are dropped
+  g.buildings = new Map(data.buildings.filter((b) => BUILDINGS[b.type]).map((b) => [b.id, b]));
   g.cities = new Map(data.cities.map((c) => [c.id, { ...c, freight: c.capital ? Infinity : c.freight ?? 0 }]));
   g.ruins = new Map(data.ruins);
   const cb = data.combat || {};
@@ -97,6 +94,11 @@ export function restoreGame(data) {
     for (const k of CIV_ARRAYS) c[k] = fromB64(o.$arrays[k], c[k].constructor);
     // saves from before difficulty profile v2 keep the multipliers they were started with
     if (o.diffProfile === undefined && c.isAI && !c.isRebel) { c.diffProfile = 'legacy'; c.fairPlay = false; }
+    // technologies and policies that have since left the game are forgotten
+    if (c.techs instanceof Set) for (const t of [...c.techs]) if (!TECHS[t]) c.techs.delete(t);
+    if (c.policies instanceof Set) for (const t of [...c.policies]) if (!POLICIES[t]) c.policies.delete(t);
+    if (Array.isArray(c.queue)) c.queue = c.queue.filter((t) => TECHS[t]);
+    if (c.researching && !TECHS[c.researching]) c.researching = null;
     // saves from before per-technology progress: keep the active project's progress
     if (!c.techProgress) c.techProgress = {};
     if (c.researching && c.progress > 0 && c.techProgress[c.researching] == null) c.techProgress[c.researching] = c.progress;
@@ -108,10 +110,6 @@ export function restoreGame(data) {
   });
   for (const [a, b, r] of data.diplomacy.pairs) { g.diplomacy.m[a][b] = r; g.diplomacy.m[b][a] = r; }
   g.diplomacy.nextProposal = data.diplomacy.nextProposal;
-  const geo = g.geology, gd = data.geology;
-  Object.assign(geo, { lastQuake: gd.lastQuake, nextDrought: gd.nextDrought, nextAvulsion: gd.nextAvulsion, hydroTimer: gd.hydroTimer, warned: new Map(gd.warned),
-    riftFlooded: gd.riftFlooded, lastRiftMsg: gd.lastRiftMsg, riftAnnounced: gd.riftAnnounced, upliftPending: gd.upliftPending, lastUpliftMsg: gd.lastUpliftMsg, upliftTile: gd.upliftTile, faultMul: new Map(gd.faultMul) });
-  geo.recomputeStabilizers();
   g.rebuildTileUnits();
   return g;
 }

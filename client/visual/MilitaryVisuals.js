@@ -48,8 +48,8 @@ export function drawUnitBody(g, u, def, S, sel, heading, art = false) {
 // Overlays on top of atlas artwork: ownership ring (with a per-empire pattern when faction
 // markings are on, so colour is never the only cue), selection, health, supply, status, rank.
 function drawOverlays(g, u, def, S, sel, col, dark) {
-  const strategic = S.lod === 'strategic';
-  const r = strategic ? 8 : def.move === 'infantry' ? 9 : 11;
+  const strategic = S.lod !== 'micro' || !S.atlasReady;      // badge mode: the badge itself shows the owner
+  const r = strategic ? (def.move === 'infantry' ? 9 : 10.5) : def.move === 'infantry' ? 9 : 11;
   if (!strategic) {
     // a thin owner ring under the artwork (plus the tinted accent on the sprite itself)
     g.ellipse(0, 1, r, r * 0.8).stroke({ width: 1, color: col, alpha: 0.7 });

@@ -13,27 +13,30 @@ import { aiMissiles } from './missiles.js';
 import { Brain } from './ai2/index.js';
 import { visibleHostiles } from './ai2/Perception.js';
 
-const TECH_PREF = {
+// the opening is for building: no AI empire declares war or launches an offensive before this
+export const EARLY_PEACE = 900;
+
+export const TECH_PREF = {
   builder: ['agronomy', 'salvage_engineering', 'schooling', 'surveying', 'trade_networks', 'fortification', 'small_arms', 'seafaring',
-    'metallurgy', 'electrification', 'higher_education', 'seismology', 'petroleum', 'civil_engineering', 'munitions_industry', 'motorization', 'logistics', 'field_artillery',
-    'mechanized_agriculture', 'geoengineering', 'highways', 'mechanization', 'railways', 'aviation', 'corporate_charter', 'self_propelled_guns',
-    'computing', 'networked_command', 'federal_union', 'air_defense', 'drones', 'special_operations', 'precision_missiles',
+    'metallurgy', 'electrification', 'higher_education', 'petroleum', 'civil_engineering', 'munitions_industry', 'motorization', 'logistics', 'field_artillery',
+    'mechanized_agriculture', 'highways', 'mechanization', 'railways', 'aviation', 'corporate_charter', 'self_propelled_guns',
+    'computing', 'energy_shields', 'networked_command', 'federal_union', 'air_defense', 'drones', 'special_operations', 'precision_missiles',
     'fusion_power', 'continental_arcology', 'robotics', 'climate_engineering', 'exo_armor', 'strike_swarms'],
   warlord: ['small_arms', 'salvage_engineering', 'agronomy', 'fortification', 'surveying', 'schooling', 'trade_networks', 'seafaring',
-    'metallurgy', 'munitions_industry', 'petroleum', 'motorization', 'field_artillery', 'electrification', 'logistics', 'civil_engineering', 'higher_education', 'seismology',
-    'mechanization', 'self_propelled_guns', 'aviation', 'highways', 'railways', 'mechanized_agriculture', 'geoengineering', 'corporate_charter',
-    'computing', 'air_defense', 'drones', 'precision_missiles', 'special_operations', 'networked_command', 'federal_union',
+    'metallurgy', 'munitions_industry', 'petroleum', 'motorization', 'field_artillery', 'electrification', 'logistics', 'civil_engineering', 'higher_education',
+    'mechanization', 'self_propelled_guns', 'aviation', 'highways', 'railways', 'mechanized_agriculture', 'corporate_charter',
+    'computing', 'energy_shields', 'air_defense', 'drones', 'precision_missiles', 'special_operations', 'networked_command', 'federal_union',
     'robotics', 'strike_swarms', 'exo_armor', 'fusion_power', 'climate_engineering', 'continental_arcology'],
   merchant: ['agronomy', 'trade_networks', 'salvage_engineering', 'schooling', 'seafaring', 'surveying', 'small_arms', 'fortification',
-    'metallurgy', 'petroleum', 'electrification', 'motorization', 'higher_education', 'logistics', 'civil_engineering', 'munitions_industry', 'seismology', 'field_artillery',
-    'corporate_charter', 'highways', 'railways', 'mechanized_agriculture', 'mechanization', 'aviation', 'geoengineering', 'self_propelled_guns',
-    'computing', 'federal_union', 'networked_command', 'air_defense', 'drones', 'precision_missiles', 'special_operations',
+    'metallurgy', 'petroleum', 'electrification', 'motorization', 'higher_education', 'logistics', 'civil_engineering', 'munitions_industry', 'field_artillery',
+    'corporate_charter', 'highways', 'railways', 'mechanized_agriculture', 'mechanization', 'aviation', 'self_propelled_guns',
+    'computing', 'energy_shields', 'federal_union', 'networked_command', 'air_defense', 'drones', 'precision_missiles', 'special_operations',
     'fusion_power', 'continental_arcology', 'robotics', 'climate_engineering', 'strike_swarms', 'exo_armor'],
 };
 const POLICY_PREF = {
-  builder: ['rationing', 'research_grants', 'extraction_quotas', 'conservation', 'homesteading'],
+  builder: ['rationing', 'research_grants', 'extraction_quotas', 'homesteading'],
   warlord: ['conscription', 'extraction_quotas', 'total_war', 'fortification', 'industrial_planning'],
-  merchant: ['free_markets', 'rationing', 'research_grants', 'public_works', 'conservation'],
+  merchant: ['free_markets', 'rationing', 'research_grants', 'public_works'],
 };
 const GOV_PREF = { builder: ['federal', 'technocracy'], warlord: ['junta'], merchant: ['corporate', 'federal'] };
 const SPEC = { builder: ['balanced', 'research', 'agrarian'], warlord: ['industrial', 'fortress', 'balanced'], merchant: ['commercial', 'balanced', 'agrarian'] };
@@ -88,11 +91,11 @@ export class AI {
     const P = this.p;
     const score = {
       recovery: (starving ? 60 : 0) + (pop < 30 ? 30 : 0) + (g.time < 240 ? 40 : 0),
-      expansion: this.cities.length < ({ builder: 5, merchant: 4, warlord: 3 }[P] + Math.min(3, civ.age)) ? 35 + (P === 'builder' ? 10 : 0) : 0,
+      expansion: this.cities.length < ({ builder: 4, merchant: 3, warlord: 3 }[P] + Math.min(3, civ.age)) ? 35 + (P === 'builder' ? 10 : 0) : 0,
       technology: (techsLeft <= 2 ? 45 : 20) + (P === 'builder' ? 12 : 0) + (P === 'merchant' ? 6 : 0),
       defense: threats.length ? 40 + Math.min(40, threats.length * 4) : enemies.length && theirs > mine ? 35 : 0,
       modernization: civ.age >= 1 && army.some((u) => (g.defs.REFIT[u.type] || []).some((r) => UNITS[r.to].age <= civ.age)) ? 22 : 0,
-      offensive: enemies.length && mine > theirs * (P === 'warlord' ? 1.15 : 1.5) && army.length >= 8 ? 30 + (P === 'warlord' ? 25 : 0) + sk.level * 4 : 0,
+      offensive: g.time > EARLY_PEACE && enemies.length && mine > theirs * (P === 'warlord' ? 0.95 : 1.2) && army.length >= 6 ? 40 + (P === 'warlord' ? 25 : 0) + sk.level * 4 : 0,
       rebuild: lost ? 55 : 0,
       victory: civ.age >= 4 ? 50 : 0,
     };
@@ -165,7 +168,7 @@ export class AI {
 
   expand() {
     const g = this.g, civ = this.civ;
-    const want = { builder: 5, merchant: 4, warlord: 3 }[this.p] + Math.min(3, civ.age);
+    const want = { builder: 4, merchant: 3, warlord: 3 }[this.p] + Math.min(3, civ.age);
     const colonists = this.myUnits.filter((u) => u.type === 'colonist');
     const cap = g.capital(civ);
     const queued = [...g.buildings.values()].some((b) => b.owner === civ.id && b.queue.some((q) => q.unit === 'colonist'));
@@ -279,9 +282,9 @@ export class AI {
       if (o === civ || !o.alive || o.isRebel) continue;
       const r = g.diplomacy.rel(civ.id, o.id);
       if (r.state !== 'peace') continue;
-      const patience = { warlord: 300, builder: 900, merchant: 1100 }[this.p];
+      const patience = { warlord: 240, builder: 600, merchant: 720 }[this.p];
       const mine = this.strength(army), theirs = this.observed(o);
-      if (g.time - r.since > patience && mine > theirs * (this.p === 'warlord' ? 1.3 : 1.8) && army.length >= desired * 0.8 && r.attitude < 30) {
+      if (g.time > EARLY_PEACE && g.time - r.since > patience && mine > theirs * (this.p === 'warlord' ? 1.1 : 1.4) && army.length >= desired * 0.7 && r.attitude < 30) {
         this.cmd({ c: 'diplo', to: o.id, action: 'war' });
         break;
       }

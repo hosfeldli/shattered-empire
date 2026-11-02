@@ -24,7 +24,7 @@ export class CityVisuals {
     for (const [id, rec] of this.cities) if (!S.cities.has(id)) { rec.g.destroy(); this.cities.delete(id); }
     for (const c of S.cities.values()) {
       const era = this.eraOf(c.o);
-      const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, c.ti || 0, S.buildingsVersion, S.ruinsVersion, S.urbanVersion || 0, S.bordersVersion || 0].join('|');
+      const key = [c.o, Math.floor(c.pop / 3), Math.round((c.dmg || 0) / 10), era, c.r, c.ti || 0, S.buildingsVersion, S.ruinsVersion, S.urbanVersion || 0, S.bordersVersion || 0, (S.roadVersion || 0) >> 3].join('|');
       let rec = this.cities.get(c.id);
       if (rec && rec.key === key) continue;
       if (!rec) { rec = { g: new PIXI.Graphics() }; v.districtLayer.addChild(rec.g); v.mirrorOf?.(rec.g); this.cities.set(c.id, rec); }
@@ -40,13 +40,16 @@ export class CityVisuals {
     const tier = c.ti || 0;                                  // Town 0, City 1, Metropolis 2, Megacity 3
     const rad = Math.min(4, (c.r || 3) + (tier >= 2 ? 1 : 0));
     const cand = [], rural = [];
-    for (let q = -rad - 1; q <= rad + 1; q++) for (let r = -rad - 1; r <= rad + 1; r++) {
+    const ribbon = [];          // road hexes beyond the district: where the town spills out along its roads
+    const reach = rad + 2 + Math.min(4, Math.floor((c.pop || 0) / 60) + tier);
+    for (let q = -reach; q <= reach; q++) for (let r = -reach; r <= reach; r++) {
       const r0 = (c.t / v.W) | 0, rr2 = r0 + r; if (rr2 < 0 || rr2 >= v.H) continue;
       let q2 = (c.t % v.W) + q; if (v.wrap) q2 = (q2 + v.W) % v.W; else if (q2 < 0 || q2 >= v.W) continue;
       const t = rr2 * v.W + q2;
-      const d = hexDist(v, c.t, t); if (d < 1 || d > rad + 1) continue;
+      const d = hexDist(v, c.t, t); if (d < 1 || d > reach) continue;
       const ter = S.terr[t];
       if (ter === 255 || ter <= 1 || ter >= 9 || S.owner[t] !== c.o || S.buildingTiles.has(t) || S.ruins.has(t)) continue;
+      if (d > rad + 1) { if (S.road[t]) ribbon.push([t, d]); continue; }
       if (d <= rad) cand.push([t, d + h(c.id, t) * 0.6]); else rural.push(t);
     }
     cand.sort((a, b) => a[1] - b[1]);
@@ -61,12 +64,16 @@ export class CityVisuals {
     const dmg = (c.dmg || 0) / 100;
     const GROUND = [0x6b5a44, 0x6a5a4c, 0x77756f, 0x5d6266, 0x8a9396];
     const ROAD = [0x8a7656, 0x6e655a, 0x56585a, 0x45494c, 0x9aa3a6];
-    // the urban ground: a paved or trodden plate on every developed hex, so a district reads as one
-    // continuous place rather than houses floating on fields
+    // the urban ground: soft, overlapping patches of yard and paving that thicken toward the middle
+    // of each developed hex and feather out over its edges (the terrain beneath is already cleared
+    // and worn), so a district reads as one continuous place grown into the land, never as plates
+    const gA = (era === 0 ? 0.1 : 0.14) + 0.025 * Math.min(3, tier);
     for (const t of hexes) {
-      const pts = []; const x = X(t), y = v.cy[t];
-      for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3; pts.push(x + Math.cos(a) * 11.2, y + Math.sin(a) * 11.2); }
-      g.poly(pts).fill({ color: GROUND[Math.min(4, era)], alpha: 0.55 + 0.1 * Math.min(3, tier) });
+      const x = X(t), y = v.cy[t];
+      for (let k = 0; k < 4; k++) {
+        const a = h(c.id, t, 200 + k) * 6.283, d = k ? 3 + h(c.id, t, 210 + k) * 3 : 0, rr = (k ? 6.5 : 10.5) + h(c.id, t, 220 + k) * 2;
+        g.ellipse(x + Math.cos(a) * d, y + Math.sin(a) * d * 0.85, rr, rr * 0.86).fill({ color: GROUND[Math.min(4, era)], alpha: gA });
+      }
     }
     // streets: between developed hexes and to the town centre, then a small grid inside each hex
     for (const t of [c.t, ...hexes]) for (let d = 0; d < 3; d++) {
@@ -74,7 +81,8 @@ export class CityVisuals {
       rec.streets.push([X(t), v.cy[t], X(n), v.cy[n]]);
     }
     // the civic centre: a paved square round the town hall, with market stalls on market days
-    { const cx = X(c.t), cy = v.cy[c.t]; g.ellipse(cx, cy + 1, 13.5, 11.5).fill({ color: [0x8a7a62, 0x9a8e7c, 0xa8a49a, 0x9aa4aa, 0xd2d8d8][Math.min(4, era)], alpha: 0.75 });
+    { const cx = X(c.t), cy = v.cy[c.t], sq = [0x8a7a62, 0x9a8e7c, 0xa8a49a, 0x9aa4aa, 0xd2d8d8][Math.min(4, era)];
+      for (const [rx, a] of [[14, 0.18], [11.5, 0.22], [9, 0.3]]) g.ellipse(cx, cy + 1, rx, rx * 0.85).fill({ color: sq, alpha: a });
       if (c.pop > 12) for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2 + h(c.id, 9), r = 11; g.rect(cx + Math.cos(a) * r - 1, cy + Math.sin(a) * r * 0.82 - 0.8, 2, 1.6).fill({ color: [0xc0503a, 0xd8b04a, 0x3a7ab0][k % 3] }); } }
     const inner = [];
     for (const t of hexes) {
@@ -84,6 +92,19 @@ export class CityVisuals {
     rec.streets.push(...inner);
     for (const sx of rec.streets) g.moveTo(sx[0], sx[1]).lineTo(sx[2], sx[3]);
     if (rec.streets.length) g.stroke({ width: era >= 2 ? 2 : 1.6, color: ROAD[Math.min(4, era)], alpha: 0.9 });
+    // trees kept along the streets and in back yards: canopy over the ground, shadow to the south-east
+    const trees = [];
+    for (const t of hexes) {
+      const x = X(t), y = v.cy[t];
+      for (let k = 0; k < 5; k++) {
+        if (h(c.id, t, 400 + k) < 0.35 + 0.08 * tier) continue;              // denser cities keep fewer
+        const a = h(c.id, t, 410 + k) * 6.283, d = 6.5 + h(c.id, t, 420 + k) * 4;
+        trees.push([x + Math.cos(a) * d, y + Math.sin(a) * d * 0.88, 1.1 + h(c.id, t, 430 + k) * 0.9]);
+      }
+    }
+    for (const [tx, ty, tr] of trees) g.ellipse(tx + tr * 0.6, ty + tr * 0.55, tr, tr * 0.7).fill({ color: 0x000000, alpha: 0.2 });
+    for (const [tx, ty, tr] of trees) g.circle(tx, ty, tr).fill({ color: 0x46703a });
+    for (const [tx, ty, tr] of trees) g.circle(tx - tr * 0.3, ty - tr * 0.35, tr * 0.45).fill({ color: 0x6f9a52, alpha: 0.8 });
     // blocks: rows of buildings in the four quarters between the streets, taller toward the centre
     // and as the city climbs tiers; industry hugs factories, shops ring the centre
     const per = Math.min(4, 1 + Math.floor(c.pop / 40) + tier);
@@ -119,6 +140,25 @@ export class CityVisuals {
           if (tall > 3.2) g.rect(bx - w / 2 + 0.5, by - hh2 / 2 + 0.6, Math.max(0.6, w - 1), 0.5).fill({ color: era >= 3 ? 0x9fd4e8 : 0x2a2a2a, alpha: 0.55 });   // rooftop plant / glazing
           rec.blocks.push({ x: bx, y: by, w, h: hh2, type, tall });
         }
+      }
+    }
+    // ribbon development: houses with yards line the roads out of town, thinning with distance and
+    // thickening as the city grows, so neighbouring towns reach toward each other along their roads
+    for (const [t, d] of ribbon) {
+      if (S.urban?.[t]) continue;
+      const k = Math.max(0, 1 - (d - rad - 1) / (reach - rad)) * Math.min(1, 0.25 + (c.pop || 0) / 120 + tier * 0.2);
+      const x = X(t), y = v.cy[t];
+      const n = Math.round(k * 4);
+      if (!n) continue;
+      g.ellipse(x, y + 0.5, 8 + n, 6.5 + n * 0.6).fill({ color: GROUND[Math.min(4, era)], alpha: 0.08 + 0.03 * n });
+      for (let i = 0; i < n; i++) {
+        const a = h(c.id, t, 600 + i) * 6.283, rr = 4.5 + h(c.id, t, 610 + i) * 3.5;
+        const hx = x + Math.cos(a) * rr, hy = y + Math.sin(a) * rr * 0.85, w = 2.4 + h(t, i, 620) * 1.2, hh2 = 1.8 + h(t, i, 621) * 0.8;
+        const bs = STYLE[Math.min(4, Math.max(0, era - (h(c.id, t, 630 + i) < 0.5 ? 1 : 0)))];
+        g.rect(hx - w / 2 + 0.7, hy - hh2 / 2 + 0.6, w, hh2).fill({ color: 0x000000, alpha: 0.2 });
+        g.rect(hx - w / 2, hy - hh2 / 2, w, hh2).fill({ color: bs.res[(i + t) % bs.res.length] }).stroke({ width: 0.3, color: 0x1b1b1b, alpha: 0.5 });
+        g.rect(hx - w / 2, hy - hh2 / 2, w, Math.min(0.7, hh2 * 0.3)).fill({ color: 0xffffff, alpha: 0.14 });
+        if (h(c.id, t, 640 + i) < 0.45) { const gx = hx + (h(t, i, 650) - 0.5) * 4, gy = hy + 2.4; g.circle(gx, gy, 1.1).fill({ color: 0x46703a }); }
       }
     }
     // the countryside the city feeds on: farmsteads and small fields on owned land around it
