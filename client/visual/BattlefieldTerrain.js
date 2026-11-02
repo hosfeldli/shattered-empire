@@ -26,6 +26,16 @@ export function drawBattlefieldTerrain(g, v, S, X, ok, wetAt) {
       const nb = v.nb(t, d); const s2 = nb >= 0 ? I.get(nb) : 0; if (!s2) continue;
       const nx = v.near ? v.near(X[nb], x) : X[nb], ny = v.cy[nb], mx = (x + nx) / 2, my = (y + ny) / 2, s = Math.min(st, s2);
       g.ellipse(mx, my, 9 + s * 2, 6 + s * 1.5).fill({ color: MUD[Math.min(2, s - 1)], alpha: 0.12 + s * 0.05 });
+      // fought-over ground joins up into one dug line: a zig-zag scrape from hex to hex with its
+      // thrown-up spoil and rubble along it, so the damage reads as continuous trench and wreckage
+      if (s >= 2) {
+        const dx = nx - x, dy = ny - y, L = Math.hypot(dx, dy) || 1, px = -dy / L, py = dx / L, n = 6;
+        g.moveTo(x, y); for (let k = 1; k <= n; k++) { const o = k === n ? 0 : (k % 2 ? 1.6 : -1.6); g.lineTo(x + dx * k / n + px * o, y + dy * k / n + py * o); }
+        g.stroke({ width: 3.4, color: 0x6e5c46, alpha: 0.55 });
+        g.moveTo(x, y); for (let k = 1; k <= n; k++) { const o = k === n ? 0 : (k % 2 ? 1.6 : -1.6); g.lineTo(x + dx * k / n + px * o, y + dy * k / n + py * o); }
+        g.stroke({ width: 1.6, color: 0x231b14, alpha: 0.85 });
+        for (let k = 0; k < 3 + s; k++) { const f = h(t, nb, 70 + k), side = h(t, nb, 80 + k) < 0.5 ? -1 : 1; g.rect(x + dx * f + px * side * (2.6 + h(t, nb, 90 + k) * 2) - 0.7, y + dy * f + py * side * (2.6 + h(t, nb, 90 + k) * 2) - 0.5, 1.4 + h(t, k, 95) * 0.8, 1).fill({ color: k % 3 ? 0x6b6258 : 0x8a7e6e, alpha: 0.95 }); }
+      }
     }
     // shattered woodland: the canopy is gone under the mud; broken trunks remain
     if (S.terr[t] === 4 && st >= 2) {

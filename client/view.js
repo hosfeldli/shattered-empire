@@ -6,7 +6,7 @@ import { lodFor, h as hh, frac } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
 import { UnitAtlas, attachArt, updateArt } from './visual/UnitSpriteManager.js';
 import { drawFieldworks } from './visual/FieldworksVisuals.js';
-import { drawBuildingArt, waterDir, shade, CAT_COL } from './visual/BuildingArt.js';
+import { drawBuildingArt, waterDir, shade, CAT_COL, drawEmblem } from './visual/BuildingArt.js';
 import { paintTerrainDetail, smoothColor } from './visual/TerrainMaterials.js';
 import { CombatEffects } from './visual/combat/CombatEffects.js';
 import { nearestCopy, tilePolyline } from './visual/WorldWrapGeometry.js';
@@ -16,8 +16,10 @@ import { CloudSystem } from './visual/CloudSystem.js';
 import { WeatherEffects } from './visual/WeatherEffects.js';
 import { OceanSurface } from './visual/OceanSurface.js';
 import { WaterShader } from './visual/WaterShader.js';
+import { BattleSmoke } from './visual/BattleSmoke.js';
 import { DistrictMerge } from './visual/DistrictMerge.js';
 import { lineAcross } from '/shared/deploy.js';
+import { drawResIcon } from './visual/ResourceIcons.js';
 
 export const R = 12;
 const R_HEX = 12;
@@ -86,6 +88,8 @@ export class View {
     this.oceanG = L('g'); this.wetLayer = L(); this.world.addChildAt(this.oceanG, this.world.getChildIndex(this.overlayLayer)); this.world.addChildAt(this.wetLayer, this.world.getChildIndex(this.overlayLayer));
     this.cloudShadow = L(); this.world.addChildAt(this.cloudShadow, this.world.getChildIndex(this.cfxG));
     this.world.addChildAt(this.shieldG, this.world.getChildIndex(this.smokeG) + 1);
+    this.smokeLayer = L(); this.world.addChildAt(this.smokeLayer, this.world.getChildIndex(this.smokeG) + 1);
+    this.smoke = new BattleSmoke(this, this.S, this.smokeLayer);
     this.world.addChildAt(this.motionG, this.world.getChildIndex(this.bLayer) + 1);
     this.precipG = L('g'); this.fogLayer = L(); this.skyLayer = L();
     for (const o of [this.fogLayer, this.precipG, this.skyLayer]) this.world.addChildAt(o, this.world.getChildIndex(this.overlay));
@@ -117,22 +121,30 @@ export class View {
     this.merge = new DistrictMerge(this, this.S, this.mergeG);
     for (const g of [this.borders, this.front, this.ruinsG, this.fwG, this.decalG, this.wreckG, this.mergeG]) this.mirrorOf(g);
     this.chunks = [];
+    // terrain texture density: sharper on smaller maps and better graphics settings (memory grows
+    // with the square of it)
+    { const gfx = this.S.prefs?.graphics || 'medium', big = this.W > 192 ? 1.5 : this.W > 128 ? 2 : 2.5;
+      this.texScale = gfx === 'low' ? 1 : gfx === 'medium' ? Math.min(2, big) : big; }
     const ccols = Math.ceil(this.W / CH), crows = Math.ceil(this.H / CH);
     for (let cr = 0; cr < crows; cr++) for (let cc = 0; cc < ccols; cc++) {
       const q0 = cc * CH, r0 = cr * CH;
       const x0 = Math.floor(R * SQ3 * q0) - 2, y0 = Math.floor(R * 1.5 * r0) - 2;
       const x1 = Math.ceil(R * SQ3 * (Math.min(this.W, q0 + CH) + 0.5)) + 4, y1 = Math.ceil(R * 1.5 * Math.min(this.H, r0 + CH) + R) + 4;
-      const mk = () => { const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; return c; };
-      const tc = mk(), oc = mk();
-      const tctx = tc.getContext('2d'); if (!this.wrap) { tctx.fillStyle = UNKNOWN; tctx.fillRect(0, 0, tc.width, tc.height); } tctx.translate(-x0, -y0);   // wrapped: margins stay transparent so mirrors overlap cleanly
+      // the terrain is painted at several pixels per world unit so it stays crisp zoomed in;
+      // the overlay (lens tints, fog) is soft by nature and stays at one
+      const K = this.texScale;
+      const mk = (k) => { const c = document.createElement('canvas'); c.width = Math.ceil((x1 - x0) * k); c.height = Math.ceil((y1 - y0) * k); return c; };
+      const tc = mk(K), oc = mk(1);
+      const tctx = tc.getContext('2d'); if (!this.wrap) { tctx.fillStyle = UNKNOWN; tctx.fillRect(0, 0, tc.width, tc.height); } tctx.scale(K, K); tctx.translate(-x0, -y0);   // wrapped: margins stay transparent so mirrors overlap cleanly
       const octx = oc.getContext('2d'); octx.translate(-x0, -y0);
       const tTex = PIXI.Texture.from(tc), oTex = PIXI.Texture.from(oc);
-      const ts = new PIXI.Sprite(tTex), os = new PIXI.Sprite(oTex);
+      if (K > 1) { tTex.source.autoGenerateMipmaps = true; tTex.source.style.mipmapFilter = 'linear'; }
+      const ts = new PIXI.Sprite(tTex), os = new PIXI.Sprite(oTex); ts.scale.set(1 / K);
       ts.position.set(x0, y0); os.position.set(x0, y0);
       this.terrainLayer.addChild(ts); this.overlayLayer.addChild(os);
       // wrapped world: the same textures drawn one period east and west
       const mirrors = [];
-      if (this.wrap) for (const k of [-1, 1]) { const mt = new PIXI.Sprite(tTex), mo = new PIXI.Sprite(oTex); mt.position.set(x0 + k * this.P, y0); mo.position.set(x0 + k * this.P, y0); this.terrainLayer.addChild(mt); this.overlayLayer.addChild(mo); mirrors.push({ k, mt, mo }); }
+      if (this.wrap) for (const k of [-1, 1]) { const mt = new PIXI.Sprite(tTex), mo = new PIXI.Sprite(oTex); mt.scale.set(1 / K); mt.position.set(x0 + k * this.P, y0); mo.position.set(x0 + k * this.P, y0); this.terrainLayer.addChild(mt); this.overlayLayer.addChild(mo); mirrors.push({ k, mt, mo }); }
       this.chunks.push({ x0, y0, x1, y1, tctx, octx, tTex, oTex, ts, os, mirrors, tDirty: false, oDirty: false });
     }
     this.ccols = ccols;
@@ -544,7 +556,8 @@ export class View {
         g.moveTo(-0.5, 0).lineTo(-0.5 + ux * 8, -2 + uy * 6).moveTo(0.6, 0.4).lineTo(0.6 + ux * 8, -1.6 + uy * 6).stroke({ width: 1.2, color: 0x2f3632 });
       }
       // operational zoom: a compact category marker in the corner (industry, power, science…)
-      if (S.lod === 'city' && b.ty !== 'house' && b.ty !== 'town' && !planned) g.circle(R0 - 2.5, -R0 + 3.5, 1.9).fill({ color: CAT_COL[def.cat] || 0x888888 }).stroke({ width: 0.6, color: 0x0b1518 });
+      // what kind of building it is: a sign in its category's colour with its pictogram
+      if (S.lod !== 'strategic' && b.ty !== 'house' && b.ty !== 'town' && !planned) drawEmblem(g, b.ty, def.cat, R0 - 2.2, -R0 + 3.2, S.lod === 'micro' ? 2.6 : 3.4);
     }
     // status tag above the building
     // mid zoom: a pictogram badge; close up: pictogram and words
@@ -553,6 +566,30 @@ export class View {
       if (!s.tag) { s.tag = this.makeTag(s.labels, 5.6); s.tag.icon = new PIXI.Graphics(); s.tag.addChild(s.tag.icon); s.tag.position.set(0, -13); }
       this.setStatusTag(s.tag, st, S.lod !== 'micro'); s.tag.visible = true;
     } else if (s.tag) s.tag.visible = false;
+    // what it makes: a chip under each producing building (pictures zoomed out, rates close up)
+    const outs = !city && b.o === S.civId && b.pr?.length && S.lod !== 'strategic' && S.prefs?.labels !== 'off' ? b.pr.slice().sort((x, y) => y[1] - x[1]).slice(0, 3) : null;
+    if (outs) {
+      const okey = outs.map(([k, r]) => k + (S.lod === 'micro' ? r.toFixed(1) : '')).join('|') + S.lod;
+      if (!s.outTag) { s.outTag = new PIXI.Container(); s.outTag.g = new PIXI.Graphics(); s.outTag.addChild(s.outTag.g); s.outTag.texts = []; s.labels.addChild(s.outTag); s.outTag.position.set(0, 12.5); }
+      if (s.outTag.key !== okey) {
+        s.outTag.key = okey;
+        const g = s.outTag.g, close = S.lod === 'micro'; g.clear();
+        for (const t of s.outTag.texts) t.visible = false;
+        const w = outs.length * (close ? 17 : 8) + 3;
+        g.roundRect(-w / 2, -4.6, w, 9.2, 4.6).fill({ color: 0x0e1517, alpha: 0.78 }).stroke({ width: 0.6, color: 0xe8dcb8, alpha: 0.35 });
+        outs.forEach(([k, r], i) => {
+          const x0 = -w / 2 + 1.5 + i * (close ? 17 : 8) + 4;
+          drawResIcon(g, k, x0, 0, 0.32);
+          if (close) {
+            let t = s.outTag.texts[i];
+            if (!t) { t = new PIXI.Text({ text: '', style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 6.5, fontWeight: '700', fill: 0xf3eedf } }); t.anchor.set(0, 0.5); t.resolution = 4; s.outTag.addChild(t); s.outTag.texts[i] = t; }
+            t.text = '+' + (r >= 10 ? r.toFixed(0) : r.toFixed(1)); t.position.set(x0 + 3.6, 0.2); t.visible = true;
+          }
+        });
+      }
+      s.outTag.visible = true;
+      s.outTag.scale.set(Math.min(2, Math.max(0.8, 1.2 / this.cam.z)));
+    } else if (s.outTag) s.outTag.visible = false;
     // city banner: name, population, capital star, and its troubles in words
     if (city) {
       if (!s.banner) { s.banner = this.makeTag(s.labels, 9, 'IM Fell English SC, serif'); s.banner.position.set(0, 16); s.chips = this.makeTag(s.labels, 6); s.chips.position.set(0, 25); }
@@ -560,7 +597,9 @@ export class View {
       this.setTag(s.banner, `${city.cap ? '★ ' : ''}${city.n}  ${Math.floor(city.pop)}`, 0xf3eedf, shade(col, 0.42), { edge: col });
       const own = city.o === S.civId || S.spectator;
       const troubles = own ? [city.fs && 'STARVING', city.iso && 'CUT OFF', city.unrest && 'UNREST', city.dmg >= 30 && 'DAMAGED'].filter(Boolean) : [];
-      const gov = own && city.gov?.enabled ? 'GOVERNOR · ' + (S.defs.GOVERNOR_SPECS[city.gov.spec]?.name || '').toUpperCase() : '';
+      // the governor's current aim in a few words (what it is building or why it is waiting)
+      const gnow = city.gov?.now ? city.gov.now.replace(/^Building /, 'BUILDING ').replace(/^Expanding the /, 'EXPANDING ').replace(/^Upgrading /, 'UPGRADING ').replace(/^Holding off on /, 'WAITING: ') : '';
+      const gov = own && city.gov?.enabled ? (gnow ? '⚙ ' + (gnow.length > 46 ? gnow.slice(0, 44) + '…' : gnow).toUpperCase() : 'GOVERNOR · ' + (S.defs.GOVERNOR_SPECS[city.gov.spec]?.name || '').toUpperCase()) : '';
       // zoomed out, construction is aggregated per city instead of one bar per site
       const sites = own && S.lod === 'strategic' ? (this.consCount?.get(city.id) || 0) : 0;
       if (sites && !troubles.length) troubles.push(`⚒ ${sites} UNDER CONSTRUCTION`);
@@ -680,6 +719,7 @@ export class View {
       if (!s.visible) continue;
       s.scale.set(S.lod === 'strategic' ? Math.min(2.6, 1.15 / z) : 1);   // pictograms stay readable zoomed out
       if (s.tag) s.tag.scale.set(tagS);
+      if (s.outTag) s.outTag.scale.set(Math.min(2, Math.max(0.8, 1.2 / z)));
       if (s.banner) { s.banner.scale.set(ts); s.chips.scale.set(ts); s.banner.y = 11 + 6 * ts; s.chips.y = s.banner.y + 10.5 * ts; }
       if (s.tag) s.tag.y = -10 - 4 * tagS;
     }
@@ -767,7 +807,7 @@ export class View {
         s.visible = this.inView(s.dx, s.dy, 20);
         if (!s.visible) return;
         const sel = S.selUnits.has(u.id);
-        updateArt(s, u, def, S, s.heading, S.lod !== 'micro');
+        updateArt(s, u, def, S, s.heading, S.lod === 'strategic');
         this.turret(s, u, def, dt);
         const key = [u.hp, u.sup, u.flags, sel, u.owner, S.lod, u.vet, u.det, S.prefs?.factionPattern, S.prefs?.highContrast].join('|');
         if (key !== s.key) { s.key = key; drawUnitBody(s.body, u, def, S, sel, s.heading, true); }
@@ -787,7 +827,7 @@ export class View {
     this.ambient.frame(dt, this.t);
     this.combat.frame(dt, this.t);
     this.resMarkers.frame(this.t);
-    this.water.frame(this.t); this.ocean.frame(this.t); this.clouds.frame(this.t, dt); this.weatherFx.frame(this.t, dt);
+    this.water.frame(this.t); this.smoke.frame(this.t, dt); this.ocean.frame(this.t); this.clouds.frame(this.t, dt); this.weatherFx.frame(this.t, dt);
     this.audio?.frame(dt);
     this.drawOverlay();
     this.tacT = (this.tacT || 0) + dt; if (this.tacT > 0.25) { this.tacT = 0; this.drawTactical(); }
@@ -818,7 +858,13 @@ export class View {
         const by = y - ({ comms_tower: 20, airfield: 9, missile_silo: 8, aa_battery: 6 }[b.ty] || 8);
         g.circle(x + (b.ty === 'airfield' ? 5 : 0), by, on ? 1.2 : 0.7).fill({ color: on ? 0xff4a3a : 0x6a2a24, alpha: on ? 1 : 0.8 });
         if (on) S.lightsList.push([x, by, 6, 0xff4a3a]);
-      } else if (b.ty === 'shield_generator') {
+      }
+      // what it makes, floating up now and then (the way gathered goods do in a builder game)
+      if (b.o === S.civId && b.pr?.length) {
+        const ph = frac(t / 3.4 + (b.id % 17) * 0.137);
+        if (ph < 0.55) { const k = ph / 0.55; drawResIcon(g, b.pr[0][0], x + 5, y - 9 - k * 12, 0.45, Math.sin(k * Math.PI) * 0.85); }
+      }
+      if (b.ty === 'shield_generator') {
         const k = 0.5 + 0.5 * Math.sin(t * 2.4 + b.id);
         g.circle(x, y - 10, 3 + k * 1.6).fill({ color: 0x9ff0ff, alpha: 0.18 + 0.15 * k });
       }

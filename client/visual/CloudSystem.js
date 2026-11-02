@@ -36,7 +36,7 @@ uniform float uDetail;
 uniform float uScale;
 uniform float uPeriod;
 uniform float uWorldP;
-uniform vec2 uDrift;
+uniform vec2 uOffset;
 uniform vec4 uMapWx;
 uniform vec4 uMapMask;
 uniform vec4 uCy0;
@@ -79,7 +79,7 @@ void main() {
   float cover = clamp(wx.r * 1.05 + wx.g * 0.45, 0.0, 1.0);
   if (cover < 0.03 || mask < 0.01) { finalColor = vec4(0.0); return; }
   vec2 sp = swirl(swirl(swirl(swirl(w, uCy0), uCy1), uCy2), uCy3);
-  vec2 p = sp / uScale - uDrift * uTime;
+  vec2 p = sp / uScale - uOffset;
   float t = uTime * 0.025;
   vec2 q = vec2(fbm(p + vec2(0.0, t)), fbm(p + vec2(5.2, 1.3) - vec2(t, 0.0)));
   float n, lit = 0.0;
@@ -136,7 +136,7 @@ export class CloudSystem {
         uTime: { value: 0, type: 'f32' }, uBlend: { value: 1, type: 'f32' }, uAlpha: { value: 0.5, type: 'f32' },
         uShadow: { value: shadow ? 1 : 0, type: 'f32' }, uDetail: { value: 5, type: 'f32' },
         uScale: { value: scale, type: 'f32' }, uPeriod: { value: period, type: 'f32' }, uWorldP: { value: P, type: 'f32' },
-        uDrift: { value: new Float32Array(2), type: 'vec2<f32>' },
+        uOffset: { value: new Float32Array(2), type: 'vec2<f32>' },
         uMapWx: { value: new Float32Array(4), type: 'vec4<f32>' }, uMapMask: { value: new Float32Array(4), type: 'vec4<f32>' },
         uCy0: { value: new Float32Array(4), type: 'vec4<f32>' }, uCy1: { value: new Float32Array(4), type: 'vec4<f32>' },
         uCy2: { value: new Float32Array(4), type: 'vec4<f32>' }, uCy3: { value: new Float32Array(4), type: 'vec4<f32>' },
@@ -151,12 +151,13 @@ export class CloudSystem {
   // the newest weather into the textures (the previous one kept for a smooth 5-second blend)
   upload() {
     const f = this.f;
-    this.prev.ctx.drawImage(this.cur.c, 0, 0);
-    const c = f.cur, img = this.cur.ctx.createImageData(c.cw, c.ch), d = img.data;
-    for (let i = 0; i < c.cw * c.ch; i++) { d[i * 4] = c.cloud[i]; d[i * 4 + 1] = c.storm[i]; d[i * 4 + 2] = c.rain[i]; d[i * 4 + 3] = 255; }
-    this.cur.ctx.putImageData(img, 0, 0);
-    if (this.wxVer < 0) this.prev.ctx.drawImage(this.cur.c, 0, 0);
-    this.cur.tex.source.update(); this.prev.tex.source.update();
+    const put = (dst, c) => {
+      const img = dst.ctx.createImageData(c.cw, c.ch), d = img.data;
+      for (let i = 0; i < c.cw * c.ch; i++) { d[i * 4] = c.cloud[i]; d[i * 4 + 1] = c.storm[i]; d[i * 4 + 2] = c.rain[i]; d[i * 4 + 3] = 255; }
+      dst.ctx.putImageData(img, 0, 0); dst.tex.source.update();
+    };
+    // previous = what was on screen when this reading arrived (the field blends from it)
+    put(this.prev, f.prev || f.cur); put(this.cur, f.cur);
   }
   // explored land (so the sky never gives away what lies under unexplored ground)
   uploadMask() {
@@ -177,9 +178,13 @@ export class CloudSystem {
     const [x0, y0, x1, y1] = v.vr, z = v.cam.z, strategic = S.lod === 'strategic';
     const c = f.cur, cell = c.cell, cw = c.cw, ch = c.ch, Rq = R * SQ3;
     // overhead cloud thins as you zoom in; shadows stay
-    const skyA = (strategic ? 0.8 : Math.max(0.14, 0.62 - (z - 0.6) * 0.42)) * (mode === 'reduced' ? 0.6 : 1);
+    const skyA = (strategic ? 0.8 : Math.max(0.26, 0.78 - (z - 0.6) * 0.34)) * (mode === 'reduced' ? 0.6 : 1);
     const shA = 0.3 * (mode === 'reduced' ? 0.7 : 1);
-    const wind = S.wind || [5, -1];
+    // the sky drifts by the wind integrated over time (never wind × elapsed time, which jumps the
+    // whole sky whenever the wind changes); the wind itself eases toward each new reading
+    const wind = S.wind || [5, -1], sw = this.wind || (this.wind = [...wind]), ke = Math.min(1, dt * 0.4);
+    sw[0] += (wind[0] - sw[0]) * ke; sw[1] += (wind[1] - sw[1]) * ke;
+    const off = this.off || (this.off = [0, 0]); off[0] += sw[0] * 0.0009 * dt; off[1] += sw[1] * 0.0009 * dt;
     const cx = (x0 + x1) / 2, P = v.P;
     const cys = f.cyclones(), sc = cell * Rq;
     for (const [m, alpha, ox, oy] of [[this.sky, skyA, 0, 0], [this.shadow, shA, 34, 46]]) {
@@ -190,7 +195,7 @@ export class CloudSystem {
       m.position.set(rx, ry); m.scale.set(rw, rh);
       u.uRect[0] = rx - ox; u.uRect[1] = ry - oy; u.uRect[2] = rw; u.uRect[3] = rh;
       u.uTime = t; u.uBlend = f.blend(); u.uAlpha = alpha; u.uDetail = mode === 'reduced' ? 3 : m === this.shadow ? 4 : 5;
-      u.uDrift[0] = wind[0] * 0.0009; u.uDrift[1] = wind[1] * 0.0009;
+      u.uOffset[0] = off[0]; u.uOffset[1] = off[1];
       u.uMapWx[0] = 1 / (Rq * cell * cw); u.uMapWx[1] = -0.5 / (cell * cw); u.uMapWx[2] = 1 / (R * 1.5 * cell * ch); u.uMapWx[3] = -R / (R * 1.5 * cell * ch);
       u.uMapMask[0] = 1 / (Rq * v.W); u.uMapMask[1] = 0; u.uMapMask[2] = 1 / (R * 1.5 * v.H); u.uMapMask[3] = (-R / (R * 1.5) + 0.5) / v.H;
       ['uCy0', 'uCy1', 'uCy2', 'uCy3'].forEach((k, i) => {

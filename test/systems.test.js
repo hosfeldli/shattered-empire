@@ -14,7 +14,7 @@ import { disk, dist, NB } from '../server/sim/hex.js';
 const newGame = (seed = 7, extra = {}) => new Game({ id: 't' + seed + Math.random(), seed, slots: [{ human: true }, { personality: 'builder' }], rebels: false, ...extra });
 const run = (g, ticks) => { for (let i = 0; i < ticks; i++) { g.tick(); g.outbox.length = 0; } };
 // players' cities run themselves by default; tests of the raw rules switch their governors off
-const manual = (g) => { for (const c of g.cities.values()) if (c.governor && !g.civs[c.owner].isAI) { c.governor.enabled = false; c.governor.level = 'off'; } };
+const manual = (g) => { g.autonomyOff = true; for (const c of g.cities.values()) if (c.governor && !g.civs[c.owner].isAI) { c.governor.enabled = false; c.governor.level = 'off'; } };
 const landNear = (g, t, r) => disk(t, r).filter((x) => !isWater(g.world.terr[x]) && Number.isFinite(g.defs.MOVE.infantry.terrain[g.world.terr[x]]) && !g.world.river[x]);
 
 test('a 24-unit group order uses a shared flow field and arrives in formation without deadlock', () => {
@@ -38,7 +38,7 @@ test('a 24-unit group order uses a shared flow field and arrives in formation wi
 });
 
 test('destroying a bridge reroutes units; heavy vehicles cannot ford major rivers', () => {
-  const g = newGame(7);
+  const g = newGame(7); manual(g);
   const civ = g.civs[0], w = g.world;
   // find a river tile with land on both sides
   let bridge = -1, a = -1, b = -1;

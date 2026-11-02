@@ -33,21 +33,43 @@ function ctx(g, o) {
     },
     line(col, w = 0.8, a = 1) { if (o.ghost) g.stroke({ width: 0.5, color: 0xf1c75b, alpha: 0.5 }); else g.stroke({ width: w, color: shade(col, k), alpha: a * o.alpha }); return C; },
     shadow(x, y, w, d, hgt) { if (o.ghost) return; g.rect(x - w / 2 + 0.6, y - d / 2 + 0.6, w + hgt * 0.35, d + hgt * 0.2).fill({ color: 0x000000, alpha: 0.22 * o.alpha }); },
-    // a box seen from above and slightly in front: roof raised by its height, front wall below it
+    // a box seen from above and slightly in front: roof raised by its height, front wall below it.
+    // The wall darkens toward the ground (contact shade), the roof has a sunlit rim on its north-west
+    // edges and a parapet line; everything is outlined so it reads at a distance.
     box(x, y, w, d, hgt, roof, wall) {
       C.shadow(x, y, w, d, hgt);
-      g.rect(x - w / 2, y + d / 2 - hgt, w, hgt); C.fill(wall ?? shade(roof, 0.72));
+      const wl = wall ?? shade(roof, 0.72);
+      g.rect(x - w / 2, y + d / 2 - hgt, w, hgt); C.fill(wl);
+      if (!o.ghost) {
+        g.rect(x - w / 2, y + d / 2 - Math.min(1.2, hgt * 0.3), w, Math.min(1.2, hgt * 0.3)).fill({ color: 0x000000, alpha: 0.18 * o.alpha });
+        g.rect(x - w / 2, y + d / 2 - hgt, w, 0.5).fill({ color: 0x000000, alpha: 0.22 * o.alpha });       // the roof's shadow on the wall
+      }
       g.rect(x - w / 2, y - d / 2 - hgt, w, d); C.fill(roof);
-      if (!o.ghost) g.rect(x - w / 2, y - d / 2 - hgt, w, d).stroke({ width: 0.35, color: DARK, alpha: 0.5 * o.alpha });
+      if (!o.ghost) {
+        g.moveTo(x - w / 2, y + d / 2 - hgt).lineTo(x - w / 2, y - d / 2 - hgt).lineTo(x + w / 2, y - d / 2 - hgt).stroke({ width: 0.5, color: 0xffffff, alpha: 0.28 * o.alpha });
+        if (w > 5 && d > 3) g.rect(x - w / 2 + 0.8, y - d / 2 - hgt + 0.8, w - 1.6, d - 1.6).stroke({ width: 0.3, color: shade(roof, 0.75), alpha: 0.8 * o.alpha });
+        g.rect(x - w / 2, y - d / 2 - hgt, w, d + hgt).stroke({ width: 0.4, color: DARK, alpha: 0.55 * o.alpha });
+      }
     },
-    // pitched roof: two slopes with a ridge
+    // pitched roof: two slopes (the sunlit one brighter) with tile courses, a ridge, eaves that throw
+    // a shadow line on the wall
     gable(x, y, w, d, hgt, roof, wall) {
       C.shadow(x, y, w, d, hgt);
       g.rect(x - w / 2, y + d / 2 - hgt, w, hgt); C.fill(wall ?? C.era.wall);
-      g.rect(x - w / 2, y - d / 2 - hgt, w, d / 2); C.fill(shade(roof, 1.12));
-      g.rect(x - w / 2, y - hgt, w, d / 2); C.fill(shade(roof, 0.86));
-      if (!o.ghost) g.moveTo(x - w / 2, y - hgt).lineTo(x + w / 2, y - hgt).stroke({ width: 0.4, color: DARK, alpha: 0.6 * o.alpha });
+      g.rect(x - w / 2 - 0.4, y - d / 2 - hgt, w + 0.8, d / 2); C.fill(shade(roof, 1.14));
+      g.rect(x - w / 2 - 0.4, y - hgt, w + 0.8, d / 2); C.fill(shade(roof, 0.84));
+      if (!o.ghost) {
+        g.rect(x - w / 2, y + d / 2 - hgt, w, 0.6).fill({ color: 0x000000, alpha: 0.25 * o.alpha });
+        if (o.lod === 'micro' && d >= 3) {
+          for (let k = 1; k < 3; k++) { const yy = y - d / 2 - hgt + (k * d) / 6; g.moveTo(x - w / 2, yy).lineTo(x + w / 2, yy); }
+          for (let k = 1; k < 3; k++) { const yy = y - hgt + (k * d) / 6; g.moveTo(x - w / 2, yy).lineTo(x + w / 2, yy); }
+          g.stroke({ width: 0.25, color: shade(roof, 0.6), alpha: 0.7 * o.alpha });
+        }
+        g.moveTo(x - w / 2 - 0.4, y - hgt).lineTo(x + w / 2 + 0.4, y - hgt).stroke({ width: 0.6, color: shade(roof, 1.35), alpha: 0.9 * o.alpha });
+        g.rect(x - w / 2 - 0.4, y - d / 2 - hgt, w + 0.8, d + hgt).stroke({ width: 0.4, color: DARK, alpha: 0.55 * o.alpha });
+      }
     },
+    door(x, y, w = 1.4, h = 1.8) { if (o.ghost) return; g.rect(x - w / 2, y - h, w, h).fill({ color: 0x2a1e14, alpha: o.alpha }); },
     // vertical cylinder (tank, silo, tower)
     cyl(x, y, r, hgt, col) {
       if (!o.ghost) g.ellipse(x + 0.8, y + 0.5, r + 0.6, r * 0.5).fill({ color: 0, alpha: 0.2 * o.alpha });
@@ -56,7 +78,8 @@ function ctx(g, o) {
       g.ellipse(x, y - hgt, r, r * 0.45); C.fill(shade(col, 1.1));
     },
     windows(x, y, w, hgt, rows = 1, col = 0xffe6a8) {
-      if (o.ghost || o.lod !== 'micro') return;
+      if (o.ghost || o.lod === 'strategic') return;
+      if (o.lod !== 'micro') { const n = Math.max(1, Math.floor(w / 3.5)); for (let i = 0; i < n; i++) g.rect(x - w / 2 + (i + 0.5) * (w / n) - 0.4, y - hgt * 0.55, 0.8, 0.8).fill({ color: col, alpha: 0.55 * o.alpha }); return; }
       const n = Math.max(1, Math.floor(w / 1.8));
       for (let r = 0; r < rows; r++) for (let i = 0; i < n; i++) g.rect(x - w / 2 + 0.6 + i * (w - 1.2) / n, y - hgt + 0.8 + r * (hgt - 1) / rows, 0.7, 0.7).fill({ color: col, alpha: 0.8 * o.alpha });
     },
@@ -124,23 +147,36 @@ const ART = {
     if (lv === 3 && era <= 1) { C.box(5.5, 5.5, 3.2, 3.2, 6, shade(e.roof, 1.15), shade(e.wall, 1.05)); }
   },
   farm(C, o) {
-    const crops = [0x6f8f3c, 0x9fae4c, 0x7d9b40, 0xb7a54a];
-    for (let i = 0; i < 4; i++) { const x = (i % 2) * 8 - 8, y = Math.floor(i / 2) * 7 - 6; C.g.rect(x, y, 7.4, 6.4); C.fill(crops[(i + o.id) % 4], 0.85); }
+    // ploughed strips in different crops with furrows and a hedge, a red barn, silo and haystacks
+    const crops = [0x6f8f3c, 0xb7a54a, 0x7d9b40, 0x9fae4c], g = C.g;
+    for (let i = 0; i < 4; i++) {
+      const x = (i % 2) * 8.2 - 8.4, y = Math.floor(i / 2) * 7 - 6.4, col = crops[(i + o.id) % 4];
+      g.rect(x, y, 7.6, 6.4); C.fill(col, 0.9);
+      if (!o.ghost && o.lod !== 'strategic') { for (let k = 1; k < 5; k++) g.moveTo(x + 0.4, y + k * 1.28).lineTo(x + 7.2, y + k * 1.28); g.stroke({ width: 0.35, color: shade(col, 0.72), alpha: 0.8 * o.alpha }); }
+    }
+    if (!o.ghost) g.moveTo(-8.6, 0.3).lineTo(7.6, 0.3).moveTo(-0.6, -6.6).lineTo(-0.6, 7).stroke({ width: 0.8, color: 0x3e5a2a, alpha: 0.85 * o.alpha });
     if (o.noBarn) return;                    // one farmstead per estate of joined farms
-    C.gable(5, -3, 5, 3.6, 3, 0x7a2f22, 0xa0402c);
-    C.cyl(8, -1, 1.4, 6, o.era >= 2 ? 0xb8bcbf : 0x9b8b70);
+    C.gable(4.8, -2.4, 5.6, 4, 3.4, 0x6a2a1e, 0xa83c2a); C.door(4.8, 0.6, 1.8, 2);
+    C.cyl(8.6, -0.6, 1.5, 6.5, o.era >= 2 ? 0xb8bcbf : 0x9b8b70);
+    if (!o.ghost) for (const [hx, hy] of [[-6, 5], [-3.6, 6]]) { g.circle(hx + 0.4, hy + 0.5, 1.2).fill({ color: 0, alpha: 0.2 * o.alpha }); g.circle(hx, hy, 1.15).fill({ color: 0xd9b860, alpha: o.alpha }).stroke({ width: 0.3, color: 0x8a6a2a, alpha: o.alpha }); }
   },
   lumber(C, o) {
-    const e = C.era;
-    C.gable(3, -1, 8, 5, 3.4, e.roof, e.wall);
-    for (let i = 0; i < 6; i++) { const x = -7 + (i % 3) * 2.3, y = 5 - Math.floor(i / 3) * 2; C.g.circle(x, y, 1.15); C.fill(0xb48a5a); if (!o.ghost) C.g.circle(x, y, 0.45).fill({ color: 0x7a5432, alpha: o.alpha }); }
-    C.g.circle(-6, -5, 1); C.fill(0x6a4a2c); C.g.circle(-3, -7, 1); C.fill(0x6a4a2c);
+    // a saw shed with an open front, stacked logs (cut ends showing), stumps and the edge of the woods
+    const e = C.era, g = C.g;
+    if (!o.ghost) for (const [tx, ty, r] of [[-7, -6, 2.4], [-3.6, -7.4, 2], [7.4, -5.4, 2.2]]) { g.circle(tx + 0.9, ty + 0.8, r).fill({ color: 0, alpha: 0.2 * o.alpha }); g.circle(tx, ty, r).fill({ color: 0x3e6a32, alpha: o.alpha }); g.circle(tx - r * 0.3, ty - r * 0.3, r * 0.45).fill({ color: 0x5f8a48, alpha: o.alpha }); }
+    C.gable(3, -1, 8.5, 5, 3.6, e.roof, e.wall); C.door(3, 1.5, 4, 2.6);
+    for (let i = 0; i < 9; i++) { const row = Math.floor(i / 4), x = -7.6 + (i % 4) * 2.1 + row * 1.05, y = 6 - row * 1.7; g.circle(x, y, 1.05); C.fill(0xb48a5a); if (!o.ghost) g.circle(x, y, 0.45).fill({ color: 0x7a5432, alpha: o.alpha }); }
+    if (!o.ghost) for (const [sx, sy] of [[-1, -5], [6, 6]]) g.ellipse(sx, sy, 1, 0.6).fill({ color: 0x8a6a42, alpha: o.alpha }).stroke({ width: 0.3, color: 0x4a3420, alpha: o.alpha });
   },
   quarry(C, o) {
-    const ring = (r, col) => { const pts = []; for (let k = 0; k < 7; k++) { const a = k * 0.9 + o.id; const rr = r * (0.82 + 0.18 * Math.sin(a * 3)); pts.push(Math.cos(k * 0.898) * rr, Math.sin(k * 0.898) * rr * 0.8); } C.g.poly(pts); C.fill(col); };
-    ring(9, 0xa29a8c); ring(6.4, 0x8a8478); ring(3.8, 0x6e6a62);
-    for (let i = 0; i < 3; i++) { C.g.rect(4 + i * 1.8, 5, 1.6, 1.4); C.fill(0xd6d0c4); }
-    C.g.moveTo(-6, 6).lineTo(-6, -4).lineTo(1, -2); C.line(0xe0b040, 0.7);
+    // a stepped pit cut into the rock, blocks of dressed stone on the lip, and a derrick crane
+    const g = C.g;
+    const ring = (r, col) => { const pts = []; for (let k = 0; k < 7; k++) { const a = k * 0.9 + o.id; const rr = r * (0.82 + 0.18 * Math.sin(a * 3)); pts.push(Math.cos(k * 0.898) * rr, Math.sin(k * 0.898) * rr * 0.8); } g.poly(pts); C.fill(col); };
+    ring(9.2, 0xb0a898); ring(7, 0x958e80); ring(4.8, 0x7a756a); ring(2.6, 0x5e5a52);
+    if (!o.ghost) { g.moveTo(-8, -2).lineTo(8, -2).moveTo(-6.4, 2).lineTo(6.4, 2).stroke({ width: 0.3, color: 0xe0d8c8, alpha: 0.5 * o.alpha }); }
+    for (let i = 0; i < 4; i++) { const bx = 3.4 + (i % 2) * 2, by = 5 + Math.floor(i / 2) * 1.6; g.rect(bx, by, 1.8, 1.4); C.fill(0xe0d8c8); if (!o.ghost) g.rect(bx, by, 1.8, 1.4).stroke({ width: 0.25, color: 0x6a6252, alpha: o.alpha }); }
+    g.moveTo(-6.5, 6).lineTo(-6.5, -6).lineTo(1.5, -3.5); C.line(0xe0b040, 0.8);
+    if (!o.ghost) g.moveTo(1.5, -3.5).lineTo(1.5, 0.5).stroke({ width: 0.3, color: 0x2a2a2a, alpha: o.alpha }).rect(0.8, 0.5, 1.4, 1).fill({ color: 0xd6d0c4, alpha: o.alpha });
   },
   salvage(C, o) {
     const heaps = [[-4, 2, 0x7a4a2e], [3, 4, 0x6b6560], [2, -4, 0x8a5636]];
@@ -150,19 +186,26 @@ const ART = {
     void o;
   },
   barracks(C, o) {
-    const e = C.era;
-    C.g.rect(-7, 2.5, 14, 5); C.fill(0xb0a27a, 0.8);                          // parade ground
-    C.box(0, -2.5, 13, 5, 4, o.era >= 2 ? 0x5e6650 : 0x56603f, e.wall); C.windows(0, -0.5, 13, 4);
-    C.flag(-6.5, 6, 11, o.civ); C.flag(6.5, 6, 11, o.civ);
+    // a long drill hall, a row of tents, a parade ground with a squad drawn up, flags at the gate
+    const e = C.era, g = C.g;
+    g.rect(-8, 2, 16, 6); C.fill(0xb0a27a, 0.85);
+    if (!o.ghost && o.lod !== 'strategic') for (let r = 0; r < 2; r++) for (let k = 0; k < 5; k++) g.rect(-5 + k * 2, 4 + r * 1.8, 0.9, 0.9).fill({ color: shade(o.civ, 0.6), alpha: o.alpha });
+    C.gable(-1, -3.5, 11, 4.6, 4, o.era >= 2 ? 0x5e6650 : 0x56603f, e.wall); C.windows(-1, -1.2, 11, 4); C.door(-1, -1.2, 1.8, 2.2);
+    if (!o.ghost) for (const tx of [6.2, 8.4]) { g.poly([tx - 1.2, -0.4, tx, -2.6, tx + 1.2, -0.4]).fill({ color: 0x8a8a5a, alpha: o.alpha }).stroke({ width: 0.3, color: 0x3a3a22, alpha: o.alpha }); }
+    C.flag(-7.5, 8, 12, o.civ); C.flag(7.5, 8, 12, o.civ);
   },
   market(C, o) {
-    const e = C.era;
-    if (o.era >= 2) { C.box(0, 0, 13, 7, 5, e.roof, e.wall); C.windows(0, 3, 13, 5); C.g.rect(-5, -7, 10, 2); C.fill(o.civ); return; }
-    for (let i = 0; i < 4; i++) {
-      const x = (i % 2) * 8 - 4, y = Math.floor(i / 2) * 7 - 3;
-      C.g.rect(x - 3, y + 0.5, 6, 3); C.fill(e.wall);
-      for (let s = 0; s < 3; s++) { C.g.rect(x - 3 + s * 2, y - 2, 2, 2.5); C.fill(s % 2 ? 0xe9e2d0 : o.civ); }
+    // stalls under striped awnings round a well; later a covered market hall with a banner
+    const e = C.era, g = C.g;
+    if (o.era >= 2) { C.box(0, 0, 13, 7, 5, e.roof, e.wall); C.windows(0, 3, 13, 5); C.door(0, 3.5, 3, 2.4); g.rect(-5, -7.5, 10, 2); C.fill(o.civ); return; }
+    g.circle(0, 0.5, 6.5); C.fill(shade(e.ground, 1.2), 0.7);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.3, x = Math.cos(a) * 5.8, y = Math.sin(a) * 4.6;
+      g.rect(x - 1.8, y, 3.6, 1.6); C.fill(e.wall);
+      for (let s = 0; s < 3; s++) { g.rect(x - 2 + s * 1.34, y - 1.6, 1.34, 1.8); C.fill(s % 2 ? 0xece4d0 : o.civ); }
+      if (!o.ghost) g.rect(x - 2, y - 1.6, 4, 1.8).stroke({ width: 0.25, color: DARK, alpha: 0.5 * o.alpha });
     }
+    g.circle(0, 0.5, 1.5); C.fill(0x7a7a7a); if (!o.ghost) g.circle(0, 0.5, 0.8).fill({ color: 0x2a4a6a, alpha: o.alpha });
   },
   academy(C, o) {
     const e = C.era;
@@ -391,6 +434,14 @@ const ICON = {
   camp: (g) => { g.poly([-3, 2.6, 0, -3, 3, 2.6]).fill({ color: W1 }); },
   wonder: (g) => { g.poly([-1, 3, -0.6, -3.4, 0.6, -3.4, 1, 3]).fill({ color: W1 }).rect(-3, 1.5, 6, 1.5).fill({ color: W1 }); },
 };
+
+// the small sign on a building at normal zoom: what kind of building this is, in its category's colour
+export function drawEmblem(g, type, cat, x, y, r = 3.4) {
+  g.circle(x, y, r + 0.7).fill({ color: 0x0b1518, alpha: 0.85 });
+  g.circle(x, y, r).fill({ color: CAT_COL[cat] || 0x888888 });
+  const icon = ICON[type]; if (!icon) return;
+  g.save(); g.translateTransform(x, y); g.scaleTransform(r / 4.2, r / 4.2); icon(g); g.restore();
+}
 
 export function drawStrategicIcon(g, type, cat, civ, o = {}) {
   const key = KEY_FACILITY.has(type);

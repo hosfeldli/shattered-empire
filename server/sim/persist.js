@@ -77,6 +77,8 @@ export function restoreGame(data) {
   // buildings whose type has since left the game (seismic stations, stabilizers) are dropped
   g.buildings = new Map(data.buildings.filter((b) => BUILDINGS[b.type]).map((b) => [b.id, b]));
   g.cities = new Map(data.cities.map((c) => [c.id, { ...c, freight: c.capital ? Infinity : c.freight ?? 0 }]));
+  // players' cities run themselves by default now: an older save's untouched advisor becomes autonomous
+  for (const c of g.cities.values()) { const gv = c.governor, civ = data.civs[c.owner]; if (gv && civ && civ.human && !gv.chosen && (gv.level === 'advisor' || !gv.level)) { gv.level = 'autonomous'; gv.enabled = true; } }
   g.ruins = new Map(data.ruins);
   const cb = data.combat || {};
   g.projectiles = new Map((cb.projectiles || []).map((p) => [p.id, p])); g.pending = new Map(cb.pending || []);
