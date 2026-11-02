@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
+import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
 
 const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 4));
 const MAX_CIVS = 12;
@@ -143,10 +144,12 @@ export class MatchManager {
         for (const p of m.pending.splice(0)) m.worker.postMessage(p);
         break;
       case 'out':
-        for (const [civId, str] of msg.msgs) {
-          if (civId === -2) { for (const w of m.watchers || []) if (w.ws && w.ws.readyState === 1) w.ws.send(str); continue; }
-          if (civId < 0) { for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws && s.ws.readyState === 1) s.ws.send(str); }
-          else { const s = m.slots[civId]; if (s && s.ws && s.ws.readyState === 1) s.ws.send(str); }
+        for (const [civId, str, cap] of msg.msgs) {
+          // a message that needs a capability only reaches connections that negotiated it
+          const ok = (ws) => ws && ws.readyState === 1 && (!cap || ws.ctx?.caps?.includes(cap));
+          if (civId === -2) { for (const w of m.watchers || []) if (ok(w.ws)) w.ws.send(str); continue; }
+          if (civId < 0) { for (const s of [...m.slots, ...(m.watchers || [])]) if (ok(s.ws)) s.ws.send(str); }
+          else { const s = m.slots[civId]; if (s && ok(s.ws)) s.ws.send(str); }
         }
         break;
       case 'stats': m.stats = msg; if (msg.avg > 50) this.log.warn?.(`match ${m.id} avg tick ${msg.avg}ms (max ${msg.max}ms); slowest: ${slowest(msg.systems).map((x) => `${x.system} p95 ${x.p95}ms`).join(', ')}`); break;
@@ -159,12 +162,12 @@ export class MatchManager {
   }
 
   toWorker(m, msg) { if (!m.worker) return; if (m.ready) m.worker.postMessage(msg); else m.pending.push(msg); }
-  welcome(m, slot) { this.toWorker(m, slot.spectator ? { t: 'obsWelcome' } : { t: 'welcome', civId: slot.civId }); }
+  welcome(m, slot) { const caps = slot.ws?.ctx?.caps || []; this.toWorker(m, slot.spectator ? { t: 'obsWelcome', caps } : { t: 'welcome', civId: slot.civId, caps }); }
   send(ws, msg) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(msg)); } catch { /* closing */ } } }
   roomUpdate(m) { for (const s of m.slots) if (s.ws) this.send(s.ws, { t: 'room', match: m.id, name: m.name, status: m.status, mapSize: m.mapSize, slots: m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token, difficulty: x.human ? undefined : x.difficulty, personality: x.human ? undefined : x.personality, fairPlay: x.human ? undefined : x.fairPlay !== false })) }); }
 
   attach(ws) {
-    ws.ctx = { match: null, slot: null };
+    ws.ctx = { match: null, slot: null, proto: 1, caps: [] };
     ws.on('message', (raw) => {
       let msg; try { msg = JSON.parse(raw); } catch { return; }
       try { this.handle(ws, msg); } catch (e) { this.send(ws, { t: 'error', error: e.message, rid: msg.rid }); }
@@ -185,6 +188,13 @@ export class MatchManager {
     const ctx = ws.ctx;
     switch (msg.t) {
       case 'ping': return this.send(ws, { t: 'pong', at: msg.at });
+      case 'hello': {
+        // versioned handshake; capabilities apply from the next welcome on this connection
+        const r = negotiate(msg);
+        if (r.error) return this.send(ws, { t: 'hello', ok: false, error: r.error, proto: PROTOCOL_VERSION });
+        ctx.proto = r.proto; ctx.caps = r.caps;
+        return this.send(ws, { t: 'hello', ok: true, proto: r.proto, server: PROTOCOL_VERSION, caps: r.caps, offered: CAPABILITIES, version: process.env.APP_VERSION || 'dev' });
+      }
       case 'list': return this.send(ws, { t: 'lobby', matches: this.list() });
       case 'create': {
         const m = this.create(msg);
@@ -233,7 +243,7 @@ export class MatchManager {
   }
 
   bind(ws, m, slot) {
-    slot.ws = ws; ws.ctx = { match: m, slot };
+    slot.ws = ws; ws.ctx = { ...ws.ctx, match: m, slot };
     m.lastActive = Date.now();
     this.send(ws, { t: 'joined', match: m.id, token: slot.token, status: m.status, mode: m.mode, mapSize: m.mapSize, spectator: !!slot.spectator });
   }

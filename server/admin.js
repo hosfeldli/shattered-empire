@@ -48,7 +48,7 @@ export class Admin {
   // end a match for everyone in it: they are told why and sent back to the menu; its save is deleted
   close(id, reason = 'This match was closed by the server administrator.') {
     const m = this.manager.matches.get(id); if (!m) return false;
-    for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws) { this.manager.send(s.ws, { t: 'closed', match: m.id, reason }); s.ws.ctx = { match: null, slot: null }; s.ws = null; }
+    for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws) { this.manager.send(s.ws, { t: 'closed', match: m.id, reason }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; s.ws = null; }
     this.manager.stopWorker(m);
     this.manager.matches.delete(m.id);
     this.manager.store?.remove(m.id).catch(() => {});

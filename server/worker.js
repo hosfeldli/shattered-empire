@@ -8,6 +8,7 @@ globalThis.SE_WRAP = workerData.wrap !== false;   // bounded only for matches sa
 const { Game } = await import('./sim/game.js');
 const { GAME_DEFS, TICK_HZ, aiProfile } = await import('./sim/constants.js');
 const { serializeGame, restoreGame } = await import('./sim/persist.js');
+const { geoViewer, geoMessage } = await import('./sim/terrainGeo.js');
 
 let game;
 if (workerData.restore) {
@@ -21,7 +22,20 @@ game.adaptive = process.env.SE_ADAPTIVE !== '0';
 if (workerData.sandbox) { game.sandbox = true; game.sandboxReveal = true; for (const c of game.civs) if (!c.human) c.ai = null; }
 const post = (m) => parentPort.postMessage(m);
 const out = [];
-const send = (civId, msg) => out.push([civId, JSON.stringify(msg)]);
+const send = (civId, msg, cap) => out.push(cap ? [civId, JSON.stringify(msg), cap] : [civId, JSON.stringify(msg)]);
+// viewers whose connection negotiated terrain geometry (civ id, or -2 for spectators): what they were sent
+const geoViewers = new Map();
+function geoView(civId) {
+  if (civId === -2) { const o = game.setObserver(), c = game.civs[o.follow]; if (!game.allSeen) game.allSeen = new Uint8Array(c.visible.length).fill(1); return o.fog ? [c.visible, c.explored] : [game.allSeen, game.allSeen]; }
+  const c = game.civs[civId]; return [c.visible, c.explored];
+}
+function sendGeo(civId, full) {
+  const v = geoViewers.get(civId); if (!v) return;
+  const [vis, explored] = geoView(civId);
+  const msg = geoMessage(game, v, vis, explored, full);
+  if (msg) send(civId, msg, 'geo');
+}
+function geoStep() { for (const civId of geoViewers.keys()) if (civId === -2 ? game.observer?.connected : game.civs[civId]?.connected) sendGeo(civId, false); }
 function flush() {
   for (const [civId, msg] of game.outbox) send(civId, msg);
   game.outbox.length = 0;
@@ -43,12 +57,12 @@ const timer = setInterval(() => {
     if (!game.speed) {
       // paused: keep the view alive (orders given now show up and run when play resumes)
       frames++;
-      if (frames % 5 === 0) for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg);   // includes the spectator
+      if (frames % 5 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg); geoStep(); }   // includes the spectator
       flush(); return;
     }
     frames++;
     // 5 Hz snapshots, economy every second, regardless of how many ticks ran
-    if (frames % 2 === 0) for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg);
+    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg); geoStep(); }
     flush();
     const dt = (performance.now() - t0) / n;
     tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks += n;
@@ -93,21 +107,26 @@ parentPort.on('message', (m) => {
       flush();
     } else if (m.t === 'connect') {
       const c = game.civs[m.civId]; if (c) c.connected = !!m.on;
+      if (!m.on) geoViewers.delete(m.civId);
     } else if (m.t === 'welcome') {
       const civ = game.civs[m.civId];
       civ.connected = true;
       send(m.civId, { t: 'welcome', match: game.id, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
       for (const [, msg] of game.snapshots(m.civId)) send(m.civId, msg);
+      if (m.caps?.includes('geo')) { geoViewers.set(m.civId, geoViewer()); sendGeo(m.civId, true); } else geoViewers.delete(m.civId);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
       flush();
     } else if (m.t === 'observe') {
       game.setObserver({ connected: m.on });
+      if (!m.on) geoViewers.delete(-2);
     } else if (m.t === 'obsWelcome') {
       const o = game.setObserver({ connected: true });
       send(-2, { t: 'welcome', match: game.id, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style },
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
       send(-2, game.observerSnapshot(true));
+      // spectators share one channel: a full sync for a newcomer is harmless to the others
+      if (m.caps?.includes('geo')) { if (!geoViewers.has(-2)) geoViewers.set(-2, geoViewer()); sendGeo(-2, true); }
       for (const e of game.log.slice(-15)) if (e.kind) send(-2, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
       flush();
     } else if (m.t === 'obsCmd') {
@@ -118,7 +137,7 @@ parentPort.on('message', (m) => {
         const before = game.observer?.follow;
         const o = game.setObserver(c.c === 'follow' ? { follow: c.civ } : { fog: c.on });
         send(-2, { t: 'ack', rid: m.rid, follow: o.follow, fog: o.fog });
-        if (c.c === 'fog' || before !== o.follow) send(-2, { ...game.observerSnapshot(true), reset: 1 });
+        if (c.c === 'fog' || before !== o.follow) { send(-2, { ...game.observerSnapshot(true), reset: 1 }); sendGeo(-2, true); }
       } else if (c.c === 'aiDiag') {
         // the developer inspector: a spectator may read any AI's full plan and decision record
         const civ = game.civs[c.civ | 0];
