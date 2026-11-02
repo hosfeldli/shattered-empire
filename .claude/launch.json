@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "game", "runtimeExecutable": "env", "runtimeArgs": ["SERVE_CLIENT=1", "ADMIT_OFF=1", "PORT=8137", "SNAPSHOT_DIR=/tmp/se-dev-snaps", "node", "server/index.js"], "port": 8137 }
+  ]
+}
