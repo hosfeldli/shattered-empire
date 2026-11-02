@@ -22,7 +22,7 @@ const BIOME := [
 	Color(0.35, 0.42, 0.32),  # marsh
 	Color(0.50, 0.47, 0.34),  # hills
 	Color(0.45, 0.42, 0.39),  # mountains
-	Color(0.86, 0.87, 0.89),  # peaks
+	Color(0.62, 0.61, 0.60),  # peaks (bare rock; snow comes from height in the shader)
 	Color(0.36, 0.20, 0.14),  # lava field
 	Color(0.36, 0.33, 0.30),  # volcanic soil
 ]
@@ -288,7 +288,6 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 			var m := c2 + g.dir_vec[d] * (SQRT3 * 0.5)
 			var ym := maxf(y, world.height[nb] + 0.05) * 0.5 + y * 0.5
 			kit.strip("water", Vector3(m.x, ym, m.y), c, width, col)
-		kit.cylinder("water", Vector3(c2.x, y - 0.005, c2.y), width * 0.5, 0.005, 8, col)
 
 
 func _sea_color(i: int) -> Color:
@@ -389,8 +388,8 @@ void fragment() {
 	base *= 0.9 + 0.2 * n;
 	vec3 rock = vec3(0.43, 0.41, 0.38) * (0.88 + 0.24 * n);
 	base = mix(base, rock, smoothstep(0.22, 0.42, slope) * step(0.05, wpos.y));
-	float snow = smoothstep(1.55, 1.8, wpos.y + n * 0.25) * (1.0 - smoothstep(0.42, 0.65, slope));
-	base = mix(base, vec3(0.87, 0.88, 0.9), snow);
+	float snow = smoothstep(2.3, 2.7, wpos.y + n * 0.3) * (1.0 - smoothstep(0.35, 0.6, slope));
+	base = mix(base, vec3(0.72, 0.74, 0.77), snow);
 	vec2 wuv = vec2(wpos.x / weather_extent.x, wpos.z / weather_extent.y);
 	float wet = texture(wet_tex, wuv).r * step(0.0, wpos.y);
 	base *= 1.0 - 0.3 * wet;

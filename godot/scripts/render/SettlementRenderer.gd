@@ -30,6 +30,8 @@ var ruin_inst: MeshInstance3D
 var ruin_sig := ""
 var ruin_anchor := Vector2.ZERO
 var rebuilt := 0
+var plumes: MultiMeshInstance3D   # all chimney and fire smoke: one batch, animated here
+const MAX_PUFFS := 900
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -48,6 +50,22 @@ func setup(w: WorldState, c: CameraController) -> void:
 	add_child(select_mark)
 	ruin_inst = MeshInstance3D.new()
 	add_child(ruin_inst)
+	plumes = MultiMeshInstance3D.new()
+	plumes.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	var puff := SphereMesh.new()
+	puff.radius = 0.05
+	puff.height = 0.08
+	puff.radial_segments = 6
+	puff.rings = 3
+	puff.material = MaterialLibrary.smoke(Color(1, 1, 1), 0.55)
+	mm.mesh = puff
+	mm.instance_count = MAX_PUFFS
+	mm.visible_instance_count = 0
+	plumes.multimesh = mm
+	add_child(plumes)
 	world.reset.connect(_clear)
 	world.welcomed.connect(_clear)
 
@@ -71,7 +89,32 @@ func update(_dt: float) -> void:
 		var a: Vector2 = d.anchor
 		(d.node as Node3D).position = Vector3(g.near_x(a.x, cx) - a.x, 0, 0)
 	ruin_inst.position = Vector3(g.near_x(ruin_anchor.x, cx) - ruin_anchor.x, 0, 0)
+	_update_plumes()
 	_update_mark()
+
+
+## smoke from working chimneys and burning buildings: puffs rising, drifting and fading on a loop
+func _update_plumes() -> void:
+	var mm := plumes.multimesh
+	var g := world.grid
+	var cx := cam.focus.x
+	var now := Time.get_ticks_msec() / 1000.0
+	var n := 0
+	for d in districts.values():
+		for s in d.smoke:
+			var base: Vector3 = s[0]
+			var col: Color = s[1]
+			var x0 := g.near_x(base.x, cx)
+			for k in 6:
+				if n >= MAX_PUFFS:
+					break
+				var u := fposmod(now * 0.22 + k / 6.0 + base.z * 0.37, 1.0)
+				var p := Vector3(x0 + u * 0.35, base.y + u * 0.7, base.z - u * 0.08)
+				var sc := 0.6 + u * 1.8
+				mm.set_instance_transform(n, Transform3D(Basis().scaled(Vector3.ONE * sc), p))
+				mm.set_instance_color(n, Color(col, (1.0 - u) * 0.8))
+				n += 1
+	mm.visible_instance_count = n
 
 
 func _update_mark() -> void:
@@ -198,14 +241,8 @@ func _build_district(rec: Dictionary, list: Array) -> void:
 					_connect(kit, group, lc, lc2, b, by_tile[nb])
 	var mi: MeshInstance3D = rec.node
 	mi.mesh = kit.commit() if not kit.is_empty() else null
-	for s in rec.smoke:
-		(s as Node).queue_free()
-	rec.smoke = []
-	for s in smokes:
-		var p := _smoke_emitter(s[1])
-		p.position = s[0]
-		mi.add_child(p)
-		rec.smoke.append(p)
+	# plumes in base-image coordinates (local x is relative to the district anchor, already wrapped)
+	rec.smoke = smokes
 
 
 func _tint(b: Dictionary) -> Color:
@@ -524,49 +561,6 @@ func _ore_outcrop(kit: MeshKit, rng: RandomNumberGenerator, tint: Color) -> void
 	for k in 4:
 		var p := Vector3(rng.randf_range(-0.5, 0.5), 0.0, rng.randf_range(-0.5, 0.5))
 		kit.box("ore", p, Vector3(0.08, 0.06 + rng.randf() * 0.06, 0.07), tint, rng.randf() * TAU)
-
-
-func _smoke_emitter(col: Color) -> GPUParticles3D:
-	var p := GPUParticles3D.new()
-	p.amount = 12
-	p.lifetime = 4.0
-	p.preprocess = 4.0
-	p.local_coords = false
-	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var pm := ParticleProcessMaterial.new()
-	pm.direction = Vector3(0.25, 1.0, 0.0)
-	pm.spread = 10.0
-	pm.initial_velocity_min = 0.08
-	pm.initial_velocity_max = 0.14
-	pm.gravity = Vector3(0.06, 0.02, 0.0)
-	pm.scale_min = 0.7
-	pm.scale_max = 1.3
-	var curve := Curve.new()
-	curve.add_point(Vector2(0, 0.4))
-	curve.add_point(Vector2(1, 1.6))
-	var ct := CurveTexture.new()
-	ct.curve = curve
-	pm.scale_curve = ct
-	var grad := Gradient.new()
-	grad.set_color(0, Color(1, 1, 1, 0.7))
-	grad.set_color(1, Color(1, 1, 1, 0.0))
-	var gt := GradientTexture1D.new()
-	gt.gradient = grad
-	pm.color_ramp = gt
-	p.process_material = pm
-	var s := SphereMesh.new()
-	s.radius = 0.05
-	s.height = 0.1
-	s.radial_segments = 6
-	s.rings = 3
-	var m := StandardMaterial3D.new()
-	m.albedo_color = col
-	m.vertex_color_use_as_albedo = true
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
-	s.material = m
-	p.draw_pass_1 = s
-	return p
 
 
 # ------------------------------------------------------------------ ruins

@@ -129,7 +129,10 @@ func update(dt: float) -> void:
 		props_dirty.erase(cid)
 		if Time.get_ticks_usec() - t0 > 3000:
 			break
+	# tree shadows only where they read (close up); far out they cost much and show little
+	var tree_shadows := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cam.size < 18.0 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	for p in props.values():
+		(p.trees as GeometryInstance3D).cast_shadow = tree_shadows
 		var x0: float = float(p.x0)
 		var off_x := g.near_x(x0, f.x) - x0
 		(p.trees as Node3D).position = Vector3(off_x, 0, 0)
@@ -283,9 +286,8 @@ func _update_rain(f: Vector3) -> void:
 # ------------------------------------------------------------------ natural cover
 func _tree_model() -> ArrayMesh:
 	var k := MeshKit.new()
-	k.cylinder("bark", Vector3.ZERO, 0.014, 0.07, 5)
-	k.cone("foliage", Vector3(0, 0.05, 0), 0.075, 0.2, 7)
-	k.cone("foliage", Vector3(0, 0.13, 0), 0.055, 0.14, 7, Color(1.08, 1.08, 1.05))
+	k.cylinder("bark", Vector3.ZERO, 0.016, 0.06, 4, Color.WHITE, -1.0)
+	k.cone("foliage", Vector3(0, 0.045, 0), 0.085, 0.26, 6)
 	return k.commit()
 
 
@@ -314,7 +316,7 @@ func _build_props(cid: int) -> void:
 			var c := g.center(i)
 			var n := 0
 			match b:
-				4: n = 14
+				4: n = 9
 				2: n = 2 if rng.randf() < 0.35 else 0
 				7: n = 3
 				8: n = 3 if rng.randf() < 0.5 else 0

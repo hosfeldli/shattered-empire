@@ -228,6 +228,22 @@ func _apply_quality(q: String) -> void:
 	quality = q
 
 
+## --hide=trees,clouds,water,smoke,shadows,buildings: switch layers off to find what the GPU pays for
+func _debug_hide(what: PackedStringArray) -> void:
+	for p in environment.props.values():
+		(p.trees as Node3D).visible = not what.has("trees")
+	environment.clouds.visible = not what.has("clouds")
+	if what.has("shadows"):
+		environment.sun.shadow_enabled = false
+	for c in terrain.chunks.values():
+		for m in c.winst:
+			if what.has("water"):
+				(m as Node3D).visible = false
+	for d in settlements.districts.values():
+		(d.node as Node3D).visible = not what.has("buildings")
+	settlements.plumes.visible = not what.has("smoke")
+
+
 func _parse_args(list: PackedStringArray) -> Dictionary:
 	var out := {}
 	for a in list:
@@ -307,6 +323,8 @@ func _process(dt: float) -> void:
 	if order_test_at > 0.0 and world.snapshot_count > 3 and Time.get_ticks_msec() / 1000.0 > order_test_at:
 		order_test_at = 0.0
 		_run_order_test()
+	if args.has("hide"):
+		_debug_hide(str(args.hide).split(","))
 	var t1 := Time.get_ticks_usec()
 	terrain.update_view(cam.focus.x, cam.view_half_width())
 	var t2 := Time.get_ticks_usec()
