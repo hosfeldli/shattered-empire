@@ -112,20 +112,8 @@ export class AI {
 
   research() {
     const civ = this.civ;
-    const next = AGES[civ.age + 1];
-    if (next && !civ.advancing) {
-      const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;
-      if (have >= next.techsNeeded && this.g.canAfford(civ, next.cost)) this.cmd({ c: 'advance' });
-      // national budget: once the era is within reach, save for it instead of spending everything
-      civ.saving = have >= next.techsNeeded - 1 ? next.cost : null;
-      // missing a deposit is not a dead end: buy the shortfall on the world market
-      if (civ.saving && civ.res.credits > (civ.saving.credits || 0) + 400) for (const [k, v] of Object.entries(civ.saving)) {
-        if (k === 'credits' || (civ.res[k] || 0) >= v || (civ.gross?.[k] || 0) * 60 > v - (civ.res[k] || 0)) continue;
-        const q = this.g.importQuote(civ, k, Math.ceil(v - (civ.res[k] || 0)));
-        if (q.error && /market/.test(q.error)) civ.needsMarket = k; else civ.needsMarket = null;
-        if (!q.error && civ.res.credits - q.credits > (civ.saving.credits || 0) + 200) this.g.command(civ.id, { c: 'import', good: k, amount: q.amount });
-      }
-    } else civ.saving = null;
+    // eras come on their own (game.checkEra); nothing to save for
+    civ.saving = null;
     if (!civ.researching) {
       // cities stranded across water make Seafaring urgent
       const urgent = this.cities.some((c) => c.wantsSeafaring) && !civ.techs.has('seafaring') && TECHS.seafaring.req.every((r) => civ.techs.has(r)) ? ['seafaring'] : [];

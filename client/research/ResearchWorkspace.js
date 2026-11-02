@@ -171,10 +171,10 @@ export class ResearchWorkspace {
     const next = D.AGES[e.age + 1];
     const have = e.techs.filter((t) => D.TECHS[t].age === e.age).length;
     const eta = e.research ? this.eta(e.research) : null;
-    const key = JSON.stringify([e.research, Math.floor(e.progress / 5), e.researchRate, e.age, have, e.advancing, this.search, this.filter]);
+    const key = JSON.stringify([e.research, Math.floor(e.progress / 5), e.researchRate, e.age, have, e.researchWait, this.search, this.filter]);
     if (key === this.hdKey) return; this.hdKey = key;
-    $('rwHead').innerHTML = `<div class="rw-now"><h2>Research</h2><button class="btn small ${e.autoTech ? 'primary' : 'ghost'}" data-rw="auto" title="${e.autoTech ? 'Automatic: the next useful technology is picked whenever nothing is under research, and the next era is entered as soon as it qualifies. Your own picks always come first.' : 'Manual: you pick research and advance eras yourself'}">${e.autoTech ? 'Automatic research: on' : 'Automatic research: off'}</button><div><b>${cur ? esc(cur.name) : 'Nothing under research'}</b> <span class="muted">${e.researchRate.toFixed(1)}/s${eta != null ? ` · ${fmtT(eta)} left` : ''}</span></div>${cur ? `<div class="era-bar"><i style="width:${Math.min(100, (100 * e.progress) / cur.cost)}%"></i></div>` : ''}</div>
-      <div class="rw-era">${next ? `<b>${esc(next.name)}</b> <span class="muted">${have}/${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies · ${Object.entries(next.cost).map(([k, v]) => `<span class="${(e.res[k] || 0) < v ? 'bad' : ''}">${v} <button type="button" class="rlink" data-res="${k}">${esc(D.GOOD_NAMES[k].toLowerCase())}</button></span>`).join(', ')}</span> ${e.advancing ? `<span class="warn">advancing ${e.advancing}s</span>` : `<button class="btn small primary" data-rw="advance" ${have < next.techsNeeded ? 'disabled' : ''}>Advance</button>`}` : '<b>Final era reached</b>'}</div>
+    $('rwHead').innerHTML = `<div class="rw-now"><h2>Research</h2><div><b>${cur ? esc(cur.name) : 'Choosing automatically…'}</b> ${e.researchWait ? `<span class="warn">waiting for ${Object.entries(e.researchWait).map(([k, v]) => `${v} ${esc(D.GOOD_NAMES[k].toLowerCase())}`).join(' and ')}</span> ` : ''}<span class="muted">${e.researchRate.toFixed(1)}/s${eta != null ? ` · ${fmtT(eta)} left` : ''}</span></div>${cur ? `<div class="era-bar"><i style="width:${Math.min(100, (100 * e.progress) / cur.cost)}%"></i></div>` : ''}</div>
+      <div class="rw-era">${next ? `<b>${esc(next.name)}</b> <span class="muted">${have}/${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies — the era begins by itself when you reach it</span>` : '<b>Final era reached</b>'}</div>
       <div class="rw-filters"><input id="rwSearch" type="search" placeholder="Search technologies or unlocks…" value="${esc(this.search)}" aria-label="Search technologies">
         <select id="rwCat" aria-label="Category"><option value="">All categories</option>${CATEGORIES.map(([k, n]) => `<option value="${k}" ${this.filter.cat === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
         <select id="rwEra" aria-label="Era"><option value="">All eras</option>${D.AGES.map((a, i) => `<option value="${i}" ${this.filter.era === String(i) ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
@@ -191,7 +191,7 @@ export class ResearchWorkspace {
     const key = JSON.stringify([k, st, Math.floor(prog / 5), e.queue, e.researchGoal, e.researchRate.toFixed(1), e.age]);
     if (this.inKey === key) return; this.inKey = key;
     const cum = (() => { let pts = 0; for (const x of [...miss, k]) pts += D.TECHS[x].cost - (e.techProgress?.[x] || 0); return e.researchRate > 0 ? Math.ceil(pts / e.researchRate) : null; })();
-    el.innerHTML = `<h3>${esc(t.name)}</h3><div class="sub">${esc(D.AGES[t.age].name)} · ${esc(CATEGORIES.find((c) => c[0] === techCategory(k))[1])}</div>
+    el.innerHTML = `<h3>${esc(t.name)}</h3><div class="sub">${esc(D.AGES[t.age].name)} · ${esc(CATEGORIES.find((c) => c[0] === techCategory(k))[1])}${D.GOVS[e.gov]?.favors?.includes(D.TECH_CAT?.[k]) ? ` · <span class="good">30% faster under ${esc(D.GOVS[e.gov].name)}</span>` : ''}</div>
       <p>${esc(t.desc)}</p>
       <dl class="kv"><dt>Cost</dt><dd>${t.cost} research${prog ? ` (${Math.floor(prog)} earned, kept if you switch)` : ''}</dd><dt>Time</dt><dd>${st === 'done' ? 'researched' : eta != null ? fmtT(eta) + ' at the current rate' : 'no research output'}</dd>
       ${miss.length ? `<dt>With prerequisites</dt><dd>${cum != null ? fmtT(cum) : '—'}</dd>` : ''}</dl>
@@ -201,7 +201,6 @@ export class ResearchWorkspace {
       <div class="actions">${st === 'available' ? `<button class="btn primary" data-rw="now" data-k="${k}">Research now</button>` : ''}
         ${st !== 'done' && st !== 'current' && !e.queue.includes(k) ? `<button class="btn" data-rw="queue" data-k="${k}">${miss.length ? `Queue with ${miss.length} prerequisite${miss.length > 1 ? 's' : ''}` : 'Add to queue'}</button>` : ''}
         ${e.queue.includes(k) ? `<button class="btn" data-rw="front" data-k="${k}">Move to front</button><button class="btn ghost" data-rw="remove" data-k="${k}">Remove from queue</button>` : ''}
-        ${st !== 'done' && e.researchGoal !== k ? `<button class="btn ghost" data-rw="goal" data-k="${k}" title="A long-term target: everything it needs is queued in order">Set as goal</button>` : ''}
         ${miss.length ? `<button class="btn ghost" data-rw="showpre" data-k="${k}">Show prerequisites</button>` : ''}</div>`;
   }
 
@@ -212,12 +211,12 @@ export class ResearchWorkspace {
     let tsum = e.research ? this.eta(e.research) || 0 : 0;
     const items = e.queue.map((k, i) => {
       const t = D.TECHS[k];
-      const blocked = t.age > e.age ? `needs ${D.AGES[t.age].name} era` : t.req.filter((r) => !e.techs.includes(r) && r !== e.research && e.queue.indexOf(r) > i).length ? 'prerequisite later in queue' : '';
+      const blocked = t.age > e.age ? `after ${D.AGES[t.age - 1].name} research` : t.req.filter((r) => !e.techs.includes(r) && r !== e.research && e.queue.indexOf(r) > i).length ? 'prerequisite later in queue' : '';
       const left = t.cost - (e.techProgress?.[k] || 0); tsum += e.researchRate > 0 ? left / e.researchRate : 0;
       return `<li class="${blocked ? 'blocked' : ''}" data-rwsel="${k}"><span class="n">${i + 1}</span><b>${esc(t.name)}</b><small>${blocked ? esc(blocked) : e.researchRate > 0 ? 'done in ' + fmtT(tsum) : ''}</small>
         <span class="qa"><button class="btn tiny ghost" data-rw="up" data-k="${k}" ${i ? '' : 'disabled'} aria-label="Earlier">↑</button><button class="btn tiny ghost" data-rw="down" data-k="${k}" ${i < e.queue.length - 1 ? '' : 'disabled'} aria-label="Later">↓</button><button class="btn tiny ghost" data-rw="remove" data-k="${k}" aria-label="Remove">✕</button></span></li>`;
     }).join('');
-    $('rwQueue').innerHTML = `<div class="qh"><b>Queue</b>${e.research ? ` <span class="muted">now: ${esc(D.TECHS[e.research].name)}</span>` : ''}${e.researchGoal ? ` <span class="goal">goal: ${esc(D.TECHS[e.researchGoal].name)}</span>` : ''}${e.queue.length ? ` <button class="btn tiny ghost" data-rw="clear">Clear</button>` : ''}</div><ol class="ql">${items || '<li class="empty muted">Empty. Queue technologies from the inspector; research continues down the queue automatically.</li>'}</ol>`;
+    $('rwQueue').innerHTML = `<div class="qh"><b>Queue</b>${e.research ? ` <span class="muted">now: ${esc(D.TECHS[e.research].name)}</span>` : ''}${e.queue.length ? ` <button class="btn tiny ghost" data-rw="clear">Clear</button>` : ''}</div><ol class="ql">${items || '<li class="empty muted">Empty: the next useful technology is chosen automatically. Queue technologies here to choose yourself.</li>'}</ol>`;
   }
 
   // ------------------------------------------------------------------ pan & zoom
@@ -302,11 +301,8 @@ export class ResearchWorkspace {
       if (op === 'fit') this.fit();
       else if (op === 'center') this.focus(e2.research || e2.queue[0] || this.sel);
       else if (op === 'zin' || op === 'zout') { const r = $('rwGraph').getBoundingClientRect(); this.zoomAt(op === 'zin' ? 1.2 : 1 / 1.2, r.width / 2, r.height / 2); }
-      else if (op === 'advance') this.A.cmd({ c: 'advance' });
-      else if (op === 'auto') this.A.cmd({ c: 'autoTech', on: !e2.autoTech });
       else if (op === 'now') this.A.cmd({ c: 'research', tech: k });
       else if (op === 'queue') this.A.cmd({ c: 'researchQueue', op: 'add', tech: k });
-      else if (op === 'goal') this.A.cmd({ c: 'researchQueue', op: 'goal', tech: k });
       else if (op === 'remove') this.A.cmd({ c: 'researchQueue', op: 'remove', tech: k });
       else if (op === 'front') this.A.cmd({ c: 'researchQueue', op: 'front', tech: k });
       else if (op === 'up' || op === 'down') { const i = e2.queue.indexOf(k); this.A.cmd({ c: 'researchQueue', op: 'move', tech: k, index: op === 'up' ? i - 1 : i + 1 }); }

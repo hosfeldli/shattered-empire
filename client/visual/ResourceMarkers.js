@@ -1,12 +1,11 @@
-// Resource deposits as crisp, zoom-aware markers in their own layer (not letters painted into the
-// terrain texture, which blurred as the map scaled). Each kind has its own shape and colour as well
-// as its short name, so deposits are told apart at a glance and not by colour alone:
-//   iron: rust diamond · coal: black square · oil: dark drop · rare earths: violet star ·
-//   stone: pale hexagon · fishing grounds: blue fish · old-world ruins: amber arch.
+// Resource deposits as crisp, zoom-aware markers in their own layer: a small picture of what lies
+// there (an oil drop, rust-red ore, coal, violet crystals, quarried stone, a fish, a broken column)
+// on a dark disc rimmed in the deposit's colour, told apart at a glance and not by colour alone.
 // Markers keep a constant size on screen (about 14 px) and are shown at city and close zoom; zoomed
 // out they would only clutter the map (the deposit finder still highlights them there).
 /* global PIXI */
 import { atLeast } from './VisualLOD.js';
+import { drawResIcon } from './ResourceIcons.js';
 
 const KIND = {
   1: { fill: 0x2a2622, edge: 0xe9d36b, text: 0xe9d36b, shape: 'drop' },
@@ -19,31 +18,17 @@ const KIND = {
 };
 const SIZE = 14;   // screen pixels
 
-function shape(g, k) {
-  const r = 6.2;
-  g.clear();
-  switch (k.shape) {
-    case 'diamond': g.poly([0, -r * 1.1, r * 1.05, 0, 0, r * 1.1, -r * 1.05, 0]); break;
-    case 'square': g.roundRect(-r * 0.9, -r * 0.9, r * 1.8, r * 1.8, 1.4); break;
-    case 'drop': g.moveTo(0, -r * 1.2).bezierCurveTo(r * 0.9, -r * 0.1, r * 0.95, r * 0.9, 0, r * 0.95).bezierCurveTo(-r * 0.95, r * 0.9, -r * 0.9, -r * 0.1, 0, -r * 1.2).closePath(); break;
-    case 'star': { const p = []; for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + (i * Math.PI) / 5, rr = i % 2 ? r * 0.55 : r * 1.15; p.push(Math.cos(a) * rr, Math.sin(a) * rr); } g.poly(p); break; }
-    case 'hex': { const p = []; for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + (i * Math.PI) / 3; p.push(Math.cos(a) * r, Math.sin(a) * r); } g.poly(p); break; }
-    case 'fish': g.ellipse(-0.8, 0, r * 0.9, r * 0.6).poly([r * 0.2, 0, r * 1.15, -r * 0.6, r * 1.15, r * 0.6]); break;
-    case 'arch': g.roundRect(-r, -r * 0.7, r * 2, r * 1.5, 1.6); break;
-    default: g.circle(0, 0, r);
-  }
-  g.fill({ color: k.fill, alpha: 0.95 }).stroke({ width: 1.2, color: k.edge, alpha: 0.95 });
-}
-
 export class ResourceMarkers {
   constructor(view, S, layer) { this.v = view; this.S = S; this.layer = layer; this.items = new Map(); this.scanAt = -1; }
 
   tex(r) {
     this.texs = this.texs || new Map();
     if (this.texs.has(r)) return this.texs.get(r);
-    const k = KIND[r], c = new PIXI.Container(), g = new PIXI.Graphics(); shape(g, k);
-    const txt = new PIXI.Text({ text: this.S.defs.RESOURCE[r].glyph, style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 9, fontWeight: '700', fill: k.text } });
-    txt.anchor.set(0.5, 0.52); txt.resolution = 4; c.addChild(g, txt);
+    // a dark disc rimmed in the deposit's colour, with a picture of what lies there
+    const k = KIND[r], c = new PIXI.Container(), g = new PIXI.Graphics();
+    g.circle(0, 0, 7.6).fill({ color: 0x101618, alpha: 0.88 }).stroke({ width: 1.3, color: k.edge, alpha: 0.95 });
+    drawResIcon(g, r, 0, 0, 0.95);
+    c.addChild(g);
     const t = this.v.app.renderer.generateTexture({ target: c, resolution: 6, antialias: true });
     c.destroy({ children: true });
     this.texs.set(r, t); return t;

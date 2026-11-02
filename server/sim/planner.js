@@ -6,7 +6,7 @@
 //                 S fit with the city's specialization or goal, C cost, D dependency/risk
 // A project wins only if it beats doing nothing; deferrals are explained, not hidden.
 import { hostilesNear } from './ai2/Perception.js';
-import { BUILDINGS, AGES, RES, TECHS, UNITS, isWater } from './constants.js';
+import { BUILDINGS, AGES, RES, TECHS, UNITS, isWater , TECH_GOODS } from './constants.js';
 import { disk, dist } from './hex.js';
 import { rareAccess } from './economy.js';
 import { upgradable, upgradeCost as levelCost, upgradeProblem, jobSlots, LEVEL_OUT, LEVEL_JOBS } from './levels.js';
@@ -326,7 +326,7 @@ export function readiness(g, civ) {
     const techs = Object.entries(TECHS).filter(([, t]) => t.age === civ.age);
     const known = techs.filter(([k]) => civ.techs.has(k)).length;
     out.era = { name: next.name, techs: [known, next.techsNeeded], cost: {} };
-    for (const [k, v] of Object.entries(next.cost)) out.era.cost[k] = { have: Math.floor(have(k)), need: v, blockers: goodBlockers(k, v) };
+    for (const [k, v] of Object.entries(TECH_GOODS[civ.age + 1] || {})) out.era.cost[k] = { have: Math.floor(have(k)), need: v, blockers: goodBlockers(k, v) };
     if (known < next.techsNeeded) out.era.research = civ.researchRate > 0 ? `${next.techsNeeded - known} more ${AGES[civ.age].name} technologies at ${civ.researchRate.toFixed(1)} research/s` : 'no research: build academies and staff them';
   }
   for (const [k, u] of Object.entries(UNITS)) {

@@ -12,7 +12,13 @@ export class WeatherField {
     const f = { v: (this.cur?.v || 0) + 1, cw: wx.cw, ch: wx.ch, cell: wx.cell, windA: wx.wind[0], windS: wx.wind[1], snow: dec(wx.snow),
       cy: (wx.cy || []).map(([id, x, y, r, s, spin]) => ({ id, x, y, r, s, spin })) };
     for (const k of FIELDS) f[k] = dec(wx[k]);
-    this.prev = this.cur && this.cur.cw === f.cw ? this.cur : f;
+    if (this.cur && wx.v != null && wx.v === this.cur.sv) return;          // same reading again: keep blending
+    f.sv = wx.v;
+    // blend from what is on screen now (mid-blend included), so a reading arriving early never jumps
+    if (this.cur && this.cur.cw === f.cw && this.prev && this.prev !== this.cur && this.blend() < 1) {
+      const k = this.blend(), mix = {}; for (const key of FIELDS) { const a = this.prev[key], b = this.cur[key], o = new Uint8Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] + (b[i] - a[i]) * k; mix[key] = o; }
+      this.prev = { ...this.cur, ...mix, cy: this.cyclones() };
+    } else this.prev = this.cur && this.cur.cw === f.cw ? this.cur : f;
     this.cur = f; this.t0 = performance.now();
     this.S.wind = [Math.cos(f.windA) * (2 + f.windS * 9), Math.sin(f.windA) * (2 + f.windS * 9) * 0.6];
   }
@@ -40,12 +46,15 @@ export class WeatherField {
   cyclones() {
     const c = this.cur, p = this.prev; if (!c) return [];
     const k = this.blend(), cw = c.cw;
-    return c.cy.map((a) => {
+    const out = c.cy.map((a) => {
       const b = p && p !== c ? p.cy.find((o) => o.id === a.id) : null;
       if (!b) return { ...a, s: a.s * k };
       let dx = a.x - b.x; if (dx > cw / 2) dx -= cw; else if (dx < -cw / 2) dx += cw;
       return { ...a, x: b.x + dx * k, y: b.y + (a.y - b.y) * k, s: b.s + (a.s - b.s) * k };
-    }).sort((x, y) => y.s - x.s);
+    });
+    // a system that has just died fades out instead of vanishing (its swirl would snap)
+    if (p && p !== c) for (const b of p.cy) if (!c.cy.some((a) => a.id === b.id)) out.push({ ...b, s: b.s * (1 - k) });
+    return out.sort((x, y) => y.s - x.s);
   }
   snowAt(wx, wy) { const c = this.cur; if (!c) return false; let [x, y] = this.cellXY(wx, wy); x = ((Math.round(x) % c.cw) + c.cw) % c.cw; y = Math.max(0, Math.min(c.ch - 1, Math.round(y))); return c.snow[y * c.cw + x] === 1; }
 }

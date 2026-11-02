@@ -24,6 +24,7 @@
       </header>
 
       <nav class="modes" aria-label="Game modes">
+        <button type="button" class="mode" data-mode="tutorial" aria-pressed="false"><b>Tutorial</b><small>Learn every main system in a short guided match</small></button>
         <button type="button" class="mode on" data-mode="ai" aria-pressed="true"><b>Play against the AI</b><small>Your empire against rival nations</small></button>
         <button type="button" class="mode" data-mode="mp" aria-pressed="false"><b>Multiplayer</b><small>Host, join, or play with Steam friends</small></button>
         <button type="button" class="mode" data-mode="watch" aria-pressed="false"><b>Watch the AI</b><small>An AI-only match, no fog of war</small></button>
@@ -83,6 +84,10 @@
           </div>
         </section>
 
+        <section class="mode-panel" data-panel="tutorial" hidden>
+          <h2>Tutorial</h2>
+          <p class="muted small">A small, peaceful match against one relaxed rival. A card in the corner walks you through moving the camera, governors, resources, building (one at a time and by dragging), upgrades, research, your army's Defend / Attack / Explore modes, moving, battle lines, rally points, government and the front-lines view. Each step moves on when you have done it. About ten minutes.</p>
+        </section>
         <section class="mode-panel" data-panel="sandbox" hidden>
           <h2>Combat sandbox</h2>
           <p class="muted small">A small map with one passive opponent. Spawn units, stage battles and see how weapons, cover and terrain play out. Nothing here counts.</p>
@@ -100,6 +105,7 @@
           <button id="btnHost" class="btn primary big" data-for="mp" hidden>Host a match</button>
           <button id="btnWatch" class="btn primary big" data-for="watch" hidden>Watch an AI match</button>
           <button id="btnSandbox" class="btn primary big" type="button" data-for="sandbox" hidden>Open the sandbox</button>
+          <button id="btnTutorial" class="btn primary big" type="button" data-for="tutorial" hidden>Start the tutorial</button>
           <p id="lobbyStatus" class="status" role="status"></p>
         </div>
       </div>
@@ -207,6 +213,7 @@
     <aside id="placePanel" class="plate" hidden aria-live="polite" aria-label="Placement preview"></aside>
     <aside id="battle" class="plate" hidden aria-label="Battle summary"></aside>
     <aside id="sandbox" class="plate" hidden aria-label="Combat sandbox"></aside>
+    <aside id="tutorial" class="plate" hidden aria-live="polite" aria-label="Tutorial"></aside>
     <div id="search" class="modal" hidden><div class="plate search-box"><input id="searchInput" type="search" placeholder="Search cities, units, buildings, technologies, commands…" aria-label="Search"><ul id="searchResults" class="log"></ul></div></div>
     <div id="hint" class="hint"></div>
     <div id="tooltip" class="tooltip" hidden></div>

@@ -267,16 +267,20 @@ test('extraction sites yield from the land without workers; woods around a timbe
   assert.ok(mill.active, 'and counts as working');
 });
 
-test('players research and advance eras automatically unless they turn it off', () => {
+test('research picks itself when nothing is chosen; eras begin on their own; later techs wait for goods', () => {
   const g = newGame(7);
   const civ = g.civs[0];
   run(g, 20);
   assert.ok(civ.researching, 'something is being researched without a pick');
   for (const k of Object.keys(TECHS_AGE0())) civ.techs.add(k);
-  rich(civ); run(g, 20);
-  assert.ok(civ.advancing > 0 || civ.age >= 1, 'the next era starts once it qualifies');
-  const g2 = newGame(8); g2.command(0, { c: 'autoTech', on: false }); run(g2, 20);
-  assert.equal(g2.civs[0].researching, null, 'manual research waits for the player');
+  run(g, 10);
+  assert.equal(civ.age, 1, 'the next era begins as soon as enough of this era is known, at no cost');
+  // an Industrial technology needs its goods before work starts
+  civ.researching = 'metallurgy'; civ.res.materials = 0; civ.res.ore = 0;
+  const p0 = civ.techProgress.metallurgy || 0; run(g, 30);
+  if (civ.researching === 'metallurgy') assert.equal(civ.techProgress.metallurgy || 0, p0, 'no progress without the goods');
+  rich(civ); civ.researching = 'metallurgy'; run(g, 20);
+  assert.ok((civ.techProgress.metallurgy || 0) > 0 || civ.techs.has('metallurgy'), 'with the goods it proceeds');
 });
 
 test('drag placement: one order places many, queues what cannot be paid, refuses bad hexes', () => {
@@ -288,4 +292,22 @@ test('drag placement: one order places many, queues what cannot be paid, refuses
   assert.equal(r.reply.many.placed, 4);
   assert.equal(r.reply.many.planned, 2, 'two paid now, two queued');
   assert.equal(r.reply.many.failed, 1, 'the town hex is refused');
+});
+
+test('Explore troops scout on their own; idle engineers go and repair damage', () => {
+  const g = newGame(7);
+  const civ = g.civs[0];
+  const scouts = [...g.units.values()].filter((u) => u.owner === 0 && (u.type === 'scout_buggy' || u.type === 'militia'));
+  const seen = () => civ.explored.reduce((a, b) => a + b, 0);
+  const e0 = seen();
+  assert.equal(g.command(0, { c: 'stance', units: scouts.map((u) => u.id), stance: 'explore' }), null);
+  run(g, 900);
+  assert.ok(seen() > e0 * 3, `explored ${e0} -> ${seen()}`);
+  // engineers: governors off, a damaged building is reached and repaired
+  for (const c of g.cities.values()) if (c.owner === 0) { c.governor.enabled = false; c.governor.level = 'off'; }
+  const eng = [...g.units.values()].find((u) => u.owner === 0 && u.type === 'engineer');
+  const b = [...g.buildings.values()].find((x) => x.owner === 0 && x.type !== 'town' && x.done);
+  b.hp = b.maxHp * 0.6; b.lastHit = g.time - 100;
+  run(g, 900);
+  assert.ok(dist(eng.tile, b.tile) <= 2, 'the engineer went to the damaged building');
 });

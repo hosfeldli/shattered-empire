@@ -19,6 +19,7 @@ import { cityState, CITY_STATES, rebuildSettlement, rebuildProblem, cityDiagnost
 import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding, resolveDeadlocks, shieldStep } from './military.js';
 import { Diplomacy } from './diplomacy.js';
 import { AI, TECH_PREF } from './ai.js';
+import { autonomyStep } from './autonomy.js';
 import { RebelAI } from './rebels.js';
 import { defaultGovernor, governorStep, autoColonists, migrateGovernor, answerProposal, LEVELS } from './governor.js';
 import { GOALS, readiness, candidates } from './planner.js';
@@ -66,6 +67,7 @@ function makeScheduler(g) {
     { name: 'governors', every: 10, phase: 2, fn: () => governorStep(g, 1), budget: 10 },
     { name: 'victory', every: 10, fn: () => g.checkVictory(), budget: 2 },
     { name: 'formations', every: 10, phase: 3, fn: () => formationsStep(g), budget: 4 },
+    { name: 'autonomy', every: 20, phase: 11, fn: () => autonomyStep(g), budget: 4 },
     { name: 'fieldworks', every: 10, phase: 7, fn: () => fieldworksStep(g, 1), budget: 4 },
     { name: 'logistics', every: 10, phase: 9, fn: () => { logisticsStep(g, 1); if ((g.policyT = (g.policyT || 0) + 1) % 5 === 0) policyStep(g); }, budget: 5 },
     { name: 'shortages', every: 50, phase: 31, fn: () => { for (const civ of g.civs) if (civ.human && civ.alive) shortageAlerts(g, civ); }, budget: 4 },
@@ -524,50 +526,68 @@ export class Game {
     return null;
   }
 
+  // Research. Eras are not bought: a nation that knows enough of its era's technologies moves on
+  // at once. What holds it back is materials: a later-era technology needs its goods (steel, fuel,
+  // electronics) before work on it can begin. Nothing chosen: the next useful technology is picked
+  // automatically (players' own picks and queue always come first). A project left waiting on goods
+  // for a while gives way to one that can proceed, keeping its progress.
   researchStep(dt) {
     for (const civ of this.civs) {
       if (!civ.alive || civ.isRebel) continue;
-      if (civ.advancing > 0) {
-        civ.advancing -= dt;
-        if (civ.advancing <= 0) { civ.advancing = 0; civ.age++; this.notify(-1, `${civ.name} has entered the ${AGES[civ.age].name} era!`, { kind: 'age' }); }
-      }
       if (civ.govCooldown > 0) civ.govCooldown -= dt;
-      if (civ.human && civ.autoTech !== false) this.autoTech(civ);
+      this.checkEra(civ);
       const tp = civ.techProgress || (civ.techProgress = {});
       if (!civ.researching && civ.queue.length) {
         const nxt = civ.queue.find((k) => researchReady(civ, k));
         if (nxt) { civ.researching = nxt; civ.queue = civ.queue.filter((k) => k !== nxt); }
       }
+      if (civ.human) this.autoTech(civ);
       if (!civ.researching) { civ.progress = 0; continue; }
+      const k = civ.researching, tech = TECHS[k];
+      const paid = civ.techPaid || (civ.techPaid = {});
+      if (tech.goods && !paid[k]) {
+        if (this.canAfford(civ, tech.goods)) { this.pay(civ, tech.goods, undefined, 'research'); paid[k] = 1; }
+        else {
+          civ.researchWait = k; civ.waitT = (civ.waitT || 0) + dt; civ.progress = tp[k] || 0;
+          if (civ.waitT > 20) {
+            const alt = Object.keys(TECHS).find((x) => x !== k && researchReady(civ, x) && (!TECHS[x].goods || paid[x] || this.canAfford(civ, TECHS[x].goods)));
+            if (alt) { civ.queue = [k, ...civ.queue.filter((x) => x !== k && x !== alt)]; civ.researching = alt; civ.waitT = 0; civ.researchWait = null; }
+          }
+          continue;
+        }
+      }
+      civ.researchWait = null; civ.waitT = 0;
       // progress belongs to the technology: switching away and back loses nothing
-      tp[civ.researching] = (tp[civ.researching] || 0) + civ.researchRate * dt;
-      civ.progress = tp[civ.researching];
-      const tech = TECHS[civ.researching];
-      if (tp[civ.researching] >= tech.cost) {
-        civ.techs.add(civ.researching);
-        delete tp[civ.researching];
+      tp[k] = (tp[k] || 0) + civ.researchRate * dt;
+      civ.progress = tp[k];
+      if (tp[k] >= tech.cost) {
+        civ.techs.add(k);
+        delete tp[k]; delete paid[k];
         this.notify(civ.id, `Research complete: ${tech.name}.`, { kind: 'tech', sound: 'research' });
         civ.researching = null; civ.progress = 0;
-        civ.queue = civ.queue.filter((k) => !civ.techs.has(k));
-        if (civ.researchGoal && civ.techs.has(civ.researchGoal)) { this.notify(civ.id, `Research goal reached: ${tech.name}.`, { kind: 'tech' }); civ.researchGoal = null; }
+        civ.queue = civ.queue.filter((x) => !civ.techs.has(x));
+        this.checkEra(civ);
       }
     }
   }
-
-  // Implicit progress for players: when nothing is being researched the next useful technology is
-  // picked (a balanced order of economy and arms), and the nation saves for and enters the next era
-  // as soon as it qualifies. Picking research yourself always takes precedence.
-  autoTech(civ) {
-    const next = AGES[civ.age + 1];
-    if (next && !civ.advancing) {
+  checkEra(civ) {
+    for (;;) {
+      const next = AGES[civ.age + 1]; if (!next) return;
       const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;
-      if (have >= next.techsNeeded && this.canAfford(civ, next.cost)) { this.pay(civ, next.cost, undefined, 'research'); civ.advancing = next.time; this.notify(civ.id, `Advancing to the ${next.name} era.`, { kind: 'age', level: 'minor' }); }
-      civ.saving = have >= next.techsNeeded - 1 ? next.cost : null;
-    } else civ.saving = null;
-    if (civ.researching || civ.queue.some((k) => researchReady(civ, k))) return;
-    const order = AUTO_TECH_ORDER;
-    const pick = order.find((k) => !civ.techs.has(k) && TECHS[k] && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)))
-      || Object.keys(TECHS).find((k) => !civ.techs.has(k) && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)));
+      if (have < next.techsNeeded) return;
+      civ.age++; civ.advancing = 0; civ.saving = null;
+      this.notify(-1, `${civ.name} has entered the ${AGES[civ.age].name} era!`, { kind: 'age' });
+    }
+  }
+
+  // Players: when nothing is chosen, the next useful technology is picked (a balanced order of
+  // economy and arms), preferring what the nation can supply the goods for right now.
+  autoTech(civ) {
+    if (civ.researching) return;
+    const paid = civ.techPaid || {};
+    const can = (k) => !TECHS[k].goods || paid[k] || this.canAfford(civ, TECHS[k].goods);
+    const ready = AUTO_TECH_ORDER.filter((k) => TECHS[k] && researchReady(civ, k)).concat(Object.keys(TECHS).filter((k) => researchReady(civ, k) && !AUTO_TECH_ORDER.includes(k)));
+    const pick = ready.find(can) || ready[0];
     if (pick) civ.researching = pick;
   }
 
@@ -637,7 +657,10 @@ export class Game {
       if (this.smoke.size) concealBySmoke(this, civ, vis, allies); else civ.smokeHide?.fill(0);
       if (this.sandboxReveal && civ.human) vis.fill(1);      // developer sandbox matches see the whole field
       const ex = civ.explored, lo = civ.lastOwner, seenOwners = new Set();
-      for (let i = 0; i < N; i++) if (vis[i]) { ex[i] = 1; const o = w.owner[i]; lo[i] = o; if (o >= 0) seenOwners.add(o); }
+      // when each hex was last seen (in 4-second steps): explorers revisit what has gone unseen longest
+      if (!civ.seenAt) Object.defineProperty(civ, 'seenAt', { value: new Uint16Array(N), writable: true, enumerable: false });   // not saved: rebuilt as the map is seen
+      const sa = civ.seenAt, stamp = Math.min(65535, 1 + Math.floor(this.time / 4));
+      for (let i = 0; i < N; i++) if (vis[i]) { ex[i] = 1; sa[i] = stamp; const o = w.owner[i]; lo[i] = o; if (o >= 0) seenOwners.add(o); }
       if (intel) { this.updateIntel(civ); this.diplomacy.checkContact(civ, seenOwners); }
     }
   }
@@ -784,7 +807,7 @@ export class Game {
       const own = b.owner === civ.id || god;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2), qw: !b.done && b.waiting ? b.waiting : undefined, qn: own && !b.done ? b.qn ?? b.id : undefined,
-        lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
+        lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
     const cities = [];
     for (const c of this.cities.values()) {
@@ -795,7 +818,7 @@ export class Game {
         ...(own ? { h: c.housing, st: Math.round(c.stability), jobs: c.jobs, un: Math.round(c.unemployed), fs: c.foodShort ? 1 : 0, dis: Math.round(c.disaster), occ: Math.round(c.occupied), unrest: c.stability < 20 ? 1 : 0, trade: c.tradeConnected ? 1 : 0,
           mil: Math.round(c.mil || 0), rsv: c.reserved || 0, lab: labor(c), rec: recruitable(civ.id === c.owner ? civ : this.civs[c.owner], c), gr: +((c.growth || 0) * 60).toFixed(1), recov: c.recovering ? 1 : 0, ua: c.unassigned || 0, mig: +(c.inMig || 0).toFixed(1), fw: c.foodWorkers || 0, wf: c.wf || null, back: c.returning ? 1 : 0,
           iso: c.isolated ? 1 : 0, fr: c.freight === Infinity ? -1 : +(c.freight || 0).toFixed(1), stock: roundObj(c.stock || {}), ship: +(c.shipped || 0).toFixed(1),
-          gov: c.governor ? { enabled: c.governor.enabled, level: c.governor.level || (c.governor.enabled ? 'autonomous' : 'off'), goal: c.governor.goal || 'none', budget: c.governor.budget ?? 0.15, emergency: c.governor.emergency !== false, spec: c.governor.spec, reserve: c.governor.reserve, perms: c.governor.perms, log: c.governor.log.slice(0, 12), queue: c.governor.queue,
+          gov: c.governor ? { enabled: c.governor.enabled, level: c.governor.level || (c.governor.enabled ? 'autonomous' : 'off'), goal: c.governor.goal || 'none', budget: c.governor.budget ?? 0.15, emergency: c.governor.emergency !== false, spec: c.governor.spec, reserve: c.governor.reserve, perms: c.governor.perms, log: c.governor.log.slice(0, 12), queue: c.governor.queue, now: c.governor.now && this.time - c.governor.now.t < 150 ? c.governor.now.text : null,
             proposals: (c.governor.proposals || []).map((p) => ({ id: p.id, action: p.action, type: p.type, tile: p.tile, cost: p.cost, reason: p.reason, benefit: p.benefit, confidence: p.confidence })), deferred: c.governor.deferred || [] } : null } : {}) });
     }
     const ruins = [];
@@ -804,7 +827,7 @@ export class Game {
     for (const [k, v] of this.roads.traffic) { const a = Math.floor(k / N), b = k % N; if (v > 0.5 && (vis[a] || vis[b])) traffic.push([a, b, Math.min(9, Math.round(v))]); }
     const soldiers = [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + UNITS[u.type].pop, 0);
     const me = {
-      res: roundObj(civ.res), rates: roundObj(civ.rates, 2), research: civ.researching, autoTech: civ.autoTech !== false, progress: Math.round(civ.progress), researchRate: +civ.researchRate.toFixed(2), queue: civ.queue, techProgress: Object.fromEntries(Object.entries(civ.techProgress || {}).map(([k, v]) => [k, Math.round(v)])), researchGoal: civ.researchGoal, gross: roundObj(civ.gross || {}, 2), saving: civ.saving || null,
+      res: roundObj(civ.res), rates: roundObj(civ.rates, 2), research: civ.researching, autoTech: true, researchWait: civ.researchWait ? TECHS[civ.researchWait]?.goods : undefined, progress: Math.round(civ.progress), researchRate: +civ.researchRate.toFixed(2), queue: civ.queue, techProgress: Object.fromEntries(Object.entries(civ.techProgress || {}).map(([k, v]) => [k, Math.round(v)])), researchGoal: civ.researchGoal, gross: roundObj(civ.gross || {}, 2), saving: civ.saving || null,
       techs: [...civ.techs], age: civ.age, advancing: Math.round(civ.advancing), gov: civ.gov, govCooldown: Math.round(civ.govCooldown), policies: [...civ.policies],
       tax: civ.tax, focus: civ.focus, weariness: Math.round(civ.weariness), soldiers, wonder: civ.wonder ? Math.round(300 - (this.time - civ.wonder.since)) : null,
       power: { gen: Math.round(civ.powerGen), use: Math.round(civ.powerUse) }, storage: civ.storage || 0,
@@ -1043,7 +1066,7 @@ export class Game {
         case 'hold':
         case 'stop': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id) { u.path = []; u.field = false; u.order = { kind: 'idle' }; u.goal = -1; u.slot = -1; u.groupSpeed = 0; u.queue = []; u.retreating = false; u.auth = cmd.c === 'hold' ? this.authOf(civ, cmd) : ''; if (cmd.c === 'hold' && !UNITS[u.type].civilian) u.stance = 'hold'; } } return null;
         case 'engage': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['balanced', 'focus', 'threat', 'antiArmor', 'counterBattery', 'defensive'].includes(cmd.policy)) u.policy = cmd.policy; } return null;
-        case 'stance': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['aggressive', 'defensive', 'hold'].includes(cmd.stance) && !UNITS[u.type].civilian) u.stance = cmd.stance; } return null;
+        case 'stance': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['aggressive', 'defensive', 'hold', 'explore'].includes(cmd.stance) && !UNITS[u.type].civilian) u.stance = cmd.stance; } return null;
         case 'build': {
           if (BUILDINGS[cmd.type]?.obsolete) return { error: `${BUILDINGS[cmd.type].name} is no longer needed: troops are always supplied` };
           if (!this.canPlace(civ, cmd.type, cmd.tile, true)) return { error: 'Cannot build there' };
@@ -1168,7 +1191,6 @@ export class Game {
           if (cmd.op !== 'clear' && (!t || civ.techs.has(k))) return { error: 'unknown or already researched' };
           if (cmd.op === 'add' || cmd.op === 'goal') {
             for (const x of researchChain(civ, k)) if (!civ.queue.includes(x) && x !== civ.researching) civ.queue.push(x);
-            if (cmd.op === 'goal') civ.researchGoal = k;
           } else if (cmd.op === 'remove') {
             // removing a technology also removes queued ones that depend on it
             const drop = new Set([k]); let grew = true;
@@ -1189,13 +1211,7 @@ export class Game {
           if (civ.queue.length > 40) civ.queue.length = 40;
           return null;
         }
-        case 'advance': {
-          const next = AGES[civ.age + 1]; if (!next || civ.advancing) return { error: 'cannot advance' };
-          const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;
-          if (have < next.techsNeeded) return { error: `need ${next.techsNeeded} ${AGES[civ.age].name} technologies` };
-          if (!this.canAfford(civ, next.cost)) return { error: 'cannot afford' };
-          this.pay(civ, next.cost, undefined, 'research'); civ.advancing = next.time; return null;
-        }
+        case 'advance': return { error: 'eras advance on their own once enough of this era’s technologies are known' };
         case 'gov': {
           const g = GOVS[cmd.id]; if (!g || (g.tech && !civ.techs.has(g.tech))) return { error: 'unavailable' };
           if (civ.govCooldown > 0) return { error: 'government recently changed' };
@@ -1220,8 +1236,8 @@ export class Game {
           if (!c || c.owner !== civ.id) return { error: 'not your city' };
           const gv = c.governor || (c.governor = defaultGovernor());
           migrateGovernor(gv);
-          if (cmd.enabled !== undefined) { gv.enabled = !!cmd.enabled; gv.level = gv.enabled ? (gv.level === 'off' ? 'advisor' : gv.level) : 'off'; }
-          if (cmd.level && LEVELS.includes(cmd.level)) { gv.level = cmd.level; gv.enabled = cmd.level !== 'off'; }
+          if (cmd.enabled !== undefined) { gv.enabled = !!cmd.enabled; gv.level = gv.enabled ? (gv.level === 'off' ? 'autonomous' : gv.level) : 'off'; gv.chosen = true; }
+          if (cmd.level && LEVELS.includes(cmd.level)) { gv.level = cmd.level; gv.enabled = cmd.level !== 'off'; gv.chosen = true; }
           if (cmd.goal && GOALS[cmd.goal]) gv.goal = cmd.goal;
           if (cmd.budget !== undefined) gv.budget = Math.max(0.05, Math.min(0.6, +cmd.budget));
           if (cmd.emergency !== undefined) gv.emergency = !!cmd.emergency;

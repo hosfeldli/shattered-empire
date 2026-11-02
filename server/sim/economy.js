@@ -4,7 +4,7 @@ import { jobSlots, outMul, cityTier, CITY_TIERS } from './levels.js';
 import { revoltBlocked, noteRevolt, afterCapture } from './cities.js';
 import { ACTIVITY } from './logistics.js';
 import { book, ledgerStep } from './ledger.js';
-import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, aiProfile, techFx } from './constants.js';
+import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, aiProfile, techFx, GOVS, TECH_CAT } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { allocate } from './workforce.js';
 import { labor, populationStep, crowdingPenalty, hasServices, migrationStep as migrate } from './population.js';
@@ -290,6 +290,10 @@ export function economyStep(g, dt) {
       for (const b of blds) {
         const def = BUILDINGS[b.type];
         const damaged = b.hp < b.maxHp * 0.5 ? 0.5 : 1;          // damaged buildings work at half capacity
+        // what this building made this step (shown on the map; not saved)
+        if (!b.out) Object.defineProperty(b, 'out', { value: {}, writable: true, enumerable: false });
+        b.out = {};
+        const made = (k, v) => { b.out[k] = (b.out[k] || 0) + v / dt; };
         // extraction sites yield from the land itself, staffed or not: one good timber mill in a
         // forest does what a row of small ones used to
         if (def.base && b.done && !b.off) {
@@ -302,6 +306,7 @@ export function economyStep(g, dt) {
             if (b.type === 'quarry' && w.res[b.tile] === RES.STONE) v *= 1.5;
             if (b.type === 'mine' && w.res[b.tile] !== RES.IRON && w.res[b.tile] !== RES.COAL) v *= 0.45;
             v *= 1 + (fx[k] || 0);
+            made(k, v);
             cd[k] += v; grossNext[k] = (grossNext[k] || 0) + v / dt;
             book(civ, k === 'credits' ? 'commerce' : 'production', k, v);
             const gt = grossByType[b.type] || (grossByType[b.type] = {}); gt[k] = (gt[k] || 0) + v / dt;
@@ -349,6 +354,7 @@ export function economyStep(g, dt) {
           if (k === 'steel' && P.has('industrial_planning')) v *= 1.3;
           if (gov === 'corporate' && (k === 'steel' || k === 'munitions' || k === 'electronics')) v *= 1.1;
           v *= 1 + (fx[k] || 0) + (k === 'steel' || k === 'munitions' || k === 'electronics' ? fx.industry || 0 : 0);
+          made(k, v);
           if (k === 'research') { research += v; continue; }
           cd[k] += v; grossNext[k] = (grossNext[k] || 0) + v / dt;
           book(civ, k === 'credits' && b.type !== 'town' ? 'commerce' : 'production', k, v);
@@ -399,6 +405,8 @@ export function economyStep(g, dt) {
     if (P.has('research_grants')) research *= 1.3;
     if (gov === 'technocracy') research *= 1.2;
     research *= 1 + (techFx(civ).research || 0);
+    // the government's favoured branches go faster
+    if (civ.researching && GOVS[civ.gov]?.favors?.includes(TECH_CAT[civ.researching])) research *= 1.3;
     // the deeper a nation's knowledge, the harder the next step: every technology known slows research
     research /= 1 + 0.1 * civ.techs.size;
     if (gov === 'junta') research *= 0.85;
@@ -425,6 +433,7 @@ export function economyStep(g, dt) {
       const enemyNear = [...g.units.values()].some((u) => g.hostile(u.owner, civ.id) && !UNITS[u.type].civilian && dist(u.tile, c.tile) <= 4);
       let target = 62 + TAX[civ.tax].stab;
       if (gov === 'federal') target += 10;
+      if (gov === 'council') target += 5;
       if (gov === 'technocracy') target -= 6;
       if (gov === 'junta') target -= 8;
       if (P.has('martial_law')) target += 15;

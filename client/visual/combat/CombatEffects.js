@@ -149,7 +149,7 @@ export class CombatEffects {
         continue;
       }
       // debris, dirt, sparks: ballistic in z, they land and settle
-      if (p.z > 0 || p.vz > 0) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.vz -= 90 * dt; if (p.z <= 0) { p.z = 0; p.vz = 0; p.vx = 0; p.vy = 0; } }
+      if (p.z > 0 || p.vz > 0) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.vz -= 90 * dt; if (p.z <= 0) { p.z = 0; p.vz = 0; p.vx = 0; p.vy = 0; p.ttl = Math.min(p.ttl, p.t + 0.3); } }
       const pr = p.r ? p.r * K : 0.8 * K;
       if (p.kind === 'spark') g.rect(p.x - pr / 2, p.y - p.z - pr / 2, pr, pr).fill({ color: p.col, alpha: 1 - k });
       else g.rect(p.x - pr / 2, p.y - p.z - pr / 2, pr, pr).fill({ color: p.col, alpha: p.z > 0 ? 1 : 1 - k });
@@ -178,7 +178,7 @@ export class CombatEffects {
       case 'mimpact': this.strike(dst[0], dst[1], e.r || 2); break;
       case 'fire': {
         if (src) this.muzzle(src, dst, wpn?.tracer === 'heavy' ? 1.2 : 0.8);
-        if (src && h(e.i, 77) < 0.35) this.puff(src[0] + (h(e.i, 78) - 0.5) * 4, src[1], 1.6, 0xd8d2c6, 0.22);   // gunsmoke drifts off the firing line
+        if (src) this.v.smoke?.add(src[0], src[1], 0.03);          // gunsmoke builds up along the firing line
         const n = Math.min(8, e.x || 3);
         for (let i = 0; i < n; i++) {
           const j = (h(e.i, i) - 0.5) * 7, jy = (h(e.i, i, 3) - 0.5) * 6;
@@ -300,7 +300,9 @@ export class CombatEffects {
         this.parts.push({ kind: 'dirt', x, y, z: 1, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.65, vz: 26 + Math.random() * 30 * size, r: 0.7 + Math.random() * 0.9, col: i % 3 ? 0x4a3f34 : 0x7d6c58, t: 0, ttl: 1.6 + Math.random() * 0.8 });
       }
     }
-    for (let i = 0; i < Math.ceil(size * 3 * sc); i++) this.puff(x + (Math.random() - 0.5) * 6 * size, y + (Math.random() - 0.5) * 4, 2.2 * size, inAir ? 0x4a4642 : i % 3 === 0 ? 0x3a3530 : i % 2 ? 0x6a625a : 0x9a9086, 0.42);
+    // the burst's smoke joins the battle's drifting smoke; one dark puff marks the burst itself
+    if (!inAir) this.v.smoke?.add(x, y, 0.22 * size);
+    this.puff(x, y, 2.6 * size, inAir ? 0x4a4642 : 0x4a443e, 0.45);
     if (!small) this.sparks(x, y, Math.round(2 * size), 0xffd080);
   }
 
@@ -455,6 +457,7 @@ export class CombatEffects {
     this.columns = this.columns.filter((c) => (c.t += dt) < c.ttl);
     for (const c of this.columns) {
       if (this.full() || !v.inView(c.x, c.y, 60)) continue;
+      this.v.smoke?.add(c.x, c.y, 0.35 * dt);
       if ((c.acc += dt) > 0.16) { c.acc = 0; const k = c.t / c.ttl; this.parts.push({ kind: 'smoke', x: c.x + (Math.random() - 0.5) * 2, y: c.y, z: 2, vx: 0, vy: 0, vz: 7 + Math.random() * 3, r: c.r * (1 - k * 0.5), grow: 2.4, col: k < 0.5 ? 0x26221f : 0x4a4540, a: 0.55 * (1 - k * 0.6), t: 0, ttl: 4.5 }); }
       if (c.t < c.ttl * 0.6) {
         const K = this.K || 1;
@@ -470,6 +473,7 @@ export class CombatEffects {
       for (let k = 0; k < 4; k++) { const j = Math.sin(t * 10 + k * 1.9 + tile) * 1.2; g.circle(x - 2 + k * 1.4 + j * 0.3, y - 2 - Math.abs(j) * 1.6, 1.2 + (k % 2) * 0.8).fill({ color: k % 2 ? 0xffb02e : 0xff5a14, alpha: 0.9 }); }
       for (let k = 0; k < 4; k++) { const age = frac(t * 0.22 + k / 4 + h(tile, k)); g.circle(x + age * 6, y - 4 - age * 18, 1.5 + age * 3.5).fill({ color: 0x2a2622, alpha: (1 - age) * 0.4 }); }
       S.lightsList.push([x, y, 9, 0xff7a2a]);
+      this.v.smoke?.add(x, y, 0.2 * dt);
     }
     // a battle in progress: a dusky glow where the guns are firing, flickers of fire through the
     // smoke, and gunsmoke hanging low over the ground being fought over (at every zoom)
@@ -485,23 +489,8 @@ export class CombatEffects {
         const fx = x + (h(b.t, k, Math.floor(t * 1.3 + k)) - 0.5) * 34, fy = y + (h(b.t, k, Math.floor(t * 1.3 + k) + 9) - 0.5) * 24;
         g.circle(fx, fy, 2.2 * KB * (1 - ph / 0.18)).fill({ color: 0xffd890, alpha: 0.7 * heat * (1 - ph / 0.18) });
       }
-      for (let k = 0; k < 6; k++) { const age = frac(t * 0.05 + k / 6 + h(b.t, k)); g.circle(x + (h(b.t, k) - 0.5) * 30 + age * 12, y + (h(b.t, k, 5) - 0.5) * 20 - age * 5, (8 + age * 10) * Math.sqrt(KB)).fill({ color: 0xb4ada2, alpha: Math.sin(age * Math.PI) * 0.16 * heat }); }
     }
-    if (atLeast(S, 'city')) for (const b of S.battles || []) {
-      if (!this.seen(b.t)) continue;
-      const x = v.cx[b.t], y = v.cy[b.t]; if (!v.inView(x, y, 40)) continue;
-      for (let k = 0; k < 6; k++) { const age = frac(t * 0.05 + k / 6 + h(b.t, k)); g.circle(x + (h(b.t, k) - 0.5) * 22 + age * 10, y + (h(b.t, k, 5) - 0.5) * 16 - age * 4, 6 + age * 8).fill({ color: 0xb4ada2, alpha: Math.sin(age * Math.PI) * 0.13 }); }
-    }
-    // drifting smoke screens: denser hexes are near-opaque (they hide what is inside from the enemy)
-    if (!atLeast(S, 'city') && (bf.s || []).length > 60) return;
-    for (const [tile, d10] of bf.s || []) {
-      const x = v.cx[tile], y = v.cy[tile]; if (!v.inView(x, y, 40)) continue;
-      const d = d10 / 10;
-      for (let k = 0; k < 5; k++) {
-        const age = frac(t * 0.08 + k / 5 + h(tile, k));
-        g.circle(x + (h(tile, k) - 0.5) * 12 + age * 8, y + (h(tile, k, 5) - 0.5) * 10 - age * 10, 5 + age * 7).fill({ color: d > 0.55 ? 0x56524c : 0x8a857c, alpha: (1 - age) * 0.32 * d + 0.08 * d });
-      }
-    }
+    // smoke screens are drawn by the battle smoke (BattleSmoke), which they feed
   }
 
   // ------------------------------------------------------------ engagement overlay

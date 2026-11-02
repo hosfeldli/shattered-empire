@@ -1,6 +1,6 @@
-// Unit presentation. Zoomed out and at operational zoom every unit is a badge in its owner's colour
+// Unit presentation. Zoomed out every unit is a badge in its owner's colour
 // carrying its own silhouette (UnitIcons): rifles, tanks, guns and aircraft are told apart at a
-// glance. Close up, the illustrated sprite from the texture atlas (rotated to its heading, with an
+// glance. From operational zoom in, the illustrated sprite from the texture atlas (rotated to its heading, with an
 // accent layer tinted in the owner's colour) takes over, with a small badge kept beside it.
 // Overlays (selection, health, supply, combat, veterancy) are drawn separately so the artwork never
 // has to be re-rendered. Textures are shared across all units.

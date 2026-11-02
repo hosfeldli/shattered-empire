@@ -30,6 +30,8 @@ uniform float uScale;
 uniform float uPeriod;
 uniform float uAlpha;
 uniform vec2 uFlow;
+uniform vec2 uOffA;
+uniform vec2 uOffB;
 
 float hash(vec2 i, float per) {
   i.x = mod(i.x, per);
@@ -52,7 +54,7 @@ void main() {
   if (m < 0.03) { finalColor = vec4(0.0); return; }
   vec2 p = w / uScale;
   float t = uTime;
-  vec2 q = vec2(fbm(p + uFlow * t * 0.05, uPeriod), fbm(p + vec2(3.1, 7.7) - vec2(uFlow.y, -uFlow.x) * t * 0.04, uPeriod));
+  vec2 q = vec2(fbm(p + uOffA, uPeriod), fbm(p + vec2(3.1, 7.7) - uOffB, uPeriod));
   float n = fbm(p * 2.0 + 1.7 * q + vec2(t * 0.02, -t * 0.015), uPeriod * 2.0);
   float deep = smoothstep(0.55, 1.0, m);
   float crest = smoothstep(0.56 - 0.04 * deep, 0.74, n);
@@ -79,7 +81,7 @@ export class WaterShader {
     const uniforms = {
       uRect: { value: new Float32Array(4), type: 'vec4<f32>' }, uMapMask: { value: new Float32Array(4), type: 'vec4<f32>' },
       uTime: { value: 0, type: 'f32' }, uScale: { value: scale, type: 'f32' }, uPeriod: { value: period, type: 'f32' }, uAlpha: { value: 1, type: 'f32' },
-      uFlow: { value: new Float32Array(2), type: 'vec2<f32>' },
+      uFlow: { value: new Float32Array(2), type: 'vec2<f32>' }, uOffA: { value: new Float32Array(2), type: 'vec2<f32>' }, uOffB: { value: new Float32Array(2), type: 'vec2<f32>' },
     };
     const geometry = new PIXI.Geometry({ attributes: { aPosition: [0, 0, 1, 0, 1, 1, 0, 1] }, indexBuffer: [0, 1, 2, 0, 2, 3] });
     const shader = PIXI.Shader.from({ gl: { vertex: VERT, fragment: FRAG, name: 'water' }, resources: { water: uniforms, uMask: this.tex.source } });
@@ -109,6 +111,12 @@ export class WaterShader {
     u.uMapMask[0] = 1 / (R * SQ3 * v.W); u.uMapMask[1] = 0; u.uMapMask[2] = 1 / (R * 1.5 * v.H); u.uMapMask[3] = (-R / (R * 1.5) + 0.5) / v.H;
     const wind = S.wind || [5, -1], ws = Math.hypot(wind[0], wind[1]) || 1;
     u.uFlow[0] = wind[0] / ws; u.uFlow[1] = wind[1] / ws;
+    // the swell drifts by the integrated flow (a change of wind turns it gently, never jumps it)
+    const dt = Math.min(0.1, Math.max(0, t - (this.lastT ?? t))); this.lastT = t;
+    const fl = this.fl || (this.fl = [u.uFlow[0], u.uFlow[1]]); fl[0] += (u.uFlow[0] - fl[0]) * dt * 0.3; fl[1] += (u.uFlow[1] - fl[1]) * dt * 0.3;
+    const a = this.offA || (this.offA = [0, 0]), b = this.offB || (this.offB = [0, 0]);
+    a[0] += fl[0] * 0.05 * dt; a[1] += fl[1] * 0.05 * dt; b[0] += fl[1] * 0.04 * dt; b[1] += -fl[0] * 0.04 * dt;
+    u.uOffA[0] = a[0]; u.uOffA[1] = a[1]; u.uOffB[0] = b[0]; u.uOffB[1] = b[1];
     u.uTime = t; u.uAlpha = S.lod === 'strategic' ? 0.7 : 1;
   }
 }

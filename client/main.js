@@ -7,6 +7,7 @@ import { Hud } from './hud.js';
 import { unitKind } from './commandBar.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { planDeployment, deployRole } from '/shared/deploy.js';
+import { Tutorial } from './tutorial.js';
 import { loadPrefs, savePrefs, applyPrefs, GRAPHICS } from './prefs.js';
 
 const $ = (id) => document.getElementById(id);
@@ -106,6 +107,7 @@ $('fairPlay').addEventListener('change', renderDifficulty);
 $('aiCount').addEventListener('change', renderDifficulty);
 renderDifficulty();
 
+$('btnTutorial').addEventListener('click', async () => { S.wantTutorial = true; lobbyStatus('Preparing the tutorial…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: 1, aiPersonality: 'builder', difficulty: 'easy', fairPlay: true, name: playerName(), seed: 7, mapSize: 'small', rebels: false }); });
 $('btnPlayAI').addEventListener('click', async () => { lobbyStatus('Shaping the continent…'); await ensureNet(); net.send({ t: 'create', mode: 'ai', ais: +$('aiCount').value, aiPersonality: $('aiPersonality').value, difficulty: $('aiDifficulty').value, fairPlay: $('fairPlay').checked, rivals: rivalSettings(), name: playerName(), ...worldOpts() }); });
 $('btnWatch').addEventListener('click', async () => { lobbyStatus('Shaping the continent for an AI exhibition…'); await ensureNet(); net.send({ t: 'create', mode: 'observe', ais: +$('watchCount').value, aiPersonality: $('watchPersonality').value, name: playerName(), ...worldOpts() }); });
 // Steam (desktop app): lobbies carry the server's match code. Hosts invite from the waiting room;
@@ -187,7 +189,7 @@ function setLobbyMode(mode) {
   store.set('se.mode', mode); lobbyStatus('');
 }
 document.querySelector('.modes').addEventListener('click', (e) => { const b = e.target.closest('[data-mode]'); if (b) setLobbyMode(b.dataset.mode); });
-setLobbyMode(['ai', 'mp', 'watch', 'sandbox'].includes(store.get('se.mode')) ? store.get('se.mode') : 'ai');
+setLobbyMode(['ai', 'mp', 'watch', 'sandbox', 'tutorial'].includes(store.get('se.mode')) ? store.get('se.mode') : 'ai');
 // desktop app: version and self-update (the app downloads updates in the background)
 const upd = window.desktop?.update || null;
 function showUpdate(st) {
@@ -376,6 +378,9 @@ function applyEcon(m) {
   if (hud.battleId != null) hud.battlePanel();
   view.syncBuildings(); view.syncArmies(); view.syncCampaigns();
   hud.topbar(); if (!S.spectator) hud.buildbar(); hud.selection(); hud.drawer(); hud.roadPanel(); hud.specbar();
+  // the tutorial belongs to the match it was started for (a reconnect keeps it; another match ends it)
+  if (S.wantTutorial && !S.spectator) { S.wantTutorial = false; S.tutorial = new Tutorial(S, hud, $('tutorial')); S.tutorial.match = m.match; }
+  else if (S.tutorial && S.tutorial.match !== m.match) { S.tutorial.end(); S.tutorial = null; }
   hud.minimap(view);
 }
 
@@ -468,9 +473,9 @@ const actions = {
     if (a === 'army') actions.formArmy();
     if (a === 'demolish' && S.selBuilding != null) { actions.cmd({ c: 'demolish', id: S.selBuilding }); S.selBuilding = null; }
     if (a === 'repair' && S.selBuilding != null) actions.cmd({ c: 'repair', id: S.selBuilding });
-    if (a === 'modeDefend' || a === 'modeAttack') {
+    if (a === 'modeDefend' || a === 'modeAttack' || a === 'modeExplore') {
       const ids = mineSel().filter((id) => !S.defs.UNITS[S.units.get(id)?.type]?.civilian);
-      const stance = a === 'modeAttack' ? 'aggressive' : 'defensive';
+      const stance = a === 'modeAttack' ? 'aggressive' : a === 'modeExplore' ? 'explore' : 'defensive';
       actions.cmd({ c: 'stance', units: ids, stance });
       for (const id of ids) { const u = S.units.get(id); if (u) u.stance = stance; }
       hud.selHtml = ''; hud.selection();
@@ -489,6 +494,7 @@ const actions = {
   deploy(line, { queue, attackMove } = {}) {
     const o = S.deployOpts, units = mineSel();
     const attackMode = attackMove || attacking(units);
+    if (S.tutorial) S.tutorial.flags.deployed = true;
     actions.cmd({ c: 'deploy', units, line, mode: 'line', density: 'auto', depth: 'auto', behavior: attackMode ? 'attackMove' : 'defend', reverse: o.reverse, queue: !!queue })
       .then((r) => {
         const d = r.deploy; if (!d) return;
@@ -885,7 +891,7 @@ function bindInput() {
     view.clamp();
     hud.clock(S.time, net?.rtt);
     layoutT += dt; if (layoutT > 0.1) { layoutT = 0; hud.layoutPanels(); }
-    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); pollDiagnostics(); }
+    uiTick += dt; if (uiTick > 0.5) { uiTick = 0; hud.selection(); hud.deployBar(); pollDiagnostics(); S.tutorial?.tick(view); }
     mmTick += dt; if (mmTick > 1) { mmTick = 0; hud.minimap(view); }
   };
   $('minimap').addEventListener('pointerdown', (e) => { const mm = (ev) => { const cvs = $('minimap'); let x = (ev.offsetX / cvs.clientWidth) * view.pw; const y = (ev.offsetY / cvs.clientHeight) * view.ph; if (view.wrap) x = view.near(x, view.camCenterX()); view.cam.x = x - view.app.screen.width / 2 / view.cam.z; view.cam.y = y - view.app.screen.height / 2 / view.cam.z; view.clamp(); }; mm(e); const mv = (ev) => mm(ev); e.target.addEventListener('pointermove', mv); window.addEventListener('pointerup', () => e.target.removeEventListener('pointermove', mv), { once: true }); });
@@ -1163,7 +1169,7 @@ function rightClick(e) {
   if (!mine.length) {
     // rally point for every selected production building
     const rb = [...S.selBuildings].map((id) => S.buildings.get(id)).filter((b) => b && b.o === S.civId && S.defs.BUILDINGS[b.ty].trains);
-    if (rb.length) { for (const b of rb) { actions.cmd({ c: 'rally', building: b.id, tile, army: b.rallyArmy || 0 }); b.r = tile; } view.rallyKey = ''; hud.toast({ text: `Rally point set for ${rb.length} building${rb.length > 1 ? 's' : ''}.`, kind: 'build', level: 'info' }); view.ping(tile, 0.8, 0x8fe0a8); }
+    if (rb.length) { for (const b of rb) { actions.cmd({ c: 'rally', building: b.id, tile, army: b.rallyArmy || 0 }); b.r = tile; } view.rallyKey = ''; if (S.tutorial) S.tutorial.flags.rally = true; hud.toast({ text: `Rally point set for ${rb.length} building${rb.length > 1 ? 's' : ''}.`, kind: 'build', level: 'info' }); view.ping(tile, 0.8, 0x8fe0a8); }
     return;
   }
   const rel = (o) => S.civInfo[o]?.rel?.state;
@@ -1324,6 +1330,7 @@ function attacking(ids) {
 }
 async function orderMove(units, tile, attackMove, queue) {
   attackMove = attackMove || attacking(units);
+  if (S.tutorial) S.tutorial.flags.moved = true;
   view.ping(tile, 0.5, queue ? 0x8fd19e : 0xf1c75b);
   const r = await actions.cmd({ c: 'move', units, tile, attackMove, formation: S.formation, queue });
   if (r && r.order && r.order.queued) return hud.toast({ text: `Waypoint queued for ${r.order.queued} unit${r.order.queued > 1 ? 's' : ''}.`, kind: 'unit', level: 'info' });

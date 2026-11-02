@@ -119,7 +119,8 @@ export function unitsStep(g, dt) {
         if (pick) {
           const { tg, tile: tt } = pick;
           // on the move, withdrawing or holding: shoot what is in range, do not chase
-          if (k === 'move' || u.stance === 'hold' || u.retreating) { if (dist(u.tile, tt) <= def.range && fireUnit(g, u, tg, tt)) cstat = CS.engaging; }
+          // a player's troops on Defend hold their ground too: they fire, they do not chase
+          if (k === 'move' || u.stance === 'hold' || u.retreating || (u.stance === 'defensive' && civ.human)) { if (dist(u.tile, tt) <= def.range && fireUnit(g, u, tg, tt)) cstat = CS.engaging; }
           else { u.order = { kind: 'attack', target: tg, resume: k === 'attackMove' ? u.goal : u.order.resume }; u.repathAt = 0; }
         }
       }

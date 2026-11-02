@@ -29,6 +29,8 @@ export function migrateGovernor(gv) {
 
 function log(g, c, text) {
   const gv = c.governor;
+  // what the governor is working on right now (shown on the city's banner)
+  if (/^(Building|Expanding|Upgrading|Repair|Clearing|Holding off|Raised|Saving|Approved)/.test(text)) gv.now = { text: text.replace(/\.$/, ''), t: g.time };
   // the same decision repeated within a few minutes is noise, not information
   if (gv.log.slice(0, 8).some((l) => l.text === text && g.time - l.t < 240)) return;
   const civ = g.civs[c.owner];

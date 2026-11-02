@@ -129,12 +129,24 @@ export const TECHS = {
 };
 
 // ---- Governments & policies ----------------------------------------------
+// Governments shape the whole nation, including which branches of the research tree it pursues
+// fastest (favors: technology categories researched 30% faster).
 export const GOVS = {
-  council: { name: 'Provisional Council', slots: 2, desc: 'Survivors governing by committee. No modifiers.' },
-  technocracy: { name: 'Technocracy', tech: 'higher_education', slots: 3, desc: '+20% research, +10% power output, -6 stability.' },
-  junta: { name: 'Military Junta', tech: 'munitions_industry', slots: 3, desc: 'Units 20% cheaper, +10% attack, -8 stability, -15% research.' },
-  corporate: { name: 'Corporate State', tech: 'corporate_charter', slots: 3, desc: '+30% credits, +10% industry, -10% unit attack.' },
-  federal: { name: 'Federal Republic', tech: 'federal_union', slots: 4, desc: '+10 stability, +10% all production, war weariness doubled.' },
+  council: { name: 'Provisional Council', slots: 2, favors: ['civ'], effects: ['+5 stability', 'Civic technologies (farming, schooling) researched 30% faster'], desc: 'Survivors governing by committee: steady, unremarkable.' },
+  technocracy: { name: 'Technocracy', tech: 'higher_education', slots: 3, favors: ['civ', 'industry', 'advanced'], effects: ['+20% research', '+10% power output', 'Civic, industrial and advanced technologies researched 30% faster', '−6 stability'], desc: 'Rule by engineers and scientists.' },
+  junta: { name: 'Military Junta', tech: 'munitions_industry', slots: 3, favors: ['military'], effects: ['Units 20% cheaper', '+10% attack', 'Military technologies researched 30% faster', '−15% research', '−8 stability'], desc: 'The army runs the state.' },
+  corporate: { name: 'Corporate State', tech: 'corporate_charter', slots: 3, favors: ['industry', 'society'], effects: ['+30% credits', '+10% steel, munitions and electronics', 'Industrial and society technologies researched 30% faster', '−10% unit attack'], desc: 'The companies own the country.' },
+  federal: { name: 'Federal Republic', tech: 'federal_union', slots: 4, favors: ['infra', 'logistics', 'society'], effects: ['+10 stability', '+10% all production', 'Infrastructure, logistics and society technologies researched 30% faster', 'War weariness builds twice as fast'], desc: 'Self-governing states in a union.' },
+};
+// research branches (the research screen's lanes); governments favour some of them
+export const TECH_CAT = {
+  agronomy: 'civ', schooling: 'civ', higher_education: 'civ', mechanized_agriculture: 'civ', climate_engineering: 'civ',
+  salvage_engineering: 'industry', metallurgy: 'industry', electrification: 'industry', petroleum: 'industry', munitions_industry: 'industry', computing: 'industry', materials_recycling: 'industry', fusion_power: 'industry',
+  surveying: 'infra', seafaring: 'infra', civil_engineering: 'infra', highways: 'infra', railways: 'infra',
+  small_arms: 'military', fortification: 'military', field_artillery: 'military', mechanization: 'military', aviation: 'military', self_propelled_guns: 'military', air_defense: 'military', special_operations: 'military', air_operations: 'military', precision_missiles: 'military', missile_defense: 'military', strategic_missiles: 'military', improved_servicing: 'military',
+  motorization: 'logistics', logistics: 'logistics', networked_command: 'logistics', drones: 'logistics',
+  trade_networks: 'society', corporate_charter: 'society', federal_union: 'society',
+  robotics: 'advanced', strike_swarms: 'advanced', exo_armor: 'advanced', continental_arcology: 'advanced', energy_shields: 'advanced',
 };
 export const POLICIES = {
   rationing: { name: 'Rationing', tech: 'agronomy', desc: '+20% food, -10% materials.' },
@@ -249,6 +261,9 @@ export const PACE = { research: 0.75, build: 0.6, train: 0.6, era: 0.5, eraCost:
 // later eras' technologies cost far more: the whole tree is a long game, not a quarter of an hour
 const ERA_RESEARCH = [1, 2, 3.5, 5.5, 8];
 for (const t of Object.values(TECHS)) t.cost = Math.round(t.cost * PACE.research * ERA_RESEARCH[t.age]);
+// Goods to begin a technology, by era: the industrial base is the bottleneck between the eras
+export const TECH_GOODS = [null, { materials: 150, ore: 60 }, { steel: 140, fuel: 60 }, { steel: 240, fuel: 140 }, { steel: 300, electronics: 120 }];
+for (const t of Object.values(TECHS)) if (TECH_GOODS[t.age]) { t.goods = { ...TECH_GOODS[t.age] }; t.desc += ` Needs ${Object.entries(t.goods).map(([k, v]) => `${v} ${k}`).join(' and ')} to begin.`; }
 
 // Every technology also makes the nation better at something, on top of what it unlocks:
 // output of a good (or 'industry': steel, munitions, electronics), construction speed, unit attack
@@ -362,5 +377,5 @@ export const VET_NAMES = ['Green', 'Regular', 'Veteran', 'Elite'];
 export const GOVERNOR_GOALS = { none: { name: 'No particular goal' }, grow: { name: 'Grow population' }, steel: { name: 'Increase steel output' }, self: { name: 'Become self-sufficient' },
   defense: { name: 'Strengthen defenses' }, repair: { name: 'Repair war damage' }, research: { name: 'Become a research centre' } };
 
-export const GAME_DEFS = { DIFFICULTY, GOVERNOR_GOALS, IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, VET_NAMES, W, H, TERRAIN, MOVE, ROAD_TYPES, RESOURCE, GOODS, GOOD_NAMES, AGES, TECHS, GOVS, POLICIES, FOCI, TAX, BUILDINGS, UNITS, CIV_COLORS, CIV_NAMES, REBEL, GOVERNOR_SPECS, FORMATIONS, STANCES, ALERT_LEVELS,
+export const GAME_DEFS = { TECH_CAT, DIFFICULTY, GOVERNOR_GOALS, IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, VET_NAMES, W, H, TERRAIN, MOVE, ROAD_TYPES, RESOURCE, GOODS, GOOD_NAMES, AGES, TECHS, GOVS, POLICIES, FOCI, TAX, BUILDINGS, UNITS, CIV_COLORS, CIV_NAMES, REBEL, GOVERNOR_SPECS, FORMATIONS, STANCES, ALERT_LEVELS,
   WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ENGAGE_POLICIES, COMBAT_STATUS };

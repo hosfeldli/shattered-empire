@@ -3,6 +3,7 @@
 // diplomacy, chronicle + command history). The HUD only ever sends intents to the server.
 import { wrappedIntervals } from './visual/WorldWrapGeometry.js';
 import { unitIconURL } from './visual/UnitIcons.js';
+import { resIconURL } from './visual/ResourceIcons.js';
 import { findMatch } from './view.js';
 import { ResearchWorkspace } from './research/ResearchWorkspace.js';
 import { EconomyWorkspace } from './economy/EconomyWorkspace.js';
@@ -168,7 +169,7 @@ export class Hud {
       for (const r of rows) {
         const li = document.createElement('li'); li.dataset.key = r.key;
         if (r.res) { li.dataset.res = r.res; li.tabIndex = 0; li.setAttribute('role', 'button'); }
-        li.innerHTML = `<span class="k"></span><b></b>${r.tr ? '<span class="tr"></span>' : ''}`; li.querySelector('.k').textContent = r.label;
+        li.innerHTML = `<span class="k">${r.res ? `<img class="ricon" src="${resIconURL(r.res)}" alt="">` : ''}<span></span></span><b></b>${r.tr ? '<span class="tr"></span>' : ''}`; li.querySelector('.k span').textContent = r.label;
         ul.appendChild(li);
       }
     }
@@ -181,7 +182,7 @@ export class Hud {
     }
     // research chip
     const cur = e.research ? D.TECHS[e.research] : null;
-    $('rcName').textContent = cur ? (e.autoTech ? '⟳ ' : '') + cur.name : e.autoTech ? 'Research: automatic' : 'No research — choose one';
+    $('rcName').textContent = cur ? cur.name + (e.researchWait ? ' · needs ' + Object.entries(e.researchWait).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ') : '') : 'Research: choosing…';
     $('rcBar').style.width = cur ? `${Math.min(100, (100 * e.progress) / cur.cost)}%` : '0';
     $('rcEta').textContent = cur && e.researchRate > 0 ? `${Math.ceil((cur.cost - e.progress) / e.researchRate)}s · ${e.queue.length} queued` : e.queue.length ? `${e.queue.length} queued` : '';
     $('researchChip').classList.toggle('idle', !cur);
@@ -515,8 +516,9 @@ export class Hud {
         // one choice: defend (hold where sent, fire at what comes) or attack (fight their way to
         // wherever they are sent); everything else is right-click and right-drag on the map
         const fighters = units.filter((u) => !D.UNITS[u.type].civilian);
-        const attack = fighters.length > 0 && fighters.every((u) => u.stance === 'aggressive');
-        if (fighters.length) html += `<div class="seg troopmode"><button class="${attack ? '' : 'on'}" data-act="modeDefend" title="Hold where you send them and fire at anything in range">Defend</button><button class="${attack ? 'on' : ''}" data-act="modeAttack" title="Fight their way to wherever you send them, and chase what they see">Attack</button></div>`;
+        const all = (st) => fighters.length > 0 && fighters.every((u) => u.stance === st);
+        const attack = all('aggressive'), explore = all('explore');
+        if (fighters.length) html += `<div class="seg troopmode"><button class="${attack || explore ? '' : 'on'}" data-act="modeDefend" title="Hold where you send them and fire at anything in range; they never chase, at most stepping onto better cover right beside them">Defend</button><button class="${attack ? 'on' : ''}" data-act="modeAttack" title="Fight their way to wherever you send them; on their own they hunt enemies they see nearby and take cover when the enemy is about">Attack</button><button class="${explore ? 'on' : ''}" data-act="modeExplore" title="Scout on their own: unexplored ground first, then whatever has gone unseen the longest">Explore</button></div>`;
         html += `<div class="howto muted small">Right-click: move · right-drag: line · right-click an enemy: attack</div>`;
         if (units.some((u) => u.type === 'colonist')) html += `<div class="actions"><button class="btn small primary" data-act="found">Found city (F)</button><button class="btn small" data-act="autoSettle">Auto-settle</button></div>`;
         if (units.some((u) => D.UNITS[u.type].engineer)) html += `<p class="muted">Idle engineers repair roads and buildings, fight fires and clear rubble next to them, and speed up nearby construction.</p>`;
@@ -943,6 +945,8 @@ export class Hud {
     const perm = (k, label) => `<label class="perm"><input type="checkbox" data-gperm="${k}" ${gv.perms[k] ? 'checked' : ''}> ${label}</label>`;
     const LV = { off: ['Off', 'No delegated actions.'], advisor: ['Advisor', 'Analyses the city and proposes projects for your approval. Only permitted emergency repairs run on their own.'], managed: ['Managed', 'Handles labor priorities, repairs, rubble, farms and housing within its budget; asks before anything else.'], autonomous: ['Autonomous', 'Develops the city within its budget, goal and permissions. Founding cities still needs your approval.'] };
     let html = `<div class="seg govlv">${Object.entries(LV).map(([k, [n]]) => `<button class="${(gv.level || 'off') === k ? 'on' : ''}" data-govlevel="${k}">${n}</button>`).join('')}</div><p class="muted">${esc(LV[gv.level || 'off'][1])}</p>`;
+    // what it is doing now, in one line, before anything else
+    if (gv.enabled) html += `<div class="gov-now"><b>Now:</b> ${esc(gv.now || `keeping the city running (${(D.GOVERNOR_SPECS[gv.spec]?.name || 'balanced').toLowerCase()})`)}</div>`;
     if ((gv.proposals || []).length) {
       html += `<h4 style="margin:6px 0 2px">Proposals</h4>` + gv.proposals.map((p) => `<div class="proposal"><b>${p.action === 'build' ? 'Construct ' + esc(D.BUILDINGS[p.type]?.name) : p.action === 'upgrade' ? 'Upgrade a housing block' : p.action === 'road' ? 'Build a road' : p.action === 'settle' ? 'Train a colonist convoy' : esc(p.action)}</b><small>${esc(p.reason || '')}</small><small class="muted">${Object.entries(p.cost || {}).map(([k, v]) => `${v} ${esc((D.GOOD_NAMES[k] || k).toLowerCase())}`).join(', ')}${p.confidence ? ` · confidence ${Math.round(p.confidence * 100)}%` : ''}</small>
         <div class="actions"><button class="btn small primary" data-prop="${p.id}" data-answer="approve">Approve</button><button class="btn small" data-prop="${p.id}" data-answer="defer">Later</button><button class="btn small ghost" data-prop="${p.id}" data-answer="reject">Reject</button>${p.tile >= 0 ? `<button class="btn small ghost" data-jump="${p.tile}">Show site</button>` : ''}</div></div>`).join('');
@@ -1071,7 +1075,7 @@ export class Hud {
     if (!this.ws && !force) return;
     if (!this.ws) return;
     if (this.ws === 'research') { this.research.render($('drawerBody')); return; }
-    const key = this.tab + (this.tab === 'research' ? JSON.stringify(e.readiness) : this.tab === 'realm' ? JSON.stringify([e.market, e.upkeep]) : '') + JSON.stringify([e.research, Math.floor(e.progress / 10), e.queue, e.techs.length, e.age, e.advancing > 0, e.gov, e.govCooldown > 0, e.policies, e.tax, e.focus, e.proposals,
+    const key = this.tab + (this.tab === 'research' ? JSON.stringify(e.readiness) : this.tab === 'realm' ? JSON.stringify([e.market, e.upkeep, e.gov, e.policies, e.govCooldown, e.tax, e.focus]) : '') + JSON.stringify([e.research, Math.floor(e.progress / 10), e.queue, e.techs.length, e.age, e.advancing > 0, e.gov, e.govCooldown > 0, e.policies, e.tax, e.focus, e.proposals,
       S.civInfo.map((c) => [c.rel, c.alive, c.age, c.known]), this.tab === 'chronicle' ? [S.log.length, e.cmdlog?.length, e.cmdlog?.[0]?.t, this.chronTab] : 0,
       this.tab === 'empire' ? [[...S.cities.values()].filter((c) => c.o === S.civId).map((c) => [Math.round(c.pop / 4), Math.round(c.st / 5), c.fs, c.iso, c.unrest, c.gov?.enabled, c.gov?.spec]), this.empireSort, this.empireFilter] : 0,
       this.tab === 'armies' ? (e.armies || []).map((a) => [a.id, a.name, a.units.length, a.status, a.formation, a.stance, a.note, Math.round((a.hp || 0) / 5), Math.round((a.supply || 0) / 5)]) : 0,
@@ -1092,8 +1096,7 @@ export class Hud {
       const have = e.techs.filter((t) => D.TECHS[t].age === e.age).length;
       const pct = Math.min(100, (100 * have) / next.techsNeeded);
       h += `<div class="era-hd"><h4>Next era: ${esc(next.name)}</h4><span class="muted">${have}/${next.techsNeeded}</span></div><div class="era-bar"><i style="width:${pct}%"></i></div>`;
-      h += `<p class="muted">Needs ${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies and ${Object.entries(next.cost).map(([k, v]) => `${v} ${D.GOOD_NAMES[k].toLowerCase()}`).join(', ')}.</p>`;
-      h += e.advancing ? `<p class="warn">Advancing… ${e.advancing}s</p>` : `<button class="btn primary" data-advance="1" ${have < next.techsNeeded ? 'disabled' : ''}>Advance to ${esc(next.name)}</button>`;
+      h += `<p class="muted">The ${esc(next.name)} era begins by itself after ${next.techsNeeded} ${esc(D.AGES[e.age].name)} technologies. Its technologies need goods to begin, so build up the industry they call for.</p>`;
     }
     if (e.queue.length) h += `<p class="muted">Queue: ${e.queue.map((k) => esc(D.TECHS[k].name)).join(' → ')}</p>`;
     h += this.readinessHtml();
@@ -1160,10 +1163,20 @@ export class Hud {
   tab_realm() {
     const S = this.S, e = S.econ, D = S.defs;
     const slots = D.GOVS[e.gov].slots;
-    let h = `<h4>Government</h4>${e.govCooldown > 0 ? `<p class="muted">Reform possible in ${e.govCooldown}s.</p>` : ''}`;
-    for (const [k, g] of Object.entries(D.GOVS)) { const ok = !g.tech || e.techs.includes(g.tech); h += `<button class="gov${e.gov === k ? ' on' : ''}" data-gov="${k}" ${!ok || e.gov === k ? 'disabled' : ''}><b>${esc(g.name)}</b> <span class="muted">${g.slots} policy slots${ok ? '' : ', needs ' + esc(D.TECHS[g.tech].name)}</span><small>${esc(g.desc)}</small></button>`; }
-    h += `<h4>Policies (${e.policies.length}/${slots})</h4>`;
-    for (const [k, p] of Object.entries(D.POLICIES)) { const ok = !p.tech || e.techs.includes(p.tech), on = e.policies.includes(k); h += `<button class="policy${on ? ' on' : ''}" data-policy="${k}" ${!ok ? 'disabled' : ''}><b>${esc(p.name)}</b> <span class="muted">${on ? 'active' : ok ? '' : 'needs ' + esc(D.TECHS[p.tech].name)}</span><small>${esc(p.desc)}</small></button>`; }
+    // governments as cards: what each does (including the research it speeds up), what unlocks it
+    const cur = D.GOVS[e.gov];
+    let h = `<h4>Government: ${esc(cur.name)}</h4><p class="muted">${esc(cur.desc || '')} Changing government costs 10 stability in every city${e.govCooldown > 0 ? `; possible again in ${e.govCooldown}s` : ''}.</p><div class="govcards">`;
+    for (const [k, g] of Object.entries(D.GOVS)) {
+      const ok = !g.tech || e.techs.includes(g.tech), on = e.gov === k;
+      h += `<button class="govcard${on ? ' on' : ''}${ok ? '' : ' locked'}" data-gov="${k}" ${!ok || on || e.govCooldown > 0 ? 'disabled' : ''}><b>${esc(g.name)}</b><span class="muted">${on ? 'current' : ok ? (e.govCooldown > 0 ? `in ${e.govCooldown}s` : 'adopt') : '🔒 ' + esc(D.TECHS[g.tech].name)} · ${g.slots} policies</span><ul>${(g.effects || [g.desc]).map((x) => `<li class="${x.startsWith('−') ? 'bad' : ''}">${esc(x)}</li>`).join('')}</ul></button>`;
+    }
+    h += `</div><h4>Policies <span class="muted">${e.policies.length} of ${slots} slots</span></h4><div class="slotbar">${Array.from({ length: slots }, (_, i) => `<i class="${i < e.policies.length ? 'on' : ''}"></i>`).join('')}</div><div class="govcards pol">`;
+    const pols = Object.entries(D.POLICIES).sort(([a], [b]) => (e.policies.includes(b) ? 1 : 0) - (e.policies.includes(a) ? 1 : 0));
+    for (const [k, p] of pols) {
+      const ok = !p.tech || e.techs.includes(p.tech), on = e.policies.includes(k), full = !on && e.policies.length >= slots;
+      h += `<button class="govcard${on ? ' on' : ''}${ok ? '' : ' locked'}" data-policy="${k}" ${!ok ? 'disabled' : ''} title="${on ? 'Click to repeal' : full ? 'No free slot: repeal another policy first' : 'Click to enact'}"><b>${esc(p.name)}</b><span class="muted">${on ? 'active · click to repeal' : !ok ? '🔒 ' + esc(D.TECHS[p.tech].name) : full ? 'no free slot' : 'enact'}</span><ul>${p.desc.split(/(?<=[.%]) (?=[+-−A-Z])|, (?=[+-])/).map((x) => `<li class="${/^-|^−/.test(x.trim()) ? 'bad' : ''}">${esc(x.trim())}</li>`).join('')}</ul></button>`;
+    }
+    h += `</div>`;
     h += `<h4>Taxation</h4><div class="seg">${D.TAX.map((t, i) => `<button class="${e.tax === i ? 'on' : ''}" data-tax="${i}" title="${t.stab >= 0 ? '+' : ''}${t.stab} stability">${esc(t.name)}</button>`).join('')}</div>`;
     h += `<h4>Labour focus</h4><div class="seg">${Object.entries(D.FOCI).map(([k, n]) => `<button class="${e.focus === k ? 'on' : ''}" data-focus="${k}">${esc(n)}</button>`).join('')}</div>`;
     if (e.market && !S.spectator) {
@@ -1268,8 +1281,8 @@ export class Hud {
     if (d.import) { this.A.cmd({ c: 'import', good: d.import, amount: +d.amount }).then((r) => { if (r.bought) this.toast({ text: `Imported ${r.bought.amount} ${D_name(this.S, r.bought.good)} for ${r.bought.credits} credits.`, kind: 'build', level: 'minor' }); }); return; }
     if (d.tech) this.A.cmd({ c: 'research', tech: d.tech, queue: t.classList.contains('locked') || t.classList.contains('queued') ? true : undefined });
     else if (d.advance) this.A.cmd({ c: 'advance' });
-    else if (d.gov) this.A.cmd({ c: 'gov', id: d.gov });
-    else if (d.policy) this.A.cmd({ c: 'policy', id: d.policy, on: !this.S.econ.policies.includes(d.policy) });
+    else if (d.gov) this.A.cmd({ c: 'gov', id: d.gov }).then((r) => { if (r?.error) this.toast({ text: r.error, kind: 'error', level: 'minor' }); });
+    else if (d.policy) this.A.cmd({ c: 'policy', id: d.policy, on: !this.S.econ.policies.includes(d.policy) }).then((r) => { if (r?.error) this.toast({ text: r.error, kind: 'error', level: 'minor' }); });
     else if (d.tax) this.A.cmd({ c: 'tax', level: +d.tax });
     else if (d.focus) this.A.cmd({ c: 'focus', id: d.focus });
     else if (d.diplo) this.A.cmd({ c: 'diplo', to: +d.to, action: d.diplo });
