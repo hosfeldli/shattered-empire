@@ -142,7 +142,7 @@ export class MilitaryPlanner {
       for (const fm of [...this.missions.values()].filter((x) => x.kind === 'front' && x.enemy === tOwner)) release(fm);
       const all = reserve();
       const free = final ? all : all.slice(0, Math.max(0, Math.ceil(all.length * (1 - T.reserve))));
-      if (free.length < Math.max(4, desired * (final ? 0.4 : 0.7))) { this.support(army, reserve, take, release, enemies); return; }
+      if (free.length < Math.max(4, desired * (final ? 0.3 : 0.45))) { this.support(army, reserve, take, release, enemies); return; }
       const staging = stagingTile(g, civ, target.tile);
       off = { id: this.nextId++, kind: 'offensive', target: target.id, tile: target.tile, buildingId: target.buildingId, staging, units: new Set(), state: 'assemble', commitUntil: g.time + COMMIT.offensive * T.commit * (final ? 2 : 1), created: g.time, final };
       if (final) g.notify(-1, `${civ.name} launches its final campaign against ${g.civs[tOwner].name}.`, { kind: 'war', tile: target.tile, quiet: true });
@@ -161,17 +161,17 @@ export class MilitaryPlanner {
     const odds = seenNear.length ? this.strength(ids) / Math.max(1, this.strength(seenNear.map((e) => e.id))) : 9;
     if (off.state !== 'regroup' && (this.strength(ids) < off.start * T.retreat * (off.final ? 0.6 : 1) || supply < 15 || (off.state === 'execute' && T.level >= 2 && odds < 0.6))) {
       this.setState(off, 'regroup', supply < 15 ? 'out of supply' : odds < 0.6 && off.state === 'execute' ? 'outmatched at the objective' : 'heavy losses'); off.regroupAt = g.time;
-      this.cooldown[off.target] = g.time + (off.final ? 90 : 180);          // do not throw the same failed attack straight back
+      this.cooldown[off.target] = g.time + (off.final ? 45 : 90);          // do not throw the same failed attack straight back
       this.order(off, ids, off.staging >= 0 ? off.staging : this.home(), false, 'column');
       return;
     }
-    if (off.state === 'regroup') { if (g.time - off.regroupAt > 40) { this.ai.campaign = null; release(off); } this.support(army, reserve, take, release, enemies); return; }
+    if (off.state === 'regroup') { if (g.time - off.regroupAt > 25) { this.ai.campaign = null; release(off); } this.support(army, reserve, take, release, enemies); return; }
     if (off.state === 'assemble') {
       const near = units.filter((u) => dist(u.tile, off.staging) <= 3).length;
       // reinforcements join while assembling
       const extra = reserve().filter((u) => dist(u.tile, off.staging) < 30).slice(0, 4);
       if (extra.length) { take(off, extra); this.ai.cmd({ c: 'move', units: extra.map((u) => u.id), tile: off.staging, formation: 'column', auth: 'mission', by: 'mission:' + off.id }); }
-      if (near >= units.length * 0.8 || g.time - off.created > 120) { this.setState(off, 'execute', near >= units.length * 0.8 ? 'assembled' : 'assembly timed out'); off.startedAt = g.time; this.order(off, ids, off.tile, true, 'line'); }
+      if (near >= units.length * 0.6 || g.time - off.created > 45) { this.setState(off, 'execute', near >= units.length * 0.6 ? 'assembled' : 'assembly timed out'); off.startedAt = g.time; this.order(off, ids, off.tile, true, 'line'); }
       return;
     }
     // execute: first suppress the defenses covering the objective with the guns (bunkers, forts,
@@ -185,25 +185,48 @@ export class MilitaryPlanner {
       }
       off.suppressing = defenses.length;
     } else off.suppressing = 0;
-    // execute, the way a player pushes: the force advances as a deployed line in bounds of a few
-    // hexes (artillery behind), consolidates, then bounds again; the assault on the town comes last
+    // execute as a horde: the force rushes the objective at once, split into prongs that come in
+    // from the front and both flanks (better commanders use more prongs) while the guns follow the
+    // main body and shell what covers the town; stragglers and fresh troops are thrown back in
+    // every few seconds, so the pressure never lets up. Close in, the assault on the town takes over.
     const broken = (() => { const t = off.buildingId >= 0 ? g.buildings.get(off.buildingId) : null; return t && t.hp <= t.maxHp * 0.25; })();
     if ((off.state === 'execute' || off.state === 'advance') && !broken) {
       const toObj = dist(units.length ? units[Math.floor(units.length / 2)].tile : off.staging, off.tile);
-      if (toObj > 4 && (off.boundAt == null || g.time - off.boundAt > 22)) {
-        const from = off.lineAt ?? off.staging;
-        const step = hexLine(from, off.tile); const next = step[Math.min(step.length - 1, 4)];
-        const line = lineAcross({ W, H, wrap: WRAP }, next, off.tile, Math.max(3, Math.min(9, Math.ceil(units.length / 2))), 0);
-        if (line) {
-          const front = units.filter((u) => UNITS[u.type].cat !== 'artillery').map((u) => u.id);
-          const guns = units.filter((u) => UNITS[u.type].cat === 'artillery' && u.order.kind !== 'attack').map((u) => u.id);
-          if (front.length) this.ai.cmd({ c: 'deploy', units: front, line, mode: 'line', behavior: 'attackMove', density: 'auto', auth: 'mission' });
-          if (guns.length) { const back = hexLine(next, off.staging)[2] ?? next; this.order(off, guns, back, false, 'line'); }
-          off.lineAt = next; off.boundAt = g.time; this.setState(off, 'advance', `bounding forward (${toObj} hexes to go)`);
+      if (toObj > 4) {
+        if (off.wave == null) {
+          const prongs = Math.min(3, Math.max(1, T.level + 1), Math.floor(units.length / 3) || 1);
+          const W2 = { W, H, wrap: WRAP };
+          const path = hexLine(off.staging >= 0 ? off.staging : units[0].tile, off.tile);
+          const mid = path[Math.floor(path.length * 0.55)] ?? off.tile;
+          const across = lineAcross(W2, mid, off.tile, Math.max(5, Math.min(11, Math.round(toObj * 0.6))), 0);
+          const fighters = units.filter((u) => UNITS[u.type].cat !== 'artillery');
+          const guns = units.filter((u) => UNITS[u.type].cat === 'artillery' && u.order.kind !== 'attack');
+          // prongs by position: whoever is already on a side takes that side
+          const groups = Array.from({ length: prongs }, () => []);
+          fighters.forEach((u, i) => groups[i % prongs].push(u.id));
+          const flank = across && prongs > 1 ? [null, across[0], across[1]] : [null];
+          groups.forEach((ids, i) => {
+            if (!ids.length) return;
+            if (flank[i] >= 0 && flank[i] != null) {
+              this.ai.cmd({ c: 'move', units: ids, tile: flank[i], attackMove: true, formation: 'wedge', auth: 'mission', by: 'mission:' + off.id });
+              this.ai.cmd({ c: 'move', units: ids, tile: off.tile, attackMove: true, queue: true, formation: 'wedge', auth: 'mission', by: 'mission:' + off.id });
+            } else this.ai.cmd({ c: 'move', units: ids, tile: off.tile, attackMove: true, formation: 'wedge', auth: 'mission', by: 'mission:' + off.id });
+          });
+          if (guns.length) { const back = hexLine(off.tile, off.staging >= 0 ? off.staging : guns[0].tile)[4] ?? mid; this.ai.cmd({ c: 'move', units: guns.map((u) => u.id), tile: back, attackMove: true, auth: 'mission', by: 'mission:' + off.id }); }
+          off.wave = g.time; off.prongs = prongs;
+          this.setState(off, 'advance', prongs > 1 ? `the horde attacks from ${prongs} directions` : 'the horde attacks');
+          return;
+        }
+        if (g.time - off.wave > 10) {
+          off.wave = g.time;
+          // reinforcements from the reserve join the rush; idle members go again
+          const extra = reserve().filter((u) => dist(u.tile, off.tile) < 30 && UNITS[u.type].cat !== 'artillery').slice(0, 6);
+          if (extra.length) take(off, extra);
+          const idle = [...off.units].map((id) => g.units.get(id)).filter((u) => u && !u.path.length && !u.field && u.order.kind !== 'attack' && UNITS[u.type].cat !== 'artillery');
+          if (idle.length) this.ai.cmd({ c: 'move', units: idle.map((u) => u.id), tile: off.tile, attackMove: true, formation: 'wedge', auth: 'mission', by: 'mission:' + off.id });
         }
         return;
       }
-      if (toObj > 4) return;     // consolidating on the current line
     }
     const town = off.buildingId >= 0 ? g.buildings.get(off.buildingId) : null;
     // siege termination: once the town is broken, troops walk in to take it (a capture needs ground

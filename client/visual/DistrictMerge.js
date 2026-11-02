@@ -65,14 +65,15 @@ export class DistrictMerge {
     for (const arr of comps.values()) {
       if (arr.length < 2) continue;
       const grp = GROUP[arr[0].ty];
-      for (const b of arr) g.ellipse(X[b.t], v.cy[b.t] + 1, 12.5, 11).fill({ color: GROUND[grp], alpha: grp === 'farm' ? 0.28 : 0.42 });
+      // feathered: denser in the middle of each member, fading into the terrain at the district's edge
+      for (const b of arr) for (const [k, a] of [[1.08, 0.1], [0.85, 0.13], [0.6, 0.16]]) g.ellipse(X[b.t], v.cy[b.t] + 1, 12.5 * k, 11 * k).fill({ color: GROUND[grp], alpha: grp === 'farm' ? a * 0.7 : a });
     }
     for (const [a, b] of links) {
       const grp = GROUP[a.ty], x0 = X[a.t], y0 = v.cy[a.t], x1 = v.near ? v.near(X[b.t], x0) : X[b.t], y1 = v.cy[b.t];
       const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, px = -uy, py = ux;
       const seed = a.id * 31 + b.id;
       // the ground across the shared edge
-      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 13, color: GROUND[grp], alpha: grp === 'farm' ? 0.3 : 0.45 });
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 13, color: GROUND[grp], alpha: grp === 'farm' ? 0.12 : 0.18 }).moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 7, color: GROUND[grp], alpha: grp === 'farm' ? 0.12 : 0.2 });
       const era = eraOf(a.o), wall = ERA_WALL[Math.min(4, era)], roof = ERA_ROOF[Math.min(4, era)];
       if (grp === 'res') {
         // a terrace straddling the edge: three joined houses, back gardens behind

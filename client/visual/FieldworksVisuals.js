@@ -24,10 +24,11 @@ export function drawFieldworks(g, v, S, strategic) {
     const [fx, fy] = DIRV[f.dir] || [0, -1];
     const [rx, ry] = [-fy, fx];
     if (strategic) {
-      // understated defensive-line symbol
-      if (links.length) for (const [dx, dy] of links) g.moveTo(x, y).lineTo(x + dx / 2, y + dy / 2).stroke({ width: 3, color: col, alpha: 0.8 });
-      else g.moveTo(x - rx * 7, y - ry * 7).lineTo(x + rx * 7, y + ry * 7).stroke({ width: 3, color: col, alpha: 0.8 });
-      g.moveTo(x, y).lineTo(x + fx * 4, y + fy * 4).stroke({ width: 2, color: col, alpha: 0.8 });
+      // the map symbol for a defensive line: a bold line with teeth pointing at the enemy
+      const segs0 = links.length ? links.map(([dx, dy]) => [x, y, x + dx / 2, y + dy / 2]) : [[x - rx * 8, y - ry * 8, x + rx * 8, y + ry * 8]];
+      for (const [x0, y0, x1, y1] of segs0) g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 4.5, color: 0x0b1518, alpha: 0.7 }).moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: col, alpha: stage === 3 ? 0.95 : 0.55 });
+      for (const [x0, y0, x1, y1] of segs0) { const mx = (x0 + x1) / 2, my = (y0 + y1) / 2; g.poly([mx - rx * 2.6, my - ry * 2.6, mx + fx * 4.5, my + fy * 4.5, mx + rx * 2.6, my + ry * 2.6]).fill({ color: col, alpha: stage === 3 ? 0.95 : 0.55 }); }
+      if (f.type === 'reinforced' && stage === 3) g.rect(x - 2.2, y - 2.2, 4.4, 4.4).fill({ color: col }).stroke({ width: 1, color: 0x0b1518 });
       continue;
     }
     // the cut: through every link to the hex edge, else across the facing
@@ -54,8 +55,21 @@ export function drawFieldworks(g, v, S, strategic) {
           g.ellipse(bx, by, 1.7, 1.1).fill({ color: i % 2 ? BAG : BAG_D }).stroke({ width: 0.4, color: 0x5a4c33 });
         }
         if (stage === 3) for (let i = 1; i < 4; i += 2) { const t = i / 4, bx = x0 + (x1 - x0) * t - fx * 2.2, by = y0 + (y1 - y0) * t - fy * 2.2; g.rect(bx - 0.9, by - 0.9, 1.8, 1.8).fill({ color: WOOD }); }
+        // barbed wire out in front of a finished line: pickets and a tangle of strands between them
+        if (stage === 3) {
+          const wx0 = x0 + fx * 6.5, wy0 = y0 + fy * 6.5, wx1 = x1 + fx * 6.5, wy1 = y1 + fy * 6.5, n = 4;
+          g.moveTo(wx0, wy0);
+          for (let i = 1; i <= n * 2; i++) { const t = i / (n * 2); g.lineTo(wx0 + (wx1 - wx0) * t + (i % 2 ? fx : -fx) * 1.1, wy0 + (wy1 - wy0) * t + (i % 2 ? fy : -fy) * 1.1); }
+          g.stroke({ width: 0.45, color: 0x8a8a84, alpha: dmg ? 0.5 : 0.85 });
+          for (let i = 0; i <= n; i++) { if (dmg && h(f.t, i, 11) < 0.4) continue; const t = i / n, px = wx0 + (wx1 - wx0) * t, py = wy0 + (wy1 - wy0) * t; g.moveTo(px - 1, py - 1).lineTo(px + 1, py + 1).moveTo(px + 1, py - 1).lineTo(px - 1, py + 1).stroke({ width: 0.6, color: 0x4a3c2c }); }
+        }
       }
-      if (f.type === 'reinforced' && stage === 3) g.circle(x + fx * 4.5, y + fy * 4.5, 1.6).fill({ color: BAG }).stroke({ width: 0.5, color: 0x5a4c33 });
+      // reinforced lines carry a concrete pillbox with a firing slit facing the enemy
+      if (f.type === 'reinforced' && stage === 3) {
+        g.ellipse(x + fx * 2 + 0.6, y + fy * 2 + 0.8, 3.6, 2.6).fill({ color: 0x000000, alpha: 0.25 });
+        g.ellipse(x + fx * 2, y + fy * 2, 3.4, 2.5).fill({ color: 0x9a9890 }).stroke({ width: 0.5, color: 0x55524c });
+        g.moveTo(x + fx * 4 - rx * 1.4, y + fy * 4 - ry * 1.4).lineTo(x + fx * 4 + rx * 1.4, y + fy * 4 + ry * 1.4).stroke({ width: 0.8, color: 0x1a1816 });
+      }
     }
     if (dmg) for (let k = 0; k < 3; k++) { const a = h(f.t, k, 9) * 6.28; g.ellipse(x + Math.cos(a) * 5, y + Math.sin(a) * 5, 2.6, 1.6).fill({ color: SOIL, alpha: 0.9 }); }
     // owner tick (so a captured or enemy line is readable)

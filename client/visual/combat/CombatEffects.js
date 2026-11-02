@@ -75,17 +75,22 @@ export class CombatEffects {
     }
     const g = this.fxG; g.clear();
     const lodStrategic = S.lod === 'strategic';
+    // effects keep a readable size on screen: zoomed out, flashes, fire and smoke grow so a battle
+    // reads as a battle at every zoom, not as a few specks and the craters they leave
+    const K = this.K = Math.max(1, Math.min(3, 1.25 / Math.max(0.2, this.v.cam.z)));
     // ground marks first (under the fire and smoke)
     this.scorch = this.scorch.filter((s) => (s.t += dt) < s.ttl);
     for (const s of this.scorch) { const a = 1 - s.t / s.ttl; g.ellipse(s.x, s.y, s.r * 1.25, s.r).fill({ color: 0x15110d, alpha: 0.42 * a }); if (s.r > 12) g.ellipse(s.x, s.y, s.r * 0.7, s.r * 0.55).fill({ color: 0x0c0a08, alpha: 0.3 * a }); }
     this.drawMissiles(g, dt);
     // tracers: a bright head and a short fading tail
     this.shots = this.shots.filter((s) => (s.t += dt) < s.delay + s.ttl);
-    if (!lodStrategic) for (const s of this.shots) {
+    for (const s of this.shots) {
       if (s.t < s.delay) continue;
-      const p = (s.t - s.delay) / s.ttl, hp = Math.min(1, p * 1.3), tp = Math.max(0, p * 1.3 - 0.3);
+      const p = (s.t - s.delay) / s.ttl, hp = Math.min(1, p * 1.3), tp = Math.max(0, p * 1.3 - 0.45);
       const hx = s.x0 + (s.x1 - s.x0) * hp, hy = s.y0 + (s.y1 - s.y0) * hp, tx = s.x0 + (s.x1 - s.x0) * tp, ty = s.y0 + (s.y1 - s.y0) * tp;
-      g.moveTo(tx, ty).lineTo(hx, hy).stroke({ width: s.heavy ? 0.9 : 0.55, color: s.col, alpha: 0.85 * (1 - p * 0.4) });
+      const w = (s.heavy ? 1.1 : 0.7) * K;
+      g.moveTo(tx, ty).lineTo(hx, hy).stroke({ width: w * 2.4, color: s.col, alpha: 0.18 * (1 - p * 0.4) });     // glow
+      g.moveTo(tx, ty).lineTo(hx, hy).stroke({ width: w, color: s.col, alpha: 0.95 * (1 - p * 0.4) });
     }
     // projectiles in flight
     for (const [id, p] of this.proj) {
@@ -101,34 +106,36 @@ export class CombatEffects {
       if (p.kind === 'missile' || p.kind === 'rocket') {
         // exhaust: a hot point and a trail of smoke puffs left in the air
         if (!lodStrategic && (p.pt = (p.pt || 0) + dt) > 0.03 && !this.full()) { p.pt = 0; this.parts.push({ kind: 'smoke', x, y, z, vx: 0, vy: 0, vz: 1, r: 0.9, grow: 2.2, col: 0xcfcac0, a: 0.5, t: 0, ttl: p.kind === 'missile' ? 1.4 : 0.8 }); }
-        g.circle(x, y - z, 1.5).fill({ color: 0xffe2a0 }); g.circle(x, y - z, 3).fill({ color: 0xff9a3a, alpha: 0.35 });
+        g.circle(x, y - z, 1.5 * K).fill({ color: 0xffe2a0 }); g.circle(x, y - z, 3.2 * K).fill({ color: 0xff9a3a, alpha: 0.35 });
       } else if (p.kind === 'bomb') {
         const ang = Math.atan2(p.y1 - p.y0 - p.z0 * 0.5, p.x1 - p.x0);
         g.ellipse(x, y - z, 1.6, 0.9).fill({ color: 0x2a2826 });
         if (!lodStrategic) g.circle(x, y, 1.2 * k).fill({ color: 0x000000, alpha: 0.2 });   // its shadow closing in
         void ang;
       } else {
-        g.circle(x, y - z, p.arc ? 1.1 : 0.9).fill({ color: p.kind === 'cannon' ? 0xffd27a : 0x3a3530 });
-        if (p.kind === 'cannon') g.moveTo(x, y - z).lineTo(x - (p.x1 - p.x0) / p.L * 5, y - z - (p.y1 - p.y0) / p.L * 5).stroke({ width: 0.8, color: 0xffd27a, alpha: 0.6 });
+        g.circle(x, y - z, (p.arc ? 1.2 : 1) * K).fill({ color: p.kind === 'cannon' ? 0xffd27a : 0x3a3530 });
+        if (p.kind === 'cannon') g.moveTo(x, y - z).lineTo(x - (p.x1 - p.x0) / p.L * 7 * K, y - z - (p.y1 - p.y0) / p.L * 7 * K).stroke({ width: 1 * K, color: 0xffd27a, alpha: 0.7 });
+        else if (p.arc && !lodStrategic) g.circle(x, y, 0.8 * K * Math.min(1, k * 2)).fill({ color: 0x000000, alpha: 0.18 });   // a shell's shadow racing over the ground
       }
     }
     // flashes: muzzle cones, fireball cores, shock rings
     this.flashes = this.flashes.filter((f) => (f.t += dt) < f.ttl);
     for (const f of this.flashes) {
       if (f.t < 0) continue;
-      const k = f.t / f.ttl, a = 1 - k;
-      if (f.ring) g.circle(f.x, f.y, f.r * (0.25 + 0.75 * Math.sqrt(k))).stroke({ width: Math.max(0.4, f.w * a), color: f.col || 0xf6ecd8, alpha: a * (f.a ?? 0.45) });
+      const k = f.t / f.ttl, a = 1 - k, fr = f.r * K;
+      if (f.ring) g.circle(f.x, f.y, fr * (0.25 + 0.75 * Math.sqrt(k))).stroke({ width: Math.max(0.4, f.w * a * K), color: f.col || 0xf6ecd8, alpha: a * (f.a ?? 0.45) });
       else if (f.cone) {
-        const L = f.r * (0.7 + 0.3 * a), w = f.r * 0.45;
+        const L = fr * (0.7 + 0.3 * a), w = fr * 0.45;
         g.poly([f.x - f.dy * w * 0.4, f.y + f.dx * w * 0.4, f.x + f.dx * L, f.y + f.dy * L, f.x + f.dy * w * 0.4, f.y - f.dx * w * 0.4]).fill({ color: 0xffe9a8, alpha: a });
         g.circle(f.x, f.y, w * 0.6).fill({ color: 0xffffff, alpha: a * 0.9 });
       } else if (f.fire) {
         // a fireball: hot core inside a cooler shell, growing then collapsing into smoke
-        const r = f.r * (0.5 + 0.8 * Math.sqrt(k));
-        g.circle(f.x, f.y - f.r * k * 0.6, r).fill({ color: k < 0.4 ? 0xff9a2a : 0xd0561a, alpha: a * 0.85 });
-        g.circle(f.x, f.y - f.r * k * 0.6, r * 0.55).fill({ color: 0xffe6a0, alpha: Math.max(0, 1 - k * 2.2) });
-      } else g.circle(f.x, f.y, f.r * (0.6 + 0.4 * a)).fill({ color: f.col, alpha: a });
-      if (f.light && !lodStrategic) S.lightsList.push([f.x, f.y, f.r * 3, 0xffb050]);
+        const r = fr * (0.5 + 0.8 * Math.sqrt(k)), cy = f.y - fr * k * 0.7;
+        g.circle(f.x, cy, r * 1.6).fill({ color: 0xff7a1a, alpha: a * 0.22 });                           // heat glow
+        g.circle(f.x, cy, r).fill({ color: k < 0.4 ? 0xff9a2a : 0xd0561a, alpha: a * 0.9 });
+        g.circle(f.x - r * 0.15, cy - r * 0.15, r * 0.55).fill({ color: 0xffe6a0, alpha: Math.max(0, 1 - k * 2.2) });
+      } else g.circle(f.x, f.y, fr * (0.6 + 0.4 * a)).fill({ color: f.col, alpha: a });
+      if (f.light) S.lightsList.push([f.x, f.y, fr * 3, 0xffb050]);
     }
     // particles
     this.parts = this.parts.filter((p) => (p.t += dt) < p.ttl);
@@ -137,16 +144,15 @@ export class CombatEffects {
       const k = p.t / p.ttl;
       if (p.kind === 'smoke') {
         const wd = S.wind || WIND; p.x += (p.vx + wd[0] * k) * dt; p.y += (p.vy + wd[1] * k) * dt; p.z += p.vz * dt; p.vx *= 0.97; p.vy *= 0.97;
-        if (lodStrategic && p.r < 4) continue;
-        const r = p.r * (1 + k * p.grow);
+        const r = p.r * K * (1 + k * p.grow);
         g.circle(p.x, p.y - p.z, r).fill({ color: p.col, alpha: (1 - k) * (1 - k) * p.a });
         continue;
       }
       // debris, dirt, sparks: ballistic in z, they land and settle
       if (p.z > 0 || p.vz > 0) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.vz -= 90 * dt; if (p.z <= 0) { p.z = 0; p.vz = 0; p.vx = 0; p.vy = 0; } }
-      if (lodStrategic) continue;
-      if (p.kind === 'spark') g.rect(p.x - 0.4, p.y - p.z - 0.4, 0.8, 0.8).fill({ color: p.col, alpha: 1 - k });
-      else g.rect(p.x - p.r / 2, p.y - p.z - p.r / 2, p.r, p.r).fill({ color: p.col, alpha: p.z > 0 ? 1 : 1 - k });
+      const pr = p.r ? p.r * K : 0.8 * K;
+      if (p.kind === 'spark') g.rect(p.x - pr / 2, p.y - p.z - pr / 2, pr, pr).fill({ color: p.col, alpha: 1 - k });
+      else g.rect(p.x - pr / 2, p.y - p.z - pr / 2, pr, pr).fill({ color: p.col, alpha: p.z > 0 ? 1 : 1 - k });
     }
     this.drawStrikes(g, dt);
     this.drawBattlefield(t, dt);
@@ -172,6 +178,7 @@ export class CombatEffects {
       case 'mimpact': this.strike(dst[0], dst[1], e.r || 2); break;
       case 'fire': {
         if (src) this.muzzle(src, dst, wpn?.tracer === 'heavy' ? 1.2 : 0.8);
+        if (src && h(e.i, 77) < 0.35) this.puff(src[0] + (h(e.i, 78) - 0.5) * 4, src[1], 1.6, 0xd8d2c6, 0.22);   // gunsmoke drifts off the firing line
         const n = Math.min(8, e.x || 3);
         for (let i = 0; i < n; i++) {
           const j = (h(e.i, i) - 0.5) * 7, jy = (h(e.i, i, 3) - 0.5) * 6;
@@ -221,12 +228,12 @@ export class CombatEffects {
         this.explosion(dst[0], dst[1], 1.3, false);
         // a vehicle brews up: secondary flashes, then a column of black smoke that rises for a while
         for (let i = 1; i <= 2; i++) this.flashes.push({ x: dst[0] + (h(e.i, i) - 0.5) * 4, y: dst[1] - 2, r: 3.5, t: -0.25 * i, ttl: 0.4 + 0.25 * i, fire: true });
-        this.columns.push({ x: dst[0], y: dst[1], t: 0, ttl: 9, acc: 0, r: 2.6 });
+        this.columns.push({ x: dst[0], y: dst[1], t: 0, ttl: 28, acc: 0, r: 2.8 });
         break;
       }
       case 'bkill': {
         this.explosion(dst[0], dst[1], 2.2, false);
-        this.columns.push({ x: dst[0], y: dst[1], t: 0, ttl: 14, acc: 0, r: 4 });
+        this.columns.push({ x: dst[0], y: dst[1], t: 0, ttl: 45, acc: 0, r: 4.5 });
         for (let i = 0; i < 6; i++) this.puff(dst[0] + (h(e.i, i) - 0.5) * 16, dst[1] + (h(e.i, i, 2) - 0.5) * 12, 5, 0x5a524a, 0.5);
         break;
       }
@@ -279,9 +286,10 @@ export class CombatEffects {
   // the battlefield should read as many small violent events, not a field of giant flashes.
   explosion(x, y, size, small, inAir) {
     const S = this.S;
-    this.flashes.push({ x, y, r: 2.2 * size, col: 0xfff6dc, t: 0, ttl: 0.06, light: true });
-    this.flashes.push({ x, y, r: 3.4 * size, t: 0, ttl: 0.32 + 0.08 * size, fire: true });
-    if (!small) this.flashes.push({ x, y, r: 11 * size, w: 1.1, ring: true, a: 0.35, t: 0, ttl: 0.28 });
+    this.flashes.push({ x, y, r: 3 * size, col: 0xfff6dc, t: 0, ttl: 0.07, light: true });
+    this.flashes.push({ x, y, r: 4.6 * size, t: 0, ttl: 0.42 + 0.1 * size, fire: true });
+    if (size >= 1.1) this.flashes.push({ x: x + (Math.random() - 0.5) * 3 * size, y: y - 1, r: 3 * size, t: -0.06, ttl: 0.36, fire: true });   // a second, ragged lobe
+    if (!small) this.flashes.push({ x, y, r: 15 * size, w: 1.3, ring: true, a: 0.4, t: 0, ttl: 0.32 });
     if (!inAir && size >= 1.1) this.scorch.push({ x, y, r: 3.2 * size, t: 0, ttl: 25 });
     if (this.full()) return;
     const sc = Math.min(1.6, S.particleScale ?? 1);
@@ -292,7 +300,7 @@ export class CombatEffects {
         this.parts.push({ kind: 'dirt', x, y, z: 1, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.65, vz: 26 + Math.random() * 30 * size, r: 0.7 + Math.random() * 0.9, col: i % 3 ? 0x4a3f34 : 0x7d6c58, t: 0, ttl: 1.6 + Math.random() * 0.8 });
       }
     }
-    for (let i = 0; i < Math.ceil(size * 2 * sc); i++) this.puff(x + (Math.random() - 0.5) * 5 * size, y + (Math.random() - 0.5) * 3, 1.8 * size, inAir ? 0x4a4642 : i % 2 ? 0x6a625a : 0x9a9086, 0.38);
+    for (let i = 0; i < Math.ceil(size * 3 * sc); i++) this.puff(x + (Math.random() - 0.5) * 6 * size, y + (Math.random() - 0.5) * 4, 2.2 * size, inAir ? 0x4a4642 : i % 3 === 0 ? 0x3a3530 : i % 2 ? 0x6a625a : 0x9a9086, 0.42);
     if (!small) this.sparks(x, y, Math.round(2 * size), 0xffd080);
   }
 
@@ -446,9 +454,13 @@ export class CombatEffects {
     // smoke columns from destroyed vehicles: puffs rise and lean with the wind
     this.columns = this.columns.filter((c) => (c.t += dt) < c.ttl);
     for (const c of this.columns) {
-      if (S.lod === 'strategic' || this.full() || !v.inView(c.x, c.y, 60)) continue;
+      if (this.full() || !v.inView(c.x, c.y, 60)) continue;
       if ((c.acc += dt) > 0.16) { c.acc = 0; const k = c.t / c.ttl; this.parts.push({ kind: 'smoke', x: c.x + (Math.random() - 0.5) * 2, y: c.y, z: 2, vx: 0, vy: 0, vz: 7 + Math.random() * 3, r: c.r * (1 - k * 0.5), grow: 2.4, col: k < 0.5 ? 0x26221f : 0x4a4540, a: 0.55 * (1 - k * 0.6), t: 0, ttl: 4.5 }); }
-      if (c.t < c.ttl * 0.5) { const j = Math.sin(t * 11 + c.x) * 0.8; g.circle(c.x + j, c.y - 1.5, 1.4).fill({ color: 0xff7a1a, alpha: 0.9 }); S.lightsList.push([c.x, c.y, 8, 0xff7a2a]); }
+      if (c.t < c.ttl * 0.6) {
+        const K = this.K || 1;
+        for (let k = 0; k < 3; k++) { const j = Math.sin(t * 11 + c.x + k * 2.1) * 0.9; g.circle(c.x + (k - 1) * 1.3 * K + j * 0.4, c.y - (1.5 + Math.abs(j)) * K, (1.2 + (k % 2) * 0.7) * K).fill({ color: k % 2 ? 0xffb02e : 0xff5a14, alpha: 0.9 }); }
+        S.lightsList.push([c.x, c.y, 10 * K, 0xff7a2a]);
+      }
     }
     if (!bf) return;
     // burning wrecks (only what we can see: a remembered wreck does not keep burning for us)
@@ -459,7 +471,22 @@ export class CombatEffects {
       for (let k = 0; k < 4; k++) { const age = frac(t * 0.22 + k / 4 + h(tile, k)); g.circle(x + age * 6, y - 4 - age * 18, 1.5 + age * 3.5).fill({ color: 0x2a2622, alpha: (1 - age) * 0.4 }); }
       S.lightsList.push([x, y, 9, 0xff7a2a]);
     }
-    // battle haze: gunsmoke hanging low over hexes being fought over
+    // a battle in progress: a dusky glow where the guns are firing, flickers of fire through the
+    // smoke, and gunsmoke hanging low over the ground being fought over (at every zoom)
+    const KB = this.K || 1;
+    for (const b of S.battles || []) {
+      if (!this.seen(b.t)) continue;
+      const x = v.cx[b.t], y = v.cy[b.t]; if (!v.inView(x, y, 80)) continue;
+      const heat = Math.min(1, 0.4 + (b.n || 0) / 30);
+      g.circle(x, y, 26 * KB).fill({ color: 0xff8a3a, alpha: 0.05 * heat * (0.8 + 0.2 * Math.sin(t * 3 + b.t)) });
+      for (let k = 0; k < 5; k++) {
+        const ph = frac(t * (1.3 + h(b.t, k, 40)) + h(b.t, k, 41));
+        if (ph > 0.18) continue;
+        const fx = x + (h(b.t, k, Math.floor(t * 1.3 + k)) - 0.5) * 34, fy = y + (h(b.t, k, Math.floor(t * 1.3 + k) + 9) - 0.5) * 24;
+        g.circle(fx, fy, 2.2 * KB * (1 - ph / 0.18)).fill({ color: 0xffd890, alpha: 0.7 * heat * (1 - ph / 0.18) });
+      }
+      for (let k = 0; k < 6; k++) { const age = frac(t * 0.05 + k / 6 + h(b.t, k)); g.circle(x + (h(b.t, k) - 0.5) * 30 + age * 12, y + (h(b.t, k, 5) - 0.5) * 20 - age * 5, (8 + age * 10) * Math.sqrt(KB)).fill({ color: 0xb4ada2, alpha: Math.sin(age * Math.PI) * 0.16 * heat }); }
+    }
     if (atLeast(S, 'city')) for (const b of S.battles || []) {
       if (!this.seen(b.t)) continue;
       const x = v.cx[b.t], y = v.cy[b.t]; if (!v.inView(x, y, 40)) continue;

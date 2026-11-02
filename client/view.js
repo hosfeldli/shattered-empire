@@ -2,7 +2,7 @@
 // units, server-computed paths and placements) plus purely decorative ambient life (client/visual).
 /* global PIXI */
 import { AmbientWorld } from './visual/AmbientWorld.js';
-import { lodFor, h as hh } from './visual/VisualLOD.js';
+import { lodFor, h as hh, frac } from './visual/VisualLOD.js';
 import { drawUnitBody } from './visual/MilitaryVisuals.js';
 import { UnitAtlas, attachArt, updateArt } from './visual/UnitSpriteManager.js';
 import { drawFieldworks } from './visual/FieldworksVisuals.js';
@@ -15,9 +15,12 @@ import { WeatherField } from './visual/WeatherField.js';
 import { CloudSystem } from './visual/CloudSystem.js';
 import { WeatherEffects } from './visual/WeatherEffects.js';
 import { OceanSurface } from './visual/OceanSurface.js';
+import { WaterShader } from './visual/WaterShader.js';
 import { DistrictMerge } from './visual/DistrictMerge.js';
+import { lineAcross } from '/shared/deploy.js';
 
 export const R = 12;
+const R_HEX = 12;
 export const SQ3 = Math.sqrt(3);
 const HW = (R * SQ3) / 2;
 export const CORNERS = [...Array(6)].map((_, k) => { const a = (Math.PI / 180) * (60 * k - 30); return [Math.cos(a), Math.sin(a)]; });
@@ -30,6 +33,7 @@ const RES_COLORS = { 1: '#1c1c1c', 2: '#d7d9dc', 3: '#3a3a3a', 4: '#c6f', 5: '#e
 const DEPOSIT = { 1: ['rgba(20,18,16,0.55)', 'rgba(40,34,28,0.45)'], 2: ['rgba(150,72,48,0.6)', 'rgba(120,96,88,0.55)', 'rgba(170,90,60,0.5)'], 3: ['rgba(26,24,22,0.65)', 'rgba(50,46,42,0.55)'], 4: ['rgba(150,100,200,0.55)', 'rgba(120,90,150,0.5)'], 5: ['rgba(226,218,198,0.6)', 'rgba(190,182,164,0.55)'], 7: ['rgba(140,110,80,0.5)', 'rgba(90,80,70,0.55)'] };
 const ROAD_STYLE = { 1: { w: 2.2, c: '#8c6a3c' }, 2: { w: 2.8, c: '#5f6266' }, 3: { w: 3.6, c: '#3b3e42' }, 4: { w: 3, c: '#2a2724' } };
 const CH = 32; // tiles per chunk side
+const TURRETED = new Set(['tank', 'autonomous_tank', 'sp_artillery', 'armored_car', 'mech_infantry', 'air_defense']);
 
 export class View {
   constructor(S, host) {
@@ -73,18 +77,24 @@ export class View {
     this.decalG = L('g'); this.wreckG = L('g'); this.cfxG = L('g'); this.smokeG = L('g'); this.engageG = L('g');
     // aircraft: ground shadows under the units, operational markers (patrol orbits, fuel, AA threat) over them
     this.airShadowG = L('g'); this.airG = L('g');
+    this.shieldG = L('g');      // energy domes over everything they cover
+    this.motionG = L('g');      // small moving details on buildings (flags, beacons)
     this.world.addChild(this.borders, this.front, this.districtLayer, this.ruinsG, this.fwG, this.decalG, this.underG, this.bLayer, this.wreckG, this.ambientG, this.airShadowG, this.uLayer, this.cfxG, this.smokeG, this.fxG, this.engageG, this.tacG, this.airG, this.overlay, this.ghost, this.campG, this.overlayTags);
     this.resLayer = L(); this.world.addChildAt(this.resLayer, this.world.getChildIndex(this.tacG));
     // weather and sea: animated water and soaked ground under the fog overlay; cloud shadows over the
-    // units; rain, snow and lightning, fog banks and high wisps above everything but the map's markers
+    // units; fog banks and the clouds overhead above everything but the map's markers
     this.oceanG = L('g'); this.wetLayer = L(); this.world.addChildAt(this.oceanG, this.world.getChildIndex(this.overlayLayer)); this.world.addChildAt(this.wetLayer, this.world.getChildIndex(this.overlayLayer));
     this.cloudShadow = L(); this.world.addChildAt(this.cloudShadow, this.world.getChildIndex(this.cfxG));
+    this.world.addChildAt(this.shieldG, this.world.getChildIndex(this.smokeG) + 1);
+    this.world.addChildAt(this.motionG, this.world.getChildIndex(this.bLayer) + 1);
     this.precipG = L('g'); this.fogLayer = L(); this.skyLayer = L();
     for (const o of [this.fogLayer, this.precipG, this.skyLayer]) this.world.addChildAt(o, this.world.getChildIndex(this.overlay));
     this.wxField = new WeatherField(this, this.S);
     this.clouds = new CloudSystem(this, this.S, this.wxField, this.cloudShadow, this.skyLayer);
     this.weatherFx = new WeatherEffects(this, this.S, this.wxField, this.wetLayer, this.precipG, this.fogLayer);
     this.ocean = new OceanSurface(this, this.S, this.wxField, this.oceanG);
+    this.waterLayer = L(); this.world.addChildAt(this.waterLayer, this.world.getChildIndex(this.oceanG));
+    this.water = new WaterShader(this, this.S, this.waterLayer);
     this.resMarkers = new ResourceMarkers(this, this.S, this.resLayer);
     this.combat = new CombatEffects(this, this.S);
     this.combat.attach({ decal: this.decalG, wreck: this.wreckG, fx: this.cfxG, smoke: this.smokeG, engage: this.engageG });
@@ -431,8 +441,8 @@ export class View {
       s.body = new PIXI.Graphics(); s.addChild(s.body);
       s.label = new PIXI.Text({ text: this.S.defs.UNITS[u.type].glyph, style: { fontFamily: 'Barlow Semi Condensed, sans-serif', fontSize: 8, fontWeight: '700', fill: 0xffffff } });
       s.label.anchor.set(0.5); s.label.resolution = 3; s.addChild(s.label);
-      // illustrated artwork from the atlas (letter glyphs only as a fallback)
-      if (attachArt(s, this.atlas, u.type, this.S.defs.UNITS[u.type])) s.label.visible = false;
+      // an icon badge always; illustrated artwork from the atlas close up
+      attachArt(s, this.atlas, u.type, this.S.defs.UNITS[u.type]); s.label.visible = false; this.S.atlasReady = this.atlas.ready;
       s.dx = this.cx[u.tile]; s.dy = this.cy[u.tile]; s.heading = 0; s.utype = u.type;
       s.position.set(s.dx, s.dy);
       this.uLayer.addChild(s); this.unitSprites.set(u.id, s); s.key = '';
@@ -479,6 +489,7 @@ export class View {
     if (b.st === 'damaged') return ['DAMAGED', 0xffd9cf, 0x6a2a1e, 'damaged'];
     if (b.na && inspect) return ['NEEDS MUNITIONS', 0x1b1405, 0xf0b54a, 'input'];
     if (b.st === 'planned') return [inspect ? 'AWAITING FUNDS' : 'PLANNED', 0x1b1405, 0xf1c75b, 'funds'];
+    if (!b.d && b.qw && inspect) return [`QUEUED · ${b.qw} AHEAD`, 0x1b1405, 0xd8cfa8, 'funds'];
     if (!b.d) return inspect && (b.cr || 1) < 0.6 ? ['SLOW: FEW HANDS', 0x1b1405, 0xf0b54a, 'staff'] : null;
     if (!inspect) return null;
     if (b.w === 'staff') return ['NO WORKERS', 0x1b1405, 0xf0b54a, 'staff'];
@@ -744,7 +755,10 @@ export class View {
         const alt = !aloft ? 0 : def.alt === 'high' ? 12 : 6;
         s.alt = s.alt == null ? alt : s.alt + (alt - s.alt) * Math.min(1, dt * 1.5);
         const hover = def.air ? s.alt + (aloft && def.alt !== 'high' ? Math.sin(this.t * 3 + u.id) * 1.2 : 0) : 0;
-        s.position.set(s.dx, s.dy - hover);
+        // a little life: marching infantry bob, vehicles hum on the move, both settle when still
+        const moving = Math.hypot(s.dx - ox, s.dy - oy) > 0.02;
+        const bob = def.air || S.prefs?.reducedMotion ? 0 : moving ? (def.move === 'infantry' ? Math.abs(Math.sin(this.t * 8 + u.id)) * 0.7 : Math.sin(this.t * 31 + u.id) * 0.18) : Math.sin(this.t * 1.3 + u.id) * 0.12;
+        s.position.set(s.dx, s.dy - hover - bob);
         if (def.air) {
           // banking: the turn rate narrows the wingspan as the aircraft rolls into the turn
           const hd = s.heading ?? 0, dh = Math.atan2(Math.sin(hd - (s.lastHd ?? hd)), Math.cos(hd - (s.lastHd ?? hd)));
@@ -753,10 +767,12 @@ export class View {
         s.visible = this.inView(s.dx, s.dy, 20);
         if (!s.visible) return;
         const sel = S.selUnits.has(u.id);
-        updateArt(s, u, def, S, s.heading, S.lod === 'strategic');
-        const key = [u.hp, u.sup, u.flags, sel, u.owner, S.lod, s.art ? u.vet : Math.round(s.heading * 4), u.det, S.prefs?.factionPattern, S.prefs?.highContrast].join('|');
-        if (key !== s.key) { s.key = key; drawUnitBody(s.body, u, def, S, sel, s.heading, !!s.art); s.label.visible = !s.art && S.lod !== 'strategic'; }
-        if (s.art && S.lod === 'strategic') s.scale.set(Math.min(2.2, 0.9 / this.cam.z)); else if (s.scale.x !== 1) s.scale.set(1);
+        updateArt(s, u, def, S, s.heading, S.lod !== 'micro');
+        this.turret(s, u, def, dt);
+        const key = [u.hp, u.sup, u.flags, sel, u.owner, S.lod, u.vet, u.det, S.prefs?.factionPattern, S.prefs?.highContrast].join('|');
+        if (key !== s.key) { s.key = key; drawUnitBody(s.body, u, def, S, sel, s.heading, true); }
+        // badges keep a readable size on screen
+        if (S.lod === 'strategic') s.scale.set(Math.min(2.2, 0.9 / this.cam.z)); else if (S.lod === 'city') s.scale.set(Math.min(1.6, Math.max(0.85, 1.05 / this.cam.z))); else if (s.scale.x !== 1) s.scale.set(1);
         if (def.air && s.art) { s.artS = s.artS || s.art.scale.x; s.art.scale.set(s.artS * (u.air?.grounded ? 0.85 : 1), s.artS * (u.air?.grounded ? 0.85 : 1) * (1 - Math.min(0.45, Math.abs(s.bank || 0) * 0.45))); }
         // screen-space spatial index for O(1) hit-testing
         const [px, py] = this.worldToScreen(s.dx, s.dy);
@@ -766,15 +782,110 @@ export class View {
     for (const [id, s] of this.unitSprites) if (!seen.has(id)) { s.destroy({ children: true }); this.unitSprites.delete(id); }
     for (const [k, bt] of this.stackBadges) if (!badges.has(k)) { bt.destroy(); this.stackBadges.delete(k); }
     this.drawAir(dt);
+    this.drawShields();
+    this.drawMotion();
     this.ambient.frame(dt, this.t);
     this.combat.frame(dt, this.t);
     this.resMarkers.frame(this.t);
-    this.ocean.frame(this.t); this.clouds.frame(this.t); this.weatherFx.frame(this.t, dt);
+    this.water.frame(this.t); this.ocean.frame(this.t); this.clouds.frame(this.t, dt); this.weatherFx.frame(this.t, dt);
     this.audio?.frame(dt);
     this.drawOverlay();
     this.tacT = (this.tacT || 0) + dt; if (this.tacT > 0.25) { this.tacT = 0; this.drawTactical(); }
     this.drawCampaigns();
     this.drawFx(dt);
+  }
+
+  // Small, slow motion on buildings, nothing that pulls the eye: a pennant that waves over towns,
+  // barracks and forts; red beacons that blink on towers, airfields and silos; a shield emitter pulse.
+  drawMotion() {
+    const S = this.S, g = this.motionG; g.clear();
+    if (S.lod === 'strategic' || S.prefs?.reducedMotion) return;
+    const t = this.t || 0;
+    for (const b of S.buildings.values()) {
+      if (!b.d || b.st === 'planned') continue;
+      const s = this.buildingSprites.get(b.id); if (!s || !s.visible) continue;
+      const x = s.x, y = s.y;
+      if (b.ty === 'barracks' || b.ty === 'fort' || b.ty === 'town') {
+        const fx = x + (b.ty === 'town' ? -7 : 7), fy = y - (b.ty === 'fort' ? 13 : 11), col = S.civColor(b.o);
+        g.moveTo(fx, fy + 8).lineTo(fx, fy).stroke({ width: 0.6, color: 0x2a2a2a });
+        const p = [fx, fy];
+        for (let k = 1; k <= 4; k++) p.push(fx + k * 1.3, fy + Math.sin(t * 4 + k * 0.9 + b.id) * 0.45 * k / 4);
+        for (let k = 4; k >= 1; k--) p.push(fx + k * 1.3, fy + 2.4 + Math.sin(t * 4 + k * 0.9 + b.id) * 0.45 * k / 4);
+        p.push(fx, fy + 2.4);
+        g.poly(p).fill({ color: col });
+      } else if (b.ty === 'comms_tower' || b.ty === 'airfield' || b.ty === 'missile_silo' || b.ty === 'aa_battery') {
+        const on = frac(t * 0.7 + (b.id % 7) / 7) < 0.18;
+        const by = y - ({ comms_tower: 20, airfield: 9, missile_silo: 8, aa_battery: 6 }[b.ty] || 8);
+        g.circle(x + (b.ty === 'airfield' ? 5 : 0), by, on ? 1.2 : 0.7).fill({ color: on ? 0xff4a3a : 0x6a2a24, alpha: on ? 1 : 0.8 });
+        if (on) S.lightsList.push([x, by, 6, 0xff4a3a]);
+      } else if (b.ty === 'shield_generator') {
+        const k = 0.5 + 0.5 * Math.sin(t * 2.4 + b.id);
+        g.circle(x, y - 10, 3 + k * 1.6).fill({ color: 0x9ff0ff, alpha: 0.18 + 0.15 * k });
+      }
+    }
+  }
+
+  // Turreted vehicles: the turret turns (at its own traverse speed) toward whatever the vehicle is
+  // shooting at, and back to the front of the hull when it has no target.
+  turret(s, u, def, dt) {
+    if (!TURRETED.has(u.type)) return;
+    const show = !!s.art && s.art.visible;
+    if (!s.tur) { if (!show) return; s.tur = new PIXI.Graphics(); s.addChild(s.tur); s.turA = s.heading || 0; s.turC = -1; }
+    s.tur.visible = show; if (!show) return;
+    let want = s.heading || 0;
+    const tg = u.tgt ? this.unitSprites.get(u.tgt) : null;
+    if (tg) want = Math.atan2(tg.dy - s.dy, this.near(tg.dx, s.dx) - s.dx);
+    const d = Math.atan2(Math.sin(want - s.turA), Math.cos(want - s.turA));
+    s.turA += Math.max(-2.2 * dt, Math.min(2.2 * dt, d));
+    const col = this.S.civColor(u.owner);
+    if (s.turC !== col) {
+      s.turC = col;
+      const body = 0x4a4f48, k = def.cat === 'artillery' ? 1.3 : 1;
+      s.tur.clear().roundRect(-3.2 * k, -2.6 * k, 6 * k, 5.2 * k, 1.4).fill({ color: body }).stroke({ width: 0.5, color: 0x1b1d1a })
+        .rect(-1.6, -1.2, 2.2, 2.4).fill({ color: col, alpha: 0.85 })
+        .rect(2.6 * k, -0.55, (def.cat === 'artillery' ? 10 : 7.5), 1.1).fill({ color: 0x2a2c28 });
+    }
+    s.tur.rotation = s.turA;
+  }
+
+  // Energy shields: a translucent dome over the covered ground with a slowly turning lattice of
+  // hexagons on its skin; it flares when it takes a hit, thins as it is worn down, and gutters out
+  // (a broken, flickering rim) when it is down or unpowered.
+  drawShields() {
+    const S = this.S, g = this.shieldG; g.clear();
+    const t = this.t || 0, now = performance.now() / 1000;
+    for (const b of S.buildings.values()) {
+      if (b.sh == null || !b.d) continue;
+      const x = this.cx[b.t], y = this.cy[b.t];
+      const R = 3.4 * R_HEX * SQ3, ry = R * 0.8;
+      if (!this.inView(x, y, R + 10)) continue;
+      const k = b.sh / 100;
+      const mem = (this.shieldMem || (this.shieldMem = new Map())).get(b.id) || { prev: b.sh, hit: -9 };
+      if (b.sh < mem.prev - 0.5) mem.hit = now;
+      mem.prev = b.sh; this.shieldMem.set(b.id, mem);
+      const hit = Math.max(0, 1 - (now - mem.hit) / 0.6);
+      const col = S.civColor(b.o);
+      if (k < 0.03) {
+        // down: a broken rim that sputters
+        for (let a = 0; a < 12; a++) if (Math.sin(t * 9 + a * 2.3 + b.id) > 0.55) g.moveTo(x + Math.cos(a / 12 * 6.283) * R, y + Math.sin(a / 12 * 6.283) * ry).lineTo(x + Math.cos((a + 0.6) / 12 * 6.283) * R, y + Math.sin((a + 0.6) / 12 * 6.283) * ry);
+        g.stroke({ width: 1, color: 0x9ff0ff, alpha: 0.35 });
+        continue;
+      }
+      g.ellipse(x, y, R, ry).fill({ color: 0x9ff0ff, alpha: 0.05 + 0.05 * k + 0.18 * hit });
+      g.ellipse(x, y - ry * 0.35, R * 0.62, ry * 0.42).fill({ color: 0xffffff, alpha: 0.03 + 0.04 * k });          // the dome's lit crown
+      g.ellipse(x, y, R, ry).stroke({ width: 1.4 + 2 * hit, color: hit > 0 ? 0xe8ffff : 0x9ff0ff, alpha: 0.35 + 0.35 * k + 0.3 * hit });
+      // lattice: hexagon cells on the dome's skin, drifting round
+      if (S.lod !== 'strategic') {
+        const rot = t * 0.08 + b.id;
+        for (let ring = 1; ring <= 2; ring++) for (let a = 0; a < ring * 6; a++) {
+          const ang = rot + (a / (ring * 6)) * 6.283, rr = (ring / 2.6) * R;
+          const cx = x + Math.cos(ang) * rr, cy = y + Math.sin(ang) * rr * 0.8, s = R * 0.12;
+          const p = []; for (let j = 0; j < 6; j++) { const aa = j * 1.047 + 0.52; p.push(cx + Math.cos(aa) * s, cy + Math.sin(aa) * s * 0.8); }
+          g.poly(p).stroke({ width: 0.6, color: 0x9ff0ff, alpha: (0.1 + 0.15 * k) * (0.6 + 0.4 * Math.sin(t * 2 + a + ring)) });
+        }
+      }
+      void col;
+    }
   }
 
   // Aircraft: ground shadows, contrails, servicing at airfields, and for our own aircraft the patrol
@@ -862,6 +973,9 @@ export class View {
   // Only what this client has been sent (fog-filtered by the server) is drawn.
   drawTactical() {
     const S = this.S, g = this.tacG; g.clear();
+    this.suggest = [];
+    for (const t of this.suggestTags || []) t.visible = false;
+    this.suggestTagN = 0;
     const lens = S.lens, D = S.defs; if (!D) return;
     const selF = new Set([...S.selUnits].map((id) => S.units.get(id)?.form).filter(Boolean));
     // convoys on the move always show their cargo and where they are going
@@ -875,6 +989,45 @@ export class View {
     if (lens !== 'front' && lens !== 'tactical' && !selF.size) return;
     const hexAt = (t, col, a) => g.poly(this.hexPoints(t, -1)).fill({ color: col, alpha: a });
     if (lens === 'front') {
+      const zs = 1 / Math.max(0.35, this.cam.z);
+      const hostile = (o) => o >= 0 && o !== S.civId && (S.civInfo[o]?.rel?.state === 'war' || S.civInfo[o]?.rebel);
+      // the front itself: every edge where our land meets land of an enemy we are at war with
+      for (let i = 0; i < this.N; i++) {
+        if (S.owner[i] !== S.civId) continue;
+        if (!this.inView(this.cx[i], this.cy[i], 20)) continue;
+        for (let d = 0; d < 6; d++) {
+          const n = this.nb(i, d); if (n < 0 || !hostile(S.owner[n])) continue;
+          const [a, b] = EDGE[d], x = this.cx[i], y = this.cy[i];
+          g.moveTo(x + R * CORNERS[a][0], y + R * CORNERS[a][1]).lineTo(x + R * CORNERS[b][0], y + R * CORNERS[b][1]);
+        }
+      }
+      g.stroke({ width: 4 * zs, color: 0xd0533b, alpha: 0.85 });
+      // suggested defensive lines: across the approach to each of our cities that an enemy can reach
+      const threats = [];
+      for (const c of S.cities.values()) if (hostile(c.o)) threats.push(c.t);
+      for (const u of S.units.values()) if (hostile(u.owner) && !D.UNITS[u.type].civilian && !D.UNITS[u.type].air) threats.push(u.tile);
+      const env = { W: this.W, H: this.H, wrap: this.wrap };
+      const dh = (a, b) => Math.hypot(this.near(this.cx[b], this.cx[a]) - this.cx[a], this.cy[b] - this.cy[a]) / (R * SQ3);
+      for (const c of S.cities.values()) {
+        if (c.o !== S.civId) continue;
+        let best = -1, bd = Infinity; for (const t of threats) { const d = dh(c.t, t); if (d < bd) { bd = d; best = t; } }
+        if (best < 0 || bd > 30) continue;
+        // already covered: a finished or planned trench between the city and the threat
+        const ahead = Math.max(2, Math.min(4, Math.floor(bd * 0.35)));
+        const line = lineAcross(env, c.t, best, 7, ahead); if (!line) continue;
+        const [a, b] = line, ax = this.cx[a], ay = this.cy[a], bx = this.near(this.cx[b], ax), by = this.cy[b];
+        const mx = (ax + bx) / 2, my = (ay + by) / 2;
+        let covered = false; for (const f of S.fw?.values() || []) if (f.o === S.civId && Math.hypot(this.near(this.cx[f.t], mx) - mx, this.cy[f.t] - my) < R * SQ3 * 3) { covered = true; break; }
+        if (covered) continue;
+        const tx = this.near(this.cx[best], mx) - mx, ty = this.cy[best] - my, tl = Math.hypot(tx, ty) || 1;
+        this.suggest.push({ a, b, x0: ax, y0: ay, x1: bx, y1: by });
+        const L = Math.hypot(bx - ax, by - ay), n = Math.max(4, Math.floor(L / (10 * zs)));
+        for (let k = 0; k < n; k += 2) g.moveTo(ax + (bx - ax) * k / n, ay + (by - ay) * k / n).lineTo(ax + (bx - ax) * (k + 1) / n, ay + (by - ay) * (k + 1) / n);
+        g.stroke({ width: 3 * zs, color: 0xf1c75b, alpha: 0.9 });
+        // teeth toward the threat: the map symbol for a defensive line
+        for (let k = 1; k < 6; k++) { const px = ax + (bx - ax) * k / 6, py = ay + (by - ay) * k / 6, ux = tx / tl, uy = ty / tl, s = 5 * zs; g.poly([px - uy * s * 0.6, py + ux * s * 0.6, px + ux * s, py + uy * s, px + uy * s * 0.6, py - ux * s * 0.6]).fill({ color: 0xf1c75b, alpha: 0.85 }); }
+        this.suggestTag(mx, my - 10 * zs, zs);
+      }
       const mine = new Map(), theirs = new Map();
       for (const u of S.units.values()) {
         const d = D.UNITS[u.type]; if (d.air || d.civilian || u.hp < 15) continue;
@@ -883,7 +1036,7 @@ export class View {
       }
       for (const [t, w] of mine) if (this.inView(this.cx[t], this.cy[t])) hexAt(t, theirs.has(t) ? 0xf0b54a : S.civColor(S.civId), theirs.has(t) ? 0.32 : w === 2 ? 0.22 : 0.1);
       for (const [t, w] of theirs) if (!mine.has(t) && this.inView(this.cx[t], this.cy[t])) hexAt(t, 0xd0533b, w === 2 ? 0.28 : 0.12);
-      for (const f of S.fw?.values() || []) if (f.p >= 100 && this.inView(this.cx[f.t], this.cy[f.t])) g.poly(this.hexPoints(f.t, -2)).stroke({ width: 1.6, color: f.o === S.civId ? 0x8fd19e : 0xd0533b, alpha: 0.9 });
+      for (const f of S.fw?.values() || []) if (this.inView(this.cx[f.t], this.cy[f.t])) g.poly(this.hexPoints(f.t, -2)).fill({ color: f.o === S.civId ? 0x8fd19e : 0xd0533b, alpha: f.p >= 100 ? 0.25 : 0.1 }).stroke({ width: 1.6 * zs, color: f.o === S.civId ? 0x8fd19e : 0xd0533b, alpha: f.p >= 100 ? 0.95 : 0.5 });
     }
     // formation lines (selected ones always; all of them on the tactical/front lenses)
     for (const f of S.econ?.formations || []) {
@@ -905,10 +1058,31 @@ export class View {
     }
   }
 
+  // a small label over a suggested defensive line (labels are pooled; hidden when unused)
+  suggestTag(x, y, zs) {
+    this.suggestTags = this.suggestTags || [];
+    let t = this.suggestTags[this.suggestTagN];
+    if (!t) { t = this.makeTag(this.overlayTags, 7); this.suggestTags.push(t); }
+    this.suggestTagN = (this.suggestTagN || 0) + 1;
+    this.setTag(t, 'Suggested line · click to dig', 0x1b1405, 0xf1c75b);
+    t.position.set(x, y); t.scale.set(Math.max(1, zs * 1.3)); t.visible = true;
+  }
+  // a suggested line near a world point (for clicks in the Front Lines lens)
+  suggestionAt(wx, wy) {
+    for (const s of this.suggest || []) {
+      const dx = s.x1 - s.x0, dy = s.y1 - s.y0, L2 = dx * dx + dy * dy || 1;
+      const k = Math.max(0, Math.min(1, ((wx - s.x0) * dx + (wy - s.y0) * dy) / L2));
+      if (Math.hypot(s.x0 + dx * k - wx, s.y0 + dy * k - wy) < 14 / Math.max(0.4, this.cam.z) + 6) return s;
+    }
+    return null;
+  }
+
   drawOverlay() {
     const S = this.S, g = this.overlay; g.clear();
     const m = S.mode;
     if (m && m.kind === 'build' && m.tiles) for (const i of m.tiles) if (this.inView(this.cx[i], this.cy[i])) g.poly(this.hexPoints(i, -1.5)).stroke({ width: 1.3, color: 0x8fe0a8, alpha: 0.85 });
+    // hexes painted by a drag, about to be built
+    if (m && m.kind === 'build' && m.paint) for (const i of m.paint) g.poly(this.hexPoints(i, -2.5)).fill({ color: 0xf1c75b, alpha: 0.35 }).stroke({ width: 1.6, color: 0xf1c75b, alpha: 0.95 });
     // ghost of the building under the cursor: its real artwork, green where it can go, red where not
     const gk = m && m.kind === 'build' && S.hover >= 0 ? m.type + '|' + S.hover + '|' + (m.tiles ? m.tiles.has(S.hover) : '?') + '|' + S.lod : '';
     if (gk !== this.ghostKey) {
@@ -921,6 +1095,21 @@ export class View {
       }
     }
     if (this.ghostKey) this.ghost.position.set(this.cx[S.hover], this.cy[S.hover]);
+    // rally points of the selected production buildings: a line from each to its flag
+    {
+      const zs = 1 / Math.max(0.4, this.cam.z), seen = new Set();
+      for (const id of S.selBuildings || []) {
+        const b = S.buildings.get(id); if (!b || b.o !== S.civId || !(b.r >= 0)) continue;
+        const x0 = this.cx[b.t], y0 = this.cy[b.t], x1 = this.nx(b.r, x0), y1 = this.cy[b.r];
+        const L = Math.hypot(x1 - x0, y1 - y0) || 1, n = Math.max(1, Math.floor(L / (8 * zs)));
+        for (let k = 0; k < n; k += 2) g.moveTo(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n).lineTo(x0 + (x1 - x0) * Math.min(1, (k + 1) / n), y0 + (y1 - y0) * Math.min(1, (k + 1) / n));
+        g.stroke({ width: 1.4 * zs, color: 0x8fe0a8, alpha: 0.8 });
+        if (seen.has(b.r)) continue; seen.add(b.r);
+        g.moveTo(x1, y1).lineTo(x1, y1 - 14 * zs).stroke({ width: 1.4 * zs, color: 0x1b2420 });
+        g.poly([x1, y1 - 14 * zs, x1 + 9 * zs, y1 - 11 * zs, x1, y1 - 8 * zs]).fill({ color: 0x8fe0a8 }).stroke({ width: 0.8 * zs, color: 0x1b2420 });
+        g.ellipse(x1, y1, 5 * zs, 3 * zs).stroke({ width: 1.2 * zs, color: 0x8fe0a8, alpha: 0.9 });
+      }
+    }
     // selected units' server-computed routes
     for (const id of S.selUnits) {
       const p = S.paths[id]; const s = this.unitSprites.get(id); if (!p || !p.length || !s) continue;
@@ -1080,7 +1269,7 @@ export function drawStatusIcon(g, kind, col) {
 }
 
 // Building finder classes (shared with the minimap).
-const FIND_CLASSES = { milprod: ['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'], defense: ['bunker', 'fort'], power: ['power_plant', 'fusion_plant'], research: ['academy', 'university', 'seismic'], food: ['farm', 'port'], logistics: ['depot', 'port', 'comms_tower'] };
+const FIND_CLASSES = { milprod: ['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex'], defense: ['bunker', 'fort'], power: ['power_plant', 'fusion_plant'], research: ['academy', 'university'], food: ['farm', 'port'], logistics: ['depot', 'port', 'comms_tower'] };
 export function findMatch(S, type, key) {
   if (!key) return false;
   if (!key.startsWith('class:')) return type === key;

@@ -92,8 +92,6 @@
           <label class="field inline world-only"><span>Map size</span><select id="mapSize"><option value="auto" selected>Fit to players</option><option value="small">Small (128)</option><option value="medium">Medium (192)</option><option value="large">Large (256)</option></select></label>
           <label class="field inline world-only"><span>World</span><select id="worldStyle"><option value="">Any</option><option value="continents">Continents</option><option value="pangaea">Pangaea</option><option value="archipelago">Archipelago</option><option value="inlandSea">Inland sea</option></select></label>
           <label class="field inline world-only"><span>Rebel Free Companies</span><input id="rebels" type="checkbox" checked></label>
-          <label class="field inline world-only" title="Earthquakes, eruptions, droughts, wandering rivers and rising mountains. Off by default: the world evolves peacefully."><span>Cataclysm mode</span><input id="cataclysm" type="checkbox"></label>
-          <label class="field inline world-only"><span>Cataclysm frequency</span><select id="cataclysmFreq"><option value="rare">Rare</option><option value="normal" selected>Normal</option><option value="frequent">Frequent</option></select></label>
           <label class="field inline"><span>Seed (blank for random)</span><input id="seed" inputmode="numeric" placeholder="random"></label>
         </details>
 
@@ -153,7 +151,6 @@
       <div class="realm"><span id="civName" class="civ-name"></span><span id="ageName" class="age"></span></div>
       <button id="researchChip" class="research-chip" title="Research (T): open the technology tree"><span class="rc-name" id="rcName">Research</span><span class="rc-bar"><i id="rcBar"></i></span><small id="rcEta"></small></button>
       <ul id="resources" class="resources"></ul>
-      <div class="seismo" title="Seismograph: tremors, eruptions and warnings across the continent"><canvas id="seismo" width="240" height="34"></canvas><span id="seismoLabel">Quiet</span></div>
       <button id="alertsBtn" class="alerts-btn" aria-label="Alerts" title="Alerts: nothing new"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6zm-2 15a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span class="badge" id="alN" hidden>0</span></button>
       <button id="btnPause" class="btn icon pause-btn" hidden aria-label="Pause" title="Pause the match (P)">&#10074;&#10074;</button>
       <div class="clock"><span id="clock">0:00</span><span id="net" class="net"></span></div>
@@ -196,7 +193,7 @@
     <div id="minimapWrap" class="plate">
       <canvas id="minimap" width="192" height="168"></canvas>
       <div class="mm-bar">
-        <button id="lensBtn" class="btn tiny" title="Map lens (L)" aria-haspopup="true">Lens: <span id="lensName">Terrain</span> ▾</button>
+        <button id="lensBtn" class="btn tiny" title="Map lens (L)" aria-haspopup="true">Lens: <span id="lensName">Terrain</span> ▾</button><div id="lensKey" class="lens-key" hidden></div>
         <select id="findType" class="findsel" title="Find buildings: highlight every building of a type or class (on the map and minimap)"><option value="">Find…</option></select>
         <button id="mmSize" class="btn tiny ghost" title="Minimap size" aria-label="Minimap size">⤢</button>
       </div>
@@ -222,7 +219,7 @@
           <button id="btnQuit" class="btn">Leave match</button>
           <button id="btnSurrender" class="btn danger">Surrender</button>
         </div>
-        <details class="shortcuts"><summary>Keyboard and mouse shortcuts</summary><p class="muted">Right-click move (aircraft: patrol; enemy: strike; own airfield: return), right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), WASD or arrows pan, Ctrl/Cmd+A attack-move, H hold, X withdraw, P pause (single player), T research, B build (Defenses → Trench Line to dig in), / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, F cycle formation (found a city with colonists), R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then train in total or per building, or set repeat production), Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p></details>
+        <details class="shortcuts"><summary>Keyboard and mouse shortcuts</summary><p class="muted">Right-click move (aircraft: patrol; enemy: strike; own airfield: return), right-click an enemy to attack (fire is spread over nearby threats; Ctrl/Cmd+right-click focus fire), right-drag to draw a deployment line (shorter = denser; Tab reverses the facing while dragging, Esc cancels), WASD or arrows pan, Q select every combat unit on screen (Shift+Q the whole army), E (or Ctrl/Cmd+A) attack-move, H hold, X withdraw, P pause (single player), T research, B build (Defenses → Trench Line to dig in), / search, Shift+right-click queue a waypoint, Alt+right-click attack-move, F cycle formation (found a city with colonists), R road planner, G form army, Ctrl+1–9 save group / 1–9 recall (twice to centre), double-click a unit for all of its type on screen (Ctrl/Cmd for the whole map), Alt-drag to box-select buildings, Shift-click to add a building, double-click a building for all of that type on screen (then upgrade them all, train in total or per building, or set repeat production), in build mode drag across hexes to place several or Shift+drag to fill an area, Space centre, L cycle lenses, K map key, trackpad or wheel to pan, pinch or +/- to zoom.</p></details>
         <p class="muted spec-only">Spectating: [ and ] follow the previous/next empire, P pause, , and . slower/faster, V toggles the followed empire's fog. WASD and arrows pan.</p>
         <div class="sound-settings" id="soundSettings">
           <h4>Sound</h4>

@@ -68,17 +68,27 @@ function ctx(g, o) {
   return C;
 }
 
-// Footprint pad: ground the building sits on, edged in the owner's colour so ownership reads at a glance.
-// A building on its own sits on a soft natural foundation with a faint owner's edge; inside a merged
-// district the district's shared ground replaces it (no hexagonal tokens in a city). The strong
-// owner's outline appears when the building is selected or hovered (drawn by the view).
-function pad(C, r, civ) {
-  const pts = []; for (let k = 0; k < 6; k++) { const a = (Math.PI / 180) * (60 * k - 30); pts.push(Math.cos(a) * r, Math.sin(a) * r); }
+// Ground contact: a building is set into its land, not stood on a token. A soft yard of worn ground
+// that feathers into the terrain (the terrain under it is already cleared), a contact shadow that
+// grounds the walls, and a few bushes and trees round the edge of the plot. Inside a merged district
+// the district's shared ground replaces the yard. Ownership shows as the owner's outline when the
+// building is pointed at or selected (drawn by the view) and in its flags and trim.
+function pad(C, r, civ, plants = true) {
   const { g, o } = C;
-  if (o.ghost) { g.poly(pts).stroke({ width: 0.8, color: 0xf1c75b, alpha: 0.7 }); return; }
-  if (o.merged) return;
-  g.ellipse(0, 0.6, r * 0.95, r * 0.8).fill({ color: C.era.ground, alpha: 0.34 * o.alpha });
-  g.poly(pts).stroke({ width: 0.8, color: civ, alpha: 0.32 * o.alpha });
+  if (o.ghost) { const pts = []; for (let k = 0; k < 6; k++) { const a = (Math.PI / 180) * (60 * k - 30); pts.push(Math.cos(a) * r, Math.sin(a) * r); } g.poly(pts).stroke({ width: 0.8, color: 0xf1c75b, alpha: 0.7 }); return; }
+  void civ;
+  if (!o.merged) for (const [k, a] of [[1, 0.1], [0.78, 0.13], [0.55, 0.16]]) g.ellipse(0, 0.8, r * k, r * k * 0.82).fill({ color: C.era.ground, alpha: a * o.alpha });
+  g.ellipse(0.8, 1.6, r * 0.62, r * 0.42).fill({ color: 0x000000, alpha: 0.12 * o.alpha });
+  if (!plants || o.lod === 'strategic' || o.building) return;
+  const id = o.id || 1;
+  for (let k = 0; k < 3; k++) {
+    const hk = ((id * 9301 + k * 49297) % 233280) / 233280;
+    if (hk < 0.3) continue;
+    const a = hk * 6.283 + k * 2.1, d = r * (0.78 + (k % 2) * 0.12), x = Math.cos(a) * d, y = Math.sin(a) * d * 0.85 + 1, rr = 1 + hk * 0.9;
+    g.ellipse(x + rr * 0.6, y + rr * 0.5, rr, rr * 0.7).fill({ color: 0x000000, alpha: 0.18 * o.alpha });
+    g.circle(x, y, rr).fill({ color: 0x46703a, alpha: o.alpha });
+    g.circle(x - rr * 0.3, y - rr * 0.35, rr * 0.45).fill({ color: 0x6f9a52, alpha: 0.8 * o.alpha });
+  }
 }
 
 const ART = {
@@ -271,14 +281,6 @@ const ART = {
     C.box(0, 1, 4.5, 4, 5, shade(stone, 1.1), shade(stone, 0.85));
     C.flag(0, -5, 8, o.civ);
   },
-  seismic(C, o) {
-    const e = C.era;
-    C.box(-3, 2, 6, 4, 3.4, e.roof, e.wall);
-    C.g.moveTo(4, 6).lineTo(4, -4); C.line(0x4a4a4a, 0.8);
-    C.g.ellipse(4, -5, 3.6, 2); C.fill(0xdfe3e4);
-    C.g.moveTo(-8, 7).lineTo(-6, 7).lineTo(-5, 5).lineTo(-4, 9).lineTo(-3, 6).lineTo(-1, 7); C.line(0x2fa36b, 0.5);
-    void o;
-  },
   university(C, o) {
     const e = C.era;
     C.g.rect(-8, 3, 16, 5); C.fill(0x5e8a44, 0.9);
@@ -300,10 +302,12 @@ const ART = {
     C.g.ellipse(-4, -4, 4, 2.6); C.fill(shade(C.era.metal, 1.1));
     C.box(5, 6, 2.4, 2.4, 7, C.era.glass, C.era.wall);
   },
-  stabilizer(C, o) {
-    C.g.circle(0, 4, 6); C.fill(0x6e7275, 0.8);
-    C.box(0, 4, 3, 3, 16, 0xbfc7cc, 0x8c98a2);
-    if (!o.ghost) for (let r = 0; r < 3; r++) C.g.ellipse(0, -2 - r * 4, 4.5 - r, 1.2).stroke({ width: 0.8, color: 0x6fe0ff, alpha: (o.active ? 0.9 : 0.4) * o.alpha });
+  shield_generator(C, o) {
+    const e = C.era;
+    C.box(0, 3, 9, 6, 3, e.roof, e.wall);
+    C.g.moveTo(-2.5, 1).lineTo(0, -9).lineTo(2.5, 1); C.line(0x7a8a94, 1);
+    C.g.circle(0, -10, 2.6); C.fill(0x9ff0ff);
+    if (!o.ghost) { C.g.circle(0, -10, 4.5).stroke({ width: 0.6, color: 0x9ff0ff, alpha: 0.6 * o.alpha }); C.g.ellipse(0, -10, 6.5, 1.8).stroke({ width: 0.5, color: 0x9ff0ff, alpha: 0.5 * o.alpha }); }
   },
   electronics_plant(C, o) {
     const e = C.era;
@@ -350,7 +354,7 @@ const ART = {
 // Strategic zoom: a distinct pictogram per building type on a category disc (readable without
 // colour), larger and ringed for military production and other key facilities.
 export const CAT_COL = { civic: 0xd9b44a, residential: 0xb08a5a, agri: 0x7da04a, industry: 0x8a6a4a, power: 0xe0c040, commerce: 0xd08a3a, science: 0x5a90c8, logistics: 0x4aa0a0, military: 0xb5432f };
-export const KEY_FACILITY = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'power_plant', 'fusion_plant', 'steel_mill', 'electronics_plant', 'university', 'fort', 'wonder', 'comms_tower', 'town', 'missile_silo', 'aa_battery']);
+export const KEY_FACILITY = new Set(['barracks', 'motor_works', 'heavy_assembly', 'airfield', 'drone_works', 'robotics_complex', 'power_plant', 'fusion_plant', 'steel_mill', 'electronics_plant', 'university', 'fort', 'wonder', 'comms_tower', 'shield_generator', 'town', 'missile_silo', 'aa_battery']);
 const W1 = 0xffffff;
 const ICON = {
   guard_post: (g) => { g.moveTo(-1.6, 3).lineTo(-0.8, -1.5).moveTo(1.6, 3).lineTo(0.8, -1.5).stroke({ width: 0.8, color: W1 }).rect(-1.8, -3.2, 3.6, 1.8).fill({ color: W1 }); },
@@ -372,15 +376,14 @@ const ICON = {
   fort: (g) => { const p = []; for (let k = 0; k < 10; k++) { const a = (k * Math.PI) / 5 - Math.PI / 2, r = k % 2 ? 1.5 : 3.4; p.push(Math.cos(a) * r, Math.sin(a) * r); } g.poly(p).fill({ color: W1 }); },
   steel_mill: (g) => { g.rect(-2.8, -0.5, 5.6, 3).fill({ color: W1 }).rect(-2, -3.2, 1.3, 2.8).fill({ color: W1 }).rect(0.4, -2.6, 1.3, 2.2).fill({ color: W1 }); },
   power_plant: (g) => { g.poly([0.8, -3.2, -2, 0.4, -0.2, 0.4, -0.8, 3.2, 2, -0.6, 0.2, -0.6]).fill({ color: W1 }); },
+  shield_generator: (g) => { g.arc(0, 2, 3.4, Math.PI, 0).stroke({ width: 1.1, color: W1 }).moveTo(-3.6, 2).lineTo(3.6, 2).stroke({ width: 0.9, color: W1 }).circle(0, 0, 0.9).fill({ color: W1 }); },
   fusion_plant: (g) => { g.circle(0, 0, 2.6).stroke({ width: 1.2, color: W1 }).circle(0, 0, 0.9).fill({ color: W1 }); },
   oil_well: (g) => { g.poly([0, -3.2, 2.2, 0.6, 1.3, 2.6, -1.3, 2.6, -2.2, 0.6]).fill({ color: W1 }); },
   munitions_plant: (g) => { g.roundRect(-1.3, -3, 2.6, 6, 1.3).fill({ color: W1 }); },
   motor_works: (g) => { g.circle(0, 0, 2.8).stroke({ width: 1.3, color: W1 }).circle(0, 0, 0.9).fill({ color: W1 }); },
   depot: (g) => { g.rect(-2.6, -2.6, 5.2, 5.2).stroke({ width: 1, color: W1 }).moveTo(-2.6, -2.6).lineTo(2.6, 2.6).moveTo(2.6, -2.6).lineTo(-2.6, 2.6).stroke({ width: 0.8, color: W1 }); },
-  seismic: (g) => { g.arc(0, -0.5, 2.8, Math.PI * 0.15, Math.PI * 0.85).stroke({ width: 1, color: W1 }).moveTo(0, 0).lineTo(0, 3).stroke({ width: 0.9, color: W1 }); },
   heavy_assembly: (g) => { g.rect(-3, -0.6, 5, 2.6).fill({ color: W1 }).rect(-1.4, -2, 2.4, 1.6).fill({ color: W1 }).moveTo(1, -1.3).lineTo(3.6, -1.3).stroke({ width: 0.9, color: W1 }); },
   airfield: (g) => { g.poly([0, -3.4, 0.7, -0.8, 3.4, 0.6, 3.4, 1.2, 0.7, 0.6, 0.5, 2.4, 1.4, 3, -1.4, 3, -0.5, 2.4, -0.7, 0.6, -3.4, 1.2, -3.4, 0.6, -0.7, -0.8]).fill({ color: W1 }); },
-  stabilizer: (g) => { g.ellipse(0, -1.5, 2.8, 1).stroke({ width: 0.9, color: W1 }).ellipse(0, 1.2, 2.2, 0.8).stroke({ width: 0.9, color: W1 }).moveTo(0, -3).lineTo(0, 3).stroke({ width: 0.8, color: W1 }); },
   electronics_plant: (g) => { g.rect(-2, -2, 4, 4).fill({ color: W1 }); for (let k = -1; k <= 1; k++) g.moveTo(-3, k * 1.3).lineTo(3, k * 1.3).stroke({ width: 0.6, color: W1 }); },
   comms_tower: (g) => { g.poly([0, -3.2, 2, 3, -2, 3]).stroke({ width: 0.9, color: W1 }).arc(0, -3.2, 1.6, Math.PI * 1.2, Math.PI * 1.8).stroke({ width: 0.7, color: W1 }); },
   drone_works: (g) => { g.moveTo(-2.4, -2.4).lineTo(2.4, 2.4).moveTo(2.4, -2.4).lineTo(-2.4, 2.4).stroke({ width: 0.9, color: W1 }); for (const [x, y] of [[-2.4, -2.4], [2.4, -2.4], [-2.4, 2.4], [2.4, 2.4]]) g.circle(x, y, 0.9).fill({ color: W1 }); },
@@ -407,8 +410,8 @@ export function drawBuildingArt(g, b, def, o) {
     return;
   }
   const C = ctx(g, o);
-  if (b.ty !== 'airfield' && b.ty !== 'farm') pad(C, b.ty === 'town' ? 10.5 : 9.6, o.civ);
-  else if (!o.ghost) pad(C, 9.6, o.civ);
+  const bare = b.ty === 'airfield' || b.ty === 'farm' || b.ty === 'port' || def.cat === 'military' || def.cat === 'industry' || def.cat === 'power';
+  pad(C, b.ty === 'town' ? 10.5 : 9.6, o.civ, !bare);
   if (o.building && !o.ghost) {
     // foundation slab first, the structure fades in as crews raise it
     const fp = []; for (let k = 0; k < 6; k++) { const a = (Math.PI / 180) * (60 * k - 30); fp.push(Math.cos(a) * 7, Math.sin(a) * 6); }

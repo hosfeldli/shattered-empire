@@ -4,18 +4,18 @@ import { jobSlots, outMul, cityTier, CITY_TIERS } from './levels.js';
 import { revoltBlocked, noteRevolt, afterCapture } from './cities.js';
 import { ACTIVITY } from './logistics.js';
 import { book, ledgerStep } from './ledger.js';
-import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, aiProfile } from './constants.js';
+import { N, T, TERRAIN, BUILDINGS, UNITS, TECHS, TAX, RES, GOODS, ROAD_TYPES, PORT_FREIGHT, LOCAL_STORE, isWater, aiProfile, techFx } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { allocate } from './workforce.js';
 import { labor, populationStep, crowdingPenalty, hasServices, migrationStep as migrate } from './population.js';
 
-const BASE_PRIORITY = { town: 120, farm: 100, port: 95, lumber: 70, quarry: 66, salvage: 68, mine: 64, oil_well: 63, power_plant: 80, fusion_plant: 82, steel_mill: 60, munitions_plant: 52, electronics_plant: 54, market: 56, academy: 55, university: 52, seismic: 40 };
+const BASE_PRIORITY = { town: 120, farm: 100, port: 95, lumber: 70, quarry: 66, salvage: 68, mine: 64, oil_well: 63, power_plant: 80, fusion_plant: 82, steel_mill: 60, munitions_plant: 52, electronics_plant: 54, market: 56, academy: 55, university: 52 };
 const FOCUS_BONUS = {
   balanced: {},
   food: { farm: 20, port: 20 },
   industry: { lumber: 30, quarry: 30, salvage: 30, mine: 30, oil_well: 30, steel_mill: 35, electronics_plant: 30 },
   commerce: { market: 45, port: 15 },
-  science: { academy: 45, university: 45, seismic: 30 },
+  science: { academy: 45, university: 45 },
   military: { munitions_plant: 45, steel_mill: 40, mine: 30, oil_well: 30 },
 };
 
@@ -50,6 +50,21 @@ export const OVERLAND_FREIGHT = 6;
 // housing blocks: homes per level grow with the era (taller blocks, then apartment towers)
 export const HOUSE_LEVEL = [1, 2.4, 4.2];
 export function houseCapacity(civ, b) { return Math.round((6 + 2 * Math.min(4, civ.age)) * HOUSE_LEVEL[Math.max(0, Math.min(2, (b.level || 1) - 1))]); }
+
+// Land around an extraction site: each neighbouring hex of the right kind adds 15% (timber from
+// woods, stone from hills and mountains, harvests from open fertile land, catches from open sea).
+const SITE_LAND = {
+  lumber: (t) => t === T.FOREST,
+  quarry: (t) => t === T.HILLS || t === T.MOUNTAIN,
+  mine: (t) => t === T.HILLS || t === T.MOUNTAIN,
+  farm: (t) => t === T.GRASS || t === T.PLAINS,
+  port: (t) => t === T.SHALLOW || t === T.DEEP,
+};
+export function siteBonus(g, b) {
+  const f = SITE_LAND[b.type]; if (!f) return 1;
+  let n = 0; for (let d = 0; d < 6; d++) { const k = NB[b.tile * 6 + d]; if (k >= 0 && f(g.world.terr[k])) n++; }
+  return 1 + 0.15 * n;
+}
 
 export function recomputeTradeNetwork(g) {
   const roads = g.roads;
@@ -201,12 +216,6 @@ export function researchOpenFor(civ) {
   return false;
 }
 
-// survey stations (seismic stations) raise extraction within 4 hexes
-export function surveyed(g, civ, tile) {
-  for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === 'seismic' && b.done && b.state !== 'damaged' && dist(b.tile, tile) <= 4) return true;
-  return false;
-}
-
 export function rareAccess(g, civ) {
   if (g.civHasResource(civ, RES.RARE)) return true;
   if (civ.techs.has('materials_recycling')) return true;
@@ -262,6 +271,7 @@ export function economyStep(g, dt) {
       const jobs = { worker: 0, merchant: 0, specialist: 0 };
       const eff = c.stability < 20 ? 0.5 : 0.7 + 0.3 * Math.min(1, c.stability / 60) + (c.stability > 75 ? 0.1 : 0);
       const govMul = (gov === 'federal' ? 1.1 : 1) * (civ.isAI && !civ.isRebel ? aiProfile(civ).adv.econ : 1);
+      const fx = techFx(civ);
       const foodTarget = (FOOD_PER_POP * c.pop + upkeepShare) * (civ.focus === 'food' ? 1.6 : pool('food') > 600 ? 0.75 : pool('food') > 250 ? 1.0 : 1.25) - 0.4;
       const sites = blds.filter((b) => !b.done && b.funded).length;
       const alloc = allocate(c, blds, {
@@ -280,10 +290,28 @@ export function economyStep(g, dt) {
       for (const b of blds) {
         const def = BUILDINGS[b.type];
         const damaged = b.hp < b.maxHp * 0.5 ? 0.5 : 1;          // damaged buildings work at half capacity
+        // extraction sites yield from the land itself, staffed or not: one good timber mill in a
+        // forest does what a row of small ones used to
+        if (def.base && b.done && !b.off) {
+          const k0 = damaged * outMul(b) * siteBonus(g, b) * eff * govMul * dt;
+          for (const k in def.base) {
+            let v = def.base[k] * k0;
+            if (b.type === 'farm') v *= farmYield(g, civ, b);
+            if (k === 'materials' && P.has('extraction_quotas')) v *= 1.3;
+            if ((k === 'ore' || k === 'fuel') && P.has('extraction_quotas')) v *= 1.3;
+            if (b.type === 'quarry' && w.res[b.tile] === RES.STONE) v *= 1.5;
+            if (b.type === 'mine' && w.res[b.tile] !== RES.IRON && w.res[b.tile] !== RES.COAL) v *= 0.45;
+            v *= 1 + (fx[k] || 0);
+            cd[k] += v; grossNext[k] = (grossNext[k] || 0) + v / dt;
+            book(civ, k === 'credits' ? 'commerce' : 'production', k, v);
+            const gt = grossByType[b.type] || (grossByType[b.type] = {}); gt[k] = (gt[k] || 0) + v / dt;
+          }
+          b.active = true;
+        }
         if (!def.jobs) { b.why = def.power < 0 && b.queue.length && civ.techs.has('electrification') && pr < 0.6 ? 'power' : ''; if (def.power < 0) powerUse += -def.power * (b.queue.length ? 1 : 0.3); continue; }
         const [kind] = def.jobs;
         const n = b.staffed; jobs[kind] += n;
-        b.active = n > 0;
+        b.active = n > 0 || (!!def.base && b.done && !b.off);
         // the allocator explained idle buildings; production below explains limited ones
         if (!n) continue;
         if (def.power > 0) {
@@ -315,12 +343,12 @@ export function economyStep(g, dt) {
           if (k === 'materials') { if (P.has('rationing')) v *= 0.9; if (P.has('extraction_quotas')) v *= 1.3; }
           if (b.type === 'quarry' && w.res[b.tile] === RES.STONE) v *= 1.5;
           if (b.type === 'mine' && w.res[b.tile] !== RES.IRON && w.res[b.tile] !== RES.COAL) v *= 0.45;   // a shaft into bare hills: poor ore
-          if ((b.type === 'mine' || b.type === 'quarry' || b.type === 'oil_well') && surveyed(g, civ, b.tile)) v *= 1.15;   // survey stations
           if ((k === 'ore' || k === 'fuel') && P.has('extraction_quotas')) v *= 1.3;
           if (k === 'credits') { if (gov === 'corporate') v *= 1.3; if (P.has('research_grants')) v *= 0.9; if (P.has('martial_law')) v *= 0.85; if (b.type === 'market' && P.has('free_markets')) v *= 1.3; }
           if (k === 'munitions') { if (P.has('total_war')) v *= 1.3; if (P.has('free_markets')) v *= 0.9; if (P.has('industrial_planning')) v *= 1.3; }
           if (k === 'steel' && P.has('industrial_planning')) v *= 1.3;
           if (gov === 'corporate' && (k === 'steel' || k === 'munitions' || k === 'electronics')) v *= 1.1;
+          v *= 1 + (fx[k] || 0) + (k === 'steel' || k === 'munitions' || k === 'electronics' ? fx.industry || 0 : 0);
           if (k === 'research') { research += v; continue; }
           cd[k] += v; grossNext[k] = (grossNext[k] || 0) + v / dt;
           book(civ, k === 'credits' && b.type !== 'town' ? 'commerce' : 'production', k, v);
@@ -370,6 +398,9 @@ export function economyStep(g, dt) {
     if (civ.upkeep.fuel) { const f = Math.min(civ.res.fuel || 0, civ.upkeep.fuel * dt); delta.fuel -= f; book(civ, 'army', 'fuel', -f); }
     if (P.has('research_grants')) research *= 1.3;
     if (gov === 'technocracy') research *= 1.2;
+    research *= 1 + (techFx(civ).research || 0);
+    // the deeper a nation's knowledge, the harder the next step: every technology known slows research
+    research /= 1 + 0.1 * civ.techs.size;
     if (gov === 'junta') research *= 0.85;
     if (civ.isAI && !civ.isRebel) research *= aiProfile(civ).adv.research;
     civ.researchRate = research;
@@ -402,7 +433,6 @@ export function economyStep(g, dt) {
       if (P.has('extraction_quotas')) target -= 4;
       if (P.has('total_war')) target -= 10;
       if (P.has('industrial_planning')) target -= 5;
-      if (P.has('conservation')) target += 5;
       if (starving) target -= 30;
       if (c.pop > 0) target -= (c.unemployed / c.pop) * 22;
       target -= crowdingPenalty(c);
@@ -413,6 +443,11 @@ export function economyStep(g, dt) {
       if (enemyNear) target -= 8;
       if ((c.jobs.merchant || 0) > 0) target += 3;
       target += 3 * (c.tier || 0);                          // developed cities have services, policing, pride
+      target += techFx(civ).stability || 0;
+      // Sprawl: an empire larger than its era can administer is restless everywhere, and every
+      // settlement founded in the last few minutes strains the whole nation while it finds its feet.
+      { let n = 0, young = 0; for (const o of g.cities.values()) if (o.owner === civ.id) { n++; if (g.time - (o.founded ?? -1e9) < 240 && !o.capital) young++; }
+        target -= Math.max(0, n - (3 + civ.age)) * 5 + young * 4; }
       target = Math.max(0, Math.min(100, target));
       c.stability += (target - c.stability) * 0.06 * dt;
       c.disaster = Math.max(0, c.disaster - 0.35 * dt);

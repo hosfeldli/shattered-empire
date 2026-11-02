@@ -7,11 +7,12 @@ import { serializeGame, restoreGame } from '../server/sim/persist.js';
 import { spawnUnit } from '../server/sim/military.js';
 import { findPath } from '../server/sim/path.js';
 import { demobilize, casualty, recruitable } from '../server/sim/population.js';
-import { BUILDINGS, isWater, W, aiProfile } from '../server/sim/constants.js';
+import { BUILDINGS, TECHS, isWater, W, aiProfile } from '../server/sim/constants.js';
 import { disk, dist, idx, qOf, rOf, WRAP, NB } from '../server/sim/hex.js';
 
 const newGame = (seed = 7, extra = {}) => new Game({ id: 'o' + seed + Math.random(), seed, slots: [{ human: true }, { personality: 'builder' }], rebels: false, ...extra });
 const run = (g, ticks) => { for (let i = 0; i < ticks; i++) { g.tick(); g.outbox.length = 0; } };
+const TECHS_AGE0 = () => Object.fromEntries(Object.entries(TECHS).filter(([, t]) => t.age === 0));
 const rich = (civ) => { for (const k of Object.keys(civ.res)) civ.res[k] = 5000; };
 const twoBarracks = (g) => {
   const civ = g.civs[0], cap = g.capital(civ);
@@ -107,12 +108,13 @@ test('governors do not pile up buildings nobody can staff', () => {
   for (const c of g.cities.values()) if (c.owner === 0) g.command(0, { c: 'governor', city: c.id, level: 'autonomous' });
   run(g, 4000);
   const work = [...g.buildings.values()].filter((b) => b.owner === 0 && b.done && BUILDINGS[b.type].jobs && !b.off);
-  const empty = work.filter((b) => !b.staffed).length;
+  // idle because its storage is full is not "nobody to staff it"
+  const empty = work.filter((b) => !b.staffed && b.why !== 'full').length;
   assert.ok(work.length >= 4, 'the governor developed the city');
   assert.ok(empty <= Math.max(2, work.length * 0.3), `unstaffed workplaces ${empty}/${work.length}`);
 });
 
-test('normal mode: no quakes, eruptions or moving land; Cataclysm mode keeps them', () => {
+test('the world is peaceful: no quakes, eruptions or moving land', () => {
   const g = newGame(21);
   const elev = Float32Array.from(g.world.elev), water = (w) => { let n = 0; for (let i = 0; i < w.terr.length; i++) if (isWater(w.terr[i])) n++; return n; };
   const w0 = water(g.world);
@@ -121,12 +123,7 @@ test('normal mode: no quakes, eruptions or moving land; Cataclysm mode keeps the
   let moved = 0; for (let i = 0; i < elev.length; i++) if (Math.abs(g.world.elev[i] - elev[i]) > 1e-6) moved++;
   assert.equal(moved, 0, 'terrain height never changes in a peaceful world');
   assert.equal(water(g.world), w0, 'no flooding or new lakes');
-  assert.equal(g.cataclysm, null);
-  const c = newGame(21, { cataclysm: { on: true, freq: 2 } });
-  assert.ok(c.cataclysm && c.cataclysm.freq === 2);
-  const e2 = Float32Array.from(c.world.elev); run(c, 600);
-  let m2 = 0; for (let i = 0; i < e2.length; i++) if (c.world.elev[i] !== e2[i]) m2++;
-  assert.ok(m2 > 0, 'Cataclysm mode keeps tectonics');
+  for (const k of ['quake', 'eruption', 'drought', 'rift', 'uplift']) assert.ok(!kinds.has(k), `no ${k}`);
 });
 
 test('the world wraps east-west: distance, neighbours and paths cross the seam', { skip: !WRAP && 'wrap disabled' }, () => {
@@ -214,4 +211,81 @@ test('AI difficulty: fair play by default, skill differs, advantages only when d
   assert.equal(old.civs[1].diffProfile, 'legacy');
   assert.ok(aiProfile(old.civs[1]).legacy && aiProfile(old.civs[1]).adv.econ > 1);
   assert.equal(g.civs[0].difficulty, 'normal');
+});
+
+test('construction queue: unaffordable orders wait in order, crews build a few sites at a time, "build next" jumps the queue', () => {
+  const g = newGame(7);
+  const civ = g.civs[0], cap = g.capital(civ);
+  const spots = disk(cap.tile, 3).filter((t) => g.canPlace(civ, 'barracks', t, true)).slice(0, 6);
+  assert.ok(spots.length >= 6);
+  civ.res.materials = 0;
+  const ids = spots.map((t) => { const r = g.command(0, { c: 'build', type: 'barracks', tile: t }); assert.ok(!r?.error, JSON.stringify(r)); return r.reply.built.id; });
+  assert.ok(ids.every((id) => g.buildings.get(id).state === 'planned'), 'unaffordable orders are queued, not refused');
+  // funds for exactly one: the first ordered gets it, not whichever the loop meets first
+  civ.res.materials = BUILDINGS.barracks.cost.materials; run(g, 10);
+  assert.equal(g.buildings.get(ids[0]).funded, true);
+  assert.ok(ids.slice(1).every((id) => !g.buildings.get(id).funded));
+  // "build next" moves the last one to the front of the line
+  assert.equal(g.command(0, { c: 'buildNext', id: ids[5] }), null);
+  civ.res.materials = BUILDINGS.barracks.cost.materials; run(g, 10);
+  assert.equal(g.buildings.get(ids[5]).funded, true, 'the site moved to the front is funded next');
+  // everything funded: only a few sites progress at once, the rest wait their turn
+  civ.res.materials = 5000; run(g, 20);
+  const sites = ids.map((id) => g.buildings.get(id));
+  const moving = sites.filter((b) => !b.waiting && b.progress > 0).length, waiting = sites.filter((b) => b.waiting).length;
+  assert.ok(moving >= 1 && moving <= 3, `active sites ${moving}`);
+  assert.ok(waiting >= 3, `waiting sites ${waiting}`);
+  run(g, 3000);
+  assert.ok(sites.every((b) => b.done), 'the queue works through every site');
+});
+
+test('batch upgrade levels any upgradable buildings, not only housing', () => {
+  const g = newGame(7);
+  const civ = g.civs[0], cap = g.capital(civ);
+  rich(civ); civ.age = 1;                     // level 2 needs the Industrial era, level 3 the next one
+  const spots = disk(cap.tile, 3).filter((t) => g.canPlace(civ, 'farm', t, true)).slice(0, 3);
+  const farms = spots.map((t) => g.makeBuilding(civ, 'farm', t, true));
+  const r = g.command(0, { c: 'batchUpgrade', ids: farms.map((b) => b.id), policy: 'affordable' });
+  assert.ok(!r?.error, JSON.stringify(r));
+  assert.equal(r.reply.upgrade.upgraded.length, 3);
+  assert.ok(farms.every((b) => b.level === 2));
+  // the next level needs the next era: skipped with the reason, nothing charged
+  const r2 = g.command(0, { c: 'batchUpgrade', ids: farms.map((b) => b.id), policy: 'affordable' });
+  assert.ok(r2.error || r2.reply.upgrade.upgraded.length === 0);
+});
+
+test('extraction sites yield from the land without workers; woods around a timber mill raise it', () => {
+  const g = newGame(7);
+  const civ = g.civs[0];
+  const mill = [...g.buildings.values()].find((b) => b.owner === 0 && b.type === 'lumber');
+  assert.ok(mill);
+  for (const c of g.cities.values()) if (c.owner === 0) { c.governor.enabled = false; c.governor.level = 'off'; }
+  mill.lock = 0;                                   // nobody works it
+  const m0 = civ.res.materials; run(g, 100);
+  assert.equal(mill.staffed || 0, 0);
+  assert.ok(civ.res.materials > m0 + 15, `an unstaffed mill still yields (${(civ.res.materials - m0).toFixed(1)} in 10 s)`);
+  assert.ok(mill.active, 'and counts as working');
+});
+
+test('players research and advance eras automatically unless they turn it off', () => {
+  const g = newGame(7);
+  const civ = g.civs[0];
+  run(g, 20);
+  assert.ok(civ.researching, 'something is being researched without a pick');
+  for (const k of Object.keys(TECHS_AGE0())) civ.techs.add(k);
+  rich(civ); run(g, 20);
+  assert.ok(civ.advancing > 0 || civ.age >= 1, 'the next era starts once it qualifies');
+  const g2 = newGame(8); g2.command(0, { c: 'autoTech', on: false }); run(g2, 20);
+  assert.equal(g2.civs[0].researching, null, 'manual research waits for the player');
+});
+
+test('drag placement: one order places many, queues what cannot be paid, refuses bad hexes', () => {
+  const g = newGame(7);
+  const civ = g.civs[0], cap = g.capital(civ);
+  const spots = disk(cap.tile, 3).filter((t) => g.canPlace(civ, 'barracks', t, true)).slice(0, 4);
+  civ.res.materials = BUILDINGS.barracks.cost.materials * 2;
+  const r = g.command(0, { c: 'buildMany', type: 'barracks', tiles: [...spots, cap.tile] });
+  assert.equal(r.reply.many.placed, 4);
+  assert.equal(r.reply.many.planned, 2, 'two paid now, two queued');
+  assert.equal(r.reply.many.failed, 1, 'the town hex is refused');
 });

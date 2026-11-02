@@ -18,13 +18,9 @@ test('continent generation is deterministic and playable', () => {
   assert.ok(dist(a.starts[0], a.starts[1]) > 30, 'starts are far apart');
 });
 
-test('AI vs AI match runs 20 minutes with terrain events, economy and combat', () => {
-  const g = new Game({ id: 't', seed: 11, slots: [{ personality: 'warlord' }, { personality: 'builder' }], cataclysm: { on: true } });   // terrain events are opt-in
-  const kinds = new Set();
+test('AI vs AI match runs 20 minutes with economy and combat', () => {
+  const g = new Game({ id: 't', seed: 11, slots: [{ personality: 'warlord' }, { personality: 'builder' }] });
   for (let i = 0; i < 12000 && !g.over; i++) { g.tick(); g.outbox.length = 0; }
-  for (const e of g.log) kinds.add(e.kind);
-  assert.ok(kinds.has('quake'), 'earthquake happened');
-  assert.ok(kinds.has('eruption') || kinds.has('drought'), 'other events happened');
   for (const c of g.civs.filter((x) => !x.isRebel)) {
     assert.ok(c.techs.size >= 5, `${c.name} researched`);
     assert.ok(g.cityOf(c).length >= 2 || !c.alive, `${c.name} expanded`);

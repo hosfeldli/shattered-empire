@@ -17,7 +17,7 @@ export const SPEC_FIT = {
   industrial: { mine: 15, steel_mill: 15, power_plant: 12, munitions_plant: 12, oil_well: 12, motor_works: 10, heavy_assembly: 10, electronics_plant: 12 },
   agrarian: { farm: 15, house: 10, port: 12 },
   commercial: { market: 15, port: 12, depot: 10 },
-  research: { academy: 15, university: 15, seismic: 8, electronics_plant: 6 },
+  research: { academy: 15, university: 15, electronics_plant: 6 },
   fortress: { bunker: 15, fort: 15, barracks: 8, depot: 8 },
 };
 export const GOALS = {
@@ -131,7 +131,8 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
     if (d.jobs) {
       if (a.idle[type]) { deferred.push(`another ${d.name}: ${a.idle[type]} already stand${a.idle[type] > 1 ? '' : 's'} idle`); continue; }
       const workers = Math.min(d.jobs[1], Math.max(0, Math.floor(a.laborFree)));
-      if (workers < 1 && type !== 'farm') { if (S > 0 || (d.produce && Object.keys(d.produce).some((k) => civ.saving?.[k] || a.short.has(k)))) deferred.push(`${d.name}: no workers to staff it (staff existing jobs or grow the city first)`); continue; }
+      // a workplace is only worth building when enough hands are free to run it properly
+      if (workers < Math.max(1, Math.ceil(d.jobs[1] * 0.4)) && type !== 'farm') { if (S > 0 || (d.produce && Object.keys(d.produce).some((k) => civ.saving?.[k] || a.short.has(k)))) deferred.push(`${d.name}: no workers to staff it (staff existing jobs or grow the city first)`); continue; }
       // diminishing returns: the fifth academy in a city adds less than the first
       B = (produceValue(g, civ, c, type, Math.max(1, workers)) * 25) / (1 + 0.4 * has(type));
       // supply chain: can the nation's input supply carry one more of these?
@@ -194,12 +195,12 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
         R = a.enemyAirNear ? 40 : valuable ? 24 : 10; why.push(a.enemyAirNear ? 'enemy aircraft over the city' : 'protect valuable targets from air attack'); break;
       }
       case 'depot': if (a.isolated || has('depot')) continue; B = c.capital ? 0 : 8; break;
-      case 'seismic': {
-        // a survey station pays off where extraction is concentrated
-        const ex = a.blds.filter((b) => (b.type === 'mine' || b.type === 'quarry' || b.type === 'oil_well') && b.done).length;
-        if (ex < 3 && !g.cataclysm) continue; B += ex * 6; why.push(`${ex} extraction sites to survey`); break;
+      case 'shield_generator': {
+        // a dome over a city that matters, once the enemy is close (or keeps coming back)
+        if (has('shield_generator') || !(a.enemyNear || a.damaged >= 2)) continue;
+        if (!c.capital && a.blds.length < 8) continue;
+        R = a.enemyNear ? 34 : 16; why.push(a.enemyNear ? 'enemy forces close to the city' : 'repeated damage from attacks'); break;
       }
-      case 'stabilizer': if (!g.cataclysm && !a.enemyNear && a.damaged < 2) continue; B += 20; why.push(g.cataclysm ? 'the ground here is unstable' : 'harden infrastructure against attack'); break;
       case 'wonder': if (!civ.isAI || civ.age < 4 || g.cityOf(civ).length < 4) continue; B = 120; break;
       case 'missile_silo': {
         // an endgame project: only for an AI at war (or under threat) with a strong economy, far from the front

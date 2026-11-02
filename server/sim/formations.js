@@ -29,6 +29,13 @@ function env(g, civ, selection) {
 
 const plannable = (u) => ({ id: u.id, tile: u.tile, type: u.type, role: deployRole(UNITS[u.type]), air: !!UNITS[u.type].air });
 
+// the own city nearest a line: lines face away from it unless told otherwise
+export function homeOf(g, civ, line) {
+  let best = -1, bd = Infinity;
+  for (const c of g.cities.values()) if (c.owner === civ.id) { const d = Math.min(dist(c.tile, line[0]), dist(c.tile, line[1])); if (d < bd) { bd = d; best = c.tile; } }
+  return bd <= 25 ? best : -1;
+}
+
 export function formationOf(g, u) { return u.formation ? g.formations.get(u.formation) : null; }
 
 // remove units from any formation they belong to (the formation dissolves when empty)
@@ -76,6 +83,7 @@ export function deployOrder(g, civ, cmd, auth = '') {
     return { reply: { t: 'ack', deploy: { queued: units.length } } };
   }
   const e = env(g, civ, units);
+  const away = cmd.away === false ? -1 : homeOf(g, civ, line);
   let plan;
   if (mode === 'preserve') {
     // keep relative positions: translate/rotate the current arrangement onto the new line
@@ -85,10 +93,10 @@ export function deployOrder(g, civ, cmd, auth = '') {
     const slots = shiftFormation(e, cur, fromLine, line);
     const perHex = new Map(); for (const t of slots.values()) perHex.set(t, (perHex.get(t) || 0) + 1);
     plan = { slots, perHex, overflow: units.filter((u) => !slots.has(u.id)).map((u) => u.id), invalid: [], label: Math.max(0, ...perHex.values()) >= 4 ? 'dense' : Math.max(0, ...perHex.values()) >= 2 ? 'concentrated' : 'dispersed', ranks: 0, line };
-  } else plan = planDeployment(e, units.map(plannable), line, { mode, density, depth, reverse: !!cmd.reverse });
+  } else plan = planDeployment(e, units.map(plannable), line, { mode, density, depth, reverse: !!cmd.reverse, away });
   release(g, units.map((u) => u.id));
   const id = g.nextFormationId = (g.nextFormationId || 0) + 1;
-  const f = { id, owner: civ.id, units: [], mode, density, depth, behavior, line: plan.line?.length ? [plan.line[0], plan.line[plan.line.length - 1]] : line, reverse: !!cmd.reverse,
+  const f = { id, owner: civ.id, units: [], mode, density, depth, behavior, line: plan.line?.length ? [plan.line[0], plan.line[plan.line.length - 1]] : line, reverse: !!cmd.reverse, away,
     slots: {}, status: 'moving', auth, since: g.time, facing: plan.facing || null };      // deploying never creates a construction job
   g.formations.set(id, f);
   const ground = units.filter((u) => !UNITS[u.type].air);
@@ -125,7 +133,7 @@ export function formationCommand(g, civ, cmd, auth = '') {
       for (const u of members()) {
         if (!ids.has(u.id)) continue;
         let slot = f.slots[u.id];
-        if (!(slot >= 0) || !e.passable(slot, u)) { const p = planDeployment(e, [plannable(u)], f.line, { mode: f.mode, density: f.density, keep: new Map(Object.entries(f.slots).filter(([k]) => +k !== u.id).map(([k, v]) => [+k, v])) }); slot = p.slots.get(u.id); }
+        if (!(slot >= 0) || !e.passable(slot, u)) { const p = planDeployment(e, [plannable(u)], f.line, { mode: f.mode, density: f.density, away: f.away, reverse: f.reverse, keep: new Map(Object.entries(f.slots).filter(([k]) => +k !== u.id).map(([k, v]) => [+k, v])) }); slot = p.slots.get(u.id); }
         if (slot == null) continue;
         f.slots[u.id] = slot; u.detached = false; sendToSlot(g, civ, u, slot, f, 0);
       }
@@ -138,7 +146,7 @@ export function formationCommand(g, civ, cmd, auth = '') {
       release(g, add.map((u) => u.id));
       const keep = new Map(Object.entries(f.slots).map(([k, v]) => [+k, v]));
       const e = env(g, civ, [...members(), ...add]);
-      const p = planDeployment(e, [...members().map(plannable), ...add.map(plannable)], f.line, { mode: f.mode, density: f.density, depth: f.depth, reverse: f.reverse, keep });
+      const p = planDeployment(e, [...members().map(plannable), ...add.map(plannable)], f.line, { mode: f.mode, density: f.density, depth: f.depth, reverse: f.reverse, away: f.away, keep });
       let placed = 0;
       for (const u of add) { const s = p.slots.get(u.id); if (s == null) continue; f.units.push(u.id); f.slots[u.id] = s; u.formation = f.id; sendToSlot(g, civ, u, s, f, 0); placed++; }
       return { reply: { t: 'ack', reinforce: { placed, overflow: add.length - placed } } };
@@ -159,9 +167,18 @@ export function formationCommand(g, civ, cmd, auth = '') {
   }
 }
 
-// a direct order to some formation members detaches just those units
+// A direct order to some formation members detaches just those units (the rest keep their places
+// and the detached can rejoin). Ordering the whole formation somewhere else simply ends it: the
+// units go where they were sent and stay there, instead of being pulled back to an old line.
 export function detach(g, ids) {
-  for (const id of ids) { const u = g.units.get(id); if (u && u.formation && g.formations.has(u.formation)) u.detached = true; }
+  const set = new Set(ids);
+  const ended = [];
+  for (const id of ids) {
+    const u = g.units.get(id); if (!u || !u.formation) continue;
+    const f = g.formations.get(u.formation); if (!f) continue;
+    if (f.units.every((x) => set.has(x) || !g.units.has(x))) ended.push(id); else u.detached = true;
+  }
+  if (ended.length) release(g, ended);
 }
 
 // Every second: drop the dead, mark arrival, keep holders in place and bring defenders back.
