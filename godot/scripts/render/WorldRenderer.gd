@@ -31,6 +31,7 @@ var world: WorldState
 var terrain_mat: ShaderMaterial
 var water_mat: ShaderMaterial
 var vis_tex: ImageTexture
+var known_tex: ImageTexture
 var chunks := {}               # chunk id -> { terrain: ArrayMesh, water: ArrayMesh, inst: [], winst: [], x0: float }
 var dirty := {}                # chunk id -> true
 var colors := PackedColorArray()
@@ -61,6 +62,7 @@ func _on_welcome() -> void:
 	var g := world.grid
 	var img := Image.create_from_data(g.w / 8, g.h, false, Image.FORMAT_R8, world.vis_bits)
 	vis_tex = ImageTexture.create_from_image(img)
+	known_tex = ImageTexture.create_from_image(Image.create_from_data(g.w, g.h, false, Image.FORMAT_R8, world.known_mask))
 	for m in [terrain_mat, water_mat]:
 		m.set_shader_parameter("vis_bits", vis_tex)
 		m.set_shader_parameter("vis_on", 0.0 if world.spectator else 1.0)
@@ -79,6 +81,8 @@ func _on_vis(bits: PackedByteArray) -> void:
 func _on_geo(list: PackedInt32Array) -> void:
 	for cid in list:
 		dirty[cid] = true
+	if known_tex:
+		known_tex.update(Image.create_from_data(world.grid.w, world.grid.h, false, Image.FORMAT_R8, world.known_mask))
 
 
 ## called by the bootstrap every frame with the camera's view
@@ -244,10 +248,22 @@ func _build_chunk(cid: int) -> void:
 func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 	var g := world.grid
 	if world.is_sea(i):
-		var depth := world.geo[i * 6 + 2] / 255.0
-		var col := Color(0.20, 0.38, 0.44).lerp(Color(0.08, 0.19, 0.29), clampf(depth * 2.2, 0.0, 1.0))
-		col.a = lerpf(0.72, 0.93, clampf(depth * 2.0, 0.0, 1.0))
-		kit.hex_plate("water", Vector3(c2.x, 0.0, c2.y), 1.0, col)
+		# depth colour blended at the corners, so the sea floor reads as a smooth gradient
+		var cc := _sea_color(i)
+		var centre := Vector3(c2.x, 0.0, c2.y)
+		var pts: Array[Vector3] = []
+		var cols: Array[Color] = []
+		for k in 6:
+			var o := g.corners[k]
+			pts.append(Vector3(c2.x + o.x, 0.0, c2.y + o.y))
+			var s := cc
+			var pair: Array = HexGrid.CORNER_DIRS[k]
+			for d: int in pair:
+				var nb: int = g.nb[i * 6 + d]
+				s += _sea_color(nb) if nb >= 0 and world.known[nb] and world.is_sea(nb) else Color(0.24, 0.42, 0.46, 0.6)
+			cols.append(s / 3.0)
+		for k in 6:
+			kit.tri_colors("water", centre, pts[k], pts[(k + 1) % 6], cc, cols[k], cols[(k + 1) % 6], Vector3.UP)
 	elif world.is_lake(i):
 		var col := Color(0.18, 0.34, 0.40, 0.86)
 		kit.hex_plate("water", Vector3(c2.x, world.water_level(i), c2.y), 1.0, col)
@@ -273,6 +289,13 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 			var ym := maxf(y, world.height[nb] + 0.05) * 0.5 + y * 0.5
 			kit.strip("water", Vector3(m.x, ym, m.y), c, width, col)
 		kit.cylinder("water", Vector3(c2.x, y - 0.005, c2.y), width * 0.5, 0.005, 8, col)
+
+
+func _sea_color(i: int) -> Color:
+	var depth := world.geo[i * 6 + 2] / 255.0
+	var col := Color(0.22, 0.40, 0.45).lerp(Color(0.09, 0.20, 0.30), clampf(depth * 2.2, 0.0, 1.0))
+	col.a = lerpf(0.66, 0.92, clampf(depth * 2.0, 0.0, 1.0))
+	return col
 
 
 ## the water (or river) surface a river reach runs into, for a smooth join
@@ -359,7 +382,7 @@ void vertex() {
 }
 
 void fragment() {
-	vec3 base = COLOR.rgb;
+	vec3 base = pow(COLOR.rgb, vec3(2.2));   // vertex colours are sRGB
 	vec3 wn = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	float slope = 1.0 - wn.y;
 	float n = noise(wpos.xz * 1.3) * 0.55 + noise(wpos.xz * 5.0) * 0.3 + noise(wpos.xz * 17.0) * 0.15;
@@ -425,15 +448,15 @@ void fragment() {
 	float t = TIME;
 	float n1 = noise(wpos.xz * 1.6 + vec2(t * 0.11, t * 0.07));
 	float n2 = noise(wpos.xz * 4.1 - vec2(t * 0.05, t * 0.13));
-	vec3 bump = vec3(n1 - 0.5, 0.0, n2 - 0.5) * 0.35;
+	vec3 bump = vec3(n1 - 0.5, 0.0, n2 - 0.5) * 0.18;
 	NORMAL = normalize(NORMAL + (VIEW_MATRIX * vec4(bump, 0.0)).xyz);
 	float v = mix(1.0, seen(wpos), vis_on);
-	vec3 col = COLOR.rgb * (0.95 + 0.1 * n1);
+	vec3 col = pow(COLOR.rgb, vec3(2.2)) * (0.95 + 0.1 * n1);
 	ALBEDO = mix(col * vec3(0.6, 0.64, 0.72), col, v);
 	ALPHA = COLOR.a;
-	ROUGHNESS = 0.07 + 0.08 * n2;
+	ROUGHNESS = 0.22 + 0.1 * n2;
 	METALLIC = 0.0;
-	SPECULAR = 0.6;
+	SPECULAR = 0.4;
 }
 """
 	return s

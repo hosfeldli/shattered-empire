@@ -40,6 +40,7 @@ static func get_mat(key: String) -> Material:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = spec.c
 	m.vertex_color_use_as_albedo = true
+	m.vertex_color_is_srgb = true
 	m.roughness = spec.get("r", 0.9)
 	m.metallic = spec.get("m", 0.0)
 	m.resource_name = key

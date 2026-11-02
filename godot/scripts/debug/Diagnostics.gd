@@ -21,7 +21,15 @@ var bench_phase := ""
 var bench_t := 0.0
 var bench_results := {}
 var bench_started := false
+var bench_wait := 0.0
 var _vp_rid: RID
+var _marker: Node
+var samples_render: Array = []
+var sub := {}                  # subsystem -> Array of ms this phase
+var net_ms: Array = []
+var probe_at := 0.0
+var probe_out := ""
+var probe_extra: Callable
 
 
 func setup(w: WorldState, n: NetworkClient, c: CameraController, t: WorldRenderer, m: MilitaryRenderer) -> void:
@@ -39,6 +47,11 @@ func setup(w: WorldState, n: NetworkClient, c: CameraController, t: WorldRendere
 	label.add_theme_constant_override("outline_size", 4)
 	label.visible = false
 	add_child(label)
+	# script time per frame: from a marker that processes first to this node, which processes last
+	process_priority = 1000
+	_marker = FrameMarker.new()
+	_marker.process_priority = -1000
+	add_child(_marker)
 	_vp_rid = get_viewport().get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(_vp_rid, true)
 
@@ -49,7 +62,9 @@ func _unhandled_input(e: InputEvent) -> void:
 
 
 func _process(dt: float) -> void:
-	var cpu := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0 + RenderingServer.viewport_get_measured_render_time_cpu(_vp_rid) + RenderingServer.get_frame_setup_time_cpu()
+	# script time of this frame (all _process callbacks, including network decode and the renderers)
+	var cpu: float = (Time.get_ticks_usec() - _marker.t) / 1000.0
+	_push(samples_render, RenderingServer.viewport_get_measured_render_time_cpu(_vp_rid) + RenderingServer.get_frame_setup_time_cpu())
 	var gpu := RenderingServer.viewport_get_measured_render_time_gpu(_vp_rid)
 	_push(samples_frame, dt * 1000.0)
 	_push(samples_cpu, cpu)
@@ -58,6 +73,83 @@ func _process(dt: float) -> void:
 		label.text = _report()
 	if bench_seconds > 0.0:
 		_bench(dt)
+	if probe_at > 0.0 and Time.get_ticks_msec() / 1000.0 >= probe_at:
+		probe_at = 0.0
+		_probe()
+
+
+## picking accuracy: project known hex centres (on the terrain surface) to the screen and pick them
+## back with the camera's ray-over-height-field test, at the current zoom and pitch
+func pick_test(samples := 400) -> Dictionary:
+	var g := world.grid
+	var vp := get_viewport().get_visible_rect().size
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99
+	var ok := 0
+	var tried := 0
+	var relief := 0.0
+	var tries := 0
+	while tried < samples and tries < samples * 50:
+		tries += 1
+		var t := rng.randi() % g.n
+		if not world.known[t]:
+			continue
+		var c := g.center(t)
+		var x := g.near_x(c.x, cam.focus.x)
+		var p := Vector3(x, maxf(world.ground_height(x, c.y), 0.0), c.y)
+		var s := cam.to_screen(p)
+		if s.x < 0.0 or s.y < 0.0 or s.x >= vp.x or s.y >= vp.y:
+			continue
+		tried += 1
+		relief = maxf(relief, world.height[t])
+		if cam.pick_tile(s) == t:
+			ok += 1
+	return {"size": cam.size, "pitch": cam.pitch_deg(), "samples": tried, "correct": ok, "accuracy": float(ok) / maxf(1.0, tried), "max_height_sampled": relief}
+
+
+## --probe: after a delay, report what the client has synchronized (Phase 1 acceptance check)
+func start_probe(seconds: float, out: String, extra: Callable) -> void:
+	probe_at = Time.get_ticks_msec() / 1000.0 + seconds
+	probe_out = out
+	probe_extra = extra
+
+
+func _probe() -> void:
+	var known := 0
+	var vis := 0
+	if world.grid:
+		for i in world.grid.n:
+			known += world.known[i]
+			if world.is_visible(i):
+				vis += 1
+	var roads := 0
+	if world.grid:
+		for i in world.grid.n:
+			if world.road[i] != 0:
+				roads += 1
+	var r := {
+		"net": {"state": net.state, "proto": net.proto, "caps": net.caps, "msgs": net.msgs_in, "mb_in": snappedf(net.bytes_in / 1048576.0, 0.01), "rtt_ms": net.rtt_ms},
+		"world": {"ready": world.ready_, "civ": world.civ_id, "map": [world.grid.w, world.grid.h] if world.grid else [], "server_time": world.server_time, "snapshots": world.snapshot_count, "snapshot_rate": snappedf(world.snapshot_rate(), 0.01),
+			"units": world.units.size(), "own_units": world.units.values().filter(func(u): return int(u.owner) == world.civ_id).size(), "buildings": world.buildings.size(), "cities": world.cities.size(), "geo_known_hexes": known, "visible_hexes": vis,
+			"playback_lag_s": snappedf(world.server_time - world.render_time, 0.01), "has_weather": not world.wx.is_empty(), "road_hexes": roads, "craters": (world.bf.get("c", []) as Array).size(), "trenches": world.fw.size()},
+		"render": {"chunks_built": terrain.chunks_built, "chunk_queue": terrain.dirty.size(), "units_drawn": military.drawn, "camera": [cam.focus.x, cam.focus.z, cam.size]},
+	}
+	if probe_extra.is_valid():
+		r["extra"] = probe_extra.call()
+	var txt := JSON.stringify(r, "  ")
+	print("PROBE ", txt)
+	if probe_out != "":
+		var f := FileAccess.open(probe_out, FileAccess.WRITE)
+		if f:
+			f.store_string(txt)
+	get_tree().quit()
+
+
+func record_subsystems(us: Dictionary) -> void:
+	for k in us.keys():
+		if not sub.has(k):
+			sub[k] = []
+		_push(sub[k], us[k] / 1000.0)
 
 
 func _push(a: Array, v: float) -> void:
@@ -86,7 +178,7 @@ static func avg(a: Array) -> float:
 func _report() -> String:
 	var lines := PackedStringArray()
 	lines.append("FPS %d   frame %.2f ms (p95 %.2f, p99 %.2f)" % [Engine.get_frames_per_second(), avg(samples_frame), pct(samples_frame, 0.95), pct(samples_frame, 0.99)])
-	lines.append("CPU %.2f ms (p95 %.2f)   GPU %.2f ms (p95 %.2f)" % [avg(samples_cpu), pct(samples_cpu, 0.95), avg(samples_gpu), pct(samples_gpu, 0.95)])
+	lines.append("script %.2f ms (p95 %.2f)   GPU %.2f ms (p95 %.2f)" % [avg(samples_cpu), pct(samples_cpu, 0.95), avg(samples_gpu), pct(samples_gpu, 0.95)])
 	lines.append("draw calls %d   primitives %dk   video mem %d MB" % [Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME) / 1000), int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576)])
 	lines.append("net %s proto %d caps %s   rtt %d ms   msgs %d   %.1f MB in" % [net.state, net.proto, str(net.caps), int(net.rtt_ms), net.msgs_in, net.bytes_in / 1048576.0])
 	lines.append("snapshots %.1f/s   buffer %d   playback %.2f s behind   server t=%.1f" % [world.snapshot_rate(), world.snaps.size(), world.server_time - world.render_time, world.server_time])
@@ -103,10 +195,14 @@ func start_bench(seconds: float, out: String) -> void:
 
 func _bench(dt: float) -> void:
 	if not bench_started:
-		if world.snapshot_count > 5 and terrain.dirty.is_empty() and terrain.chunks_built > 0:
+		if world.snapshot_count > 5 and terrain.dirty.is_empty() and terrain.chunks_built > 0 and world.server_time >= bench_wait:
 			bench_started = true
 			bench_phase = "idle"
 			bench_t = 0.0
+			if bench_wait > 0.0 and world.spectator:
+				# a developed scene: back to normal speed, looking at the biggest city
+				net.cmd({"c": "speed", "speed": 1})
+				cam.focus_tile(get_parent()._tour_target(), 30.0)
 			_reset_samples()
 		return
 	bench_t += dt
@@ -119,7 +215,9 @@ func _bench(dt: float) -> void:
 			var k := fmod(bench_t, 4.0)
 			cam.goal_size = clampf(cam.goal_size * (0.985 if k < 2.0 else 1.015), CameraController.MIN_SIZE, cam.max_size)
 		"pan":
-			cam.focus.x += cam.size * 0.6 * dt
+			# steady pan east, across the seam at least once
+			cam.goal_size = 30.0
+			cam.focus.x += 30.0 * dt
 	if bench_t >= span:
 		bench_results[bench_phase] = _summary()
 		_reset_samples()
@@ -140,13 +238,23 @@ func _summary() -> Dictionary:
 	return {
 		"frames": samples_frame.size(), "fps": samples_frame.size() / maxf(0.001, avg(samples_frame) * samples_frame.size() / 1000.0),
 		"frame_p50": pct(samples_frame, 0.5), "frame_p95": pct(samples_frame, 0.95), "frame_p99": pct(samples_frame, 0.99), "frame_max": pct(samples_frame, 1.0), "over50": over50,
-		"cpu_avg": avg(samples_cpu), "cpu_p95": pct(samples_cpu, 0.95), "cpu_p99": pct(samples_cpu, 0.99), "gpu_avg": avg(samples_gpu), "gpu_p95": pct(samples_gpu, 0.95),
+		"script_avg": avg(samples_cpu), "script_p95": pct(samples_cpu, 0.95), "script_p99": pct(samples_cpu, 0.99), "render_cpu_avg": avg(samples_render), "render_cpu_p95": pct(samples_render, 0.95), "render_cpu_p99": pct(samples_render, 0.99), "gpu_avg": avg(samples_gpu), "gpu_p95": pct(samples_gpu, 0.95),
 		"draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), "units": world.units.size(), "buildings": world.buildings.size(),
 		"recentred": cam.recentred,
+		"script": _sub_summary(),
 	}
 
 
+func _sub_summary() -> Dictionary:
+	var out := {}
+	for k in sub.keys():
+		out[k] = {"avg": snappedf(avg(sub[k]), 0.001), "p99": snappedf(pct(sub[k], 0.99), 0.001), "max": snappedf(pct(sub[k], 1.0), 0.001)}
+	return out
+
+
 func _reset_samples() -> void:
+	sub.clear()
+	samples_render.clear()
 	samples_frame.clear()
 	samples_cpu.clear()
 	samples_gpu.clear()
@@ -154,7 +262,7 @@ func _reset_samples() -> void:
 
 func _finish() -> void:
 	var vp := get_viewport().get_visible_rect().size
-	bench_results["meta"] = {"viewport": [vp.x, vp.y], "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "godot": Engine.get_version_info().string, "map": [world.grid.w, world.grid.h], "server_time": world.server_time}
+	bench_results["meta"] = {"viewport": [vp.x, vp.y], "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "quality": get_parent().quality, "scale": get_window().content_scale_factor, "pixels": get_viewport().get_texture().get_size(), "godot": Engine.get_version_info().string, "map": [world.grid.w, world.grid.h], "server_time": world.server_time}
 	var txt := JSON.stringify(bench_results, "  ")
 	print("BENCH ", txt)
 	if bench_out != "":
@@ -164,3 +272,10 @@ func _finish() -> void:
 			f.close()
 	bench_seconds = 0.0
 	get_tree().quit()
+
+
+class FrameMarker extends Node:
+	var t := 0
+
+	func _process(_dt: float) -> void:
+		t = Time.get_ticks_usec()

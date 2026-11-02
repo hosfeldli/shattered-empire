@@ -6,7 +6,7 @@ extends Node3D
 ## running along the roads: the economy's activity made visible.
 
 const SQRT3 := HexGrid.SQRT3
-const WIDTH := [0.0, 0.11, 0.15, 0.22, 0.13]
+const WIDTH := [0.0, 0.16, 0.19, 0.26, 0.15]
 const MAT := ["", "soil", "asphalt", "asphalt", "ballast"]
 const MAX_TRUCKS := 400
 

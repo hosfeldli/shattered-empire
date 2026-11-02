@@ -233,13 +233,13 @@ func _ground(kit: MeshKit, b: Dictionary, group: String) -> void:
 	var g: String = GROUP.get(ty, "")
 	match g:
 		"res":
-			kit.hex_plate("grass", Vector3(0, 0.02, 0), 0.97, Color(1, 1, 1), 0.3)
+			kit.hex_plate("grass", Vector3(0, 0.02, 0), 0.94, Color(0.95, 0.95, 0.92), 0.14)
 		"civ", "com":
-			kit.hex_plate("paving", Vector3(0, 0.025, 0), 0.97, Color(1, 1, 1), 0.3)
+			kit.hex_plate("paving", Vector3(0, 0.025, 0), 0.94, Color(0.8, 0.79, 0.76), 0.14)
 		"ind":
-			kit.hex_plate("concrete", Vector3(0, 0.025, 0), 0.97, Color(0.85, 0.84, 0.82), 0.3)
+			kit.hex_plate("concrete", Vector3(0, 0.025, 0), 0.94, Color(0.7, 0.69, 0.67), 0.14)
 		"ext":
-			kit.hex_plate("soil", Vector3(0, 0.015, 0), 0.9, Color(0.95, 0.92, 0.88), 0.25)
+			kit.hex_plate("soil", Vector3(0, 0.015, 0), 0.88, Color(0.85, 0.82, 0.78), 0.12)
 		"farm":
 			pass
 		_:
@@ -509,7 +509,8 @@ func _fields(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 	var rows := 7
 	for k in rows:
 		var z := -0.78 + 1.56 * (k + 0.5) / rows
-		var half := (1.0 - absf(z) / 0.866 * 0.5) * 0.86 if absf(z) < 0.866 else 0.0
+		var az := absf(z) + 0.5 * 1.56 / rows
+		var half := 0.8 if az <= 0.5 else 0.8 * maxf(0.0, (1.0 - az) / 0.5)
 		if half <= 0.05:
 			continue
 		var crop := Color(1, 1, 1).lerp(Color(0.85, 0.78, 0.55), float((int(b.t) + k) % 3) * 0.3)

@@ -115,7 +115,10 @@ func update(dt: float) -> void:
 		m.set_shader_parameter("cloud_off", off)
 		m.set_shader_parameter("cloud_off_prev", off_prev)
 		m.set_shader_parameter("cloud_blend", blend)
-	cloud_mat.set_shader_parameter("opacity", lerpf(0.12, 0.55, clampf((cam.size - 10.0) / 80.0, 0.0, 1.0)))
+	if terrain.known_tex:
+		cloud_mat.set_shader_parameter("known_tex", terrain.known_tex)
+		cloud_mat.set_shader_parameter("world_size", Vector2(g.period, g.depth))
+	cloud_mat.set_shader_parameter("opacity", lerpf(0.08, 0.32, clampf((cam.size - 10.0) / 80.0, 0.0, 1.0)))
 	var f := cam.focus
 	clouds.position = Vector3(f.x, CLOUD_HEIGHT, f.z)
 	clouds.scale = Vector3.ONE * maxf(cam.size * 3.0, 60.0)
@@ -212,6 +215,8 @@ uniform vec2 cloud_off = vec2(0.0);
 uniform vec2 cloud_off_prev = vec2(0.0);
 uniform vec2 weather_extent = vec2(221.7, 192.0);
 uniform float opacity = 0.5;
+uniform sampler2D known_tex : filter_linear, repeat_enable, hint_default_black;
+uniform vec2 world_size = vec2(221.7, 192.0);
 
 varying vec3 wpos;
 
@@ -228,8 +233,10 @@ void vertex() {
 void fragment() {
 	vec2 uv = vec2(wpos.x / weather_extent.x, wpos.z / weather_extent.y);
 	float c = mix(texture(cloud_prev, uv - cloud_off_prev).r, texture(cloud_tex, uv - cloud_off).r, cloud_blend);
-	float n = noise(wpos.xz * 0.3 + TIME * 0.015) * 0.6 + noise(wpos.xz * 1.2 - TIME * 0.025) * 0.4;
-	float a = smoothstep(0.32, 0.85, c + (n - 0.5) * 0.4);
+	float n = noise(wpos.xz * 0.12 + TIME * 0.01) * 0.65 + noise(wpos.xz * 0.37 - TIME * 0.015) * 0.35;
+	float a = smoothstep(0.35, 0.9, c + (n - 0.5) * 0.3);
+	// the sky is only drawn over land this viewer knows (the void beyond stays clean)
+	a *= texture(known_tex, vec2(wpos.x / world_size.x, wpos.z / world_size.y)).r;
 	ALBEDO = mix(vec3(0.97, 0.97, 0.96), vec3(0.72, 0.74, 0.78), a * 0.6);
 	ALPHA = a * opacity;
 }
@@ -257,7 +264,7 @@ func _make_rain() -> void:
 	rain.process_material = pm
 	var streak := BoxMesh.new()
 	streak.size = Vector3(0.012, 0.25, 0.012)
-	streak.material = MaterialLibrary.smoke(Color(0.75, 0.8, 0.88), 0.35)
+	streak.material = MaterialLibrary.smoke(Color(0.7, 0.75, 0.82), 0.22)
 	rain.draw_pass_1 = streak
 	rain.emitting = false
 	add_child(rain)
@@ -265,7 +272,8 @@ func _make_rain() -> void:
 
 func _update_rain(f: Vector3) -> void:
 	var r := rain_at(f.x, f.z)
-	rain.emitting = r > 0.15
+	# seen from above, falling streaks read as specks: rain shows as wet ground and cloud instead
+	rain.emitting = r > 0.15 and cam.size < 12.0 and cam.pitch_deg() < 55.0
 	if rain.emitting:
 		rain.amount_ratio = clampf(r * 1.4, 0.1, 1.0)
 		(rain.process_material as ParticleProcessMaterial).emission_box_extents = Vector3(cam.size * 0.9, 0.5, cam.size * 0.9)
@@ -360,7 +368,8 @@ func _deposit(kit: MeshKit, i: int, c: Vector2, rng: RandomNumberGenerator) -> v
 		2, 3, 4, 5:
 			var col: Color = {2: Color(0.85, 0.55, 0.42), 3: Color(0.35, 0.33, 0.32), 4: Color(0.7, 0.8, 0.85), 5: Color(1.25, 1.22, 1.15)}[dep]
 			var mat := "ore" if dep != 5 else "stone"
-			for k in 6:
-				var p := Vector3(rng.randf_range(-0.55, 0.55), -0.02, rng.randf_range(-0.55, 0.55))
-				var s := rng.randf_range(0.06, 0.13)
+			var spot := Vector2(rng.randf_range(-0.3, 0.3), rng.randf_range(-0.3, 0.3))
+			for k in 4:
+				var p := Vector3(spot.x + rng.randf_range(-0.16, 0.16), -0.02, spot.y + rng.randf_range(-0.16, 0.16))
+				var s := rng.randf_range(0.05, 0.1)
 				kit.box(mat, Vector3(p.x, world.ground_height(c.x + p.x, c.y + p.z) - y - 0.02, p.z), Vector3(s, s * rng.randf_range(0.6, 1.2), s * 0.8), col, rng.randf() * TAU)

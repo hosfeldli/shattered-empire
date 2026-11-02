@@ -116,8 +116,14 @@ func _build_field() -> void:
 		var t := int(s[0])
 		var p := _local(t, field_anchor)
 		var a := clampf(float(s[1]) / 3.0, 0.2, 1.0)
-		kit.set_frame(p, float(t % 7))
-		kit.hex_plate("char", Vector3(0, 0.03, 0), 0.55 + 0.3 * a, Color(1, 1, 1, 1).lerp(Color(1.8, 1.7, 1.6), 1.0 - a))
+		var rng := RandomNumberGenerator.new()
+		rng.seed = t * 59
+		# churned, scorched ground: a few irregular dark patches rather than one plate
+		for k in 3 + int(a * 3.0):
+			var off := Vector3(rng.randf_range(-0.5, 0.5), 0, rng.randf_range(-0.5, 0.5))
+			var y := world.ground_height(p.x + off.x, p.z + off.z)
+			kit.set_frame(Vector3(p.x + off.x, y, p.z + off.z), rng.randf() * TAU)
+			kit.cylinder("soil", Vector3(0, 0.0, 0), rng.randf_range(0.12, 0.28) * (0.6 + a * 0.5), 0.012, 9, Color(0.55, 0.5, 0.45).lerp(Color(0.3, 0.27, 0.25), a))
 	for cr in craters:
 		var t := int(cr[0])
 		var depth := float(cr[1])
@@ -242,14 +248,14 @@ func _on_events(ev: Array) -> void:
 			"impact":
 				if b >= 0:
 					var big := float(e.get("r", 0)) > 0.0
-					_spawn("blast", _tile_point(b, 0.08, int(e.get("p", 0))), Vector3.ZERO, 0.45 if big else 0.3, Color(1.0, 0.62, 0.25), 0.35 if big else 0.22)
+					_spawn("blast", _tile_point(b, 0.08, int(e.get("p", 0))), Vector3.ZERO, 0.4 if big else 0.28, Color(1.0, 0.55, 0.2), 0.2 if big else 0.12)
 					_spawn("dust", _tile_point(b, 0.1, int(e.get("p", 0))), Vector3.ZERO, 1.6, Color(0.55, 0.5, 0.44), 0.3)
 			"hit", "bhit":
 				if b >= 0:
 					_spawn("flash", _tile_point(b, 0.1, int(e.get("t", 0))), Vector3.ZERO, 0.08, Color(1.0, 0.95, 0.75), 0.06)
 			"kill", "bkill":
 				if b >= 0:
-					_spawn("blast", _tile_point(b, 0.1), Vector3.ZERO, 0.6, Color(1.0, 0.5, 0.2), 0.45)
+					_spawn("blast", _tile_point(b, 0.1), Vector3.ZERO, 0.55, Color(1.0, 0.48, 0.18), 0.26)
 					_spawn("dust", _tile_point(b, 0.15), Vector3.ZERO, 2.4, Color(0.3, 0.28, 0.26), 0.45)
 
 
@@ -287,7 +293,7 @@ func _spawn(kind: String, a: Vector3, b: Vector3, life: float, col: Color, size:
 			node.material_override = MaterialLibrary.smoke(col, 0.5)
 		_:
 			node.mesh = flash_mesh
-			node.material_override = MaterialLibrary.glow(col, 0.85)
+			node.material_override = MaterialLibrary.glow(col, 0.7)
 	node.visible = true
 	fx.append({"node": node, "t": 0.0, "life": life, "kind": kind, "a": a, "b": b, "h": size})
 

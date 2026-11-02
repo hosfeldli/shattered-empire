@@ -16,7 +16,7 @@ signal combat_events(ev: Array)
 signal note(m: Dictionary)
 
 ## world-space heights (one unit = one hex radius)
-const LAND_SCALE := 2.4
+const LAND_SCALE := 3.2
 const SEA_SCALE := 1.4
 const LAKE_DEPTH := 0.14
 const RIVER_DEPTH := 0.07
@@ -29,6 +29,7 @@ var ready_ := false
 var defs := {}
 var civ_id := 0
 var spectator := false
+var sandbox := false
 var civs: Array = []
 var civ_by_id := {}
 var start_tile := -1
@@ -41,6 +42,7 @@ var chunks_h := 0
 # terrain geometry ('geo' capability), 6 bytes per hex, and which hexes are known
 var geo := PackedByteArray()
 var known := PackedByteArray()
+var known_mask := PackedByteArray()   # 255 per known hex: a soft mask texture for clouds
 var height := PackedFloat32Array()   # derived from geo per hex
 
 # tile records (protocol 1): road edges, owner, flags, server colour
@@ -80,6 +82,7 @@ func apply_welcome(m: Dictionary) -> void:
 	defs = m.get("defs", {})
 	civ_id = int(m.get("civId", 0))
 	spectator = bool(m.get("spectator", false))
+	sandbox = bool(m.get("sandbox", false))
 	match_id = str(m.get("match", ""))
 	civs = m.get("civs", [])
 	civ_by_id.clear()
@@ -104,6 +107,7 @@ func _clear_map() -> void:
 	var n := grid.n
 	geo = PackedByteArray(); geo.resize(n * GEO_STRIDE)
 	known = PackedByteArray(); known.resize(n)
+	known_mask = PackedByteArray(); known_mask.resize(n)
 	height = PackedFloat32Array(); height.resize(n)
 	terr = PackedByteArray(); terr.resize(n)
 	tile_owner = PackedInt32Array(); tile_owner.resize(n); tile_owner.fill(-1)
@@ -241,6 +245,7 @@ func apply_geo(m: Dictionary) -> void:
 	var cs := int(m.get("cs", chunk))
 	if m.get("full", 0):
 		known.fill(0)
+		known_mask.fill(0)
 	var stride := int(m.get("stride", GEO_STRIDE))
 	var touched := {}
 	var W := grid.w
@@ -259,6 +264,7 @@ func apply_geo(m: Dictionary) -> void:
 			for b in GEO_STRIDE:
 				geo[i * GEO_STRIDE + b] = data[k * stride + b]
 			known[i] = 1
+			known_mask[i] = 255
 			k += 1
 			# a hex's shape changes its neighbours' corners: their chunks are rebuilt too
 			touched[_chunk_of(i)] = true

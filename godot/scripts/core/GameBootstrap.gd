@@ -27,6 +27,10 @@ var diag: Diagnostics
 var args := {}
 var pending_mode := ""
 var pending_opts := {}
+var order_test_at := 0.0
+var order_test := {}
+var battle := {}
+var quality := "medium"
 
 
 func _ready() -> void:
@@ -85,14 +89,143 @@ func _ready() -> void:
 	net.status_changed.connect(_on_status)
 	hud.start_requested.connect(start)
 	input.order_feedback.connect(hud.show_toast)
+	_apply_quality(str(args.get("quality", "medium")))
+	if args.has("novsync"):
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		Engine.max_fps = 0
 	if args.has("bench"):
 		diag.start_bench(float(args.bench), str(args.get("bench-out", "")))
+		diag.bench_wait = float(args.get("bench-wait", "0"))
 		diag.label.visible = true
+	if args.has("probe"):
+		diag.start_probe(float(args.probe), str(args.get("probe-out", "")), _probe_extra)
+	if args.has("order-test"):
+		order_test_at = float(args["order-test"])
+	if args.has("tour"):
+		_tour(str(args.tour))
 	if args.has("mode"):
 		start({"mode": args.mode, "url": args.get("server", "ws://127.0.0.1:8137/ws"), "name": args.get("name", "Native"), "seed": args.get("seed", ""), "map": args.get("map", ""), "match": args.get("match", "")})
 	else:
 		hud.show_lobby(true)
 		hud.url_edit.text = str(args.get("server", ""))
+
+
+## --order-test=SECONDS: select the scout and order it three hexes east through the normal input path
+func _run_order_test() -> void:
+	for id in world.units.keys():
+		var u: Dictionary = world.units[id]
+		if int(u.owner) == world.civ_id and str(u.type) == "scout_buggy":
+			military.selected.clear()
+			military.selected[id] = true
+			var target := world.grid.nb[world.grid.nb[world.grid.nb[int(u.tile) * 6] * 6] * 6]
+			order_test = {"unit": id, "from": int(u.tile), "to": target, "sent_at": world.server_time}
+			net.cmd({"c": "move", "units": [id], "tile": target}, func(r: Dictionary): order_test["reply"] = r)
+			return
+
+
+## --tour=DIR: once the land is built, capture screenshots at several views (close, mid, far, seam)
+func _tour(dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dir)
+	var wait := float(args.get("tour-wait", "0"))
+	while not (world.ready_ and world.snapshot_count > 8 and terrain.dirty.is_empty() and settlements.version >= 0 and world.server_time >= wait):
+		await get_tree().process_frame
+	await get_tree().create_timer(1.0).timeout
+	var shots := [["close", 9.0, 0.0], ["city", 16.0, 0.0], ["mid", 34.0, 0.0], ["far", 200.0, 0.0], ["seam", 30.0, -1.0]]
+	for s in shots:
+		if s[2] < 0.0:
+			cam.focus.x = 0.5   # look straight at the east-west seam
+		else:
+			cam.focus_tile(_tour_target())
+		cam.size = s[1]
+		cam.goal_size = s[1]
+		for k in 20:
+			await get_tree().process_frame
+		var img := get_viewport().get_texture().get_image()
+		img.save_png("%s/%s.png" % [dir, s[0]])
+		print("TOUR saved ", s[0])
+	get_tree().quit()
+
+
+## --battle=SCENARIO (sandbox matches only): stage a developer scenario through the server's own
+## sandbox command, dig in half the infantry, then attack-move the rest. Every step is an intent the
+## server validates; the client decides nothing about the outcome.
+func _stage_battle(key: String) -> void:
+	net.cmd({"c": "sandbox", "op": "scenario", "key": key}, func(r: Dictionary):
+		battle = r.get("scenario", {})
+		if battle.is_empty():
+			push_warning("battle: %s" % str(r))
+			return
+		cam.focus_tile(int(battle.arena), 24.0)
+		var mine: Array = battle.A
+		var half := mine.slice(0, mine.size() / 3)
+		net.cmd({"c": "fortify", "units": half}, func(f): battle["fortify"] = f)
+		await get_tree().create_timer(6.0).timeout
+		net.cmd({"c": "move", "units": mine.slice(mine.size() / 3), "tile": int(battle.arena), "attackMove": true}, func(m): battle["advance"] = m))
+
+
+## the biggest city (spectators), the battle arena, or the start, for screenshots
+func _tour_target() -> int:
+	if battle.has("arena"):
+		return int(battle.arena)
+	var best := world.start_tile
+	var pop := -1.0
+	for c in world.cities.values():
+		if float(c.pop) > pop:
+			pop = float(c.pop)
+			best = int(c.t)
+	return best
+
+
+func _probe_extra() -> Dictionary:
+	var out := order_test.duplicate()
+	out["bridges_drawn"] = infra.bridge_count()
+	out["trucks_drawn"] = infra.trucks.multimesh.visible_instance_count
+	out["districts"] = settlements.districts.size()
+	out["merged_districts"] = settlements.districts.keys().filter(func(k): return str(k).contains(",")).size()
+	if not battle.is_empty():
+		out["battle"] = {"arena": battle.get("arena"), "fortify": battle.get("fortify"), "advance": battle.get("advance")}
+	if args.has("pick-test"):
+		var res := []
+		# the most rugged known ground: where picking against a flat plane would go wrong
+		var hi := 0
+		for i in world.grid.n:
+			if world.known[i] and world.height[i] > world.height[hi]:
+				hi = i
+		cam.focus_tile(hi)
+		for z in [9.0, 30.0, 120.0]:
+			cam.size = z
+			cam.goal_size = z
+			cam._apply()
+			res.append(diag.pick_test())
+		out["picking"] = res
+	if out.has("unit") and world.units.has(out.unit):
+		out["now_tile"] = int(world.units[out.unit].tile)
+		out["path"] = world.paths.get(str(out.unit), [])
+	return out
+
+
+## high: soft 4k shadows, SSAO, MSAA 2x. medium (default): sharper 2k shadows, no SSAO, MSAA 2x.
+## low: no shadows, no SSAO, FXAA.
+func _apply_quality(q: String) -> void:
+	var vp := get_viewport()
+	var e: Environment = environment.env.environment
+	match q:
+		"high":
+			RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_HIGH)
+			RenderingServer.directional_shadow_atlas_set_size(4096, true)
+			e.ssao_enabled = true
+			vp.msaa_3d = Viewport.MSAA_2X
+		"low":
+			environment.sun.shadow_enabled = false
+			e.ssao_enabled = false
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+		_:
+			RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_LOW)
+			RenderingServer.directional_shadow_atlas_set_size(2048, true)
+			e.ssao_enabled = false
+			vp.msaa_3d = Viewport.MSAA_2X
+	quality = q
 
 
 func _parse_args(list: PackedStringArray) -> Dictionary:
@@ -146,6 +279,10 @@ func _on_message(m: Dictionary) -> void:
 			cam.on_world()
 			cam.focus_tile(world.start_tile, 26.0)
 			hud.show_lobby(false)
+			if args.has("battle") and world.sandbox:
+				_stage_battle(str(args.battle))
+			if world.spectator and args.has("speed"):
+				net.cmd({"c": "speed", "speed": int(args.speed)})
 		"error":
 			var err := str(m.get("error", "error"))
 			if world.ready_:
@@ -165,14 +302,26 @@ func _process(dt: float) -> void:
 	hud.update(dt)
 	if not world.ready_:
 		return
+	var t0 := Time.get_ticks_usec()
 	world.advance_clock(dt)
+	if order_test_at > 0.0 and world.snapshot_count > 3 and Time.get_ticks_msec() / 1000.0 > order_test_at:
+		order_test_at = 0.0
+		_run_order_test()
+	var t1 := Time.get_ticks_usec()
 	terrain.update_view(cam.focus.x, cam.view_half_width())
+	var t2 := Time.get_ticks_usec()
 	environment.update(dt)
+	var t3 := Time.get_ticks_usec()
 	infra.update(dt)
+	var t4 := Time.get_ticks_usec()
 	settlements.update(dt)
+	var t5 := Time.get_ticks_usec()
 	military.update(dt)
+	var t6 := Time.get_ticks_usec()
 	combat.update(dt)
 	input.update(dt)
+	var t7 := Time.get_ticks_usec()
+	diag.record_subsystems({"state": t1 - t0, "terrain": t2 - t1, "environment": t3 - t2, "infrastructure": t4 - t3, "settlements": t5 - t4, "military": t6 - t5, "combat+input": t7 - t6, "total": t7 - t0})
 
 
 func _save_session(s: Dictionary) -> void:

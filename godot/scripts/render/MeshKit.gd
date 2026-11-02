@@ -50,6 +50,31 @@ func tri(mat: String, a: Vector3, b: Vector3, c: Vector3, col: Color, outward :=
 	pc.append(col); pc.append(col); pc.append(col)
 
 
+## a triangle with its own colour per vertex (smooth blends, e.g. water depth)
+func tri_colors(mat: String, a: Vector3, b: Vector3, c: Vector3, ca: Color, cb: Color, cc: Color, outward: Vector3) -> void:
+	var nrm := (c - a).cross(b - a)
+	if not FRONT_CLOCKWISE:
+		nrm = -nrm
+	if nrm.dot(outward) < 0.0:
+		var t := b
+		b = c
+		c = t
+		var tc := cb
+		cb = cc
+		cc = tc
+		nrm = -nrm
+	if nrm.length_squared() < 1e-12:
+		return
+	nrm = nrm.normalized()
+	var p := _part(mat)
+	var pv: Array = p[0]
+	var pn: Array = p[1]
+	var pc: Array = p[2]
+	pv.append(a); pv.append(b); pv.append(c)
+	pn.append(nrm); pn.append(nrm); pn.append(nrm)
+	pc.append(ca); pc.append(cb); pc.append(cc)
+
+
 ## a, b, c, d around the quad; outward tells which side is the front
 func quad(mat: String, a: Vector3, b: Vector3, c: Vector3, d: Vector3, col: Color, outward: Vector3) -> void:
 	tri(mat, a, b, c, col, outward)
