@@ -7,7 +7,7 @@ extends Node3D
 ## shadows) comes from EnvironmentRenderer. Each chunk is drawn at the image(s) of the wrapped world
 ## that the camera can see, so the east-west seam is never visible.
 
-const CHUNK_BUDGET_MS := 5.0
+const CHUNK_BUDGET_MS := 3.0
 const SQRT3 := HexGrid.SQRT3
 
 ## restrained natural palette per biome (terrain id)
@@ -39,6 +39,8 @@ var cam_x := 0.0
 var half_w := 100.0
 var chunks_built := 0
 var last_build_ms := 0.0
+var max_build_ms := 0.0
+var build_job := {}             # one chunk's arrays, filled incrementally across frames
 
 
 func setup(w: WorldState) -> void:
@@ -59,6 +61,10 @@ func _on_welcome() -> void:
 			(m as Node).queue_free()
 	chunks.clear()
 	dirty.clear()
+	build_job.clear()
+	chunks_built = 0
+	last_build_ms = 0.0
+	max_build_ms = 0.0
 	var g := world.grid
 	var img := Image.create_from_data(g.w / 8, g.h, false, Image.FORMAT_R8, world.vis_bits)
 	vis_tex = ImageTexture.create_from_image(img)
@@ -80,7 +86,7 @@ func _on_vis(bits: PackedByteArray) -> void:
 
 func _on_geo(list: PackedInt32Array) -> void:
 	for cid in list:
-		dirty[cid] = true
+		dirty[cid] = int(dirty.get(cid, 0)) + 1
 	if known_tex:
 		known_tex.update(Image.create_from_data(world.grid.w, world.grid.h, false, Image.FORMAT_R8, world.known_mask))
 
@@ -98,16 +104,30 @@ func _build_some() -> void:
 	if dirty.is_empty():
 		return
 	var t0 := Time.get_ticks_usec()
-	# nearest chunks first, so the land around the camera appears before the rest
-	var ids := dirty.keys()
-	ids.sort_custom(func(a, b): return _chunk_dist(a) < _chunk_dist(b))
-	for cid in ids:
-		_build_chunk(cid)
-		dirty.erase(cid)
+	# Upload a completed chunk in its own slice so mesh upload cannot stack on array generation.
+	if not build_job.is_empty() and int(build_job.next) == (build_job.tiles as PackedInt32Array).size():
+		var cid := int(build_job.cid)
+		_commit_chunk()
+		if int(dirty.get(cid, 0)) == int(build_job.revision):
+			dirty.erase(cid)
+		build_job.clear()
 		chunks_built += 1
-		if (Time.get_ticks_usec() - t0) / 1000.0 > CHUNK_BUDGET_MS:
+		last_build_ms = (Time.get_ticks_usec() - t0) / 1000.0
+		max_build_ms = maxf(max_build_ms, last_build_ms)
+		return
+	if build_job.is_empty():
+		# Choose only when starting a chunk. Sorting 256 entries every partial slice adds overhead.
+		var ids := dirty.keys()
+		ids.sort_custom(func(a, b): return _chunk_dist(a) < _chunk_dist(b))
+		_begin_chunk(int(ids[0]))
+	var tiles: PackedInt32Array = build_job.tiles
+	while int(build_job.next) < tiles.size():
+		_append_tile(tiles[int(build_job.next)])
+		build_job.next += 1
+		if (Time.get_ticks_usec() - t0) / 1000.0 >= CHUNK_BUDGET_MS:
 			break
 	last_build_ms = (Time.get_ticks_usec() - t0) / 1000.0
+	max_build_ms = maxf(max_build_ms, last_build_ms)
 
 
 func _chunk_dist(cid: int) -> float:
@@ -162,16 +182,11 @@ func _corner_normal(i: int, k: int) -> Vector3:
 	return nrm.normalized()
 
 
-func _build_chunk(cid: int) -> void:
+func _begin_chunk(cid: int) -> void:
 	var g := world.grid
 	var cs := world.chunk
 	var cx := cid % world.chunks_w
 	var cy := cid / world.chunks_w
-	var vt := PackedVector3Array()
-	var nt := PackedVector3Array()
-	var ct := PackedColorArray()
-	var ut := PackedVector2Array()
-	var water := MeshKit.new()
 	var tiles := PackedInt32Array()
 	for lr in cs:
 		var r := cy * cs + lr
@@ -191,43 +206,57 @@ func _build_chunk(cid: int) -> void:
 			var nb := g.nb[i * 6 + d]
 			if nb >= 0 and world.known[nb]:
 				colors[nb] = _tile_color(nb)
-	for i in tiles:
-		var c2 := g.center(i)
-		var c := Vector3(c2.x, world.height[i], c2.y)
-		var cn := Vector3.ZERO
-		var pc: Array[Vector3] = []
-		var pn: Array[Vector3] = []
-		var pcol: Array[Color] = []
-		for k in 6:
-			var o := g.corners[k]
-			pc.append(Vector3(c2.x + o.x, world.corner_height(i, k), c2.y + o.y))
-			var nk := _corner_normal(i, k)
-			pn.append(nk)
-			cn += nk
-			pcol.append(_corner_color(i, k))
-		cn = cn.normalized()
-		var uv := Vector2(i % g.w, i / g.w)
-		var col := colors[i]
-		for k in 6:
-			var k2 := (k + 1) % 6
-			# clockwise seen from above: centre, corner k, corner k + 1
-			vt.append(c); vt.append(pc[k]); vt.append(pc[k2])
-			nt.append(cn); nt.append(pn[k]); nt.append(pn[k2])
-			ct.append(col); ct.append(pcol[k]); ct.append(pcol[k2])
-			ut.append(uv); ut.append(uv); ut.append(uv)
-		_water_for(i, c2, water)
+	build_job = {"cid": cid, "revision": dirty[cid], "tiles": tiles, "next": 0, "vt": [], "nt": [], "ct": [], "ut": [], "water": MeshKit.new()}
+
+
+func _append_tile(i: int) -> void:
+	var g := world.grid
+	var vt: Array = build_job.vt
+	var nt: Array = build_job.nt
+	var ct: Array = build_job.ct
+	var ut: Array = build_job.ut
+	var c2 := g.center(i)
+	var c := Vector3(c2.x, world.height[i], c2.y)
+	var cn := Vector3.ZERO
+	var pc: Array[Vector3] = []
+	var pn: Array[Vector3] = []
+	var pcol: Array[Color] = []
+	for k in 6:
+		var o := g.corners[k]
+		pc.append(Vector3(c2.x + o.x, world.corner_height(i, k), c2.y + o.y))
+		var nk := _corner_normal(i, k)
+		pn.append(nk)
+		cn += nk
+		pcol.append(_corner_color(i, k))
+	cn = cn.normalized()
+	var uv := Vector2(i % g.w, i / g.w)
+	var col := colors[i]
+	for k in 6:
+		var k2 := (k + 1) % 6
+		vt.append(c); vt.append(pc[k]); vt.append(pc[k2])
+		nt.append(cn); nt.append(pn[k]); nt.append(pn[k2])
+		ct.append(col); ct.append(pcol[k]); ct.append(pcol[k2])
+		ut.append(uv); ut.append(uv); ut.append(uv)
+	_water_for(i, c2, build_job.water)
+
+
+func _commit_chunk() -> void:
+	var cid := int(build_job.cid)
+	var cs := world.chunk
+	var cx := cid % world.chunks_w
+	var water: MeshKit = build_job.water
 	var rec: Dictionary = chunks.get(cid, {})
 	if rec.is_empty():
 		rec = {"inst": [], "winst": [], "x0": cx * cs * SQRT3 - SQRT3, "w": (cs + 2) * SQRT3}
 		chunks[cid] = rec
 	var mesh: ArrayMesh = null
-	if not vt.is_empty():
+	if not (build_job.vt as Array).is_empty():
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = vt
-		arrays[Mesh.ARRAY_NORMAL] = nt
-		arrays[Mesh.ARRAY_COLOR] = ct
-		arrays[Mesh.ARRAY_TEX_UV2] = ut
+		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(build_job.vt)
+		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(build_job.nt)
+		arrays[Mesh.ARRAY_COLOR] = PackedColorArray(build_job.ct)
+		arrays[Mesh.ARRAY_TEX_UV2] = PackedVector2Array(build_job.ut)
 		mesh = ArrayMesh.new()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		mesh.surface_set_material(0, terrain_mat)
@@ -338,8 +367,7 @@ func _ensure(rec: Dictionary, key: String, count: int, mesh: Mesh) -> void:
 	while list.size() < count:
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
-		if key == "winst":
-			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mi)
 		list.append(mi)
 

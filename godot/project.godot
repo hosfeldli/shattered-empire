@@ -17,6 +17,7 @@ gdscript/warnings/narrowing_conversion=0
 
 [display]
 
+window/dpi/allow_hidpi=true
 window/size/viewport_width=1600
 window/size/viewport_height=900
 window/vsync/vsync_mode=1

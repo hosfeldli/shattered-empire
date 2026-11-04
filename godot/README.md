@@ -29,9 +29,42 @@ directory). Command-line options (after `--`):
 | `--probe=SECONDS [--probe-out=PATH] [--order-test=S] [--pick-test]` | report what was synchronized, then quit |
 | `--tour=DIR [--tour-wait=T]` | save screenshots at several zoom levels and across the seam |
 
+The matching PixiJS benchmark starts a clean port-8139 server for each scene and opens a visible
+Chromium window at the same 1024x768 render-pixel size reported by Godot:
+
+```bash
+npm run bench:pixi -- --out=pixi-bench.json
+npm run bench:godot -- --out=godot-bench.json
+npm run bench:godot -- --scenario=large --out=godot-large-bench.json
+```
+
+Keep that window visible. Use `--scenario=early` or `--scenario=late` for one scene, and
+`--seconds=30` to set the total duration of the three equal-length phases. `--scale=2` keeps a
+1024x768 CSS viewport and renders 2048x1536 pixels when comparing against a Godot run whose `meta.pixels` is that
+size. `--url=URL` uses an already-running server instead of the isolated server; do that only when
+it has no other matches.
+
+The runners own port 8139; stop a manually started benchmark server before running them. Both pin
+the AI personalities to warlord / merchant / builder (only warlord in the early two-player match),
+use medium graphics, and run the late scene from 720 game-seconds at normal speed. Godot's benchmark
+is capped at 60 fps and records monotonic wall-clock intervals, not Godot's smoothed process delta.
+GPU values of zero on Metal mean unavailable measurements, not free GPU work.
+
+Renderer regression checks (no server or display required):
+
+```bash
+godot --headless --path godot -s res://tests/render_regressions.gd
+node godot/tests/network-smoke.mjs
+```
+
+The second check restarts its isolated server and verifies protocol/geo negotiation, picking, a
+real move order and automatic rejoin. Large JSON packets decode in workers; their results are
+applied in wire order on the main thread. The protocol and server commands are unchanged.
+
 Controls: WASD / arrows pan (Shift faster), the wheel zooms about the cursor, middle-drag pans,
 left click or drag selects, right click moves, Ctrl+right click attack-moves, H holds, T toggles a
 defensive / aggressive stance, Escape cancels, F3 shows frame and network statistics.
+The camera keeps a fixed 60-degree pitch while zooming so terrain proportions do not stretch.
 
 ## Protocol
 

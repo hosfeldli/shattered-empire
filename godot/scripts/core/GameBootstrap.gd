@@ -37,6 +37,7 @@ func _ready() -> void:
 	args = _parse_args(OS.get_cmdline_user_args())
 	net = NetworkClient.new()
 	net.name = "NetworkClient"
+	net.process_priority = -100
 	add_child(net)
 	world = WorldState.new()
 	world.name = "WorldState"
@@ -94,6 +95,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		Engine.max_fps = 0
 	if args.has("bench"):
+		Engine.max_fps = 60
 		diag.start_bench(float(args.bench), str(args.get("bench-out", "")))
 		diag.bench_wait = float(args.get("bench-wait", "0"))
 		diag.label.visible = true
@@ -127,7 +129,7 @@ func _run_order_test() -> void:
 func _tour(dir: String) -> void:
 	DirAccess.make_dir_recursive_absolute(dir)
 	var wait := float(args.get("tour-wait", "0"))
-	while not (world.ready_ and world.snapshot_count > 8 and terrain.dirty.is_empty() and settlements.version >= 0 and world.server_time >= wait):
+	while not (world.ready_ and world.snapshot_count > 8 and terrain.dirty.is_empty() and settlements.version >= 0 and not settlements.is_building() and world.server_time >= wait):
 		await get_tree().process_frame
 	await get_tree().create_timer(1.0).timeout
 	var shots := [["close", 9.0, 0.0], ["city", 16.0, 0.0], ["mid", 34.0, 0.0], ["far", 200.0, 0.0], ["seam", 30.0, -1.0]]
@@ -211,16 +213,18 @@ func _apply_quality(q: String) -> void:
 	var e: Environment = environment.env.environment
 	match q:
 		"high":
+			environment.set_shadows_enabled(true)
 			RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_HIGH)
 			RenderingServer.directional_shadow_atlas_set_size(4096, true)
 			e.ssao_enabled = true
 			vp.msaa_3d = Viewport.MSAA_2X
 		"low":
-			environment.sun.shadow_enabled = false
+			environment.set_shadows_enabled(false)
 			e.ssao_enabled = false
 			vp.msaa_3d = Viewport.MSAA_DISABLED
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 		_:
+			environment.set_shadows_enabled(true)
 			RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_LOW)
 			RenderingServer.directional_shadow_atlas_set_size(2048, true)
 			e.ssao_enabled = false
@@ -230,17 +234,17 @@ func _apply_quality(q: String) -> void:
 
 ## --hide=trees,clouds,water,smoke,shadows,buildings: switch layers off to find what the GPU pays for
 func _debug_hide(what: PackedStringArray) -> void:
-	for p in environment.props.values():
-		(p.trees as Node3D).visible = not what.has("trees")
+	environment.hide_trees = what.has("trees")
 	environment.clouds.visible = not what.has("clouds")
 	if what.has("shadows"):
-		environment.sun.shadow_enabled = false
+		environment.set_shadows_enabled(false)
 	for c in terrain.chunks.values():
 		for m in c.winst:
 			if what.has("water"):
 				(m as Node3D).visible = false
 	for d in settlements.districts.values():
 		(d.node as Node3D).visible = not what.has("buildings")
+		(d.fx as Node3D).visible = not what.has("buildings")
 	settlements.plumes.visible = not what.has("smoke")
 
 
@@ -275,6 +279,10 @@ func start(opts: Dictionary) -> void:
 			msg.seed = int(opts.seed)
 		if str(opts.get("map", "")) != "":
 			msg.mapSize = str(opts.map)
+		if args.has("bench"):
+			# Seed fixes terrain, but the lobby otherwise chooses AI personalities with Math.random.
+			# Pin them for repeatable cross-client benchmark populations without changing the server.
+			msg.rivals = [{"personality": "warlord"}, {"personality": "merchant"}, {"personality": "builder"}]
 		net.send(msg)
 	net.connect_to(str(opts.url))
 
@@ -332,7 +340,7 @@ func _process(dt: float) -> void:
 	var t3 := Time.get_ticks_usec()
 	infra.update(dt)
 	var t4 := Time.get_ticks_usec()
-	settlements.update(dt)
+	settlements.update(dt, net.frame_work_us < 500)
 	var t5 := Time.get_ticks_usec()
 	military.update(dt)
 	var t6 := Time.get_ticks_usec()

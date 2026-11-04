@@ -21,9 +21,16 @@ const SQRT3 := HexGrid.SQRT3
 var world: WorldState
 var cam: CameraController
 var version := -1
-var districts := {}          # district key (sorted member ids) -> { node: MeshInstance3D, anchor: Vector2, sig: String, smoke: [] }
+var districts := {}          # district key -> { node, fx, anchor, structure_sig, progress_sig, smoke }
 var at_tile := {}            # tile -> building id
 var district_of := {}        # building id -> district key
+var build_queue: Array[String] = []
+var queued := {}
+var pending := {}            # district key -> latest member list
+var _topology_sig := ""
+var refresh_queue: Array[String] = []
+var refresh_pending := {}
+var district_job := {}
 var selected_building := -1
 var select_mark: MeshInstance3D
 var ruin_inst: MeshInstance3D
@@ -32,6 +39,7 @@ var ruin_anchor := Vector2.ZERO
 var rebuilt := 0
 var plumes: MultiMeshInstance3D   # all chimney and fire smoke: one batch, animated here
 const MAX_PUFFS := 900
+const REBUILD_BUDGET_US := 1000
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -49,6 +57,7 @@ func setup(w: WorldState, c: CameraController) -> void:
 	select_mark.visible = false
 	add_child(select_mark)
 	ruin_inst = MeshInstance3D.new()
+	ruin_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ruin_inst)
 	plumes = MultiMeshInstance3D.new()
 	plumes.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -73,21 +82,40 @@ func setup(w: WorldState, c: CameraController) -> void:
 func _clear() -> void:
 	for d in districts.values():
 		(d.node as Node).queue_free()
+		(d.fx as Node).queue_free()
 	districts.clear()
+	at_tile.clear()
+	district_of.clear()
+	build_queue.clear()
+	queued.clear()
+	pending.clear()
+	refresh_queue.clear()
+	refresh_pending.clear()
+	district_job.clear()
+	_topology_sig = ""
+	ruin_sig = ""
+	if ruin_inst:
+		ruin_inst.mesh = null
 	version = -1
 
 
-func update(_dt: float) -> void:
+func update(_dt: float, allow_rebuild := true) -> void:
 	if world.grid == null:
 		return
-	if version != world.buildings_version:
-		version = world.buildings_version
-		_rebuild()
+	# Never stack an economy/geo dispatch, district regrouping and mesh generation in one frame.
+	if allow_rebuild:
+		if version != world.buildings_version:
+			version = world.buildings_version
+			_rebuild()
+		else:
+			_build_some()
 	var cx := cam.focus.x
 	var g := world.grid
 	for d in districts.values():
 		var a: Vector2 = d.anchor
-		(d.node as Node3D).position = Vector3(g.near_x(a.x, cx) - a.x, 0, 0)
+		var off := Vector3(g.near_x(a.x, cx) - a.x, 0, 0)
+		(d.node as Node3D).position = off
+		(d.fx as Node3D).position = off
 	ruin_inst.position = Vector3(g.near_x(ruin_anchor.x, cx) - ruin_anchor.x, 0, 0)
 	_update_plumes()
 	_update_mark()
@@ -100,13 +128,14 @@ func _update_plumes() -> void:
 	var cx := cam.focus.x
 	var now := Time.get_ticks_msec() / 1000.0
 	var n := 0
+	var cap := MAX_PUFFS if cam.size < 40.0 else 450 if cam.size < 100.0 else 180
 	for d in districts.values():
 		for s in d.smoke:
 			var base: Vector3 = s[0]
 			var col: Color = s[1]
 			var x0 := g.near_x(base.x, cx)
 			for k in 6:
-				if n >= MAX_PUFFS:
+				if n >= cap:
 					break
 				var u := fposmod(now * 0.22 + k / 6.0 + base.z * 0.37, 1.0)
 				var p := Vector3(x0 + u * 0.35, base.y + u * 0.7, base.z - u * 0.08)
@@ -132,9 +161,23 @@ func building_at(tile: int) -> int:
 	return int(at_tile.get(tile, -1))
 
 
+func is_building() -> bool:
+	return not refresh_queue.is_empty() or not build_queue.is_empty() or not district_job.is_empty()
+
+
 # ------------------------------------------------------------------ districts
 func _rebuild() -> void:
 	var g := world.grid
+	var topology := PackedStringArray()
+	for b in world.buildings.values():
+		topology.append("%d:%d:%s:%d:%d" % [int(b.id), int(b.t), b.ty, int(b.o), int(b.get("d", 0))])
+	var topology_sig := "|".join(topology)
+	if topology_sig == _topology_sig:
+		for key in districts.keys():
+			_queue_refresh(key)
+		_build_ruins()
+		return
+	_topology_sig = topology_sig
 	at_tile.clear()
 	var members := {}            # tile -> building for district candidates
 	for b in world.buildings.values():
@@ -176,23 +219,42 @@ func _rebuild() -> void:
 		keep[key] = true
 		for id in ids:
 			district_of[id] = key
-		var sig := _signature(list)
 		var rec: Dictionary = districts.get(key, {})
-		if not rec.is_empty() and rec.sig == sig:
-			continue
 		if rec.is_empty():
 			var mi := MeshInstance3D.new()
+			var fx := MeshInstance3D.new()
+			fx.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(mi)
-			rec = {"node": mi, "smoke": []}
+			add_child(fx)
+			rec = {"node": mi, "fx": fx, "ids": ids, "anchor": world.grid.center(int(list[0].t)), "structure_sig": "", "progress_sig": "", "smoke": []}
 			districts[key] = rec
-		rec.sig = sig
-		_build_district(rec, list)
-		rebuilt += 1
+		_queue_refresh(key)
 	for key in districts.keys():
 		if not keep.has(key):
 			(districts[key].node as Node).queue_free()
+			(districts[key].fx as Node).queue_free()
 			districts.erase(key)
+			pending.erase(key)
+			queued.erase(key)
 	_build_ruins()
+
+
+func _queue_refresh(key: String) -> void:
+	if not refresh_pending.has(key):
+		refresh_pending[key] = true
+		refresh_queue.append(key)
+
+
+func _refresh_district(key: String, list: Array) -> void:
+	var rec: Dictionary = districts[key]
+	var structure_sig := _structure_signature(list)
+	var progress_sig := _progress_signature(list)
+	if rec.structure_sig != structure_sig:
+		rec.structure_sig = structure_sig
+		_queue_build(key, list)
+	if rec.progress_sig != progress_sig:
+		rec.progress_sig = progress_sig
+		_build_progress(rec, list)
 
 
 func _find(parent: Dictionary, x):
@@ -202,47 +264,132 @@ func _find(parent: Dictionary, x):
 	return x
 
 
-func _signature(list: Array) -> String:
+func _structure_signature(list: Array) -> String:
 	var parts := PackedStringArray()
+	parts.append("era:%d" % _era())
 	for b in list:
-		parts.append("%d:%s:%d:%s:%d:%d:%d:%d:%d:%d" % [int(b.id), b.ty, int(b.get("d", 0)), str(b.get("st", "")), int(b.get("lv", 1)), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0)), int(b.get("hp", 100)) / 25, int(b.get("ti", 0))])
+		# Damage stages alter the static tint, but progress, fire and activity never rebuild this mesh.
+		parts.append("%d:%s:%d:%d:%s:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", "")), int(b.get("lv", 1)), int(b.get("hp", 100)) / 25, int(b.get("ti", 0))])
 	return "|".join(parts)
 
 
-func _build_district(rec: Dictionary, list: Array) -> void:
+func _progress_signature(list: Array) -> String:
+	var parts := PackedStringArray()
+	for b in list:
+		parts.append("%d:%d:%d:%d" % [int(b.id), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0))])
+	return "|".join(parts)
+
+
+func _queue_build(key: String, list: Array) -> void:
+	pending[key] = list.duplicate()
+	if not queued.has(key):
+		queued[key] = true
+		build_queue.append(key)
+
+
+func _build_some() -> void:
+	var t0 := Time.get_ticks_usec()
+	while Time.get_ticks_usec() - t0 < REBUILD_BUDGET_US:
+		if not refresh_queue.is_empty():
+			var key: String = refresh_queue.pop_front()
+			refresh_pending.erase(key)
+			if districts.has(key):
+				var list := []
+				for id in districts[key].ids:
+					list.append(world.buildings[id])
+				_refresh_district(key, list)
+			continue
+		if district_job.is_empty():
+			if build_queue.is_empty():
+				return
+			var key: String = build_queue.pop_front()
+			queued.erase(key)
+			if not districts.has(key) or not pending.has(key):
+				continue
+			var list: Array = pending[key]
+			pending.erase(key)
+			_begin_district(key, list)
+		var key := str(district_job.key)
+		if not districts.has(key):
+			district_job.clear()
+			continue
+		var list: Array = district_job.list
+		if int(district_job.next) < list.size():
+			_append_building(list[int(district_job.next)])
+			district_job.next += 1
+		else:
+			var kit: MeshKit = district_job.kit
+			(districts[key].node as MeshInstance3D).mesh = kit.commit() if not kit.is_empty() else null
+			district_job.clear()
+			rebuilt += 1
+
+
+func _begin_district(key: String, list: Array) -> void:
 	var g := world.grid
 	var anchor := g.center(int(list[0].t))
-	rec.anchor = anchor
-	var kit := MeshKit.new()
+	districts[key].anchor = anchor
 	var by_tile := {}
 	for b in list:
 		by_tile[int(b.t)] = b
 	var group: String = GROUP.get(list[0].ty, "") if list.size() > 1 else ""
+	district_job = {"key": key, "list": list, "next": 0, "kit": MeshKit.new(), "by_tile": by_tile, "anchor": anchor, "group": group}
+
+
+func _append_building(b: Dictionary) -> void:
+	var g := world.grid
+	var anchor: Vector2 = district_job.anchor
+	var kit: MeshKit = district_job.kit
+	var group := str(district_job.group)
+	var by_tile: Dictionary = district_job.by_tile
+	var t := int(b.t)
+	var c2 := g.center(t)
+	var lc := Vector3(anchor.x + g.dx_wrap(anchor.x, c2.x), world.tile_height(t), c2.y)
+	kit.set_frame(lc, 0.0)
+	_ground(kit, b, group)
+	if int(b.get("d", 0)) == 1:
+		_building(kit, b, _tint(b))
+	if group != "":
+		for d in [0, 4, 5]:
+			var nb: int = g.nb[t * 6 + d]
+			if by_tile.has(nb):
+				var c3 := g.center(nb)
+				var lc2 := Vector3(lc.x + g.dx_wrap(c2.x, c3.x), world.tile_height(nb), c3.y)
+				kit.set_frame(Vector3.ZERO, 0.0)
+				_connect(kit, group, lc, lc2, b, by_tile[nb])
+
+
+## Frequently changing progress, fire and activity stay out of the district mesh. Construction and
+## fire are tiny companion meshes; smoke is just a list consumed by the shared MultiMesh batch.
+func _build_progress(rec: Dictionary, list: Array) -> void:
+	var g := world.grid
+	var anchor := g.center(int(list[0].t))
+	rec.anchor = anchor
+	var kit := MeshKit.new()
 	var smokes: Array = []
 	for b in list:
 		var t := int(b.t)
 		var c2 := g.center(t)
 		var lc := Vector3(anchor.x + g.dx_wrap(anchor.x, c2.x), world.tile_height(t), c2.y)
-		var tint := _tint(b)
 		kit.set_frame(lc, 0.0)
-		_ground(kit, b, group)
 		if int(b.get("d", 0)) == 0:
-			_construction(kit, b, tint)
-		else:
-			_building(kit, b, tint, smokes, lc)
-		# connections to district neighbours (each shared edge once)
-		if group != "":
-			for d in [0, 4, 5]:
-				var nb: int = g.nb[t * 6 + d]
-				if by_tile.has(nb):
-					var c3 := g.center(nb)
-					var lc2 := Vector3(lc.x + g.dx_wrap(c2.x, c3.x), world.tile_height(nb), c3.y)
-					kit.set_frame(Vector3.ZERO, 0.0)
-					_connect(kit, group, lc, lc2, b, by_tile[nb])
-	var mi: MeshInstance3D = rec.node
-	mi.mesh = kit.commit() if not kit.is_empty() else null
-	# plumes in base-image coordinates (local x is relative to the district anchor, already wrapped)
+			_construction(kit, b, _tint(b))
+		if int(b.get("f", 0)) == 1:
+			kit.box("glow:ff8a2a", Vector3(0, 0.05, 0), Vector3(0.3, 0.12, 0.25), Color.WHITE)
+		_append_smoke(smokes, b, lc)
+	(rec.fx as MeshInstance3D).mesh = kit.commit() if not kit.is_empty() else null
 	rec.smoke = smokes
+
+
+func _append_smoke(smokes: Array, b: Dictionary, lc: Vector3) -> void:
+	var active := int(b.get("a", 0)) == 1
+	var ty := str(b.ty)
+	if active and ty in ["steel_mill", "refinery", "munitions_plant", "electronics_plant", "motor_works", "heavy_assembly", "robotics_complex", "drone_works", "salvage"]:
+		smokes.append([lc + Vector3(0.36, 0.665, -0.22), Color(0.55, 0.53, 0.5)])
+	elif active and ty == "power_plant":
+		for z in [-0.18, 0.18]:
+			smokes.append([lc + Vector3(0.2, 0.425, z), Color(0.86, 0.86, 0.86)])
+	if int(b.get("f", 0)) == 1:
+		smokes.append([lc + Vector3(0, 0.3, 0), Color(0.2, 0.18, 0.17)])
 
 
 func _tint(b: Dictionary) -> Color:
@@ -372,10 +519,9 @@ func _awning(rng: RandomNumberGenerator) -> Color:
 	return opts[rng.randi() % opts.size()]
 
 
-func _building(kit: MeshKit, b: Dictionary, tint: Color, smokes: Array, lc: Vector3) -> void:
+func _building(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 	var rng := _rng(b)
 	var lv := int(b.get("lv", 1))
-	var active := int(b.get("a", 0)) == 1
 	var ty: String = b.ty
 	match ty:
 		"house":
@@ -469,16 +615,12 @@ func _building(kit: MeshKit, b: Dictionary, tint: Color, smokes: Array, lc: Vect
 					kit.cylinder("steel", Vector3(0.3, 0.025, 0.05 + 0.13 * k), 0.06, 0.18, 10, tint)
 			if ty == "steel_mill":
 				kit.cylinder("steel", Vector3(0.3, 0.025, 0.15), 0.09, 0.42, 10, tint * 0.8, 0.06)
-			if active:
-				smokes.append([lc + chim + Vector3(0, 0.64, 0), Color(0.55, 0.53, 0.5)])
 		"power_plant":
 			kit.box("concrete", Vector3(-0.2, 0.025, 0), Vector3(0.36, 0.22, 0.3), tint)
 			for k in 2:
 				var p := Vector3(0.2, 0.025, -0.18 + 0.36 * k)
 				kit.cylinder("concrete", p, 0.16, 0.24, 12, tint, 0.11)
 				kit.cylinder("concrete", p + Vector3(0, 0.24, 0), 0.11, 0.14, 12, tint, 0.13)
-				if active:
-					smokes.append([lc + p + Vector3(0, 0.4, 0), Color(0.86, 0.86, 0.86)])
 		"fusion_plant":
 			kit.box("concrete", Vector3(0, 0.025, 0), Vector3(0.6, 0.12, 0.5), tint)
 			kit.cylinder("glass", Vector3(0, 0.145, 0), 0.22, 0.12, 14, tint, 0.12)
@@ -536,11 +678,6 @@ func _building(kit: MeshKit, b: Dictionary, tint: Color, smokes: Array, lc: Vect
 		_:
 			kit.box("concrete", Vector3(0, 0.02, 0), Vector3(0.42, 0.2, 0.36), tint)
 			kit.box("steel", Vector3(0, 0.22, 0), Vector3(0.44, 0.02, 0.38), tint)
-	if int(b.get("f", 0)) == 1:
-		smokes.append([lc + Vector3(0, 0.3, 0), Color(0.2, 0.18, 0.17)])
-		kit.box("glow:ff8a2a", Vector3(0, 0.05, 0), Vector3(0.3, 0.12, 0.25), Color(1, 1, 1))
-
-
 ## fields in rows aligned east-west, so neighbouring farms read as one stretch of countryside
 func _fields(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 	var rows := 7

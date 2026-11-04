@@ -1,7 +1,7 @@
 class_name CameraController
 extends Node3D
-## Orthographic oblique camera with a fixed heading (north up, no free rotation). Zoomed in it looks
-## across the land at an angle; zoomed out it tips toward straight down, like a map. WASD / arrows
+## Orthographic oblique camera with a fixed heading and pitch. Zoom changes magnification only,
+## so the ground keeps the same proportions throughout a zoom sweep. WASD / arrows
 ## pan, the wheel zooms about the point under the cursor, middle-drag pans, Escape is passed to the
 ## input controller. The focus x is kept in the base image [0, period) by shifting it by exactly one
 ## period, and all content is drawn at the image nearest the camera, so the seam never jumps.
@@ -9,8 +9,7 @@ extends Node3D
 signal cancel_pressed
 
 const MIN_SIZE := 7.0
-const PITCH_NEAR := 50.0
-const PITCH_FAR := 80.0
+const PITCH := 60.0
 const DISTANCE := 300.0
 const PAN_SPEED := 0.9          # view heights per second
 const ZOOM_STEP := 1.15
@@ -59,8 +58,7 @@ func focus_tile(i: int, zoom := -1.0) -> void:
 
 
 func pitch_deg() -> float:
-	var t := clampf(log(size / MIN_SIZE) / log(maxf(max_size / MIN_SIZE, 1.001)), 0.0, 1.0)
-	return lerpf(PITCH_NEAR, PITCH_FAR, smoothstep(0.0, 1.0, t))
+	return PITCH
 
 
 ## half the width of the ground the camera sees (east-west)

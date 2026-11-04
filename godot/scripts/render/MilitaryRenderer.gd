@@ -14,6 +14,13 @@ var ring_mesh: TorusMesh
 var path_mesh: ImmediateMesh
 var path_inst: MeshInstance3D
 var drawn := 0
+const BATCH_THRESHOLD := 200
+var batched := false
+var batches := {}        # model key -> MultiMeshInstance3D
+var motions := {}        # id -> { last: Vector2, yaw: float }
+var draw_positions := {} # id -> Vector3, also used by picking and path drawing
+var ring_batch: MultiMeshInstance3D
+var ground_cache := {}
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -25,6 +32,9 @@ func setup(w: WorldState, c: CameraController) -> void:
 	ring_mesh.rings = 24
 	ring_mesh.ring_segments = 4
 	ring_mesh.material = MaterialLibrary.glow(Color(0.95, 0.92, 0.6))
+	ring_batch = MultiMeshInstance3D.new()
+	ring_batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(ring_batch)
 	path_mesh = ImmediateMesh.new()
 	path_inst = MeshInstance3D.new()
 	path_inst.mesh = path_mesh
@@ -39,6 +49,11 @@ func _clear() -> void:
 	for r in nodes.values():
 		(r.node as Node).queue_free()
 	nodes.clear()
+	_clear_batches()
+	meshes.clear()
+	motions.clear()
+	draw_positions.clear()
+	ground_cache.clear()
 	selected.clear()
 
 
@@ -50,14 +65,29 @@ func unit_def(type: String) -> Dictionary:
 func update(dt: float) -> void:
 	if world.grid == null:
 		return
+	world.prepare_unit_frame()
+	var want_batched := world.units.size() > BATCH_THRESHOLD
+	if want_batched != batched:
+		batched = want_batched
+		for r in nodes.values():
+			(r.node as Node).queue_free()
+		nodes.clear()
+		_clear_batches()
+		motions.clear()
+	if batched:
+		_update_batched(dt)
+		_draw_paths()
+		return
 	var g := world.grid
 	var cx := cam.focus.x
 	for id in nodes.keys():
 		if not world.units.has(id):
 			(nodes[id].node as Node).queue_free()
 			nodes.erase(id)
+			ground_cache.erase(id)
 			selected.erase(id)
 	drawn = 0
+	draw_positions.clear()
 	for id in world.units.keys():
 		var u: Dictionary = world.units[id]
 		var key := "%s|%d" % [u.type, u.owner]
@@ -71,7 +101,7 @@ func update(dt: float) -> void:
 		var d: Dictionary = unit_def(u.type)
 		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
 		var x := g.near_x(p.x, cx)
-		var y := maxf(world.ground_height(x, p.y), 0.0)
+		var y := _ground_for(id, p)
 		if air:
 			y += 1.4
 		elif (u.flags & 2) != 0:
@@ -83,10 +113,114 @@ func update(dt: float) -> void:
 		r.last = p
 		var node: Node3D = r.node
 		node.position = Vector3(x, y, p.y)
+		draw_positions[id] = node.position
 		(r.mesh as Node3D).rotation = Vector3(0, float(r.yaw), 0)
 		(r.ring as Node3D).visible = selected.has(id)
 		drawn += 1
 	_draw_paths()
+
+
+func _ground_for(id: int, p: Vector2) -> float:
+	var cache: Dictionary = ground_cache.get(id, {})
+	if cache.is_empty() or cache.pos != p or int(cache.revision) != world.geo_version:
+		cache = {"pos": p, "revision": world.geo_version, "height": maxf(world.ground_height(p.x, p.y), 0.0)}
+		ground_cache[id] = cache
+	return float(cache.height)
+
+
+func _clear_batches() -> void:
+	for b in batches.values():
+		(b as Node).queue_free()
+	batches.clear()
+	if ring_batch:
+		ring_batch.multimesh = null
+
+
+## Dense scenes use one MultiMesh per model/owner key. Positions remain authoritative snapshot
+## interpolation; batching only changes how the same transforms reach the renderer.
+func _update_batched(dt: float) -> void:
+	var g := world.grid
+	var cx := cam.focus.x
+	var groups := {}
+	var seen := {}
+	draw_positions.clear()
+	drawn = 0
+	for id in world.units.keys():
+		seen[id] = true
+		var u: Dictionary = world.units[id]
+		var p := world.unit_position(id)
+		var d: Dictionary = unit_def(u.type)
+		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
+		var x := g.near_x(p.x, cx)
+		var y := _ground_for(id, p)
+		if air:
+			y += 1.4
+		elif (u.flags & 2) != 0:
+			y = maxf(y, 0.02)
+		var motion: Dictionary = motions.get(id, {"last": p, "yaw": 0.0})
+		var moved := Vector2(g.dx_wrap(motion.last.x, p.x), p.y - motion.last.y)
+		if moved.length_squared() > 1e-6:
+			var want := atan2(-moved.y, moved.x)
+			motion.yaw = lerp_angle(float(motion.yaw), want, minf(1.0, dt * 8.0))
+		motion.last = p
+		motions[id] = motion
+		var pos := Vector3(x, y, p.y)
+		draw_positions[id] = pos
+		var key := "%s|%d" % [u.type, u.owner]
+		if not groups.has(key):
+			groups[key] = {"unit": u, "xforms": []}
+		(groups[key].xforms as Array).append(Transform3D(Basis(Vector3.UP, float(motion.yaw)), pos))
+		drawn += 1
+	for id in motions.keys():
+		if not seen.has(id):
+			motions.erase(id)
+			ground_cache.erase(id)
+			selected.erase(id)
+	for key in batches.keys():
+		if not groups.has(key):
+			(batches[key] as Node).queue_free()
+			batches.erase(key)
+	for key in groups.keys():
+		var batch: MultiMeshInstance3D = batches.get(key)
+		var info: Dictionary = groups[key]
+		if batch == null:
+			batch = MultiMeshInstance3D.new()
+			add_child(batch)
+			batches[key] = batch
+		var mm := batch.multimesh
+		if mm == null:
+			mm = MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+		if not meshes.has(key):
+			var sample: Dictionary = info.unit
+			meshes[key] = _build_model(sample.type, world.civ_color(int(sample.owner)))
+		mm.mesh = meshes[key]
+		var xforms: Array = info.xforms
+		if mm.instance_count < xforms.size():
+			mm.instance_count = maxi(xforms.size(), mm.instance_count * 2)
+		mm.visible_instance_count = xforms.size()
+		for k in xforms.size():
+			mm.set_instance_transform(k, xforms[k])
+		batch.multimesh = mm
+	_update_batched_rings()
+
+
+func _update_batched_rings() -> void:
+	var xforms: Array[Transform3D] = []
+	for id in selected.keys():
+		if draw_positions.has(id):
+			xforms.append(Transform3D(Basis.IDENTITY, (draw_positions[id] as Vector3) + Vector3(0, 0.03, 0)))
+	var mm := ring_batch.multimesh
+	if mm == null:
+		mm = MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = ring_mesh
+	if mm.instance_count < xforms.size():
+		mm.instance_count = maxi(xforms.size(), mm.instance_count * 2)
+	mm.visible_instance_count = xforms.size()
+	for k in xforms.size():
+		mm.set_instance_transform(k, xforms[k])
+	ring_batch.multimesh = mm
 
 
 func _draw_paths() -> void:
@@ -103,7 +237,9 @@ func _draw_paths() -> void:
 		if not any:
 			path_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
 			any = true
-		var prev: Vector3 = (nodes[id].node as Node3D).position
+		if not draw_positions.has(id):
+			continue
+		var prev: Vector3 = draw_positions[id]
 		for t in path:
 			var c := g.center(int(t))
 			var x := g.near_x(c.x, prev.x)
@@ -200,11 +336,11 @@ func _build_model(type: String, team_color: Color) -> ArrayMesh:
 ## own units whose drawn position projects within radius px of the screen point, nearest first
 func units_near_screen(screen: Vector2, radius: float, own_only := true) -> Array:
 	var out := []
-	for id in nodes.keys():
+	for id in draw_positions.keys():
 		var u: Dictionary = world.units.get(id, {})
 		if u.is_empty() or (own_only and int(u.owner) != world.civ_id):
 			continue
-		var s := cam.to_screen((nodes[id].node as Node3D).global_position + Vector3(0, 0.05, 0))
+		var s := cam.to_screen((draw_positions[id] as Vector3) + Vector3(0, 0.05, 0))
 		var dd := s.distance_to(screen)
 		if s.x >= 0.0 and dd <= radius:
 			out.append([dd, id])
@@ -214,11 +350,11 @@ func units_near_screen(screen: Vector2, radius: float, own_only := true) -> Arra
 
 func units_in_rect(rect: Rect2) -> Array:
 	var out := []
-	for id in nodes.keys():
+	for id in draw_positions.keys():
 		var u: Dictionary = world.units.get(id, {})
 		if u.is_empty() or int(u.owner) != world.civ_id:
 			continue
-		var s := cam.to_screen((nodes[id].node as Node3D).global_position)
+		var s := cam.to_screen(draw_positions[id])
 		if rect.has_point(s):
 			out.append(id)
 	return out

@@ -275,6 +275,11 @@ Only after native parity, at least one release cycle as the default, and no open
 | --- | --- |
 | synchronized state, order, picking | `godot --headless --path godot -- --server=ws://127.0.0.1:8139/ws --mode=observe --probe=15 --order-test=6 --pick-test` |
 | frame times | `godot --path godot --resolution 1024x768 -- --server=ws://127.0.0.1:8139/ws --mode=ai --seed=7 --bench=30 --bench-out=bench.json` |
+| isolated PixiJS comparison (early + late) | `npm run bench:pixi -- --out=pixi-bench.json` |
+| isolated Godot comparison (early + late) | `npm run bench:godot -- --out=godot-bench.json` |
+| isolated developed large-map benchmark | `npm run bench:godot -- --scenario=large --out=godot-large-bench.json` |
+| renderer regressions | `godot --headless --path godot -s res://tests/render_regressions.gd` |
+| native network / order / reconnect smoke | `node godot/tests/network-smoke.mjs` |
 | late-scene frame times | same with `--mode=observe --seed=5 --speed=8 --bench-wait=720` |
 | what costs the GPU | add `--hide=trees`, `shadows`, `smoke`, `clouds,water` or `buildings` and compare |
 | screenshots | `--tour=DIR [--tour-wait=T]`, add `--mode=sandbox --battle=large` for a battle |

@@ -30,6 +30,11 @@ var net_ms: Array = []
 var probe_at := 0.0
 var probe_out := ""
 var probe_extra: Callable
+var _last_frame_us := 0
+# The common zoom range supported by both clients at a 768-pixel viewport height. Pixi's max
+# zoom is 4, which corresponds to 16 native world units (768 / (4 * 12)).
+const BENCH_MIN_SIZE := 16.0
+const BENCH_MAX_SIZE := 110.0
 
 
 func setup(w: WorldState, n: NetworkClient, c: CameraController, t: WorldRenderer, m: MilitaryRenderer) -> void:
@@ -61,7 +66,11 @@ func _unhandled_input(e: InputEvent) -> void:
 		label.visible = not label.visible
 
 
-func _process(dt: float) -> void:
+func _process(_dt: float) -> void:
+	# Engine delta is smoothed and can be quantized by vsync. Benchmark actual frame intervals.
+	var now := Time.get_ticks_usec()
+	var dt := float(now - _last_frame_us) / 1000000.0 if _last_frame_us > 0 else 1.0 / 60.0
+	_last_frame_us = now
 	# script time of this frame (all _process callbacks, including network decode and the renderers)
 	var cpu: float = (Time.get_ticks_usec() - _marker.t) / 1000.0
 	_push(samples_render, RenderingServer.viewport_get_measured_render_time_cpu(_vp_rid) + RenderingServer.get_frame_setup_time_cpu())
@@ -69,6 +78,7 @@ func _process(dt: float) -> void:
 	_push(samples_frame, dt * 1000.0)
 	_push(samples_cpu, cpu)
 	_push(samples_gpu, gpu)
+	record_subsystems({"network": net.frame_work_us, "json_decode": net.frame_decode_us, "async_json_decode": net.frame_async_decode_us, "state_dispatch": net.frame_dispatch_us})
 	if label.visible and Engine.get_process_frames() % 10 == 0:
 		label.text = _report()
 	if bench_seconds > 0.0:
@@ -128,11 +138,11 @@ func _probe() -> void:
 			if world.road[i] != 0:
 				roads += 1
 	var r := {
-		"net": {"state": net.state, "proto": net.proto, "caps": net.caps, "msgs": net.msgs_in, "mb_in": snappedf(net.bytes_in / 1048576.0, 0.01), "rtt_ms": net.rtt_ms},
+		"net": {"state": net.state, "proto": net.proto, "caps": net.caps, "connections": net.connections, "msgs": net.msgs_in, "mb_in": snappedf(net.bytes_in / 1048576.0, 0.01), "rtt_ms": net.rtt_ms},
 		"world": {"ready": world.ready_, "civ": world.civ_id, "map": [world.grid.w, world.grid.h] if world.grid else [], "server_time": world.server_time, "snapshots": world.snapshot_count, "snapshot_rate": snappedf(world.snapshot_rate(), 0.01),
 			"units": world.units.size(), "own_units": world.units.values().filter(func(u): return int(u.owner) == world.civ_id).size(), "buildings": world.buildings.size(), "cities": world.cities.size(), "geo_known_hexes": known, "visible_hexes": vis,
 			"playback_lag_s": snappedf(world.server_time - world.render_time, 0.01), "has_weather": not world.wx.is_empty(), "road_hexes": roads, "craters": (world.bf.get("c", []) as Array).size(), "trenches": world.fw.size()},
-		"render": {"chunks_built": terrain.chunks_built, "chunk_queue": terrain.dirty.size(), "units_drawn": military.drawn, "camera": [cam.focus.x, cam.focus.z, cam.size]},
+		"render": {"chunks_built": terrain.chunks_built, "chunk_queue": terrain.dirty.size(), "terrain_last_build_ms": snappedf(terrain.last_build_ms, 0.01), "terrain_max_build_ms": snappedf(terrain.max_build_ms, 0.01), "memory_static_mb": snappedf(Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0, 0.01), "units_drawn": military.drawn, "units_batched": military.batched, "unit_batches": military.batches.size(), "camera": [cam.focus.x, cam.focus.z, cam.size]},
 	}
 	if probe_extra.is_valid():
 		r["extra"] = probe_extra.call()
@@ -195,7 +205,7 @@ func start_bench(seconds: float, out: String) -> void:
 
 func _bench(dt: float) -> void:
 	if not bench_started:
-		if world.snapshot_count > 5 and terrain.dirty.is_empty() and terrain.chunks_built > 0 and world.server_time >= bench_wait:
+		if world.snapshot_count > 5 and terrain.dirty.is_empty() and terrain.chunks_built > 0 and not get_parent().settlements.is_building() and world.server_time >= bench_wait:
 			bench_started = true
 			bench_phase = "idle"
 			bench_t = 0.0
@@ -213,7 +223,7 @@ func _bench(dt: float) -> void:
 			var vp := get_viewport().get_visible_rect().size
 			cam.anchor_screen = vp * 0.5 + Vector2(vp.x * 0.15, 0)
 			var k := fmod(bench_t, 4.0)
-			cam.goal_size = clampf(cam.goal_size * (0.985 if k < 2.0 else 1.015), CameraController.MIN_SIZE, cam.max_size)
+			cam.goal_size = clampf(cam.goal_size * pow(0.985 if k < 2.0 else 1.015, dt * 60.0), BENCH_MIN_SIZE, minf(BENCH_MAX_SIZE, cam.max_size))
 		"pan":
 			# steady pan east, across the seam at least once
 			cam.goal_size = 30.0
@@ -226,6 +236,9 @@ func _bench(dt: float) -> void:
 			bench_phase = "zoom"
 		elif bench_phase == "zoom":
 			bench_phase = "pan"
+			cam.size = 30.0
+			cam.goal_size = 30.0
+			cam.focus.x = world.grid.period * 0.85
 		else:
 			_finish()
 
@@ -262,7 +275,13 @@ func _reset_samples() -> void:
 
 func _finish() -> void:
 	var vp := get_viewport().get_visible_rect().size
-	bench_results["meta"] = {"viewport": [vp.x, vp.y], "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "quality": get_parent().quality, "scale": get_window().content_scale_factor, "pixels": get_viewport().get_texture().get_size(), "godot": Engine.get_version_info().string, "map": [world.grid.w, world.grid.h], "server_time": world.server_time}
+	var px := get_viewport().get_texture().get_size()
+	bench_results["meta"] = {"viewport": [vp.x, vp.y], "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "quality": get_parent().quality, "scale": get_window().content_scale_factor, "pixels": [px.x, px.y], "screen_scale": DisplayServer.screen_get_scale(), "godot": Engine.get_version_info().string, "map": [world.grid.w, world.grid.h], "server_time": world.server_time, "clock": "monotonic_usec", "gpu_supported": avg(samples_gpu) > 0.0}
+	bench_results.meta["gpu_supported"] = float(bench_results.idle.gpu_avg) > 0.0
+	bench_results.meta["fps_limit"] = Engine.max_fps
+	bench_results.meta["camera_size_range"] = [BENCH_MIN_SIZE, minf(BENCH_MAX_SIZE, cam.max_size)]
+	bench_results.meta["memory_static_mb"] = snappedf(Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0, 0.01)
+	bench_results.meta["terrain_max_build_ms"] = snappedf(terrain.max_build_ms, 0.01)
 	var txt := JSON.stringify(bench_results, "  ")
 	print("BENCH ", txt)
 	if bench_out != "":

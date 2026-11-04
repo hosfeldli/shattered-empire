@@ -9,6 +9,8 @@ extends Node3D
 const SQRT3 := HexGrid.SQRT3
 const CLOUD_HEIGHT := 6.0
 const FADE_S := 2.5
+const TREE_LOD_SIZE := 60.0
+const SHADOW_MAX_SIZE := 120.0
 
 var world: WorldState
 var cam: CameraController
@@ -34,6 +36,8 @@ var props_dirty := {}
 var built_tiles := {}
 var tree_mesh: ArrayMesh
 var tree_count := 0
+var shadows_allowed := true
+var hide_trees := false
 
 
 func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
@@ -77,7 +81,9 @@ func _clear() -> void:
 	for p in props.values():
 		(p.trees as Node).queue_free()
 		(p.rocks as Node).queue_free()
+		(p.canopy as Node).queue_free()
 	props.clear()
+	tree_count = 0
 	props_dirty.clear()
 	built_tiles.clear()
 
@@ -104,8 +110,9 @@ func update(dt: float) -> void:
 	if world.grid == null:
 		return
 	var g := world.grid
-	# sun shadows sized to what the camera sees
-	sun.directional_shadow_max_distance = CameraController.DISTANCE + cam.size * 1.3
+	# Sun shadows follow the visible footprint and disappear once they are sub-pixel at map zoom.
+	sun.shadow_enabled = shadows_allowed and cam.size < SHADOW_MAX_SIZE
+	sun.directional_shadow_max_distance = CameraController.DISTANCE + minf(cam.size * 0.75, 90.0)
 	# clouds drift with the wind between authoritative updates, then cross-fade to the new field
 	since += dt
 	off += wind * dt
@@ -132,11 +139,22 @@ func update(dt: float) -> void:
 	# tree shadows only where they read (close up); far out they cost much and show little
 	var tree_shadows := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cam.size < 18.0 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	for p in props.values():
-		(p.trees as GeometryInstance3D).cast_shadow = tree_shadows
+		var trees := p.trees as MultiMeshInstance3D
+		var canopy := p.canopy as MeshInstance3D
+		trees.cast_shadow = tree_shadows
+		# Camera distance is fixed by the orthographic boom, so zoom LOD is keyed to camera size.
+		trees.visible = not hide_trees and cam.size < TREE_LOD_SIZE
+		canopy.visible = not hide_trees and cam.size >= TREE_LOD_SIZE
 		var x0: float = float(p.x0)
 		var off_x := g.near_x(x0, f.x) - x0
-		(p.trees as Node3D).position = Vector3(off_x, 0, 0)
+		trees.position = Vector3(off_x, 0, 0)
 		(p.rocks as Node3D).position = Vector3(off_x, 0, 0)
+		canopy.position = Vector3(off_x, 0, 0)
+
+
+func set_shadows_enabled(enabled: bool) -> void:
+	shadows_allowed = enabled
+	sun.shadow_enabled = enabled and cam.size < SHADOW_MAX_SIZE
 
 
 # ------------------------------------------------------------------ weather
@@ -275,8 +293,8 @@ func _make_rain() -> void:
 
 func _update_rain(f: Vector3) -> void:
 	var r := rain_at(f.x, f.z)
-	# seen from above, falling streaks read as specks: rain shows as wet ground and cloud instead
-	rain.emitting = r > 0.15 and cam.size < 12.0 and cam.pitch_deg() < 55.0
+	# Rain streaks read close up; farther out wet ground and cloud carry the weather instead.
+	rain.emitting = r > 0.15 and cam.size < 12.0
 	if rain.emitting:
 		rain.amount_ratio = clampf(r * 1.4, 0.1, 1.0)
 		(rain.process_material as ParticleProcessMaterial).emission_box_extents = Vector3(cam.size * 0.9, 0.5, cam.size * 0.9)
@@ -299,6 +317,7 @@ func _build_props(cid: int) -> void:
 	var xforms: Array[Transform3D] = []
 	var cols: Array[Color] = []
 	var rocks := MeshKit.new()
+	var canopy := MeshKit.new()
 	for lr in cs:
 		var r := cy * cs + lr
 		if r >= g.h:
@@ -323,6 +342,10 @@ func _build_props(cid: int) -> void:
 				6: n = 1 if rng.randf() < 0.3 else 0
 			if world.is_river(i):
 				n = mini(n, 4)
+			if b == 4:
+				canopy.set_frame(Vector3(c.x, world.tile_height(i) + 0.055, c.y), 0.0)
+				var quilt := Color(0.72, 0.86, 0.62).darkened(rng.randf_range(0.0, 0.16))
+				canopy.hex_plate("foliage", Vector3.ZERO, 0.82, quilt, 0.025)
 			for k in n:
 				var a := rng.randf() * TAU
 				var d := sqrt(rng.randf()) * 0.82
@@ -339,9 +362,13 @@ func _build_props(cid: int) -> void:
 	if rec.is_empty():
 		var mmi := MultiMeshInstance3D.new()
 		var mi := MeshInstance3D.new()
+		var far := MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		far.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mmi)
 		add_child(mi)
-		rec = {"trees": mmi, "rocks": mi, "x0": (cx + 0.5) * cs * SQRT3}
+		add_child(far)
+		rec = {"trees": mmi, "rocks": mi, "canopy": far, "x0": (cx + 0.5) * cs * SQRT3}
 		props[cid] = rec
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -355,6 +382,7 @@ func _build_props(cid: int) -> void:
 	rec.n = xforms.size()
 	(rec.trees as MultiMeshInstance3D).multimesh = mm
 	(rec.rocks as MeshInstance3D).mesh = rocks.commit() if not rocks.is_empty() else null
+	(rec.canopy as MeshInstance3D).mesh = canopy.commit() if not canopy.is_empty() else null
 
 
 ## a visible sign of what lies in the ground (iron, coal, stone, oil, rare earths)

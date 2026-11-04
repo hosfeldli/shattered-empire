@@ -30,8 +30,10 @@ func setup(w: WorldState, c: CameraController) -> void:
 	world = w
 	cam = c
 	field = MeshInstance3D.new()
+	field.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(field)
 	trenches = MeshInstance3D.new()
+	trenches.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(trenches)
 	smoke = MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
@@ -207,10 +209,11 @@ func _update_smoke() -> void:
 	var cx := cam.focus.x
 	var now := Time.get_ticks_msec() / 1000.0
 	var n := 0
+	var cap := mm.instance_count if cam.size < 40.0 else 300 if cam.size < 100.0 else 120
 	for s in smoke_list:
 		var count := clampi(int(float(s[2]) * 6.0) + 1, 1, 6)
 		for k in count:
-			if n >= mm.instance_count:
+			if n >= cap:
 				break
 			var ph := float(int(s[3]) % 101) * 0.37 + k * 1.7
 			var drift := Vector2(sin(now * 0.13 + ph), cos(now * 0.11 + ph * 1.3)) * 0.35

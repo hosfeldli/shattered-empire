@@ -60,6 +60,12 @@ var units := {}                 # id -> latest unit record (Dictionary)
 var paths := {}
 var snaps: Array = []           # [{ t, at (local s), pos: { id: Vector3(tile, next, prog) } }]
 var render_time := 0.0
+var _interp_time := -INF
+var _interp_s0: Dictionary = {}
+var _interp_s1: Dictionary = {}
+var _interp_f := 1.0
+var _interp_single := true
+var geo_version := 0
 var play_rate := 1.0
 var buildings := {}             # id -> Dictionary as sent
 var buildings_version := 0
@@ -104,6 +110,7 @@ func apply_welcome(m: Dictionary) -> void:
 
 
 func _clear_map() -> void:
+	_interp_time = -INF
 	var n := grid.n
 	geo = PackedByteArray(); geo.resize(n * GEO_STRIDE)
 	known = PackedByteArray(); known.resize(n)
@@ -138,6 +145,7 @@ func on_message(m: Dictionary) -> void:
 
 
 func apply_snapshot(m: Dictionary) -> void:
+	_interp_time = -INF
 	if m.get("reset", 0):
 		_clear_map()
 		reset.emit()
@@ -246,8 +254,11 @@ func apply_geo(m: Dictionary) -> void:
 	if m.get("full", 0):
 		known.fill(0)
 		known_mask.fill(0)
+		height.fill(0.0)
+		geo_version += 1
 	var stride := int(m.get("stride", GEO_STRIDE))
 	var touched := {}
+	var height_changed := false
 	var W := grid.w
 	for c in m.get("chunks", []):
 		var cx := int(c[0])
@@ -263,6 +274,9 @@ func apply_geo(m: Dictionary) -> void:
 			var i := r * W + q
 			for b in GEO_STRIDE:
 				geo[i * GEO_STRIDE + b] = data[k * stride + b]
+			var y := _tile_height(i)
+			height_changed = height_changed or known[i] == 0 or height[i] != y
+			height[i] = y
 			known[i] = 1
 			known_mask[i] = 255
 			k += 1
@@ -272,7 +286,8 @@ func apply_geo(m: Dictionary) -> void:
 				var nb := grid.nb[i * 6 + d]
 				if nb >= 0:
 					touched[_chunk_of(nb)] = true
-	_update_heights()
+	if height_changed:
+		geo_version += 1
 	if m.get("full", 0):
 		for cid in chunks_w * chunks_h:
 			touched[cid] = true
@@ -286,12 +301,6 @@ func _chunk_of(i: int) -> int:
 	var q := i % grid.w
 	var r := i / grid.w
 	return (r / chunk) * chunks_w + (q / chunk)
-
-
-func _update_heights() -> void:
-	for i in grid.n:
-		if known[i]:
-			height[i] = _tile_height(i)
 
 
 # ------------------------------------------------------------------ terrain queries
@@ -415,26 +424,45 @@ func advance_clock(dt: float) -> void:
 
 
 ## where a unit is drawn now: interpolated between the two snapshots around the playback time
-func unit_position(id: int) -> Vector2:
+func prepare_unit_frame() -> void:
+	if _interp_time == render_time:
+		return
+	_interp_time = render_time
+	_interp_s0 = {}
+	_interp_s1 = {}
+	_interp_f = 1.0
+	_interp_single = true
 	var n := snaps.size()
 	if n == 0:
-		return Vector2.ZERO
+		return
 	var i1 := n - 1
 	while i1 > 0 and float(snaps[i1 - 1].t) >= render_time:
 		i1 -= 1
-	var s1: Dictionary = snaps[i1]
-	var p1 := _pos_in(s1, id)
+	_interp_s1 = snaps[i1]
 	if i1 == 0:
+		_interp_s0 = _interp_s1
+		return
+	_interp_single = false
+	_interp_s0 = snaps[i1 - 1]
+	var span := float(_interp_s1.t) - float(_interp_s0.t)
+	_interp_f = clampf((render_time - float(_interp_s0.t)) / span, 0.0, 1.0) if span > 1e-4 else 1.0
+
+
+func unit_position(id: int) -> Vector2:
+	prepare_unit_frame()
+	if _interp_s1.is_empty():
+		return Vector2.ZERO
+	var p1 := _pos_in(_interp_s1, id)
+	if _interp_single:
 		return p1 if p1.x > -1e8 else _latest_pos(id)
-	var s0: Dictionary = snaps[i1 - 1]
-	var p0 := _pos_in(s0, id)
+	if _interp_s0.pos.has(id) and _interp_s1.pos.has(id) and _interp_s0.pos[id] == _interp_s1.pos[id]:
+		return p1
+	var p0 := _pos_in(_interp_s0, id)
 	if p1.x < -1e8:
 		return p0 if p0.x > -1e8 else _latest_pos(id)
 	if p0.x < -1e8:
 		return p1
-	var span := float(s1.t) - float(s0.t)
-	var f := clampf((render_time - float(s0.t)) / span, 0.0, 1.0) if span > 1e-4 else 1.0
-	return Vector2(p0.x + grid.dx_wrap(p0.x, p1.x) * f, lerpf(p0.y, p1.y, f))
+	return Vector2(p0.x + grid.dx_wrap(p0.x, p1.x) * _interp_f, lerpf(p0.y, p1.y, _interp_f))
 
 
 func _latest_pos(id: int) -> Vector2:

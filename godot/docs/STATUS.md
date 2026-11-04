@@ -1,4 +1,116 @@
-# Native edition: status after the first session (2026-11-02)
+# Native edition: status
+
+## Part A checkpoint (2026-11-03)
+
+The prototype is still a native Godot client. The browser window used by `bench:pixi` is the
+existing shipping client, measured as the control. No server rules, balance, protocol formats or
+deployment workflows changed in this iteration. **The migration gate has not passed.**
+
+The reported zoom stretching came from changing the camera pitch from 50° to 80° as the zoom
+changed. Zoom now keeps a fixed 60° pitch and preserves the cursor anchor. Regression checks project
+perpendicular ground vectors at five zoom levels and verify that their proportions stay constant.
+
+| step | state | remaining acceptance work |
+| --- | --- | --- |
+| A1 | harnesses and equal-pixel comparison implemented | real GPU timings; repeat on a quiet machine |
+| A2 | renderer optimizations implemented, acceptance still open | strict script-p99 and chunk-budget targets must pass reliably |
+| A3 | not started | modelled residential assets, comparison images, actual hours and budget judgement |
+| A4 | not started | placement, roads, bridges, trenches, formations and training in the native HUD |
+| A5 | not passed | full quality/readability/responsiveness/asset/stability review, including the two-hour session |
+
+### Repeatable measurements
+
+`npm run bench:pixi` and `npm run bench:godot` each own an isolated port-8139 server and restart it
+between scenes. Early: seed 7 with one warlord rival. Late: seed 5 with warlord, merchant and builder,
+speed 8 until 720 game-seconds, then speed 1, centred on the largest city. Each phase lasts ten
+seconds. The common zoom sweep covers native camera sizes 16–110 (converted to Pixi's 12× world
+coordinates), followed by a 30-units/s seam pan at size 30. Godot's benchmark is capped at 60 fps.
+
+Both render **1024×768 pixels**, medium graphics. HiDPI is allowed in Godot, but this machine still
+reports a 1024×768 render target for the benchmark command, so Pixi uses the roadmap's 1× fallback.
+The JSON records actual pixel dimensions. Godot frame intervals now use the monotonic clock;
+its earlier smoothed-process-delta interval figures should not be used as wall-clock pacing data.
+
+The measurements below were taken on the Apple M3 with Godot 4.7.2 / Metal and headed Chromium 130
+/ Pixi 8.6.6. Each runner used one match and a visible window. Other desktop activity was present,
+so these are **provisional desktop measurements**, not the clean-machine sign-off required by A1.
+
+| scene | phase | client | fps | interval p50 / p99 (ms) | max (ms) | >50 ms | script avg / p99 (ms) | render CPU avg (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| early | idle | PixiJS | 60.0 | 16.70 / 17.60 | 17.70 | 0 | 0.66 / 2.10 | 0.64 |
+| early | idle | Godot | 60.0 | 16.67 / 18.28 | 24.23 | 0 | 1.49 / 2.80 | 1.01 |
+| early | zoom | PixiJS | 60.0 | 16.70 / 17.70 | 17.70 | 0 | 0.83 / 2.20 | 0.74 |
+| early | zoom | Godot | 60.0 | 16.67 / 18.01 | 18.30 | 0 | 1.78 / 2.64 | 1.18 |
+| early | pan | PixiJS | 60.0 | 16.70 / 17.60 | 18.00 | 0 | 0.70 / 2.00 | 0.66 |
+| early | pan | Godot | 60.0 | 16.67 / 18.35 | 26.41 | 0 | 1.84 / 2.93 | 1.12 |
+| late | idle | PixiJS | 59.6 | 16.70 / 17.70 | 67.70 | 1 | 1.64 / 7.10 | 1.94 |
+| late | idle | Godot | 60.0 | 16.66 / 21.52 | 31.66 | 0 | 4.30 / 8.06 | 1.00 |
+| late | zoom | PixiJS | 58.7 | 16.70 / 49.00 | 50.90 | 2 | 1.72 / 24.50 | 2.43 |
+| late | zoom | Godot | 60.0 | 16.64 / 21.38 | 31.83 | 0 | 4.22 / 7.63 | 0.99 |
+| late | pan | PixiJS | 58.6 | 16.70 / 34.40 | 66.60 | 3 | 1.51 / 21.70 | 2.42 |
+| late | pan | Godot | 60.0 | 16.67 / 23.02 | 31.11 | 0 | 4.67 / 10.69 | 0.93 |
+
+Raw results: [PixiJS](benchmarks/pixi-2026-11-03.json), [Godot](benchmarks/godot-2026-11-03.json).
+
+Godot held approximately 60 fps in the late scene, with frame p99 below 25 ms and no frames over
+50 ms in this run. However, late script p99 is **7.63–10.69 ms**, above A2's 5 ms target. The
+late run also recorded a worst terrain build slice of **7.16 ms**, so the scheduling budget is not
+a hard upper bound yet. A2 is **not passed**; the queue/LOD improvements are not a migration approval.
+
+CPU columns keep the two sources explicit: Godot script time covers main-thread `_process` work,
+including state application; Pixi wraps `view.frame` and `renderer.render`, so its snapshot/HUD
+work outside those wrappers is not included. Worker JSON-decode time is reported separately under
+`script.async_json_decode` and is not part of Godot's main-thread script time. Render CPU is not
+GPU time. GPU zeros mean **unavailable**: this Mac has Command Line Tools, but no Xcode Metal frame
+debugger / `xctrace`; a real capture or Vulkan measurement on another machine remains outstanding.
+
+### Developed 256×256 map
+
+| phase | fps | interval p50 / p99 (ms) | >50 ms | script avg / p99 (ms) |
+| --- | --- | --- | --- | --- |
+| idle | 60.0 | 16.62 / 22.38 | 0 | 4.47 / 10.35 |
+| zoom | 60.0 | 16.61 / 23.17 | 0 | 4.59 / 9.03 |
+| pan | 60.0 | 16.60 / 22.84 | 0 | 4.80 / 9.14 |
+
+Static memory at the end was **289.37 MB** (Godot's `MEMORY_STATIC`, not total
+process/GPU memory). The initial terrain build drained before measurement; the worst terrain build
+slice across warm-up and measurement was **9.96 ms**, above the intended 5 ms bound.
+This run also met the approximately-60-fps / frame-p99 target, but missed the script-p99 target.
+Raw result: [developed large map](benchmarks/godot-large-2026-11-03.json).
+
+### Changes and verification
+
+- District structure, progress/fire visuals and smoke/activity are separate. Refresh work uses a
+  queue; merged districts assemble over several frames under a 1 ms scheduling budget. Regrouping,
+  geometry generation and heavy state dispatch do not deliberately stack in one frame.
+- Forest chunks switch from detailed trees to canopy quilts at camera size 60. This uses explicit
+  camera-size LOD because the orthographic camera's boom distance stays fixed; distance-based
+  `visibility_range_*` would not respond to zoom. Sun shadows stop beyond size 120; terrain receives
+  shadows without casting them. Chimney and battlefield smoke have far-zoom caps.
+- Unit interpolation finds the snapshot bracket once per frame. Stationary ground samples are
+  cached until position/terrain changes. Above 200 units, models share per-type/owner MultiMeshes
+  while selection and path positions remain per unit.
+- Terrain arrays build incrementally, and mesh upload uses its own slice. Updates arriving during
+  a build retain a newer revision instead of being discarded at commit. Geometry deltas recalculate
+  only the heights they carry instead of scanning the whole map.
+- Large JSON packets parse in workers. Scene/state access stays on the main thread in wire order.
+  This follows measured decode costs of roughly 3 ms at p99 in the developed large-map scene;
+  there is no compact/binary protocol change.
+- Native regression script: **33 checks passed**, including zoom proportions/anchoring, progress
+  invalidation, seam interpolation, batches/selection, terrain revisions, LOD/shadows and worker
+  decoding. Live smoke: **two connections, 122 snapshots, 7 ms RTT**, a real move reaching its
+  destination, accurate picking, and rejoin after restarting the server. This is not a two-hour soak.
+- Server suite: **127/127 passed** (`ADMIT_OFF=1 node --test test/*.test.js`).
+
+Commands and runner options are in [../README.md](../README.md). The remaining acceptance work is
+still governed by [ROADMAP.md](ROADMAP.md); Part B has not begun.
+
+---
+
+## Historical first-session report (2026-11-02)
+
+The original report below is retained as history. The checkpoint above supersedes its benchmark
+methodology and statements about work still untested.
 
 Covers Phase 0 (baseline), Phase 1 (Godot foundation) and a first pass at the Section 17 vertical
 slice. Everything was run on an Apple M3 MacBook (macOS 26, Godot 4.7.2 official, Forward+ on Metal)
