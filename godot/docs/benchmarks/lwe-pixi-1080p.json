@@ -1,0 +1,132 @@
+{
+  "late": {
+    "idle": {
+      "frames": 302,
+      "fps": 30.149,
+      "frame_p50": 33.3,
+      "frame_p95": 34.2,
+      "frame_p99": 50,
+      "frame_max": 50.3,
+      "over50": 3,
+      "script_avg": 2.395,
+      "script_p95": 4.3,
+      "script_p99": 20.9,
+      "render_cpu_avg": 2.663,
+      "render_cpu_p95": 3.6,
+      "render_cpu_p99": 19.6,
+      "gpu_avg": 0,
+      "gpu_p95": 0,
+      "draw_calls": null,
+      "units": 97,
+      "buildings": 245,
+      "recentred": -1,
+      "script": {
+        "view.frame": {
+          "avg": 2.395,
+          "p99": 20.9,
+          "max": 35.6
+        },
+        "renderer.render": {
+          "avg": 2.663,
+          "p99": 19.6,
+          "max": 21.5
+        }
+      }
+    },
+    "zoom": {
+      "frames": 303,
+      "fps": 30.2,
+      "frame_p50": 33.3,
+      "frame_p95": 34.2,
+      "frame_p99": 50,
+      "frame_max": 50.1,
+      "over50": 1,
+      "script_avg": 2.775,
+      "script_p95": 6.6,
+      "script_p99": 28.5,
+      "render_cpu_avg": 3.664,
+      "render_cpu_p95": 6.4,
+      "render_cpu_p99": 21.7,
+      "gpu_avg": 0,
+      "gpu_p95": 0,
+      "draw_calls": null,
+      "units": 103,
+      "buildings": 251,
+      "recentred": -1,
+      "script": {
+        "view.frame": {
+          "avg": 2.775,
+          "p99": 28.5,
+          "max": 32.1
+        },
+        "renderer.render": {
+          "avg": 3.664,
+          "p99": 21.7,
+          "max": 22.9
+        }
+      }
+    },
+    "pan": {
+      "frames": 306,
+      "fps": 30.6,
+      "frame_p50": 33.3,
+      "frame_p95": 34.2,
+      "frame_p99": 50,
+      "frame_max": 100,
+      "over50": 3,
+      "script_avg": 2.37,
+      "script_p95": 4.7,
+      "script_p99": 30.9,
+      "render_cpu_avg": 3.415,
+      "render_cpu_p95": 6.1,
+      "render_cpu_p99": 22.7,
+      "gpu_avg": 0,
+      "gpu_p95": 0,
+      "draw_calls": null,
+      "units": 107,
+      "buildings": 254,
+      "recentred": 1,
+      "script": {
+        "view.frame": {
+          "avg": 2.37,
+          "p99": 30.9,
+          "max": 31.9
+        },
+        "renderer.render": {
+          "avg": 3.415,
+          "p99": 22.7,
+          "max": 31
+        }
+      }
+    },
+    "meta": {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "renderer": "webgl",
+      "adapter": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+      "quality": "medium",
+      "scale": 1,
+      "pixels": [
+        1920,
+        1080
+      ],
+      "pixi": "8.6.6",
+      "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+      "map": [
+        128,
+        128
+      ],
+      "server_time": 755.4,
+      "camera_size_range": [
+        16,
+        110
+      ],
+      "scenario": "late",
+      "headless": false,
+      "valid": true,
+      "invalid_reasons": []
+    }
+  }
+}

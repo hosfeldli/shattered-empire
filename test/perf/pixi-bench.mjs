@@ -42,6 +42,9 @@ try { ({ chromium } = await import('playwright')); } catch {
 const scenario = String(raw.scenario || 'all');
 if (!['all', 'early', 'late'].includes(scenario)) throw new Error(`Unknown scenario: ${scenario}`);
 const seconds = Number(raw.seconds || 30);
+const resolution = String(raw.resolution || '1024x768');
+if (!/^\d{3,4}x\d{3,4}$/.test(resolution)) throw new Error('Invalid --resolution');
+const [width, height] = resolution.split('x').map(Number);
 if (!Number.isFinite(seconds) || seconds <= 0) throw new Error('--seconds must be positive');
 const outPath = path.resolve(ROOT, String(raw.out || 'pixi-bench.json'));
 const port = Number(raw.port || 8139);
@@ -95,7 +98,7 @@ async function stopServer(server) {
 
 async function openScene(browser, baseUrl, kind) {
   const context = await browser.newContext({
-    viewport: { width: 1024, height: 768 },
+    viewport: { width, height },
     deviceScaleFactor: scale,
   });
   const page = await context.newPage();

@@ -23,6 +23,8 @@ var marker_t := 0.0
 var marker_base := Vector3.ZERO
 var last_order_ms := 0.0
 var orders_sent := 0
+var tools: NativeCommandTools
+var move_formation := "line"
 
 
 func setup(w: WorldState, n: NetworkClient, c: CameraController, m: MilitaryRenderer, s: SettlementRenderer) -> void:
@@ -59,6 +61,12 @@ func cancel() -> void:
 
 func _unhandled_input(e: InputEvent) -> void:
 	if world.grid == null:
+		return
+	if e is InputEventKey and e.pressed and not e.echo and e.keycode==KEY_P:
+		net.cmd({"c":"pause","on":not world.paused},func(reply):order_feedback.emit("Paused" if reply.get("paused",false) else str(reply.get("error","Resumed")),reply.get("error")==null))
+		get_viewport().set_input_as_handled()
+		return
+	if tools and tools.mode != "select":
 		return
 	if e is InputEventMouseButton:
 		var mb := e as InputEventMouseButton
@@ -133,9 +141,20 @@ func _order(pos: Vector2, attack: bool) -> void:
 	var ids := []
 	for id in military.selected.keys():
 		ids.append(int(id))
-	var c := {"c": "move", "units": ids, "tile": t}
+	var c := {"c": "move", "units": ids, "tile": t, "formation": move_formation}
 	if attack:
 		c.attackMove = true
+	var target := {}
+	for hit in military.units_near_screen(pos,16.0,false):
+		var unit:Dictionary=world.units[hit]
+		if int(unit.owner)!=world.civ_id and str(world.civ_by_id.get(int(unit.owner),{}).get("rel",{}).get("state",""))=="war":
+			target={"kind":"unit","id":int(hit)}; break
+	if target.is_empty():
+		var bid:=settlements.building_at(t)
+		var building:Dictionary=world.buildings.get(bid,{})
+		if not building.is_empty() and int(building.o)!=world.civ_id and str(world.civ_by_id.get(int(building.o),{}).get("rel",{}).get("state",""))=="war":
+			target={"kind":"building","id":bid}
+	if not target.is_empty(): c={"c":"attack","units":ids,"target":target,"focus":attack}
 	orders_sent += 1
 	last_order_ms = Time.get_ticks_msec()
 	var sent_at := Time.get_ticks_msec()

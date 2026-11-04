@@ -11,9 +11,11 @@ extends Node3D
 ##   --bench=SECONDS  --bench-out=PATH   scripted benchmark, writes JSON and quits
 
 const SESSION_FILE := "user://session.json"
+var session_file:=SESSION_FILE
 
 var net: NetworkClient
 var world: WorldState
+var composition: WorldCompositionSystem
 var cam: CameraController
 var terrain: WorldRenderer
 var settlements: SettlementRenderer
@@ -24,6 +26,16 @@ var combat: CombatRenderer
 var input: InputController
 var hud: GameHUD
 var diag: Diagnostics
+var generation_diag: GenerationDiagnostics
+var command_tools: NativeCommandTools
+var command_panel: NativeCommandPanel
+var civilians: CivilianActivitySystem
+var strategic: StrategicPresentation
+var workspace: NativeWorkspace
+var live_validation: LiveValidation
+var battlefield_composer: BattlefieldComposer
+var audio: AudioDirector
+var minimap: NativeMinimap
 var args := {}
 var pending_mode := ""
 var pending_opts := {}
@@ -35,6 +47,12 @@ var quality := "medium"
 
 func _ready() -> void:
 	args = _parse_args(OS.get_cmdline_user_args())
+	session_file=str(args.get("session-file",SESSION_FILE))
+	# Decode imported meshes/textures before connecting. First use must not stall construction.
+	for key in MaterialLibrary.SPECS: MaterialLibrary.get_mat(key)
+	for variant in 3: AssetLibrary.residential(variant)
+	for model in ["infantry_idle","infantry_walk_0","infantry_walk_1","infantry_cover","tank_hull","tank_turret","scout_vehicle","artillery_gun","aircraft"]:
+		AssetLibrary.unit_component(model)
 	net = NetworkClient.new()
 	net.name = "NetworkClient"
 	net.process_priority = -100
@@ -42,6 +60,8 @@ func _ready() -> void:
 	world = WorldState.new()
 	world.name = "WorldState"
 	add_child(world)
+	composition = WorldCompositionSystem.new()
+	composition.setup(world)
 	cam = CameraController.new()
 	cam.name = "CameraController"
 	cam.process_priority = -10
@@ -55,6 +75,7 @@ func _ready() -> void:
 	environment.name = "EnvironmentRenderer"
 	add_child(environment)
 	environment.setup(world, cam, terrain)
+	environment.composition = composition
 	infra = InfrastructureRenderer.new()
 	infra.name = "InfrastructureRenderer"
 	add_child(infra)
@@ -62,7 +83,7 @@ func _ready() -> void:
 	settlements = SettlementRenderer.new()
 	settlements.name = "SettlementRenderer"
 	add_child(settlements)
-	settlements.setup(world, cam)
+	settlements.setup(world, cam, composition)
 	military = MilitaryRenderer.new()
 	military.name = "MilitaryRenderer"
 	add_child(military)
@@ -71,20 +92,49 @@ func _ready() -> void:
 	combat.name = "CombatRenderer"
 	add_child(combat)
 	combat.setup(world, cam)
+	civilians = CivilianActivitySystem.new()
+	add_child(civilians)
+	civilians.setup(composition, cam)
+	combat.composition = composition
+	combat.director = CombatPresentationDirector.new()
+	combat.director.world = world; combat.director.camera = cam; combat.director.lod = composition.lod
+	battlefield_composer = BattlefieldComposer.new()
+	battlefield_composer.setup(composition,terrain)
+	audio=AudioDirector.new(); add_child(audio); audio.setup(world,cam)
+	combat.audio=audio
 	input = InputController.new()
 	input.name = "InputController"
 	add_child(input)
 	input.setup(world, net, cam, military, settlements)
 	input.attach_marker(self)
+	command_tools = NativeCommandTools.new()
+	add_child(command_tools)
+	command_tools.setup(world, net, cam, military)
+	input.tools = command_tools
 	hud = GameHUD.new()
 	hud.name = "GameHUD"
 	add_child(hud)
 	hud.setup(world, net, military, settlements)
 	hud.input_ref = input
+	command_panel = NativeCommandPanel.new()
+	add_child(command_panel)
+	command_panel.setup(world, command_tools, input, settlements)
+	command_tools.feedback.connect(hud.show_toast)
+	strategic = StrategicPresentation.new()
+	hud.root.add_child(strategic)
+	strategic.setup(world,cam,composition,terrain)
+	minimap=NativeMinimap.new(); hud.root.add_child(minimap); minimap.setup(world,cam,composition)
+	workspace = NativeWorkspace.new()
+	add_child(workspace)
+	workspace.setup(world,net,cam,settlements,military,hud.show_toast)
 	diag = Diagnostics.new()
 	diag.name = "Diagnostics"
 	add_child(diag)
 	diag.setup(world, net, cam, terrain, military)
+	generation_diag = GenerationDiagnostics.new()
+	generation_diag.name = "GenerationDiagnostics"
+	add_child(generation_diag)
+	generation_diag.setup(composition, settlements, cam, self)
 
 	net.message.connect(_on_message)
 	net.status_changed.connect(_on_status)
@@ -105,6 +155,9 @@ func _ready() -> void:
 		order_test_at = float(args["order-test"])
 	if args.has("tour"):
 		_tour(str(args.tour))
+	if args.has("validate-lwe"):
+		live_validation = LiveValidation.new()
+		live_validation.run(self,str(args["validate-lwe"]))
 	if args.has("mode"):
 		start({"mode": args.mode, "url": args.get("server", "ws://127.0.0.1:8137/ws"), "name": args.get("name", "Native"), "seed": args.get("seed", ""), "map": args.get("map", ""), "match": args.get("match", "")})
 	else:
@@ -184,6 +237,10 @@ func _probe_extra() -> Dictionary:
 	out["trucks_drawn"] = infra.trucks.multimesh.visible_instance_count
 	out["districts"] = settlements.districts.size()
 	out["merged_districts"] = settlements.districts.keys().filter(func(k): return str(k).contains(",")).size()
+	out["district_handoffs_pending"] = settlements.retiring.size()
+	out["composition"] = composition.stats()
+	if settlements.selected_building >= 0:
+		out["selected_recipe"] = composition.explain_building(settlements.selected_building)
 	if not battle.is_empty():
 		out["battle"] = {"arena": battle.get("arena"), "fortify": battle.get("fortify"), "advance": battle.get("advance")}
 	if args.has("pick-test"):
@@ -209,10 +266,11 @@ func _probe_extra() -> Dictionary:
 ## high: soft 4k shadows, SSAO, MSAA 2x. medium (default): sharper 2k shadows, no SSAO, MSAA 2x.
 ## low: no shadows, no SSAO, FXAA.
 func _apply_quality(q: String) -> void:
+	composition.lod.set_quality(q)
 	var vp := get_viewport()
 	var e: Environment = environment.env.environment
 	match q:
-		"high":
+		"high", "ultra":
 			environment.set_shadows_enabled(true)
 			RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_HIGH)
 			RenderingServer.directional_shadow_atlas_set_size(4096, true)
@@ -345,22 +403,23 @@ func _process(dt: float) -> void:
 	military.update(dt)
 	var t6 := Time.get_ticks_usec()
 	combat.update(dt)
+	civilians.update(dt)
 	input.update(dt)
 	var t7 := Time.get_ticks_usec()
 	diag.record_subsystems({"state": t1 - t0, "terrain": t2 - t1, "environment": t3 - t2, "infrastructure": t4 - t3, "settlements": t5 - t4, "military": t6 - t5, "combat+input": t7 - t6, "total": t7 - t0})
 
 
 func _save_session(s: Dictionary) -> void:
-	var f := FileAccess.open(SESSION_FILE, FileAccess.WRITE)
+	var f := FileAccess.open(session_file, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(s))
 		f.close()
 
 
 func _load_session() -> Dictionary:
-	if not FileAccess.file_exists(SESSION_FILE):
+	if not FileAccess.file_exists(session_file):
 		return {}
-	var f := FileAccess.open(SESSION_FILE, FileAccess.READ)
+	var f := FileAccess.open(session_file, FileAccess.READ)
 	if f == null:
 		return {}
 	var d = JSON.parse_string(f.get_as_text())

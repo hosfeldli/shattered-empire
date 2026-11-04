@@ -60,7 +60,7 @@ func setup(w: WorldState, n: NetworkClient, m: MilitaryRenderer, s: SettlementRe
 	help.custom_minimum_size = Vector2(460, 0)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	help.modulate = Color(1, 1, 1, 0.7)
-	help.text = "WASD pan · wheel zoom · middle-drag pan · left select · right move · Ctrl+right attack-move · H hold · T stance · Esc cancel · F3 stats"
+	help.text = "WASD pan · wheel zoom · right move/attack · Ctrl+right attack-move · B tools · F2 empire · M mute"
 	box = Panel.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.9, 0.85, 0.5, 0.12)

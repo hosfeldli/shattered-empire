@@ -1,6 +1,95 @@
 # Native edition: status
 
-## Part A checkpoint (2026-11-03)
+## Living World Engine checkpoint (2026-11-04)
+
+**Godot is the sole development target.** The browser/Electron sources are reference only.
+[LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md) is the requirement-by-requirement implementation and
+acceptance checklist for the complete design and subsequent corrections. The complete engine
+and production-quality review have **not** passed all gates.
+
+Implemented native foundations now include:
+
+- A shared authorized-state adapter, semantic graph, recipe registry, deterministic purpose seeds,
+  bounded generation scheduler, site planner, weather context and LOD budgets.
+- Blender-authored residential GLBs and military components, original PBR material maps/audio,
+  stable irregular housing/parcel layouts, slope-aware foundations and river setbacks. Broad
+  building plates are removed; decorative connections do not invent crossings.
+- Atomic district mesh handoffs and shared wrapped instances, fixed-pitch zoom, stable terrain
+  instances and safe optional terrain overlay reads.
+- Native building/road/rail/bridge/trench/deployment/training controls; selection, attack/movement,
+  empire workspace tabs, strategic lenses/labels, minimap and F4 composition diagnostics. Detailed
+  panel parity, a complete army/economy workspace and final UX polish remain open.
+- Bounded decorative civilian activity, modular military poses/turrets, event-driven combat/audio,
+  continuous battlefield scars and shared wetness/wind. These are first passes; full animation,
+  material-specific destruction, historical growth and regional ecology are incomplete.
+- Separate native CI checks and local Windows/macOS development exports. No `deploy.yml` change,
+  public upload, project signing/notarization or Windows runtime acceptance has occurred.
+
+### Reload/ground investigation
+
+The user narrowed the disappearance to city-center hexes in the Godot window, then supplied a
+desktop screenshot showing a broad blue surface after world reload. Pink/purple unexplored space
+was also reported after reload. The visual validation driver had temporarily used a magenta
+background to detect holes; that diagnostic change is removed, and test windows are named clearly.
+
+World reset now invalidates height caches, clears old economic/weather/path state and cancels
+stale overlay/battlefield/weather presentation. Optional fog texture reads are bounds checked.
+Completing a building now invalidates the local urban soil tint, which previously changed only
+after reconnecting. A real-server same-match rejoin test compares received geometry/visibility
+and rendered land colors, then repeats close zoom over city-center hexes. Keep the original
+blue-ground report open for user confirmation if it cannot be reproduced in the current build;
+the reset hardening and passing checks are evidence, not proof of its exact original cause.
+
+### Validation and performance evidence
+
+Headless checks: rendering 43, composition 33, LWE 62 (138 total). Server suite: 127/127 pass;
+server sources are unchanged. Real-server checks exercise placement,
+construction, individual selection, training, roads, trenches, deployment and a built bridge.
+Rendered evidence and reload results are recorded in `lwe-validation/validation.json`.
+The current rendered run passes 20 checks, including 2,520 city-center samples before reload,
+2,520 after reload and 53 matching land-color samples across the rejoin. Both received geometry
+and visibility match the paused match's original state; the runtime-source hash stayed constant.
+`lwe-validation/terrain-zoom.json` records 6,525 actual M3 GPU terrain samples with no holes across
+zoom levels, eased zoom, viewport shapes, invalidation and horizontal wrapping.
+
+Earlier provisional 1920×1080 runs are retained as dated checkpoints, **not current-source final
+acceptance**. `lwe-godot-1080p-final.json` is an earlier filename, despite the word “final”:
+
+| checkpoint | mean FPS across idle/zoom/pan | script p99 (ms) | frame interval p99 (ms) |
+| --- | --- | --- | --- |
+| native late, earlier optimized slice | ~60 / ~60 / ~60 | 8.48 / 9.71 / 13.76 | 21.61 / 22.38 / 23.52 |
+| native 256×256, earlier slice | ~60 / ~60 / ~60 | 10.45 / 10.95 / 11.08 | 22.91 / 23.15 / 22.24 |
+| current native reload checkpoint, late | 59.90 / 59.90 / 60.00 | 5.04 / 13.25 / 13.98 | 22.04 / 30.40 / 27.44 |
+
+`lwe-native-reload-1080p.json` records the current-source late scene, including its source hash and
+`source_changed_during_run: false`: 277.89 MB static memory, maximum terrain build slice 3.08 ms
+including warmup, GPU timing unavailable. Current zoom/pan p99 results still exceed strict targets.
+
+The late scene is seeded and staged identically to the original benchmark. Desktop activity was
+present. GPU timestamps on this Metal setup report zero/unavailable, and Xcode frame capture is
+not available with only Command Line Tools installed. Strict CPU/chunk p99 targets, quiet-machine
+GPU measurement, sustained combat/load, integrated-GPU fallback and long-session stability remain
+open. Do not infer these gates from average 60 FPS. Asset production hours and the full art budget
+also remain unmeasured; the reproducible authored-source pipeline is not an estimate of them.
+
+### Distribution and remaining gates
+
+`node tools/build-native.mjs --platform=all --smoke` produces local development artifacts and a
+source/hash manifest under ignored `dist/native/`, checks the macOS ad-hoc signature and exercises
+the embedded native pack. The current build completed for both targets with unchanged runtime
+source hash; macOS embedded-pack command/reload checks passed, as did a server-restart test with
+two connections, 120 snapshots, a completed move and correct picking. Windows execution requires
+a Windows machine. Trusted signing,
+notarization, public opt-in distribution and a full default-release cycle are future gates.
+
+The next integrated acceptance scenario remains the complete river-valley city and adjoining
+battlefield from design §29, including mountains/mine, economic activity, upgrade/destruction,
+weather, reconstruction and reload continuity. See the contract for gaps in every subsystem.
+
+## Historical Part A checkpoint (2026-11-03)
+
+The remainder of this document preserves the original measurements and starting-state assessment;
+“not started” entries below describe that historical checkpoint, not current implementation.
 
 The prototype is still a native Godot client. The browser window used by `bench:pixi` is the
 existing shipping client, measured as the control. No server rules, balance, protocol formats or

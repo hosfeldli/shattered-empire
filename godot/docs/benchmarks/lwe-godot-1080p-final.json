@@ -1,0 +1,283 @@
+{
+  "late": {
+    "idle": {
+      "buildings": 244,
+      "draw_calls": 509,
+      "fps": 59.9889020531202,
+      "frame_max": 41.891,
+      "frame_p50": 16.684,
+      "frame_p95": 18.036,
+      "frame_p99": 21.606,
+      "frames": 600,
+      "gpu_avg": 0,
+      "gpu_p95": 0,
+      "over50": 0,
+      "recentred": 1,
+      "render_cpu_avg": 0.618298334722918,
+      "render_cpu_p95": 0.777999976158142,
+      "render_cpu_p99": 1.01299999904633,
+      "script": {
+        "async_json_decode": {
+          "avg": 0.087,
+          "max": 5.245,
+          "p99": 3.675
+        },
+        "combat+input": {
+          "avg": 0.277,
+          "max": 1.878,
+          "p99": 1.618
+        },
+        "environment": {
+          "avg": 0.224,
+          "max": 20.278,
+          "p99": 0.467
+        },
+        "infrastructure": {
+          "avg": 0.49,
+          "max": 0.946,
+          "p99": 0.846
+        },
+        "json_decode": {
+          "avg": 0,
+          "max": 0.008,
+          "p99": 0.005
+        },
+        "military": {
+          "avg": 1.294,
+          "max": 2.795,
+          "p99": 1.954
+        },
+        "network": {
+          "avg": 0.199,
+          "max": 7.804,
+          "p99": 5.654
+        },
+        "settlements": {
+          "avg": 0.405,
+          "max": 1.766,
+          "p99": 1.455
+        },
+        "state": {
+          "avg": 0.003,
+          "max": 0.015,
+          "p99": 0.01
+        },
+        "state_dispatch": {
+          "avg": 0.173,
+          "max": 7.758,
+          "p99": 5.616
+        },
+        "terrain": {
+          "avg": 0.326,
+          "max": 0.692,
+          "p99": 0.644
+        },
+        "total": {
+          "avg": 3.019,
+          "max": 22.445,
+          "p99": 5.339
+        }
+      },
+      "script_avg": 3.27979333333333,
+      "script_p95": 4.711,
+      "script_p99": 8.475,
+      "units": 97
+    },
+    "meta": {
+      "adapter": "Apple M3 (Apple9)",
+      "camera_size_range": [
+        16,
+        110
+      ],
+      "clock": "monotonic_usec",
+      "fps_limit": 60,
+      "godot": "4.7.2-stable (official)",
+      "gpu_supported": false,
+      "map": [
+        128,
+        128
+      ],
+      "memory_static_mb": 276.2,
+      "pixels": [
+        1920,
+        1080
+      ],
+      "quality": "medium",
+      "renderer": "forward_plus",
+      "scale": 1,
+      "screen_scale": 2,
+      "server_time": 750.5,
+      "terrain_max_build_ms": 15.38,
+      "viewport": [
+        1920,
+        1080
+      ]
+    },
+    "pan": {
+      "buildings": 253,
+      "draw_calls": 274,
+      "fps": 59.9980692801,
+      "frame_max": 42.587,
+      "frame_p50": 16.693,
+      "frame_p95": 18.098,
+      "frame_p99": 23.522,
+      "frames": 601,
+      "gpu_avg": 0,
+      "gpu_p95": 0,
+      "over50": 0,
+      "recentred": 3,
+      "render_cpu_avg": 0.541599001440947,
+      "render_cpu_p95": 0.720000004291534,
+      "render_cpu_p99": 0.842999997615814,
+      "script": {
+        "async_json_decode": {
+          "avg": 0.087,
+          "max": 4.386,
+          "p99": 3.765
+        },
+        "combat+input": {
+          "avg": 0.187,
+          "max": 4.748,
+          "p99": 1.37
+        },
+        "environment": {
+          "avg": 0.256,
+          "max": 18.232,
+          "p99": 0.398
+        },
+        "infrastructure": {
+          "avg": 0.58,
+          "max": 4.462,
+          "p99": 2.061
+        },
+        "json_decode": {
+          "avg": 0,
+          "max": 0.007,
+          "p99": 0
+        },
+        "military": {
+          "avg": 1.33,
+          "max": 2.494,
+          "p99": 1.927
+        },
+        "network": {
+          "avg": 0.219,
+          "max": 8.405,
+          "p99": 6.75
+        },
+        "settlements": {
+          "avg": 0.639,
+          "max": 7.693,
+          "p99": 4.279
+        },
+        "state": {
+          "avg": 0.003,
+          "max": 0.018,
+          "p99": 0.009
+        },
+        "state_dispatch": {
+          "avg": 0.193,
+          "max": 8.355,
+          "p99": 6.712
+        },
+        "terrain": {
+          "avg": 0.345,
+          "max": 0.826,
+          "p99": 0.555
+        },
+        "total": {
+          "avg": 3.34,
+          "max": 22.616,
+          "p99": 9.068
+        }
+      },
+      "script_avg": 3.61648585690516,
+      "script_p95": 5.065,
+      "script_p99": 13.763,
+      "units": 107
+    },
+    "zoom": {
+      "buildings": 248,
+      "draw_calls": 479,
+      "fps": 60.0135804441603,
+      "frame_max": 38.741,
+      "frame_p50": 16.694,
+      "frame_p95": 18.022,
+      "frame_p99": 22.384,
+      "frames": 601,
+      "gpu_avg": 0,
+      "gpu_p95": 0,
+      "over50": 0,
+      "recentred": 1,
+      "render_cpu_avg": 0.626770382855775,
+      "render_cpu_p95": 0.821999977111816,
+      "render_cpu_p99": 0.96199999332428,
+      "script": {
+        "async_json_decode": {
+          "avg": 0.074,
+          "max": 4.153,
+          "p99": 3.406
+        },
+        "combat+input": {
+          "avg": 0.249,
+          "max": 1.79,
+          "p99": 1.412
+        },
+        "environment": {
+          "avg": 0.25,
+          "max": 18.157,
+          "p99": 0.338
+        },
+        "infrastructure": {
+          "avg": 0.504,
+          "max": 1.466,
+          "p99": 0.62
+        },
+        "json_decode": {
+          "avg": 0,
+          "max": 0.011,
+          "p99": 0
+        },
+        "military": {
+          "avg": 1.251,
+          "max": 1.89,
+          "p99": 1.67
+        },
+        "network": {
+          "avg": 0.192,
+          "max": 7.462,
+          "p99": 5.508
+        },
+        "settlements": {
+          "avg": 0.506,
+          "max": 7.331,
+          "p99": 1.949
+        },
+        "state": {
+          "avg": 0.003,
+          "max": 0.026,
+          "p99": 0.01
+        },
+        "state_dispatch": {
+          "avg": 0.167,
+          "max": 7.41,
+          "p99": 5.46
+        },
+        "terrain": {
+          "avg": 0.331,
+          "max": 0.599,
+          "p99": 0.517
+        },
+        "total": {
+          "avg": 3.094,
+          "max": 20.329,
+          "p99": 6.76
+        }
+      },
+      "script_avg": 3.35435108153078,
+      "script_p95": 4.424,
+      "script_p99": 9.708,
+      "units": 99
+    }
+  }
+}

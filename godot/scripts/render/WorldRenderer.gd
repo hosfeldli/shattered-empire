@@ -41,6 +41,7 @@ var chunks_built := 0
 var last_build_ms := 0.0
 var max_build_ms := 0.0
 var build_job := {}             # one chunk's arrays, filled incrementally across frames
+var urban_mask := PackedByteArray()
 
 
 func setup(w: WorldState) -> void:
@@ -53,6 +54,7 @@ func setup(w: WorldState) -> void:
 	world.geo_changed.connect(_on_geo)
 	world.vis_changed.connect(_on_vis)
 	world.reset.connect(_on_welcome)
+	world.econ_applied.connect(_on_economy)
 
 
 func _on_welcome() -> void:
@@ -62,9 +64,13 @@ func _on_welcome() -> void:
 	chunks.clear()
 	dirty.clear()
 	build_job.clear()
+	urban_mask=world.urban_bits.duplicate()
 	chunks_built = 0
 	last_build_ms = 0.0
 	max_build_ms = 0.0
+	# Presentation textures belong to this world, including when the same viewport rejoins.
+	terrain_mat.set_shader_parameter("overlay_strength",0.0)
+	terrain_mat.set_shader_parameter("battle_active",0.0)
 	var g := world.grid
 	var img := Image.create_from_data(g.w / 8, g.h, false, Image.FORMAT_R8, world.vis_bits)
 	vis_tex = ImageTexture.create_from_image(img)
@@ -89,6 +95,25 @@ func _on_geo(list: PackedInt32Array) -> void:
 		dirty[cid] = int(dirty.get(cid, 0)) + 1
 	if known_tex:
 		known_tex.update(Image.create_from_data(world.grid.w, world.grid.h, false, Image.FORMAT_R8, world.known_mask))
+
+
+func _on_economy() -> void:
+	if urban_mask==world.urban_bits: return
+	# Urban soil tint is presentation too. Without local invalidation, finishing a building
+	# changes its ground only on the next reconnect, producing different before/after terrain.
+	var affected:={}
+	for byte in world.urban_bits.size():
+		var changed:=int(world.urban_bits[byte]) ^ (int(urban_mask[byte]) if byte<urban_mask.size() else 0)
+		if changed==0: continue
+		for bit in 8:
+			var tile:=byte*8+bit
+			if (changed & (1<<bit))==0 or tile>=world.grid.n or world.known[tile]==0: continue
+			affected[world._chunk_of(tile)]=true
+			for dir in 6:
+				var neighbor:=world.grid.nb[tile*6+dir]
+				if neighbor>=0: affected[world._chunk_of(neighbor)]=true
+	urban_mask=world.urban_bits.duplicate()
+	for chunk in affected: dirty[chunk]=int(dirty.get(chunk,0))+1
 
 
 ## called by the bootstrap every frame with the camera's view
@@ -336,17 +361,15 @@ func _surface(nb: int, fallback: float) -> float:
 	return world.height[nb] + 0.05
 
 
-## show each chunk at the image(s) of the wrapped world inside the view
+## Keep stable images resident. Godot's mesh frustum culling decides what is on screen; zoom must
+## never hide/reassign terrain instances using a separately estimated horizontal view width.
 func _place(rec: Dictionary) -> void:
 	var g := world.grid
 	var offsets: Array[float] = []
 	if g.wrap:
 		var base := g.near_x(float(rec.x0) + float(rec.w) * 0.5, cam_x) - (float(rec.x0) + float(rec.w) * 0.5)
 		for k in [-1, 0, 1]:
-			var off: float = base + k * g.period
-			var x0: float = float(rec.x0) + off
-			if x0 + float(rec.w) >= cam_x - half_w and x0 <= cam_x + half_w:
-				offsets.append(off)
+			offsets.append(base + k * g.period)
 	else:
 		offsets.append(0.0)
 	_ensure(rec, "inst", offsets.size(), rec.get("terrain"))
@@ -388,6 +411,11 @@ uniform vec2 cloud_off = vec2(0.0);
 uniform vec2 cloud_off_prev = vec2(0.0);
 uniform vec2 shadow_shift = vec2(-0.012, -0.012);
 uniform vec2 weather_extent = vec2(221.7, 192.0);
+uniform sampler2D strategic_overlay : filter_nearest, hint_default_black;
+uniform float overlay_strength = 0.0;
+uniform sampler2D battle_scar : filter_linear, repeat_enable, hint_default_black;
+uniform vec2 battle_cells = vec2(128.0);
+uniform float battle_active = 0.0;
 
 varying vec3 wpos;
 varying vec2 tile;
@@ -398,8 +426,12 @@ float noise(vec2 p) {
 	return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 float seen(vec2 t) {
+	if (vis_on < 0.5) return 1.0;
 	int q = int(t.x + 0.5);
-	int b = int(texelFetch(vis_bits, ivec2(q >> 3, int(t.y + 0.5)), 0).r * 255.0 + 0.5);
+	ivec2 cell=ivec2(q >> 3, int(t.y + 0.5));
+	ivec2 bounds=textureSize(vis_bits,0);
+	if (cell.x<0 || cell.y<0 || cell.x>=bounds.x || cell.y>=bounds.y) return 0.0;
+	int b = int(texelFetch(vis_bits, cell, 0).r * 255.0 + 0.5);
 	return float((b >> (q & 7)) & 1);
 }
 
@@ -412,7 +444,8 @@ void fragment() {
 	vec3 base = pow(COLOR.rgb, vec3(2.2));   // vertex colours are sRGB
 	vec3 wn = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	float slope = 1.0 - wn.y;
-	float n = noise(wpos.xz * 1.3) * 0.55 + noise(wpos.xz * 5.0) * 0.3 + noise(wpos.xz * 17.0) * 0.15;
+	vec3 weights = pow(abs(wn), vec3(4.0)); weights /= max(dot(weights, vec3(1.0)), 0.0001);
+	float n = (noise(wpos.zy * 5.0)*weights.x + noise(wpos.xz * 5.0)*weights.y + noise(wpos.xy * 5.0)*weights.z)*0.45 + noise(wpos.xz * 1.3)*0.55;
 	base *= 0.9 + 0.2 * n;
 	vec3 rock = vec3(0.43, 0.41, 0.38) * (0.88 + 0.24 * n);
 	base = mix(base, rock, smoothstep(0.22, 0.42, slope) * step(0.05, wpos.y));
@@ -420,12 +453,24 @@ void fragment() {
 	base = mix(base, vec3(0.72, 0.74, 0.77), snow);
 	vec2 wuv = vec2(wpos.x / weather_extent.x, wpos.z / weather_extent.y);
 	float wet = texture(wet_tex, wuv).r * step(0.0, wpos.y);
+	vec2 battle_uv = vec2(wpos.x/1.7320508 - .5*mod(floor(wpos.z/1.5+.5),2.0), wpos.z/1.5);
+	float scar = texture(battle_scar,(battle_uv+vec2(.5))/battle_cells).r * battle_active * step(.01,wpos.y);
+	base = mix(base,vec3(.24,.20,.15)*(0.8+0.3*n),scar*.8);
+	wet = max(wet,scar*wet);
 	base *= 1.0 - 0.3 * wet;
 	float cl = mix(texture(cloud_prev, wuv - cloud_off_prev + shadow_shift).r, texture(cloud_tex, wuv - cloud_off + shadow_shift).r, cloud_blend);
 	float shade = 1.0 - 0.3 * smoothstep(0.3, 0.75, cl);
 	float v = mix(1.0, seen(tile), vis_on);
 	vec3 remembered = mix(vec3(dot(base, vec3(0.3, 0.59, 0.11))), base, 0.45) * vec3(0.62, 0.65, 0.72);
 	ALBEDO = mix(remembered, base, v) * shade;
+	// An inactive lens may still have the default 1x1 texture. Out-of-range texelFetch is
+	// undefined (and NaN * 0 can poison the terrain colour even with a zero-strength lens).
+	if (overlay_strength > 0.0) {
+		ivec2 bounds=textureSize(strategic_overlay,0);
+		ivec2 sample_tile=clamp(ivec2(tile+vec2(.5)),ivec2(0),bounds-ivec2(1));
+		vec4 overlay=texelFetch(strategic_overlay,sample_tile,0);
+		ALBEDO=mix(ALBEDO,overlay.rgb,overlay.a*overlay_strength);
+	}
 	ROUGHNESS = mix(0.93, 0.35, wet);
 	SPECULAR = 0.25 + 0.35 * wet;
 }
@@ -451,6 +496,7 @@ float noise(vec2 p) {
 	return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 float seen(vec3 p) {
+	if (vis_on < 0.5) return 1.0;
 	// the hex under this point (water has no per-hex attribute): pointy-top odd-r conversion
 	float cx = 0.57735 * p.x - p.z / 3.0;
 	float cz = 2.0 / 3.0 * p.z;
@@ -463,7 +509,10 @@ float seen(vec3 p) {
 	int w = int(world_cells.x);
 	col = ((col % w) + w) % w;
 	row = clamp(row, 0, int(world_cells.y) - 1);
-	int b = int(texelFetch(vis_bits, ivec2(col >> 3, row), 0).r * 255.0 + 0.5);
+	ivec2 cell=ivec2(col >> 3,row);
+	ivec2 bounds=textureSize(vis_bits,0);
+	if (cell.x>=bounds.x || cell.y>=bounds.y) return 0.0;
+	int b = int(texelFetch(vis_bits, cell, 0).r * 255.0 + 0.5);
 	return float((b >> (col & 7)) & 1);
 }
 

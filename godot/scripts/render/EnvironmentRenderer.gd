@@ -30,6 +30,7 @@ var off := Vector2.ZERO
 var off_prev := Vector2.ZERO
 var wx_cw := 0
 var wx_ch := 0
+var composition: WorldCompositionSystem
 var wx_updates := 0
 var props := {}            # chunk id -> { trees: MultiMeshInstance3D, rocks: MeshInstance3D, x0 }
 var props_dirty := {}
@@ -86,6 +87,18 @@ func _clear() -> void:
 	tree_count = 0
 	props_dirty.clear()
 	built_tiles.clear()
+	# A rejoin can receive geometry before the next weather packet. Do not blend the old
+	# world's clouds/wetness into the new visibility mask during that interval.
+	cloud_tex=null; cloud_prev=null; wet_tex=null; rain_img=null
+	wx_cw=0; wx_ch=0; wind=Vector2.ZERO; off=Vector2.ZERO; off_prev=Vector2.ZERO; since=0.0
+	rain.emitting=false
+	for material in [terrain.terrain_mat,cloud_mat]:
+		material.set_shader_parameter("cloud_tex",null)
+		material.set_shader_parameter("cloud_prev",null)
+		material.set_shader_parameter("cloud_off",Vector2.ZERO)
+		material.set_shader_parameter("cloud_off_prev",Vector2.ZERO)
+		material.set_shader_parameter("cloud_blend",1.0)
+	terrain.terrain_mat.set_shader_parameter("wet_tex",null)
 
 
 func _on_geo(list: PackedInt32Array) -> void:
@@ -111,7 +124,8 @@ func update(dt: float) -> void:
 		return
 	var g := world.grid
 	# Sun shadows follow the visible footprint and disappear once they are sub-pixel at map zoom.
-	sun.shadow_enabled = shadows_allowed and cam.size < SHADOW_MAX_SIZE
+	var shadow_size := float(LODManager.PRESETS[composition.lod.quality].shadow_size) if composition else SHADOW_MAX_SIZE
+	sun.shadow_enabled = shadows_allowed and cam.size < shadow_size
 	sun.directional_shadow_max_distance = CameraController.DISTANCE + minf(cam.size * 0.75, 90.0)
 	# clouds drift with the wind between authoritative updates, then cross-fade to the new field
 	since += dt
@@ -143,8 +157,9 @@ func update(dt: float) -> void:
 		var canopy := p.canopy as MeshInstance3D
 		trees.cast_shadow = tree_shadows
 		# Camera distance is fixed by the orthographic boom, so zoom LOD is keyed to camera size.
-		trees.visible = not hide_trees and cam.size < TREE_LOD_SIZE
-		canopy.visible = not hide_trees and cam.size >= TREE_LOD_SIZE
+		var tree_size := float(LODManager.PRESETS[composition.lod.quality].tree_size) if composition else TREE_LOD_SIZE
+		trees.visible = not hide_trees and cam.size < tree_size
+		canopy.visible = not hide_trees and cam.size >= tree_size
 		var x0: float = float(p.x0)
 		var off_x := g.near_x(x0, f.x) - x0
 		trees.position = Vector3(off_x, 0, 0)

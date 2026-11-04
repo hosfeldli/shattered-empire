@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "recipes": [
+    {
+      "id": "residential.compound", "version": 1, "priority": 100,
+      "authority": "state_derived_visual", "types": ["house"], "grammar": "house",
+      "preconditions": {"min_level": 1},
+      "materials": ["brick", "plaster", "timber", "glass", "roof_tile", "roof_slate", "grass"],
+      "adjacency": "terraces_and_courtyards", "site": "footprint_foundation",
+      "activity": "population_context", "damage": "deterministic_components",
+      "lod": "district", "validation": ["stable_id", "received_site", "no_gameplay_collision"]
+    },
+    {
+      "id": "industry.works", "version": 1, "priority": 90,
+      "authority": "state_derived_visual",
+      "types": ["steel_mill", "refinery", "munitions_plant", "electronics_plant", "motor_works", "heavy_assembly", "robotics_complex", "drone_works", "salvage", "power_plant", "fusion_plant"],
+      "grammar": "$type", "preconditions": {"min_level": 1},
+      "materials": ["brick", "concrete", "steel", "glass"], "adjacency": "shared_yards",
+      "site": "footprint_foundation", "activity": "authoritative_active_only",
+      "damage": "deterministic_components", "lod": "district",
+      "validation": ["stable_id", "received_site", "real_transport_edges", "no_gameplay_collision"]
+    },
+    {
+      "id": "agriculture.fields", "version": 1, "priority": 80,
+      "authority": "state_derived_visual", "types": ["farm"], "grammar": "farm",
+      "preconditions": {"min_level": 1}, "materials": ["crop", "soil", "timber", "roof_slate"],
+      "adjacency": "aligned_fields", "site": "terrain_rows", "activity": "authoritative_active_only",
+      "damage": "ground_condition", "lod": "district", "validation": ["stable_id", "received_site"]
+    },
+    {
+      "id": "settlement.procedural", "version": 1, "priority": 10,
+      "authority": "state_derived_visual",
+      "types": ["town", "academy", "university", "comms_tower", "market", "port", "mine", "quarry", "lumber", "oil_well", "barracks", "camp", "guard_post", "bunker", "missile_silo", "fort", "airfield", "aa_battery", "shield_generator", "depot", "wonder"],
+      "grammar": "$type", "preconditions": {"min_level": 1},
+      "materials": ["stone", "concrete", "timber", "brick", "steel", "glass", "roof_tile", "roof_slate"],
+      "adjacency": "compatible_group", "site": "footprint_foundation", "activity": "authoritative_active_only",
+      "damage": "deterministic_components", "lod": "district", "validation": ["stable_id", "received_site", "no_gameplay_collision"]
+    },
+    {
+      "id": "fallback.structure", "version": 1, "priority": -100,
+      "authority": "state_derived_visual", "types": ["*"], "grammar": "generic",
+      "preconditions": {"min_level": 1}, "materials": ["concrete", "steel"],
+      "adjacency": "none", "site": "footprint_foundation", "activity": "none",
+      "damage": "deterministic_components", "lod": "district", "validation": ["stable_id", "received_site"]
+    }
+  ]
+}

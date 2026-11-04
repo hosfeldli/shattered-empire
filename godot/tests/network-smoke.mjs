@@ -38,9 +38,9 @@ let restartTimer, timeout;
 try {
   server = await startServer();
   const probeFile = path.join(temp, 'probe.json');
-  native = spawn(process.env.GODOT_PATH || 'godot', ['--path', 'godot', '--headless', '--',
+  native = spawn(process.env.GODOT_PATH || 'godot', [...(process.env.GODOT_EXPORTED==='1'?[]:['--path','godot']), '--headless', '--',
     '--server=ws://127.0.0.1:8139/ws', '--mode=ai', '--seed=7', '--probe=25', '--order-test=5',
-    '--pick-test', `--probe-out=${probeFile}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    '--pick-test', `--probe-out=${probeFile}`, `--session-file=${path.join(temp,'session.json')}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   native.stdout.on('data', (data) => { logs += data; });
   native.stderr.on('data', (data) => { logs += data; });
   const restart = new Promise((resolve, reject) => {

@@ -1,17 +1,21 @@
-# Shattered Empires: native client (Godot 4.7)
+# Shattered Empires: native client (Godot 4.7.2)
 
 A second client for the same authoritative Node.js server. It draws an orthographic 3D world with a
 2D interface on top. It sends intents and renders what the server tells it; it simulates nothing.
-The PixiJS / Electron client in `client/` and `desktop/` is unchanged and remains the shipping client.
+Godot is the development target. The PixiJS / Electron sources in `client/` and `desktop/` are kept
+as reference material; native work does not develop the browser version.
 
-Status: **Phase 0, Phase 1 and a first pass at the Section 17 vertical slice**. Next steps: [docs/ROADMAP.md](docs/ROADMAP.md). See
-[docs/STATUS.md](docs/STATUS.md) for measurements, what is left and the decision-gate assessment.
+The Living World Engine has working semantic graph, recipe, scheduling, terrain/site, district,
+activity, military and native-command foundations. It is a development preview, not the complete
+production-quality engine. [LWE_REQUIREMENTS.md](docs/LWE_REQUIREMENTS.md) tracks all thirty design
+sections and later visual corrections. See [STATUS.md](docs/STATUS.md) for evidence and remaining
+gates, and the original [ROADMAP.md](docs/ROADMAP.md) for the migration/release checklist.
 
 ## Running it
 
 ```bash
 brew install --cask godot          # Godot 4.7.2
-SERVE_CLIENT=1 ADMIT_OFF=1 PORT=8139 SNAPSHOT_DIR=/tmp/se-native-bench node server/index.js
+ADMIT_OFF=1 PORT=8139 SNAPSHOT_DIR=/tmp/se-native-bench node server/index.js
 godot --path godot                 # start panel: server address, name, play / watch / rejoin
 ```
 
@@ -24,18 +28,18 @@ directory). Command-line options (after `--`):
 | `--mode=ai\|observe\|sandbox\|rejoin\|spectate` | start straight away (`--seed`, `--name`, `--map`, `--match`) |
 | `--speed=N` | spectators: run the AI exhibition faster (1, 2, 4, 8) |
 | `--battle=large\|armor\|artillery\|…` | sandbox: stage a scenario, dig in, attack-move |
-| `--quality=low\|medium\|high` | shadows / SSAO / antialiasing (default medium) |
+| `--quality=low\|medium\|high\|ultra` | rendering, activity and effect budgets (default medium) |
 | `--bench=SECONDS [--bench-wait=T] [--bench-out=PATH]` | scripted idle / zoom / seam-pan benchmark, JSON out |
 | `--probe=SECONDS [--probe-out=PATH] [--order-test=S] [--pick-test]` | report what was synchronized, then quit |
 | `--tour=DIR [--tour-wait=T]` | save screenshots at several zoom levels and across the seam |
+| `--session-file=PATH` | isolate test/rejoin session storage from the player's session |
 
-The matching PixiJS benchmark starts a clean port-8139 server for each scene and opens a visible
-Chromium window at the same 1024x768 render-pixel size reported by Godot:
+Native benchmarks start a clean port-8139 server for each scene. Existing Pixi measurements remain
+reference evidence in `docs/benchmarks/`; native development does not require opening the browser.
 
 ```bash
-npm run bench:pixi -- --out=pixi-bench.json
-npm run bench:godot -- --out=godot-bench.json
-npm run bench:godot -- --scenario=large --out=godot-large-bench.json
+npm run bench:godot -- --resolution=1920x1080 --out=/tmp/godot-bench.json
+npm run bench:godot -- --scenario=large --resolution=1920x1080 --out=/tmp/godot-large-bench.json
 ```
 
 Keep that window visible. Use `--scenario=early` or `--scenario=late` for one scene, and
@@ -54,16 +58,40 @@ Renderer regression checks (no server or display required):
 
 ```bash
 godot --headless --path godot -s res://tests/render_regressions.gd
+godot --headless --path godot -s res://tests/composition_regressions.gd
+godot --headless --path godot -s res://tests/lwe_regressions.gd
+node godot/tests/lwe-live.mjs
 node godot/tests/network-smoke.mjs
 ```
 
-The second check restarts its isolated server and verifies protocol/geo negotiation, picking, a
-real move order and automatic rejoin. Large JSON packets decode in workers; their results are
+The live check builds/trains/draws infrastructure through existing server commands and verifies
+same-match reload. The network check restarts its isolated server and verifies protocol/geo,
+picking, a real move order and automatic rejoin. Large JSON packets decode in workers; results are
 applied in wire order on the main thread. The protocol and server commands are unchanged.
+
+Actual-GPU visual checks (temporary native test windows; run these one at a time):
+
+```bash
+node godot/tests/lwe-live.mjs --visible --out=/tmp/se-live-visual
+godot --path godot --resolution 1024x768 -s res://tests/terrain_zoom_visual.gd -- --out=/tmp/se-terrain-zoom
+```
+
+`tools/art/README.md` documents original Blender GLBs, procedural PBR maps and audio source scripts.
+To build local development previews with installed official export templates:
+
+```bash
+node tools/build-native.mjs --platform=all --smoke
+```
+
+Outputs go to ignored `dist/native/`. macOS bundles use an ad-hoc local development signature;
+Windows previews are unsigned. These are not notarized/trusted signed public releases. Windows
+execution and public signing/distribution remain acceptance work. The separate
+`.github/workflows/godot-smoke.yml` runs headless checks without touching `deploy.yml`.
 
 Controls: WASD / arrows pan (Shift faster), the wheel zooms about the cursor, middle-drag pans,
 left click or drag selects, right click moves, Ctrl+right click attack-moves, H holds, T toggles a
-defensive / aggressive stance, Escape cancels, F3 shows frame and network statistics.
+defensive / aggressive stance, Escape cancels, B opens construction/orders, F2 opens empire
+workspaces, M toggles audio, F3 shows statistics, and F4 shows generation/recipe diagnostics.
 The camera keeps a fixed 60-degree pitch while zooming so terrain proportions do not stretch.
 
 ## Protocol

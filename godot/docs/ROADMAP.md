@@ -1,5 +1,11 @@
 # Native edition: guide to the remaining steps
 
+**2026-11-04 scope update:** Godot is now the sole development target at the user's direction.
+The browser sources are reference only. This original gate/release guide is retained; the complete
+Living World Engine specification and subsequent corrections are tracked in
+[LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md). Use [STATUS.md](STATUS.md) for current evidence rather
+than treating the original starting-state descriptions below as present implementation status.
+
 Where things stand is recorded in [STATUS.md](STATUS.md): Phase 0, Phase 1 and a first pass at the
 vertical slice are done. This guide covers what comes next, in order. Each step lists the files to
 touch, how to do it and how to know it's finished.

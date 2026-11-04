@@ -1,7 +1,7 @@
 class_name MaterialLibrary
 extends RefCounted
 ## The shared material library: every building, unit and prop is built from these few surfaces,
-## so the world reads as one place. Stylized realism: restrained natural colours, no textures yet,
+## so the world reads as one place. Restrained colours and tileable PBR detail,
 ## per-vertex tint for variety, one sun. Materials are created once and shared by all meshes.
 
 const SPECS := {
@@ -31,21 +31,43 @@ const SPECS := {
 
 static var _cache := {}
 static var _team := {}
+static var _surface_shader:Shader
+static var _wet_texture:Texture2D
+static var _weather_extent:=Vector2(221.7,192.0)
 
 
 static func get_mat(key: String) -> Material:
 	if _cache.has(key):
 		return _cache[key]
 	var spec: Dictionary = SPECS.get(key, SPECS.concrete)
-	var m := StandardMaterial3D.new()
-	m.albedo_color = spec.c
-	m.vertex_color_use_as_albedo = true
-	m.vertex_color_is_srgb = true
-	m.roughness = spec.get("r", 0.9)
-	m.metallic = spec.get("m", 0.0)
+	if _surface_shader==null: _surface_shader=load("res://shaders/world_surface.gdshader")
+	var m := ShaderMaterial.new()
+	m.shader=_surface_shader
+	m.set_shader_parameter("base_color",spec.c)
+	m.set_shader_parameter("base_roughness",spec.get("r",.9))
+	m.set_shader_parameter("base_metallic",spec.get("m",0.0))
 	m.resource_name = key
+	var path := "res://assets/materials/%s_" % key
+	if ResourceLoader.exists(path + "albedo.png"):
+		m.set_shader_parameter("albedo_map",load(path+"albedo.png"))
+		m.set_shader_parameter("normal_map",load(path+"normal.png"))
+		m.set_shader_parameter("roughness_map",load(path+"roughness.png"))
+		m.set_shader_parameter("normal_strength",.35)
+	if _wet_texture:
+		m.set_shader_parameter("wet_map",_wet_texture)
+		m.set_shader_parameter("weather_extent",_weather_extent)
+		m.set_shader_parameter("weather_ready",1.0)
 	_cache[key] = m
 	return m
+
+
+static func bind_weather(texture:Texture2D,extent:Vector2) -> void:
+	_wet_texture=texture; _weather_extent=extent
+	for material in _cache.values():
+		if material is ShaderMaterial:
+			material.set_shader_parameter("wet_map",texture)
+			material.set_shader_parameter("weather_extent",extent)
+			material.set_shader_parameter("weather_ready",1.0 if texture else 0.0)
 
 
 ## a civilization's colour, for flags, bands and markings (restrained: slightly desaturated)

@@ -2,6 +2,12 @@
 
 A grand-scale RTS where you rebuild a civilization on a shattered world that wraps around east to west. Armies hold real ground behind supplied, entrenched lines; cities grow from a real population ledger, workers are allocated to the jobs that matter, governors and rival empires plan with the same tools you do, and armies are drawn from your people.
 
+**Native development:** the active client target is [Godot 4.7.2](godot/README.md). The
+[Living World Engine checklist](godot/docs/LWE_REQUIREMENTS.md) tracks the complete procedural-world
+design and [native status](godot/docs/STATUS.md) records validation and remaining gates. The older
+Electron/PixiJS sources and documentation below are retained as reference; new client work targets
+Godot. Native builds are currently development previews.
+
 ## Architecture: the cloud does the thinking
 
 ```

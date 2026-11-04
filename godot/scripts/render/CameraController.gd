@@ -32,6 +32,7 @@ func setup(w: WorldState) -> void:
 	world = w
 	cam = Camera3D.new()
 	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.keep_aspect=Camera3D.KEEP_HEIGHT
 	cam.near = 1.0
 	cam.far = 2000.0
 	cam.current = true
@@ -72,6 +73,13 @@ func _apply() -> void:
 		return
 	var p := deg_to_rad(pitch_deg())
 	cam.size = size
+	# Reserve depth precision for the map around the fixed orthographic boom. A huge 1..2000
+	# range wastes precision exactly where city roads, soil and foundations meet at close zoom.
+	var viewport_size:=get_viewport().get_visible_rect().size
+	var aspect:=viewport_size.x/maxf(viewport_size.y,1.0)
+	var span:=maxf(size,size/maxf(aspect,.1))*.6+WorldState.LAND_SCALE*3.0+16.0
+	cam.near=maxf(.1,DISTANCE-span)
+	cam.far=DISTANCE+span
 	var back := Vector3(0, sin(p), cos(p)) * DISTANCE
 	cam.global_transform = Transform3D(Basis.looking_at(-back, Vector3.UP), focus + back)
 

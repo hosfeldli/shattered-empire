@@ -34,6 +34,7 @@ var civs: Array = []
 var civ_by_id := {}
 var start_tile := -1
 var match_id := ""
+var world_seed := 0
 var grid: HexGrid
 var chunk := 16
 var chunks_w := 0
@@ -48,6 +49,9 @@ var height := PackedFloat32Array()   # derived from geo per hex
 # tile records (protocol 1): road edges, owner, flags, server colour
 var terr := PackedByteArray()
 var tile_owner := PackedInt32Array()
+var tile_color := PackedColorArray()
+var tile_stability := PackedInt32Array()
+var supply_bits := PackedByteArray()
 var road := PackedInt32Array()
 var flags := PackedInt32Array()
 var res := PackedByteArray()
@@ -66,6 +70,8 @@ var _interp_s1: Dictionary = {}
 var _interp_f := 1.0
 var _interp_single := true
 var geo_version := 0
+var geometry_revision := 0   # all received geometry; geo_version only invalidates sampled heights
+var world_epoch := 0        # increases on welcome/reset, even when the same match is rejoined
 var play_rate := 1.0
 var buildings := {}             # id -> Dictionary as sent
 var buildings_version := 0
@@ -85,6 +91,7 @@ var snapshot_intervals: Array = []
 
 
 func apply_welcome(m: Dictionary) -> void:
+	world_seed = int(m.get("seed", 0))
 	defs = m.get("defs", {})
 	civ_id = int(m.get("civId", 0))
 	spectator = bool(m.get("spectator", false))
@@ -110,7 +117,13 @@ func apply_welcome(m: Dictionary) -> void:
 
 
 func _clear_map() -> void:
+	world_epoch+=1
+	geometry_revision+=1
+	geo_version+=1
 	_interp_time = -INF
+	_interp_s0.clear(); _interp_s1.clear()
+	paths.clear(); econ.clear(); wx.clear()
+	server_time=0.0; render_time=0.0; tick=0
 	var n := grid.n
 	geo = PackedByteArray(); geo.resize(n * GEO_STRIDE)
 	known = PackedByteArray(); known.resize(n)
@@ -118,6 +131,9 @@ func _clear_map() -> void:
 	height = PackedFloat32Array(); height.resize(n)
 	terr = PackedByteArray(); terr.resize(n)
 	tile_owner = PackedInt32Array(); tile_owner.resize(n); tile_owner.fill(-1)
+	tile_color=PackedColorArray(); tile_color.resize(n); tile_color.fill(Color(.06,.07,.08))
+	tile_stability = PackedInt32Array(); tile_stability.resize(n); tile_stability.fill(-1)
+	supply_bits = PackedByteArray(); supply_bits.resize(n / 8)
 	road = PackedInt32Array(); road.resize(n)
 	flags = PackedInt32Array(); flags.resize(n)
 	res = PackedByteArray(); res.resize(n)
@@ -175,6 +191,8 @@ func apply_snapshot(m: Dictionary) -> void:
 			road[i] = rd
 			flags[i] = int(t[5])
 			tile_owner[i] = int(t[8])
+			tile_color[i]=Color.hex((int(t[2])<<8)|255)
+			tile_stability[i] = int(t[9]) if t.size() > 9 else -1
 			changed.append(i)
 		tiles_changed.emit(changed, roads)
 	if m.has("vis"):
@@ -197,6 +215,11 @@ func apply_snapshot(m: Dictionary) -> void:
 		u.prog = float(a[5]) / 100.0
 		u.hp = int(a[6])
 		u.flags = int(a[8])
+		u.supply = int(a[7])
+		u.target = int(a[11]) if a.size() > 11 and a[11] != null else 0
+		u.supp = int(a[12]) if a.size() > 12 and a[12] != null else 0
+		u.veteran = int(a[14]) if a.size() > 14 and a[14] != null else 0
+		u.air = a[18] if a.size() > 18 and a[18] is Array else []
 		u.stance = a[9]
 		u.cstat = a[10]
 		u.morale = a[13]
@@ -222,6 +245,9 @@ func apply_snapshot(m: Dictionary) -> void:
 
 func _apply_econ(m: Dictionary) -> void:
 	econ = m.econ
+	if m.has("supply"):
+		var bits := Marshalls.base64_to_raw(m.supply)
+		if bits.size() == supply_bits.size(): supply_bits = bits
 	var bl := {}
 	for b in m.get("buildings", []):
 		bl[int(b.id)] = b
@@ -234,11 +260,13 @@ func _apply_econ(m: Dictionary) -> void:
 	ruins = m.get("ruins", [])
 	traffic = m.get("traffic", [])
 	if m.has("bf"):
-		bf = m.bf
-		bf_version += 1
+		if bf != m.bf:
+			bf = m.bf
+			bf_version += 1
 	if m.has("fw"):
-		fw = m.fw
-		fw_version += 1
+		if fw != m.fw:
+			fw = m.fw
+			fw_version += 1
 	if m.has("urban"):
 		var u := Marshalls.base64_to_raw(m.urban)
 		if u.size() == urban_bits.size():
@@ -250,6 +278,7 @@ func _apply_econ(m: Dictionary) -> void:
 
 
 func apply_geo(m: Dictionary) -> void:
+	geometry_revision+=1
 	var cs := int(m.get("cs", chunk))
 	if m.get("full", 0):
 		known.fill(0)

@@ -24,6 +24,9 @@ var fx_pool: Array = []
 var events_seen := 0
 var flash_mesh: SphereMesh
 var shell_mesh: SphereMesh
+var composition: WorldCompositionSystem
+var director: CombatPresentationDirector
+var audio: AudioDirector
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -210,6 +213,7 @@ func _update_smoke() -> void:
 	var now := Time.get_ticks_msec() / 1000.0
 	var n := 0
 	var cap := mm.instance_count if cam.size < 40.0 else 300 if cam.size < 100.0 else 120
+	if composition: cap = mini(cap, composition.lod.budget("battle_puffs",cam.size))
 	for s in smoke_list:
 		var count := clampi(int(float(s[2]) * 6.0) + 1, 1, 6)
 		for k in count:
@@ -217,6 +221,7 @@ func _update_smoke() -> void:
 				break
 			var ph := float(int(s[3]) % 101) * 0.37 + k * 1.7
 			var drift := Vector2(sin(now * 0.13 + ph), cos(now * 0.11 + ph * 1.3)) * 0.35
+			if composition: drift += composition.weather.wind * (k * .12)
 			var x := g.near_x(float(s[0]) + drift.x, cx)
 			var z := float(s[1]) + drift.y
 			var y := maxf(world.ground_height(x, z), 0.0) + 0.15 + 0.12 * k + 0.05 * sin(now * 0.5 + ph)
@@ -230,6 +235,8 @@ func _update_smoke() -> void:
 # ------------------------------------------------------------------ transient effects
 func _on_events(ev: Array) -> void:
 	var g := world.grid
+	if director: ev=director.select(ev)
+	if audio: audio.present(ev)
 	for e in ev:
 		events_seen += 1
 		var k := str(e.get("k", ""))

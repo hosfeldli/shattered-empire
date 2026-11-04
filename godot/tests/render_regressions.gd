@@ -75,6 +75,27 @@ func _run() -> void:
 		settlements.update(0.016)
 	check(settlements.rebuilt == rebuilt, "activity update rebuilt a completed building")
 	check(settlements.building_at(100) == 1, "queued building remains selectable by hex")
+	var old_node:MeshInstance3D=settlements.districts["1"].node
+	var old_mesh:=old_node.mesh
+	var parcel:=settlements.parcel_transform(b)
+	var other:=b.duplicate(true); other.id=2; other.t=101
+	w.buildings[2]=other; w.buildings_version+=1
+	settlements.update(.016,false)
+	check(not old_node.is_queued_for_deletion() and old_node.visible and old_node.mesh==old_mesh,"district merge removed old buildings before replacements were ready")
+	check(not (settlements.districts["1,2"].node as Node3D).visible,"partial replacement rendered over old buildings")
+	while settlements.is_building(): settlements.update(.016)
+	check(old_node.is_queued_for_deletion() and settlements.retiring.is_empty(),"finished district failed to retire its old batch")
+	check((settlements.districts["1,2"].node as MeshInstance3D).visible and (settlements.districts["1,2"].node as MeshInstance3D).mesh!=null,"atomic district handoff left buildings hidden")
+	check(settlements.parcel_transform(b)==parcel,"district merge changed existing parcel position/heading")
+	check(settlements.parcel_transform(other)!=parcel,"different buildings share identical parcel variation")
+	other.lv=3; other.hp=40; other.o=1
+	check(settlements.parcel_transform(other).origin.length()<.07,"parcel variation escapes its authorized footprint")
+	check(settlements.parcel_transform(b)==parcel,"neighbor upgrade or ownership change moved an existing building")
+	cam.size=80.0; cam.focus.x=w.grid.center(100).x+w.grid.period*.5; cam._apply()
+	settlements.update(.016,false)
+	var copies:Array=settlements.districts["1,2"].get("copies",[])
+	check(copies.any(func(pair):return (pair[0] as Node3D).visible),"wide seam view omitted the adjacent wrapped building image")
+	check(copies.all(func(pair):return (pair[0] as MeshInstance3D).mesh==(settlements.districts["1,2"].node as MeshInstance3D).mesh),"wrapped buildings failed to share the stable district mesh")
 
 	# Two positions across the cylinder seam must interpolate by the short path.
 	w.snaps = [{"t": 0.0, "pos": {1: Vector3(127, -1, 0)}}, {"t": 1.0, "pos": {1: Vector3(96, -1, 0)}}]

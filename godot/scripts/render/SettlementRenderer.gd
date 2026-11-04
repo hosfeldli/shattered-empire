@@ -8,31 +8,25 @@ extends Node3D
 ## selected building is outlined. All state shown here (level, progress, damage, fire, activity) is
 ## what the server sent; nothing is decided by the client.
 
-const GROUP := {
-	"house": "res",
-	"farm": "farm",
-	"market": "com", "port": "com",
-	"town": "civ", "academy": "civ", "university": "civ", "comms_tower": "civ",
-	"steel_mill": "ind", "munitions_plant": "ind", "motor_works": "ind", "heavy_assembly": "ind", "electronics_plant": "ind", "refinery": "ind", "power_plant": "ind", "fusion_plant": "ind", "robotics_complex": "ind", "drone_works": "ind", "salvage": "ind",
-	"mine": "ext", "quarry": "ext", "lumber": "ext", "oil_well": "ext",
-}
+const GROUP := RecipeRegistry.GROUPS
 const SQRT3 := HexGrid.SQRT3
 
 var world: WorldState
 var cam: CameraController
+var composition: WorldCompositionSystem
 var version := -1
 var districts := {}          # district key -> { node, fx, anchor, structure_sig, progress_sig, smoke }
 var at_tile := {}            # tile -> building id
 var district_of := {}        # building id -> district key
-var build_queue: Array[String] = []
-var queued := {}
-var pending := {}            # district key -> latest member list
-var _topology_sig := ""
 var refresh_queue: Array[String] = []
 var refresh_pending := {}
-var district_job := {}
+var retiring: Array = []     # old district batches stay visible until all replacements are ready
+var home_sites:={}
+var site_records:={}
+var _next_generation := 0
 var selected_building := -1
 var select_mark: MeshInstance3D
+var select_copies: Array[MeshInstance3D] = []
 var ruin_inst: MeshInstance3D
 var ruin_sig := ""
 var ruin_anchor := Vector2.ZERO
@@ -42,9 +36,15 @@ const MAX_PUFFS := 900
 const REBUILD_BUDGET_US := 1000
 
 
-func setup(w: WorldState, c: CameraController) -> void:
+func setup(w: WorldState, c: CameraController, shared: WorldCompositionSystem = null) -> void:
 	world = w
 	cam = c
+	composition = shared
+	if composition == null:
+		composition = WorldCompositionSystem.new()
+		composition.setup(world)
+	composition.graph.districts_reconciled.connect(_on_districts_reconciled)
+	composition.graph.district_invalidated.connect(_on_district_invalidated)
 	var t := TorusMesh.new()
 	t.inner_radius = 0.82
 	t.outer_radius = 0.9
@@ -56,6 +56,10 @@ func setup(w: WorldState, c: CameraController) -> void:
 	select_mark.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	select_mark.visible = false
 	add_child(select_mark)
+	for k in 2:
+		var copy:=MeshInstance3D.new(); copy.mesh=t
+		copy.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		copy.visible=false; add_child(copy); select_copies.append(copy)
 	ruin_inst = MeshInstance3D.new()
 	ruin_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ruin_inst)
@@ -80,19 +84,23 @@ func setup(w: WorldState, c: CameraController) -> void:
 
 
 func _clear() -> void:
+	for key in districts:
+		composition.scheduler.cancel("district:" + str(key))
 	for d in districts.values():
 		(d.node as Node).queue_free()
 		(d.fx as Node).queue_free()
+		_free_copies(d)
+	for d in retiring:
+		(d.node as Node).queue_free(); (d.fx as Node).queue_free()
+		_free_copies(d)
+	retiring.clear()
+	home_sites.clear()
+	site_records.clear()
 	districts.clear()
-	at_tile.clear()
-	district_of.clear()
-	build_queue.clear()
-	queued.clear()
-	pending.clear()
+	at_tile = {}
+	district_of = {}
 	refresh_queue.clear()
 	refresh_pending.clear()
-	district_job.clear()
-	_topology_sig = ""
 	ruin_sig = ""
 	if ruin_inst:
 		ruin_inst.mesh = null
@@ -102,20 +110,28 @@ func _clear() -> void:
 func update(_dt: float, allow_rebuild := true) -> void:
 	if world.grid == null:
 		return
-	# Never stack an economy/geo dispatch, district regrouping and mesh generation in one frame.
+	composition.sync()
+	at_tile = composition.graph.at_tile
+	district_of = composition.graph.district_of
 	if allow_rebuild:
 		if version != world.buildings_version:
 			version = world.buildings_version
+			for id in home_sites.keys():
+				if not world.buildings.has(id): home_sites.erase(id)
+			for id in site_records.keys():
+				if not world.buildings.has(id): site_records.erase(id)
 			_rebuild()
 		else:
 			_build_some()
 	var cx := cam.focus.x
 	var g := world.grid
-	for d in districts.values():
+	for d in districts.values()+retiring:
 		var a: Vector2 = d.anchor
 		var off := Vector3(g.near_x(a.x, cx) - a.x, 0, 0)
 		(d.node as Node3D).position = off
 		(d.fx as Node3D).position = off
+		_place_copies(d,cx)
+	_try_handoff()
 	ruin_inst.position = Vector3(g.near_x(ruin_anchor.x, cx) - ruin_anchor.x, 0, 0)
 	_update_plumes()
 	_update_mark()
@@ -129,6 +145,7 @@ func _update_plumes() -> void:
 	var now := Time.get_ticks_msec() / 1000.0
 	var n := 0
 	var cap := MAX_PUFFS if cam.size < 40.0 else 450 if cam.size < 100.0 else 180
+	cap = mini(cap,composition.lod.budget("puffs",cam.size))
 	for d in districts.values():
 		for s in d.smoke:
 			var base: Vector3 = s[0]
@@ -138,7 +155,8 @@ func _update_plumes() -> void:
 				if n >= cap:
 					break
 				var u := fposmod(now * 0.22 + k / 6.0 + base.z * 0.37, 1.0)
-				var p := Vector3(x0 + u * 0.35, base.y + u * 0.7, base.z - u * 0.08)
+				var drift := composition.weather.wind * u * .4
+				var p := Vector3(x0 + drift.x, base.y + u * 0.7, base.z + drift.y)
 				var sc := 0.6 + u * 1.8
 				mm.set_instance_transform(n, Transform3D(Basis().scaled(Vector3.ONE * sc), p))
 				mm.set_instance_color(n, Color(col, (1.0 - u) * 0.8))
@@ -150,11 +168,16 @@ func _update_mark() -> void:
 	var b: Dictionary = world.buildings.get(selected_building, {})
 	if b.is_empty():
 		select_mark.visible = false
+		for copy in select_copies: copy.visible=false
 		return
 	var c := world.grid.center(int(b.t))
 	var x := world.grid.near_x(c.x, cam.focus.x)
 	select_mark.visible = true
 	select_mark.position = Vector3(x, world.tile_height(int(b.t)) + 0.03, c.y)
+	for k in select_copies.size():
+		var copy:MeshInstance3D=select_copies[k]
+		copy.position=select_mark.position+Vector3(world.grid.period*(-1 if k==0 else 1),0,0)
+		copy.visible=world.grid.wrap and absf(copy.position.x-cam.focus.x)<cam.view_half_width()+1
 
 
 func building_at(tile: int) -> int:
@@ -162,63 +185,30 @@ func building_at(tile: int) -> int:
 
 
 func is_building() -> bool:
-	return not refresh_queue.is_empty() or not build_queue.is_empty() or not district_job.is_empty()
+	return not refresh_queue.is_empty() or composition.scheduler.has_pending("district:")
 
 
 # ------------------------------------------------------------------ districts
 func _rebuild() -> void:
-	var g := world.grid
-	var topology := PackedStringArray()
-	for b in world.buildings.values():
-		topology.append("%d:%d:%s:%d:%d" % [int(b.id), int(b.t), b.ty, int(b.o), int(b.get("d", 0))])
-	var topology_sig := "|".join(topology)
-	if topology_sig == _topology_sig:
-		for key in districts.keys():
-			_queue_refresh(key)
-		_build_ruins()
-		return
-	_topology_sig = topology_sig
-	at_tile.clear()
-	var members := {}            # tile -> building for district candidates
-	for b in world.buildings.values():
-		var t := int(b.t)
-		at_tile[t] = int(b.id)
-		if GROUP.has(b.ty) and int(b.get("d", 0)) == 1 and str(b.get("st", "")) != "planned":
-			members[t] = b
-	# union-find over hex adjacency per group and owner
-	var parent := {}
-	for t in members.keys():
-		parent[t] = t
-	for t in members.keys():
-		var b: Dictionary = members[t]
-		for d in 6:
-			var nb := g.nb[int(t) * 6 + d]
-			if nb < 0 or not members.has(nb):
-				continue
-			var o: Dictionary = members[nb]
-			if GROUP[o.ty] == GROUP[b.ty] and int(o.o) == int(b.o):
-				var ra = _find(parent, t)
-				var rb = _find(parent, nb)
-				if ra != rb:
-					parent[ra] = rb
-	var groups := {}
-	for b in world.buildings.values():
-		var t := int(b.t)
-		var root = _find(parent, t) if parent.has(t) else "s%d" % int(b.id)
-		if not groups.has(root):
-			groups[root] = []
-		(groups[root] as Array).append(b)
-	var keep := {}
-	district_of.clear()
-	for list in groups.values():
-		var ids := []
-		for b in list:
-			ids.append(int(b.id))
-		ids.sort()
-		var key := ",".join(ids.map(func(x): return str(x)))
-		keep[key] = true
-		for id in ids:
-			district_of[id] = key
+	# Topology belongs to the semantic graph. Ruins are still a separate authoritative render layer.
+	composition.sync()
+	_build_ruins()
+
+
+func _on_districts_reconciled(upserted: Array, removed: Array) -> void:
+	for key in removed:
+		if not districts.has(key):
+			continue
+		var old:Dictionary=districts[key]
+		if (old.node as MeshInstance3D).mesh!=null:
+			retiring.append(old)
+		else:
+			(old.node as Node).queue_free(); (old.fx as Node).queue_free()
+			_free_copies(old)
+		districts.erase(key)
+		composition.scheduler.cancel("district:" + str(key))
+	for key in upserted:
+		var ids: Array = composition.graph.districts[key].ids
 		var rec: Dictionary = districts.get(key, {})
 		if rec.is_empty():
 			var mi := MeshInstance3D.new()
@@ -226,17 +216,76 @@ func _rebuild() -> void:
 			fx.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(mi)
 			add_child(fx)
-			rec = {"node": mi, "fx": fx, "ids": ids, "anchor": world.grid.center(int(list[0].t)), "structure_sig": "", "progress_sig": "", "smoke": []}
+			var first: WorldStateAdapter.BuildingRecord = composition.adapter.buildings[ids[0]]
+			rec = {"node": mi, "fx": fx, "ids": ids, "anchor": world.grid.center(first.tile), "structure_sig": "", "progress_sig": "", "smoke": [],"ready":false}
 			districts[key] = rec
+		rec.ids = ids
+		rec.ready=false
 		_queue_refresh(key)
-	for key in districts.keys():
-		if not keep.has(key):
-			(districts[key].node as Node).queue_free()
-			(districts[key].fx as Node).queue_free()
-			districts.erase(key)
-			pending.erase(key)
-			queued.erase(key)
-	_build_ruins()
+	_try_handoff()
+
+
+func _try_handoff() -> void:
+	if retiring.is_empty(): return
+	var keep:=[]
+	for old in retiring:
+		var ready:=true
+		for id in old.ids:
+			var key:=str(composition.graph.district_of.get(id,""))
+			if key!="" and (not districts.has(key) or not districts[key].get("ready",false)):
+				ready=false; break
+		if ready:
+			(old.node as Node).queue_free(); (old.fx as Node).queue_free()
+			_free_copies(old)
+		else: keep.append(old)
+	retiring=keep
+	var staged:={}
+	for old in retiring:
+		for id in old.ids:
+			var key:=str(composition.graph.district_of.get(id,""))
+			if key!="": staged[key]=true
+	for key in districts:
+		var show:=not staged.has(key)
+		(districts[key].node as Node3D).visible=show
+		(districts[key].fx as Node3D).visible=show
+		if not show:
+			for pair in districts[key].get("copies",[]):
+				(pair[0] as Node3D).hide(); (pair[1] as Node3D).hide()
+
+
+func _free_copies(rec:Dictionary) -> void:
+	for pair in rec.get("copies",[]):
+		(pair[0] as Node).queue_free(); (pair[1] as Node).queue_free()
+
+
+func _place_copies(rec:Dictionary,cx:float) -> void:
+	if not world.grid.wrap: return
+	var source:MeshInstance3D=rec.node
+	var effects:MeshInstance3D=rec.fx
+	var bounds:=source.mesh.get_aabb() if source.mesh else AABB(Vector3(rec.anchor.x-1,0,rec.anchor.y-1),Vector3(2,1,2))
+	var primary:=source.position.x
+	var copies:Array=rec.get("copies",[])
+	for k in 2:
+		var offset:=primary+world.grid.period*(-1 if k==0 else 1)
+		var visible_:bool=source.visible and bounds.end.x+offset>=cx-cam.view_half_width() and bounds.position.x+offset<=cx+cam.view_half_width()
+		if copies.size()<=k:
+			if not visible_: continue
+			while copies.size()<=k:
+				var geometry:=MeshInstance3D.new(); var fx:=MeshInstance3D.new()
+				fx.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				add_child(geometry); add_child(fx); copies.append([geometry,fx])
+		var geometry:MeshInstance3D=copies[k][0]; var fx:MeshInstance3D=copies[k][1]
+		geometry.mesh=source.mesh; fx.mesh=effects.mesh
+		geometry.position=Vector3(offset,0,0); fx.position=geometry.position
+		geometry.visible=visible_; fx.visible=visible_
+	rec.copies=copies
+
+
+func _on_district_invalidated(key: String, flags: int) -> void:
+	if districts.has(key):
+		if flags & WorldStateAdapter.Change.CONTEXT:
+			districts[key].structure_sig = ""
+		_queue_refresh(key)
 
 
 func _queue_refresh(key: String) -> void:
@@ -252,24 +301,18 @@ func _refresh_district(key: String, list: Array) -> void:
 	if rec.structure_sig != structure_sig:
 		rec.structure_sig = structure_sig
 		_queue_build(key, list)
+	elif (rec.node as MeshInstance3D).mesh!=null:
+		rec.ready=true
 	if rec.progress_sig != progress_sig:
 		rec.progress_sig = progress_sig
 		_build_progress(rec, list)
 
 
-func _find(parent: Dictionary, x):
-	while parent[x] != x:
-		parent[x] = parent[parent[x]]
-		x = parent[x]
-	return x
-
-
 func _structure_signature(list: Array) -> String:
 	var parts := PackedStringArray()
-	parts.append("era:%d" % _era())
 	for b in list:
 		# Damage stages alter the static tint, but progress, fire and activity never rebuild this mesh.
-		parts.append("%d:%s:%d:%d:%s:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", "")), int(b.get("lv", 1)), int(b.get("hp", 100)) / 25, int(b.get("ti", 0))])
+		parts.append("%d:%s:%d:%d:%s:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), int(b.get("hp", 100)) / 25, int(b.get("ti", 0))])
 	return "|".join(parts)
 
 
@@ -281,50 +324,32 @@ func _progress_signature(list: Array) -> String:
 
 
 func _queue_build(key: String, list: Array) -> void:
-	pending[key] = list.duplicate()
-	if not queued.has(key):
-		queued[key] = true
-		build_queue.append(key)
+	_next_generation += 1
+	var job := _begin_district(key, list)
+	job["generation"] = _next_generation
+	districts[key]["generation"] = _next_generation
+	var priority := GenerationScheduler.Priority.HIGH
+	if (districts[key].ids as Array).has(selected_building):
+		priority = GenerationScheduler.Priority.CRITICAL
+	composition.scheduler.enqueue("district:" + key, _next_generation, priority, _step_district.bind(job), _commit_district.bind(job))
 
 
 func _build_some() -> void:
 	var t0 := Time.get_ticks_usec()
-	while Time.get_ticks_usec() - t0 < REBUILD_BUDGET_US:
-		if not refresh_queue.is_empty():
-			var key: String = refresh_queue.pop_front()
-			refresh_pending.erase(key)
-			if districts.has(key):
-				var list := []
-				for id in districts[key].ids:
-					list.append(world.buildings[id])
-				_refresh_district(key, list)
-			continue
-		if district_job.is_empty():
-			if build_queue.is_empty():
-				return
-			var key: String = build_queue.pop_front()
-			queued.erase(key)
-			if not districts.has(key) or not pending.has(key):
-				continue
-			var list: Array = pending[key]
-			pending.erase(key)
-			_begin_district(key, list)
-		var key := str(district_job.key)
-		if not districts.has(key):
-			district_job.clear()
-			continue
-		var list: Array = district_job.list
-		if int(district_job.next) < list.size():
-			_append_building(list[int(district_job.next)])
-			district_job.next += 1
-		else:
-			var kit: MeshKit = district_job.kit
-			(districts[key].node as MeshInstance3D).mesh = kit.commit() if not kit.is_empty() else null
-			district_job.clear()
-			rebuilt += 1
+	while not refresh_queue.is_empty() and Time.get_ticks_usec() - t0 < REBUILD_BUDGET_US:
+		var key: String = refresh_queue.pop_front()
+		refresh_pending.erase(key)
+		if districts.has(key):
+			var list := []
+			for id in districts[key].ids:
+				list.append(world.buildings[id])
+			_refresh_district(key, list)
+	var remaining := REBUILD_BUDGET_US - (Time.get_ticks_usec() - t0)
+	if remaining > 0:
+		composition.scheduler.tick(remaining)
 
 
-func _begin_district(key: String, list: Array) -> void:
+func _begin_district(key: String, list: Array) -> Dictionary:
 	var g := world.grid
 	var anchor := g.center(int(list[0].t))
 	districts[key].anchor = anchor
@@ -332,21 +357,61 @@ func _begin_district(key: String, list: Array) -> void:
 	for b in list:
 		by_tile[int(b.t)] = b
 	var group: String = GROUP.get(list[0].ty, "") if list.size() > 1 else ""
-	district_job = {"key": key, "list": list, "next": 0, "kit": MeshKit.new(), "by_tile": by_tile, "anchor": anchor, "group": group}
+	return {"key": key, "list": list, "next": 0, "kit": MeshKit.new(), "by_tile": by_tile, "anchor": anchor, "group": group}
 
 
-func _append_building(b: Dictionary) -> void:
+func _step_district(job: Dictionary) -> bool:
+	if not districts.has(job.key) or int(districts[job.key].get("generation", -1)) != int(job.generation):
+		return true
+	var list: Array = job.list
+	if int(job.next) >= list.size():
+		if not job.has("surfaces"):
+			job.surfaces=(job.kit as MeshKit).parts.keys(); job.surface_next=0; job.mesh=ArrayMesh.new()
+		if int(job.surface_next)<job.surfaces.size():
+			(job.kit as MeshKit).commit_surface(job.mesh,job.surfaces[int(job.surface_next)])
+			job.surface_next+=1
+		return int(job.surface_next)==job.surfaces.size()
+	var building:Dictionary=list[int(job.next)]
+	if str(building.ty)=="house" and int(building.get("d",0))==1:
+		if not job.has("house_part"):
+			_append_building(building,job,true)
+			job.house_part=0
+			return false
+		var tile:=int(building.t); var center:=world.grid.center(tile); var anchor:Vector2=job.anchor
+		(job.kit as MeshKit).set_frame(Vector3(anchor.x+world.grid.dx_wrap(anchor.x,center.x),world.tile_height(tile),center.y),0)
+		_parcel_frame(job.kit,building)
+		_house_part(job.kit,building,int(job.house_part),_tint(building))
+		job.house_part+=1
+		if int(job.house_part)<2+mini(int(building.get("lv",1)),3): return false
+		job.erase("house_part")
+	else:
+		_append_building(building, job)
+	job.next += 1
+	return false
+
+
+func _commit_district(job: Dictionary) -> void:
+	if not districts.has(job.key) or int(districts[job.key].get("generation", -1)) != int(job.generation):
+		return
+	(districts[job.key].node as MeshInstance3D).mesh = job.get("mesh")
+	districts[job.key].ready=true
+	_try_handoff()
+	rebuilt += 1
+
+
+func _append_building(b: Dictionary, job: Dictionary, skip_model := false) -> void:
 	var g := world.grid
-	var anchor: Vector2 = district_job.anchor
-	var kit: MeshKit = district_job.kit
-	var group := str(district_job.group)
-	var by_tile: Dictionary = district_job.by_tile
+	var anchor: Vector2 = job.anchor
+	var kit: MeshKit = job.kit
+	var group := str(job.group)
+	var by_tile: Dictionary = job.by_tile
 	var t := int(b.t)
 	var c2 := g.center(t)
 	var lc := Vector3(anchor.x + g.dx_wrap(anchor.x, c2.x), world.tile_height(t), c2.y)
 	kit.set_frame(lc, 0.0)
-	_ground(kit, b, group)
-	if int(b.get("d", 0)) == 1:
+	if int(b.get("d", 0)) == 1 and not skip_model:
+		if not _parcel_frame(kit,b): return
+		if str(b.ty)!="house" and str(b.ty)!="farm": _foundation(kit,Vector2(.25,.20))
 		_building(kit, b, _tint(b))
 	if group != "":
 		for d in [0, 4, 5]:
@@ -371,25 +436,26 @@ func _build_progress(rec: Dictionary, list: Array) -> void:
 		var c2 := g.center(t)
 		var lc := Vector3(anchor.x + g.dx_wrap(anchor.x, c2.x), world.tile_height(t), c2.y)
 		kit.set_frame(lc, 0.0)
+		if not _parcel_frame(kit,b): continue
 		if int(b.get("d", 0)) == 0:
 			_construction(kit, b, _tint(b))
 		if int(b.get("f", 0)) == 1:
 			kit.box("glow:ff8a2a", Vector3(0, 0.05, 0), Vector3(0.3, 0.12, 0.25), Color.WHITE)
-		_append_smoke(smokes, b, lc)
+		_append_smoke(smokes, b, Transform3D(kit.basis,kit.origin))
 	(rec.fx as MeshInstance3D).mesh = kit.commit() if not kit.is_empty() else null
 	rec.smoke = smokes
 
 
-func _append_smoke(smokes: Array, b: Dictionary, lc: Vector3) -> void:
+func _append_smoke(smokes: Array, b: Dictionary, frame: Transform3D) -> void:
 	var active := int(b.get("a", 0)) == 1
 	var ty := str(b.ty)
 	if active and ty in ["steel_mill", "refinery", "munitions_plant", "electronics_plant", "motor_works", "heavy_assembly", "robotics_complex", "drone_works", "salvage"]:
-		smokes.append([lc + Vector3(0.36, 0.665, -0.22), Color(0.55, 0.53, 0.5)])
+		smokes.append([frame * Vector3(0.36, 0.665, -0.22), Color(0.55, 0.53, 0.5)])
 	elif active and ty == "power_plant":
 		for z in [-0.18, 0.18]:
-			smokes.append([lc + Vector3(0.2, 0.425, z), Color(0.86, 0.86, 0.86)])
+			smokes.append([frame * Vector3(0.2, 0.425, z), Color(0.86, 0.86, 0.86)])
 	if int(b.get("f", 0)) == 1:
-		smokes.append([lc + Vector3(0, 0.3, 0), Color(0.2, 0.18, 0.17)])
+		smokes.append([frame * Vector3(0, 0.3, 0), Color(0.2, 0.18, 0.17)])
 
 
 func _tint(b: Dictionary) -> Color:
@@ -401,49 +467,65 @@ func _tint(b: Dictionary) -> Color:
 	return c
 
 
-func _era() -> int:
-	return int(world.econ.get("age", 1))
+func _rng(b: Dictionary, purpose := "layout") -> RandomNumberGenerator:
+	var recipe: Dictionary = composition.graph.matches.get(int(b.id), {})
+	return composition.identities.rng_for("building:%d" % int(b.id), str(recipe.get("id", "fallback.structure")), int(recipe.get("version", 1)), purpose)
 
 
-func _rng(b: Dictionary) -> RandomNumberGenerator:
-	var r := RandomNumberGenerator.new()
-	r.seed = int(b.t) * 7919 + 17
-	return r
+func parcel_transform(b:Dictionary) -> Transform3D:
+	var rng:=_rng(b,"parcel")
+	var offset:=Vector3(rng.randf_range(-.045,.045),0,rng.randf_range(-.045,.045))
+	var yaw:=rng.randf_range(-PI,PI)
+	if GROUP.get(str(b.ty),"")=="farm":
+		var region:=composition.identities.rng_for("agriculture:%d"%world._chunk_of(int(b.t)),"field.orientation",1,"layout")
+		yaw=region.randf_range(-PI,PI)+rng.randf_range(-.10,.10)
+	# Waterfront structures and extraction cuts retain their geographic alignment.
+	if str(b.ty) in ["port","mine","quarry"]: yaw=rng.randf_range(-.12,.12)
+	return Transform3D(Basis(Vector3.UP,yaw),offset)
 
 
-# ------------------------------------------------------------------ ground and connections
-func _ground(kit: MeshKit, b: Dictionary, group: String) -> void:
-	var ty: String = b.ty
-	var g: String = GROUP.get(ty, "")
-	match g:
-		"res":
-			kit.hex_plate("grass", Vector3(0, 0.02, 0), 0.94, Color(0.95, 0.95, 0.92), 0.14)
-		"civ", "com":
-			kit.hex_plate("paving", Vector3(0, 0.025, 0), 0.94, Color(0.8, 0.79, 0.76), 0.14)
-		"ind":
-			kit.hex_plate("concrete", Vector3(0, 0.025, 0), 0.94, Color(0.7, 0.69, 0.67), 0.14)
-		"ext":
-			kit.hex_plate("soil", Vector3(0, 0.015, 0), 0.88, Color(0.85, 0.82, 0.78), 0.12)
-		"farm":
-			pass
-		_:
-			kit.hex_plate("paving", Vector3(0, 0.02, 0), 0.72, Color(0.92, 0.92, 0.9), 0.25)
-	if group == "" and g == "res":
-		# a lone house plot gets a hedge
-		for k in 6:
-			var a := deg_to_rad(-60.0 + 60.0 * k)
-			kit.box("foliage", Vector3(cos(a) * 0.8, 0.02, sin(a) * 0.8), Vector3(0.05, 0.06, 0.8), Color(1, 1, 1), -a)
+func _parcel_frame(kit:MeshKit,b:Dictionary) -> bool:
+	var variation:=parcel_transform(b)
+	if str(b.ty)!="house":
+		var half:=Vector2(.54,.44)
+		if str(b.ty)=="town": half=Vector2(.48,.4)
+		elif str(b.ty)=="farm": half=Vector2(.23,.2)
+		elif str(b.ty)=="airfield": half=Vector2(.78,.52)
+		var site:=composition.sites.plan(int(b.t),Vector2(variation.origin.x,variation.origin.z),variation.basis.get_euler().y,half)
+		site_records[int(b.id)]=site
+		if site.valid:
+			var planned:Transform3D=site.transform
+			planned.origin.x=world.grid.near_x(planned.origin.x,kit.origin.x)
+			kit.basis=planned.basis; kit.origin=planned.origin
+			return true
+		return false
+	var frame:=Transform3D(kit.basis,kit.origin)*variation
+	kit.basis=frame.basis; kit.origin=frame.origin
+	return true
+
+
+# ------------------------------------------------------------------ foundations and connections
+func _foundation(kit:MeshKit,half:Vector2) -> void:
+	for x in [-half.x,half.x]:
+		for z in [-half.y,half.y]:
+			var point:=kit.xf(Vector3(x,0,z))
+			var ground:=world.ground_height(point.x,point.z)
+			var depth:=maxf(0.0,point.y-ground)
+			if depth>.018:
+				var scale_:float=kit.basis.get_scale().y
+				kit.box("stone",Vector3(x,-depth/scale_,z),Vector3(.045,depth/scale_+.015,.045))
 
 
 func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionary, bb: Dictionary) -> void:
+	if composition.sites.crosses_water(int(ba.t),Vector2(a.x,a.z),Vector2(b.x,b.z),.5): return
 	var mid := (a + b) * 0.5
 	var dir := Vector2(b.x - a.x, b.z - a.z)
 	var yaw := atan2(-dir.y, dir.x)
 	var along := Vector3(dir.x, 0, dir.y).normalized()
 	var across := along.cross(Vector3.UP)
 	var y := maxf(a.y, b.y) + 0.02
-	var rng := RandomNumberGenerator.new()
-	rng.seed = int(ba.t) * 31 + int(bb.t)
+	var edge := "edge:%d:%d" % [mini(int(ba.id), int(bb.id)), maxi(int(ba.id), int(bb.id))]
+	var rng := composition.identities.rng_for(edge, "connection." + group, 1, "layout")
 	match group:
 		"res":
 			# a terrace of row houses straddling the shared edge, facing the street
@@ -452,8 +534,9 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 			for k in n:
 				var off := (k - (n - 1) * 0.5) * 0.17
 				var p := mid + across * off
-				kit.box(walls, Vector3(p.x, y, p.z), Vector3(0.26, 0.17 + 0.05 * int(ba.get("lv", 1)), 0.15), Color(1, 1, 1).darkened(rng.randf() * 0.12), yaw)
-				kit.gable(_roof_mat(rng), Vector3(p.x, y + 0.17 + 0.05 * int(ba.get("lv", 1)), p.z), 0.15, 0.26, 0.08, Color(1, 1, 1), yaw + PI * 0.5)
+				var ground:=world.ground_height(p.x,p.z)+.016
+				kit.box(walls, Vector3(p.x, ground, p.z), Vector3(0.26, 0.17 + 0.05 * int(ba.get("lv", 1)), 0.15), Color(1, 1, 1).darkened(rng.randf() * 0.12), yaw)
+				kit.gable(_roof_mat(rng), Vector3(p.x, ground + 0.17 + 0.05 * int(ba.get("lv", 1)), p.z), 0.15, 0.26, 0.08, Color(1, 1, 1), yaw + PI * 0.5)
 		"ind":
 			# a pipe run on trestles and a rail spur between the plants
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
@@ -466,7 +549,7 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 			kit.box("steel", Vector3(mid.x, y + 0.01, mid.z) - across * 0.17, Vector3(len, 0.012, 0.012), Color(0.7, 0.7, 0.7), yaw)
 		"civ":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
-			kit.box("stone", Vector3(mid.x, y - 0.01, mid.z), Vector3(len, 0.02, 0.4), Color(0.95, 0.94, 0.9), yaw)
+			_ground_path(kit,a,b,.4,"paving",Color(.95,.94,.9))
 			for s in [-1.0, 1.0]:
 				var p: Vector3 = mid + across * (0.3 * s)
 				kit.cylinder("bark", Vector3(p.x, y, p.z), 0.015, 0.1, 5)
@@ -479,7 +562,7 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 				kit.gable("canvas", Vector3(p.x, y + 0.08, p.z), 0.12, 0.16, 0.05, _awning(rng), yaw)
 		"ext":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
-			kit.box("soil", Vector3(mid.x, y - 0.015, mid.z), Vector3(len, 0.02, 0.16), Color(0.9, 0.85, 0.78), yaw)
+			_ground_path(kit,a,b,.16,"soil",Color(.9,.85,.78))
 		"farm":
 			pass
 
@@ -502,12 +585,9 @@ func _construction(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 
 
 func _wall_mat(rng: RandomNumberGenerator) -> String:
-	var era := _era()
-	if era <= 0:
-		return "timber" if rng.randf() < 0.5 else "plaster"
-	if era <= 2:
-		return "brick" if rng.randf() < 0.65 else "plaster"
-	return "concrete" if rng.randf() < 0.5 else "brick"
+	# No birth-era record is transmitted. A neutral, versioned base palette stays stable across
+	# the observing empire's era advances instead of silently rebuilding every other city too.
+	return "brick" if rng.randf() < 0.65 else "plaster"
 
 
 func _roof_mat(rng: RandomNumberGenerator) -> String:
@@ -519,26 +599,61 @@ func _awning(rng: RandomNumberGenerator) -> Color:
 	return opts[rng.randi() % opts.size()]
 
 
+func _house_part(kit: MeshKit, b: Dictionary, index: int, tint: Color) -> void:
+	var rng:=_rng(b,"home:%d"%index)
+	var slots:=[Vector2(-.28,-.29),Vector2(.29,-.24),Vector2(-.29,.29),Vector2(.28,.31),Vector2(.01,.015)]
+	var slot:Vector2=slots[index]
+	slot+=Vector2(rng.randf_range(-.035,.035),rng.randf_range(-.035,.035))
+	var color:=tint.darkened(rng.randf()*.15)
+	var position:=Vector3(slot.x,.02,slot.y)
+	var variant:=int(_rng(b,"architecture:%d"%index).randi()%3)
+	var damage:=clampf((65.0-float(b.get("hp",100)))/100.0,0,.65)
+	var yaw:=kit.basis.get_euler().y+rng.randf_range(-.18,.18)
+	var cache:Dictionary=home_sites.get(int(b.id),{})
+	if int(cache.get("revision",-1))!=world.geometry_revision:
+		cache={"revision":world.geometry_revision,"sites":{}}
+		home_sites[int(b.id)]=cache
+	var site:Dictionary=cache.sites.get(index,{})
+	if site.is_empty():
+		var preferred:=kit.xf(position)
+		var center:=world.grid.center(int(b.t))
+		var offset:=Vector2(world.grid.dx_wrap(center.x,preferred.x),preferred.z-center.y)
+		var reserved:=[]
+		for earlier in cache.sites:
+			if int(earlier)<index and cache.sites[earlier].get("valid",false): reserved.append(cache.sites[earlier])
+		site=composition.sites.plan(int(b.t),offset,yaw,Vector2(.18,.21),reserved)
+		cache.sites[index]=site
+	if not site.get("valid",false): return
+	var parent:=Transform3D(kit.basis,kit.origin)
+	var transform:Transform3D=site.transform
+	transform.origin.x=world.grid.near_x(transform.origin.x,kit.origin.x)
+	kit.set_frame(transform.origin,float(site.yaw))
+	_foundation(kit,site.half_size)
+	kit.component(AssetLibrary.residential(variant),Transform3D(Basis().scaled(Vector3.ONE*.72*float(site.scale)),Vector3.ZERO),color,damage)
+	kit.basis=parent.basis; kit.origin=parent.origin
+
+
+func _ground_path(kit:MeshKit,a:Vector3,b:Vector3,width:float,material:String,color:Color) -> void:
+	var direction:=Vector2(b.x-a.x,b.z-a.z).normalized()
+	var side:=Vector3(-direction.y,0,direction.x)*width*.5
+	for k in 6:
+		var start:=a.lerp(b,k/6.0); var finish:=a.lerp(b,(k+1)/6.0)
+		var points:=[start-side,start+side,finish+side,finish-side]
+		for i in 4:
+			points[i].y=world.ground_height(points[i].x,points[i].z)+.016
+		kit.quad(material,points[0],points[1],points[2],points[3],color,Vector3.UP)
+
+
 func _building(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 	var rng := _rng(b)
 	var lv := int(b.get("lv", 1))
-	var ty: String = b.ty
+	var recipe: Dictionary = composition.graph.matches.get(int(b.id), {})
+	var ty: String = str(recipe.get("grammar", b.ty))
 	match ty:
 		"house":
-			var walls := _wall_mat(rng)
-			var roof := _roof_mat(rng)
-			var floors := 1 + mini(lv, 3) - 1
-			var h := 0.15 + 0.11 * (floors - 1)
 			var n := 2 + mini(lv, 3)
 			for k in n:
-				var a := TAU * k / n + rng.randf() * 0.3
-				var r := 0.42 + rng.randf() * 0.12
-				var p := Vector3(cos(a) * r, 0.02, sin(a) * r)
-				var yaw := -a + PI * 0.5
-				var col := tint.darkened(rng.randf() * 0.15)
-				kit.box(walls, p, Vector3(0.24, h, 0.16), col, yaw)
-				kit.gable(roof, p + Vector3(0, h, 0), 0.16, 0.24, 0.09, tint, yaw + PI * 0.5)
-				kit.box("glass", p + Vector3(0, h * 0.45, 0), Vector3(0.245, 0.04, 0.12), tint, yaw)
+				_house_part(kit,b,k,tint)
 			kit.cone("foliage", Vector3(0.05, 0.02, 0.0), 0.12, 0.3, 7, tint)
 		"town":
 			var tier := int(b.get("ti", 1))
@@ -606,7 +721,7 @@ func _building(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 			kit.cylinder("steel", Vector3(0.3, 0.02, 0.25), 0.1, 0.16, 10, tint * Color(0.9, 0.9, 0.85))
 		"steel_mill", "refinery", "munitions_plant", "electronics_plant", "motor_works", "heavy_assembly", "robotics_complex", "drone_works", "salvage":
 			var w := 0.62 + (0.1 if ty in ["heavy_assembly", "steel_mill"] else 0.0)
-			kit.box("brick" if _era() <= 2 else "concrete", Vector3(-0.05, 0.025, 0), Vector3(w, 0.2, 0.42), tint)
+			kit.box("brick", Vector3(-0.05, 0.025, 0), Vector3(w, 0.2, 0.42), tint)
 			kit.sawtooth("steel", "glass", Vector3(-0.05, 0.225, 0), w, 0.42, 0.08, 4, tint, PI * 0.5)
 			var chim := Vector3(0.36, 0.025, -0.22)
 			kit.cylinder("brick", chim, 0.05, 0.62, 8, tint, 0.04)
@@ -688,7 +803,18 @@ func _fields(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 		if half <= 0.05:
 			continue
 		var crop := Color(1, 1, 1).lerp(Color(0.85, 0.78, 0.55), float((int(b.t) + k) % 3) * 0.3)
-		kit.box("crop" if k % 2 == 0 else "soil", Vector3(0, 0.0, z), Vector3(half * 2.0, 0.025, 1.56 / rows - 0.01), crop * tint)
+		for segment in 8:
+			var x0:=lerpf(-half,half,segment/8.0); var x1:=lerpf(-half,half,(segment+1)/8.0)
+			var half_row:=(1.56/rows-.01)*.5
+			var points:=[kit.xf(Vector3(x0,0,z-half_row)),kit.xf(Vector3(x1,0,z-half_row)),kit.xf(Vector3(x1,0,z+half_row)),kit.xf(Vector3(x0,0,z+half_row))]
+			var footprint:=[]; var fits:=true
+			for point in points:
+				footprint.append(Vector2(point.x,point.z))
+				if world.grid.tile_at(point.x,point.z)!=int(b.t): fits=false
+			if not fits or not composition.sites.clear_of_water(int(b.t),footprint,.04): continue
+			for i in 4: points[i].y=world.ground_height(points[i].x,points[i].z)+.012
+			kit.quad("crop" if k%2==0 else "soil",points[0],points[1],points[2],points[3],crop*tint,Vector3.UP)
+	_foundation(kit,Vector2(.10,.07))
 	kit.box("timber", Vector3(0.12, 0.025, 0.05), Vector3(0.2, 0.12, 0.14), tint * Color(0.85, 0.55, 0.45))
 	kit.gable("roof_slate", Vector3(0.12, 0.145, 0.05), 0.14, 0.2, 0.08, tint, PI * 0.5)
 	kit.cylinder("concrete", Vector3(-0.02, 0.025, 0.08), 0.04, 0.2, 8, tint, 0.0)

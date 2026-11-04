@@ -14,7 +14,7 @@ var ring_mesh: TorusMesh
 var path_mesh: ImmediateMesh
 var path_inst: MeshInstance3D
 var drawn := 0
-const BATCH_THRESHOLD := 200
+const BATCH_THRESHOLD := 64
 var batched := false
 var batches := {}        # model key -> MultiMeshInstance3D
 var motions := {}        # id -> { last: Vector2, yaw: float }
@@ -102,7 +102,12 @@ func update(dt: float) -> void:
 		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
 		var x := g.near_x(p.x, cx)
 		var y := _ground_for(id, p)
-		if air:
+		var pose := MilitaryPresentationState.pose(u, int(u.next)>=0, d)
+		var animation:=_animation(u,d)
+		var mesh_key:=key+("|"+animation if animation!="idle" else "")
+		if not meshes.has(mesh_key): meshes[mesh_key]=_build_model(u.type,world.civ_color(int(u.owner)),animation)
+		if (r.mesh as MeshInstance3D).mesh!=meshes[mesh_key]: (r.mesh as MeshInstance3D).mesh=meshes[mesh_key]
+		if air and not pose.grounded:
 			y += 1.4
 		elif (u.flags & 2) != 0:
 			y = maxf(y, 0.02)   # afloat
@@ -115,6 +120,9 @@ func update(dt: float) -> void:
 		node.position = Vector3(x, y, p.y)
 		draw_positions[id] = node.position
 		(r.mesh as Node3D).rotation = Vector3(0, float(r.yaw), 0)
+		(r.mesh as Node3D).scale = Vector3(1,1.0 if animation=="cover" else float(pose.height_scale),1)
+		if r.get("turret")!=null:
+			(r.turret as Node3D).rotation.y=_target_yaw(u,p,float(r.yaw))
 		(r.ring as Node3D).visible = selected.has(id)
 		drawn += 1
 	_draw_paths()
@@ -153,7 +161,8 @@ func _update_batched(dt: float) -> void:
 		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
 		var x := g.near_x(p.x, cx)
 		var y := _ground_for(id, p)
-		if air:
+		var pose := MilitaryPresentationState.pose(u,int(u.next)>=0,d)
+		if air and not pose.grounded:
 			y += 1.4
 		elif (u.flags & 2) != 0:
 			y = maxf(y, 0.02)
@@ -167,9 +176,15 @@ func _update_batched(dt: float) -> void:
 		var pos := Vector3(x, y, p.y)
 		draw_positions[id] = pos
 		var key := "%s|%d" % [u.type, u.owner]
+		var animation:=_animation(u,d)
+		if animation!="idle": key+="|"+animation
 		if not groups.has(key):
-			groups[key] = {"unit": u, "xforms": []}
-		(groups[key].xforms as Array).append(Transform3D(Basis(Vector3.UP, float(motion.yaw)), pos))
+			groups[key] = {"unit": u, "xforms": [],"animation":animation}
+		(groups[key].xforms as Array).append(Transform3D(Basis(Vector3.UP, float(motion.yaw)).scaled(Vector3(1,1.0 if animation=="cover" else float(pose.height_scale),1)), pos))
+		if str(d.get("cat",""))=="tracked":
+			var turret_key:="turret|%d"%int(u.owner)
+			if not groups.has(turret_key): groups[turret_key]={"unit":u,"xforms":[]}
+			(groups[turret_key].xforms as Array).append(Transform3D(Basis(Vector3.UP,_target_yaw(u,p,float(motion.yaw))),pos))
 		drawn += 1
 	for id in motions.keys():
 		if not seen.has(id):
@@ -178,8 +193,10 @@ func _update_batched(dt: float) -> void:
 			selected.erase(id)
 	for key in batches.keys():
 		if not groups.has(key):
-			(batches[key] as Node).queue_free()
-			batches.erase(key)
+			# Keep the small alternate animation batches warm across walk cycles.
+			(batches[key] as MultiMeshInstance3D).multimesh.visible_instance_count=0
+			if batches.size()>groups.size()+24:
+				(batches[key] as Node).queue_free(); batches.erase(key)
 	for key in groups.keys():
 		var batch: MultiMeshInstance3D = batches.get(key)
 		var info: Dictionary = groups[key]
@@ -193,7 +210,7 @@ func _update_batched(dt: float) -> void:
 			mm.transform_format = MultiMesh.TRANSFORM_3D
 		if not meshes.has(key):
 			var sample: Dictionary = info.unit
-			meshes[key] = _build_model(sample.type, world.civ_color(int(sample.owner)))
+			meshes[key] = _build_turret(world.civ_color(int(sample.owner))) if str(key).begins_with("turret|") else _build_model(sample.type, world.civ_color(int(sample.owner)),str(info.get("animation","idle")))
 		mm.mesh = meshes[key]
 		var xforms: Array = info.xforms
 		if mm.instance_count < xforms.size():
@@ -266,16 +283,54 @@ func _make(u: Dictionary, key: String) -> Dictionary:
 	ring.visible = false
 	node.add_child(ring)
 	var p := world.unit_position(int(u.id))
-	return {"node": node, "mesh": mi, "ring": ring, "last": p, "yaw": 0.0, "key": key}
+	var turret:MeshInstance3D
+	if str(unit_def(u.type).get("cat",""))=="tracked":
+		turret=MeshInstance3D.new()
+		var turret_key:="turret|%d"%int(u.owner)
+		if not meshes.has(turret_key): meshes[turret_key]=_build_turret(world.civ_color(int(u.owner)))
+		turret.mesh=meshes[turret_key]; node.add_child(turret)
+	return {"node": node, "mesh": mi, "turret":turret,"ring": ring, "last": p, "yaw": 0.0, "key": key}
+
+
+func _target_yaw(unit:Dictionary, position:Vector2, fallback:float) -> float:
+	var target:Dictionary=world.units.get(int(unit.get("target",0)),{})
+	if target.is_empty(): return fallback
+	var point:=world.grid.center(int(target.tile))
+	return atan2(-(point.y-position.y),world.grid.dx_wrap(position.x,point.x))
+
+
+func _build_turret(color:Color) -> ArrayMesh:
+	var kit:=MeshKit.new()
+	kit.component(AssetLibrary.unit_component("tank_turret"),Transform3D.IDENTITY)
+	kit.box("team:"+color.to_html(false),Vector3(-.02,.17,0),Vector3(.08,.004,.07))
+	return kit.commit()
+
+
+func _animation(unit:Dictionary,definition:Dictionary) -> String:
+	if str(definition.get("cat",""))!="infantry" or cam.size>25.0: return "idle"
+	if int(unit.get("supp",0))>60: return "cover"
+	if int(unit.get("next",-1))>=0: return "walk_%d"%posmod(int(world.render_time*4)+int(unit.id),2)
+	return "idle"
 
 
 ## a small readable model per unit class; forward is +X
-func _build_model(type: String, team_color: Color) -> ArrayMesh:
+func _build_model(type: String, team_color: Color, animation:="idle") -> ArrayMesh:
 	var k := MeshKit.new()
 	var d := unit_def(type)
 	var cat: String = str(d.get("cat", "infantry"))
 	var team := "team:" + team_color.to_html(false)
 	var olive := Color(1, 1, 1)
+	var authored:={"tracked":"tank_hull","wheeled":"scout_vehicle","artillery":"artillery_gun","air":"aircraft"}
+	if cat=="infantry":
+		var spots:=[Vector2(.1,0),Vector2(0,-.09),Vector2(0,.09),Vector2(-.1,-.17),Vector2(-.1,.17),Vector2(-.12,0)]
+		for spot in spots:
+			k.component(AssetLibrary.unit_component("infantry_"+animation),Transform3D(Basis(),Vector3(spot.x,0,spot.y)))
+		k.box(team,Vector3(.1,.10,.025),Vector3(.028,.025,.004))
+		return k.commit()
+	if authored.has(cat):
+		k.component(AssetLibrary.unit_component(authored[cat]),Transform3D.IDENTITY)
+		if cat!="tracked": k.box(team,Vector3(-.03,.12,0),Vector3(.05,.004,.06))
+		return k.commit()
 	match cat:
 		"infantry":
 			# a squad in a loose wedge, the leader carrying the colours
@@ -289,9 +344,6 @@ func _build_model(type: String, team_color: Color) -> ArrayMesh:
 			k.box("steel", Vector3(0, 0, -0.075), Vector3(0.32, 0.05, 0.05), Color(0.45, 0.45, 0.45))
 			k.box("steel", Vector3(0, 0, 0.075), Vector3(0.32, 0.05, 0.05), Color(0.45, 0.45, 0.45))
 			k.box("olive", Vector3(0, 0.03, 0), Vector3(0.3, 0.06, 0.15), olive)
-			k.box("olive", Vector3(-0.02, 0.09, 0), Vector3(0.13, 0.05, 0.11), olive * 0.95)
-			k.box("steel", Vector3(0.12, 0.105, 0), Vector3(0.17, 0.016, 0.016))
-			k.box(team, Vector3(-0.02, 0.14, 0), Vector3(0.1, 0.006, 0.09))
 		"wheeled":
 			for wx in [-0.08, 0.08]:
 				for wz in [-0.065, 0.065]:

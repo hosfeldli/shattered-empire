@@ -8,14 +8,14 @@ extends RefCounted
 
 const FRONT_CLOCKWISE := true
 
-var parts := {}   # material key -> [verts, normals, colors] as plain Arrays (by reference; packed arrays copy on write)
+var parts := {}   # material key -> [verts, normals, colors, UVs]
 var basis := Basis()
 var origin := Vector3.ZERO
 
 
 func _part(mat: String) -> Array:
 	if not parts.has(mat):
-		parts[mat] = [[], [], []]
+		parts[mat] = [[], [], [], []]
 	return parts[mat]
 
 
@@ -48,6 +48,7 @@ func tri(mat: String, a: Vector3, b: Vector3, c: Vector3, col: Color, outward :=
 	pv.append(a); pv.append(b); pv.append(c)
 	pn.append(nrm); pn.append(nrm); pn.append(nrm)
 	pc.append(col); pc.append(col); pc.append(col)
+	_uvs(p, a, b, c, nrm)
 
 
 ## a triangle with its own colour per vertex (smooth blends, e.g. water depth)
@@ -73,6 +74,48 @@ func tri_colors(mat: String, a: Vector3, b: Vector3, c: Vector3, ca: Color, cb: 
 	pv.append(a); pv.append(b); pv.append(c)
 	pn.append(nrm); pn.append(nrm); pn.append(nrm)
 	pc.append(ca); pc.append(cb); pc.append(cc)
+	_uvs(p, a, b, c, nrm)
+
+
+func _uvs(p: Array, a: Vector3, b: Vector3, c: Vector3, normal: Vector3) -> void:
+	var axis := normal.abs().max_axis_index()
+	for v in [a, b, c]:
+		p[3].append(Vector2(v.z, v.y) if axis == 0 else Vector2(v.x, v.z) if axis == 1 else Vector2(v.x, v.y))
+
+
+func component(surfaces: Array, transform: Transform3D, tint := Color.WHITE, damage := 0.0) -> void:
+	for surface in surfaces:
+		var arrays: Array = surface.arrays
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV] if arrays[Mesh.ARRAY_TEX_UV] != null else PackedVector2Array()
+		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+		var frame: Transform3D = Transform3D(basis, origin) * transform * surface.transform
+		var normal_basis := frame.basis.inverse().transposed()
+		var p := _part(str(surface.material))
+		var count := indices.size() if not indices.is_empty() else verts.size()
+		if damage<=0.0 and indices.is_empty():
+			# Imported components have uniform scale. Packed transforms run in native code instead
+			# of a GDScript iteration for every window/roof vertex.
+			p[0].append_array(Array(frame*verts))
+			p[1].append_array(Array(Transform3D(frame.basis.orthonormalized(),Vector3.ZERO)*normals))
+			var colors:=PackedColorArray(); colors.resize(count); colors.fill(tint)
+			p[2].append_array(Array(colors)); p[3].append_array(Array(uvs))
+			continue
+		for k in count:
+			var i := indices[k] if not indices.is_empty() else k
+			var v := verts[i]
+			# Stable missing upper triangles expose a localized damaged roof/facade. Never collision.
+			if damage > 0.0:
+				var first := k - k % 3
+				var vi := indices[first] if not indices.is_empty() else first
+				var mark := posmod(first * 31 + int(verts[vi].x * 1000), 100) / 100.0
+				if verts[vi].y > 0.22 and mark < damage:
+					continue
+			p[0].append(frame * v)
+			p[1].append((normal_basis * normals[i]).normalized())
+			p[2].append(tint)
+			p[3].append(uvs[i] if i < uvs.size() else Vector2.ZERO)
 
 
 ## a, b, c, d around the quad; outward tells which side is the front
@@ -204,17 +247,21 @@ func is_empty() -> bool:
 func commit() -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	for mat in parts.keys():
-		var p: Array = parts[mat]
-		if (p[0] as Array).is_empty():
-			continue
-		var arrays := []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(p[0])
-		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(p[1])
-		arrays[Mesh.ARRAY_COLOR] = PackedColorArray(p[2])
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, _material_for(mat))
+		commit_surface(mesh,mat)
 	return mesh
+
+
+func commit_surface(mesh: ArrayMesh, mat: String) -> void:
+	var p: Array = parts[mat]
+	if (p[0] as Array).is_empty(): return
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(p[0])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(p[1])
+	arrays[Mesh.ARRAY_COLOR] = PackedColorArray(p[2])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array(p[3])
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(mesh.get_surface_count() - 1, _material_for(mat))
 
 
 static func _material_for(key: String) -> Material:
