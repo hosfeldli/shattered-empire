@@ -4,7 +4,7 @@ A second client for the same authoritative Node.js server. It draws an orthograp
 2D interface on top. It sends intents and renders what the server tells it; it simulates nothing.
 The PixiJS / Electron client in `client/` and `desktop/` is unchanged and remains the shipping client.
 
-Status: **Phase 0, Phase 1 and a first pass at the Section 17 vertical slice**. See
+Status: **Phase 0, Phase 1 and a first pass at the Section 17 vertical slice**. Next steps: [docs/ROADMAP.md](docs/ROADMAP.md). See
 [docs/STATUS.md](docs/STATUS.md) for measurements, what is left and the decision-gate assessment.
 
 ## Running it
