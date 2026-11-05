@@ -314,40 +314,37 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 			var pair: Array = HexGrid.CORNER_DIRS[k]
 			for d: int in pair:
 				var nb: int = g.nb[i * 6 + d]
-				s += _sea_color(nb) if nb >= 0 and world.known[nb] and world.is_sea(nb) else Color(0.24, 0.42, 0.46, 0.6)
+				s += _sea_color(nb) if nb >= 0 and world.known[nb] and world.is_sea(nb) else Color(0.25, 0.31, 0.29, 0.92)
 			cols.append(s / 3.0)
 		for k in 6:
 			kit.tri_colors("water", centre, pts[k], pts[(k + 1) % 6], cc, cols[k], cols[(k + 1) % 6], Vector3.UP)
 	elif world.is_lake(i):
-		var col := Color(0.18, 0.34, 0.40, 0.86)
+		var col := Color(0.17, 0.25, 0.27, 0.94)
 		kit.hex_plate("water", Vector3(c2.x, world.water_level(i), c2.y), 1.0, col)
 	elif world.is_river(i):
-		var width := 0.2 + 0.07 * world.flow_bucket(i)
-		var col := Color(0.22, 0.38, 0.43, 0.9)
-		var y := world.height[i] + 0.05
-		var c := Vector3(c2.x, y, c2.y)
-		var fd := world.flow_dir(i)
-		if fd >= 0:
-			var m := c2 + g.dir_vec[fd] * (SQRT3 * 0.5)
-			var ym := (y + _surface(g.nb[i * 6 + fd], y)) * 0.5
-			kit.strip("water", c, Vector3(m.x, ym, m.y), width, col)
-		# the upstream reaches flowing into this hex
-		for d in 6:
-			var nb := g.nb[i * 6 + d]
-			if nb < 0 or not world.known[nb] or not world.is_river(nb):
-				continue
-			var nfd := world.flow_dir(nb)
-			if nfd < 0 or g.nb[nb * 6 + nfd] != i:
-				continue
-			var m := c2 + g.dir_vec[d] * (SQRT3 * 0.5)
-			var ym := maxf(y, world.height[nb] + 0.05) * 0.5 + y * 0.5
-			kit.strip("water", Vector3(m.x, ym, m.y), c, width, col)
+		var col:=Color(.20,.265,.25,.96)
+		var sections:=RiverGeometry.ribbon(world,i)
+		var left:Array[Vector3]=[]; var right:Array[Vector3]=[]
+		for section in sections:
+			var normal:Vector2=section.side
+			var center:=_river_point(section.center)
+			left.append(center+Vector3(normal.x,0,normal.y)); right.append(center-Vector3(normal.x,0,normal.y))
+		for index in sections.size()-1:
+			kit.quad("water",left[index],right[index],right[index+1],left[index+1],col,Vector3.UP)
+		# A confluence shares one filled center; ribbons meet without triangular holes.
+		if sections.is_empty(): kit.cylinder("water",Vector3(c2.x,world.ground_height(c2.x,c2.y)+.028,c2.y),RiverGeometry.width(world,i)*.45,.001,12,col,RiverGeometry.width(world,i)*.45)
+
+func _river_point(point:Vector2) -> Vector3:
+	var tile:=world.grid.tile_at(point.x,point.y)
+	var level:=world.water_level(tile) if tile>=0 and world.known[tile] else -1e6
+	var y:=level+.012 if level> -1e6 and (world.is_sea(tile) or world.is_lake(tile)) else world.ground_height(point.x,point.y)+.028
+	return Vector3(point.x,y,point.y)
 
 
 func _sea_color(i: int) -> Color:
 	var depth := world.geo[i * 6 + 2] / 255.0
-	var col := Color(0.22, 0.40, 0.45).lerp(Color(0.09, 0.20, 0.30), clampf(depth * 2.2, 0.0, 1.0))
-	col.a = lerpf(0.66, 0.92, clampf(depth * 2.0, 0.0, 1.0))
+	var col := Color(0.22, 0.30, 0.30).lerp(Color(0.10, 0.18, 0.235), clampf(depth * 2.2, 0.0, 1.0))
+	col.a = lerpf(0.88, 0.96, clampf(depth * 2.0, 0.0, 1.0))
 	return col
 
 
@@ -404,18 +401,19 @@ render_mode cull_back, diffuse_burley, specular_schlick_ggx;
 uniform sampler2D vis_bits : filter_nearest;
 uniform float vis_on = 1.0;
 uniform sampler2D wet_tex : filter_linear, repeat_enable, hint_default_black;
-uniform sampler2D cloud_tex : filter_linear, repeat_enable, hint_default_black;
-uniform sampler2D cloud_prev : filter_linear, repeat_enable, hint_default_black;
-uniform float cloud_blend = 1.0;
-uniform vec2 cloud_off = vec2(0.0);
-uniform vec2 cloud_off_prev = vec2(0.0);
-uniform vec2 shadow_shift = vec2(-0.012, -0.012);
-uniform vec2 weather_extent = vec2(221.7, 192.0);
+#include "res://shaders/weather_clouds.gdshaderinc"
 uniform sampler2D strategic_overlay : filter_nearest, hint_default_black;
 uniform float overlay_strength = 0.0;
 uniform sampler2D battle_scar : filter_linear, repeat_enable, hint_default_black;
 uniform vec2 battle_cells = vec2(128.0);
 uniform float battle_active = 0.0;
+uniform sampler2D trench_routes : filter_nearest, repeat_disable, hint_default_black;
+uniform vec2 trench_cells=vec2(128.0);
+uniform float trench_active=0.0;
+uniform sampler2D river_bank_field : filter_linear,repeat_disable,hint_default_black;
+uniform vec2 river_bank_origin=vec2(0);
+uniform float river_bank_extent=10.0;
+uniform float river_bank_active=0.0;
 
 varying vec3 wpos;
 varying vec2 tile;
@@ -441,12 +439,41 @@ void vertex() {
 }
 
 void fragment() {
+	if (trench_active>.5) {
+		ivec2 cell=ivec2(tile+vec2(.5));
+		vec4 route=texelFetch(trench_routes,clamp(cell,ivec2(0),ivec2(trench_cells)-ivec2(1)),0);
+		if (route.a>.5 && route.r>.01) {
+			vec2 center=vec2(1.7320508*(float(cell.x)+.5*mod(float(cell.y),2.0)),1.5*float(cell.y));
+			vec2 local=wpos.xz-center;
+			float period=trench_cells.x*1.7320508;
+			local.x-=round(local.x/period)*period;
+			int bits=int(route.g*255.0+.5);
+			float nearest=100.0;
+			for (int d=0;d<6;d++) if ((bits & (1<<d))!=0) {
+				float angle=-float(d)*1.04719755; vec2 endpoint=vec2(cos(angle),sin(angle))*.8660254;
+				float along=clamp(dot(local,endpoint)/dot(endpoint,endpoint),0.0,1.0);
+				nearest=min(nearest,length(local-endpoint*along));
+			}
+			if (nearest<.043+.03*route.r) discard;
+		}
+	}
 	vec3 base = pow(COLOR.rgb, vec3(2.2));   // vertex colours are sRGB
 	vec3 wn = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	float slope = 1.0 - wn.y;
 	vec3 weights = pow(abs(wn), vec3(4.0)); weights /= max(dot(weights, vec3(1.0)), 0.0001);
 	float n = (noise(wpos.zy * 5.0)*weights.x + noise(wpos.xz * 5.0)*weights.y + noise(wpos.xy * 5.0)*weights.z)*0.45 + noise(wpos.xz * 1.3)*0.55;
 	base *= 0.9 + 0.2 * n;
+	if (river_bank_active>.0) {
+		float period=weather_extent.x;
+		vec2 relative=wpos.xz-river_bank_origin;
+		relative.x-=round((relative.x-river_bank_extent*.5)/period)*period;
+		vec2 uv=relative/river_bank_extent;
+		if (all(greaterThan(uv,vec2(0))) && all(lessThan(uv,vec2(1)))) {
+			vec4 bank=texture(river_bank_field,uv);
+			float fade=smoothstep(.0,.1,min(min(uv.x,uv.y),min(1.0-uv.x,1.0-uv.y)));
+			base=mix(base,vec3(.12,.105,.075),bank.a*(1.0-bank.b)*fade*river_bank_active*.45);
+		}
+	}
 	vec3 rock = vec3(0.43, 0.41, 0.38) * (0.88 + 0.24 * n);
 	base = mix(base, rock, smoothstep(0.22, 0.42, slope) * step(0.05, wpos.y));
 	float snow = smoothstep(2.3, 2.7, wpos.y + n * 0.3) * (1.0 - smoothstep(0.35, 0.6, slope));
@@ -458,8 +485,7 @@ void fragment() {
 	base = mix(base,vec3(.24,.20,.15)*(0.8+0.3*n),scar*.8);
 	wet = max(wet,scar*wet);
 	base *= 1.0 - 0.3 * wet;
-	float cl = mix(texture(cloud_prev, wuv - cloud_off_prev + shadow_shift).r, texture(cloud_tex, wuv - cloud_off + shadow_shift).r, cloud_blend);
-	float shade = 1.0 - 0.3 * smoothstep(0.3, 0.75, cl);
+	float shade = cloud_shadow(wpos);
 	float v = mix(1.0, seen(tile), vis_on);
 	vec3 remembered = mix(vec3(dot(base, vec3(0.3, 0.59, 0.11))), base, 0.45) * vec3(0.62, 0.65, 0.72);
 	ALBEDO = mix(remembered, base, v) * shade;
@@ -479,60 +505,4 @@ void fragment() {
 
 
 func _water_shader() -> Shader:
-	var s := Shader.new()
-	s.code = """
-shader_type spatial;
-render_mode blend_mix, cull_back, depth_draw_opaque, specular_schlick_ggx;
-
-uniform sampler2D vis_bits : filter_nearest;
-uniform float vis_on = 1.0;
-uniform vec2 world_cells = vec2(128.0, 128.0);
-
-varying vec3 wpos;
-
-float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float noise(vec2 p) {
-	vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-float seen(vec3 p) {
-	if (vis_on < 0.5) return 1.0;
-	// the hex under this point (water has no per-hex attribute): pointy-top odd-r conversion
-	float cx = 0.57735 * p.x - p.z / 3.0;
-	float cz = 2.0 / 3.0 * p.z;
-	float cy = -cx - cz;
-	vec3 r = round(vec3(cx, cy, cz));
-	vec3 d = abs(r - vec3(cx, cy, cz));
-	if (d.x > d.y && d.x > d.z) r.x = -r.y - r.z; else if (d.y > d.z) r.y = -r.x - r.z; else r.z = -r.x - r.y;
-	int row = int(r.z);
-	int col = int(r.x) + (row - (row & 1)) / 2;
-	int w = int(world_cells.x);
-	col = ((col % w) + w) % w;
-	row = clamp(row, 0, int(world_cells.y) - 1);
-	ivec2 cell=ivec2(col >> 3,row);
-	ivec2 bounds=textureSize(vis_bits,0);
-	if (cell.x>=bounds.x || cell.y>=bounds.y) return 0.0;
-	int b = int(texelFetch(vis_bits, cell, 0).r * 255.0 + 0.5);
-	return float((b >> (col & 7)) & 1);
-}
-
-void vertex() {
-	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-}
-
-void fragment() {
-	float t = TIME;
-	float n1 = noise(wpos.xz * 1.6 + vec2(t * 0.11, t * 0.07));
-	float n2 = noise(wpos.xz * 4.1 - vec2(t * 0.05, t * 0.13));
-	vec3 bump = vec3(n1 - 0.5, 0.0, n2 - 0.5) * 0.18;
-	NORMAL = normalize(NORMAL + (VIEW_MATRIX * vec4(bump, 0.0)).xyz);
-	float v = mix(1.0, seen(wpos), vis_on);
-	vec3 col = pow(COLOR.rgb, vec3(2.2)) * (0.95 + 0.1 * n1);
-	ALBEDO = mix(col * vec3(0.6, 0.64, 0.72), col, v);
-	ALPHA = COLOR.a;
-	ROUGHNESS = 0.22 + 0.1 * n2;
-	METALLIC = 0.0;
-	SPECULAR = 0.4;
-}
-"""
-	return s
+	return load("res://shaders/living_water.gdshader")

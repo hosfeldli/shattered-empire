@@ -1,3 +1,4 @@
+import { LEGACY_RULESET, nativeRules, normalizeNativeCiv } from './rulesets.js';
 // Full match serialization: everything needed to resume a match bit-for-bit (including the RNG),
 // so live games survive deploys, restarts and crashes, and replays can be verified.
 import { Game } from './game.js';
@@ -42,7 +43,7 @@ export function serializeGame(g) {
   const diplo = [];
   for (let a = 0; a < g.civs.length; a++) for (let b = a + 1; b < g.civs.length; b++) diplo.push([a, b, g.diplomacy.m[a][b]]);
   return {
-    v: 2, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
+    v: 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
     // v2: wrapped topology and world style
     wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style,
@@ -61,7 +62,7 @@ const revive = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? (v.$set
 export function restoreGame(data) {
   const savedWrap = data.wrap === undefined ? false : !!data.wrap;
   if (savedWrap !== WRAP) throw new Error(`snapshot topology (${savedWrap ? 'wrapped' : 'bounded'}) does not match this worker`);
-  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, restore: true, rebels: data.civs.some((c) => c.isRebel), style: data.style || data.worldStyle || null });
+  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, ruleset: data.ruleset || LEGACY_RULESET, restore: true, rebels: data.civs.some((c) => c.isRebel), style: data.style || data.worldStyle || null });
   g.worldStyle = data.worldStyle ?? null;
   const w = g.world;
   if (w.elev.length !== data.size) throw new Error(`snapshot map size ${data.size} does not match this worker (${w.elev.length})`);
@@ -104,6 +105,7 @@ export function restoreGame(data) {
     // saves from before per-technology progress: keep the active project's progress
     if (!c.techProgress) c.techProgress = {};
     if (c.researching && c.progress > 0 && c.techProgress[c.researching] == null) c.techProgress[c.researching] = c.progress;
+    c.ruleset = g.ruleset; if (nativeRules(g)) normalizeNativeCiv(c);
     c.knownVer.fill(0); c.knownOwner.fill(-2); c.visKey = ''; c.knownStab = false; c.connected = false; c.token = o.$token || null;
     if (o.$ai) {
       if (o.$ai.kind === 'rebel') { c.ai = new RebelAI(g, c); Object.assign(c.ai, { nextCamp: o.$ai.nextCamp, nextSpawn: o.$ai.nextSpawn, raid: o.$ai.raid }); }

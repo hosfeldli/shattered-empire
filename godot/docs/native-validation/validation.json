@@ -1,0 +1,261 @@
+{
+  "checks": {
+    "bridge_commit": true,
+    "bridge_error_feedback": true,
+    "bridge_fixture": true,
+    "bridge_rendered": true,
+    "build": true,
+    "city_center_ground": true,
+    "city_center_ground_after_reload": true,
+    "construction_completed": true,
+    "deployment": true,
+    "graph": true,
+    "individual_selection": true,
+    "placement": true,
+    "reload_geometry": true,
+    "reload_rendering": true,
+    "reload_visibility": true,
+    "road_commit": true,
+    "road_preview": true,
+    "training": true,
+    "trench_commit": true,
+    "trench_preview": true
+  },
+  "civilian_agents": 4,
+  "composition": {
+    "graph": {
+      "building_nodes": 5,
+      "districts": 5,
+      "last_districts_touched": 0,
+      "nodes": 22,
+      "revision": 11,
+      "topology_revision": 1
+    },
+    "recipe_errors": [],
+    "scheduler": {
+      "completed": 16,
+      "last_slice_ms": 0.002,
+      "max_commit_ms": 0.337,
+      "max_step_ms": 3.496,
+      "pending": 0,
+      "superseded": 0
+    },
+    "sync_ms": 0.096
+  },
+  "details": {
+    "bridge": {
+      "plan": {
+        "blocked": 0,
+        "bridge": true,
+        "bridges": 2,
+        "buildable": 2,
+        "cls": "timber",
+        "cost": {
+          "materials": 10
+        },
+        "length": 2,
+        "major": false,
+        "segments": [
+          {
+            "a": 4254,
+            "b": 4253,
+            "bridge": true,
+            "ok": true,
+            "reason": null,
+            "skip": false
+          },
+          {
+            "a": 4253,
+            "b": 4252,
+            "bridge": true,
+            "ok": true,
+            "reason": null,
+            "skip": false
+          }
+        ],
+        "tiles": [
+          4254,
+          4253,
+          4252
+        ],
+        "time": 6,
+        "type": 1,
+        "water": 0
+      },
+      "rid": 14,
+      "started": 2,
+      "t": "bridgePlan"
+    },
+    "bridge_fixture_available": true,
+    "build": {
+      "built": {
+        "cost": {
+          "materials": 45
+        },
+        "id": 31,
+        "planned": false,
+        "tile": 4254,
+        "type": "house"
+      },
+      "rid": 2,
+      "t": "ack"
+    },
+    "city_center_ground": {
+      "failures": [],
+      "samples": 2520
+    },
+    "city_center_ground_after_reload": {
+      "failures": [],
+      "samples": 2520
+    },
+    "deployment": {
+      "deploy": {
+        "formation": 1,
+        "invalid": 0,
+        "label": "concentrated",
+        "overflow": [],
+        "partial": 0,
+        "perHex": [
+          [
+            4638,
+            2
+          ],
+          [
+            4639,
+            1
+          ],
+          [
+            4766,
+            1
+          ]
+        ],
+        "placed": 4,
+        "slots": [
+          [
+            3,
+            4638
+          ],
+          [
+            4,
+            4639
+          ],
+          [
+            5,
+            4638
+          ],
+          [
+            6,
+            4766
+          ]
+        ],
+        "unreachable": 0
+      },
+      "rid": 11,
+      "t": "ack"
+    },
+    "reload_rendering": {
+      "failures": [],
+      "samples": 53
+    },
+    "road": {
+      "plan": {
+        "blocked": 0,
+        "bridge": false,
+        "bridges": 0,
+        "buildable": 2,
+        "cost": {
+          "materials": 4
+        },
+        "length": 2,
+        "segments": [
+          {
+            "a": 4638,
+            "b": 4639,
+            "bridge": false,
+            "ok": true,
+            "reason": null,
+            "skip": false
+          },
+          {
+            "a": 4639,
+            "b": 4640,
+            "bridge": false,
+            "ok": true,
+            "reason": null,
+            "skip": false
+          }
+        ],
+        "tiles": [
+          4638,
+          4639,
+          4640
+        ],
+        "time": 3,
+        "type": 1
+      },
+      "rid": 5,
+      "started": 1,
+      "t": "roadPlan"
+    },
+    "training": {
+      "rid": 3,
+      "t": "ack"
+    },
+    "trench": {
+      "rid": 10,
+      "started": {
+        "cost": {
+          "materials": 6
+        },
+        "placed": 1,
+        "project": 1,
+        "seconds": 16,
+        "skipped": [],
+        "type": "basic"
+      },
+      "t": "ack",
+      "trench": {
+        "build": 1,
+        "cost": {
+          "materials": 6
+        },
+        "crews": 1,
+        "dir": 5,
+        "facing": [
+          0.5,
+          -0.866
+        ],
+        "invalid": 0,
+        "name": "Earthworks",
+        "seconds": 16,
+        "segments": [
+          {
+            "ok": true,
+            "t": 4255
+          }
+        ],
+        "tiles": [
+          4255
+        ],
+        "type": "basic"
+      }
+    }
+  },
+  "view": {
+    "camera_size": 22,
+    "pixels": [
+      1280,
+      900
+    ],
+    "seed": 4,
+    "server_time": 15,
+    "tile": 4254
+  },
+  "meta": {
+    "created": "2026-11-05T03:41:03.415Z",
+    "source_hash": "196d542b9a0539cf7acf60745eca0d45300b787c0e1271b061e56eca1b0596d3",
+    "source_changed_during_run": false,
+    "rendered": true,
+    "exported": true
+  }
+}

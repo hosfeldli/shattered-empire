@@ -5,6 +5,11 @@ including later corrections. The design describes the intended result; this chec
 what is actually present and what still needs acceptance. A working first pass is not a passed
 production-quality gate.
 
+The later [native redesign](NATIVE_REDESIGN.md) explicitly authorizes versioned pacing and
+gameplay simplification: native matches remove government/treaty management and all trading.
+Those instructions supersede the original administration-parity and unchanged-balance goals.
+Server authority, save compatibility and the complete visual/performance acceptance still apply.
+
 ## Scope and nonnegotiable rules
 
 - Develop **Godot 4.7.2 native**, Windows and macOS, procedural 3D with an orthographic camera and

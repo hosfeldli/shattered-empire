@@ -33,6 +33,7 @@ static var _cache := {}
 static var _team := {}
 static var _surface_shader:Shader
 static var _wet_texture:Texture2D
+static var _cloud_state:={}
 static var _weather_extent:=Vector2(221.7,192.0)
 
 
@@ -57,6 +58,7 @@ static func get_mat(key: String) -> Material:
 		m.set_shader_parameter("wet_map",_wet_texture)
 		m.set_shader_parameter("weather_extent",_weather_extent)
 		m.set_shader_parameter("weather_ready",1.0)
+	for parameter in _cloud_state: m.set_shader_parameter(parameter,_cloud_state[parameter])
 	_cache[key] = m
 	return m
 
@@ -69,6 +71,12 @@ static func bind_weather(texture:Texture2D,extent:Vector2) -> void:
 			material.set_shader_parameter("weather_extent",extent)
 			material.set_shader_parameter("weather_ready",1.0 if texture else 0.0)
 
+
+static func bind_clouds(parameters:Dictionary) -> void:
+	_cloud_state.merge(parameters,true)
+	for material in _cache.values():
+		if material is ShaderMaterial:
+			for key in parameters: material.set_shader_parameter(key,parameters[key])
 
 ## a civilization's colour, for flags, bands and markings (restrained: slightly desaturated)
 static func team(color: Color) -> Material:

@@ -12,6 +12,13 @@ const FADE_S := 2.5
 const TREE_LOD_SIZE := 60.0
 const SHADOW_MAX_SIZE := 120.0
 
+var water:=WaterDynamics.new()
+var cloud_clock:=0.0
+var previous_age:=0.0
+var cloud_drift:=Vector2.ZERO
+var wind_world:=Vector2.ZERO
+var snow_mesh:SphereMesh
+var rain_mesh:BoxMesh
 var world: WorldState
 var cam: CameraController
 var terrain: WorldRenderer
@@ -61,6 +68,7 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	e.ambient_light_color = Color(0.62, 0.67, 0.74)
 	e.ambient_light_energy = 0.6
+	e.fog_density=0.0
 	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	e.tonemap_exposure = 1.0
 	e.ssao_enabled = true
@@ -68,6 +76,7 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 	e.ssao_intensity = 1.2
 	env.environment = e
 	add_child(env)
+	water.setup(w,t)
 	_make_clouds()
 	_make_rain()
 	tree_mesh = _tree_model()
@@ -89,10 +98,13 @@ func _clear() -> void:
 	built_tiles.clear()
 	# A rejoin can receive geometry before the next weather packet. Do not blend the old
 	# world's clouds/wetness into the new visibility mask during that interval.
+	cloud_clock=0; previous_age=0; cloud_drift=Vector2.ZERO; wind_world=Vector2.ZERO
+	MaterialLibrary.bind_clouds({"cloud_ready":0.0})
 	cloud_tex=null; cloud_prev=null; wet_tex=null; rain_img=null
 	wx_cw=0; wx_ch=0; wind=Vector2.ZERO; off=Vector2.ZERO; off_prev=Vector2.ZERO; since=0.0
 	rain.emitting=false
-	for material in [terrain.terrain_mat,cloud_mat]:
+	for material in [terrain.terrain_mat,cloud_mat,terrain.water_mat]:
+		material.set_shader_parameter("cloud_ready",0.0)
 		material.set_shader_parameter("cloud_tex",null)
 		material.set_shader_parameter("cloud_prev",null)
 		material.set_shader_parameter("cloud_off",Vector2.ZERO)
@@ -128,18 +140,28 @@ func update(dt: float) -> void:
 	sun.shadow_enabled = shadows_allowed and cam.size < shadow_size
 	sun.directional_shadow_max_distance = CameraController.DISTANCE + minf(cam.size * 0.75, 90.0)
 	# clouds drift with the wind between authoritative updates, then cross-fade to the new field
-	since += dt
-	off += wind * dt
-	off_prev += wind * dt
-	var blend := clampf(since / FADE_S, 0.0, 1.0)
-	for m in [terrain.terrain_mat, cloud_mat]:
-		m.set_shader_parameter("cloud_off", off)
-		m.set_shader_parameter("cloud_off_prev", off_prev)
-		m.set_shader_parameter("cloud_blend", blend)
+	var visual_dt:=0.0 if world.paused else dt*world.play_rate
+	since += visual_dt
+	cloud_clock+=visual_dt
+	if composition: wind_world=wind_world.lerp(composition.weather.wind_at_world(Vector2(cam.focus.x,cam.focus.z)),minf(1.0,dt*.6))
+	cloud_drift+=wind*Vector2(g.period,g.depth)*visual_dt
+	off += wind * visual_dt
+	off_prev += wind * visual_dt
+	var blend := clampf(since / .8, 0.0, 1.0)
+	var toward_sun:=sun.global_transform.basis.z
+	var cloud_parameters:={"cloud_age":since,"cloud_age_prev":since+previous_age,"cloud_off":off,"cloud_off_prev":off_prev,"cloud_blend":blend,"cloud_time":cloud_clock,"cloud_drift":cloud_drift,"cloud_light_slant":Vector2(toward_sun.x,toward_sun.z)/maxf(.2,toward_sun.y)}
+	for material in [terrain.terrain_mat,cloud_mat,terrain.water_mat]:
+		for key in cloud_parameters: material.set_shader_parameter(key,cloud_parameters[key])
+	MaterialLibrary.bind_clouds(cloud_parameters)
+	terrain.water_mat.set_shader_parameter("water_wind",wind_world)
+	terrain.water_mat.set_shader_parameter("water_time",cloud_clock)
+	terrain.water_mat.set_shader_parameter("water_detail",clampf((65.0-cam.size)/40.0,0,1))
+	if composition: water.update(dt,cam,composition.weather)
 	if terrain.known_tex:
 		cloud_mat.set_shader_parameter("known_tex", terrain.known_tex)
 		cloud_mat.set_shader_parameter("world_size", Vector2(g.period, g.depth))
-	cloud_mat.set_shader_parameter("opacity", lerpf(0.08, 0.32, clampf((cam.size - 10.0) / 80.0, 0.0, 1.0)))
+	cloud_mat.set_shader_parameter("opacity", lerpf(0.24, 0.40, clampf((cam.size - 10.0) / 80.0, 0.0, 1.0)))
+	cloud_mat.set_shader_parameter("cloud_steps",9 if composition and composition.lod.quality in ["high","ultra"] else 6)
 	var f := cam.focus
 	clouds.position = Vector3(f.x, CLOUD_HEIGHT, f.z)
 	clouds.scale = Vector3.ONE * maxf(cam.size * 3.0, 60.0)
@@ -196,15 +218,21 @@ func _on_weather(wx: Dictionary) -> void:
 		wet_tex.update(wet)
 	off_prev = off
 	off = Vector2.ZERO
+	previous_age=since
 	since = 0.0
 	var wa: Array = wx.get("wind", [0.0, 0.5])
 	var ang := float(wa[0])
 	var strength := float(wa[1])
-	wind = Vector2(cos(ang), sin(ang)) * strength * 0.0025
-	for m in [terrain.terrain_mat, cloud_mat]:
+	wind=Vector2(cos(ang),sin(ang))*Vector2(1,.6)*(.25+strength*.55)/Vector2(cw,ch)/5.0
+	for m in [terrain.terrain_mat, cloud_mat,terrain.water_mat]:
 		m.set_shader_parameter("cloud_tex", cloud_tex)
 		m.set_shader_parameter("cloud_prev", cloud_prev)
 		m.set_shader_parameter("weather_extent", extent)
+		m.set_shader_parameter("cloud_ready",1.0)
+		if composition and composition.weather.wind_texture:
+			m.set_shader_parameter("cloud_velocity",composition.weather.wind_texture)
+			m.set_shader_parameter("cloud_velocity_ready",1.0)
+	MaterialLibrary.bind_clouds({"cloud_tex":cloud_tex,"cloud_prev":cloud_prev,"cloud_ready":1.0,"weather_extent":extent,"cloud_velocity":composition.weather.wind_texture if composition else null,"cloud_velocity_ready":1.0 if composition else 0.0})
 	terrain.terrain_mat.set_shader_parameter("wet_tex", wet_tex)
 
 
@@ -239,45 +267,7 @@ func _make_clouds() -> void:
 	clouds.mesh = pm
 	clouds.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	cloud_mat = ShaderMaterial.new()
-	var s := Shader.new()
-	s.code = """
-shader_type spatial;
-render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, shadows_disabled;
-
-uniform sampler2D cloud_tex : filter_linear, repeat_enable, hint_default_black;
-uniform sampler2D cloud_prev : filter_linear, repeat_enable, hint_default_black;
-uniform float cloud_blend = 1.0;
-uniform vec2 cloud_off = vec2(0.0);
-uniform vec2 cloud_off_prev = vec2(0.0);
-uniform vec2 weather_extent = vec2(221.7, 192.0);
-uniform float opacity = 0.5;
-uniform sampler2D known_tex : filter_linear, repeat_enable, hint_default_black;
-uniform vec2 world_size = vec2(221.7, 192.0);
-
-varying vec3 wpos;
-
-float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float noise(vec2 p) {
-	vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-
-void vertex() {
-	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-}
-
-void fragment() {
-	vec2 uv = vec2(wpos.x / weather_extent.x, wpos.z / weather_extent.y);
-	float c = mix(texture(cloud_prev, uv - cloud_off_prev).r, texture(cloud_tex, uv - cloud_off).r, cloud_blend);
-	float n = noise(wpos.xz * 0.12 + TIME * 0.01) * 0.65 + noise(wpos.xz * 0.37 - TIME * 0.015) * 0.35;
-	float a = smoothstep(0.35, 0.9, c + (n - 0.5) * 0.3);
-	// the sky is only drawn over land this viewer knows (the void beyond stays clean)
-	a *= texture(known_tex, vec2(wpos.x / world_size.x, wpos.z / world_size.y)).r;
-	ALBEDO = mix(vec3(0.97, 0.97, 0.96), vec3(0.72, 0.74, 0.78), a * 0.6);
-	ALPHA = a * opacity;
-}
-"""
-	cloud_mat.shader = s
+	cloud_mat.shader=load("res://shaders/cloud_volume.gdshader")
 	clouds.material_override = cloud_mat
 	add_child(clouds)
 
@@ -301,19 +291,35 @@ func _make_rain() -> void:
 	var streak := BoxMesh.new()
 	streak.size = Vector3(0.012, 0.25, 0.012)
 	streak.material = MaterialLibrary.smoke(Color(0.7, 0.75, 0.82), 0.22)
+	rain_mesh=streak
+	snow_mesh=SphereMesh.new(); snow_mesh.radius=.02; snow_mesh.height=.04; snow_mesh.radial_segments=4; snow_mesh.rings=2; snow_mesh.material=MaterialLibrary.smoke(Color(.9,.94,.98),.65)
 	rain.draw_pass_1 = streak
 	rain.emitting = false
 	add_child(rain)
 
 
-func _update_rain(f: Vector3) -> void:
-	var r := rain_at(f.x, f.z)
-	# Rain streaks read close up; farther out wet ground and cloud carry the weather instead.
-	rain.emitting = r > 0.15 and cam.size < 12.0
+func _update_rain(f:Vector3) -> void:
+	var local_weather:=composition.weather.at_tile(world.grid.tile_at(f.x,f.z)) if composition else {}
+	var r:=float(local_weather.get("rain",0.0))
+	var snowing:=float(local_weather.get("snow",0.0))>.001
+	var fog:=float(local_weather.get("fog",0.0))
+	var target_density:=fog*.00008
+	env.environment.fog_enabled=fog>.04
+	env.environment.fog_density=lerpf(env.environment.fog_density,target_density,.03)
+	env.environment.fog_light_color=Color(.62,.68,.73)
+	rain.emitting=r>.10 and cam.size<24.0 and not world.paused
 	if rain.emitting:
-		rain.amount_ratio = clampf(r * 1.4, 0.1, 1.0)
-		(rain.process_material as ParticleProcessMaterial).emission_box_extents = Vector3(cam.size * 0.9, 0.5, cam.size * 0.9)
-		rain.position = Vector3(f.x, f.y + 5.0, f.z)
+		rain.draw_pass_1=snow_mesh if snowing else rain_mesh
+		rain.lifetime=2.5 if snowing else .75
+		rain.amount_ratio=clampf(r*1.4,.1,1.0)*clampf((28.0-cam.size)/14.0,0,1)
+		var material:=rain.process_material as ParticleProcessMaterial
+		material.emission_box_extents=Vector3(cam.size*.9,.5,cam.size*.9)
+		material.direction=Vector3(wind_world.x*.15,-1,wind_world.y*.15).normalized()
+		material.gravity=Vector3(wind_world.x*.3,-.3 if snowing else -2.0,wind_world.y*.3)
+		material.initial_velocity_min=1.0 if snowing else 8.0
+		material.initial_velocity_max=2.0 if snowing else 11.0
+		material.spread=18.0 if snowing else 3.0
+		rain.position=Vector3(f.x,f.y+5.0,f.z)
 
 
 # ------------------------------------------------------------------ natural cover
@@ -366,6 +372,7 @@ func _build_props(cid: int) -> void:
 				var d := sqrt(rng.randf()) * 0.82
 				var x := c.x + cos(a) * d
 				var z := c.y + sin(a) * d
+				if composition and not composition.sites.clear_of_water(i,[Vector2(x-.06,z-.06),Vector2(x+.06,z-.06),Vector2(x+.06,z+.06),Vector2(x-.06,z+.06)],.04): continue
 				var y := world.ground_height(x, z)
 				if y < 0.02:
 					continue
@@ -418,3 +425,7 @@ func _deposit(kit: MeshKit, i: int, c: Vector2, rng: RandomNumberGenerator) -> v
 				var p := Vector3(spot.x + rng.randf_range(-0.16, 0.16), -0.02, spot.y + rng.randf_range(-0.16, 0.16))
 				var s := rng.randf_range(0.05, 0.1)
 				kit.box(mat, Vector3(p.x, world.ground_height(c.x + p.x, c.y + p.z) - y - 0.02, p.z), Vector3(s, s * rng.randf_range(0.6, 1.2), s * 0.8), col, rng.randf() * TAU)
+
+
+func _exit_tree() -> void:
+	water.shutdown()

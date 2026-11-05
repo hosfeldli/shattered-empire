@@ -27,6 +27,7 @@ var bar: ColorRect
 var help: Label
 var note_lines: Array = []
 var toast_until := 0.0
+var notes_until:=0.0
 var input_ref: InputController
 
 
@@ -45,10 +46,12 @@ func setup(w: WorldState, n: NetworkClient, m: MilitaryRenderer, s: SettlementRe
 	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(bar)
 	top = _label(Vector2(12, 6), 14)
+	top.visible=false
 	conn = _label(Vector2(0, 6), 13)
 	conn.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	conn.custom_minimum_size = Vector2(350, 0)
 	sel = _label(Vector2(12, 0), 13)
+	sel.visible=false # NativeCommandDock owns the persistent selection panel.
 	notes = _label(Vector2(0, 40), 12)
 	notes.custom_minimum_size = Vector2(420, 0)
 	notes.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -56,6 +59,8 @@ func setup(w: WorldState, n: NetworkClient, m: MilitaryRenderer, s: SettlementRe
 	toast = _label(Vector2(0, 0), 15)
 	toast.custom_minimum_size = Vector2(600, 0)
 	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast.add_theme_stylebox_override("normal",NativeUI.style(Color(.08,.11,.13,.96),Color("596058"),10))
+	toast.visible=false
 	help = _label(Vector2(0, 0), 12)
 	help.custom_minimum_size = Vector2(460, 0)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -131,17 +136,20 @@ func show_lobby(on: bool, status := "") -> void:
 func _layout() -> void:
 	var vp := root.get_viewport_rect().size
 	bar.position = Vector2.ZERO
-	bar.size = Vector2(vp.x, 30)
-	conn.position = Vector2(vp.x - 362, 6)
-	notes.position = Vector2(vp.x - 432, 40)
+	bar.size = Vector2(vp.x, 54)
+	conn.custom_minimum_size.x=175
+	conn.position = Vector2(vp.x - 187, 14)
+	notes.custom_minimum_size.x=300
+	notes.position = Vector2(vp.x - 312, 120)
 	sel.position = Vector2(12, vp.y - 150)
-	toast.position = Vector2(vp.x * 0.5 - 300, vp.y - 64)
+	toast.position = Vector2(vp.x * 0.5 - 300, 116)
 	help.position = Vector2(vp.x - 472, vp.y - 24)
 	lobby.position = (vp - lobby.size) * 0.5
 
 
 func show_toast(text: String, ok := true) -> void:
 	toast.text = text
+	toast.visible=true
 	toast.modulate = Color(0.85, 1, 0.85) if ok else Color(1, 0.75, 0.7)
 	toast_until = Time.get_ticks_msec() / 1000.0 + 3.0
 
@@ -152,7 +160,8 @@ func _on_note(m: Dictionary) -> void:
 	note_lines.push_front("[%s] %s" % [_clock(float(m.get("time", 0))), str(m.get("text", ""))])
 	while note_lines.size() > 6:
 		note_lines.pop_back()
-	notes.text = "\n".join(note_lines)
+	if str(m.get("level","")) in ["major","critical"]:
+		notes.text="\n".join(note_lines.slice(0,2)); notes_until=Time.get_ticks_msec()/1000.0+10.0
 
 
 func _clock(t: float) -> String:
@@ -160,7 +169,7 @@ func _clock(t: float) -> String:
 
 
 func _refresh_conn() -> void:
-	conn.text = "%s · proto %d %s · %d ms" % [net.state, net.proto, ("+" + ",".join(net.caps)) if not net.caps.is_empty() else "", int(net.rtt_ms)]
+	conn.text = "Connected · %d ms"%int(net.rtt_ms) if net.state=="ready" else str(net.state).capitalize()
 
 
 func update(_dt: float) -> void:
@@ -171,7 +180,9 @@ func update(_dt: float) -> void:
 		_refresh_sel()
 	if toast_until > 0.0 and Time.get_ticks_msec() / 1000.0 > toast_until:
 		toast.text = ""
+		toast.visible=false
 		toast_until = 0.0
+	notes.visible=Time.get_ticks_msec()/1000.0<notes_until
 	if input_ref and input_ref.box_active:
 		var r := input_ref.box_rect.abs()
 		box.visible = true
@@ -196,6 +207,7 @@ func _refresh_top() -> void:
 			parts.append("%s %d%s" % [g.substr(0, 4), int(res[g]), (" %+.1f" % r) if absf(r) >= 0.05 else ""])
 	parts.append(_clock(world.server_time) + (" ‖" if world.paused else ""))
 	top.text = "   ".join(parts)
+	top.tooltip_text=top.text; top.clip_text=true; top.size.x=maxf(100,root.get_viewport_rect().size.x-390)
 
 
 func _refresh_sel() -> void:

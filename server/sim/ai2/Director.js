@@ -27,7 +27,7 @@ export class Director {
     }
     civ.posture = POSTURE[s?.goal] || 'Developing';
     // reserve the next era's cost once it is within reach (the governors respect reservations)
-    const next = AGES[civ.age + 1];
+    const next = g.defs.AGES[civ.age + 1];
     if (next) {
       const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;
       if (have >= next.techsNeeded - 1) this.board.reserve('era', next.cost, g.time + 120, `the ${next.name} era`);

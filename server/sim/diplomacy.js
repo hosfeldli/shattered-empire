@@ -1,6 +1,7 @@
 // Diplomacy: contact, war & peace, trade agreements, open borders, alliances, tribute.
 import { book } from './ledger.js';
 import { N } from './constants.js';
+import { nativeRules } from './rulesets.js';
 
 const ACTIONS = {
   war: 'Declare war', peace: 'Propose peace', trade: 'Propose trade agreement', cancel_trade: 'Cancel trade agreement',
@@ -44,6 +45,28 @@ export class Diplomacy {
 
   step() {
     const g = this.g;
+    if (nativeRules(g)) {
+      // A war ends only after sustained absence of contact and active attack orders on either side.
+      for (let a = 0; a < this.m.length; a++) for (let b = a + 1; b < this.m.length; b++) {
+        const r = this.m[a][b];
+        if (!g.civs[a].alive || !g.civs[b].alive) { r.state = 'defeated'; continue; }
+        if (r.state !== 'war' || r.rebel) continue;
+        const active = [...g.units.values()].some((u) => {
+          if (u.owner !== a && u.owner !== b) return false;
+          const enemy = u.owner === a ? b : a;
+          const target = u.order?.target;
+          const victim = target?.kind === 'unit' ? g.units.get(target.id) : g.buildings.get(target?.id);
+          return victim?.owner === enemy || (g.world.owner[u.tile] === enemy && u.order?.kind !== 'idle');
+        });
+        const recentDamage = [...g.units.values(), ...g.buildings.values()].some((u) => (u.owner === a || u.owner === b) && g.time - (u.lastHit ?? -1e9) < 30);
+        if (active || recentDamage) r.lastActive = g.time;
+        if (g.time - (r.lastActive ?? r.since) >= 300) {
+          r.state = 'peace'; r.since = g.time;
+          for (const id of [a, b]) g.notify(id, `Hostilities between ${g.civs[a].name} and ${g.civs[b].name} have lapsed after five minutes without active fighting.`, { kind: 'peace' });
+        }
+      }
+      return;
+    }
     for (const c of g.civs) c.proposals = c.proposals.filter((p) => g.time - p.time < 60);
     // rebel truces expire
     for (let a = 0; a < this.m.length; a++) for (let b = a + 1; b < this.m.length; b++) {
@@ -56,6 +79,14 @@ export class Diplomacy {
     const g = this.g, other = g.civs[to];
     if (!other || other === civ || !other.alive) return { error: 'invalid civilization' };
     const r = this.rel(civ.id, to);
+    if (nativeRules(g)) {
+      if (action !== 'war') return { error: 'Treaties, payments and trading are not part of this ruleset' };
+      if (r.state === 'unmet') return { error: 'you have not met them yet' };
+      if (r.state === 'war') return { error: 'already at war' };
+      r.state = 'war'; r.trade = false; r.borders = false; r.since = g.time; r.lastActive = g.time;
+      for (const id of [civ.id, to]) g.notify(id, `${civ.name} has begun hostilities with ${other.name}.`, { kind: 'war' });
+      return null;
+    }
     if (other.isRebel) {
       if (action === 'payoff') {
         if (civ.res.credits < 250) return { error: 'not enough credits' };
@@ -107,6 +138,7 @@ export class Diplomacy {
   }
 
   respond(civ, pid, accept) {
+    if (nativeRules(this.g)) return { error: 'Treaty negotiation is not part of this ruleset' };
     const p = civ.proposals.find((x) => x.id === pid);
     if (!p) return { error: 'proposal expired' };
     civ.proposals = civ.proposals.filter((x) => x !== p);

@@ -22,23 +22,34 @@ func setup(w: WorldState, t: NativeCommandTools, i: InputController, s: Settleme
 	world = w; tools = t; input = i; settlements = s
 	layer = 12
 	panel = PanelContainer.new()
-	panel.position = Vector2(12,40)
-	panel.custom_minimum_size = Vector2(290,0)
+	panel.position = Vector2(12,92)
+	panel.custom_minimum_size = Vector2(330,0)
 	add_child(panel)
+	panel.theme=NativeUI.theme()
+	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; panel.add_child(scroll)
 	var col := VBoxContainer.new()
+	col.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	col.add_theme_constant_override("separation", 5)
-	panel.add_child(col)
+	scroll.add_child(col)
 	var heading := Label.new(); heading.text = "Construction & orders · B to hide"; col.add_child(heading)
 	build_list = OptionButton.new(); col.add_child(build_list)
 	_button(col, "Place building", func(): tools.activate("build", build_list.get_item_metadata(build_list.selected)))
 	road_list = _options(col, [["Dirt road",1],["Paved road",2],["Highway",3],["Railway",4]])
 	_button(col, "Draw road / railway", func(): tools.activate("road", road_list.get_item_metadata(road_list.selected)))
+	var auto_route:=CheckButton.new(); auto_route.text="Automatic road routing"; auto_route.button_pressed=true; col.add_child(auto_route)
+	auto_route.toggled.connect(func(on):tools.road_auto=on)
 	bridge_list = OptionButton.new(); col.add_child(bridge_list)
 	_button(col, "Draw bridge between banks", func(): tools.activate("bridge", bridge_list.get_item_metadata(bridge_list.selected)))
 	var trenches := _options(col, [["Earthworks","basic"],["Reinforced trench","reinforced"]])
 	_button(col, "Draw trench line", func(): tools.activate("trench", trenches.get_item_metadata(trenches.selected)))
 	var form := _options(col, [["Line","line"],["Compact line","compact"],["Defense in depth","depth"],["Preserve shape","preserve"]])
 	form.item_selected.connect(func(index): tools.formation = str(form.get_item_metadata(index)))
+	var density:=_options(col,[["Spacing: automatic","auto"],["Spread","spread"],["Balanced","balanced"],["Tight","tight"]])
+	density.item_selected.connect(func(index):tools.deployment.density=density.get_item_metadata(index))
+	var depth:=_options(col,[["Ranks: automatic","auto"],["1 rank",1],["2 ranks",2],["3 ranks",3]])
+	depth.item_selected.connect(func(index):tools.deployment.depth=depth.get_item_metadata(index))
+	var behavior:=_options(col,[["Defend frontage","defend"],["Hold frontage","hold"],["Advance from frontage","attackMove"]])
+	behavior.item_selected.connect(func(index):tools.deployment.behavior=behavior.get_item_metadata(index))
 	_button(col, "Deploy selected units", func(): tools.activate("deploy"))
 	_button(col,"Found settlement with selected convoy",func():
 		for id in tools.military.selected:
@@ -87,7 +98,7 @@ func _populate() -> void:
 			if defs[key].get("obsolete", false): continue
 			list.add_item(str(defs[key].get("name", key))); list.set_item_metadata(list.item_count-1, key)
 	_selection = -2
-	panel.visible = not world.spectator
+	panel.visible = false
 
 
 func _status() -> void:
@@ -110,6 +121,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(_dt: float) -> void:
 	if not world.ready_ or not panel.visible: return
+	panel.size=Vector2(330,get_viewport().get_visible_rect().size.y-140)
 	if _selection != settlements.selected_building:
 		_selection = settlements.selected_building
 		train_list.clear()

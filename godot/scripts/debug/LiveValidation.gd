@@ -142,6 +142,8 @@ func run(game: Node3D, directory: String) -> void:
 
 func _audit_city_ground(tile:int,directory:String,key:="city_center_ground") -> void:
 	print("LWE validation: city-center ground and close zoom")
+	var ui_hidden:bool=app.shell.world_hidden; app.shell.world_hidden=true
+	var input_processing:bool=app.input.is_processing(); app.input.set_process(false)
 	var after_pause:int=app.world.snapshot_count+2
 	while app.world.snapshot_count<after_pause or not app.terrain.dirty.is_empty(): await app.get_tree().process_frame
 	var failures:=[]; var samples:=0
@@ -188,6 +190,7 @@ func _audit_city_ground(tile:int,directory:String,key:="city_center_ground") -> 
 	for index in hidden.size(): hidden[index].visible=visibility[index]
 	app.environment.hide_trees=trees_hidden
 	app.cam.set_process(camera_processing)
+	app.shell.world_hidden=ui_hidden; app.input.set_process(input_processing)
 	checks[key]=failures.is_empty() and samples>0
 	details[key]={"samples":samples,"failures":failures}
 	print("LWE city ground ",key," ",JSON.stringify(details[key]))
@@ -228,6 +231,8 @@ func _audit_reload(tile:int,directory:String) -> void:
 
 
 func _ground_image(tile:int) -> Image:
+	var ui_hidden:bool=app.shell.world_hidden; app.shell.world_hidden=true
+	var input_processing:bool=app.input.is_processing(); app.input.set_process(false)
 	var processing:bool=app.cam.is_processing(); app.cam.set_process(false)
 	var trees_hidden:bool=app.environment.hide_trees; app.environment.hide_trees=true
 	var hidden:Array=[app.settlements,app.infra,app.military,app.combat,app.civilians,app.environment.clouds,app.environment.rain,app.input.marker,app.hud.root,app.command_panel.panel]
@@ -239,4 +244,5 @@ func _ground_image(tile:int) -> Image:
 	var image:Image=app.get_viewport().get_texture().get_image()
 	for index in hidden.size(): hidden[index].visible=visibility[index]
 	app.environment.hide_trees=trees_hidden; app.cam.set_process(processing)
+	app.shell.world_hidden=ui_hidden; app.input.set_process(input_processing)
 	return image

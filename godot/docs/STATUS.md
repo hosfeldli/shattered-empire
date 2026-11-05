@@ -1,5 +1,13 @@
 # Native edition: status
 
+## Streamlined native redesign and water revision
+
+See [NATIVE_REDESIGN.md](NATIVE_REDESIGN.md) for the new ruleset, eight-workspace UI, complete
+trading removal, ordered trenches and water/atmosphere implementation. This replaces the earlier
+government/diplomacy parity goals. Current visual artifacts are in `ui-validation/` and
+`water-validation/`; use each JSON report's source hash and fixture notes when interpreting them.
+Production remains gated by [RELEASE_GATES.md](RELEASE_GATES.md).
+
 ## Living World Engine checkpoint (2026-11-04)
 
 **Godot is the sole development target.** The browser/Electron sources are reference only.

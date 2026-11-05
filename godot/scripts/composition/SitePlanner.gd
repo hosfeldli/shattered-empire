@@ -25,20 +25,11 @@ func rivers(tile:int) -> Array:
 	var center:=world.grid.center(tile)
 	for t in nearby:
 		if world.known[t]==0 or not world.is_river(t): continue
-		var point:=world.grid.center(t)
-		point.x=center.x+world.grid.dx_wrap(center.x,point.x)
-		var width:=(.2+.07*world.flow_bucket(t))*.5
-		var flow:=world.flow_dir(t)
-		if flow>=0:
-			result.append({"a":point,"b":point+world.grid.dir_vec[flow]*HexGrid.SQRT3*.5,"width":width})
-		for dir in 6:
-			var neighbor:=world.grid.nb[t*6+dir]
-			if neighbor<0 or world.known[neighbor]==0 or not world.is_river(neighbor): continue
-			if world.flow_dir(neighbor)==(dir+3)%6:
-				result.append({"a":point,"b":point+world.grid.dir_vec[dir]*HexGrid.SQRT3*.5,"width":width})
-		if flow<0:
-			# A known isolated source is a water area too, even without an outgoing flow record.
-			result.append({"a":point,"b":point+Vector2(.001,0),"width":width})
+		for segment in RiverGeometry.segments(world,t):
+			var a:Vector2=segment.a; var b:Vector2=segment.b
+			a.x=center.x+world.grid.dx_wrap(center.x,a.x)
+			b.x=a.x+world.grid.dx_wrap(segment.a.x,b.x)
+			result.append({"a":a,"b":b,"width":segment.width})
 	if channels.size()>4096: channels.clear()
 	channels[tile]={"revision":world.geometry_revision,"segments":result}
 	return result

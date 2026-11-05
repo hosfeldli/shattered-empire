@@ -1,3 +1,4 @@
+import { nativeRules, tempo } from './rulesets.js';
 // Road network as a graph of edges between adjacent hexes. Each edge has a class
 // (dirt/paved/highway/rail), a condition (0 = ruined) and may be a bridge over a river.
 // Damage hits individual segments; ruined segments persist until repaired.
@@ -114,7 +115,7 @@ export class RoadNet {
     let mult = (span ? BRIDGE_MULT * 1.6 : w.river[a] || w.river[b] ? BRIDGE_MULT : 1) * (w.terr[a] === T.MOUNTAIN || w.terr[b] === T.MOUNTAIN ? 2 : 1);
     if (e && e.type >= type) mult *= 0.4;              // repair of a damaged/ruined segment
     else if (e && e.cond > 0) mult *= 0.7;             // upgrade
-    if (civ.policies.has('public_works')) mult *= 0.5;
+    if ((!nativeRules(civ) && civ.policies.has('public_works'))) mult *= 0.5;
     const cost = {}; for (const k in rt.cost) cost[k] = Math.ceil(rt.cost[k] * mult);
     return { cost, time: rt.time * (span ? 3 : w.river[a] || w.river[b] ? 2 : 1) };
   }
@@ -134,7 +135,7 @@ export class RoadNet {
       }
       segs.push(s);
     }
-    return { tiles: path, type, bridge, segments: segs, cost: total, time: Math.round(time * (civ.policies.has('public_works') ? 0.5 : 1)), bridges, buildable: ok, blocked: segs.filter((s) => !s.ok).length, length: path.length - 1 };
+    return { tiles: path, type, bridge, segments: segs, cost: total, time: Math.round(time / tempo(civ, 'infrastructureConstruction') * ((!nativeRules(civ) && civ.policies.has('public_works')) ? 0.5 : 1)), bridges, buildable: ok, blocked: segs.filter((s) => !s.ok).length, length: path.length - 1 };
   }
 
   startProject(g, civ, plan) {
@@ -168,7 +169,7 @@ export class RoadNet {
         if (!g.canAfford(civ, cost)) { p.status = 'paused'; continue; }
         g.pay(civ, cost); p.paid = true; p.t = time; p.status = 'constructing';
       }
-      p.t -= dt * (civ.policies.has('public_works') ? 2 : 1);
+      p.t -= dt * tempo(g, 'infrastructureConstruction') * ((!nativeRules(civ) && civ.policies.has('public_works')) ? 2 : 1);
       if (p.t <= 0) {
         this.set(seg.a, seg.b, p.type);
         p.i++; p.paid = false;

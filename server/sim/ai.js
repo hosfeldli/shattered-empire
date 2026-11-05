@@ -1,3 +1,4 @@
+import { nativeRules, techEnabled } from './rulesets.js';
 // AI empires. Personalities shape specialization:
 //   builder  - stable, scientific, expands widely
 //   merchant - trade, markets, diplomacy
@@ -84,7 +85,7 @@ export class AI {
     const enemies = this.enemies(), threats = this.enemiesNear();
     const mine = this.strength(army), theirs = Math.max(0, ...enemies.map((o) => this.observed(o)));
     const pop = this.cities.reduce((t, c) => t + c.pop, 0), starving = this.cities.some((c) => c.foodShort);
-    const next = AGES[civ.age + 1];
+    const next = g.defs.AGES[civ.age + 1];
     const techsLeft = next ? Math.max(0, next.techsNeeded - [...civ.techs].filter((t) => TECHS[t].age === civ.age).length) : 9;
     const lost = (s.peakArmy || 0) > 8 && army.length < (s.peakArmy || 0) * 0.5;
     s.peakArmy = Math.max((s.peakArmy || 0) * 0.995, army.length);
@@ -117,12 +118,13 @@ export class AI {
     if (!civ.researching) {
       // cities stranded across water make Seafaring urgent
       const urgent = this.cities.some((c) => c.wantsSeafaring) && !civ.techs.has('seafaring') && TECHS.seafaring.req.every((r) => civ.techs.has(r)) ? ['seafaring'] : [];
-      const t = [...urgent, ...TECH_PREF[this.p]].find((k) => !civ.techs.has(k) && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)));
+      const t = [...urgent, ...TECH_PREF[this.p]].find((k) => techEnabled(civ, k) && !civ.techs.has(k) && TECHS[k].age <= civ.age && TECHS[k].req.every((r) => civ.techs.has(r)));
       if (t) this.cmd({ c: 'research', tech: t });
     }
   }
 
   government() {
+    if (nativeRules(this.g)) return;
     const civ = this.civ, G = this.g.defs.GOVS;
     const want = GOV_PREF[this.p].find((k) => !G[k].tech || civ.techs.has(G[k].tech));
     if (want && civ.gov !== want && civ.govCooldown <= 0) this.cmd({ c: 'gov', id: want });
@@ -333,6 +335,7 @@ export class AI {
   }
 
   diplomacy() {
+    if (nativeRules(this.g)) return;
     const g = this.g, civ = this.civ;
     const mine = this.strength(this.myUnits);
     for (const o of g.civs) {

@@ -1,3 +1,5 @@
+import { LEGACY_RULESET, nativeRules, validateRuleset, normalizeNativeCiv, nativeDefinitions, tempo, movementRate, techEnabled, REMOVED_COMMANDS } from './rulesets.js';
+import { rivalIntel } from './rivals.js';
 // Authoritative match simulation. One Game per match; clients only send intents.
 import { Scheduler } from './scheduler.js';
 import { techFx, IMPORT_PRICE, IMPORT_PER_MARKET, REFIT, N, W, H, T, DT, TERRAIN, BUILDINGS, UNITS, TECHS, GOVS, POLICIES, FOCI, AGES, CIV_COLORS, CIV_NAMES, REBEL, GAME_DEFS, GOVERNOR_SPECS, ROAD_TYPES, RES, isWater, DIFFICULTY } from './constants.js';
@@ -90,7 +92,7 @@ function makeScheduler(g) {
 }
 
 // research helpers
-function researchReady(civ, k) { const t = TECHS[k]; return !!t && !civ.techs.has(k) && t.age <= civ.age && t.req.every((r) => civ.techs.has(r)); }
+function researchReady(civ, k) { const t = TECHS[k]; return techEnabled(civ, k) && !!t && !civ.techs.has(k) && t.age <= civ.age && t.req.every((r) => civ.techs.has(r)); }
 function researchChain(civ, k) { const chain = []; const add = (x) => { if (civ.techs.has(x) || chain.includes(x)) return; for (const r of TECHS[x].req) add(r); chain.push(x); }; add(k); return chain; }
 const prereqCache = new Map();
 function researchPrereqsAll(k) { let s = prereqCache.get(k); if (s) return s; s = new Set(); const walk = (x) => { for (const r of TECHS[x].req) if (!s.has(r)) { s.add(r); walk(r); } }; walk(k); prereqCache.set(k, s); return s; }
@@ -106,12 +108,14 @@ const AUTO_TECH_ORDER = (() => {
 })();
 
 export class Game {
-  constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, style = null }) {
+  constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, style = null, ruleset = LEGACY_RULESET }) {
     this.id = id;
+    this.ruleset = validateRuleset(ruleset);
     this.seed = seed;
     this.worldStyle = style || null;
     this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay }));
     this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, LEVELS: { max: MAX_LEVEL, jobs: LEVEL_JOBS, out: LEVEL_OUT, age: LEVEL_AGE, tiers: CITY_TIERS }, CITY_STATES, REBUILD_COST, BRIDGE_CLASSES, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
+    if (nativeRules(this)) this.defs = nativeDefinitions(this.defs);
     this.rng = mulberry32(seed ^ 0x9e3779b9);
     this.world = new World(seed, { style });
     this.world.generate(slots.length);
@@ -131,6 +135,7 @@ export class Game {
     this.cityNameIdx = 0;
     this.civs = slots.map((s, i) => this.makeCiv(i, s));
     if (rebels) { const r = this.makeCiv(this.civs.length, { human: false, name: REBEL.name }); r.isRebel = true; r.color = REBEL.color; r.personality = 'rebel'; this.civs.push(r); }
+    for (const civ of this.civs) { civ.ruleset = this.ruleset; if (nativeRules(this)) normalizeNativeCiv(civ); }
     this.diplomacy = new Diplomacy(this);
     this.geology = new Geology(this);
     this.weather = new Weather(this.world, this.seed ?? 1);
@@ -313,7 +318,7 @@ export class Game {
   buildingCost(civ, type, tile) {
     const c = { ...BUILDINGS[type].cost };
     let m = 1;
-    if ((type === 'bunker' || type === 'fort') && civ.policies.has('fortification')) m *= 0.75;
+    if ((type === 'bunker' || type === 'fort') && (!nativeRules(this) && civ.policies.has('fortification'))) m *= 0.75;
     if (tile != null && this.ruins.get(tile)?.type === type) m *= 0.5;   // rebuilding from ruins
     if (m !== 1) for (const k in c) c[k] = Math.round(c[k] * m);
     return c;
@@ -327,9 +332,9 @@ export class Game {
   }
   unitCost(civ, type) {
     const c = { ...UNITS[type].cost };
-    if (civ.policies.has('conscription')) { if (c.food) c.food = Math.round(c.food * 0.7); if (c.credits) c.credits = Math.round(c.credits * 0.7); }
-    if (civ.gov === 'junta' && !UNITS[type].civilian) for (const k in c) c[k] = Math.round(c[k] * 0.8);
-    if (type === 'colonist' && civ.policies.has('homesteading')) for (const k in c) c[k] = Math.round(c[k] * 0.6);
+    if ((!nativeRules(this) && civ.policies.has('conscription'))) { if (c.food) c.food = Math.round(c.food * 0.7); if (c.credits) c.credits = Math.round(c.credits * 0.7); }
+    if (!nativeRules(this) && civ.gov === 'junta' && !UNITS[type].civilian) for (const k in c) c[k] = Math.round(c[k] * 0.8);
+    if (type === 'colonist' && (!nativeRules(this) && civ.policies.has('homesteading'))) for (const k in c) c[k] = Math.round(c[k] * 0.6);
     // every city already held makes the next settlement dearer: expansion has to be earned
     if (type === 'colonist') { const n = this.cityOf(civ).length; const m = 1 + 0.45 * Math.max(0, n - 1); for (const k in c) c[k] = Math.round(c[k] * m); }
     return c;
@@ -477,7 +482,7 @@ export class Game {
       }
       if (b.done) {
         if (b.queue.length) {
-          const q = b.queue[0]; q.left -= dt * (b.state === 'damaged' ? 0.5 : 1);
+          const q = b.queue[0]; q.left -= dt * tempo(this, 'training') * (b.state === 'damaged' ? 0.5 : 1);
           if (q.left <= 0) {
             b.queue.shift();
             const spot = this.freeTilesNear(b.tile, 2)[0] ?? b.tile;
@@ -504,7 +509,7 @@ export class Game {
       }
       if (!b.funded || b.waiting) continue;          // awaiting funds, or waiting its turn in the queue
       const def = BUILDINGS[b.type];
-      const rate = (b.crew || 1) * (civ.policies.has('public_works') ? 1.15 : 1) * (1 + (techFx(civ).build || 0));
+      const rate = tempo(this, 'construction') * (b.crew || 1) * ((!nativeRules(this) && civ.policies.has('public_works')) ? 1.15 : 1) * (1 + (techFx(civ).build || 0));
       b.progress += (dt * rate) / def.time;
       b.hp = Math.min(b.maxHp, b.hp + (b.maxHp * 0.9 * dt * rate) / def.time);
       if (b.progress >= 1) {
@@ -534,7 +539,7 @@ export class Game {
   researchStep(dt) {
     for (const civ of this.civs) {
       if (!civ.alive || civ.isRebel) continue;
-      if (civ.govCooldown > 0) civ.govCooldown -= dt;
+      if (!nativeRules(this) && civ.govCooldown > 0) civ.govCooldown -= dt;
       this.checkEra(civ);
       const tp = civ.techProgress || (civ.techProgress = {});
       if (!civ.researching && civ.queue.length) {
@@ -572,8 +577,8 @@ export class Game {
   }
   checkEra(civ) {
     for (;;) {
-      const next = AGES[civ.age + 1]; if (!next) return;
-      const have = [...civ.techs].filter((t) => TECHS[t].age === civ.age).length;
+      const next = this.defs.AGES[civ.age + 1]; if (!next) return;
+      const have = [...civ.techs].filter((t) => techEnabled(civ, t) && TECHS[t].age === civ.age).length;
       if (have < next.techsNeeded) return;
       civ.age++; civ.advancing = 0; civ.saving = null;
       this.notify(-1, `${civ.name} has entered the ${AGES[civ.age].name} era!`, { kind: 'age' });
@@ -821,6 +826,12 @@ export class Game {
           gov: c.governor ? { enabled: c.governor.enabled, level: c.governor.level || (c.governor.enabled ? 'autonomous' : 'off'), goal: c.governor.goal || 'none', budget: c.governor.budget ?? 0.15, emergency: c.governor.emergency !== false, spec: c.governor.spec, reserve: c.governor.reserve, perms: c.governor.perms, log: c.governor.log.slice(0, 12), queue: c.governor.queue, now: c.governor.now && this.time - c.governor.now.t < 150 ? c.governor.now.text : null,
             proposals: (c.governor.proposals || []).map((p) => ({ id: p.id, action: p.action, type: p.type, tile: p.tile, cost: p.cost, reason: p.reason, benefit: p.benefit, confidence: p.confidence })), deferred: c.governor.deferred || [] } : null } : {}) });
     }
+    if (nativeRules(this)) for (const record of cities) {
+      if (record.o !== civ.id && !god) continue;
+      const city = this.cities.get(record.id);
+      record.development = { on: city.governor?.enabled !== false, priority: city.development || 'balanced', activity: city.governor?.now?.text || null };
+      delete record.gov; delete record.wf;
+    }
     const ruins = [];
     for (const [t, r] of this.ruins) if (vis[t] || civ.explored[t] || god) ruins.push([t, r.type, (r.clearing ? 1 : 0) | (r.smoke > 0 ? 2 : 0) | (r.overgrown ? 4 : 0)]);
     const traffic = [];
@@ -835,7 +846,7 @@ export class Game {
       armies: armySummary(this, civ), cmdlog: civ.cmdlog.slice(0, 60),
       readiness: this.tickN % 50 === 0 || !civ.readinessCache ? (civ.readinessCache = readiness(this, civ)) : civ.readinessCache,
       upkeep: civ.upkeep || null, natReserve: civ.natReserve ? civ.natReserve.type : null,
-      market: civ.techs.has('trade_networks') ? this.marketInfo(civ) : null,
+      market: !nativeRules(this) && civ.techs.has('trade_networks') ? this.marketInfo(civ) : null,
       men: [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + (UNITS[u.type].men || 0), 0),
       formations: formationsSnapshot(this, civ.id), command: civ.command || null,
       convoys: convoysFor(this, civ), caches: cachesFor(this, civ), logPolicies: civ.logPolicies ? [...civ.logPolicies].map(([k, p]) => ({ key: k, auto: p.auto, threshold: p.threshold, preset: p.preset, note: p.note || '' })) : [],
@@ -846,10 +857,12 @@ export class Game {
       air: airSnapshot(this, civ),
       missiles: { ready: inventory(this, civ.id) },
     };
+    if (nativeRules(this)) { for (const key of ['gov', 'govCooldown', 'policies', 'tax', 'focus', 'market', 'proposals']) delete me[key]; me.ruleset = this.ruleset; }
     const civs = this.civs.map((c) => {
       const base = { id: c.id, name: c.name, color: c.color, alive: c.alive, human: c.human, rebel: c.isRebel };
       if (c.id === civ.id) return { ...base, age: c.age, rel: null, summary: this.civSummary(c) };
       const rel = this.diplomacy.rel(civ.id, c.id);
+      if (nativeRules(this)) return { ...base, rel: { state: rel.state }, intel: rivalIntel(this, civ, c) };
       if (rel.state === 'unmet' && !god) return { ...base, rel: { state: 'unmet' } };
       const knownCities = [...civ.knownCities.values()].filter((k) => k.owner === c.id).length;
       if (god && !c.isRebel) base.summary = this.civSummary(c);
@@ -924,6 +937,7 @@ export class Game {
 
   commandInner(civ, cmd) {
     try {
+      if (nativeRules(this) && REMOVED_COMMANDS.has(cmd.c)) return { error: 'This system is not part of the native ruleset' };
       switch (cmd.c) {
         case 'move': {
           const line = Array.isArray(cmd.line) && cmd.line.length === 2 && cmd.line.every((t) => t >= 0 && t < N) ? cmd.line : null;
@@ -1159,7 +1173,7 @@ export class Game {
           if (!u || u.owner !== civ.id || u.type !== 'colonist') return { error: 'need a colonist convoy' };
           const why = this.canFound(civ, u.tile); if (why) return { error: why };
           this.units.delete(u.id);
-          const c = this.foundCity(civ, u.tile, (u.men || 3) + (civ.policies.has('homesteading') ? 1 : 0));   // the convoy's settlers
+          const c = this.foundCity(civ, u.tile, (u.men || 3) + ((!nativeRules(this) && civ.policies.has('homesteading')) ? 1 : 0));   // the convoy's settlers
           c.stock = { food: 80, materials: 60 };   // the convoy's wagons become the new town's first reserves
           if (civ.human && u.auto) { c.governor.enabled = true; c.governor.level = 'managed'; }
           this.notify(civ.id, `New city founded: ${c.name}.`, { kind: 'city', tile: c.tile });
@@ -1169,7 +1183,7 @@ export class Game {
         case 'autoTech': civ.autoTech = !!cmd.on; return null;
         case 'research': {
           const tech = TECHS[cmd.tech];
-          if (!tech || civ.techs.has(cmd.tech)) return { error: 'unavailable' };
+          if (!tech || !techEnabled(civ, cmd.tech) || civ.techs.has(cmd.tech)) return { error: 'unavailable' };
           if (!researchReady(civ, cmd.tech) || cmd.queue) {
             // queue it (and any missing prerequisites in order)
             for (const k of researchChain(civ, cmd.tech)) if (!civ.queue.includes(k) && k !== civ.researching) civ.queue.push(k);
@@ -1188,7 +1202,7 @@ export class Game {
           // queue management: add (with prerequisites), remove, move to an index, move to the front,
           // clear, or set a long-term goal (which may lie in a later era)
           const k = cmd.tech, t = TECHS[k];
-          if (cmd.op !== 'clear' && (!t || civ.techs.has(k))) return { error: 'unknown or already researched' };
+          if (cmd.op !== 'clear' && (!t || !techEnabled(civ, k) || civ.techs.has(k))) return { error: 'unknown or already researched' };
           if (cmd.op === 'add' || cmd.op === 'goal') {
             for (const x of researchChain(civ, k)) if (!civ.queue.includes(x) && x !== civ.researching) civ.queue.push(x);
           } else if (cmd.op === 'remove') {
@@ -1231,7 +1245,18 @@ export class Game {
         }
         case 'tax': civ.tax = Math.max(0, Math.min(3, cmd.level | 0)); return null;
         case 'focus': if (FOCI[cmd.id]) civ.focus = cmd.id; return null;
+        case 'cityDevelopment': {
+          if (!nativeRules(this)) return { error: 'Requires native ruleset' };
+          const city = this.cities.get(cmd.city);
+          if (!city || city.owner !== civ.id) return { error: 'not your city' };
+          const gv = city.governor || (city.governor = defaultGovernor(true));
+          if (cmd.priority != null && !['balanced', 'industry', 'agriculture', 'military'].includes(cmd.priority)) return { error: 'Unknown development priority' };
+          if (cmd.on != null) { gv.enabled = !!cmd.on; gv.level = gv.enabled ? 'managed' : 'off'; gv.chosen = true; }
+          if (cmd.priority) { city.development = cmd.priority; gv.spec = cmd.priority === 'agriculture' ? 'agrarian' : cmd.priority === 'industry' ? 'industrial' : cmd.priority === 'military' ? 'fortress' : 'balanced'; }
+          return null;
+        }
         case 'governor': {
+          if (nativeRules(this)) return { error: 'Use Automatic Development in the city inspector' };
           const c = this.cities.get(cmd.city);
           if (!c || c.owner !== civ.id) return { error: 'not your city' };
           const gv = c.governor || (c.governor = defaultGovernor());
@@ -1608,7 +1633,7 @@ export class Game {
     if (same.length === free.length) { results.kept = free.length; return { reply: { t: 'ack', order: results } }; }
     const slots = free.length > 1 || opts.line ? formationSlots(this, civ, free, tile, formation, opts.line) : new Map([[free[0].id, tile]]);
     const ground = free.filter((u) => !UNITS[u.type].air);
-    const groupSpeed = free.length >= 3 && ground.length ? Math.min(...ground.map((u) => UNITS[u.type].speed)) : 0;
+    const groupSpeed = free.length >= 3 && ground.length ? Math.min(...ground.map((u) => UNITS[u.type].speed * movementRate(this, UNITS[u.type]))) : 0;
     for (const u of free) {
       const slot = slots.get(u.id) ?? tile;
       u.order = { kind }; if (opts.withdraw) u.order.withdraw = true;

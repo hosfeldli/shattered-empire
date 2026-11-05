@@ -1,3 +1,4 @@
+import { nativeRules, tempo } from './rulesets.js';
 // Population ledger. Every city keeps one consistent account of its people:
 //   pop        civilians living in the city (they eat, pay tax, can work)
 //   reserved   civilians committed to a training queue (not working, not yet soldiers)
@@ -16,8 +17,8 @@ const FOOD_PER_PERSON = 0.12;
 
 export function recruitShare(civ) {
   let s = RECRUIT_SHARE;
-  if (civ.policies?.has('conscription')) s += 0.15;
-  if (civ.policies?.has('total_war')) s += 0.1;
+  if ((!nativeRules(civ) && civ.policies?.has('conscription'))) s += 0.15;
+  if ((!nativeRules(civ) && civ.policies?.has('total_war'))) s += 0.1;
   return Math.min(0.6, s);
 }
 
@@ -100,8 +101,8 @@ export function growthRate(g, civ, c, ctx) {
   const food = ctx.starving ? 0 : ctx.foodBalance >= 0 ? (ctx.foodStock > 300 ? 1.25 : 1) : ctx.foodStock > 400 ? 0.4 : 0;
   const stab = c.stability < 15 ? 0.15 : 0.5 + Math.min(1, c.stability / 100);
   let dev = 1 + 0.08 * Math.min(4, civ.age) + (c.tradeConnected ? 0.1 : 0) + (ctx.services ? 0.12 : 0);
-  if (civ.policies?.has('martial_law')) dev *= 0.75;
-  if (civ.policies?.has('homesteading') && g.time - (c.founded || 0) < 300) dev *= 1.5;
+  if ((!nativeRules(civ) && civ.policies?.has('martial_law'))) dev *= 0.75;
+  if ((!nativeRules(civ) && civ.policies?.has('homesteading')) && g.time - (c.founded || 0) < 300) dev *= 1.5;
   let rate = (0.010 * pop + 0.025) * food * stab * housing * dev;
   // small settlements recover: a town of three with food and room grows steadily
   if (pop < 8 && food > 0 && h < 0.95) rate += 0.05 * Math.min(1, food) * stab;
@@ -109,7 +110,7 @@ export function growthRate(g, civ, c, ctx) {
   c.peak = Math.max(c.peak || 0, c.pop);
   c.recovering = !ctx.enemyNear && food > 0 && h < 1 && c.pop < c.peak * 0.6 && c.peak > 6;
   if (c.recovering) rate *= 1.8;
-  return rate;
+  return rate * tempo(g, 'populationGrowth');
 }
 
 export function populationStep(g, civ, c, ctx, dt) {

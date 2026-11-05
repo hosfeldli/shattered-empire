@@ -1,3 +1,4 @@
+import { nativeRules } from './rulesets.js';
 // Resource explanations. For every good: what it is, what makes it, what uses it, which technology
 // unlocks its producers, where they can be built, why the stock is rising or falling (from the
 // ledger), and what the player can do next. The same analysis feeds the resource panel, the
@@ -155,11 +156,11 @@ function diagnose(g, civ, r) {
         addAction(r, { a: 'find', type: cand.type, label: sites.beyond ? 'Show deposits beyond the border' : 'Find sites', disabled: !sites.beyond, why: sites.beyond ? '' : 'none discovered yet: explore' });
         addAction(r, { a: 'expand', label: 'Expand toward a deposit (found a city)' });
       }
-      if (cand.needsRare && !g.civHasResource(civ, RES.RARE) && !civ.techs.has('materials_recycling')) causes.push('Electronics plants also need rare earths: a deposit in your territory, a trade partner with one, or Materials Recycling.');
+      if (cand.needsRare && !g.civHasResource(civ, RES.RARE) && !civ.techs.has('materials_recycling')) causes.push(nativeRules(g) ? 'Electronics plants need a domestic rare-earth deposit or Materials Recycling.' : 'Electronics plants also need rare earths: a deposit in your territory, a trade partner with one, or Materials Recycling.');
     }
     if (r.consumers.length && r.status !== 'ok') causes.push(`Used by ${r.consumers.map((c) => `${c.count} ${c.name}${c.count > 1 ? 's' : ''}`).join(', ')}.`);
   }
-  if (IMPORT_PRICE[k] && r.status !== 'ok') {
+  if (!nativeRules(g) && IMPORT_PRICE[k] && r.status !== 'ok') {
     const market = civ.techs.has('trade_networks') && [...g.buildings.values()].some((b) => b.owner === civ.id && b.type === 'market' && b.done);
     addAction(r, { a: 'import', good: k, label: `Import ${r.title.toLowerCase()}`, disabled: !market, why: market ? '' : civ.techs.has('trade_networks') ? 'needs a market' : 'needs Trade Networks and a market' });
   }
@@ -178,13 +179,22 @@ function diagnoseCredits(g, civ, r) {
   const NAMES = { army: 'army upkeep', maintenance: 'building maintenance', construction: 'construction', training: 'training', research: 'the era advance', imports: 'imports', diplomacy: 'diplomatic payments' };
   r.cause = top ? `The largest expense is ${NAMES[top[0]]} (${top[1].toFixed(1)}/s).` : '';
   if (top && top[0] === 'army') r.cause += ' Army upkeep grows faster than the army: disband or refit obsolete units.';
-  addAction(r, { a: 'tax', label: 'Review taxes' });
+  if (!nativeRules(g)) addAction(r, { a: 'tax', label: 'Review taxes' });
   if (civ.techs.has('trade_networks')) addAction(r, { a: 'build', type: 'market', label: 'Build a Market' });
   else addAction(r, { a: 'research', tech: 'trade_networks', label: 'Research Trade Networks (markets)' });
-  addAction(r, { a: 'diplomacy', label: 'Seek trade agreements' });
+  if (!nativeRules(g)) addAction(r, { a: 'diplomacy', label: 'Seek trade agreements' });
 }
 
-export function resourcesReport(g, civ) { const out = {}; for (const k of GOODS) out[k] = resourceReport(g, civ, k); return out; }
+export function resourcesReport(g, civ) {
+  const out = {}; for (const k of GOODS) out[k] = resourceReport(g, civ, k);
+  if (nativeRules(g)) for (const report of Object.values(out)) {
+    report.actions = report.actions.filter((action) => !['import', 'tax', 'diplomacy', 'workforce'].includes(action.a));
+    report.what = report.what?.replace(/taxes, markets and trade/g, 'productive cities and commercial halls').replace(/ and imports/g, '');
+    report.cause = report.cause?.replace(/Trade Networks/g, 'Local Commerce').replace(/Market/g, 'Commercial Hall');
+    for (const action of report.actions) action.label = action.label.replace(/Trade Networks/g, 'Local Commerce').replace(/Markets?/g, 'Commercial Hall');
+  }
+  return out;
+}
 
 // Shortage alerts: specific, with the cause and the actions (the client renders them).
 export function shortageAlerts(g, civ) {

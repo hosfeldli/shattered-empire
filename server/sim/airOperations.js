@@ -1,3 +1,4 @@
+import { tempo } from './rulesets.js';
 // Air operations. One order runs a whole mission: the aircraft launches, flies out, patrols /
 // strikes / supports / scouts, turns for home when fuel (by distance), ammunition or damage says so,
 // lands (or holds, or diverts), is serviced from real stock, and relaunches while the mission stands.
@@ -150,7 +151,7 @@ export function airStep(g, dt) {
     // the developer combat sandbox has no logistics: aircraft there neither need bases nor burn fuel
     if (g.sandbox && !homeOk) { if (a.state === 'ready' && m && m.kind !== 'return') { a.state = 'outbound'; u.grounded = false; } a.fuel = d.fuel; if (d.ammo && a.ammo <= 0) a.ammo = d.ammo; if (a.state === 'returning' || a.state === 'diverting' || a.state === 'launching') a.state = m && m.kind !== 'return' ? 'outbound' : 'ready'; }
     if (!u.grounded) {
-      a.fuel -= dt;
+      a.fuel -= dt * tempo(g, 'aircraftMovement');
       if (a.fuel <= 0) { crash(g, u); continue; }
     }
     u.supply = Math.round((100 * Math.max(0, a.fuel)) / d.fuel);   // shown as the aircraft's fuel

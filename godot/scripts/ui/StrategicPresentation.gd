@@ -20,7 +20,7 @@ func setup(w: WorldState, cam: CameraController, system: WorldCompositionSystem,
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	font = ThemeDB.fallback_font
 	selector = OptionButton.new(); selector.position = Vector2(330,40)
-	for title in ["Landscape", "Territory", "Supply", "Stability"]: selector.add_item(title)
+	for title in ["Landscape", "Territory", "Supply", "Stability", "Traffic", "Fronts", "Tactical"]: selector.add_item(title)
 	selector.item_selected.connect(func(index): mode = index; _dirty = true)
 	add_child(selector)
 	world.welcomed.connect(func(): deposits.clear(); _dirty = true)
@@ -61,6 +61,11 @@ func _overlay() -> void:
 		return
 	_revision += 1
 	var image := Image.create(world.grid.w,world.grid.h,false,Image.FORMAT_RGBA8)
+	var density:={}; var fighting:={}; var defenses:={}
+	for edge in world.traffic:
+		for tile in [int(edge[0]),int(edge[1])]: density[tile]=maxf(float(density.get(tile,0)),float(edge[2])/9.0)
+	for record in world.bf.get("i",[]): fighting[int(record[0])]=float(record[1])/3.0
+	for record in world.fw: defenses[int(record[0])]=true
 	var job := {"row":0,"mode":mode}
 	composition.scheduler.enqueue("strategic-overlay",_revision,GenerationScheduler.Priority.MEDIUM,func():
 		var y := int(job.row)
@@ -76,6 +81,13 @@ func _overlay() -> void:
 							color = Color(.2,.7,.35) if (world.supply_bits[tile>>3] & (1<<(tile&7))) else Color(.8,.25,.15)
 					3:
 						if world.tile_stability[tile]>=0: color = Color(.8,.25,.15).lerp(Color(.2,.7,.4),clampf(world.tile_stability[tile]/100.0,0,1))
+					4:
+						if density.has(tile): color=Color(.95,.35,.08,clampf(float(density[tile]),.1,1))
+					5:
+						if fighting.has(tile): color=Color(.9,.2,.1,clampf(float(fighting[tile]),0,1))
+					6:
+						if defenses.has(tile): color=Color(.25,.7,.85,.9)
+						elif fighting.has(tile): color=Color(.9,.45,.15,clampf(float(fighting[tile]),0,1))
 			image.set_pixel(x,y,color)
 		job.row += 1
 		return int(job.row) == world.grid.h,
@@ -103,6 +115,11 @@ func _draw() -> void:
 		var color := world.civ_color(int(city.o))
 		if camera.size >= 72: draw_circle(p,4,color)
 		_text(p+Vector2(7,-5),str(city.n),Color(.95,.94,.86),14)
+		if camera.size<40 and (int(city.o)==world.civ_id or world.spectator):
+			var state:="%d people · %s homes"%[int(city.pop),str(city.get("h","—"))]
+			if int(city.get("fs",0)): state+=" · FOOD SHORTAGE"
+			elif int(city.get("iso",0)): state+=" · ISOLATED"
+			_text(p+Vector2(7,13),state,Color(.95,.68,.45) if int(city.get("fs",0)) or int(city.get("iso",0)) else Color(.82,.85,.77),12)
 	if camera.size >= 72:
 		# Aggregate only received units, without exposing hidden army membership.
 		var groups := {}
@@ -114,7 +131,7 @@ func _draw() -> void:
 			var p := _point(group.tile)
 			draw_rect(Rect2(p-Vector2(5,4),Vector2(10,8)),world.civ_color(group.owner))
 			_text(p+Vector2(7,4),str(group.count),Color.WHITE,13)
-	elif camera.size <= 25:
+	elif camera.size <= 16:
 		var names := ["","Oil","Iron","Coal","Rare earth","Stone","Fish","Salvage"]
 		for list in deposits.values():
 			for tile in list:

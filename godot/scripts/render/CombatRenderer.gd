@@ -9,6 +9,7 @@ extends Node3D
 const SQRT3 := HexGrid.SQRT3
 const MAX_FX := 220
 
+var terrain:WorldRenderer
 var world: WorldState
 var cam: CameraController
 var bf_version := -1
@@ -73,6 +74,8 @@ func setup(w: WorldState, c: CameraController) -> void:
 func _clear() -> void:
 	bf_version = -1
 	fw_version = -1
+	trenches.mesh=null
+	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",0.0)
 	for e in fx:
 		(e.node as Node3D).visible = false
 		fx_pool.append(e.node)
@@ -88,6 +91,8 @@ func update(dt: float) -> void:
 	if fw_version != world.fw_version:
 		fw_version = world.fw_version
 		_build_trenches()
+	# Hiding the works must hide their terrain cut too, otherwise a debug/LOD hide leaves holes.
+	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",1.0 if visible and not world.fw.is_empty() else 0.0)
 	var g := world.grid
 	var cx := cam.focus.x
 	field.position = Vector3(g.near_x(field_anchor.x, cx) - field_anchor.x, 0, 0)
@@ -166,44 +171,17 @@ func _build_field() -> void:
 			smoke_list.append([c.x, c.y, 0.5, int(wr[0])])
 
 
-## trench lines: zigzag earthworks across the hex, facing the threat, sandbagged when reinforced
+## Continuous terrain-aware defensive works; the shader cuts only the received route.
 func _build_trenches() -> void:
-	var list := world.fw
-	if list.is_empty():
-		trenches.mesh = null
-		return
-	var kit := MeshKit.new()
-	trench_anchor = world.grid.center(int(list[0][0]))
-	for f in list:
-		var t := int(f[0])
-		var reinforced := int(f[2]) == 1
-		var d := int(f[3])
-		var prog := clampf(float(f[4]) / 100.0, 0.0, 1.0)
-		var state := int(f[6])
-		if state == 2 or prog <= 0.01:
-			continue
-		var p := _local(t, trench_anchor)
-		var a := deg_to_rad(60.0 * d)
-		var facing := Vector2(cos(a), sin(a))
-		var across := Vector2(-facing.y, facing.x)
-		var len := 1.5 * prog
-		var segs := 6
-		var prev := Vector3.INF
-		for k in segs + 1:
-			var u := (k / float(segs) - 0.5) * len
-			var zig := (0.08 if k % 2 == 0 else -0.08)
-			var q := Vector2(p.x, p.z) + across * u + facing * zig
-			var y := world.ground_height(q.x, q.y)
-			var pt := Vector3(q.x, y, q.y)
-			if prev != Vector3.INF:
-				kit.strip("char", prev + Vector3(0, 0.012, 0), pt + Vector3(0, 0.012, 0), 0.08, Color(0.9, 0.85, 0.8))
-				# the parapet on the enemy side
-				var fwd := Vector3(facing.x, 0, facing.y) * 0.07
-				kit.strip("soil", prev + fwd + Vector3(0, 0.035, 0), pt + fwd + Vector3(0, 0.035, 0), 0.05, Color(0.9, 0.82, 0.7))
-				if reinforced:
-					kit.strip("canvas", prev + fwd + Vector3(0, 0.06, 0), pt + fwd + Vector3(0, 0.06, 0), 0.04, Color(0.85, 0.78, 0.6))
-			prev = pt
-	trenches.mesh = kit.commit() if not kit.is_empty() else null
+	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",0.0)
+	if world.fw.is_empty(): trenches.mesh=null; return
+	trench_anchor=world.grid.center(int(world.fw[0][0]))
+	var result:=TrenchPresentation.build(world,trench_anchor)
+	trenches.mesh=result.mesh
+	if terrain:
+		terrain.terrain_mat.set_shader_parameter("trench_routes",result.mask)
+		terrain.terrain_mat.set_shader_parameter("trench_cells",Vector2(world.grid.w,world.grid.h))
+		terrain.terrain_mat.set_shader_parameter("trench_active",1.0)
 
 
 func _update_smoke() -> void:

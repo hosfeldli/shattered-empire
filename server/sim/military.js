@@ -1,3 +1,4 @@
+import { movementRate } from './rulesets.js';
 // Units: movement (flow fields, formations, tile/bridge capacity), combat (incl. air),
 // supply networks & attrition, engineers, and damage that persists in the world.
 import { book } from './ledger.js';
@@ -214,6 +215,7 @@ export function unitsStep(g, dt) {
       // low supply slows an advance gradually (fuel, spares), not all at once
       let spd = (onWater && !isAir(u) ? 1.0 : def.speed) * (u.supply >= 50 ? 1 : u.supply >= 25 ? 0.9 : u.supply >= 10 ? 0.78 : 0.7);
       spd *= 1 + (techFx(g.civs[u.owner]).speed || 0);
+      spd *= movementRate(g, def);
       if (u.groupSpeed) spd = Math.min(spd, u.groupSpeed * (1 + (techFx(g.civs[u.owner]).speed || 0)));   // formations move at their slowest member's pace
       if (u.supp > 30) spd *= 1 - 0.35 * (u.supp / 100);
       u.prog += (spd * dt) / c;

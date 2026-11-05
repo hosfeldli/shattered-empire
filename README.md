@@ -8,6 +8,10 @@ design and [native status](godot/docs/STATUS.md) records validation and remainin
 Electron/PixiJS sources and documentation below are retained as reference; new client work targets
 Godot. Native builds are currently development previews.
 
+The [streamlined native redesign](godot/docs/NATIVE_REDESIGN.md) replaces government/treaty
+management and removes trading entirely in new native matches, with versioned legacy-save support.
+It also documents the current native UI, ordered trench construction and fine water/weather work.
+
 ## Architecture: the cloud does the thinking
 
 ```

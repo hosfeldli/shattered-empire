@@ -43,10 +43,22 @@ var order_test_at := 0.0
 var order_test := {}
 var battle := {}
 var quality := "medium"
+var preferences:=NativePreferences.new()
+var shell:NativeAppShell
+var automated:=false
+var atmosphere_validation:AtmosphereValidation
+var ui_validation:NativeUIValidation
+var command_dock:NativeCommandDock
+var map_overlay:NativeMapOverlay
+var resource_strip:NativeResourceStrip
 
 
 func _ready() -> void:
 	args = _parse_args(OS.get_cmdline_user_args())
+	automated=args.has("bench") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test")
+	if not automated: preferences.load_from(str(args.get("settings-file","user://settings.cfg")))
+	else: preferences.path=str(args.get("settings-file","user://test-settings.cfg"))
+	if args.has("server"): preferences.values.server=str(args.server)
 	session_file=str(args.get("session-file",SESSION_FILE))
 	# Decode imported meshes/textures before connecting. First use must not stall construction.
 	for key in MaterialLibrary.SPECS: MaterialLibrary.get_mat(key)
@@ -92,6 +104,7 @@ func _ready() -> void:
 	combat.name = "CombatRenderer"
 	add_child(combat)
 	combat.setup(world, cam)
+	combat.terrain=terrain
 	civilians = CivilianActivitySystem.new()
 	add_child(civilians)
 	civilians.setup(composition, cam)
@@ -127,6 +140,11 @@ func _ready() -> void:
 	workspace = NativeWorkspace.new()
 	add_child(workspace)
 	workspace.setup(world,net,cam,settlements,military,hud.show_toast)
+	workspace.tools=command_tools; workspace.input_ref=input
+	shell=NativeAppShell.new(); add_child(shell); shell.setup(self,preferences,automated)
+	command_dock=NativeCommandDock.new(); add_child(command_dock); command_dock.setup(self)
+	map_overlay=NativeMapOverlay.new(); hud.root.add_child(map_overlay); map_overlay.setup(self)
+	resource_strip=NativeResourceStrip.new(); hud.root.add_child(resource_strip); resource_strip.setup(self)
 	diag = Diagnostics.new()
 	diag.name = "Diagnostics"
 	add_child(diag)
@@ -140,7 +158,8 @@ func _ready() -> void:
 	net.status_changed.connect(_on_status)
 	hud.start_requested.connect(start)
 	input.order_feedback.connect(hud.show_toast)
-	_apply_quality(str(args.get("quality", "medium")))
+	preferences.apply(self,automated or args.has("windowed"))
+	if args.has("quality"): _apply_quality(str(args.quality))
 	if args.has("novsync"):
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		Engine.max_fps = 0
@@ -158,11 +177,16 @@ func _ready() -> void:
 	if args.has("validate-lwe"):
 		live_validation = LiveValidation.new()
 		live_validation.run(self,str(args["validate-lwe"]))
+	if args.has("water-test"):
+		atmosphere_validation=AtmosphereValidation.new(); atmosphere_validation.run(self,str(args["water-test"]))
+	if args.has("ui-test"):
+		ui_validation=NativeUIValidation.new(); ui_validation.run(self,str(args["ui-test"]))
 	if args.has("mode"):
 		start({"mode": args.mode, "url": args.get("server", "ws://127.0.0.1:8137/ws"), "name": args.get("name", "Native"), "seed": args.get("seed", ""), "map": args.get("map", ""), "match": args.get("match", "")})
 	else:
-		hud.show_lobby(true)
+		hud.show_lobby(false)
 		hud.url_edit.text = str(args.get("server", ""))
+		if args.has("server"): preferences.values.server=str(args.server)
 
 
 ## --order-test=SECONDS: select the scout and order it three hexes east through the normal input path
@@ -239,6 +263,7 @@ func _probe_extra() -> Dictionary:
 	out["merged_districts"] = settlements.districts.keys().filter(func(k): return str(k).contains(",")).size()
 	out["district_handoffs_pending"] = settlements.retiring.size()
 	out["composition"] = composition.stats()
+	out["water"]={"active":environment.water.active,"steps":environment.water.simulation.steps,"solver_max_step_us":environment.water.simulation.max_step_us}
 	if settlements.selected_building >= 0:
 		out["selected_recipe"] = composition.explain_building(settlements.selected_building)
 	if not battle.is_empty():
@@ -319,16 +344,18 @@ func start(opts: Dictionary) -> void:
 	hud.show_lobby(true, "Connecting to %s…" % opts.url)
 	pending_mode = str(opts.mode)
 	pending_opts = opts
+	if pending_mode!="rejoin":
+		net.session={}; net._queue.clear(); net._pending.clear()
 	if pending_mode == "rejoin":
 		var s := _load_session()
 		if s.is_empty():
 			hud.show_lobby(true, "No earlier match to return to.")
 			return
 		net.session = s
-	elif pending_mode == "spectate":
-		net.send({"t": "spectate", "match": str(opts.get("match", "")), "name": str(opts.name)})
+	elif pending_mode in ["spectate","join"]:
+		net.send({"t": pending_mode, "match": str(opts.get("match", "")), "name": str(opts.name)})
 	else:
-		var msg := {"t": "create", "mode": pending_mode, "name": str(opts.name)}
+		var msg := {"t": "create", "mode": pending_mode, "name": str(opts.name), "ruleset":"native-v1"}
 		if pending_mode == "observe":
 			msg.ais = 3
 		else:
@@ -337,6 +364,8 @@ func start(opts: Dictionary) -> void:
 			msg.seed = int(opts.seed)
 		if str(opts.get("map", "")) != "":
 			msg.mapSize = str(opts.map)
+		for key in ["ais","humans","difficulty","aiPersonality","fairPlay","rebels","style","rivals"]:
+			if opts.has(key): msg[key]=opts[key]
 		if args.has("bench"):
 			# Seed fixes terrain, but the lobby otherwise chooses AI personalities with Math.random.
 			# Pin them for repeatable cross-client benchmark populations without changing the server.
@@ -357,6 +386,10 @@ func _on_message(m: Dictionary) -> void:
 			if str(m.get("status", "")) == "lobby":
 				hud.show_lobby(true, "Waiting in the match lobby…")
 		"welcome":
+			if pending_mode not in ["rejoin","join","spectate"] and str(m.get("ruleset","legacy-v1"))!="native-v1":
+				net.close(); shell.show_view("main")
+				NativeUI.label(shell.content,"This server needs the native ruleset update. Choose an updated server in Settings to start a new campaign.",16,NativeUI.GOLD)
+				return
 			world.apply_welcome(m)
 			cam.on_world()
 			cam.focus_tile(world.start_tile, 26.0)
@@ -380,7 +413,12 @@ func _on_message(m: Dictionary) -> void:
 
 
 func _process(dt: float) -> void:
-	cam.input_enabled = not hud.lobby.visible
+	var focused:=get_viewport().gui_get_focus_owner()
+	var typing:=focused is LineEdit or focused is TextEdit or focused is SpinBox
+	var blocked:=shell.is_blocking() if shell else true
+	cam.input_enabled = world.ready_ and not blocked and not typing and not workspace.panel.visible
+	input.input_enabled=world.ready_ and not blocked and not typing and not workspace.panel.visible
+	command_tools.input_enabled=input.input_enabled
 	hud.update(dt)
 	if not world.ready_:
 		return

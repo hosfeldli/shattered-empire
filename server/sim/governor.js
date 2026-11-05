@@ -1,3 +1,4 @@
+import { nativeRules } from './rulesets.js';
 // City governors: per-city automation that players delegate to, and that AI empires use for
 // every city. Governors obey the same placement checks, costs and research as manual orders,
 // respect a resource reserve and explicit permissions, and log why they did everything.
@@ -88,6 +89,11 @@ export function governorStep(g, dt) {
   for (const c of g.cities.values()) {
     const gv = c.governor; if (!gv) continue;
     migrateGovernor(gv);
+    if (nativeRules(g)) {
+      gv.level = gv.enabled ? 'autonomous' : 'off'; gv.reserve = .35; gv.budget = .2; gv.emergency = true;
+      gv.perms = { build: true, repair: true, roads: false, recruit: false, settle: false };
+      gv.proposals = [];
+    }
     if (gv.level === 'off') continue;
     const civ = g.civs[c.owner]; if (!civ || !civ.alive) continue;
     if (g.time < gv.next) continue;
@@ -143,6 +149,7 @@ function develop(g, civ, c, gv, level) {
     if (cand.kind === 'none' || cand.u <= none) break;
     if (gv.rejected?.[cand.type] && g.time < gv.rejected[cand.type]) continue;
     const routine = isRoutine(cand.type);
+    if (nativeRules(g) && civ.human && (!routine || cand.kind === 'upgrade')) continue;
     if (cand.kind === 'upgrade') {
       if (!(level === 'autonomous' || level === 'managed')) { propose(g, civ, c, gv, { action: 'upgrade', type: cand.type, id: cand.id, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: 0.8 }); return false; }
       if (!governorCanSpend(civ, gv, cand.cost, c)) continue;

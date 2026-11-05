@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "active_fluid": true,
+    "finite_surface": true,
+    "fixed_step_bounded": true,
+    "gpu_pressure_waves": true,
+    "gpu_wet_boundary": true,
+    "micro_gpu_texture": true,
+    "real_coast": true,
+    "real_river": true,
+    "shared_clouds": true,
+    "surface_changes": true,
+    "terrain_ready": true
+  },
+  "coast_tile": 1015,
+  "frame_p95_ms": 17.098,
+  "rendered": true,
+  "river_tile": 3340,
+  "solver_max_step_us": 0,
+  "solver_steps": 1256,
+  "surface_resolution": 256,
+  "weather_fixture": "Last two images use controlled local cloud/rain values over actual server terrain; no server state is changed.",
+  "meta": {
+    "created": "2026-11-05T03:37:43.952Z",
+    "source_hash": "196d542b9a0539cf7acf60745eca0d45300b787c0e1271b061e56eca1b0596d3",
+    "source_changed_during_run": false,
+    "rendered": true,
+    "exported": true
+  }
+}

@@ -85,6 +85,12 @@ var fw_version := 0
 var econ := {}
 var wx := {}
 var paused := false
+var ruleset:="legacy-v1"
+var can_pause:=false
+var battles:Array=[]
+var missiles:={}
+var notifications:Array=[]
+var observer:={}
 var snapshot_count := 0
 var last_snapshot_at := 0.0
 var snapshot_intervals: Array = []
@@ -92,6 +98,8 @@ var snapshot_intervals: Array = []
 
 func apply_welcome(m: Dictionary) -> void:
 	world_seed = int(m.get("seed", 0))
+	ruleset=str(m.get("ruleset","legacy-v1"))
+	play_rate=float(m.get("speed",1))
 	defs = m.get("defs", {})
 	civ_id = int(m.get("civId", 0))
 	spectator = bool(m.get("spectator", false))
@@ -103,6 +111,7 @@ func apply_welcome(m: Dictionary) -> void:
 		civ_by_id[int(c.id)] = c
 	start_tile = int(m.get("start", -1)) if m.get("start") != null else -1
 	paused = bool(m.get("paused", false))
+	can_pause=bool(m.get("canPause",false))
 	var world: Dictionary = m.get("world", {})
 	var W := int(defs.get("W", 128))
 	var H := int(defs.get("H", 128))
@@ -123,6 +132,7 @@ func _clear_map() -> void:
 	_interp_time = -INF
 	_interp_s0.clear(); _interp_s1.clear()
 	paths.clear(); econ.clear(); wx.clear()
+	battles.clear(); missiles.clear(); notifications.clear(); observer.clear()
 	server_time=0.0; render_time=0.0; tick=0
 	var n := grid.n
 	geo = PackedByteArray(); geo.resize(n * GEO_STRIDE)
@@ -155,9 +165,12 @@ func on_message(m: Dictionary) -> void:
 			if ready_:
 				apply_geo(m)
 		"note":
+			notifications.push_front(m.duplicate(true))
+			if notifications.size()>256: notifications.resize(256)
 			note.emit(m)
 		"paused":
 			paused = bool(m.get("on", false))
+			if m.has("speed") and not paused: play_rate=float(m.speed)
 
 
 func apply_snapshot(m: Dictionary) -> void:
@@ -166,6 +179,7 @@ func apply_snapshot(m: Dictionary) -> void:
 		_clear_map()
 		reset.emit()
 	if m.has("obs"):
+		observer=m.obs
 		var follow := int(m.obs.get("follow", civ_id))
 		civ_id = follow
 		play_rate = float(m.obs.get("speed", 1))
@@ -245,6 +259,7 @@ func apply_snapshot(m: Dictionary) -> void:
 
 func _apply_econ(m: Dictionary) -> void:
 	econ = m.econ
+	battles=m.get("battles",[]); missiles=m.get("ms",{})
 	if m.has("supply"):
 		var bits := Marshalls.base64_to_raw(m.supply)
 		if bits.size() == supply_bits.size(): supply_bits = bits

@@ -26,6 +26,10 @@ var dragging := false
 var drag_last := Vector2.ZERO
 var input_enabled := true
 var recentred := 0
+var pan_multiplier:=1.0
+var zoom_multiplier:=1.0
+var invert_zoom:=false
+var edge_pan:=false
 
 
 func setup(w: WorldState) -> void:
@@ -93,8 +97,15 @@ func _process(dt: float) -> void:
 		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): v.y += 1
 		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): v.x -= 1
 		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): v.x += 1
+		if edge_pan and DisplayServer.get_name()!="headless":
+			var mouse:=get_viewport().get_mouse_position(); var bounds:=get_viewport().get_visible_rect().size
+			if mouse.x>=0 and mouse.y>=0 and mouse.x<bounds.x and mouse.y<bounds.y:
+				if mouse.x<8: v.x-=1
+				if mouse.x>bounds.x-8: v.x+=1
+				if mouse.y<8: v.y-=1
+				if mouse.y>bounds.y-8: v.y+=1
 		if v != Vector2.ZERO:
-			var sp := size * PAN_SPEED * dt * (2.0 if Input.is_key_pressed(KEY_SHIFT) else 1.0)
+			var sp := size * PAN_SPEED * pan_multiplier * dt * (2.0 if Input.is_key_pressed(KEY_SHIFT) else 1.0)
 			var tilt := 1.0 / maxf(sin(deg_to_rad(pitch_deg())), 0.3)
 			focus.x += v.normalized().x * sp
 			focus.z += v.normalized().y * sp * tilt
@@ -134,6 +145,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		var mb := e as InputEventMouseButton
 		if mb.pressed and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
 			var f := 1.0 / ZOOM_STEP if mb.button_index == MOUSE_BUTTON_WHEEL_UP else ZOOM_STEP
+			f=pow(f,zoom_multiplier*(-1.0 if invert_zoom else 1.0))
 			goal_size = clampf(goal_size * pow(f, clampf(mb.factor, 0.1, 4.0) if mb.factor > 0.0 else 1.0), MIN_SIZE, max_size)
 			anchor_screen = mb.position
 			get_viewport().set_input_as_handled()

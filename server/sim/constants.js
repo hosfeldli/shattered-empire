@@ -1,3 +1,4 @@
+import { nativeRules, REMOVED_TECHS } from './rulesets.js';
 // Shattered Empires — game data (sent to clients in `welcome`).
 // Setting: a post-collapse continent. Five eras take survivors from salvaged tools
 // (Reclamation) to autonomous war machines (Advanced Systems).
@@ -296,7 +297,7 @@ for (const [k, fx] of Object.entries(TECH_FX)) {
 export function techFx(civ) {
   if (civ._fx && civ._fxN === civ.techs.size) return civ._fx;
   const out = { atk: {} };
-  for (const t of civ.techs) { const fx = TECH_FX[t]; if (!fx) continue; for (const [e, v] of Object.entries(fx)) { if (e === 'atk') for (const [c, x] of Object.entries(v)) out.atk[c] = (out.atk[c] || 0) + x; else out[e] = (out[e] || 0) + v; } }
+  for (const t of civ.techs) { if (nativeRules(civ) && REMOVED_TECHS.has(t)) continue; const fx = TECH_FX[t]; if (!fx) continue; for (const [e, v] of Object.entries(fx)) { if (e === 'atk') for (const [c, x] of Object.entries(v)) out.atk[c] = (out.atk[c] || 0) + x; else out[e] = (out[e] || 0) + v; } }
   Object.defineProperty(civ, '_fx', { value: out, writable: true, configurable: true, enumerable: false });
   Object.defineProperty(civ, '_fxN', { value: civ.techs.size, writable: true, configurable: true, enumerable: false });
   return out;

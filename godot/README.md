@@ -1,7 +1,8 @@
 # Shattered Empires: native client (Godot 4.7.2)
 
 A second client for the same authoritative Node.js server. It draws an orthographic 3D world with a
-2D interface on top. It sends intents and renders what the server tells it; it simulates nothing.
+2D interface on top. Gameplay is simulated by the server; bounded water, weather and activity
+simulation on the client is cosmetic.
 Godot is the development target. The PixiJS / Electron sources in `client/` and `desktop/` are kept
 as reference material; native work does not develop the browser version.
 
@@ -10,13 +11,15 @@ activity, military and native-command foundations. It is a development preview, 
 production-quality engine. [LWE_REQUIREMENTS.md](docs/LWE_REQUIREMENTS.md) tracks all thirty design
 sections and later visual corrections. See [STATUS.md](docs/STATUS.md) for evidence and remaining
 gates, and the original [ROADMAP.md](docs/ROADMAP.md) for the migration/release checklist.
+The [streamlined redesign](docs/NATIVE_REDESIGN.md) supersedes government/treaty parity and removes
+all trading from new, versioned native matches. Older saves retain explicit legacy rules.
 
 ## Running it
 
 ```bash
 brew install --cask godot          # Godot 4.7.2
 ADMIT_OFF=1 PORT=8139 SNAPSHOT_DIR=/tmp/se-native-bench node server/index.js
-godot --path godot                 # start panel: server address, name, play / watch / rejoin
+godot --path godot -- --server=ws://127.0.0.1:8139/ws
 ```
 
 The `.claude/launch.json` entry `native-bench` starts the same server (port 8139, its own snapshot
@@ -32,6 +35,7 @@ directory). Command-line options (after `--`):
 | `--bench=SECONDS [--bench-wait=T] [--bench-out=PATH]` | scripted idle / zoom / seam-pan benchmark, JSON out |
 | `--probe=SECONDS [--probe-out=PATH] [--order-test=S] [--pick-test]` | report what was synchronized, then quit |
 | `--tour=DIR [--tour-wait=T]` | save screenshots at several zoom levels and across the seam |
+| `--water-test=DIR` | developer water/cloud captures; use `node godot/tests/lwe-live.mjs --water --visible` |
 | `--session-file=PATH` | isolate test/rejoin session storage from the player's session |
 
 Native benchmarks start a clean port-8139 server for each scene. Existing Pixi measurements remain

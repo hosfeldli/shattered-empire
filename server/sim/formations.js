@@ -1,3 +1,4 @@
+import { movementRate } from './rulesets.js';
 // Formations: a deployment order turns a selection into a persistent formation plan (who stands
 // where, facing, density, behaviour). Units walk to their slots; afterwards the plan decides
 // whether they hold, defend nearby and return, or advance. A unit moved by hand is detached (the
@@ -100,7 +101,7 @@ export function deployOrder(g, civ, cmd, auth = '') {
     slots: {}, status: 'moving', auth, since: g.time, facing: plan.facing || null };      // deploying never creates a construction job
   g.formations.set(id, f);
   const ground = units.filter((u) => !UNITS[u.type].air);
-  const groupSpeed = ground.length >= 3 ? Math.min(...ground.map((u) => UNITS[u.type].speed)) : 0;
+  const groupSpeed = ground.length >= 3 ? Math.min(...ground.map((u) => UNITS[u.type].speed * movementRate(g, UNITS[u.type]))) : 0;
   const result = { formation: id, placed: 0, partial: 0, unreachable: 0, overflow: plan.overflow, invalid: plan.invalid.length, label: plan.label, perHex: [...plan.perHex.entries()], slots: [] };
   for (const u of units) {
     const slot = plan.slots.get(u.id);
@@ -159,7 +160,7 @@ export function formationCommand(g, civ, cmd, auth = '') {
       const slots = shiftFormation(e, cur, f.line, line);
       f.line = line; f.status = 'moving';
       const ground = members().filter((u) => !UNITS[u.type].air);
-      const gs = ground.length >= 3 ? Math.min(...ground.map((u) => UNITS[u.type].speed)) : 0;
+      const gs = ground.length >= 3 ? Math.min(...ground.map((u) => UNITS[u.type].speed * movementRate(g, UNITS[u.type]))) : 0;
       for (const u of members()) { const s = slots.get(u.id); if (s == null) continue; f.slots[u.id] = s; if (!u.detached) sendToSlot(g, civ, u, s, f, gs); }
       return null;
     }

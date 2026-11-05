@@ -17,6 +17,7 @@
 //    Trenches on the rural outskirts inside a city's territory remain.
 import { UNITS, BUILDINGS, TERRAIN, N, W, T, isWater } from './constants.js';
 import { disk, dist, NB, hexLine } from './hex.js';
+import { nativeRules, tempo } from './rulesets.js';
 
 export const FIELDWORKS = {
   basic: { name: 'Earthworks', time: 10, cost: { materials: 6 }, cover: { front: 0.25, flank: 0.10, rear: 0, indirect: 0.08 } },
@@ -112,7 +113,7 @@ export function planTrench(g, civ, points, opts = {}) {
     for (const [k, v] of Object.entries(FIELDWORKS[type].cost)) cost[k] = (cost[k] || 0) + v;
     work += FIELDWORKS[type].time;
   }
-  const crews = trenchCrews(g, civ), rate = crewRate(civ);
+  const crews = nativeRules(g) ? Math.min(2, tiles.length >= 8 && (g.sandbox || civ.supply[tiles.at(-1)]) && (g.sandbox || civ.supply[tiles[0]]) ? 2 : 1) : trenchCrews(g, civ), rate = crewRate(civ) * tempo(g, 'trenchConstruction');
   const build = segments.filter((s) => s.ok && !s.skip).length;
   // estimated completion: the work shared over the crews, plus whatever is already queued ahead
   const queued = queuedWork(g, civ);
@@ -130,8 +131,15 @@ function queuedWork(g, civ) {
 // Commit a plan exactly as previewed. Returns { project, placed, skipped, cost, seconds }.
 export function commitTrench(g, civ, plan, by = 'player') {
   if (!plan.build) return { error: plan.invalid ? `no valid segments: ${plan.segments.find((s) => !s.ok)?.reason}` : 'nothing new to build on that line' };
+  if (nativeRules(g) && plan.invalid) return { error: 'A continuous trench needs a valid route. Adjust the line around blocked ground.' };
   const id = (g.trenchSeq = (g.trenchSeq || 0) + 1);
   const pr = { id, owner: civ.id, type: plan.type, tiles: [], facing: plan.facing, created: g.time, by, status: 'queued' };
+  if (nativeRules(g)) {
+    pr.path = [...plan.tiles];
+    const access = (tile) => (g.sandbox || civ.supply[tile] ? 2 : 0) + (g.world.road[tile] ? 4 : 0);
+    if (access(pr.path.at(-1)) > access(pr.path[0])) pr.path.reverse();
+    pr.twoFronts = pr.path.length >= 8 && access(pr.path[0]) > 0 && access(pr.path.at(-1)) > 0;
+  }
   const [fx, fy] = plan.facing;
   for (const s of plan.segments) {
     if (!s.ok || s.skip) continue;
@@ -141,7 +149,10 @@ export function commitTrench(g, civ, plan, by = 'player') {
     g.fieldworks.set(s.t, { tile: s.t, owner: civ.id, type: plan.type, fx, fy, dir: dirIndex(fx, fy), progress: 0, hp: MAX_HP, paid: false, state: 'planned', project: id, at: g.time, lastSeen: g.time });
     pr.tiles.push(s.t);
   }
-  g.trenchProjects.set(id, pr); g.fwVer++;
+  if (pr.path) pr.tiles.sort((a, b) => pr.path.indexOf(a) - pr.path.indexOf(b));
+  g.trenchProjects.set(id, pr);
+  if (nativeRules(g)) updateTrenchRoutes(g);
+  g.fwVer++;
   return { project: id, placed: pr.tiles.length, skipped: plan.segments.filter((s) => !s.ok || s.skip).map((s) => [s.t, s.reason]), cost: plan.cost, seconds: plan.seconds, type: plan.type };
 }
 
@@ -218,10 +229,21 @@ export function fieldworksStep(g, dt) {
   }
   for (const [owner, list] of byCiv) {
     const civ = g.civs[owner];
-    const rate = crewRate(civ);
+    const rate = crewRate(civ) * tempo(g, 'trenchConstruction');
     let crews = trenchCrews(g, civ);
     // work in order: segments already under way, then the oldest project's next segments, then repairs
-    const work = list.filter((f) => f.progress < 1 || f.upgrading).sort((a, b) => (b.paid - a.paid) || (a.project || 0) - (b.project || 0) || a.at - b.at || a.tile - b.tile);
+    let work = list.filter((f) => f.progress < 1 || f.upgrading).sort((a, b) => (b.paid - a.paid) || (a.project || 0) - (b.project || 0) || a.at - b.at || a.tile - b.tile);
+    if (nativeRules(g)) {
+      // Only each project's endpoint fronts may advance; a blocked front cannot be skipped.
+      const fronts = new Set();
+      for (const project of [...g.trenchProjects.values()].filter((p) => p.owner === owner).sort((a, b) => a.id - b.id)) {
+        const remaining = (project.path || project.tiles).map((t) => g.fieldworks.get(t)).filter((f) => f && f.project === project.id && (f.progress < 1 || f.upgrading));
+        if (remaining.length) fronts.add(remaining[0].tile);
+        if (project.twoFronts && remaining.length > 1) fronts.add(remaining.at(-1).tile);
+        project.fronts = [...fronts].filter((t) => g.fieldworks.get(t)?.project === project.id);
+      }
+      work = work.filter((f) => fronts.has(f.tile));
+    }
     for (const f of work) {
       if (crews <= 0) { if (f.state === 'constructing') { f.state = 'queued'; changed = true; } continue; }
       const spec = f.upgrading ? UPGRADE : FIELDWORKS[f.type];
@@ -263,13 +285,13 @@ export function fieldworksStep(g, dt) {
 
 export function trenchProjectsFor(g, civ) {
   const out = [];
-  const crews = trenchCrews(g, civ), rate = crewRate(civ);
+  const crews = trenchCrews(g, civ), rate = crewRate(civ) * tempo(g, 'trenchConstruction');
   let ahead = 0;     // work queued in earlier projects is done first
   for (const pr of [...g.trenchProjects.values()].filter((p) => p.owner === civ.id).sort((a, b) => a.id - b.id)) {
     let done = 0, left = 0;
     for (const t of pr.tiles) { const f = g.fieldworks.get(t); if (!f || f.project !== pr.id) { done++; continue; } if (f.progress >= 1 && !f.upgrading) done++; else left += (1 - f.progress) * (f.upgrading ? UPGRADE.time : FIELDWORKS[f.type].time); }
     ahead += left;
-    out.push({ id: pr.id, type: pr.type, total: pr.tiles.length, done, status: pr.status, eta: left ? Math.ceil(ahead / (crews * rate)) : 0, tiles: pr.tiles.slice(0, 120), by: pr.by });
+    out.push({ id: pr.id, type: pr.type, total: pr.tiles.length, done, status: pr.status, eta: left ? Math.ceil(ahead / ((nativeRules(g) ? pr.twoFronts ? 2 : 1 : crews) * rate)) : 0, tiles: pr.tiles.slice(0, 120), by: pr.by, ...(nativeRules(g) ? { path: pr.path || pr.tiles, fronts: pr.fronts || [], stages: pr.tiles.map((t) => { const f = g.fieldworks.get(t); const p = f?.progress || 0; return [t, p >= 1 ? 'complete' : p >= .75 ? 'reinforcement' : p >= .4 ? 'deep_excavation' : p > 0 ? 'earth_removal' : 'survey']; }) } : {}) });
   }
   return { projects: out, crews };
 }
@@ -303,9 +325,35 @@ export function urbanStep(g) {
 // a building or city placed on a trench takes the hex
 export function buildOver(g, t) { if (g.fieldworks.delete(t)) g.fwVer++; }
 
+function updateTrenchRoutes(g) {
+  const routes = new Map();
+  if (nativeRules(g)) for (const pr of g.trenchProjects.values()) {
+    const path = pr.path || pr.tiles;
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1], b = path[i];
+      if (!g.fieldworks.has(a) || !g.fieldworks.has(b)) continue;
+      for (let d = 0; d < 6; d++) {
+        if (NB[a * 6 + d] === b) routes.set(a, (routes.get(a) || 0) | (1 << d));
+        if (NB[b * 6 + d] === a) routes.set(b, (routes.get(b) || 0) | (1 << d));
+      }
+    }
+  }
+  // Retain route topology on completed segments after project records expire.
+  for (const [t, bits] of routes) g.fieldworks.get(t).route = bits;
+}
+
 export function fieldworksFor(g, civ, vis) {
   const out = [];
-  for (const f of g.fieldworks.values()) if (f.owner === civ.id || vis[f.tile]) out.push([f.tile, f.owner, f.type === 'reinforced' && !f.upgrading ? 1 : 0, f.dir, Math.round(f.progress * 100), Math.round(f.hp), f.state === 'materials' ? 1 : f.state === 'queued' || f.state === 'planned' ? 2 : 0, f.upgrading ? 1 : 0]);
+  for (const f of g.fieldworks.values()) if (f.owner === civ.id || vis[f.tile]) {
+    let route = f.route || 0;
+    for (let d = 0; d < 6; d++) if (!g.fieldworks.has(NB[f.tile * 6 + d])) route &= ~(1 << d);
+    // Endpoints meeting existing works form a junction. Interior parallel lines stay separate.
+    if (nativeRules(g) && (!route || (route & (route - 1)) === 0)) for (let d = 0; d < 6; d++) {
+      const neighbor = g.fieldworks.get(NB[f.tile * 6 + d]);
+      if (neighbor && neighbor.owner === f.owner && neighbor.project !== f.project) route |= 1 << d;
+    }
+    out.push([f.tile, f.owner, f.type === 'reinforced' && !f.upgrading ? 1 : 0, f.dir, Math.round(f.progress * 100), Math.round(f.hp), f.state === 'materials' ? 1 : f.state === 'queued' || f.state === 'planned' ? 2 : 0, f.upgrading ? 1 : 0, ...(nativeRules(g) ? [route] : [])]);
+  }
   return out;
 }
 

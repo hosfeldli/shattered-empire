@@ -1,3 +1,4 @@
+import { nativeRules, tempo } from './rulesets.js';
 // Combat resolution: weapons fire (hitscan volleys or authoritative projectiles that damage on
 // impact), area blasts, suppression and morale, cover and line of fire, target choice with
 // overkill avoidance, and a sequenced combat-event stream that clients replay.
@@ -109,9 +110,9 @@ export function recoveryFactor(u) { const s = u.supply ?? 100; return (s >= 80 ?
 function unitStrength(g, u) {
   const def = UNITS[u.type], civ = g.civs[u.owner], w = g.world;
   let a = def.atk;
-  if (civ.gov === 'corporate') a *= 0.9;
-  if (civ.gov === 'junta') a *= 1.1;
-  if (civ.policies.has('total_war')) a *= 1.2;
+  if (!nativeRules(civ) && civ.gov === 'corporate') a *= 0.9;
+  if (!nativeRules(civ) && civ.gov === 'junta') a *= 1.1;
+  if ((!nativeRules(civ) && civ.policies.has('total_war'))) a *= 1.2;
   { const fx = techFx(civ).atk; a *= 1 + (fx.all || 0) + (fx[def.cat] || 0); }      // what the nation has learned
   // supply bands: full strength above half supply, then a gradual decline (never zero: an
   // isolated defender can still resist); high-tech equipment feels it more
@@ -160,7 +161,7 @@ export function fireBuilding(g, b, target) {
   if (!lof.ok) return false;
   // installations that fire munitions (AA batteries) stop when the stockpile is empty
   if (bd.ammo) { if ((civ.res.munitions || 0) < bd.ammo) { b.noAmmo = true; return false; } civ.res.munitions -= bd.ammo; book(civ, 'army', 'munitions', -bd.ammo); b.noAmmo = false; }
-  let a = bd.attack * (civ.policies.has('fortification') && b.type !== 'town' && bd.defense === 'ground' ? 1.5 : 1) * (0.4 + 0.6 * b.hp / b.maxHp);
+  let a = bd.attack * ((!nativeRules(civ) && civ.policies.has('fortification')) && b.type !== 'town' && bd.defense === 'ground' ? 1.5 : 1) * (0.4 + 0.6 * b.hp / b.maxHp);
   if (b.upgraded) a *= 1.25;          // upgraded fire control (Air Defense)
   // diminishing returns when many static defenses pour fire on one target in the same moment
   const df = g.defFire || (g.defFire = new Map()), k = 'd' + target.id, n = (df.get(k) || 0) + 1; df.set(k, n);
