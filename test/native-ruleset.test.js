@@ -141,3 +141,22 @@ test('Rivals does not identify an undetected stealth force through another civil
   viewer.detect[11] = 1;
   assert.equal(rivalIntel(g, viewer, g.civs[1]).focus, 2);
 });
+
+test('placement previews are authoritative, visibility filtered and do not construct or spend', () => {
+  const g = create(), civ = g.civs[0];
+  const tile = g.command(0, { c: 'placement', type: 'house' }).reply.tiles[0];
+  assert.ok(Number.isInteger(tile));
+  const before = structuredClone(civ.res), buildings = g.buildings.size;
+  const site = g.command(0, { c: 'placement', type: 'house', tile }).reply.site;
+  assert.equal(site.valid, true); assert.deepEqual(site.cost, g.buildingCost(civ, 'house', tile));
+  assert.equal(site.seconds, Math.ceil(BUILDINGS.house.time / TEMPO.construction));
+  assert.equal(g.buildings.size, buildings); assert.deepEqual(civ.res, before);
+  const city = g.cities.get(g.nearestCityId(0, tile)); city.isolated = true; city.stock = { materials: 2 };
+  const short = g.command(0, { c: 'placement', type: 'house', tile }).reply.site;
+  assert.equal(short.queued, true); assert.equal(short.missing.materials, short.cost.materials - 2);
+  const occupied = [...g.buildings.values()].find(b => b.owner === 0).tile;
+  assert.match(g.command(0, { c: 'placement', type: 'house', tile: occupied }).reply.site.reason, /already has/);
+  civ.explored[occupied] = 0;
+  const hidden = g.command(0, { c: 'placement', type: 'house', tile: occupied }).reply.site;
+  assert.deepEqual(hidden, { tile: occupied, valid: false, reason: 'Explore this site first' });
+});

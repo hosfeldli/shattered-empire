@@ -13,6 +13,8 @@ sections and later visual corrections. See [STATUS.md](docs/STATUS.md) for evide
 gates, and the original [ROADMAP.md](docs/ROADMAP.md) for the migration/release checklist.
 The [streamlined redesign](docs/NATIVE_REDESIGN.md) supersedes government/treaty parity and removes
 all trading from new, versioned native matches. Older saves retain explicit legacy rules.
+The [simple native UI](docs/SIMPLE_UI.md) uses Build, Army and Research with contextual cards;
+the minimap is removed. Its visual catalogue covers the five eras, supported building levels and all troop types.
 
 ## Running it
 

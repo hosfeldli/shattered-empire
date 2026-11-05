@@ -32,7 +32,9 @@ jobs:
           godot --headless --path godot -s res://tests/render_regressions.gd
           godot --headless --path godot -s res://tests/composition_regressions.gd
           godot --headless --path godot -s res://tests/lwe_regressions.gd
+          godot --headless --path godot -s res://tests/development_regressions.gd
       - name: Live commands and reconnect
         run: |
           node godot/tests/lwe-live.mjs
+          node godot/tests/lwe-live.mjs --ui
           node godot/tests/network-smoke.mjs

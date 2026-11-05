@@ -46,6 +46,8 @@ var tree_mesh: ArrayMesh
 var tree_count := 0
 var shadows_allowed := true
 var hide_trees := false
+var effects_enabled:=true
+var reduced_motion:=false
 
 
 func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
@@ -140,7 +142,8 @@ func update(dt: float) -> void:
 	sun.shadow_enabled = shadows_allowed and cam.size < shadow_size
 	sun.directional_shadow_max_distance = CameraController.DISTANCE + minf(cam.size * 0.75, 90.0)
 	# clouds drift with the wind between authoritative updates, then cross-fade to the new field
-	var visual_dt:=0.0 if world.paused else dt*world.play_rate
+	var visual_dt:=0.0 if world.paused or reduced_motion else dt*world.play_rate
+	clouds.visible=effects_enabled
 	since += visual_dt
 	cloud_clock+=visual_dt
 	if composition: wind_world=wind_world.lerp(composition.weather.wind_at_world(Vector2(cam.focus.x,cam.focus.z)),minf(1.0,dt*.6))
@@ -149,7 +152,7 @@ func update(dt: float) -> void:
 	off_prev += wind * visual_dt
 	var blend := clampf(since / .8, 0.0, 1.0)
 	var toward_sun:=sun.global_transform.basis.z
-	var cloud_parameters:={"cloud_age":since,"cloud_age_prev":since+previous_age,"cloud_off":off,"cloud_off_prev":off_prev,"cloud_blend":blend,"cloud_time":cloud_clock,"cloud_drift":cloud_drift,"cloud_light_slant":Vector2(toward_sun.x,toward_sun.z)/maxf(.2,toward_sun.y)}
+	var cloud_parameters:={"cloud_shadow_strength":.27 if effects_enabled else 0.0,"cloud_age":since,"cloud_age_prev":since+previous_age,"cloud_off":off,"cloud_off_prev":off_prev,"cloud_blend":blend,"cloud_time":cloud_clock,"cloud_drift":cloud_drift,"cloud_light_slant":Vector2(toward_sun.x,toward_sun.z)/maxf(.2,toward_sun.y)}
 	for material in [terrain.terrain_mat,cloud_mat,terrain.water_mat]:
 		for key in cloud_parameters: material.set_shader_parameter(key,cloud_parameters[key])
 	MaterialLibrary.bind_clouds(cloud_parameters)
@@ -304,10 +307,10 @@ func _update_rain(f:Vector3) -> void:
 	var snowing:=float(local_weather.get("snow",0.0))>.001
 	var fog:=float(local_weather.get("fog",0.0))
 	var target_density:=fog*.00008
-	env.environment.fog_enabled=fog>.04
+	env.environment.fog_enabled=effects_enabled and fog>.04
 	env.environment.fog_density=lerpf(env.environment.fog_density,target_density,.03)
 	env.environment.fog_light_color=Color(.62,.68,.73)
-	rain.emitting=r>.10 and cam.size<24.0 and not world.paused
+	rain.emitting=effects_enabled and not reduced_motion and r>.10 and cam.size<24.0 and not world.paused
 	if rain.emitting:
 		rain.draw_pass_1=snow_mesh if snowing else rain_mesh
 		rain.lifetime=2.5 if snowing else .75

@@ -65,7 +65,7 @@ func setup(w: WorldState, n: NetworkClient, m: MilitaryRenderer, s: SettlementRe
 	help.custom_minimum_size = Vector2(460, 0)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	help.modulate = Color(1, 1, 1, 0.7)
-	help.text = "WASD pan · wheel zoom · right move/attack · Ctrl+right attack-move · B tools · F2 empire · M mute"
+	help.text = "K · Controls     F10 · Hide interface"
 	box = Panel.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.9, 0.85, 0.5, 0.12)
@@ -136,10 +136,10 @@ func show_lobby(on: bool, status := "") -> void:
 func _layout() -> void:
 	var vp := root.get_viewport_rect().size
 	bar.position = Vector2.ZERO
-	bar.size = Vector2(vp.x, 54)
-	conn.custom_minimum_size.x=175
-	conn.position = Vector2(vp.x - 187, 14)
-	notes.custom_minimum_size.x=300
+	bar.size = Vector2(vp.x, 44)
+	conn.custom_minimum_size.x=175; conn.size=Vector2(175,24)
+	conn.position = Vector2(vp.x - 187, 10)
+	notes.custom_minimum_size.x=300; notes.size=Vector2(300,0)
 	notes.position = Vector2(vp.x - 312, 120)
 	sel.position = Vector2(12, vp.y - 150)
 	toast.position = Vector2(vp.x * 0.5 - 300, 116)
@@ -160,8 +160,8 @@ func _on_note(m: Dictionary) -> void:
 	note_lines.push_front("[%s] %s" % [_clock(float(m.get("time", 0))), str(m.get("text", ""))])
 	while note_lines.size() > 6:
 		note_lines.pop_back()
-	if str(m.get("level","")) in ["major","critical"]:
-		notes.text="\n".join(note_lines.slice(0,2)); notes_until=Time.get_ticks_msec()/1000.0+10.0
+	if str(m.get("level",""))=="critical":
+		notes.text=note_lines[0]; notes_until=Time.get_ticks_msec()/1000.0+10.0
 
 
 func _clock(t: float) -> String:

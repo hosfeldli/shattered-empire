@@ -1,5 +1,7 @@
 class_name InputController
 extends Node
+var commands:CommandRegistry
+var preferences:NativePreferences
 ## Selection and orders. Left click selects your unit under the cursor (or the building on the
 ## picked hex), left-drag box-selects, Shift adds. Right click orders the selected units to the hex
 ## under the cursor (picked against the terrain, so hills and valleys resolve to the right hex);
@@ -27,6 +29,7 @@ var tools: NativeCommandTools
 var move_formation := "line"
 var input_enabled:=true
 var selected_buildings:={}
+var selected_army:=-1
 var groups:={}
 var last_group:=-1
 var last_group_ms:=0
@@ -59,6 +62,7 @@ func attach_marker(parent: Node3D) -> void:
 
 
 func cancel() -> void:
+	selected_army=-1
 	box_active = false
 	press_pos = Vector2(-1, -1)
 	right_press=Vector2(-1,-1); right_drag=false; selected_buildings.clear()
@@ -81,9 +85,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			right_drag=true; tools.activate("deploy"); tools.drawing=true; tools.points=[right_tile]
 		tools._add_point(cam.pick_tile(e.position)); get_viewport().set_input_as_handled(); return
 	if e is InputEventKey and e.pressed and not e.echo and _group_key(e): get_viewport().set_input_as_handled(); return
-	if e is InputEventKey and e.pressed and not e.echo and e.keycode==KEY_P:
-		if world.spectator: net.cmd({"c":"speed","speed":0 if float(world.observer.get("speed",1))>0 else 1})
-		else: net.cmd({"c":"pause","on":not world.paused},func(reply):order_feedback.emit("Paused" if reply.get("paused",false) else str(reply.get("error","Resumed")),reply.get("error")==null))
+	if e is InputEventKey and e.pressed and not e.echo and (preferences.canonical_key(e.keycode) if preferences else e.keycode)==KEY_P:
+		if world.spectator: commands.submit({"c":"speed","speed":0 if float(world.observer.get("speed",1))>0 else 1})
+		else: commands.submit({"c":"pause","on":not world.paused},func(reply):order_feedback.emit("Paused" if reply.get("paused",false) else str(reply.get("error","Resumed")),reply.get("error")==null))
 		get_viewport().set_input_as_handled()
 		return
 	if tools and tools.mode != "select":
@@ -113,7 +117,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			box_active = true
 			box_rect = Rect2(press_pos, Vector2.ZERO).expand(mm.position)
 	elif e is InputEventKey and (e as InputEventKey).pressed and not (e as InputEventKey).echo:
-		var k := (e as InputEventKey).keycode
+		var k:int=preferences.canonical_key(e.keycode) if preferences else e.keycode
 		if k == KEY_H:
 			_simple("hold", {})
 		elif k == KEY_T:
@@ -124,12 +128,12 @@ func _unhandled_input(e: InputEvent) -> void:
 			_simple("stance", {"stance": "aggressive" if any_def else "defensive"})
 		elif k==KEY_Q: select_combat(not e.shift_pressed)
 		elif k==KEY_E or (k==KEY_A and (e.ctrl_pressed or e.meta_pressed)):
-			tools.target_command({"c":"move","units":_owned_units(),"tile":"@map","attackMove":true,"formation":move_formation},"Advance and engage")
+			tools.target_command({"c":"move","units":_owned_units(),"tile":"@map","attackMove":true,"formation":move_formation},"Attack-move","point",false,false)
 		elif k==KEY_X: _simple("withdraw",{})
 		elif k==KEY_G: _simple("army",{"op":"create"})
 		elif k==KEY_F:
 			var colonists:=_owned_units().filter(func(id):return world.units[id].type=="colonist")
-			if not colonists.is_empty(): net.cmd({"c":"found","unit":colonists[0]})
+			if not colonists.is_empty(): commands.submit({"c":"found","unit":colonists[0]})
 			else:
 				var shapes:Array=world.defs.get("FORMATIONS",{}).keys()
 				if not shapes.is_empty(): move_formation=str(shapes[(shapes.find(move_formation)+1)%shapes.size()]); order_feedback.emit("Movement formation: "+move_formation,true)
@@ -141,6 +145,7 @@ func _unhandled_input(e: InputEvent) -> void:
 
 
 func _click_select(pos: Vector2, add: bool) -> void:
+	selected_army=-1
 	var hits := military.units_near_screen(pos, 16.0, false)
 	if not add:
 		military.selected.clear()
@@ -165,6 +170,7 @@ func _click_select(pos: Vector2, add: bool) -> void:
 
 
 func _box_select(add: bool) -> void:
+	selected_army=-1
 	if not add:
 		military.selected.clear()
 		settlements.selected_building = -1
@@ -189,10 +195,13 @@ func _order(pos: Vector2, attack: bool,queue:=false) -> void:
 		for id in facilities:
 			var building:Dictionary=world.buildings.get(id,{})
 			if int(building.get("o",-1))==world.civ_id and world.defs.get("BUILDINGS",{}).get(building.get("ty",""),{}).has("trains") and rally>=0:
-				net.cmd({"c":"rally","building":id,"tile":rally,"army":int(building.get("ra",0))})
+				commands.submit({"c":"rally","building":id,"tile":rally,"army":int(building.get("ra",0))})
 		return
 	var t := cam.pick_tile(pos)
 	if t < 0:
+		return
+	if selected_army>=0:
+		commands.submit({"c":"army","op":"order","id":selected_army,"kind":"attackMove" if attack else "move","tile":t,"radius":4})
 		return
 	var ids := []
 	for id in _owned_units():
@@ -216,7 +225,7 @@ func _order(pos: Vector2, attack: bool,queue:=false) -> void:
 	orders_sent += 1
 	last_order_ms = Time.get_ticks_msec()
 	var sent_at := Time.get_ticks_msec()
-	net.cmd(c, func(r: Dictionary):
+	commands.submit(c, func(r: Dictionary):
 		if r.has("error") and r.error != null:
 			order_feedback.emit(str(r.error), false)
 		else:
@@ -237,7 +246,7 @@ func _simple(c: String, extra: Dictionary) -> void:
 		ids.append(int(id))
 	var cmd := {"c": c, "units": ids}
 	cmd.merge(extra)
-	net.cmd(cmd, func(r: Dictionary):
+	commands.submit(cmd, func(r: Dictionary):
 		order_feedback.emit(str(r.error) if r.has("error") and r.error != null else "%s: %d units" % [c.capitalize(), ids.size()], not (r.has("error") and r.error != null)))
 
 func _owned_units() -> Array:
@@ -294,13 +303,13 @@ func _group_key(event:InputEventKey) -> bool:
 	last_group=key; last_group_ms=Time.get_ticks_msec(); selection_changed.emit(); return true
 
 func _observer_key(key:Key) -> void:
-	if key==KEY_V: net.cmd({"c":"fog","on":not bool(world.observer.get("fog",false))})
+	if key==KEY_V: commands.submit({"c":"fog","on":not bool(world.observer.get("fog",false))})
 	elif key in [KEY_BRACKETLEFT,KEY_BRACKETRIGHT]:
 		var ids:Array=world.civ_by_id.keys(); var index:=ids.find(world.civ_id)
-		if not ids.is_empty(): net.cmd({"c":"follow","civ":ids[posmod(index+(-1 if key==KEY_BRACKETLEFT else 1),ids.size())]})
+		if not ids.is_empty(): commands.submit({"c":"follow","civ":ids[posmod(index+(-1 if key==KEY_BRACKETLEFT else 1),ids.size())]})
 	elif key in [KEY_COMMA,KEY_PERIOD]:
 		var speeds:=[0,1,2,4,8]; var index:=speeds.find(int(world.observer.get("speed",1)))
-		net.cmd({"c":"speed","speed":speeds[clampi(index+(-1 if key==KEY_COMMA else 1),0,4)]})
+		commands.submit({"c":"speed","speed":speeds[clampi(index+(-1 if key==KEY_COMMA else 1),0,4)]})
 
 
 func update(dt: float) -> void:

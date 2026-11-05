@@ -1,0 +1,1064 @@
+{
+  "checks": {
+    "advanced_damage_stages": true,
+    "all_upgrade_levels_change_geometry": true,
+    "every_building_has_visual": true,
+    "every_unit_has_explicit_visual": true,
+    "unit_silhouettes_distinct": true
+  },
+  "entries": [
+    {
+      "age": 0.0,
+      "kind": "unit",
+      "signature": "3831e714ff0b351fd3c33443c66db3bd",
+      "type": "colonist",
+      "vertices": 360
+    },
+    {
+      "age": 0.0,
+      "kind": "unit",
+      "signature": "40cba44a27d8905253253d285cd396c0",
+      "type": "engineer",
+      "vertices": 4608
+    },
+    {
+      "age": 0.0,
+      "kind": "unit",
+      "signature": "4e883e72e6a27f105d4a1ccaa3e51c87",
+      "type": "scout_buggy",
+      "vertices": 1500
+    },
+    {
+      "age": 0.0,
+      "kind": "unit",
+      "signature": "b12ce6c17a7c26e36f20a31cd24d68f3",
+      "type": "militia",
+      "vertices": 9216
+    },
+    {
+      "age": 0.0,
+      "kind": "unit",
+      "signature": "cc5807c58fe88bae527663a3ee799467",
+      "type": "rifle_squad",
+      "vertices": 13608
+    },
+    {
+      "age": 1.0,
+      "kind": "unit",
+      "signature": "ad5726c2e759a1e568e518d4be5614a7",
+      "type": "mortar_team",
+      "vertices": 4662
+    },
+    {
+      "age": 1.0,
+      "kind": "unit",
+      "signature": "064fd5fb520a74c59bd15280c843753e",
+      "type": "armored_car",
+      "vertices": 396
+    },
+    {
+      "age": 1.0,
+      "kind": "unit",
+      "signature": "97648c11ee9f6dfdf12e26505c2728ad",
+      "type": "supply_truck",
+      "vertices": 396
+    },
+    {
+      "age": 1.0,
+      "kind": "unit",
+      "signature": "2fa38384fffdcaf392fd125ea493c620",
+      "type": "field_gun",
+      "vertices": 5388
+    },
+    {
+      "age": 2.0,
+      "kind": "unit",
+      "signature": "601fdc0c2ea73e5b420042a13af1ea2f",
+      "type": "mech_infantry",
+      "vertices": 5556
+    },
+    {
+      "age": 2.0,
+      "kind": "unit",
+      "signature": "026ac293812d5067e856bf81f6f7b68a",
+      "type": "tank",
+      "vertices": 5940
+    },
+    {
+      "age": 2.0,
+      "kind": "unit",
+      "signature": "b65d2cfd07a04e69b6df9d533c297bea",
+      "type": "sp_artillery",
+      "vertices": 5412
+    },
+    {
+      "age": 2.0,
+      "kind": "unit",
+      "signature": "b0a170f7903719d14e62c5c729d36c72",
+      "type": "helicopter",
+      "vertices": 324
+    },
+    {
+      "age": 3.0,
+      "kind": "unit",
+      "signature": "5c8c870f9164fb0514c393ea7ce102b9",
+      "type": "recon_drone",
+      "vertices": 252
+    },
+    {
+      "age": 3.0,
+      "kind": "unit",
+      "signature": "05cc257b36ed161a12b1bb3dc31e3505",
+      "type": "missile_battery",
+      "vertices": 531
+    },
+    {
+      "age": 2.0,
+      "kind": "unit",
+      "signature": "c427dab5c908d044a48d38ae771f88a4",
+      "type": "fighter",
+      "vertices": 216
+    },
+    {
+      "age": 3.0,
+      "kind": "unit",
+      "signature": "b42847a5262535aec794a4bc94043354",
+      "type": "bomber",
+      "vertices": 360
+    },
+    {
+      "age": 3.0,
+      "kind": "unit",
+      "signature": "a90d32ae456b5830b40ca68973c3b992",
+      "type": "oneway_drone",
+      "vertices": 216
+    },
+    {
+      "age": 3.0,
+      "kind": "unit",
+      "signature": "3bea4a9fe24cb974091c9d9a5c6b860c",
+      "type": "air_defense",
+      "vertices": 612
+    },
+    {
+      "age": 3.0,
+      "kind": "unit",
+      "signature": "ecd1e43e6b14639de612b7acf4266c42",
+      "type": "special_forces",
+      "vertices": 9360
+    },
+    {
+      "age": 4.0,
+      "kind": "unit",
+      "signature": "6b40192a962f53836ce7cdf9313cb090",
+      "type": "autonomous_tank",
+      "vertices": 5592
+    },
+    {
+      "age": 4.0,
+      "kind": "unit",
+      "signature": "4e41d67ce8202bc384485cdeb0136787",
+      "type": "strike_swarm",
+      "vertices": 1080
+    },
+    {
+      "age": 4.0,
+      "kind": "unit",
+      "signature": "8d6a3cb54d7924472d1907211d690d27",
+      "type": "exo_infantry",
+      "vertices": 9648
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "a577d678c4471ce7f5f3037c4f0161f2",
+      "type": "town",
+      "vertices": 570
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "4a6948b86fff6132e74c9e361eb6e192",
+      "type": "house",
+      "vertices": 18393
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "2f5731a0b3a3651f02c87e1d02b1373f",
+      "type": "house",
+      "vertices": 18969
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "76997468d6648684b73f7f3d828f6073",
+      "type": "house",
+      "vertices": 19761
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "afbcea5f75a5544c937b4f59efb72a69",
+      "type": "farm",
+      "vertices": 540
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "ef1ae023d1b64741dc955e1f5de6a90f",
+      "type": "farm",
+      "vertices": 684
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "dce51dc478a0f410597621cf36273aa3",
+      "type": "farm",
+      "vertices": 936
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "1a0e681b1f5841394e81decb68c094a8",
+      "type": "lumber",
+      "vertices": 342
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "d946a065c026b904e65d99bb454c38d2",
+      "type": "lumber",
+      "vertices": 486
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "7ddf1d2f67d6992ab986bb771a710b93",
+      "type": "lumber",
+      "vertices": 738
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "69035100a736df90a0fe6d44e472140f",
+      "type": "quarry",
+      "vertices": 288
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "4871f232fb66a39e843af7a069feb68a",
+      "type": "quarry",
+      "vertices": 432
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "fbce6d79e1f9e1b89e03046e0854a402",
+      "type": "quarry",
+      "vertices": 684
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "5ad9d5c92c9930a4a2590f652aa5c595",
+      "type": "salvage",
+      "vertices": 486
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "09089667f74a3e5aef0e8c8d66daf591",
+      "type": "salvage",
+      "vertices": 630
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "b89230b6f731e61016a615f6b506f84f",
+      "type": "salvage",
+      "vertices": 882
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "salvage",
+      "vertices": 471
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "salvage",
+      "vertices": 630
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "salvage",
+      "vertices": 591
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "salvage",
+      "vertices": 948
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "cf051545926dd2e45426349208941ab0",
+      "type": "barracks",
+      "vertices": 360
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "789246f8743e59171f0c0ee27887a839",
+      "type": "market",
+      "vertices": 522
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "97a2362e4d9470092ffba0acf2b54edf",
+      "type": "market",
+      "vertices": 666
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "93c077871883a3f90cdc7daf824673c7",
+      "type": "market",
+      "vertices": 918
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "22f68befd1e08f8bb680b2b0d70a5eca",
+      "type": "academy",
+      "vertices": 576
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "fbbddaef9c7ad4f6ebc0fa9d2a872c84",
+      "type": "academy",
+      "vertices": 720
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "940c03d9ee8315b56e76f7e9a5f8dc71",
+      "type": "academy",
+      "vertices": 972
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "76fd62688ba1133eb331880a144c2b9c",
+      "type": "port",
+      "vertices": 306
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "9259dc0696d5987cb727f3e2c5b07748",
+      "type": "port",
+      "vertices": 450
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "4ed42b5b3f46218260a332aaa28ffcad",
+      "type": "port",
+      "vertices": 702
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "45d1becd4dc3ca1f9fb64625e3940b4c",
+      "type": "guard_post",
+      "vertices": 342
+    },
+    {
+      "age": 0.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "1f4299a2da38442a4cabdd77c2578ed7",
+      "type": "bunker",
+      "vertices": 216
+    },
+    {
+      "age": 2.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "c9b832fd67750b3b4ff5e667761ea5e9",
+      "type": "aa_battery",
+      "vertices": 306
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "8898eb3658611645640043bdc0d34b26",
+      "type": "mine",
+      "vertices": 561
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "f999e8bc673fa27d281e75997099af8c",
+      "type": "mine",
+      "vertices": 705
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "0b83f668a4a044cb6437bb875fde8b7a",
+      "type": "mine",
+      "vertices": 957
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "cc63502eba6593b4bacc80fdcc54ce81",
+      "type": "steel_mill",
+      "vertices": 594
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "5110735ba1a39f68873e970ba410bd06",
+      "type": "steel_mill",
+      "vertices": 738
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "5c14d0a63ae757f82b353b30de8d54aa",
+      "type": "steel_mill",
+      "vertices": 990
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 594,
+      "kind": "damage",
+      "type": "steel_mill",
+      "vertices": 564
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 594,
+      "kind": "damage",
+      "type": "steel_mill",
+      "vertices": 705
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 594,
+      "kind": "damage",
+      "type": "steel_mill",
+      "vertices": 579
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 594,
+      "kind": "damage",
+      "type": "steel_mill",
+      "vertices": 1086
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "fcf8d22669adea1f80420372b8fba77e",
+      "type": "power_plant",
+      "vertices": 612
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "2b1863471535ed504a36269dc98eeb14",
+      "type": "power_plant",
+      "vertices": 756
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "96a54752efabab1344d1fdce0c9570a8",
+      "type": "power_plant",
+      "vertices": 1008
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "8d462fc08698360134a2394af94f0f97",
+      "type": "oil_well",
+      "vertices": 342
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "71959b7c7d312aff2c403245193900a0",
+      "type": "oil_well",
+      "vertices": 486
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "9b61c274a25e99ff74584f34c81fd9e2",
+      "type": "oil_well",
+      "vertices": 738
+    },
+    {
+      "age": 2.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "0a3e4e95cd7125683e90746b88b34b4d",
+      "type": "refinery",
+      "vertices": 1314
+    },
+    {
+      "age": 2.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "10e688a14404c6d9481f1f9149f47dea",
+      "type": "refinery",
+      "vertices": 1458
+    },
+    {
+      "age": 2.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "70cbbcf9b1f2083e58c1934fdcc77cfd",
+      "type": "refinery",
+      "vertices": 1710
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 1314,
+      "kind": "damage",
+      "type": "refinery",
+      "vertices": 1227
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 1314,
+      "kind": "damage",
+      "type": "refinery",
+      "vertices": 1275
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 1314,
+      "kind": "damage",
+      "type": "refinery",
+      "vertices": 1116
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 1314,
+      "kind": "damage",
+      "type": "refinery",
+      "vertices": 1272
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "832f0240a57da18554176ef4f2d0d626",
+      "type": "munitions_plant",
+      "vertices": 540
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "820d75eba1009d7b9b9a093edcf96cd6",
+      "type": "munitions_plant",
+      "vertices": 684
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "7e9b69003c78e6c3fa7cdf95342d74c7",
+      "type": "munitions_plant",
+      "vertices": 936
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "munitions_plant",
+      "vertices": 510
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "munitions_plant",
+      "vertices": 621
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "munitions_plant",
+      "vertices": 546
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "munitions_plant",
+      "vertices": 894
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "1b8e6c4f833f2f8edeaeb67365529a0b",
+      "type": "motor_works",
+      "vertices": 486
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "motor_works",
+      "vertices": 474
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "motor_works",
+      "vertices": 600
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "motor_works",
+      "vertices": 561
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 486,
+      "kind": "damage",
+      "type": "motor_works",
+      "vertices": 960
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "5e22470789f2ef616a99f5b7c4f28996",
+      "type": "fort",
+      "vertices": 828
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "7b2a654848a0cb39b14a1de35ea2c1fe",
+      "type": "university",
+      "vertices": 606
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "10241f6dfd8f774c7e20b5257066478d",
+      "type": "university",
+      "vertices": 750
+    },
+    {
+      "age": 1.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "99e74f700e106ed12c2cf93629bab501",
+      "type": "university",
+      "vertices": 1002
+    },
+    {
+      "age": 2.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "84ce8a8d964622f8735c5a82c6324c29",
+      "type": "heavy_assembly",
+      "vertices": 414
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 414,
+      "kind": "damage",
+      "type": "heavy_assembly",
+      "vertices": 408
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 414,
+      "kind": "damage",
+      "type": "heavy_assembly",
+      "vertices": 534
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 414,
+      "kind": "damage",
+      "type": "heavy_assembly",
+      "vertices": 489
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 414,
+      "kind": "damage",
+      "type": "heavy_assembly",
+      "vertices": 852
+    },
+    {
+      "age": 2.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "af694c81afc767899d845ed991dd8823",
+      "type": "airfield",
+      "vertices": 270
+    },
+    {
+      "age": 3.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "2203143bf73fa9e2d9cfdd1b7b05da15",
+      "type": "electronics_plant",
+      "vertices": 936
+    },
+    {
+      "age": 3.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "71c4aad786f5a2e20154f677b3859e1f",
+      "type": "electronics_plant",
+      "vertices": 1080
+    },
+    {
+      "age": 3.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "d90140feeb2e84f5fe3fdd381ea74eda",
+      "type": "electronics_plant",
+      "vertices": 1332
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 936,
+      "kind": "damage",
+      "type": "electronics_plant",
+      "vertices": 924
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 936,
+      "kind": "damage",
+      "type": "electronics_plant",
+      "vertices": 858
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 936,
+      "kind": "damage",
+      "type": "electronics_plant",
+      "vertices": 717
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 936,
+      "kind": "damage",
+      "type": "electronics_plant",
+      "vertices": 768
+    },
+    {
+      "age": 3.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "fdfb33b23eebf1adef385e2f25e09e92",
+      "type": "comms_tower",
+      "vertices": 306
+    },
+    {
+      "age": 3.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "cce9acbc22f5a9c5f323ed5910e2aaec",
+      "type": "drone_works",
+      "vertices": 540
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "drone_works",
+      "vertices": 495
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "drone_works",
+      "vertices": 621
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "drone_works",
+      "vertices": 522
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 540,
+      "kind": "damage",
+      "type": "drone_works",
+      "vertices": 894
+    },
+    {
+      "age": 3.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "9a403fe3a00ab7a06d6ac9e846bf89ca",
+      "type": "shield_generator",
+      "vertices": 630
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 630,
+      "kind": "damage",
+      "type": "shield_generator",
+      "vertices": 606
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 630,
+      "kind": "damage",
+      "type": "shield_generator",
+      "vertices": 675
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 630,
+      "kind": "damage",
+      "type": "shield_generator",
+      "vertices": 549
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 630,
+      "kind": "damage",
+      "type": "shield_generator",
+      "vertices": 1050
+    },
+    {
+      "age": 4.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "4598b4947773c11421e07ab778c2d1be",
+      "type": "fusion_plant",
+      "vertices": 1386
+    },
+    {
+      "age": 4.0,
+      "kind": "building",
+      "level": 2,
+      "signature": "ca48ed18a3c7b9eede95e86c889353f0",
+      "type": "fusion_plant",
+      "vertices": 1530
+    },
+    {
+      "age": 4.0,
+      "kind": "building",
+      "level": 3,
+      "signature": "f90b7380288119bebf6e56bf3b0a3ae4",
+      "type": "fusion_plant",
+      "vertices": 1782
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 1386,
+      "kind": "damage",
+      "type": "fusion_plant",
+      "vertices": 1350
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 1386,
+      "kind": "damage",
+      "type": "fusion_plant",
+      "vertices": 1401
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 1386,
+      "kind": "damage",
+      "type": "fusion_plant",
+      "vertices": 1164
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 1386,
+      "kind": "damage",
+      "type": "fusion_plant",
+      "vertices": 870
+    },
+    {
+      "age": 4.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "221d39a1645fa43bc27b3399111f50df",
+      "type": "robotics_complex",
+      "vertices": 450
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 450,
+      "kind": "damage",
+      "type": "robotics_complex",
+      "vertices": 438
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 450,
+      "kind": "damage",
+      "type": "robotics_complex",
+      "vertices": 525
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 450,
+      "kind": "damage",
+      "type": "robotics_complex",
+      "vertices": 483
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 450,
+      "kind": "damage",
+      "type": "robotics_complex",
+      "vertices": 894
+    },
+    {
+      "age": 4.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "bb93599d8555c3cc0ee2192ea9f7c6de",
+      "type": "missile_silo",
+      "vertices": 954
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 954,
+      "kind": "damage",
+      "type": "missile_silo",
+      "vertices": 918
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 954,
+      "kind": "damage",
+      "type": "missile_silo",
+      "vertices": 1065
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 954,
+      "kind": "damage",
+      "type": "missile_silo",
+      "vertices": 1044
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 954,
+      "kind": "damage",
+      "type": "missile_silo",
+      "vertices": 1374
+    },
+    {
+      "age": 4.0,
+      "kind": "building",
+      "level": 1,
+      "signature": "57224de5391205c1291a2b910b2ff5af",
+      "type": "wonder",
+      "vertices": 612
+    },
+    {
+      "hp": 70,
+      "intact_vertices": 612,
+      "kind": "damage",
+      "type": "wonder",
+      "vertices": 576
+    },
+    {
+      "hp": 45,
+      "intact_vertices": 612,
+      "kind": "damage",
+      "type": "wonder",
+      "vertices": 678
+    },
+    {
+      "hp": 20,
+      "intact_vertices": 612,
+      "kind": "damage",
+      "type": "wonder",
+      "vertices": 510
+    },
+    {
+      "hp": 0,
+      "intact_vertices": 612,
+      "kind": "damage",
+      "type": "wonder",
+      "vertices": 1098
+    }
+  ]
+}

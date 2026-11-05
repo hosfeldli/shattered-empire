@@ -1,5 +1,18 @@
 # Native edition: status
 
+## Compact UI and later-era development (2026-11-05)
+
+The minimap is removed. Build, Army and Research are the primary tools; selection cards and
+compact drawers replace the broad command dock and full-screen management default.
+[SIMPLE_UI.md](SIMPLE_UI.md) describes direct placement, recruitment, commands and all-era coverage.
+The current packaged macOS run passes 50 UI checks. The server suite passes 140 tests and native
+headless checks total 226. Both development exports share the hash in [VERIFICATION.md](VERIFICATION.md).
+
+The catalogue covers all 23 troop types, all 32 active player building types, all supported
+levels 1–3 and the four city tiers. Advanced industry and military silhouettes are distinct;
+construction and HP-derived damage use real geometry. The sheets establish coverage and regression
+evidence; final art quality, sustained large-map/late-game performance and release acceptance remain open.
+
 ## Streamlined native redesign and water revision
 
 See [NATIVE_REDESIGN.md](NATIVE_REDESIGN.md) for the new ruleset, eight-workspace UI, complete

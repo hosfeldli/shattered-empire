@@ -10,12 +10,15 @@ var signature:=""
 var elapsed:=0.0
 var research_details:VBoxContainer
 var response_panel:PanelContainer
+var city_tab:="Overview"
+var build_group:="City"
+var thumbnail_jobs:Array=[]
 
 func setup(owner_:NativeWorkspace) -> void:
 	workspace=owner_; world=owner_.world
 	size_flags_horizontal=Control.SIZE_EXPAND_FILL; size_flags_vertical=Control.SIZE_EXPAND_FILL
 	scroll=ScrollContainer.new(); scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; add_child(scroll)
-	body=VBoxContainer.new(); body.size_flags_horizontal=Control.SIZE_EXPAND_FILL; body.add_theme_constant_override("separation",18); scroll.add_child(body)
+	body=VBoxContainer.new(); body.size_flags_horizontal=Control.SIZE_EXPAND_FILL; body.add_theme_constant_override("separation",10); scroll.add_child(body)
 
 func sync() -> void:
 	var ids:Array=workspace.rows.map(func(row):return row.key)
@@ -24,13 +27,15 @@ func sync() -> void:
 	if workspace.page in ["Cities"]: layout=_data().get("gov",{}).get("proposals",[]).map(func(item):return item.id)
 	elif workspace.page=="Resources": layout=[_data().get("actions",[]),_data().get("consumers",[]).map(func(item):return item.get("type")),_data().get("producers",[]).map(func(item):return item.get("count",item.get("n",0)))]
 	if workspace.page=="Rivals": layout=workspace.rows.map(func(row):return row.data)
-	var next:=str([workspace.page,ids,null if workspace.page=="Research" else key,layout])
+	if workspace.page=="Research": layout=world.econ.get("queue",[])
+	if workspace.page=="Construction": layout=[world.econ.get("age",0),world.econ.get("techs",[])]
+	var next:=str([workspace.page,workspace.expanded,city_tab,ids,null if workspace.page=="Research" and workspace.expanded else key,layout])
 	if signature!=next:
 		signature=next; _build()
 	_update_values()
 
 func _card(parent:Node,title:String) -> VBoxContainer:
-	var panel:=PanelContainer.new(); panel.add_theme_stylebox_override("panel",NativeUI.style(Color("1c292f"),Color("36464b"),16)); panel.size_flags_horizontal=Control.SIZE_EXPAND_FILL; parent.add_child(panel)
+	var panel:=PanelContainer.new(); panel.add_theme_stylebox_override("panel",NativeUI.style(Color("1c292f"),Color("36464b"),9)); panel.size_flags_horizontal=Control.SIZE_EXPAND_FILL; parent.add_child(panel)
 	var column:=VBoxContainer.new(); panel.add_child(column)
 	if not title.is_empty(): NativeUI.label(column,title.to_upper(),13,NativeUI.GOLD)
 	return column
@@ -39,12 +44,12 @@ func _bind(parent:Node,getter:Callable,size_:=17,color:=NativeUI.TEXT) -> Label:
 	var label:=NativeUI.label(parent,"",size_,color); bindings.append({"label":label,"get":getter}); return label
 
 func _metric(parent:Node,title:String,getter:Callable) -> void:
-	var column:=_card(parent,title); _bind(column,getter,30)
+	var column:=_card(parent,title); _bind(column,getter,22)
 
 func _button(parent:Node,title:String,action:Callable,primary:=false) -> Button:
-	var button:=NativeUI.button(parent,title,action)
+	var button:=NativeUI.compact_button(parent,title,action)
 	if primary:
-		button.add_theme_stylebox_override("normal",NativeUI.style(Color("d0af6c"),Color("e5c687"),10)); button.add_theme_color_override("font_color",Color("142026")); button.add_theme_color_override("font_hover_color",Color("142026"))
+		button.add_theme_stylebox_override("normal",NativeUI.style(Color("d0af6c"),Color("e5c687"),6)); button.add_theme_color_override("font_color",Color("142026")); button.add_theme_color_override("font_hover_color",Color("142026"))
 	return button
 
 func _data() -> Dictionary:
@@ -67,10 +72,8 @@ func _action(id:String,values:Dictionary={}) -> void:
 	workspace._perform(false)
 
 func _all_orders(action_id:="") -> void:
-	workspace.show_all_orders(true)
-	if not action_id.is_empty():
-		var matches:=workspace.page_actions.filter(func(record):return record.id==action_id)
-		if not matches.is_empty(): workspace.action_list.select(workspace.page_actions.find(matches[0])); workspace._set_action(matches[0])
+	if action_id.is_empty(): workspace.show_all_orders(true)
+	else: workspace.focus_order(action_id)
 
 func _record_picker() -> void:
 	if workspace.rows.is_empty(): return
@@ -82,8 +85,8 @@ func _record_picker() -> void:
 	picker.item_selected.connect(func(index):workspace._choose(index))
 
 func _build() -> void:
-	NativeUI.clear(body); bindings.clear(); response_panel=null
-	var related:={"Cities":["Cities","Production"],"Buildings":["Cities","Buildings","Production"],"Military":["Military","Armies","Formations","Air","Strategic"],"Armies":["Military","Armies","Formations","Air","Strategic"],"Air":["Military","Armies","Air","Strategic"],"Economy":["Economy","Resources","Logistics"],"Resources":["Economy","Resources","Logistics"],"Alerts":["Alerts","Battles","History"]}
+	NativeUI.clear(body); bindings.clear(); response_panel=null; thumbnail_jobs.clear()
+	var related:={"Buildings":["Buildings","Production","Cities"],"Military":["Military","Armies","Formations","Air","Strategic"],"Armies":["Military","Armies","Formations","Air","Strategic"],"Air":["Military","Armies","Air","Strategic"],"Economy":["Economy","Resources","Logistics"],"Resources":["Economy","Resources","Logistics"],"Alerts":["Alerts","Battles","History"]}
 	if related.has(workspace.page):
 		var tabs:=HFlowContainer.new(); body.add_child(tabs)
 		for target in related[workspace.page]:
@@ -96,7 +99,8 @@ func _build() -> void:
 		"Research": _research()
 		"Buildings","Production": _building()
 		"Construction": _construction()
-		"Military","Armies","Formations","Air": _forces()
+		"Armies": _armies()
+		"Military","Formations","Air": _forces()
 		"Rivals": _rivals()
 		"Strategic": _strategic()
 		"Battles": _battles()
@@ -125,24 +129,17 @@ func show_response(reply:Dictionary) -> void:
 	else: NativeUI.label(card,"Your order has been accepted.",18)
 
 func _economy() -> void:
-	NativeUI.label(body,"The national economy",30)
-	NativeUI.label(body,"Stockpiles, production and the cost of keeping your empire moving.",16,NativeUI.MUTED)
-	var grid:=GridContainer.new(); grid.columns=4; grid.size_flags_horizontal=Control.SIZE_EXPAND_FILL; grid.add_theme_constant_override("h_separation",12); grid.add_theme_constant_override("v_separation",12); body.add_child(grid)
+	var resources:=_card(body,"Stockpiles · net per second")
 	for good in GameHUD.GOODS:
-		var key:String=good; var card:=_card(grid,str(world.defs.get("GOOD_NAMES",{}).get(key,key)))
-		_bind(card,func():return str(roundi(float(world.econ.get("res",{}).get(key,0)))),30)
-		_bind(card,func():return "%+.2f / sec"%float(world.econ.get("rates",{}).get(key,0)),16,NativeUI.MUTED)
-		_button(card,"Details →",func():workspace.open_page("Resources"); _select_key(key))
-	var row:=HBoxContainer.new(); body.add_child(row)
-	_metric(row,"Power",func():return "%d / %d"%[int(world.econ.get("power",{}).get("gen",0)),int(world.econ.get("power",{}).get("use",0))])
-	_metric(row,"Storage",func():return str(world.econ.get("storage",0)))
-	_metric(row,"Field army",func():return "%d personnel"%int(world.econ.get("men",0)))
-	var ledger:=_card(body,"Treasury and expenditure")
-	NativeUI.label(ledger,"Income comes from productive cities and commercial halls. Roads and freight connect local production to national stockpiles.",17,NativeUI.MUTED)
-	var buttons:=HFlowContainer.new(); ledger.add_child(buttons)
-	_button(buttons,"Spending details",func():_all_orders())
-	_button(buttons,"Infrastructure & supply",func():workspace.open_page("Logistics"))
-	_button(buttons,"City production",func():workspace.open_page("Cities"))
+		var key:String=good
+		var row:=HBoxContainer.new(); resources.add_child(row)
+		var button:=_button(row,str(world.defs.get("GOOD_NAMES",{}).get(key,key.capitalize())),func():workspace.open_page("Resources"); _select_key(key))
+		button.size_flags_horizontal=Control.SIZE_EXPAND_FILL; button.alignment=HORIZONTAL_ALIGNMENT_LEFT
+		_bind(row,func():return "%s   %+.1f"%[_number(world.econ.get("res",{}).get(key,0)),float(world.econ.get("rates",{}).get(key,0))],16)
+	var power:=_card(body,"Infrastructure")
+	_bind(power,func():return "Power %d generated / %d used · Storage %s"%[int(world.econ.get("power",{}).get("gen",0)),int(world.econ.get("power",{}).get("use",0)),str(world.econ.get("storage",0))],16)
+	_button(power,"Inspect supply network",func():workspace.open_page("Logistics"))
+	_button(power,"Spending breakdown",func():_all_orders())
 
 func _select_key(key:Variant) -> void:
 	for index in workspace.rows.size():
@@ -150,7 +147,7 @@ func _select_key(key:Variant) -> void:
 
 func _resource() -> void:
 	_record_picker()
-	_bind(body,func():return str(_data().get("title","Resource")),30)
+	_bind(body,func():return str(_data().get("title","Resource")),22)
 	_bind(body,func():return str(_data().get("what","")),17,NativeUI.MUTED)
 	var row:=HBoxContainer.new(); body.add_child(row)
 	_metric(row,"Stockpile",func():return str(_data().get("stock",0)))
@@ -161,58 +158,79 @@ func _resource() -> void:
 	_bind(advice,func():return str(_data().get("cause","")),16,NativeUI.MUTED)
 	for action in _data().get("actions",[]):
 		var record:Dictionary=action
-		_button(advice,str(record.get("label","Review")),func():_resource_action(record))
+		var button:=_button(advice,str(record.get("label","Review")),func():_resource_action(record))
+		button.disabled=bool(record.get("disabled",false)); button.tooltip_text=str(record.get("why",""))
 	var chains:=HBoxContainer.new(); body.add_child(chains)
 	for category in ["producers","consumers"]:
 		var card:=_card(chains,category)
 		for record in _data().get(category,[]):
 			NativeUI.label(card,str(record.get("name",record.get("type",""))),18)
 			NativeUI.label(card,"%s facilities · %s / sec"%[str(record.get("count",record.get("n",0))),str(record.get("rate",record.get("output",0)))],14,NativeUI.MUTED)
-	_button(body,"Import goods / request a quote",func():_all_orders("quote"))
 
 func _resource_action(record:Dictionary) -> void:
 	match str(record.get("a","")):
 		"build","housing": workspace.tools.activate("build",record.get("type","house")); workspace.panel.hide()
+		"inspect": workspace.open_page("Resources"); _select_key(record.get("good",""))
+		"locate":
+			for building in world.buildings.values():
+				if int(building.o)==world.civ_id and building.ty==record.get("type"):
+					workspace.settlements.selected_building=int(building.id); workspace.camera.focus_tile(int(building.t)); workspace.panel.hide(); return
+		"find":
+			var type:=str(record.get("type","mine")); var deposits:={"mine":[2,3],"oil_well":[1],"quarry":[5],"salvage":[7]}
+			var nearest:=-1; var distance:=INF
+			for tile in world.grid.n:
+				if world.known[tile]==0: continue
+				var biome:=world.biome(tile); var terrains:Array=world.defs.get("TERRAIN",[])
+				var suitable:bool=world.deposit(tile) in deposits.get(type,[]) or type=="lumber" and biome<terrains.size() and str(terrains[biome].get("name","")).to_lower().contains("forest")
+				if not suitable: continue
+				var point:=world.grid.center(tile); var d:=Vector2(world.grid.dx_wrap(workspace.camera.focus.x,point.x),point.y-workspace.camera.focus.z).length_squared()
+				if d<distance: nearest=tile; distance=d
+			if nearest>=0: workspace.camera.focus_tile(nearest,16); workspace.panel.hide()
+			else: workspace.feedback.call("No suitable deposit is known. Explore more terrain.",false)
 		"research": workspace._dispatch({"c":"researchQueue","op":"goal","tech":record.get("tech")})
 		_: _all_orders()
 
 func _city() -> void:
 	_record_picker()
-	if workspace.current.is_empty(): NativeUI.label(body,"No cities to manage yet.",24); return
-	_bind(body,func():return str(_data().get("n","City")),32)
-	_bind(body,func():return "Capital" if int(_data().get("cap",0)) else "Settlement",15,NativeUI.GOLD)
-	var stats:=HBoxContainer.new(); body.add_child(stats)
-	_metric(stats,"Population",func():return str(snappedf(float(_data().get("pop",0)),.1)))
-	_metric(stats,"Housing",func():return str(_data().get("h",0)))
-	_metric(stats,"Stability",func():return "%d%%"%int(_data().get("st",0)))
-	_metric(stats,"Growth / minute",func():return "%+.1f"%float(_data().get("gr",0)))
-	var columns:=HBoxContainer.new(); body.add_child(columns)
-	var labor:=_card(columns,"Population & work")
-	_bind(labor,func():return "Labor force   %s\nUnemployed   %s\nAvailable recruits   %s\nMilitary reserves   %s\nHousing   %s / %s"%[str(_data().get("lab",0)),str(_data().get("un",0)),str(_data().get("rec",0)),str(_data().get("rsv",0)),str(_data().get("pop",0)),str(_data().get("h",0))])
-	NativeUI.label(labor,"Workers automatically respond to food needs, shortages and available production.",16,NativeUI.MUTED)
-	var network:=_card(columns,"City connections")
-	_bind(network,func():return "%s\nFreight capacity   %s\nGoods shipped   %s\nMigration   %s"%["Isolated from the national network" if int(_data().get("iso",0)) else "Connected to the national network","Unlimited" if float(_data().get("fr",0))<0 else str(_data().get("fr",0)),str(_data().get("ship",0)),str(_data().get("mig",0))])
-	_button(network,"Center on city",workspace._center_current)
-	var development:=_card(body,"Development")
-	NativeUI.label(development,"Routine staffing, repairs, rubble and basic housing are handled locally. Major construction stays under your control.",16,NativeUI.MUTED)
-	var controls:=HBoxContainer.new(); development.add_child(controls)
-	var automatic:=CheckButton.new(); automatic.text="Automatic Development"; automatic.button_pressed=bool(_data().get("development",{}).get("on",true)); controls.add_child(automatic)
-	var priority:=NativeUI.options(controls,[["balanced","Balanced"],["industry","Industry"],["agriculture","Agriculture"],["military","Military"]])
-	for index in priority.item_count:
-		if priority.get_item_metadata(index)==_data().get("development",{}).get("priority","balanced"): priority.select(index)
-	_button(controls,"Apply",func():workspace._dispatch({"c":"cityDevelopment","city":int(workspace.current.key),"on":automatic.button_pressed,"priority":NativeUI.value(priority)}),true)
-	_bind(development,func():return str(_data().get("development",{}).get("activity","No routine project active") if _data().get("development",{}).get("activity")!=null else "No routine project active"),16,NativeUI.MUTED)
-	var production:=_card(body,"Production")
-	for building in world.buildings.values():
-		if int(building.get("c",-1))!=int(workspace.current.key): continue
-		var id:=int(building.id)
-		var line:=HBoxContainer.new(); production.add_child(line)
-		var info:=_bind(line,func():return "%s · %s"%[workspace._name("BUILDINGS",world.buildings.get(id,{}).get("ty","")),str(world.buildings.get(id,{}).get("w","Working") if world.buildings.get(id,{}).get("d",0) else "Under construction")],17)
-		info.size_flags_horizontal=Control.SIZE_EXPAND_FILL
-		_button(line,"Inspect",func():workspace.settlements.selected_building=id; workspace.open_page("Buildings"))
+	if workspace.current.is_empty(): NativeUI.label(body,"No cities to manage yet.",22); return
+	var tabs:=HFlowContainer.new(); body.add_child(tabs)
+	for section in ["Overview","Development","Buildings"]:
+		var target:String=section
+		_button(tabs,target,func():city_tab=target; signature=""; sync(),target==city_tab)
+	match city_tab:
+		"Overview":
+			var stats:=GridContainer.new(); stats.columns=2; body.add_child(stats)
+			_metric(stats,"Population",func():return _number(_data().get("pop",0)))
+			_metric(stats,"Housing",func():return _number(_data().get("h",0)))
+			_metric(stats,"Stability",func():return "%d%%"%int(_data().get("st",0)))
+			_metric(stats,"Growth / minute",func():return "%+.1f"%float(_data().get("gr",0)))
+			var conditions:=_card(body,"City conditions")
+			_bind(conditions,func():return "Labor force %s · Unemployed %s\nAvailable recruits %s\n%s"%[_number(_data().get("lab",0)),_number(_data().get("un",0)),_number(_data().get("rec",0)),"Isolated from the supply network" if int(_data().get("iso",0)) else "Connected to the supply network"],16)
+			_bind(conditions,func():return str(_data().get("development",{}).get("activity") if _data().get("development",{}).get("activity")!=null else "No routine construction active"),15,NativeUI.MUTED)
+			_button(body,"Center on city",workspace._center_current)
+		"Development":
+			NativeUI.label(body,"Routine staffing, repairs and basic needs are managed locally. Choose the city's development priority.",16,NativeUI.MUTED)
+			var automatic:=CheckButton.new(); automatic.text="Automatic development"; automatic.button_pressed=bool(_data().get("development",{}).get("on",true)); body.add_child(automatic)
+			NativeUI.label(body,"Development priority",14,NativeUI.GOLD)
+			var priority:=NativeUI.options(body,[["balanced","Balanced"],["industry","Industry"],["agriculture","Agriculture"],["military","Military"]])
+			for index in priority.item_count:
+				if priority.get_item_metadata(index)==_data().get("development",{}).get("priority","balanced"): priority.select(index)
+			var city_id:=int(workspace.current.key)
+			var save:=func():workspace._dispatch({"c":"cityDevelopment","city":city_id,"on":automatic.button_pressed,"priority":NativeUI.value(priority)})
+			automatic.toggled.connect(func(_on):save.call()); priority.item_selected.connect(func(_index):save.call())
+			_button(body,"Suggest next construction",func():_action("city_plan",{"city":city_id}))
+		"Buildings":
+			for building in world.buildings.values():
+				if int(building.get("c",-1))!=int(workspace.current.key): continue
+				var id:=int(building.id)
+				var card:=_card(body,"")
+				var row:=HBoxContainer.new(); card.add_child(row)
+				var label:=NativeUI.label(row,workspace._name("BUILDINGS",building.ty),17); label.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+				_button(row,"Inspect",func():workspace.settlements.selected_building=id; workspace.open_page("Buildings"))
+				_bind(card,func():return str(world.buildings.get(id,{}).get("w","Working") if world.buildings.get(id,{}).get("d",0) else "Under construction"),14,NativeUI.MUTED)
 
 func _rivals() -> void:
-	NativeUI.label(body,"Beyond your borders",32)
+	NativeUI.label(body,"Beyond your borders",24)
 	NativeUI.label(body,"Only observed activity is shown. A quiet border does not reveal an opponent's plans.",16,NativeUI.MUTED)
 	for row in workspace.rows:
 		var rival:Dictionary=row.data; var id:=int(rival.id)
@@ -229,15 +247,26 @@ func _rivals() -> void:
 		elif status=="war": NativeUI.label(card,"Use Withdraw or Hold to disengage your forces. Enemy forces may continue fighting.",15,NativeUI.MUTED)
 
 func _research() -> void:
-	var progress:=_card(body,"Research programme")
-	_bind(progress,func():return workspace._name("TECHS",world.econ.get("research","Automatic research")),26)
-	_bind(progress,func():return "%s points earned · %.2f points / sec · %d technologies queued"%[str(world.econ.get("progress",0)),float(world.econ.get("researchRate",0)),world.econ.get("queue",[]).size()],16,NativeUI.MUTED)
-	var columns:=HSplitContainer.new(); columns.custom_minimum_size.y=520; body.add_child(columns)
-	var graph_scroll:=ScrollContainer.new(); graph_scroll.size_flags_horizontal=Control.SIZE_EXPAND_FILL; graph_scroll.custom_minimum_size.x=400; columns.add_child(graph_scroll)
-	var graph:=NativeResearchTree.new(); graph.setup(world); graph_scroll.add_child(graph)
-	research_details=_card(columns,"Technology")
-	research_details.custom_minimum_size.x=260
-	graph.technology_selected.connect(func(key):_select_key(key); _research_detail())
+	var progress:=_card(body,"Current research")
+	_bind(progress,func():return workspace._name("TECHS",world.econ.get("research","Choose a technology")),21)
+	_bind(progress,func():return "%s points · %.2f / sec · %d queued"%[str(world.econ.get("progress",0)),float(world.econ.get("researchRate",0)),world.econ.get("queue",[]).size()],15,NativeUI.MUTED)
+	if not world.econ.get("queue",[]).is_empty():
+		var queue:=_card(body,"Research queue")
+		for technology in world.econ.queue:
+			var key:String=technology; var row:=HBoxContainer.new(); queue.add_child(row)
+			var name_:=NativeUI.label(row,workspace._name("TECHS",key),16); name_.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+			_button(row,"First",func():_action("research_front",{"tech":key}))
+			_button(row,"Remove",func():_action("research_remove",{"tech":key}))
+	if not workspace.expanded:
+		_button(body,"Open technology tree",func():workspace.set_expanded(true))
+		_record_picker()
+		research_details=_card(body,"Selected technology")
+	else:
+		var columns:=HSplitContainer.new(); columns.custom_minimum_size.y=500; body.add_child(columns)
+		var graph_scroll:=ScrollContainer.new(); graph_scroll.size_flags_horizontal=Control.SIZE_EXPAND_FILL; graph_scroll.custom_minimum_size.x=360; columns.add_child(graph_scroll)
+		var graph:=NativeResearchTree.new(); graph.setup(world); graph_scroll.add_child(graph)
+		research_details=_card(columns,"Technology"); research_details.custom_minimum_size.x=260
+		graph.technology_selected.connect(func(key):_select_key(key); _research_detail())
 	_research_detail()
 
 func _number(value:Variant) -> String:
@@ -254,22 +283,28 @@ func _research_detail() -> void:
 	NativeUI.label(research_details,str(info.get("desc","")),17,NativeUI.MUTED)
 	NativeUI.label(research_details,"%s points · %s"%[str(info.get("cost",0)),str(info.get("status",""))],15,NativeUI.GOLD)
 	for prerequisite in info.get("req",[]): NativeUI.label(research_details,"Requires "+workspace._name("TECHS",prerequisite),15,NativeUI.MUTED)
+	var unlocks:=[]
+	for catalog in ["BUILDINGS","UNITS"]:
+		for item in world.defs.get(catalog,{}).values():
+			if item.get("tech")==key: unlocks.append(str(item.get("name","")))
+	if not unlocks.is_empty(): NativeUI.label(research_details,"Unlocks: "+", ".join(unlocks),15,NativeUI.MUTED)
+	var rate:=float(world.econ.get("researchRate",0))
+	if rate>0: NativeUI.label(research_details,"~%d seconds at current research output"%ceili(maxf(0,float(info.get("cost",0))-float(info.get("earned_points",0)))/rate),14,NativeUI.MUTED)
 	var complete:bool=key in world.econ.get("techs",[])
-	_button(research_details,"Research now",func():_action("research_now",{"tech":key}),true).disabled=complete
+	_button(research_details,"Research",func():_action("research_now",{"tech":key}),true).disabled=complete
 	_button(research_details,"Add to research queue",func():_action("research_add",{"tech":key})).disabled=complete
-	_button(research_details,"Set as long-term goal",func():_action("research_goal",{"tech":key})).disabled=complete
-	_button(research_details,"Manage research queue",func():_all_orders("research_front"))
+	NativeUI.menu(research_details,"Research options ▾",[{"label":"Research prerequisites automatically","disabled":complete,"action":func():_action("research_goal",{"tech":key})}])
 
 func _building() -> void:
 	_record_picker()
 	if workspace.current.is_empty(): NativeUI.label(body,"Select a facility to manage production.",24); return
 	var data:=_data(); var type:=str(data.get("ty","")); var def:Dictionary=world.defs.get("BUILDINGS",{}).get(type,{})
-	NativeUI.label(body,str(def.get("name",type)),32)
+	NativeUI.label(body,str(def.get("name",type)),24)
 	_bind(body,func():return "%s · level %s · health %s%% · workers %s"%[str(_data().get("st","Operational")).capitalize(),str(_data().get("lv",1)),str(_data().get("hp",100)),str(_data().get("s",0))],17,NativeUI.MUTED)
 	var choices:=HFlowContainer.new(); body.add_child(choices)
 	for pair in [["Upgrade","upgrade"],["Repair","repair"],["Fund this site next","fund_next"]]:
 		var action_id:String=pair[1]; _button(choices,pair[0],func():_action(action_id,{"building":int(workspace.current.key)}))
-	var catalog:=GridContainer.new(); catalog.columns=3; catalog.add_theme_constant_override("h_separation",12); catalog.add_theme_constant_override("v_separation",12); body.add_child(catalog)
+	var catalog:=GridContainer.new(); catalog.columns=1; catalog.add_theme_constant_override("h_separation",12); catalog.add_theme_constant_override("v_separation",12); body.add_child(catalog)
 	for unit in def.get("trains",[]):
 		var key:String=unit; var definition:Dictionary=world.defs.get("UNITS",{}).get(key,{})
 		var card:=_card(catalog,str(definition.get("name",key)))
@@ -287,40 +322,90 @@ func _cost(cost:Dictionary) -> String:
 	return " · ".join(parts)
 
 func _construction() -> void:
-	NativeUI.label(body,"Build your empire",32)
-	NativeUI.label(body,"Choose a building, then place it on an approved site. Drag to plan several sites.",17,NativeUI.MUTED)
-	var tools_row:=HFlowContainer.new(); body.add_child(tools_row)
-	for spec in [["Road / rail","construction_road"],["Bridge","construction_bridge"],["Trench line","construction_trench"]]:
-		var id:String=spec[1]; _button(tools_row,spec[0],func():_all_orders(id))
-	var grid:=GridContainer.new(); grid.columns=3; grid.add_theme_constant_override("h_separation",12); grid.add_theme_constant_override("v_separation",12); body.add_child(grid)
-	for type in world.defs.get("BUILDINGS",{}):
-		var key:String=type; var def:Dictionary=world.defs.BUILDINGS[key]
-		if def.get("obsolete",false) or def.get("rebelOnly",false): continue
-		var card:=_card(grid,str(def.get("cat","Infrastructure")))
-		NativeUI.label(card,str(def.get("name",key)),24)
-		NativeUI.label(card,_cost(def.get("cost",{})),15,NativeUI.MUTED)
-		if def.get("tech")!=null: NativeUI.label(card,"Requires "+workspace._name("TECHS",def.tech),14,NativeUI.MUTED)
-		_button(card,"Plan building",func():workspace.tools.activate("build",key); workspace.panel.hide())
+	var search:=LineEdit.new(); search.placeholder_text="Find a building…"; body.add_child(search)
+	var catalog:=VBoxContainer.new(); catalog.add_theme_constant_override("separation",5); body.add_child(catalog)
+	search.text_changed.connect(func(_value):_build_catalog(catalog,search.text,build_group)); _build_catalog(catalog,"",build_group)
+
+func _build_group(type:String) -> String:
+	if type in ["house","town","market","academy","university","port","comms_tower","wonder"]: return "City"
+	if type in ["farm","lumber","mine","quarry","oil_well","salvage"]: return "Resources"
+	var definition:Dictionary=world.defs.BUILDINGS[type]
+	if definition.has("trains") or type in ["fort","bunker","guard_post","aa_battery","missile_silo","shield_generator","depot"]: return "Defense"
+	return "Industry"
+
+func _build_catalog(catalog:VBoxContainer,query:String,category:String) -> void:
+	NativeUI.clear(catalog); thumbnail_jobs.clear()
+	for group in ["City","Resources","Industry","Roads","Defense"]:
+		var section:String=group
+		var open:bool=category==group or not query.is_empty()
+		var heading:=_button(catalog,("▾ " if open else "▸ ")+group,func():build_group="" if build_group==section else section; _build_catalog(catalog,query,build_group),open)
+		heading.alignment=HORIZONTAL_ALIGNMENT_LEFT
+		if not open: continue
+		if group=="Roads":
+			var road:=NativeUI.options(catalog,[[1,"Dirt road"],[2,"Paved road"],[3,"Highway"],[4,"Railway"]])
+			_button(catalog,"Draw road",func():workspace.tools.activate("road",NativeUI.value(road)); workspace.panel.hide())
+			var bridges:=[]
+			for key in world.defs.get("BRIDGE_CLASSES",{}): bridges.append([key,str(world.defs.BRIDGE_CLASSES[key].get("name",key))])
+			var bridge:=NativeUI.options(catalog,bridges)
+			_button(catalog,"Draw bridge between banks",func():workspace.tools.activate("bridge",NativeUI.value(bridge)); workspace.panel.hide())
+		if group=="Defense":
+			var trench:=NativeUI.options(catalog,[["basic","Basic trench"],["reinforced","Reinforced trench"]])
+			_button(catalog,"Draw trench line",func():workspace.tools.activate("trench",NativeUI.value(trench)); workspace.panel.hide())
+		for type in world.defs.get("BUILDINGS",{}):
+			var key:String=type; var definition:Dictionary=world.defs.BUILDINGS[key]
+			if type=="town" or definition.get("obsolete",false) or definition.get("rebelOnly",false) or _build_group(key)!=group: continue
+			var name_:=str(definition.get("name",key))
+			if not query.is_empty() and not query.to_lower() in name_.to_lower(): continue
+			var tech:=str(definition.get("tech",""))
+			var unlocked:bool=int(definition.get("age",0))<=int(world.econ.get("age",0)) and (tech.is_empty() or tech in world.econ.get("techs",[]))
+			if not unlocked and query.is_empty(): continue
+			var button:=_button(catalog,"",func():workspace.tools.activate("build",key); workspace.panel.hide())
+			button.custom_minimum_size.y=62; button.disabled=not unlocked
+			var row:=HBoxContainer.new(); row.mouse_filter=Control.MOUSE_FILTER_IGNORE; button.add_child(row)
+			row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT); row.offset_left=5; row.offset_right=-5; row.offset_top=3; row.offset_bottom=-3
+			var thumbnail:=NativeModelThumbnail.new(); thumbnail.custom_minimum_size=Vector2(64,48); row.add_child(thumbnail)
+			var text:=VBoxContainer.new(); text.mouse_filter=Control.MOUSE_FILTER_IGNORE; text.size_flags_horizontal=Control.SIZE_EXPAND_FILL; text.add_theme_constant_override("separation",0); row.add_child(text)
+			NativeUI.label(text,name_,16).mouse_filter=Control.MOUSE_FILTER_IGNORE
+			NativeUI.label(text,_cost(definition.get("cost",{})) if unlocked else "Requires "+workspace._name("TECHS",tech) if not tech.is_empty() else "Requires a later era",12,NativeUI.MUTED).mouse_filter=Control.MOUSE_FILTER_IGNORE
+			button.tooltip_text="Place "+name_+" on the map" if unlocked else "Requires "+workspace._name("TECHS",tech) if not tech.is_empty() else "Requires a later era"
+			thumbnail_jobs.append(func():
+				if is_instance_valid(thumbnail): thumbnail.setup(workspace.settlements.preview_mesh(key,world.start_tile,false)))
+
+func _armies() -> void:
+	var armies:Array=world.econ.get("armies",[])
+	if armies.is_empty():
+		NativeUI.label(body,"No armies yet. Select troops and press G to organize an army.",17,NativeUI.MUTED)
+		_button(body,"Form army from selection · G",func():workspace.commands.issue("army_create",{"units":workspace.input_ref._owned_units(),"name":"Field army"})).disabled=workspace.input_ref._owned_units().is_empty()
+	for record in armies:
+		var army:Dictionary=record
+		var card:=_card(body,"")
+		_button(card,str(army.name),func():
+			workspace.input_ref.cancel(); workspace.input_ref.selected_army=int(army.id)
+			for id in army.get("units",[]):
+				if world.units.has(int(id)): workspace.military.selected[int(id)]=true
+			workspace.panel.hide(); workspace.input_ref.selection_changed.emit())
+		NativeUI.label(card,"%s · %d units\n%s"%[str(army.get("order",{}).get("kind","Hold")).capitalize(),army.get("units",[]).size(),str(army.get("status","Ready"))],15,NativeUI.MUTED)
+	_button(body,"Advanced army orders…",func():_all_orders())
 
 func _forces() -> void:
 	_record_picker()
-	NativeUI.label(body,"Forces & operations" if workspace.page=="Military" else workspace.page,32)
-	var selected:=HBoxContainer.new(); body.add_child(selected)
-	_metric(selected,"Owned units",func():return str(world.units.values().filter(func(unit):return int(unit.owner)==world.civ_id).size()))
-	_metric(selected,"Armies",func():return str(world.econ.get("armies",[]).size()))
-	_metric(selected,"Formations",func():return str(world.econ.get("formations",[]).size()))
-	var operations:=_card(body,"Operational orders")
-	var flow:=HFlowContainer.new(); operations.add_child(flow)
+	_bind(body,func():return "%d units · %d armies · %d formations"%[world.units.values().filter(func(unit):return int(unit.owner)==world.civ_id).size(),world.econ.get("armies",[]).size(),world.econ.get("formations",[]).size()],15,NativeUI.MUTED)
+	var status:=_card(body,"Selected force")
+	_bind(status,func():return str(_data().get("name",str(workspace.current.get("label","Select a force on the map")).split(" · ")[0])),21)
+	_bind(status,func():return "Health %s%% · Supply %s%%\nStatus: %s"%[str(_data().get("hp","—")),str(_data().get("supply",_data().get("sup","—"))),str(_data().get("status",_data().get("stance","—")))],16,NativeUI.MUTED)
+	_button(status,"Select on map",workspace._select_current)
+	var main:={"Military":["move","attack_move","hold"],"Armies":["army_move","army_defend","army_offensive"],"Formations":["formation_deploy","formation_rejoin","formation_shift"],"Air":["air_strike","air_patrol","air_return"]}
+	var flow:=HFlowContainer.new(); body.add_child(flow)
+	var extra:=[]
 	for action in workspace.page_actions:
 		var record:Dictionary=action
-		_button(flow,str(record.title).capitalize(),func():_all_orders(str(record.id)))
-	var status:=_card(body,"Selected force")
-	_bind(status,func():return str(_data().get("name",workspace.current.get("label","Select units on the map or choose a force above"))),23)
-	_bind(status,func():return "Health %s%%   ·   Supply %s%%   ·   Status %s"%[str(_data().get("hp","—")),str(_data().get("supply",_data().get("sup","—"))),str(_data().get("status",_data().get("stance","—")))],17,NativeUI.MUTED)
-	_button(status,"Select on map",workspace._select_current)
+		var label:=str(record.title).capitalize()
+		if record.id in main.get(workspace.page,[]): _button(flow,label+"…",func():_all_orders(str(record.id)))
+		else: extra.append({"label":label+"…","action":func():_all_orders(str(record.id))})
+	if not extra.is_empty(): NativeUI.menu(body,"Other military orders ▾",extra)
 
 func _strategic() -> void:
-	NativeUI.label(body,"Strategic forces",32)
+	NativeUI.label(body,"Strategic forces",24)
 	var row:=HBoxContainer.new(); body.add_child(row)
 	_metric(row,"Ready missiles",func():return str(world.econ.get("missiles",{}).get("ready",0)))
 	_metric(row,"Visible launches",func():return str(world.missiles.get("m",[]).size()))
@@ -339,7 +424,7 @@ func _strategic() -> void:
 		_button(warning,"Go to target",func():workspace.camera.focus_tile(int(data[2]),20); workspace.panel.hide())
 
 func _battles() -> void:
-	NativeUI.label(body,"Active engagements",32)
+	NativeUI.label(body,"Active engagements",24)
 	if world.battles.is_empty(): NativeUI.label(body,"No active battles in your current reports.",18,NativeUI.MUTED)
 	for battle in world.battles:
 		var record:Dictionary=battle; var mine:Dictionary=battle.get("mine",{}); var tile:=int(battle.get("t",-1))
@@ -357,7 +442,7 @@ func _battles() -> void:
 				workspace._dispatch({"c":operation,"units":units}))
 
 func _events() -> void:
-	NativeUI.label(body,"Situation reports" if workspace.page=="Alerts" else "Command chronicle",32)
+	NativeUI.label(body,"Situation reports" if workspace.page=="Alerts" else "Command chronicle",24)
 	NativeUI.label(body,"Select an event to return to its location. Reports contain information received by your civilization.",16,NativeUI.MUTED)
 	for row in workspace.rows:
 		var record:Dictionary=row; var data:Dictionary=row.data
@@ -368,7 +453,7 @@ func _events() -> void:
 
 func _overview() -> void:
 	_record_picker()
-	NativeUI.label(body,workspace.page,32)
+	NativeUI.label(body,workspace.page,24)
 	var actions:=HFlowContainer.new(); body.add_child(actions)
 	for action in workspace.page_actions:
 		var record:Dictionary=action; _button(actions,str(record.title).capitalize(),func():_all_orders(str(record.id)))
@@ -391,5 +476,6 @@ func _update_values() -> void:
 
 func _process(dt:float) -> void:
 	if not visible or not workspace.panel.visible: return
+	if not thumbnail_jobs.is_empty(): (thumbnail_jobs.pop_front() as Callable).call()
 	elapsed+=dt
 	if elapsed>.5: elapsed=0; sync()

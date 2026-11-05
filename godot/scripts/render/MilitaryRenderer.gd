@@ -14,6 +14,7 @@ var ring_mesh: TorusMesh
 var path_mesh: ImmediateMesh
 var path_inst: MeshInstance3D
 var drawn := 0
+var path_until:=0
 const BATCH_THRESHOLD := 64
 var batched := false
 var batches := {}        # model key -> MultiMeshInstance3D
@@ -182,7 +183,7 @@ func _update_batched(dt: float) -> void:
 			groups[key] = {"unit": u, "xforms": [],"animation":animation}
 		(groups[key].xforms as Array).append(Transform3D(Basis(Vector3.UP, float(motion.yaw)).scaled(Vector3(1,1.0 if animation=="cover" else float(pose.height_scale),1)), pos))
 		if str(d.get("cat",""))=="tracked":
-			var turret_key:="turret|%d"%int(u.owner)
+			var turret_key:="turret|%s|%d"%[u.type,int(u.owner)]
 			if not groups.has(turret_key): groups[turret_key]={"unit":u,"xforms":[]}
 			(groups[turret_key].xforms as Array).append(Transform3D(Basis(Vector3.UP,_target_yaw(u,p,float(motion.yaw))),pos))
 		drawn += 1
@@ -210,7 +211,7 @@ func _update_batched(dt: float) -> void:
 			mm.transform_format = MultiMesh.TRANSFORM_3D
 		if not meshes.has(key):
 			var sample: Dictionary = info.unit
-			meshes[key] = _build_turret(world.civ_color(int(sample.owner))) if str(key).begins_with("turret|") else _build_model(sample.type, world.civ_color(int(sample.owner)),str(info.get("animation","idle")))
+			meshes[key] = _build_turret(world.civ_color(int(sample.owner)),str(sample.type)) if str(key).begins_with("turret|") else _build_model(sample.type, world.civ_color(int(sample.owner)),str(info.get("animation","idle")))
 		mm.mesh = meshes[key]
 		var xforms: Array = info.xforms
 		if mm.instance_count < xforms.size():
@@ -242,6 +243,7 @@ func _update_batched_rings() -> void:
 
 func _draw_paths() -> void:
 	path_mesh.clear_surfaces()
+	if Time.get_ticks_msec()>path_until: return
 	var any := false
 	var g := world.grid
 	for id in selected.keys():
@@ -286,8 +288,8 @@ func _make(u: Dictionary, key: String) -> Dictionary:
 	var turret:MeshInstance3D
 	if str(unit_def(u.type).get("cat",""))=="tracked":
 		turret=MeshInstance3D.new()
-		var turret_key:="turret|%d"%int(u.owner)
-		if not meshes.has(turret_key): meshes[turret_key]=_build_turret(world.civ_color(int(u.owner)))
+		var turret_key:="turret|%s|%d"%[u.type,int(u.owner)]
+		if not meshes.has(turret_key): meshes[turret_key]=_build_turret(world.civ_color(int(u.owner)),str(u.type))
 		turret.mesh=meshes[turret_key]; node.add_child(turret)
 	return {"node": node, "mesh": mi, "turret":turret,"ring": ring, "last": p, "yaw": 0.0, "key": key}
 
@@ -299,15 +301,13 @@ func _target_yaw(unit:Dictionary, position:Vector2, fallback:float) -> float:
 	return atan2(-(point.y-position.y),world.grid.dx_wrap(position.x,point.x))
 
 
-func _build_turret(color:Color) -> ArrayMesh:
-	var kit:=MeshKit.new()
-	kit.component(AssetLibrary.unit_component("tank_turret"),Transform3D.IDENTITY)
-	kit.box("team:"+color.to_html(false),Vector3(-.02,.17,0),Vector3(.08,.004,.07))
-	return kit.commit()
+func _build_turret(color:Color,type:="tank") -> ArrayMesh:
+	return MilitaryModelLibrary.turret(type,color)
 
 
 func _animation(unit:Dictionary,definition:Dictionary) -> String:
-	if str(definition.get("cat",""))!="infantry" or cam.size>25.0: return "idle"
+	if unit.type=="helicopter" and not world.paused and cam.size<25: return "rotor_%d"%posmod(int(world.render_time*8),2)
+	if str(definition.get("cat",""))!="infantry" and unit.type!="engineer" or cam.size>25.0: return "idle"
 	if int(unit.get("supp",0))>60: return "cover"
 	if int(unit.get("next",-1))>=0: return "walk_%d"%posmod(int(world.render_time*4)+int(unit.id),2)
 	return "idle"
@@ -315,74 +315,7 @@ func _animation(unit:Dictionary,definition:Dictionary) -> String:
 
 ## a small readable model per unit class; forward is +X
 func _build_model(type: String, team_color: Color, animation:="idle") -> ArrayMesh:
-	var k := MeshKit.new()
-	var d := unit_def(type)
-	var cat: String = str(d.get("cat", "infantry"))
-	var team := "team:" + team_color.to_html(false)
-	var olive := Color(1, 1, 1)
-	var authored:={"tracked":"tank_hull","wheeled":"scout_vehicle","artillery":"artillery_gun","air":"aircraft"}
-	if cat=="infantry":
-		var spots:=[Vector2(.1,0),Vector2(0,-.09),Vector2(0,.09),Vector2(-.1,-.17),Vector2(-.1,.17),Vector2(-.12,0)]
-		for spot in spots:
-			k.component(AssetLibrary.unit_component("infantry_"+animation),Transform3D(Basis(),Vector3(spot.x,0,spot.y)))
-		k.box(team,Vector3(.1,.10,.025),Vector3(.028,.025,.004))
-		return k.commit()
-	if authored.has(cat):
-		k.component(AssetLibrary.unit_component(authored[cat]),Transform3D.IDENTITY)
-		if cat!="tracked": k.box(team,Vector3(-.03,.12,0),Vector3(.05,.004,.06))
-		return k.commit()
-	match cat:
-		"infantry":
-			# a squad in a loose wedge, the leader carrying the colours
-			var spots := [Vector2(0.1, 0), Vector2(0, -0.09), Vector2(0, 0.09), Vector2(-0.1, -0.17), Vector2(-0.1, 0.17), Vector2(-0.12, 0)]
-			for s: Vector2 in spots:
-				k.box("olive", Vector3(s.x, 0, s.y), Vector3(0.045, 0.085, 0.045), olive)
-				k.box("olive", Vector3(s.x, 0.085, s.y), Vector3(0.035, 0.03, 0.035), Color(0.8, 0.8, 0.75))
-			k.box("timber", Vector3(0.1, 0, 0.03), Vector3(0.008, 0.2, 0.008))
-			k.box(team, Vector3(0.1, 0.15, 0.06), Vector3(0.006, 0.05, 0.06))
-		"tracked":
-			k.box("steel", Vector3(0, 0, -0.075), Vector3(0.32, 0.05, 0.05), Color(0.45, 0.45, 0.45))
-			k.box("steel", Vector3(0, 0, 0.075), Vector3(0.32, 0.05, 0.05), Color(0.45, 0.45, 0.45))
-			k.box("olive", Vector3(0, 0.03, 0), Vector3(0.3, 0.06, 0.15), olive)
-		"wheeled":
-			for wx in [-0.08, 0.08]:
-				for wz in [-0.065, 0.065]:
-					k.box("char", Vector3(wx, 0, wz), Vector3(0.05, 0.045, 0.025))
-			k.box("olive", Vector3(0, 0.025, 0), Vector3(0.24, 0.06, 0.12), olive)
-			k.box("glass", Vector3(0.07, 0.085, 0), Vector3(0.05, 0.03, 0.1))
-			k.box(team, Vector3(-0.04, 0.086, 0), Vector3(0.1, 0.006, 0.1))
-		"artillery":
-			k.box("olive", Vector3(0, 0, 0), Vector3(0.12, 0.05, 0.1), olive)
-			k.box("char", Vector3(0, 0, -0.06), Vector3(0.06, 0.06, 0.02))
-			k.box("char", Vector3(0, 0, 0.06), Vector3(0.06, 0.06, 0.02))
-			k.box("steel", Vector3(0.12, 0.06, 0), Vector3(0.24, 0.02, 0.02))
-			k.box("olive", Vector3(-0.13, 0, -0.03), Vector3(0.16, 0.015, 0.015))
-			k.box("olive", Vector3(-0.13, 0, 0.03), Vector3(0.16, 0.015, 0.015))
-			for s: Vector2 in [Vector2(-0.05, -0.12), Vector2(-0.1, 0.12)]:
-				k.box("olive", Vector3(s.x, 0, s.y), Vector3(0.04, 0.08, 0.04), olive)
-			k.box(team, Vector3(0, 0.05, 0), Vector3(0.06, 0.006, 0.06))
-		"air":
-			k.box("steel", Vector3(0, 0, 0), Vector3(0.36, 0.05, 0.06), Color(0.75, 0.77, 0.78))
-			k.box("steel", Vector3(0.02, 0.02, 0), Vector3(0.1, 0.012, 0.42), Color(0.7, 0.72, 0.74))
-			k.box("steel", Vector3(-0.15, 0.02, 0), Vector3(0.06, 0.01, 0.16), Color(0.7, 0.72, 0.74))
-			k.box("glass", Vector3(0.12, 0.04, 0), Vector3(0.06, 0.02, 0.035))
-			k.box(team, Vector3(0.02, 0.035, 0.17), Vector3(0.05, 0.004, 0.05))
-			k.box(team, Vector3(0.02, 0.035, -0.17), Vector3(0.05, 0.004, 0.05))
-		"civilian":
-			k.box("canvas", Vector3(0, 0.03, 0), Vector3(0.2, 0.08, 0.11))
-			k.box("timber", Vector3(0, 0, 0), Vector3(0.22, 0.03, 0.12))
-			k.box("char", Vector3(-0.06, 0, -0.07), Vector3(0.05, 0.05, 0.015))
-			k.box("char", Vector3(-0.06, 0, 0.07), Vector3(0.05, 0.05, 0.015))
-			k.box(team, Vector3(0, 0.11, 0), Vector3(0.08, 0.006, 0.06))
-		_:
-			# support: engineers and supply trucks
-			k.box("olive", Vector3(0.08, 0.02, 0), Vector3(0.08, 0.08, 0.11), olive)
-			k.box("canvas", Vector3(-0.04, 0.02, 0), Vector3(0.16, 0.09, 0.12))
-			for wx in [-0.08, 0.08]:
-				for wz in [-0.065, 0.065]:
-					k.box("char", Vector3(wx, 0, wz), Vector3(0.045, 0.04, 0.02))
-			k.box(team, Vector3(-0.04, 0.115, 0), Vector3(0.12, 0.006, 0.08))
-	return k.commit()
+	return MilitaryModelLibrary.build(type,team_color,animation)
 
 
 ## own units whose drawn position projects within radius px of the screen point, nearest first

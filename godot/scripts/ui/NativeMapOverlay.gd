@@ -2,6 +2,7 @@ class_name NativeMapOverlay
 extends Control
 ## Crisp tactical outlines, authoritative formation frontage and fog-safe hover information.
 var app:Node
+var high_contrast:=false
 var tooltip:PanelContainer
 var body_label:Label
 var hover:=-1
@@ -29,10 +30,20 @@ func _outline(tile:int,color:Color,width:=1.5) -> void:
 	points.append(points[0]); draw_polyline(points,color,width,true)
 
 func _draw() -> void:
-	if not app.world.ready_ or app.shell.is_blocking() or app.workspace.panel.visible: return
+	if not app.world.ready_ or app.shell.is_blocking(): return
 	if hover>=0 and app.command_tools.mode=="select": _outline(hover,Color(1,1,.9,.4),1)
 	for id in app.input.selected_buildings:
-		if app.world.buildings.has(id): _outline(int(app.world.buildings[id].t),NativeUI.GOLD,2)
+		if app.world.buildings.has(id): _outline(int(app.world.buildings[id].t),Color("77e7ff") if high_contrast else NativeUI.GOLD,3 if high_contrast else 2)
+	if app.cam.size<40:
+		var shown:=0
+		for id in app.world.units:
+			var unit:Dictionary=app.world.units[id]
+			if float(unit.get("hp",100))>=70 or not app.military.draw_positions.has(id): continue
+			var point:Vector2=app.cam.to_screen(app.military.draw_positions[id])+Vector2(-9,-12)
+			draw_rect(Rect2(point,Vector2(18,3)),Color(.08,.09,.1,.9))
+			draw_rect(Rect2(point,Vector2(18*clampf(float(unit.hp)/100.0,0,1),3)),Color("77e7ff") if high_contrast else Color("e5a176"))
+			shown+=1
+			if shown>=128: break
 	var formations:={}
 	for id in app.military.selected:
 		var formation:=int(app.world.units.get(id,{}).get("formation",0))
@@ -64,7 +75,7 @@ func _describe(tile:int) -> String:
 	return "\n".join(lines)
 
 func _process(dt:float) -> void:
-	if not app.world.ready_ or app.shell.is_blocking() or app.workspace.panel.visible: tooltip.hide(); return
+	if not app.world.ready_ or app.shell.is_blocking(): tooltip.hide(); return
 	var mouse:=get_viewport().get_mouse_position()
 	if not get_viewport_rect().has_point(mouse): hover=-1; tooltip.hide(); queue_redraw(); return
 	settled=settled+dt if mouse.distance_to(last_mouse)<3 else 0.0

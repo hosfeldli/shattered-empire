@@ -5,6 +5,15 @@ extends Node3D
 
 signal feedback(text: String, ok: bool)
 signal changed
+var commands:CommandRegistry
+var preferences:NativePreferences
+var settlements:SettlementRenderer
+var infrastructure:InfrastructureRenderer
+var placement:WorldPlacementPreview
+var site_details:={}
+var hover_serial:=0
+var target_confirm:=true
+var keep_placing:=false
 var world: WorldState
 var net: NetworkClient
 var cam: CameraController
@@ -29,10 +38,10 @@ var target_title:=""
 var target_preview:=false
 var target_enemy:={}
 
-func target_command(command:Dictionary,title:String,kind:="point",server_preview:=false) -> void:
+func target_command(command:Dictionary,title:String,kind:="point",server_preview:=false,require_confirmation:=true) -> void:
 	cancel()
 	if world.spectator: feedback.emit("Spectators cannot issue orders",false); return
-	mode="target"; target_payload=command.duplicate(true); target_title=title; target_kind=kind; target_preview=server_preview
+	mode="target"; target_payload=command.duplicate(true); target_title=title; target_kind=kind; target_preview=server_preview; target_confirm=require_confirmation
 	status=title.capitalize()+": choose a target on the map, then Enter confirms. Right click cancels."; changed.emit()
 
 
@@ -55,17 +64,22 @@ func activate(kind: String, option: Variant = "") -> void:
 	status = "Click to place" if kind == "build" else "Draw a line, then press Enter to confirm the server preview"
 	if mode == "build":
 		var token := revision
-		net.cmd({"c": "placement", "type": value}, func(reply: Dictionary):
+		_submit({"c": "placement", "type": value}, func(reply: Dictionary):
 			if revision != token: return
 			valid_tiles.clear()
 			for tile in reply.get("tiles", []): valid_tiles[int(tile)] = true
 			status = "%d legal sites · %s" % [valid_tiles.size(), "affordable" if reply.get("afford", false) else "will join the construction queue"]
 			changed.emit())
+	if kind=="build" and settlements!=null:
+		if placement==null:
+			placement=WorldPlacementPreview.new(); add_child(placement); placement.setup(world,cam,settlements)
+		_preview_build(cam.pick_tile(get_viewport().get_mouse_position()))
 	changed.emit()
 
 
 func cancel() -> void:
-	revision += 1
+	revision += 1; hover_serial+=1; site_details.clear()
+	if placement: placement.mesh=null; placement.tile=-1
 	mode = "select"; points.clear(); preview.clear(); valid_tiles.clear(); drawing = false
 	target_payload.clear(); target_enemy.clear()
 	last_hover = -1
@@ -93,6 +107,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			if event.pressed:
 				revision += 1; preview.clear()
 				if not event.shift_pressed: points.clear()
+				keep_placing=event.shift_pressed
 				drawing = true; _add_point(tile)
 				if mode=="target" and target_kind=="enemy":
 					target_enemy.clear()
@@ -106,17 +121,22 @@ func _unhandled_input(event: InputEvent) -> void:
 				if mode=="build":
 					var sites:=points.filter(func(t):return valid_tiles.has(t))
 					if sites.size()>1:
-						net.cmd({"c":"buildMany","type":value,"tiles":sites},func(reply):feedback.emit("Construction sites queued" if reply.get("error")==null else str(reply.error),reply.get("error")==null))
-					elif sites.size()==1: _place(sites[0])
+						var repeat_:bool=event.shift_pressed
+						_submit({"c":"buildMany","type":value,"tiles":sites},func(reply):
+							feedback.emit("Construction sites queued" if reply.get("error")==null else str(reply.error),reply.get("error")==null)
+							if reply.get("error")==null and not repeat_: cancel())
+					elif sites.size()==1: _place(sites[0],event.shift_pressed)
 					else: feedback.emit("Choose a server-approved building site",false)
-				else: request_preview()
+				else:
+					request_preview()
+					if mode=="target" and not target_confirm and not target_preview: commit()
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		var tile := cam.pick_tile(event.position)
 		if drawing: _add_point(tile)
 		elif mode == "build" and tile != last_hover:
 			last_hover = tile
-			_draw([tile], valid_tiles.has(tile))
+			_preview_build(tile)
 		get_viewport().set_input_as_handled()
 
 
@@ -157,7 +177,7 @@ func request_preview() -> void:
 	var command := _command(false)
 	if command.is_empty(): return
 	status = "Waiting for the server preview…"; changed.emit()
-	net.cmd(command, func(reply: Dictionary):
+	_submit(command, func(reply: Dictionary):
 		if token != revision: return
 		preview = reply
 		if mode=="target":
@@ -184,26 +204,51 @@ func commit() -> void:
 	var token := revision
 	# Invalidate the preview immediately so repeated Enter cannot duplicate a project.
 	preview.clear(); revision += 1
-	net.cmd(command, func(reply: Dictionary):
+	_submit(command, func(reply: Dictionary):
 		var ok: bool = reply.get("error") == null
 		feedback.emit("Order accepted" if ok else str(reply.error), ok)
 		if revision == token + 1: cancel())
 
 
-func _place(tile: int) -> void:
+func _place(tile: int,repeat_:=false) -> void:
 	if not valid_tiles.has(tile):
 		feedback.emit("Choose a server-approved site", false); return
 	var building_type := str(value)
 	valid_tiles.erase(tile)
-	net.cmd({"c": "build", "tile": tile, "type": building_type, "plan": true}, func(reply: Dictionary):
+	_submit({"c": "build", "tile": tile, "type": building_type, "plan": true}, func(reply: Dictionary):
 		var ok: bool = reply.get("error") == null
 		feedback.emit("Construction queued" if ok else str(reply.error), ok)
-		if mode == "build" and value == building_type: activate("build", building_type))
+		if mode == "build" and value == building_type:
+			if ok and not repeat_: cancel()
+			else: activate("build", building_type))
+
+
+func _preview_build(tile:int) -> void:
+	if tile<0: return
+	last_hover=tile; hover_serial+=1
+	var token:=hover_serial; var type:=str(value)
+	placement.show_building(type,tile)
+	_draw([tile],valid_tiles.has(tile))
+	status="Checking site…"
+	_submit({"c":"placement","type":type,"tile":tile},func(reply):
+		if mode!="build" or token!=hover_serial or type!=value: return
+		site_details=reply.get("site",{})
+		if site_details.is_empty(): status="This server needs the placement preview update"; changed.emit(); return
+		var valid:bool=site_details.get("valid",false)
+		if valid: valid_tiles[tile]=true
+		else: valid_tiles.erase(tile)
+		var costs:=[]; var missing:=[]
+		for good in site_details.get("cost",{}): costs.append("%s %s"%[str(site_details.cost[good]),good])
+		for good in site_details.get("missing",{}): missing.append("%s %s"%[str(snappedf(float(site_details.missing[good]),.1)),good])
+		status=str(site_details.get("reason","Choose a legal site")) if not valid else " · ".join(costs)+" · ~%s sec"%str(site_details.get("seconds","—"))
+		if valid and not missing.is_empty(): status+=" · Missing "+", ".join(missing)+"; click to queue"
+		_draw([tile],valid)
+		changed.emit())
 
 
 func _draw(tiles: Array, ok: bool) -> void:
 	var kit := MeshKit.new()
-	var color := "glow:75d59b" if ok else "glow:ed766a"
+	var color := "glow:e4bd76" if mode=="build" and bool(site_details.get("queued",false)) and ok else "glow:75d59b" if ok else "glow:ed766a"
 	for tile in tiles:
 		if int(tile) < 0 or int(tile) >= world.grid.n: continue
 		var p := world.grid.center(int(tile))
@@ -215,9 +260,29 @@ func _draw(tiles: Array, ok: bool) -> void:
 			var start:=kit.xf(Vector3(a.x,0,a.y)); var end:=kit.xf(Vector3(b.x,0,b.y))
 			start.y=world.ground_height(start.x,start.z)+.035; end.y=world.ground_height(end.x,end.z)+.035
 			kit.strip(color,start,end,.025)
+	if mode in ["road","bridge"] and tiles.size()>1 and infrastructure:
+		for index in range(tiles.size()-1):
+			var first:=int(tiles[index]); var second:=int(tiles[index+1]); var a:=world.grid.center(first); var b:=world.grid.center(second)
+			a.x=world.grid.near_x(a.x,cam.focus.x); b.x=a.x+world.grid.dx_wrap(a.x,b.x)
+			var midpoint:Vector2=(a+b)*.5; kit.set_frame(Vector3.ZERO,0)
+			for side in [[first,a,midpoint],[second,b,midpoint]]:
+				var wet:bool=world.is_river(side[0]) or world.is_sea(side[0]) or world.is_lake(side[0])
+				var road_type:=int(value) if mode=="road" else 2
+				if wet: infrastructure._bridge(kit,side[0],side[1],side[2],road_type,false)
+				else: infrastructure._road(kit,side[1],side[2],road_type,false)
+	elif mode=="trench" and tiles.size()>1:
+		for index in range(tiles.size()-1):
+			var a:=world.grid.center(int(tiles[index])); var b:=world.grid.center(int(tiles[index+1])); a.x=world.grid.near_x(a.x,cam.focus.x); b.x=a.x+world.grid.dx_wrap(a.x,b.x)
+			var start:=Vector3(a.x,world.tile_height(int(tiles[index]))+.045,a.y); var finish:=Vector3(b.x,world.tile_height(int(tiles[index+1]))+.045,b.y)
+			kit.strip("soil",start,finish,.14,Color(.5,.4,.3)); var side:Vector3=(finish-start).normalized().cross(Vector3.UP)*.13
+			kit.strip("soil",start+side,finish+side,.09,Color(.85,.75,.6))
 	mesh.mesh = kit.commit() if not kit.is_empty() else null
 
 
 func train(building: int, unit_type: String) -> void:
-	net.cmd({"c": "train", "building": building, "unit": unit_type}, func(reply: Dictionary):
+	_submit({"c": "train", "building": building, "unit": unit_type}, func(reply: Dictionary):
 		feedback.emit("Training queued" if reply.get("error") == null else str(reply.error), reply.get("error") == null))
+
+func _submit(command:Dictionary,callback:=Callable()) -> void:
+	if commands: commands.submit(command,callback)
+	else: net.cmd(command,callback)

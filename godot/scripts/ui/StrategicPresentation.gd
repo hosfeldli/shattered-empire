@@ -1,5 +1,7 @@
 class_name StrategicPresentation
 extends Control
+var unit_labels:=true
+var resource_markers:=true
 ## Native screen-space labels remain crisp through zoom. Strategic lenses tint terrain through a
 ## texture built cooperatively; the source is exclusively received tile and supply records.
 var world: WorldState
@@ -120,7 +122,7 @@ func _draw() -> void:
 			if int(city.get("fs",0)): state+=" · FOOD SHORTAGE"
 			elif int(city.get("iso",0)): state+=" · ISOLATED"
 			_text(p+Vector2(7,13),state,Color(.95,.68,.45) if int(city.get("fs",0)) or int(city.get("iso",0)) else Color(.82,.85,.77),12)
-	if camera.size >= 72:
+	if camera.size >= 72 and unit_labels:
 		# Aggregate only received units, without exposing hidden army membership.
 		var groups := {}
 		for unit in world.units.values():
@@ -131,7 +133,7 @@ func _draw() -> void:
 			var p := _point(group.tile)
 			draw_rect(Rect2(p-Vector2(5,4),Vector2(10,8)),world.civ_color(group.owner))
 			_text(p+Vector2(7,4),str(group.count),Color.WHITE,13)
-	elif camera.size <= 16:
+	elif camera.size <= 16 and resource_markers:
 		var names := ["","Oil","Iron","Coal","Rare earth","Stone","Fish","Salvage"]
 		for list in deposits.values():
 			for tile in list:

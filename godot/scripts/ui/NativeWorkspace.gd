@@ -3,6 +3,7 @@ extends CanvasLayer
 ## Typed native system workspaces. Commands use existing authoritative server contracts.
 const PAGES:=["Economy","Resources","Cities","Buildings","Production","Construction","Research","Military","Armies","Formations","Logistics","Air","Strategic","Rivals","Battles","Alerts","History","Observer","Sandbox"]
 const NAMES:={"n":"Name","ty":"Building type","t":"Location","o":"Owner","h":"Housing","st":"Condition","un":"Unemployed","fs":"Food shortage","rsv":"Reserved recruits","lab":"Labor force","rec":"Recruitable population","gr":"Growth per minute","ua":"Unassigned workers","wf":"Workforce","iso":"Isolated","fr":"Freight capacity","ship":"Goods shipped","gov":"Governor","dmg":"City damage","ti":"Development tier","s":"Workers assigned","w":"Production constraint","lk":"Worker lock","off":"Switched off","q":"Training queue","rp":"Repeat production","ra":"Rally army","r":"Rally point / radius","pr":"Production per second","mi":"Ready missiles","mp":"Missile construction %","hp":"Health %","d":"Complete","p":"Construction %","a":"Active","f":"On fire","c":"City","cr":"Construction crews","qw":"Waiting for","tr":"Training progress %","lv":"Level","res":"Stockpiles","rates":"Net change per second","cmdlog":"Command history","techs":"Completed technologies"}
+var commands:CommandRegistry
 var world:WorldState
 var net:NetworkClient
 var camera:CameraController
@@ -43,43 +44,49 @@ var dashboard:NativeDashboard
 var inspector_view:VBoxContainer
 var orders_toggle:Button
 var selected_city:=-1
+var expanded:=false
+var expand_button:Button
+var records_context:VBoxContainer
 
 func setup(w:WorldState,n:NetworkClient,cam:CameraController,s:SettlementRenderer,m:MilitaryRenderer,report:Callable) -> void:
 	world=w; net=n; camera=cam; settlements=s; military=m; feedback=report; layer=30
-	actions=JSON.parse_string(FileAccess.get_file_as_string("res://recipes/ui_actions.json"))
+	actions=commands.actions if commands else JSON.parse_string(FileAccess.get_file_as_string("res://recipes/ui_actions.json"))
 	panel=PanelContainer.new(); panel.theme=NativeUI.theme(); panel.visible=false; add_child(panel)
+	panel.mouse_force_pass_scroll_events=false
 	var outer:=VBoxContainer.new(); panel.add_child(outer)
 	var top:=HBoxContainer.new(); outer.add_child(top)
-	heading=NativeUI.label(top,"Empire command",24,NativeUI.GOLD); heading.size_flags_horizontal=Control.SIZE_EXPAND_FILL
-	orders_toggle=NativeUI.button(top,"All orders",func():show_all_orders(not inspector_view.visible))
-	NativeUI.button(top,"Back to world · F2",func():panel.hide())
-	var body:=HSplitContainer.new(); body.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(body)
-	sidebar=NativeSectionNav.new(); sidebar.setup(PAGES); body.add_child(sidebar)
+	heading=NativeUI.label(top,"Empire",22,NativeUI.GOLD); heading.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	expand_button=NativeUI.compact_button(top,"Expand",func():set_expanded(not expanded),"Enlarge this panel for planning; the map remains interactive")
+	NativeUI.compact_button(top,"Close",func():panel.hide(),"Return to the map · Escape / F2")
+	var body:=VBoxContainer.new(); body.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(body)
+	sidebar=NativeSectionNav.new(); sidebar.setup(PAGES); body.add_child(sidebar); sidebar.hide()
 	sidebar.page_selected.connect(open_page)
 	var host:=VBoxContainer.new(); host.size_flags_horizontal=Control.SIZE_EXPAND_FILL; body.add_child(host)
-	var main:=VBoxContainer.new(); main.size_flags_horizontal=Control.SIZE_EXPAND_FILL; main.size_flags_vertical=Control.SIZE_EXPAND_FILL; host.add_child(main); inspector_view=main
-	filter=LineEdit.new(); filter.placeholder_text="Filter records…"; main.add_child(filter)
+	host.size_flags_vertical=Control.SIZE_EXPAND_FILL
+	orders_toggle=NativeUI.compact_button(outer,"Detailed orders…",func():show_all_orders(not inspector_view.visible),"Additional commands and parameters for this workspace")
+	var editor_scroll:=ScrollContainer.new(); editor_scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; editor_scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; host.add_child(editor_scroll)
+	var main:=VBoxContainer.new(); main.size_flags_horizontal=Control.SIZE_EXPAND_FILL; editor_scroll.add_child(main); inspector_view=main
+	records_context=VBoxContainer.new(); main.add_child(records_context)
+	filter=LineEdit.new(); filter.placeholder_text="Filter records…"; records_context.add_child(filter)
 	filter.text_changed.connect(func(_value):_records_signature=""; _refresh())
-	summary=NativeUI.label(main,"",14,NativeUI.MUTED)
-	var split:=HSplitContainer.new(); split.size_flags_vertical=Control.SIZE_EXPAND_FILL; split.split_offset=440; main.add_child(split)
-	var left:=VBoxContainer.new(); left.custom_minimum_size.x=260; left.size_flags_horizontal=Control.SIZE_EXPAND_FILL; split.add_child(left)
-	records=ItemList.new(); records.custom_minimum_size.y=150; records.select_mode=ItemList.SELECT_MULTI; left.add_child(records)
+	summary=NativeUI.label(records_context,"",14,NativeUI.MUTED)
+	var left:=VBoxContainer.new(); left.size_flags_horizontal=Control.SIZE_EXPAND_FILL; records_context.add_child(left)
+	records=ItemList.new(); records.custom_minimum_size.y=110; records.select_mode=ItemList.SELECT_MULTI; left.add_child(records)
 	records.multi_selected.connect(func(index,_selected):_choose(index))
 	records.item_activated.connect(func(index):_choose(index); _center_current())
 	var buttons:=HBoxContainer.new(); left.add_child(buttons)
-	NativeUI.button(buttons,"Center on map",_center_current); NativeUI.button(buttons,"Select on map",_select_current)
-	detail=_tree(left); detail.custom_minimum_size.y=180
-	var scroll:=ScrollContainer.new(); scroll.custom_minimum_size.x=330; scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; split.add_child(scroll)
-	var right:=VBoxContainer.new(); right.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(right)
-	NativeUI.label(right,"ORDERS & MANAGEMENT",13,NativeUI.GOLD)
-	action_list=OptionButton.new(); action_list.custom_minimum_size.y=40; right.add_child(action_list)
+	NativeUI.compact_button(buttons,"Center on map",_center_current); NativeUI.compact_button(buttons,"Select on map",_select_current)
+	detail=_tree(left); detail.custom_minimum_size.y=150; detail.hide()
+	NativeUI.compact_button(left,"Inspect record details",func():detail.visible=not detail.visible)
+	var right:=VBoxContainer.new(); right.size_flags_horizontal=Control.SIZE_EXPAND_FILL; main.add_child(right)
+	NativeUI.label(right,"CHOOSE AN ORDER",13,NativeUI.GOLD)
+	action_list=OptionButton.new(); action_list.custom_minimum_size.y=38; action_list.fit_to_longest_item=false; action_list.clip_text=true; right.add_child(action_list)
 	action_list.item_selected.connect(func(index):_set_action(page_actions[index]))
 	fields_box=VBoxContainer.new(); right.add_child(fields_box)
 	action_hint=NativeUI.label(right,"",14,NativeUI.MUTED)
 	preview_button=NativeUI.button(right,"Preview costs / effects",func():_perform(true))
 	execute=NativeUI.button(right,"Issue order",func():_perform(false))
-	NativeUI.label(right,"SERVER RESPONSE",13,NativeUI.GOLD)
-	reply_tree=_tree(right); reply_tree.custom_minimum_size.y=190
+	reply_tree=_tree(right); reply_tree.custom_minimum_size.y=150; reply_tree.hide()
 	confirm=ConfirmationDialog.new(); confirm.title="Confirm order"; add_child(confirm)
 	confirm.theme=panel.theme
 	confirm.confirmed.connect(func():_dispatch(pending))
@@ -96,7 +103,8 @@ func open_page(title:String) -> void:
 	var aliases:={"Forces":"Military","Build":"Construction","Chronicle":"Alerts","Workforce":"Cities","Governors":"Cities"}
 	page=str(aliases.get(title,title))
 	if not page in PAGES: page="Economy"
-	panel.show(); sidebar.select(PAGES.find(page)); filter.text=""; current.clear(); last_reply.clear()
+	expanded=page=="Research"
+	panel.show(); sidebar.select(PAGES.find(page)); filter.text=""; current.clear(); last_reply.clear(); reply_tree.hide()
 	records.clear()
 	if page in ["Buildings","Production"] and settlements.selected_building>=0: current={"key":settlements.selected_building}
 	if page in ["Cities"] and world.buildings.has(settlements.selected_building): current={"key":world.buildings[settlements.selected_building].get("c",-1)}
@@ -113,9 +121,37 @@ func open_page(title:String) -> void:
 	if dashboard: dashboard.signature=""; dashboard.sync(); show_all_orders(false)
 
 func show_all_orders(on:bool) -> void:
+	if on: expanded=false
 	inspector_view.visible=on
+	inspector_view.get_parent().visible=on
+	records_context.show()
 	if dashboard: dashboard.visible=not on
-	orders_toggle.text="Overview" if on else "All orders"
+	orders_toggle.text="Back to overview" if on else "Detailed orders…"
+
+func focus_order(id:String) -> void:
+	show_all_orders(true)
+	for index in page_actions.size():
+		if page_actions[index].id==id:
+			action_list.select(index); _set_action(page_actions[index]); records_context.hide(); return
+
+func set_expanded(on:bool) -> void:
+	expanded=on
+	if dashboard: dashboard.signature=""; dashboard.sync()
+
+func follow_selection() -> void:
+	if not panel.visible: return
+	var building:Dictionary=world.buildings.get(settlements.selected_building,{})
+	var key:Variant=null
+	if page=="Cities" and not building.is_empty(): key=building.get("c",-1)
+	elif page in ["Buildings","Production"] and not building.is_empty(): key=settlements.selected_building
+	elif page in ["Military","Air"] and not military.selected.is_empty(): key=military.selected.keys()[0]
+	if key!=null:
+		for index in rows.size():
+			if rows[index].key==key:
+				current=rows[index]; selected_city=int(key) if page=="Cities" else selected_city
+				if dashboard: dashboard.signature=""
+				_refresh(); return
+	if not military.selected.is_empty() or not building.is_empty(): panel.hide()
 
 func _tree(parent:Node) -> Tree:
 	var tree:=Tree.new(); tree.columns=2; tree.hide_root=true; tree.size_flags_vertical=Control.SIZE_EXPAND_FILL
@@ -249,7 +285,8 @@ func _name(catalog:String,key:Variant) -> String:
 	var record:Variant=world.defs.get(catalog,{}).get(key,key)
 	return str(record.get("name",key)) if record is Dictionary else str(record)
 
-func _set_action(action:Dictionary) -> void: active_action=action; draft.clear(); _render_form()
+func _set_action(action:Dictionary) -> void:
+	active_action=action; draft.clear(); reply_tree.hide(); _render_form()
 
 func _render_form() -> void:
 	NativeUI.clear(fields_box); controls.clear()
@@ -389,10 +426,11 @@ func _dispatch(command:Dictionary) -> void:
 	if world.spectator and not command.get("c","") in ["follow","speed","fog","aiDiag"]:
 		feedback.call("Spectators cannot issue gameplay orders",false); return
 	busy=true
-	net.cmd(command,func(reply):
+	commands.submit(command,func(reply):
 		busy=false; last_reply=reply
 		var visible_reply:Dictionary=reply.duplicate(true); visible_reply.erase("t"); visible_reply.erase("rid")
 		_fill_tree(reply_tree,visible_reply)
+		reply_tree.visible=not visible_reply.is_empty()
 		if dashboard and dashboard.visible: dashboard.show_response(reply)
 		feedback.call(str(reply.error) if reply.get("error")!=null else "Order accepted",reply.get("error")==null)
 		if reply.has("scenario"):
@@ -420,6 +458,10 @@ func _unhandled_input(event:InputEvent) -> void:
 func _process(dt:float) -> void:
 	if not panel.visible: return
 	var bounds:=get_viewport().get_visible_rect().size
-	panel.size=Vector2(minf(1380,bounds.x-32),bounds.y-152); panel.position=Vector2((bounds.x-panel.size.x)*.5,114)
+	var width:=minf(1080,bounds.x-32) if expanded else 300.0 if page in ["Construction","Armies"] and not inspector_view.visible else clampf(bounds.x*.26,340,390)
+	var content_height:=inspector_view.get_combined_minimum_size().y if inspector_view.visible else dashboard.body.get_combined_minimum_size().y
+	var height:=minf(760,bounds.y-111) if expanded else minf(content_height+120,minf(760,bounds.y-111))
+	panel.size=Vector2(width,maxf(220,height)); panel.position=Vector2(10,91)
+	expand_button.text="Compact" if expanded else "Expand"
 	timer+=dt
 	if timer>=1: timer=0; _refresh()

@@ -1095,6 +1095,16 @@ export class Game {
           return { reply: { t: 'ack', built: { id: nb.id, type: cmd.type, tile: cmd.tile, planned: !affordable, cost } } };
         }
         case 'placement': {
+          if (cmd.tile != null) {
+            const tile = Number(cmd.tile), def = BUILDINGS[cmd.type];
+            if (!Number.isInteger(tile) || tile < 0 || tile >= N || !civ.explored[tile] || !def) return { reply: { t: 'placement', site: { tile, valid: false, reason: 'Explore this site first' } } };
+            const valid = this.canPlace(civ, cmd.type, tile, true), cost = this.buildingCost(civ, cmd.type, tile);
+            let reason = '';
+            if (!valid) reason = this.tileB[tile] >= 0 ? 'This site already has a building' : def.tech && !civ.techs.has(def.tech) ? 'Research ' + TECHS[def.tech].name + ' first' : def.age > civ.age ? 'Requires a later era' : isWater(this.world.terr[tile]) ? 'Choose dry land beside the water' : !this.terrainOk(def, tile) ? 'Requires suitable terrain or a resource deposit' : this.world.owner[tile] !== civ.id ? 'Choose a site in your territory' : 'Site unavailable: check city capacity or clear the ruins';
+            const local = this.poolAt(civ, tile);
+            const missing = Object.fromEntries(Object.entries(cost).map(([key, amount]) => [key, Math.max(0, amount - ((local && key !== 'credits' ? local[key] : civ.res[key]) || 0))]).filter(([, amount]) => amount > 0));
+            return { reply: { t: 'placement', site: { tile, valid, reason, cost, missing, queued: valid && !this.canAfford(civ, cost, tile), seconds: Math.ceil(def.time / (tempo(this, 'construction') * (1 + (techFx(civ).build || 0)))) } } };
+          }
           const tiles = [];
           for (let i = 0; i < N; i++) if (civ.explored[i] && this.canPlace(civ, cmd.type, i, true)) tiles.push(i);
           return { reply: { t: 'placement', type: cmd.type, tiles, afford: this.canAfford(civ, this.buildingCost(civ, cmd.type)) } };

@@ -13,6 +13,7 @@ func select(events: Array) -> Array:
 	ordered.sort_custom(func(a,b): return str(a.get("k","")) in MAJOR and not str(b.get("k","")) in MAJOR)
 	var result:=[]
 	var budget:=24 if camera.size>72 else 60 if lod.quality=="low" else 120
+	budget=maxi(6,roundi(budget*lod.particle_scale))
 	for event in ordered:
 		if camera.size>72 and str(event.get("k","")) not in MAJOR: dropped+=1; continue
 		var tile:=int(event.get("b",event.get("a",-1)))

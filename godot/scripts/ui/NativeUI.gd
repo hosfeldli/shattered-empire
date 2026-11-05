@@ -50,10 +50,34 @@ static func label(parent:Node,message:String,size_:=16,color:=TEXT) -> Label:
 
 static func button(parent:Node,message:String,action:Callable) -> Button:
 	var item:=Button.new(); item.text=message; item.custom_minimum_size.y=38
+	item.mouse_force_pass_scroll_events=false
 	item.pressed.connect(action); parent.add_child(item); return item
+
+static func compact_button(parent:Node,message:String,action:Callable,explanation:="") -> Button:
+	var item:=button(parent,message,action); item.custom_minimum_size.y=30
+	item.add_theme_font_size_override("font_size",15)
+	for state in ["normal","hover","pressed","disabled"]:
+		var box:StyleBoxFlat=item.get_theme_stylebox(state).duplicate()
+		box.content_margin_top=5; box.content_margin_bottom=5; box.content_margin_left=9; box.content_margin_right=9
+		item.add_theme_stylebox_override(state,box)
+	item.tooltip_text=explanation
+	return item
+
+static func menu(parent:Node,title:String,entries:Array) -> MenuButton:
+	var item:=MenuButton.new(); item.flat=false; item.text=title; item.custom_minimum_size.y=30; item.add_theme_font_size_override("font_size",15); parent.add_child(item)
+	for state in ["normal","hover","pressed","disabled"]:
+		var box:StyleBoxFlat=item.get_theme_stylebox(state).duplicate(); box.content_margin_top=5; box.content_margin_bottom=5
+		item.add_theme_stylebox_override(state,box)
+	var popup:=item.get_popup(); popup.add_theme_font_size_override("font_size",16)
+	for entry in entries:
+		popup.add_item(str(entry.label)); popup.set_item_disabled(popup.item_count-1,bool(entry.get("disabled",false)))
+		popup.set_item_tooltip(popup.item_count-1,str(entry.get("tip","")))
+	popup.index_pressed.connect(func(index): (entries[index].action as Callable).call())
+	return item
 
 static func options(parent:Node,rows:Array) -> OptionButton:
 	var item:=OptionButton.new(); item.custom_minimum_size.y=38; item.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	item.fit_to_longest_item=false; item.clip_text=true
 	for row in rows:
 		item.add_item(str(row[1])); item.set_item_metadata(item.item_count-1,row[0])
 	parent.add_child(item); return item

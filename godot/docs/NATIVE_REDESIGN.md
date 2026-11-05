@@ -26,8 +26,9 @@ training, growth, roads/bridges and trench work have separate rates. Food and re
 consumption are adjusted together. Simulation ticks remain 10 Hz. Aircraft fuel burn is adjusted
 alongside speed so endurance does not receive an accidental second penalty.
 
-The eight main workspaces are World, Build, Cities, Military, Economy, Research, Rivals and
-Chronicle. Detailed production, air, logistics and army views are contextual subpages. Rivals
+The later [simple UI](SIMPLE_UI.md) replaces permanent workspace navigation with Build, Army and
+Research, plus an Overview menu and contextual selection cards. The minimap is removed. Detailed
+production, air, logistics, city and army views remain contextual. Rivals
 reports only observed activity and visible opponents; unknown focus stays unknown. Starting
 hostilities requires a native confirmation. Inactive native wars lapse after five minutes without
 active fighting/orders; this is an initial rule requiring campaign balance review.

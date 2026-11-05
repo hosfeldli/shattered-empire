@@ -35,7 +35,6 @@ var workspace: NativeWorkspace
 var live_validation: LiveValidation
 var battlefield_composer: BattlefieldComposer
 var audio: AudioDirector
-var minimap: NativeMinimap
 var args := {}
 var pending_mode := ""
 var pending_opts := {}
@@ -48,6 +47,7 @@ var shell:NativeAppShell
 var automated:=false
 var atmosphere_validation:AtmosphereValidation
 var ui_validation:NativeUIValidation
+var commands:=CommandRegistry.new()
 var command_dock:NativeCommandDock
 var map_overlay:NativeMapOverlay
 var resource_strip:NativeResourceStrip
@@ -136,11 +136,18 @@ func _ready() -> void:
 	strategic = StrategicPresentation.new()
 	hud.root.add_child(strategic)
 	strategic.setup(world,cam,composition,terrain)
-	minimap=NativeMinimap.new(); hud.root.add_child(minimap); minimap.setup(world,cam,composition)
 	workspace = NativeWorkspace.new()
 	add_child(workspace)
+	commands.setup(world,net,hud.show_toast)
+	workspace.commands=commands
 	workspace.setup(world,net,cam,settlements,military,hud.show_toast)
+	command_tools.commands=commands; command_tools.settlements=settlements; command_tools.infrastructure=infra
+	input.commands=commands
+	commands.finished.connect(func(command,reply):
+		if command.get("c")=="army" and command.get("op")=="create" and int(reply.get("id",-1))>=0: input.selected_army=int(reply.id)
+		if command.get("c") in ["move","deploy","army"]: military.path_until=Time.get_ticks_msec()+3500)
 	workspace.tools=command_tools; workspace.input_ref=input
+	input.selection_changed.connect(workspace.follow_selection)
 	shell=NativeAppShell.new(); add_child(shell); shell.setup(self,preferences,automated)
 	command_dock=NativeCommandDock.new(); add_child(command_dock); command_dock.setup(self)
 	map_overlay=NativeMapOverlay.new(); hud.root.add_child(map_overlay); map_overlay.setup(self)
@@ -415,9 +422,9 @@ func _on_message(m: Dictionary) -> void:
 func _process(dt: float) -> void:
 	var focused:=get_viewport().gui_get_focus_owner()
 	var typing:=focused is LineEdit or focused is TextEdit or focused is SpinBox
-	var blocked:=shell.is_blocking() if shell else true
-	cam.input_enabled = world.ready_ and not blocked and not typing and not workspace.panel.visible
-	input.input_enabled=world.ready_ and not blocked and not typing and not workspace.panel.visible
+	var blocked:=(shell.is_blocking() or workspace.confirm.visible) if shell else true
+	cam.input_enabled = world.ready_ and not blocked and not typing
+	input.input_enabled=world.ready_ and not blocked and not typing
 	command_tools.input_enabled=input.input_enabled
 	hud.update(dt)
 	if not world.ready_:

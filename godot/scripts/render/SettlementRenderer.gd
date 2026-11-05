@@ -31,6 +31,7 @@ var ruin_inst: MeshInstance3D
 var ruin_sig := ""
 var ruin_anchor := Vector2.ZERO
 var rebuilt := 0
+var construction_templates:={}
 var plumes: MultiMeshInstance3D   # all chimney and fire smoke: one batch, animated here
 const MAX_PUFFS := 900
 const REBUILD_BUDGET_US := 1000
@@ -94,7 +95,7 @@ func _clear() -> void:
 		(d.node as Node).queue_free(); (d.fx as Node).queue_free()
 		_free_copies(d)
 	retiring.clear()
-	home_sites.clear()
+	home_sites.clear(); construction_templates.clear()
 	site_records.clear()
 	districts.clear()
 	at_tile = {}
@@ -312,7 +313,7 @@ func _structure_signature(list: Array) -> String:
 	var parts := PackedStringArray()
 	for b in list:
 		# Damage stages alter the static tint, but progress, fire and activity never rebuild this mesh.
-		parts.append("%d:%s:%d:%d:%s:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), int(b.get("hp", 100)) / 25, int(b.get("ti", 0))])
+		parts.append("%d:%s:%d:%d:%s:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), (0 if int(b.get("hp",100))>=85 else 1 if int(b.get("hp",100))>=60 else 2 if int(b.get("hp",100))>=35 else 3), int(b.get("ti", 0))])
 	return "|".join(parts)
 
 
@@ -469,7 +470,36 @@ func _tint(b: Dictionary) -> Color:
 
 func _rng(b: Dictionary, purpose := "layout") -> RandomNumberGenerator:
 	var recipe: Dictionary = composition.graph.matches.get(int(b.id), {})
-	return composition.identities.rng_for("building:%d" % int(b.id), str(recipe.get("id", "fallback.structure")), int(recipe.get("version", 1)), purpose)
+	if recipe.is_empty():
+		for candidate in composition.registry.recipes:
+			if str(b.ty) in candidate.get("types",[]) or "*" in candidate.get("types",[]): recipe=candidate; break
+	# Site/type identity can be reconstructed before the server allocates a building ID. The
+	# placement ghost and accepted building therefore retain the same architecture and siting.
+	return composition.identities.rng_for("site:%d:%s" % [int(b.t),str(b.ty)], str(recipe.get("id", "fallback.structure")), int(recipe.get("version", 1)), purpose)
+
+func preview_mesh(type:String,tile:int,adjacency:=true,level:=1,tier:=0,hp:=100,state:="operational") -> ArrayMesh:
+	if world.grid==null or tile<0 or tile>=world.grid.n or world.known[tile]==0: return null
+	var record:={"id":-tile-2,"ty":type,"t":tile,"o":world.civ_id,"d":1,"hp":hp,"lv":level,"st":state,"ti":tier}
+	var kit:=MeshKit.new(); var center:=world.grid.center(tile)
+	kit.set_frame(Vector3(center.x,world.tile_height(tile),center.y),0)
+	if not _parcel_frame(kit,record): return null
+	if not type in ["house","farm"]: _foundation(kit,Vector2(.25,.20))
+	_building(kit,record,Color.WHITE)
+	var group:=str(GROUP.get(type,""))
+	if adjacency and not group.is_empty():
+		for direction in 6:
+			var neighbor:=world.grid.nb[tile*6+direction]
+			var other:Dictionary=world.buildings.get(at_tile.get(neighbor,-1),{})
+			if other.is_empty() or int(other.o)!=world.civ_id or int(other.get("d",0))!=1 or GROUP.get(str(other.ty),"")!=group: continue
+			var p:=world.grid.center(neighbor)
+			var a:=Vector3(center.x,world.tile_height(tile),center.y)
+			var b:=Vector3(center.x+world.grid.dx_wrap(center.x,p.x),world.tile_height(neighbor),p.y)
+			kit.set_frame(Vector3.ZERO,0)
+			if direction in [0,4,5]: _connect(kit,group,a,b,record,other)
+			else: _connect(kit,group,b,a,other,record)
+	# Temporary records are render-only and never enter the authoritative graph or picking map.
+	home_sites.erase(record.id); site_records.erase(record.id)
+	return kit.commit() if not kit.is_empty() else null
 
 
 func parcel_transform(b:Dictionary) -> Transform3D:
@@ -490,7 +520,9 @@ func _parcel_frame(kit:MeshKit,b:Dictionary) -> bool:
 		var half:=Vector2(.54,.44)
 		if str(b.ty)=="town": half=Vector2(.48,.4)
 		elif str(b.ty)=="farm": half=Vector2(.23,.2)
-		elif str(b.ty)=="airfield": half=Vector2(.78,.52)
+		elif str(b.ty)=="airfield": half=Vector2(.79,.54)
+		elif str(b.ty)=="fort": half=Vector2(.86,.86)
+		elif str(b.ty)=="wonder": half=Vector2(.42,.42)
 		var site:=composition.sites.plan(int(b.t),Vector2(variation.origin.x,variation.origin.z),variation.basis.get_euler().y,half)
 		site_records[int(b.id)]=site
 		if site.valid:
@@ -524,7 +556,7 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 	var along := Vector3(dir.x, 0, dir.y).normalized()
 	var across := along.cross(Vector3.UP)
 	var y := maxf(a.y, b.y) + 0.02
-	var edge := "edge:%d:%d" % [mini(int(ba.id), int(bb.id)), maxi(int(ba.id), int(bb.id))]
+	var edge := "edge:%d:%d" % [mini(int(ba.t), int(bb.t)), maxi(int(ba.t), int(bb.t))]
 	var rng := composition.identities.rng_for(edge, "connection." + group, 1, "layout")
 	match group:
 		"res":
@@ -568,20 +600,16 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 
 
 # ------------------------------------------------------------------ buildings
-func _construction(kit: MeshKit, b: Dictionary, tint: Color) -> void:
-	var p := clampf(float(b.get("p", 0)) / 100.0, 0.0, 1.0)
-	kit.box("concrete", Vector3(0, 0.02, 0), Vector3(0.6, 0.03, 0.5), tint)
-	var h := 0.05 + 0.3 * p
-	kit.box("concrete", Vector3(0, 0.05, 0), Vector3(0.48, h * 0.8, 0.38), tint * 0.95)
-	for x in [-0.27, 0.27]:
-		for z in [-0.22, 0.22]:
-			kit.box("timber", Vector3(x, 0.05, z), Vector3(0.018, h + 0.08, 0.018), tint)
-	kit.box("timber", Vector3(0, 0.05 + h, -0.22), Vector3(0.56, 0.015, 0.015), tint)
-	kit.box("timber", Vector3(0, 0.05 + h, 0.22), Vector3(0.56, 0.015, 0.015), tint)
-	# a crane once the frame is up
-	if p > 0.3:
-		kit.box("steel", Vector3(0.36, 0.05, 0.3), Vector3(0.03, 0.55, 0.03), Color(0.95, 0.75, 0.3))
-		kit.box("steel", Vector3(0.2, 0.6, 0.3), Vector3(0.45, 0.025, 0.025), Color(0.95, 0.75, 0.3))
+func _construction(kit: MeshKit, b: Dictionary, _tint_: Color) -> void:
+	var progress:=clampf(float(b.get("p",0))/100.0,0,1)
+	var key:=str([b.id,b.ty,b.t,b.get("lv",1),world.geometry_revision,kit.origin,kit.basis])
+	if not construction_templates.has(key):
+		if construction_templates.size()>=128: construction_templates.clear()
+		var full:=MeshKit.new(); full.basis=kit.basis; full.origin=kit.origin
+		var complete:Dictionary=b.duplicate(); complete.hp=100; complete.d=1; complete.st="operational"
+		_compose_building(full,complete,Color.WHITE)
+		construction_templates[key]=full
+	BuildingLifecycle.construction(kit,construction_templates[key],b,progress)
 
 
 func _wall_mat(rng: RandomNumberGenerator) -> String:
@@ -599,7 +627,13 @@ func _awning(rng: RandomNumberGenerator) -> Color:
 	return opts[rng.randi() % opts.size()]
 
 
-func _house_part(kit: MeshKit, b: Dictionary, index: int, tint: Color) -> void:
+func _house_part(kit:MeshKit,b:Dictionary,index:int,tint:Color) -> void:
+	var structure:=MeshKit.new(); structure.basis=kit.basis; structure.origin=kit.origin
+	_compose_house_part(structure,b,index,tint)
+	var condition:Dictionary=b.duplicate(); condition._skip_rubble=index>0
+	BuildingLifecycle.append(kit,structure,condition)
+
+func _compose_house_part(kit: MeshKit, b: Dictionary, index: int, tint: Color) -> void:
 	var rng:=_rng(b,"home:%d"%index)
 	var slots:=[Vector2(-.28,-.29),Vector2(.29,-.24),Vector2(-.29,.29),Vector2(.28,.31),Vector2(.01,.015)]
 	var slot:Vector2=slots[index]
@@ -629,7 +663,16 @@ func _house_part(kit: MeshKit, b: Dictionary, index: int, tint: Color) -> void:
 	transform.origin.x=world.grid.near_x(transform.origin.x,kit.origin.x)
 	kit.set_frame(transform.origin,float(site.yaw))
 	_foundation(kit,site.half_size)
-	kit.component(AssetLibrary.residential(variant),Transform3D(Basis().scaled(Vector3.ONE*.72*float(site.scale)),Vector3.ZERO),color,damage)
+	if index<3:
+		kit.component(AssetLibrary.residential(variant),Transform3D(Basis().scaled(Vector3.ONE*.72*float(site.scale)),Vector3.ZERO),color,damage)
+	else:
+		var height:=.28 if index==3 else .42
+		kit.box("brick",Vector3(0,.02,0),Vector3(.23,height,.27),color)
+		kit.box("roof_slate",Vector3(0,height+.02,0),Vector3(.25,.02,.29),color)
+		for floor_ in 2 if index==3 else 3:
+			for x in [-.065,.065]:
+				for z in [-.136,.136]: kit.box("glass",Vector3(x,.07+floor_*.12,z),Vector3(.045,.055,.004))
+			for x in [-.116,.116]: kit.box("glass",Vector3(x,.07+floor_*.12,0),Vector3(.004,.055,.07))
 	kit.basis=parent.basis; kit.origin=parent.origin
 
 
@@ -645,10 +688,18 @@ func _ground_path(kit:MeshKit,a:Vector3,b:Vector3,width:float,material:String,co
 
 
 func _building(kit: MeshKit, b: Dictionary, tint: Color) -> void:
+	var structure:=MeshKit.new(); structure.basis=kit.basis; structure.origin=kit.origin
+	_compose_building(structure,b,tint)
+	BuildingLifecycle.append(kit,structure,b)
+
+func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 	var rng := _rng(b)
 	var lv := int(b.get("lv", 1))
 	var recipe: Dictionary = composition.graph.matches.get(int(b.id), {})
 	var ty: String = str(recipe.get("grammar", b.ty))
+	var definition:Dictionary=world.defs.get("BUILDINGS",{}).get(str(b.ty),{})
+	DevelopedBuildingLibrary.development(kit,b,definition,tint)
+	if DevelopedBuildingLibrary.compose(kit,b,ty,tint): return
 	match ty:
 		"house":
 			var n := 2 + mini(lv, 3)
@@ -656,13 +707,14 @@ func _building(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 				_house_part(kit,b,k,tint)
 			kit.cone("foliage", Vector3(0.05, 0.02, 0.0), 0.12, 0.3, 7, tint)
 		"town":
-			var tier := int(b.get("ti", 1))
-			var w := 0.5 + 0.08 * tier
-			kit.box("stone", Vector3(0, 0.025, 0), Vector3(w, 0.28 + 0.04 * tier, 0.34), tint)
-			kit.gable("roof_slate", Vector3(0, 0.305 + 0.04 * tier, 0), 0.34, w, 0.14, tint, PI * 0.5)
+			var tier := int(b.get("ti",0))
+			_city_growth(kit,tier,tint)
+			var w := 0.5
+			kit.box("stone", Vector3(0, 0.025, 0), Vector3(w, 0.28, 0.34), tint)
+			kit.gable("roof_slate", Vector3(0, 0.305, 0), 0.34, w, 0.14, tint, PI * 0.5)
 			kit.box("glass", Vector3(0, 0.14, 0.171), Vector3(w * 0.8, 0.08, 0.005), tint)
-			kit.box("stone", Vector3(-w * 0.5 + 0.08, 0.025, -0.1), Vector3(0.13, 0.62 + 0.06 * tier, 0.13), tint * 1.03)
-			kit.cone("roof_slate", Vector3(-w * 0.5 + 0.08, 0.645 + 0.06 * tier, -0.1), 0.1, 0.18, 4, tint)
+			kit.box("stone", Vector3(-w * 0.5 + 0.08, 0.025, -0.1), Vector3(0.13, 0.62, 0.13), tint * 1.03)
+			kit.cone("roof_slate", Vector3(-w * 0.5 + 0.08, 0.645, -0.1), 0.1, 0.18, 4, tint)
 			for k in 4:
 				kit.cylinder("stone", Vector3(-0.15 + 0.1 * k, 0.025, 0.21), 0.018, 0.22, 6, tint)
 			kit.box("steel", Vector3(0.22, 0.31, -0.08), Vector3(0.008, 0.25, 0.008))
@@ -854,3 +906,18 @@ func _build_ruins() -> void:
 		if overgrown:
 			kit.cone("foliage", Vector3(0.2, 0.01, -0.1), 0.12, 0.2, 6)
 	ruin_inst.mesh = kit.commit()
+
+func _city_growth(kit:MeshKit,tier:int,tint:Color) -> void:
+	if tier>=1:
+		kit.box("brick",Vector3(-.26,.025,.25),Vector3(.22,.17,.18),tint)
+		kit.gable("roof_tile",Vector3(-.26,.195,.25),.18,.22,.07,tint)
+	if tier>=2:
+		kit.box("concrete",Vector3(.27,.025,.12),Vector3(.18,.36,.24),tint)
+		for floor_ in 3:
+			for z in [-.002,.242]: kit.box("glass",Vector3(.27,.10+floor_*.10,z),Vector3(.14,.045,.004))
+			for x in [.178,.362]: kit.box("glass",Vector3(x,.10+floor_*.10,.12),Vector3(.004,.045,.18))
+	if tier>=3:
+		kit.box("concrete",Vector3(.18,.025,-.23),Vector3(.23,.58,.20),tint)
+		for floor_ in 5:
+			for z in [-.332,-.128]: kit.box("glass",Vector3(.18,.095+floor_*.10,z),Vector3(.19,.045,.004))
+			for x in [.063,.297]: kit.box("glass",Vector3(x,.095+floor_*.10,-.23),Vector3(.004,.045,.16))

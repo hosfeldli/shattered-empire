@@ -7,8 +7,7 @@ var root:Control
 var veil:ColorRect
 var card:PanelContainer
 var content:VBoxContainer
-var navigation:VBoxContainer
-var expanded:=false
+var navigation:HBoxContainer
 var world_hidden:=false
 var rail_buttons:={}
 var status:Label
@@ -20,6 +19,8 @@ var menu_pause_pending:=false
 var connection_pending:=false
 var connection_started:=0
 var room:={}
+var listening_key:=""
+var binding_button:Button
 
 func setup(game:Node,settings:NativePreferences,is_automated:bool) -> void:
 	app=game; prefs=settings; automated=is_automated; layer=90
@@ -31,15 +32,15 @@ func setup(game:Node,settings:NativePreferences,is_automated:bool) -> void:
 	card=PanelContainer.new(); root.add_child(card)
 	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; card.add_child(scroll)
 	content=VBoxContainer.new(); content.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(content)
-	navigation=VBoxContainer.new(); root.add_child(navigation)
-	NativeUI.button(navigation,"☰",func():expanded=not expanded)
-	for title in NativeSectionNav.MAIN:
-		var target:String=NativeSectionNav.MAIN[title]
-		var button:=NativeUI.button(navigation,"",func():app.command_panel.panel.hide(); app.workspace.open_page(target))
-		button.custom_minimum_size=Vector2(44,44); button.tooltip_text=title; button.alignment=HORIZONTAL_ALIGNMENT_LEFT
-		var icon:=NativeRailIcon.new(); icon.title=title; icon.position=Vector2(10,10); icon.mouse_filter=Control.MOUSE_FILTER_IGNORE; button.add_child(icon)
+	navigation=HBoxContainer.new(); root.add_child(navigation)
+	navigation.add_theme_constant_override("separation",5)
+	for title in ["Build","Army","Research"]:
+		var target:String={"Build":"Construction","Army":"Armies","Research":"Research"}[title]
+		var button:=NativeUI.compact_button(navigation,title+(" · B" if title=="Build" else " · T" if title=="Research" else ""),func():
+			app.command_panel.panel.hide()
+			if app.workspace.panel.visible and app.workspace.page==target: app.workspace.panel.hide()
+			else: app.workspace.open_page(target),"Open "+title.to_lower()+" controls")
 		rail_buttons[title]=button
-	NativeUI.button(navigation,"⚙",func():previous="pause";show_view("settings"))
 	app.net.message.connect(_message)
 	if automated: show_view("")
 	else: show_view("main")
@@ -118,7 +119,7 @@ func _new_game(mode:String) -> void:
 	_base("New campaign" if mode=="ai" else "AI exhibition","Choose the world and opponents. Your campaign is saved by the server.")
 	var player:=LineEdit.new(); player.text=str(prefs.values.player); NativeUI.field(content,"Your name").add_child(player); player.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	var seed:=LineEdit.new(); seed.placeholder_text="Random"; NativeUI.field(content,"World seed").add_child(seed)
-	var size_:=NativeUI.options(NativeUI.field(content,"Map size"),[["small","Small · 64 × 64"],["medium","Medium · 128 × 128"],["large","Large · 256 × 256"]]); size_.select(1)
+	var size_:=NativeUI.options(NativeUI.field(content,"Map size"),[["small","Small · 128 × 128"],["medium","Medium · 192 × 192"],["large","Large · 256 × 256"]]); size_.select(1)
 	var style:=NativeUI.options(NativeUI.field(content,"Geography"),[["","Varied world"],["continents","Continents"],["archipelago","Archipelago"],["inlandSea","Inland sea"],["pangaea","Pangaea"]])
 	var count:=SpinBox.new(); count.min_value=1; count.max_value=7; count.value=3; NativeUI.field(content,"AI opponents").add_child(count)
 	var personality:=NativeUI.options(NativeUI.field(content,"AI personality"),[["mixed","Varied"],["warlord","Warlord"],["merchant","Merchant"],["builder","Builder"]])
@@ -168,12 +169,28 @@ func _settings() -> void:
 	var zoom:=_slider("Zoom speed",.3,3,.1,float(prefs.values.zoom_speed))
 	var invert:=CheckButton.new(); invert.text="Invert zoom direction"; invert.button_pressed=prefs.values.invert_zoom; content.add_child(invert)
 	var edges:=CheckButton.new(); edges.text="Pan at screen edges"; edges.button_pressed=prefs.values.edge_pan; content.add_child(edges)
+	var presentation:=VBoxContainer.new(); presentation.hide()
+	NativeUI.compact_button(content,"World & accessibility options…",func():presentation.visible=not presentation.visible)
+	content.add_child(presentation)
+	var switches:={}
+	for pair in [["weather_effects","Weather effects"],["screen_shake","Screen shake"],["reduced_motion","Reduced motion"],["high_contrast","High-contrast selection"],["unit_labels","Unit labels"],["resource_markers","Resource markers"]]:
+		var toggle:=CheckButton.new(); toggle.text=pair[1]; toggle.button_pressed=bool(prefs.values[pair[0]]); presentation.add_child(toggle); switches[pair[0]]=toggle
+	var particles:=NativeUI.options(NativeUI.field(presentation,"Particle density"),[[0.0,"Minimal"],[.5,"Reduced"],[1.0,"Full"]]); _select(particles,prefs.values.particle_density)
+	var shortcuts:=VBoxContainer.new(); shortcuts.hide()
+	NativeUI.compact_button(content,"Keyboard shortcuts…",func():shortcuts.visible=not shortcuts.visible)
+	content.add_child(shortcuts)
+	for action in NativePreferences.SHORTCUTS:
+		var key:String=action; var row:=NativeUI.field(shortcuts,key.replace("_"," ").capitalize())
+		var button:=NativeUI.compact_button(row,OS.get_keycode_string(int(prefs.values.bindings.get(key,NativePreferences.SHORTCUTS[key]))),func():pass)
+		button.pressed.connect(func():listening_key=key; binding_button=button; button.text="Press a key… (Esc cancels)")
 	var server:=LineEdit.new(); server.text=str(prefs.values.server); server.size_flags_horizontal=Control.SIZE_EXPAND_FILL; NativeUI.field(content,"Game server").add_child(server)
 	status=NativeUI.label(content,"",14,NativeUI.GOLD)
 	NativeUI.button(content,"Apply & save",func():
 		var address:=server.text.strip_edges()
 		if not address.begins_with("ws://") and not address.begins_with("wss://"): status.text="Use a ws:// or wss:// game-server address."; return
 		prefs.values.merge({"fullscreen":fullscreen.button_pressed,"resolution":NativeUI.value(resolution),"quality":NativeUI.value(quality),"vsync":vsync.button_pressed,"fps":NativeUI.value(fps),"volume":volume.value,"mute":mute.button_pressed,"ui_scale":ui_scale.value,"pan_speed":pan.value,"zoom_speed":zoom.value,"invert_zoom":invert.button_pressed,"edge_pan":edges.button_pressed,"server":address},true)
+		for key in switches: prefs.values[key]=(switches[key] as CheckButton).button_pressed
+		prefs.values.particle_density=NativeUI.value(particles)
 		var error:=prefs.save(); prefs.apply(app); root.theme=NativeUI.theme()
 		status.text="Settings saved" if error==OK else "Settings applied, but could not save them to disk")
 	NativeUI.button(content,"Back",func():show_view(previous))
@@ -212,6 +229,16 @@ func _message(record:Dictionary) -> void:
 
 func _input(event:InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo: return
+	if not listening_key.is_empty():
+		if event.keycode!=KEY_ESCAPE:
+			var duplicate:=false
+			for key in NativePreferences.SHORTCUTS:
+				if key!=listening_key and int(prefs.values.bindings.get(key,NativePreferences.SHORTCUTS[key]))==event.keycode: duplicate=true
+			if event.keycode in [KEY_F11,KEY_ENTER,KEY_TAB,KEY_W,KEY_A,KEY_S,KEY_D] or duplicate:
+				binding_button.text="Key in use · choose another"; app.get_viewport().set_input_as_handled(); return
+			prefs.values.bindings[listening_key]=int(event.keycode)
+		binding_button.text=OS.get_keycode_string(int(prefs.values.bindings.get(listening_key,NativePreferences.SHORTCUTS[listening_key])))
+		listening_key=""; app.get_viewport().set_input_as_handled(); return
 	if event.keycode==KEY_F11:
 		prefs.values.fullscreen=not bool(prefs.values.fullscreen); prefs.save(); prefs.apply(app,automated)
 		app.get_viewport().set_input_as_handled(); return
@@ -227,36 +254,36 @@ func _input(event:InputEvent) -> void:
 	if is_blocking(): return
 	var focused:=app.get_viewport().gui_get_focus_owner()
 	if focused is LineEdit or focused is TextEdit or focused is SpinBox: return
-	if (event.keycode==KEY_SLASH or (event.keycode==KEY_K and (event.ctrl_pressed or event.meta_pressed))):
+	var code:=prefs.canonical_key(event.keycode)
+	if (code==KEY_SLASH or (code==KEY_K and (event.ctrl_pressed or event.meta_pressed))):
 		show_view("search"); app.get_viewport().set_input_as_handled()
-	elif event.keycode==KEY_K: previous="pause"; show_view("help"); app.get_viewport().set_input_as_handled()
-	elif event.keycode==KEY_B:
+	elif code==KEY_K: previous="pause"; show_view("help"); app.get_viewport().set_input_as_handled()
+	elif code==KEY_B:
 		app.workspace.open_page("Construction"); app.get_viewport().set_input_as_handled()
-	elif event.keycode==KEY_F10:
-		world_hidden=not world_hidden; app.get_viewport().set_input_as_handled()
-	elif event.keycode==KEY_T and not event.ctrl_pressed and not event.meta_pressed:
+	elif code==KEY_F10:
+		world_hidden=not world_hidden
+		if world_hidden: app.workspace.panel.hide()
+		app.get_viewport().set_input_as_handled()
+	elif code==KEY_T and not event.ctrl_pressed and not event.meta_pressed:
 		if app.workspace.panel.visible and app.workspace.page=="Research": app.workspace.panel.hide()
 		else: app.workspace.open_page("Research")
 		app.get_viewport().set_input_as_handled()
-	elif event.keycode==KEY_M:
+	elif code==KEY_M:
 		prefs.values.mute=not bool(prefs.values.mute); prefs.save()
 		app.audio.enabled=not bool(prefs.values.mute); AudioServer.set_bus_mute(0,bool(prefs.values.mute))
 		if not app.audio.enabled: app.audio.stop()
 		app.get_viewport().set_input_as_handled()
-	elif event.keycode==KEY_L:
+	elif code==KEY_L:
 		app.strategic.mode=(app.strategic.mode+1)%app.strategic.selector.item_count
 		app.strategic.selector.select(app.strategic.mode); app.strategic._dirty=true; app.get_viewport().set_input_as_handled()
 
 func _process(_dt:float) -> void:
 	var bounds:=root.get_viewport_rect().size
-	navigation.visible=app.world.ready_ and not is_blocking() and not app.workspace.panel.visible and not world_hidden
-	navigation.position=Vector2(8,70)
-	for title in rail_buttons:
-		(rail_buttons[title] as Button).text="      "+title if expanded else ""
-		(rail_buttons[title] as Button).custom_minimum_size.x=138 if expanded else 44
+	navigation.visible=app.world.ready_ and not is_blocking() and not world_hidden
+	navigation.position=Vector2(10,53)
 	app.hud.root.visible=not world_hidden and app.world.ready_
-	app.strategic.selector.position=Vector2(bounds.x-192,61)
-	app.strategic.selector.custom_minimum_size=Vector2(180,40)
+	app.strategic.selector.visible=false
+	app.strategic.selector.custom_minimum_size=Vector2(156,30)
 	card.size=Vector2(minf(650,bounds.x-32),minf(850,bounds.y-48)); card.position=(bounds-card.size)*.5
 	if view=="main": card.size.y=minf(690,bounds.y-48); card.position=Vector2(maxf(24,bounds.x*.09),(bounds.y-card.size.y)*.5)
 	app.hud.lobby.visible=false

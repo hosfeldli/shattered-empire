@@ -9,6 +9,7 @@ const PRESETS := {
 	"high": {"pedestrians": 140, "puffs": 900, "battle_puffs": 600, "tree_size": 80.0, "shadow_size": 140.0},
 	"ultra": {"pedestrians": 200, "puffs": 900, "battle_puffs": 600, "tree_size": 90.0, "shadow_size": 160.0}}
 var quality := "medium"
+var particle_scale:=1.0
 
 
 func set_quality(value: String) -> void:
@@ -25,6 +26,7 @@ func scale_name(camera_size: float) -> String:
 
 func budget(kind: String, camera_size: float) -> int:
 	var full := int(PRESETS[quality].get(kind, 0))
+	if kind in ["puffs","battle_puffs"]: full=roundi(full*particle_scale)
 	match scale_for(camera_size):
 		Scale.STRATEGIC:
 			return 0 if kind == "pedestrians" else int(full * 0.2)

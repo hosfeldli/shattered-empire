@@ -14,8 +14,8 @@ retain their rules. The remaining LWE acceptance and platform/release gates stil
 - [x] Native fullscreen launch, windowed option, F11 toggle, main/pause menus and match setup.
 - [x] Persistent graphics, display, audio, interface-scale and camera preferences.
 - [x] Native system navigation and typed action catalog for existing server commands.
-- [x] Eight primary workspaces, economy/resource explanations, construction/research, recruitment,
-  armies/formations, air/missile controls, observed Rivals information and Chronicle.
+- [x] Three primary tools (Build, Army, Research), contextual selection cards and Overview access
+  to cities, economy, Rivals and Chronicle. Minimap removed. Recruitment, formations and air/missile controls retained.
 - [x] Trading/imports, government and treaty controls removed from native gameplay.
 - [x] Versioned native/legacy save behavior and server-side command gates.
 - [ ] Seeded pace, food/maintenance sustainability, scarce-region progression and era milestone audit.
@@ -23,7 +23,8 @@ retain their rules. The remaining LWE acceptance and platform/release gates stil
 - [x] Map selection, additive/batch selection, control groups, double-click type selection,
   queued movement, rally points, road undo/waypoints, deployment spacing/depth/facing controls.
 - [ ] Complete the explicit old-build feature/command audit and close remaining discrepancies.
-- [ ] Finish rendered review of tactical command dock, all pages, small windows and UI scaling.
+- [x] Rendered compact selection/palette/drawer review, all contextual pages and larger UI scale.
+  Packaged macOS: 50 UI checks. Windows interactive review remains open.
 - [ ] Validate keyboard/mouse modality, target previews, destructive confirmations and stale replies.
 - [ ] Multiplayer host/join/rejoin and observer controls verified through native menus.
 - [ ] Windows and macOS packaged application checks, including saved preferences/fullscreen.

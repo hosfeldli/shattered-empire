@@ -1,8 +1,10 @@
 class_name NativePreferences
 extends RefCounted
 ## Local presentation preferences only. Gameplay state remains on the server.
+const SHORTCUTS:={"build":KEY_B,"research":KEY_T,"hold":KEY_H,"withdraw":KEY_X,"attack_move":KEY_E,"select_combat":KEY_Q,"form_army":KEY_G,"road":KEY_R,"center":KEY_SPACE,"pause":KEY_P}
 const DEFAULTS:={"fullscreen":true,"resolution":"1600x900","quality":"medium","vsync":true,"fps":60,
 	"volume":70.0,"mute":false,"ui_scale":1.0,"pan_speed":1.0,"zoom_speed":1.0,"invert_zoom":false,"edge_pan":false,
+	"weather_effects":true,"particle_density":1.0,"screen_shake":false,"reduced_motion":false,"high_contrast":false,"unit_labels":true,"resource_markers":true,"bindings":{},
 	"server":"wss://game.liamhosfeld.com/ws","player":"Commander"}
 var values:=DEFAULTS.duplicate(true)
 var path:="user://settings.cfg"
@@ -28,6 +30,13 @@ func save() -> Error:
 func apply(app:Node,windowed:=false) -> void:
 	app._apply_quality(str(values.quality))
 	app.cam.pan_multiplier=float(values.pan_speed); app.cam.zoom_multiplier=float(values.zoom_speed)
+	app.input.preferences=self; app.command_tools.preferences=self
+	app.cam.reduced_motion=bool(values.reduced_motion); app.cam.shake_enabled=bool(values.screen_shake) and not bool(values.reduced_motion)
+	app.environment.effects_enabled=bool(values.weather_effects); app.environment.reduced_motion=bool(values.reduced_motion)
+	app.composition.lod.particle_scale=float(values.particle_density)
+	app.strategic.unit_labels=bool(values.unit_labels); app.strategic.resource_markers=bool(values.resource_markers)
+	app.map_overlay.high_contrast=bool(values.high_contrast)
+	app.military.ring_mesh.material=MaterialLibrary.glow(Color("77e7ff") if values.high_contrast else Color(.9,.92,.55))
 	app.cam.invert_zoom=bool(values.invert_zoom); app.cam.edge_pan=bool(values.edge_pan)
 	app.audio.enabled=not bool(values.mute)
 	AudioServer.set_bus_volume_db(0,linear_to_db(maxf(float(values.volume)/100.0,.001)))
@@ -49,7 +58,7 @@ func apply(app:Node,windowed:=false) -> void:
 	var scaled_ui:bool=not app.automated or app.args.has("ui-test")
 	window.content_scale_mode=Window.CONTENT_SCALE_MODE_CANVAS_ITEMS if scaled_ui else Window.CONTENT_SCALE_MODE_DISABLED
 	window.content_scale_aspect=Window.CONTENT_SCALE_ASPECT_EXPAND
-	window.content_scale_size=Vector2i(1600,900)
+	window.content_scale_size=Vector2i(1280,720)
 	window.content_scale_factor=float(values.ui_scale) if scaled_ui else 1.0
 	var skin:=NativeUI.theme()
 	app.hud.root.theme=skin; app.workspace.panel.theme=skin; app.command_panel.panel.theme=skin
@@ -60,3 +69,8 @@ func apply(app:Node,windowed:=false) -> void:
 func _scale_labels(node:Node,scale_:float) -> void:
 	if node is Label and node.has_meta("ui_font_size"): node.add_theme_font_size_override("font_size",roundi(float(node.get_meta("ui_font_size"))*scale_))
 	for child in node.get_children(): _scale_labels(child,scale_)
+
+func canonical_key(code:int) -> int:
+	for action in SHORTCUTS:
+		if int(values.bindings.get(action,SHORTCUTS[action]))==code: return int(SHORTCUTS[action])
+	return KEY_NONE if code in SHORTCUTS.values() else code

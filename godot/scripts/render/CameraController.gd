@@ -30,6 +30,9 @@ var pan_multiplier:=1.0
 var zoom_multiplier:=1.0
 var invert_zoom:=false
 var edge_pan:=false
+var reduced_motion:=false
+var shake_enabled:=false
+var shake_time:=0.0
 
 
 func setup(w: WorldState) -> void:
@@ -91,13 +94,17 @@ func _apply() -> void:
 func _process(dt: float) -> void:
 	if world == null or world.grid == null:
 		return
+	shake_time=maxf(0,shake_time-dt)
+	if cam:
+		cam.h_offset=sin(shake_time*140)*shake_time*.08 if shake_enabled else 0.0
+		cam.v_offset=sin(shake_time*110)*shake_time*.04 if shake_enabled else 0.0
 	if input_enabled:
 		var v := Vector2.ZERO
 		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP): v.y -= 1
 		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): v.y += 1
 		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): v.x -= 1
 		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): v.x += 1
-		if edge_pan and DisplayServer.get_name()!="headless":
+		if edge_pan and DisplayServer.get_name()!="headless" and get_viewport().gui_get_hovered_control()==null:
 			var mouse:=get_viewport().get_mouse_position(); var bounds:=get_viewport().get_visible_rect().size
 			if mouse.x>=0 and mouse.y>=0 and mouse.x<bounds.x and mouse.y<bounds.y:
 				if mouse.x<8: v.x-=1
@@ -112,7 +119,7 @@ func _process(dt: float) -> void:
 	# eased zoom, keeping the ground under the anchor fixed on screen every frame
 	if absf(goal_size - size) > 1e-3:
 		var before := ground_at(anchor_screen) if anchor_screen.x >= 0.0 else Vector3.INF
-		size = lerpf(size, goal_size, 1.0 - exp(-ZOOM_EASE * dt))
+		size = lerpf(size, goal_size, 1.0 - exp(-(40.0 if reduced_motion else ZOOM_EASE) * dt))
 		if absf(goal_size - size) < 1e-3:
 			size = goal_size
 		_apply()

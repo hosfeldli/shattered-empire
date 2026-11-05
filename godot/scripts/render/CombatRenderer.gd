@@ -258,6 +258,7 @@ func _tile_point(t: int, lift: float, salt := 0) -> Vector3:
 
 
 func _spawn(kind: String, a: Vector3, b: Vector3, life: float, col: Color, size: float) -> void:
+	if kind in ["dust","explosion"] and cam.shake_enabled and a.distance_to(cam.focus)<12: cam.shake_time=maxf(cam.shake_time,.2)
 	if fx.size() >= MAX_FX:
 		return
 	var node: MeshInstance3D
