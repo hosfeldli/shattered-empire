@@ -4,10 +4,10 @@ extends RefCounted
 
 enum Scale { TACTICAL, OPERATIONAL, STRATEGIC }
 const PRESETS := {
-	"low": {"pedestrians": 24, "puffs": 180, "battle_puffs": 120, "tree_size": 40.0, "shadow_size": 0.0},
-	"medium": {"pedestrians": 80, "puffs": 600, "battle_puffs": 400, "tree_size": 60.0, "shadow_size": 120.0},
-	"high": {"pedestrians": 140, "puffs": 900, "battle_puffs": 600, "tree_size": 80.0, "shadow_size": 140.0},
-	"ultra": {"pedestrians": 200, "puffs": 900, "battle_puffs": 600, "tree_size": 90.0, "shadow_size": 160.0}}
+	"low": {"pedestrians": 24, "vehicles": 8, "puffs": 180, "battle_puffs": 120, "tree_size": 40.0, "shadow_size": 0.0},
+	"medium": {"pedestrians": 80, "vehicles": 24, "puffs": 600, "battle_puffs": 400, "tree_size": 60.0, "shadow_size": 120.0},
+	"high": {"pedestrians": 140, "vehicles": 40, "puffs": 900, "battle_puffs": 600, "tree_size": 80.0, "shadow_size": 140.0},
+	"ultra": {"pedestrians": 200, "vehicles": 64, "puffs": 900, "battle_puffs": 600, "tree_size": 90.0, "shadow_size": 160.0}}
 var quality := "medium"
 var particle_scale:=1.0
 
@@ -29,7 +29,7 @@ func budget(kind: String, camera_size: float) -> int:
 	if kind in ["puffs","battle_puffs"]: full=roundi(full*particle_scale)
 	match scale_for(camera_size):
 		Scale.STRATEGIC:
-			return 0 if kind == "pedestrians" else int(full * 0.2)
+			return 0 if kind in ["pedestrians","vehicles"] else int(full * 0.2)
 		Scale.OPERATIONAL:
 			return int(full * 0.5)
 	return full

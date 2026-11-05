@@ -17,6 +17,101 @@ func shot(name_:String) -> void:
 func frames(count:=4) -> void:
 	for frame in count: await app.get_tree().process_frame
 
+func banner_zoom() -> void:
+	await request({"c":"pause","on":true}); await frames(12)
+	var original:float=app.cam.size; var keys:={}; var aligned:=true; var stable:=true
+	app.world_labels.refresh()
+	for key in app.world_labels.groups: keys[key]=app.world_labels.groups[key].ids.duplicate()
+	for zoom in [6.0,16.0,30.0,50.0,80.0,40.0,10.0]:
+		app.cam.size=zoom; app.cam.goal_size=zoom; app.cam._apply(); await frames(2)
+		for key in keys:
+			stable=stable and app.world_labels.groups.has(key) and app.world_labels.groups[key].ids==keys[key]
+		for banner:Dictionary in app.world_labels.banners:
+			var anchor:=Vector2.ZERO
+			for id in banner.ids: anchor+=app.cam.to_screen(app.military.draw_positions[id]+Vector3(0,.22,0))
+			anchor/=banner.ids.size(); aligned=aligned and anchor.distance_to(banner.anchor)<.5
+	checks.zoom_preserves_banner_membership=stable
+	checks.banners_follow_camera_each_frame=aligned
+	app.cam.size=original; app.cam.goal_size=original; app.cam._apply(); await frames()
+
+func city_activity() -> void:
+	app.input.cancel(); app.workspace.panel.hide(); await request({"c":"pause","on":false})
+	var city:Dictionary={}
+	for record:Dictionary in app.world.cities.values():
+		if int(record.o)==app.world.civ_id: city=record; break
+	if city.is_empty(): checks.city_activity=false; return
+	app.cam.focus_tile(int(city.t),5.5); app.cam.size=5.5; app.cam.goal_size=5.5; app.cam._apply()
+	app.civilians.elapsed=1.0; await frames(90)
+	var before:Array=app.civilians.actor_positions.duplicate()
+	checks.city_pedestrians=app.civilians.drawn>0
+	checks.city_local_traffic=app.civilians.vehicles_drawn>0
+	await shot("city-activity-before"); await frames(90)
+	var changed:=false
+	for index in mini(before.size(),app.civilians.actor_positions.size()): changed=changed or (before[index] as Vector3).distance_to(app.civilians.actor_positions[index])>.005
+	checks.city_activity_moves=changed
+	await shot("city-activity-after")
+	var producer:Dictionary={}
+	for building:Dictionary in app.world.buildings.values():
+		if app.production_feedback.eligible(building): producer=building; break
+	checks.measured_production_available=not producer.is_empty()
+	if not producer.is_empty():
+		app.cam.focus_tile(int(producer.t),6); app.cam.size=6; app.cam.goal_size=6; app.cam._apply()
+		app.production_feedback.clock=fposmod(.7-float(int(producer.id)%29)*.31,5.0)
+		await frames(4)
+		checks.production_icons_bounded=app.production_feedback.shown.size()>0 and app.production_feedback.shown.size()<=12
+		await shot("production-icons")
+	checks.no_routine_connection_status=not app.hud.conn.visible
+	await request({"c":"pause","on":true})
+
+func deployment_gesture() -> void:
+	app.input.cancel(); app.workspace.panel.hide(); app.command_tools.cancel()
+	var world:WorldState=app.world
+	var units:Array=world.units.values().filter(func(unit):return int(unit.owner)==world.civ_id and not world.defs.UNITS[unit.type].get("civilian",false) and not world.defs.UNITS[unit.type].get("air",false)).slice(0,4)
+	if units.is_empty(): checks.right_drag_deploys=false; return
+	for unit:Dictionary in units: app.military.selected[int(unit.id)]=true
+	app.cam.focus_tile(int(units[0].tile),16); app.cam.size=16; app.cam.goal_size=16; app.cam._apply(); await frames(6)
+	var a:=int(units[0].tile); var b:=a
+	for step_ in 4: b=world.grid.nb[b*6]
+	var pa:Vector2=app.map_overlay._point(a); var pb:Vector2=app.map_overlay._point(b)
+	var before:int=world.econ.get("formations",[]).size()
+	mouse_button(pa,MOUSE_BUTTON_RIGHT,true)
+	var motion:=InputEventMouseMotion.new(); motion.position=pb; motion.global_position=pb; motion.relative=pb-pa; app.get_viewport().push_input(motion,true)
+	mouse_button(pb,MOUSE_BUTTON_RIGHT,false)
+	var until:=Time.get_ticks_msec()+5000
+	while world.econ.get("formations",[]).size()<=before and Time.get_ticks_msec()<until: await frames()
+	checks.right_drag_deploys=world.econ.get("formations",[]).size()>before and app.command_tools.mode=="select"
+	await shot("drag-deployment")
+
+func mass_upgrade() -> void:
+	await request({"c":"pause","on":false})
+	var world:WorldState=app.world
+	var houses:Array=world.buildings.values().filter(func(building):return building.ty=="house" and int(building.o)==world.civ_id)
+	for attempt in maxi(0,2-houses.size()):
+		var sites:=await request({"c":"placement","type":"house"})
+		if sites.get("tiles",[]).is_empty(): break
+		await request({"c":"build","type":"house","tile":int(sites.tiles[0]),"plan":true}); await frames(15)
+	var until:=Time.get_ticks_msec()+35000
+	while Time.get_ticks_msec()<until:
+		houses=world.buildings.values().filter(func(building):return building.ty=="house" and int(building.o)==world.civ_id and int(building.get("d",0))==1 and int(building.get("lv",1))==1)
+		if houses.size()>=2: break
+		await frames(12)
+	checks.finished_houses_for_batch=houses.size()>=2
+	if houses.size()<2: return
+	app.input.cancel(); app.workspace.panel.hide(); app.cam.focus_tile(int(houses[0].t),16); app.cam.size=16; app.cam.goal_size=16; app.cam._apply(); await frames(8)
+	var center:Vector2=world.grid.center(int(houses[0].t)); var point:Vector2=app.cam.to_screen(Vector3(world.grid.near_x(center.x,app.cam.focus.x),world.tile_height(int(houses[0].t)),center.y))
+	var event:=InputEventMouseButton.new(); event.position=point; event.global_position=point; event.button_index=MOUSE_BUTTON_LEFT; event.pressed=true; event.double_click=true
+	app.get_viewport().push_input(event,true); mouse_button(point,MOUSE_BUTTON_LEFT,false); await frames(12)
+	var selected:Array=app.input.selected_buildings.keys()
+	checks.double_click_matches_building_type=selected.size()>=2 and selected.all(func(id):return world.buildings[id].ty=="house" and int(world.buildings[id].o)==world.civ_id)
+	var eligible:Array=selected.filter(func(id):return int(world.buildings[id].get("d",0))==1 and int(world.buildings[id].get("lv",1))==1)
+	var buttons:Array=app.command_dock.orders.get_children().filter(func(button):return str(button.text).begins_with("Upgrade"))
+	if not buttons.is_empty(): (buttons[0] as Button).pressed.emit()
+	until=Time.get_ticks_msec()+5000
+	while eligible.any(func(id):return int(world.buildings[id].get("lv",1))==1) and Time.get_ticks_msec()<until: await frames()
+	checks.mass_upgrade_authoritative=eligible.size()>=2 and eligible.all(func(id):return int(world.buildings[id].get("lv",1))==2)
+	checks.mass_upgrade_keeps_selection=app.input.selected_buildings.keys()==selected
+	await shot("mass-upgrade")
+
 func mouse_button(point:Vector2,button:MouseButton,pressed:bool) -> void:
 	var event:=InputEventMouseButton.new(); event.position=point; event.global_position=point; event.button_index=button; event.pressed=pressed
 	app.get_viewport().push_input(event,true)
@@ -56,6 +151,13 @@ func compact_layout() -> void:
 	app.workspace.open_page("Economy"); await shot("economy")
 	app.workspace.open_page("Research"); app.workspace.set_expanded(true); await shot("research-tree")
 	checks.research_expands_on_request=app.workspace.panel.size.x>420
+	var graph:NativeResearchTree=app.workspace.dashboard.research_graph
+	checks.research_starts_with_available=graph.view_filter==0 and graph.cards.keys().all(func(key):return graph.model.ready(key) or key==app.world.econ.get("research") or key in app.world.econ.get("queue",[]))
+	graph.configure("",1,-1)
+	checks.research_all_eras=graph.cards.size()==app.world.defs.TECHS.size()
+	graph.configure("tank",1,-1)
+	checks.research_searches_unlocks=not graph.cards.is_empty() and graph.cards.keys().all(func(key):return "tank" in (str(app.world.defs.TECHS[key].get("desc",""))+" "+" ".join(graph.model.unlocks(key))).to_lower())
+	await shot("research-search"); graph.configure("",0,-1)
 	app.workspace.set_expanded(false); await frames()
 	checks.research_returns_to_drawer=app.workspace.panel.size.x<=420
 	var previous:float=app.preferences.values.ui_scale
@@ -211,6 +313,26 @@ func run(game:Node,out:String) -> void:
 	await app.get_tree().create_timer(.6).timeout
 	app.workspace.panel.hide(); await shot("ground-selection")
 	checks.ground_specific_actions=app.command_dock.orders.get_children().any(func(button):return button.text=="Attack-move") and not app.command_dock.orders.get_children().any(func(button):return button.text=="Air strike…")
+	checks.unit_behavior_choices=app.command_dock.behavior_buttons.size()==3
+	if checks.unit_behavior_choices:
+		var combat:Array=app.input._owned_units().filter(func(id):return not app.world.defs.UNITS[app.world.units[id].type].get("civilian",false) and not app.world.defs.UNITS[app.world.units[id].type].get("air",false))
+		(app.command_dock.behavior_buttons.explore as Button).pressed.emit()
+		var until:=Time.get_ticks_msec()+4000
+		while combat.any(func(id):return app.world.units[id].stance!="explore") and Time.get_ticks_msec()<until: await frames()
+		checks.explore_behavior_authoritative=combat.all(func(id):return app.world.units[id].stance=="explore")
+		(app.command_dock.behavior_buttons.defensive as Button).pressed.emit(); await frames()
+	app.world_labels.refresh()
+	checks.bounded_troop_banners=not app.world_labels.banners.is_empty() and app.world_labels.banners.size()<=48
+	if not app.world_labels.banners.is_empty():
+		var banner:Dictionary=app.world_labels.banners[0]
+		mouse_button((banner.rect as Rect2).get_center(),MOUSE_BUTTON_LEFT,true); mouse_button((banner.rect as Rect2).get_center(),MOUSE_BUTTON_LEFT,false); await frames()
+		checks.banner_selects_real_units=banner.ids.all(func(id):return app.military.selected.has(id))
+	checks.resource_icons_only=app.world_labels.markers.all(func(record):return (record.rect as Rect2).size==Vector2(20,20) and app.world_labels.icons.has(record.resource))
+	checks.compact_troop_composition_icons=app.world_labels.banners.all(func(record):return (record.rect as Rect2).size==Vector2(26,26) and app.world_labels.unit_icons.has(record.type))
+	checks.unit_card_behavior_compact=app.command_dock.panel.size.y<220
+	await banner_zoom()
+	await shot("troop-banners")
+	await deployment_gesture()
 	app.input.cancel(); await frames()
 	checks.selection_hides_when_cleared=not app.command_dock.panel.visible
 	app.workspace.open_page("Cities")
@@ -223,6 +345,8 @@ func run(game:Node,out:String) -> void:
 	checks.building_specific_actions=app.command_dock.orders.get_children().any(func(button):return button.text=="Manage" or button.text=="More ▾")
 	app.input.cancel(); await shot("world")
 	await direct_placement()
+	await mass_upgrade()
+	await city_activity()
 	checks.merge(await catalogue.run(app,directory),true)
 	app.shell.show_view("pause"); await shot("pause-menu"); app.shell.show_view("")
 	var result:={"checks":checks,"actions":app.workspace.actions.size(),"pages":NativeWorkspace.PAGES.size(),"rendered":DisplayServer.get_name()!="headless"}

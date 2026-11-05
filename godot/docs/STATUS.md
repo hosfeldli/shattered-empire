@@ -1,12 +1,26 @@
 # Native edition: status
 
-## Compact UI and later-era development (2026-11-05)
+## Living world, readable icons and direct orders (2026-11-05)
+
+The latest native pass is tracked in [CURRENT_WORK.md](CURRENT_WORK.md), including the quarry,
+production, integrated defenses, civilian activity and observer-control requests. Lakes share a
+continuous surface, farms/industry share ground, fog has neutral inward transitions and mountains
+have stronger relief. Small material icons replace resource banners; troop composition uses
+separate type/count circles that stay aligned during zoom.
+
+Packaged macOS passes 73 interaction checks. The server suite passes 144 tests and native headless
+checks total 253. Double-click batch upgrade, deployment on right-drag release, Explore leaving
+a fixed frontage, measured production rates, moving pedestrians/carts/cars and available-first
+research are covered. Both development exports share the hash in [VERIFICATION.md](VERIFICATION.md).
+These are tested improvements, not closure of the full LWE/art/performance/platform release gates.
+
+## Earlier compact UI and later-era development checkpoint (2026-11-05)
 
 The minimap is removed. Build, Army and Research are the primary tools; selection cards and
 compact drawers replace the broad command dock and full-screen management default.
 [SIMPLE_UI.md](SIMPLE_UI.md) describes direct placement, recruitment, commands and all-era coverage.
-The current packaged macOS run passes 50 UI checks. The server suite passes 140 tests and native
-headless checks total 226. Both development exports share the hash in [VERIFICATION.md](VERIFICATION.md).
+That checkpoint passed 50 packaged macOS UI checks. Its server suite passed 140 tests and native
+headless checks total 226. The latest exports and evidence are in [VERIFICATION.md](VERIFICATION.md).
 
 The catalogue covers all 23 troop types, all 32 active player building types, all supported
 levels 1–3 and the four city tiers. Advanced industry and military silhouettes are distinct;

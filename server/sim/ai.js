@@ -43,9 +43,15 @@ const GOV_PREF = { builder: ['federal', 'technocracy'], warlord: ['junta'], merc
 const SPEC = { builder: ['balanced', 'research', 'agrarian'], warlord: ['industrial', 'fortress', 'balanced'], merchant: ['commercial', 'balanced', 'agrarian'] };
 const ARMY_PREF = ['autonomous_tank', 'exo_infantry', 'strike_swarm', 'tank', 'mech_infantry', 'helicopter', 'missile_battery', 'sp_artillery', 'air_defense', 'special_forces', 'armored_car', 'field_gun', 'mortar_team', 'rifle_squad', 'militia'];
 
+export function resolvePersonality(value, id = 0) {
+  // "mixed" is a setup choice, not an AI strategy key. Keep the existing deterministic
+  // varied defaults, including when loading a match saved with this older invalid value.
+  return Object.hasOwn(TECH_PREF, value) ? value : ['merchant', 'warlord', 'builder'][((id % 3) + 3) % 3];
+}
+
 export class AI {
   constructor(g, civ) {
-    this.g = g; this.civ = civ; this.p = civ.personality;
+    this.g = g; this.civ = civ; this.p = resolvePersonality(civ.personality, civ.id); civ.personality = this.p;
     this.campaign = null; this.lastTrade = 0; this.colonists = new Map();
     this.mil = new MilitaryPlanner(this);
     this.brain = new Brain(this);

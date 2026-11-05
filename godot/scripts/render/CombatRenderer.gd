@@ -14,6 +14,9 @@ var world: WorldState
 var cam: CameraController
 var bf_version := -1
 var fw_version := -1
+var defense_version:=-1
+var defense_signature:=""
+var trench_geo_version:=-1
 var field: MeshInstance3D       # craters, scorch, wrecks
 var trenches: MeshInstance3D
 var smoke: MultiMeshInstance3D
@@ -74,6 +77,7 @@ func setup(w: WorldState, c: CameraController) -> void:
 func _clear() -> void:
 	bf_version = -1
 	fw_version = -1
+	defense_version=-1; defense_signature=""; trench_geo_version=-1
 	trenches.mesh=null
 	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",0.0)
 	for e in fx:
@@ -88,8 +92,16 @@ func update(dt: float) -> void:
 	if bf_version != world.bf_version:
 		bf_version = world.bf_version
 		_build_field()
-	if fw_version != world.fw_version:
+	if defense_version!=world.buildings_version:
+		defense_version=world.buildings_version
+		var records:=[]
+		for building:Dictionary in world.buildings.values():
+			if building.ty in ["guard_post","bunker","fort","aa_battery"]: records.append([building.id,building.t,building.o,building.get("d",0),building.get("st","")=="ruined"])
+		var next:=str(records)
+		if next!=defense_signature: defense_signature=next; fw_version=-1
+	if fw_version != world.fw_version or trench_geo_version!=world.geo_version:
 		fw_version = world.fw_version
+		trench_geo_version=world.geo_version
 		_build_trenches()
 	# Hiding the works must hide their terrain cut too, otherwise a debug/LOD hide leaves holes.
 	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",1.0 if visible and not world.fw.is_empty() else 0.0)

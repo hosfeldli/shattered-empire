@@ -7,6 +7,11 @@ func setup(model:Mesh) -> void:
 	view.render_target_update_mode=SubViewport.UPDATE_ONCE; add_child(view)
 	if model==null: return
 	var instance:=MeshInstance3D.new(); instance.mesh=model; instance.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF; view.add_child(instance)
+	for surface in model.get_surface_count():
+		var material:Material=model.surface_get_material(surface)
+		if material is ShaderMaterial:
+			var isolated:ShaderMaterial=material.duplicate(); isolated.set_shader_parameter("visibility_ready",0.0); isolated.set_shader_parameter("weather_ready",0.0); isolated.set_shader_parameter("cloud_ready",0.0)
+			instance.set_surface_override_material(surface,isolated)
 	var bounds:=model.get_aabb(); var center:=bounds.get_center(); var radius:=maxf(bounds.size.length()*.7,.5)
 	var camera:=Camera3D.new(); camera.projection=Camera3D.PROJECTION_ORTHOGONAL; camera.size=radius*1.65; camera.far=radius*10; view.add_child(camera)
 	camera.position=center+Vector3(1,1.6,1.5).normalized()*radius*3; camera.look_at(center); camera.current=true

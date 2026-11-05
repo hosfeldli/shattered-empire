@@ -20,7 +20,7 @@ import { upgradable, upgradeCost as levelUpgradeCost, upgradeProblem, jobSlots, 
 import { cityState, CITY_STATES, rebuildSettlement, rebuildProblem, cityDiagnostics, REBUILD_COST } from './cities.js';
 import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding, resolveDeadlocks, shieldStep } from './military.js';
 import { Diplomacy } from './diplomacy.js';
-import { AI, TECH_PREF } from './ai.js';
+import { AI, TECH_PREF, resolvePersonality } from './ai.js';
 import { autonomyStep } from './autonomy.js';
 import { RebelAI } from './rebels.js';
 import { defaultGovernor, governorStep, autoColonists, migrateGovernor, answerProposal, LEVELS } from './governor.js';
@@ -153,7 +153,7 @@ export class Game {
   makeCiv(id, slot) {
     return {
       id, name: slot.name || CIV_NAMES[id % CIV_NAMES.length], leader: slot.leader || (slot.human ? 'Player' : 'AI'), color: CIV_COLORS[id % CIV_COLORS.length],
-      human: !!slot.human, isAI: !slot.human, isRebel: false, personality: slot.personality || ['merchant', 'warlord', 'builder'][id % 3], difficulty: DIFFICULTY[slot.difficulty] ? slot.difficulty : 'normal', fairPlay: slot.fairPlay !== false, diffProfile: 'v2',
+      human: !!slot.human, isAI: !slot.human, isRebel: false, personality: resolvePersonality(slot.personality,id), difficulty: DIFFICULTY[slot.difficulty] ? slot.difficulty : 'normal', fairPlay: slot.fairPlay !== false, diffProfile: 'v2',
       alive: true, connected: false, token: null,
       res: { food: 220, materials: 260, ore: 0, steel: 20, fuel: 0, electronics: 0, munitions: 20, credits: 150 },
       rates: {}, researchRate: 0, researching: null, progress: 0, techProgress: {}, researchGoal: null, queue: [], techs: new Set(),
@@ -1080,7 +1080,15 @@ export class Game {
         case 'hold':
         case 'stop': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id) { u.path = []; u.field = false; u.order = { kind: 'idle' }; u.goal = -1; u.slot = -1; u.groupSpeed = 0; u.queue = []; u.retreating = false; u.auth = cmd.c === 'hold' ? this.authOf(civ, cmd) : ''; if (cmd.c === 'hold' && !UNITS[u.type].civilian) u.stance = 'hold'; } } return null;
         case 'engage': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['balanced', 'focus', 'threat', 'antiArmor', 'counterBattery', 'defensive'].includes(cmd.policy)) u.policy = cmd.policy; } return null;
-        case 'stance': for (const id of cmd.units || []) { const u = this.units.get(id); if (u && u.owner === civ.id && ['aggressive', 'defensive', 'hold', 'explore'].includes(cmd.stance) && !UNITS[u.type].civilian) u.stance = cmd.stance; } return null;
+        case 'stance': {
+          const units = (Array.isArray(cmd.units) ? cmd.units : []).map(id => this.units.get(id)).filter(u => u && u.owner === civ.id && !UNITS[u.type].civilian);
+          if (!['aggressive', 'defensive', 'hold', 'explore'].includes(cmd.stance)) return null;
+          // Native Explore releases selected units from a fixed frontage. They finish their
+          // current direct movement before existing idle exploration takes over.
+          if (cmd.stance === 'explore' && cmd.releaseFormation) detach(this, units.map(u => u.id));
+          for (const u of units) u.stance = cmd.stance;
+          return null;
+        }
         case 'build': {
           if (BUILDINGS[cmd.type]?.obsolete) return { error: `${BUILDINGS[cmd.type].name} is no longer needed: troops are always supplied` };
           if (!this.canPlace(civ, cmd.type, cmd.tile, true)) return { error: 'Cannot build there' };

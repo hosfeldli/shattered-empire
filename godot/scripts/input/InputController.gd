@@ -36,6 +36,7 @@ var last_group_ms:=0
 var right_press:=Vector2(-1,-1)
 var right_tile:=-1
 var right_drag:=false
+var labels:NativeWorldLabels
 
 
 func setup(w: WorldState, n: NetworkClient, c: CameraController, m: MilitaryRenderer, s: SettlementRenderer) -> void:
@@ -77,12 +78,12 @@ func _unhandled_input(e: InputEvent) -> void:
 		return
 	if e is InputEventMouseButton and e.button_index==MOUSE_BUTTON_RIGHT and not e.pressed and right_press.x>=0:
 		if right_drag and tools:
-			tools.points=[right_tile,cam.pick_tile(e.position)]; tools.drawing=false; tools.request_preview()
+			tools.right_dragging=false; tools.points=[right_tile,cam.pick_tile(e.position)]; tools.drawing=false; tools.request_preview(); tools.commit()
 		else: _order(e.position,e.ctrl_pressed or e.meta_pressed,e.shift_pressed)
 		right_press=Vector2(-1,-1); right_drag=false; get_viewport().set_input_as_handled(); return
 	if e is InputEventMouseMotion and right_press.x>=0 and e.position.distance_to(right_press)>8 and not military.selected.is_empty():
 		if not right_drag:
-			right_drag=true; tools.activate("deploy"); tools.drawing=true; tools.points=[right_tile]
+			right_drag=true; tools.activate("deploy"); tools.right_dragging=true; tools.drawing=true; tools.points=[right_tile]
 		tools._add_point(cam.pick_tile(e.position)); get_viewport().set_input_as_handled(); return
 	if e is InputEventKey and e.pressed and not e.echo and _group_key(e): get_viewport().set_input_as_handled(); return
 	if e is InputEventKey and e.pressed and not e.echo and (preferences.canonical_key(e.keycode) if preferences else e.keycode)==KEY_P:
@@ -109,7 +110,7 @@ func _unhandled_input(e: InputEvent) -> void:
 				press_pos = Vector2(-1, -1)
 			get_viewport().set_input_as_handled()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
-			right_press=mb.position; right_tile=cam.pick_tile(mb.position); right_drag=false
+			right_press=mb.position; right_tile=cam.pick_tile(labels.order_point(mb.position) if labels else mb.position); right_drag=false
 			get_viewport().set_input_as_handled()
 	elif e is InputEventMouseMotion and press_pos.x >= 0.0:
 		var mm := e as InputEventMouseMotion
@@ -146,6 +147,11 @@ func _unhandled_input(e: InputEvent) -> void:
 
 func _click_select(pos: Vector2, add: bool) -> void:
 	selected_army=-1
+	if labels:
+		var banner:=labels.banner_at(pos)
+		if not banner.is_empty(): labels.select_banner(banner,add); return
+		var resource:=labels.marker_at(pos)
+		if not resource.is_empty(): labels.app.resource_strip._open_resource(resource.good); return
 	var hits := military.units_near_screen(pos, 16.0, false)
 	if not add:
 		military.selected.clear()
@@ -188,6 +194,7 @@ func _box_select(add: bool) -> void:
 
 func _order(pos: Vector2, attack: bool,queue:=false) -> void:
 	if world.spectator: return
+	if labels: pos=labels.order_point(pos)
 	if military.selected.is_empty():
 		var rally:=cam.pick_tile(pos)
 		var facilities:=selected_buildings.keys()
@@ -224,13 +231,12 @@ func _order(pos: Vector2, attack: bool,queue:=false) -> void:
 	if not target.is_empty(): c={"c":"attack","units":ids,"target":target,"focus":attack}
 	orders_sent += 1
 	last_order_ms = Time.get_ticks_msec()
-	var sent_at := Time.get_ticks_msec()
 	commands.submit(c, func(r: Dictionary):
 		if r.has("error") and r.error != null:
 			order_feedback.emit(str(r.error), false)
 		else:
 			var o: Dictionary = r.get("order", {})
-			order_feedback.emit("%s acknowledged in %d ms%s" % ["Attack-move" if attack else "Move", Time.get_ticks_msec() - sent_at, (" (%d unreachable)" % int(o.unreachable)) if int(o.get("unreachable", 0)) > 0 else ""], true))
+			if int(o.get("unreachable",0))>0: order_feedback.emit("%d units cannot reach that destination"%int(o.unreachable),false))
 	var c2 := world.grid.center(t)
 	marker_base = Vector3(c2.x, world.tile_height(t) + 0.05, c2.y)
 	marker_t = 0.0
@@ -269,9 +275,11 @@ func center_selection() -> void:
 		if int(city.o)==world.civ_id and int(city.get("cap",0)): cam.focus_tile(int(city.t)); return
 
 func _select_same_type(pos:Vector2,whole_map:bool) -> void:
+	selected_army=-1
+	if labels: pos=labels.order_point(pos)
 	var hits:=military.units_near_screen(pos,18)
 	if not hits.is_empty():
-		var type:String=world.units[hits[0]].type; military.selected.clear(); selected_buildings.clear()
+		var type:String=world.units[hits[0]].type; military.selected.clear(); selected_buildings.clear(); settlements.selected_building=-1
 		for unit in world.units.values():
 			if int(unit.owner)!=world.civ_id or unit.type!=type: continue
 			if whole_map or (military.draw_positions.has(unit.id) and get_viewport().get_visible_rect().has_point(cam.to_screen(military.draw_positions[unit.id]))): military.selected[int(unit.id)]=true

@@ -169,7 +169,8 @@ func _clock(t: float) -> String:
 
 
 func _refresh_conn() -> void:
-	conn.text = "Connected · %d ms"%int(net.rtt_ms) if net.state=="ready" else str(net.state).capitalize()
+	conn.visible=world.ready_ and net.state!="ready"
+	conn.text="Reconnecting…" if net.state!="ready" else ""
 
 
 func update(_dt: float) -> void:

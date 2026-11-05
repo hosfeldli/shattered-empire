@@ -11,6 +11,7 @@ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'se-lwe-live-'));
 const out=path.resolve(process.argv.find(a=>a.startsWith('--out='))?.slice(6)||path.join(temp,'artifacts'));
 const ui=process.argv.includes('--ui');
 const water=process.argv.includes('--water');
+const surface=process.argv.includes('--surface');
 const seed=Number(process.argv.find(a=>a.startsWith('--seed='))?.slice(7)||4);
 let server, native, timeout;
 let logs='';
@@ -26,14 +27,14 @@ try {
   const args=[...(process.env.GODOT_EXPORTED==='1'?[]:['--path','godot']),'--resolution','1280x900'];
   if(!process.argv.includes('--visible')) args.push('--headless');
   const sessionFile=path.join(temp,'native-session.json');
-  args.push('--','--server=ws://127.0.0.1:8139/ws',`--mode=${ui?'sandbox':water?'observe':'ai'}`,`--seed=${seed}`,`--${ui?'ui-test':water?'water-test':'validate-lwe'}=${out}`,`--validation-session-out=${sessionFile}`,`--session-file=${sessionFile}`,`--settings-file=${path.join(temp,'settings.cfg')}`);
+  args.push('--','--server=ws://127.0.0.1:8139/ws',`--mode=${ui?'sandbox':water||surface?'observe':'ai'}`,`--seed=${seed}`,`--${ui?'ui-test':water?'water-test':surface?'surface-test':'validate-lwe'}=${out}`,`--validation-session-out=${sessionFile}`,`--session-file=${sessionFile}`,`--settings-file=${path.join(temp,'settings.cfg')}`);
   native=spawn(process.env.GODOT_PATH||'godot',args,{cwd:root,stdio:['ignore','pipe','pipe']});
   native.stdout.on('data',d=>{logs+=d;process.stderr.write(d);});
   native.stderr.on('data',d=>{logs+=d;process.stderr.write(d);if(/SCRIPT ERROR:|ERROR:/.test(String(d)))native.kill('SIGTERM');});
-  timeout=setTimeout(()=>native.kill('SIGTERM'),150000);
+  timeout=setTimeout(()=>native.kill('SIGTERM'),ui?210000:150000);
   const [code]=await once(native,'exit');
   if(code!==0||/SCRIPT ERROR:|Shader compilation failed|ERROR:/.test(logs)) throw new Error(logs);
-  const validationPath=path.join(out,ui?'ui-validation.json':water?'water-validation.json':'validation.json');
+  const validationPath=path.join(out,ui?'ui-validation.json':water?'water-validation.json':surface?'surface-validation.json':'validation.json');
   const report=JSON.parse(fs.readFileSync(validationPath,'utf8'));
   report.meta={created:new Date().toISOString(),source_hash:sourceHash,source_changed_during_run:nativeSourceHash(root)!==sourceHash,
     rendered:process.argv.includes('--visible'),exported:process.env.GODOT_EXPORTED==='1'};

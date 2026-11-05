@@ -101,6 +101,17 @@ static func development(k:MeshKit,b:Dictionary,definition:Dictionary,tint:Color)
 	var level:=int(b.get("lv",1)); var type:=str(b.ty)
 	if type=="house" or type=="town" or level<2: return
 	if not definition.has("jobs"): return
+	if type=="farm":
+		for index in range(level-1):
+			var z:=.17 if index==0 else -.17
+			k.box("timber",Vector3(.01,.025,z),Vector3(.24,.10,.11),tint*Color(.86,.74,.58))
+			k.gable("roof_slate",Vector3(.01,.125,z),.11,.24,.04,tint,PI*.5)
+		return
+	if type=="quarry":
+		for index in range(level-1):
+			k.box("stone",Vector3(.32,.025+index*.06,.27),Vector3(.12,.06,.12),tint)
+			k.box("steel",Vector3(.24,.07+index*.04,-.20),Vector3(.11,.08,.13),tint)
+		return
 	# Add service wings and equipment without moving or replacing the original structure.
 	for index in range(level-1):
 		var z:=.29 if index==0 else -.29

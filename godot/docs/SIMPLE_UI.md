@@ -22,10 +22,37 @@ large workspace layout. The later user instruction removes the minimap entirely.
   and repeat production are expandable. Rally and attack-move targets commit on a map click.
 - Army selection exposes Move, Defend and Attack. Individual movement, queued right-click orders,
   deployment drawing, facing and control groups remain available. Routes are temporary feedback.
-- Research opens the technology tree with prerequisites, unlocks, current-rate time estimates and
-  an inline queue. Cities expose automatic development and local priorities rather than civic controls.
+- Right-drag deploys on release; the explicit drawing tool retains Confirm/Enter. Attack, Defend
+  and Explore are directly available. Explore leaves a fixed frontage after current movement finishes.
+- Research starts with available choices. Search matches technology names and unlocks; era and
+  completed/all filters expose the full five-era map. Only the selected prerequisite path draws
+  connectors. Missing prerequisites have one queue-path action; ready projects have Start/Queue next.
+- Double-click selects matching buildings on screen (Ctrl/Cmd includes the map). Upgrade selected
+  submits one authoritative affordable batch and retains the selection, with reasons for skipped sites.
+- Cities expose automatic development and local priorities rather than civic controls. Current work
+  uses actual construction progress; a full city explains the housing constraint instead of an old log.
 - Low-health units have a short screen-space indicator. Critical alerts can interrupt visually;
   resource and other actionable reports remain accessible from the compact top bar.
+
+Troops use separate 26-pixel circular type icons with counts per tile and names on hover. Individual
+selection circles remain separate. Membership is based on received tile/type/owner, never zoom or
+screen buckets; anchors project every frame and layout slots remain stable during zoom. Resource
+deposits use 20-pixel material pictograms, with text on hover, and never cover a building's pick target.
+
+At close/operational zoom, bounded production indicators rise subtly above actual building sites.
+They show the icon and `+rate/s` from the server's measured building output, including research/power.
+They are explanatory gross production rates, not additional rewards or invented per-tick totals.
+Hidden, inactive, ruined and paused production has no indicators. Reduced motion removes the rise.
+
+AI watching replaces player stockpiles and construction tools with a compact follow/fog/time strip:
+Pause, 1×, 2×, 4× and 8×. Ordinary connection/ping and generic acceptance notices are hidden.
+Meaningful failures still explain what needs attention.
+
+Civilian pedestrians, local carts and later-era cars are bounded decorative activity derived from
+visible population, condition and production. They yield locally to troops rather than disappearing
+from an entire occupied hex, stay on dry parcel/valid road routes, and avoid broken crossings.
+Automatic construction and population growth remain authoritative; the client does not manufacture
+new development to make a stationary city look busy.
 
 `CommandRegistry` owns the native action definitions, submission, pending tracking and feedback.
 The server still checks legality and changes simulation state. Decorative models and previews never

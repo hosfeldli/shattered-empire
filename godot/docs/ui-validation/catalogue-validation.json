@@ -204,25 +204,25 @@
       "age": 0.0,
       "kind": "building",
       "level": 1,
-      "signature": "afbcea5f75a5544c937b4f59efb72a69",
+      "signature": "0c60612c4c98f5b54750fe9f0fee505e",
       "type": "farm",
-      "vertices": 540
+      "vertices": 594
     },
     {
       "age": 0.0,
       "kind": "building",
       "level": 2,
-      "signature": "ef1ae023d1b64741dc955e1f5de6a90f",
+      "signature": "4cfc142375fc4b639e9a40d0560947c8",
       "type": "farm",
-      "vertices": 684
+      "vertices": 648
     },
     {
       "age": 0.0,
       "kind": "building",
       "level": 3,
-      "signature": "dce51dc478a0f410597621cf36273aa3",
+      "signature": "f9e4352c58c11f51afe0e48f99b92d3f",
       "type": "farm",
-      "vertices": 936
+      "vertices": 702
     },
     {
       "age": 0.0,
@@ -252,31 +252,31 @@
       "age": 0.0,
       "kind": "building",
       "level": 1,
-      "signature": "69035100a736df90a0fe6d44e472140f",
+      "signature": "c95a31623024ba2553fa642712a37ed3",
       "type": "quarry",
-      "vertices": 288
+      "vertices": 765
     },
     {
       "age": 0.0,
       "kind": "building",
       "level": 2,
-      "signature": "4871f232fb66a39e843af7a069feb68a",
+      "signature": "2d078e8cfdb67355e2caab134bb666b6",
       "type": "quarry",
-      "vertices": 432
+      "vertices": 837
     },
     {
       "age": 0.0,
       "kind": "building",
       "level": 3,
-      "signature": "fbce6d79e1f9e1b89e03046e0854a402",
+      "signature": "a9161f5d11a08f30203d35abf17482a9",
       "type": "quarry",
-      "vertices": 684
+      "vertices": 909
     },
     {
       "age": 0.0,
       "kind": "building",
       "level": 1,
-      "signature": "5ad9d5c92c9930a4a2590f652aa5c595",
+      "signature": "d6319fb3e817ae5fe81b79395c05364d",
       "type": "salvage",
       "vertices": 486
     },
@@ -284,7 +284,7 @@
       "age": 0.0,
       "kind": "building",
       "level": 2,
-      "signature": "09089667f74a3e5aef0e8c8d66daf591",
+      "signature": "ddce99def0da429639331add72aeb20c",
       "type": "salvage",
       "vertices": 630
     },
@@ -292,7 +292,7 @@
       "age": 0.0,
       "kind": "building",
       "level": 3,
-      "signature": "b89230b6f731e61016a615f6b506f84f",
+      "signature": "23f24b395d2a52f83099896aa8017443",
       "type": "salvage",
       "vertices": 882
     },
@@ -456,7 +456,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 1,
-      "signature": "cc63502eba6593b4bacc80fdcc54ce81",
+      "signature": "989b92603eb5f7de5af4c11c1fcce67e",
       "type": "steel_mill",
       "vertices": 594
     },
@@ -464,7 +464,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 2,
-      "signature": "5110735ba1a39f68873e970ba410bd06",
+      "signature": "663d6f5e932a5474f4187dcab1c4cb8a",
       "type": "steel_mill",
       "vertices": 738
     },
@@ -472,7 +472,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 3,
-      "signature": "5c14d0a63ae757f82b353b30de8d54aa",
+      "signature": "25b18f731b18b256ec7283b8b0ecec4f",
       "type": "steel_mill",
       "vertices": 990
     },
@@ -508,7 +508,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 1,
-      "signature": "fcf8d22669adea1f80420372b8fba77e",
+      "signature": "59f2e555bd377f24ee2ed3b4658179b2",
       "type": "power_plant",
       "vertices": 612
     },
@@ -516,7 +516,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 2,
-      "signature": "2b1863471535ed504a36269dc98eeb14",
+      "signature": "0a47cb80fa4960488e5c1da6a8338cc5",
       "type": "power_plant",
       "vertices": 756
     },
@@ -524,7 +524,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 3,
-      "signature": "96a54752efabab1344d1fdce0c9570a8",
+      "signature": "2e766f926541bb33854447168184b4ee",
       "type": "power_plant",
       "vertices": 1008
     },
@@ -556,7 +556,7 @@
       "age": 2.0,
       "kind": "building",
       "level": 1,
-      "signature": "0a3e4e95cd7125683e90746b88b34b4d",
+      "signature": "bd8c98bae763d736444f19112290f994",
       "type": "refinery",
       "vertices": 1314
     },
@@ -564,7 +564,7 @@
       "age": 2.0,
       "kind": "building",
       "level": 2,
-      "signature": "10e688a14404c6d9481f1f9149f47dea",
+      "signature": "7bed1daaf8dc1e719ad8695919885a79",
       "type": "refinery",
       "vertices": 1458
     },
@@ -572,7 +572,7 @@
       "age": 2.0,
       "kind": "building",
       "level": 3,
-      "signature": "70cbbcf9b1f2083e58c1934fdcc77cfd",
+      "signature": "5e2655869312baed95a0de8d93d924c5",
       "type": "refinery",
       "vertices": 1710
     },
@@ -608,7 +608,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 1,
-      "signature": "832f0240a57da18554176ef4f2d0d626",
+      "signature": "60bf7308d97f75e1e5697fe85ca652be",
       "type": "munitions_plant",
       "vertices": 540
     },
@@ -616,7 +616,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 2,
-      "signature": "820d75eba1009d7b9b9a093edcf96cd6",
+      "signature": "f0c1dd48c7361f98d9cde7ce902256dd",
       "type": "munitions_plant",
       "vertices": 684
     },
@@ -624,7 +624,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 3,
-      "signature": "7e9b69003c78e6c3fa7cdf95342d74c7",
+      "signature": "ed0ab7bfd7e40308d17ef0790fe1adb4",
       "type": "munitions_plant",
       "vertices": 936
     },
@@ -660,7 +660,7 @@
       "age": 1.0,
       "kind": "building",
       "level": 1,
-      "signature": "1b8e6c4f833f2f8edeaeb67365529a0b",
+      "signature": "5e28343dd65a0ecc64fd73158ec1f05d",
       "type": "motor_works",
       "vertices": 486
     },
@@ -728,7 +728,7 @@
       "age": 2.0,
       "kind": "building",
       "level": 1,
-      "signature": "84ce8a8d964622f8735c5a82c6324c29",
+      "signature": "a723216ea04fea39cc372a44f5fcd2e2",
       "type": "heavy_assembly",
       "vertices": 414
     },
@@ -772,7 +772,7 @@
       "age": 3.0,
       "kind": "building",
       "level": 1,
-      "signature": "2203143bf73fa9e2d9cfdd1b7b05da15",
+      "signature": "e08828f4271fce162aec9e5360af095f",
       "type": "electronics_plant",
       "vertices": 936
     },
@@ -780,7 +780,7 @@
       "age": 3.0,
       "kind": "building",
       "level": 2,
-      "signature": "71c4aad786f5a2e20154f677b3859e1f",
+      "signature": "0e46fe611d3ceacd44d1110a8f8891e7",
       "type": "electronics_plant",
       "vertices": 1080
     },
@@ -788,7 +788,7 @@
       "age": 3.0,
       "kind": "building",
       "level": 3,
-      "signature": "d90140feeb2e84f5fe3fdd381ea74eda",
+      "signature": "1c0769c2e6d13cc36ea571652f327816",
       "type": "electronics_plant",
       "vertices": 1332
     },
@@ -811,7 +811,7 @@
       "intact_vertices": 936,
       "kind": "damage",
       "type": "electronics_plant",
-      "vertices": 717
+      "vertices": 720
     },
     {
       "hp": 0,
@@ -832,7 +832,7 @@
       "age": 3.0,
       "kind": "building",
       "level": 1,
-      "signature": "cce9acbc22f5a9c5f323ed5910e2aaec",
+      "signature": "006d2a1a40d617b30bcf608187835236",
       "type": "drone_works",
       "vertices": 540
     },
@@ -848,7 +848,7 @@
       "intact_vertices": 540,
       "kind": "damage",
       "type": "drone_works",
-      "vertices": 621
+      "vertices": 624
     },
     {
       "hp": 20,
@@ -904,7 +904,7 @@
       "age": 4.0,
       "kind": "building",
       "level": 1,
-      "signature": "4598b4947773c11421e07ab778c2d1be",
+      "signature": "84a32405a71c415dd6ee1dd976851f68",
       "type": "fusion_plant",
       "vertices": 1386
     },
@@ -912,7 +912,7 @@
       "age": 4.0,
       "kind": "building",
       "level": 2,
-      "signature": "ca48ed18a3c7b9eede95e86c889353f0",
+      "signature": "133661d2f94050ad4dfcb233baeb9a48",
       "type": "fusion_plant",
       "vertices": 1530
     },
@@ -920,7 +920,7 @@
       "age": 4.0,
       "kind": "building",
       "level": 3,
-      "signature": "f90b7380288119bebf6e56bf3b0a3ae4",
+      "signature": "675133ed3fc4486cb98632816a454057",
       "type": "fusion_plant",
       "vertices": 1782
     },
@@ -956,7 +956,7 @@
       "age": 4.0,
       "kind": "building",
       "level": 1,
-      "signature": "221d39a1645fa43bc27b3399111f50df",
+      "signature": "331f68bfdfb26668d82f848b7b4c1570",
       "type": "robotics_complex",
       "vertices": 450
     },

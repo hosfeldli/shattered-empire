@@ -122,20 +122,4 @@ func _draw() -> void:
 			if int(city.get("fs",0)): state+=" · FOOD SHORTAGE"
 			elif int(city.get("iso",0)): state+=" · ISOLATED"
 			_text(p+Vector2(7,13),state,Color(.95,.68,.45) if int(city.get("fs",0)) or int(city.get("iso",0)) else Color(.82,.85,.77),12)
-	if camera.size >= 72 and unit_labels:
-		# Aggregate only received units, without exposing hidden army membership.
-		var groups := {}
-		for unit in world.units.values():
-			var key := "%d:%d" % [int(unit.owner),world._chunk_of(int(unit.tile))]
-			if not groups.has(key): groups[key] = {"tile":int(unit.tile),"owner":int(unit.owner),"count":0}
-			groups[key].count += 1
-		for group in groups.values():
-			var p := _point(group.tile)
-			draw_rect(Rect2(p-Vector2(5,4),Vector2(10,8)),world.civ_color(group.owner))
-			_text(p+Vector2(7,4),str(group.count),Color.WHITE,13)
-	elif camera.size <= 16 and resource_markers:
-		var names := ["","Oil","Iron","Coal","Rare earth","Stone","Fish","Salvage"]
-		for list in deposits.values():
-			for tile in list:
-				var resource := world.deposit(tile)
-				if resource<names.size(): _text(_point(tile),names[resource],Color(.95,.84,.5),13)
+			if camera.size<24: _text(p+Vector2(7,29),CityPresentation.work(world,city),NativeUI.MUTED,12)

@@ -70,6 +70,8 @@ var _interp_s1: Dictionary = {}
 var _interp_f := 1.0
 var _interp_single := true
 var geo_version := 0
+var _lake_levels:={}
+var _lake_tiles:={}
 var geometry_revision := 0   # all received geometry; geo_version only invalidates sampled heights
 var world_epoch := 0        # increases on welcome/reset, even when the same match is rejoined
 var play_rate := 1.0
@@ -126,8 +128,10 @@ func apply_welcome(m: Dictionary) -> void:
 
 
 func _clear_map() -> void:
+	_lake_tiles.clear()
 	world_epoch+=1
 	geometry_revision+=1
+	_lake_levels.clear()
 	geo_version+=1
 	_interp_time = -INF
 	_interp_s0.clear(); _interp_s1.clear()
@@ -294,8 +298,10 @@ func _apply_econ(m: Dictionary) -> void:
 
 func apply_geo(m: Dictionary) -> void:
 	geometry_revision+=1
+	_lake_levels.clear()
 	var cs := int(m.get("cs", chunk))
 	if m.get("full", 0):
+		_lake_tiles.clear()
 		known.fill(0)
 		known_mask.fill(0)
 		height.fill(0.0)
@@ -323,6 +329,8 @@ func apply_geo(m: Dictionary) -> void:
 			height[i] = y
 			known[i] = 1
 			known_mask[i] = 255
+			if is_lake(i): _lake_tiles[i]=true
+			else: _lake_tiles.erase(i)
 			k += 1
 			# a hex's shape changes its neighbours' corners: their chunks are rebuilt too
 			touched[_chunk_of(i)] = true
@@ -332,6 +340,13 @@ func apply_geo(m: Dictionary) -> void:
 					touched[_chunk_of(nb)] = true
 	if height_changed:
 		geo_version += 1
+		var lake_chunks:={}
+		for tile in _lake_tiles:
+			lake_chunks[_chunk_of(tile)]=true
+			for direction in 6:
+				var neighbor:=grid.nb[int(tile)*6+direction]
+				if neighbor>=0: lake_chunks[_chunk_of(neighbor)]=true
+		for cid in lake_chunks: touched[cid]=true
 	if m.get("full", 0):
 		for cid in chunks_w * chunks_h:
 			touched[cid] = true
@@ -396,7 +411,8 @@ func _tile_height(i: int) -> float:
 	var e := elevation(i)
 	if is_sea(i):
 		return minf(e, -0.03) * SEA_SCALE
-	var y := maxf(e, 0.0) * LAND_SCALE + 0.05
+	var relief:=maxf(e-.32,0.0)
+	var y := maxf(e, 0.0) * LAND_SCALE + relief*relief*6.0 + 0.05
 	if is_lake(i):
 		y -= LAKE_DEPTH
 	elif is_river(i):
@@ -408,8 +424,17 @@ func _tile_height(i: int) -> float:
 func water_level(i: int) -> float:
 	if is_sea(i):
 		return 0.0
-	if is_lake(i):
-		return height[i] + LAKE_DEPTH * 0.8
+	if is_lake(i) and known[i]:
+		if not _lake_levels.has(i):
+			var queue:=[i]; var visited:={i:true}; var level:=-INF; var cursor:=0
+			while cursor<queue.size():
+				var tile:int=queue[cursor]; cursor+=1
+				level=maxf(level,height[tile]+LAKE_DEPTH*.8)
+				for direction in 6:
+					var neighbor:=grid.nb[tile*6+direction]
+					if neighbor>=0 and known[neighbor] and is_lake(neighbor) and not visited.has(neighbor): visited[neighbor]=true; queue.append(neighbor)
+			for tile in queue: _lake_levels[tile]=level
+		return float(_lake_levels[i])
 	return -INF
 
 
@@ -421,13 +446,20 @@ func tile_height(i: int) -> float:
 func corner_height(i: int, k: int) -> float:
 	var s := height[i]
 	var c := 1
+	var lake_count:=1 if is_lake(i) else 0
+	var lake_tile:=i if is_lake(i) else -1
 	var pair: Array = HexGrid.CORNER_DIRS[k]
 	for d: int in pair:
 		var nb: int = grid.nb[i * 6 + d]
 		if nb >= 0 and known[nb]:
 			s += height[nb]
 			c += 1
-	return s / c
+			if is_lake(nb): lake_count+=1; lake_tile=nb
+	# A land sample on the bank must not lift an internal lake edge through the surface.
+	# The same three samples are used by every adjoining hex, including across chunk/wrap seams.
+	var result:=s/c
+	if lake_count>=2: result=minf(result,water_level(lake_tile)-.035)
+	return result
 
 
 ## ground height under (x, z) in any image: the same triangles the terrain mesh is built from

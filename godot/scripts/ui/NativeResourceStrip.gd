@@ -27,12 +27,16 @@ func setup(game:Node) -> void:
 	for good in ESSENTIAL:
 		var key:String=good
 		var button:=NativeUI.compact_button(self,key.capitalize()+" 0",func():_open_resource(key))
+		button.icon=load("res://assets/icons/resources/%s.svg"%key); button.expand_icon=true; button.add_theme_constant_override("icon_max_width",18)
 		button.custom_minimum_size=Vector2(94,32); chips.append(button); values[key]=button
 	var entries:=[]
 	for good in GameHUD.GOODS:
 		var key:String=good
 		entries.append({"label":key.capitalize(),"action":func():_open_resource(key)})
 	resource_menu=NativeUI.menu(self,"Resources ▾",entries)
+	for index in GameHUD.GOODS.size():
+		var path:="res://assets/icons/resources/%s.svg"%GameHUD.GOODS[index]
+		if ResourceLoader.exists(path): resource_menu.get_popup().set_item_icon(index,load(path))
 	resource_menu.tooltip_text="All stockpiles, production rates and shortages"
 	var overview:=[]
 	for page in ["Cities","Economy","Rivals","Chronicle"]:
@@ -51,7 +55,7 @@ func setup(game:Node) -> void:
 	NativeUI.compact_button(self,"Settings",func():app.shell.previous="pause"; app.shell.show_view("settings"))
 
 func _process(dt:float) -> void:
-	visible=app.world.ready_
+	visible=app.world.ready_ and not app.world.spectator
 	if not visible: return
 	position=Vector2(10,3); size=Vector2(get_viewport_rect().size.x-150,36)
 	(values.steel as Button).visible=get_viewport_rect().size.x>=1200

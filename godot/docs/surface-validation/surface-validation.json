@@ -1,0 +1,26 @@
+{
+  "checks": {
+    "district_site": true,
+    "internal_lake_edges_submerged": true,
+    "observer_bar_compact": true,
+    "observer_replaces_player_controls": true,
+    "observer_speed_authoritative": true,
+    "real_connected_lake": true,
+    "real_mountain": true,
+    "shared_lake_height": true,
+    "terrain_ready": true
+  },
+  "district_tile": 2177,
+  "fixture": "Districts and fog are local presentation fixtures on received server terrain. No simulation state is changed.",
+  "lake_cells": 68,
+  "lake_tile": 8062,
+  "mountain_tile": 8695,
+  "rendered": true,
+  "meta": {
+    "created": "2026-11-05T12:57:17.001Z",
+    "source_hash": "5a71c7179d66b991679bc7b08131fe0c628d9e028c99899a94fc99eeae21bd29",
+    "source_changed_during_run": false,
+    "rendered": true,
+    "exported": true
+  }
+}

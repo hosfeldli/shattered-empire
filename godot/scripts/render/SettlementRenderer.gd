@@ -448,6 +448,7 @@ func _build_progress(rec: Dictionary, list: Array) -> void:
 
 
 func _append_smoke(smokes: Array, b: Dictionary, frame: Transform3D) -> void:
+	if not world.is_visible(int(b.t)): return
 	var active := int(b.get("a", 0)) == 1
 	var ty := str(b.ty)
 	if active and ty in ["steel_mill", "refinery", "munitions_plant", "electronics_plant", "motor_works", "heavy_assembly", "robotics_complex", "drone_works", "salvage"]:
@@ -506,9 +507,12 @@ func parcel_transform(b:Dictionary) -> Transform3D:
 	var rng:=_rng(b,"parcel")
 	var offset:=Vector3(rng.randf_range(-.045,.045),0,rng.randf_range(-.045,.045))
 	var yaw:=rng.randf_range(-PI,PI)
-	if GROUP.get(str(b.ty),"")=="farm":
-		var region:=composition.identities.rng_for("agriculture:%d"%world._chunk_of(int(b.t)),"field.orientation",1,"layout")
-		yaw=region.randf_range(-PI,PI)+rng.randf_range(-.10,.10)
+	var group:=str(GROUP.get(str(b.ty),""))
+	if group=="farm":
+		yaw=-(.22+posmod(world.world_seed,9)*.045+PI*.5)+rng.randf_range(-.045,.045)
+	elif group=="ind":
+		var region:=composition.identities.rng_for("industrial-region","works.orientation",1,"layout")
+		yaw=(region.randi()%3)*PI/3.0+rng.randf_range(-.07,.07)
 	# Waterfront structures and extraction cuts retain their geographic alignment.
 	if str(b.ty) in ["port","mine","quarry"]: yaw=rng.randf_range(-.12,.12)
 	return Transform3D(Basis(Vector3.UP,yaw),offset)
@@ -519,7 +523,7 @@ func _parcel_frame(kit:MeshKit,b:Dictionary) -> bool:
 	if str(b.ty)!="house":
 		var half:=Vector2(.54,.44)
 		if str(b.ty)=="town": half=Vector2(.48,.4)
-		elif str(b.ty)=="farm": half=Vector2(.23,.2)
+		elif str(b.ty)=="farm": half=Vector2(.25,.26)
 		elif str(b.ty)=="airfield": half=Vector2(.79,.54)
 		elif str(b.ty)=="fort": half=Vector2(.86,.86)
 		elif str(b.ty)=="wonder": half=Vector2(.42,.42)
@@ -576,9 +580,7 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 			for f in [-0.3, 0.0, 0.3]:
 				var p: Vector3 = mid + along * (f * len) + across * 0.25
 				kit.box("steel", Vector3(p.x, y, p.z), Vector3(0.025, 0.2, 0.025), Color(0.8, 0.8, 0.8))
-			kit.box("ballast", Vector3(mid.x, y - 0.01, mid.z) - across * 0.2, Vector3(len, 0.02, 0.12), Color(1, 1, 1), yaw)
-			kit.box("steel", Vector3(mid.x, y + 0.01, mid.z) - across * 0.23, Vector3(len, 0.012, 0.012), Color(0.7, 0.7, 0.7), yaw)
-			kit.box("steel", Vector3(mid.x, y + 0.01, mid.z) - across * 0.17, Vector3(len, 0.012, 0.012), Color(0.7, 0.7, 0.7), yaw)
+			_ground_path(kit,a,b,.28,"paving",Color(.86,.85,.80))
 		"civ":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
 			_ground_path(kit,a,b,.4,"paving",Color(.95,.94,.9))
@@ -758,9 +760,21 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 			kit.cone("rock", Vector3(0.35, 0.0, -0.25), 0.28, 0.24, 7, tint * Color(0.75, 0.72, 0.7))
 			_ore_outcrop(kit, rng, tint)
 		"quarry":
-			for k in 3:
-				kit.box("rock", Vector3(-0.1 + 0.08 * k, -0.06 * k, 0), Vector3(0.5 - 0.12 * k, 0.06, 0.45 - 0.1 * k), tint * (1.0 - 0.08 * k))
-			kit.box("stone", Vector3(0.38, 0.02, 0.25), Vector3(0.16, 0.1, 0.12), tint)
+			# An open working face, stepped benches and recognizable handling equipment. The
+			# authorized site remains unchanged; no hidden excavation modifies movement.
+			for tier in 3:
+				var y:=.025+tier*.075; var z:=-.27-tier*.055
+				kit.box("rock",Vector3(-.08,y,z),Vector3(.58-tier*.045,.075,.10),tint*Color(.92,.91,.87))
+				kit.box("rock",Vector3(-.35-tier*.025,y,-.10),Vector3(.09,.075,.36-tier*.04),tint*Color(.90,.88,.83))
+			for index in 5:
+				kit.box("stone",Vector3(.20+(index%2)*.095,.025+(index/2)*.035,.22),Vector3(.085,.035,.09),tint*Color(.95,.92,.84))
+			kit.box("steel",Vector3(.18,.025,-.09),Vector3(.12,.10,.15),tint*Color(.85,.80,.66))
+			kit.box("char",Vector3(.18,.13,-.09),Vector3(.16,.025,.18))
+			kit.box("steel",Vector3(.24,.075,.02),Vector3(.05,.16,.05),tint)
+			kit.box("steel",Vector3(.16,.18,.07),Vector3(.20,.025,.05),tint,PI*.12)
+			kit.box("timber",Vector3(-.20,.025,.23),Vector3(.20,.12,.14),tint)
+			kit.gable("roof_slate",Vector3(-.20,.145,.23),.14,.20,.05,tint,PI*.5)
+			kit.cone("ballast",Vector3(.02,.025,.08),.12,.09,9,tint)
 		"lumber":
 			kit.box("timber", Vector3(-0.1, 0.02, 0), Vector3(0.4, 0.16, 0.22), tint)
 			kit.gable("roof_slate", Vector3(-0.1, 0.18, 0), 0.22, 0.4, 0.08, tint, PI * 0.5)
@@ -845,31 +859,18 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 		_:
 			kit.box("concrete", Vector3(0, 0.02, 0), Vector3(0.42, 0.2, 0.36), tint)
 			kit.box("steel", Vector3(0, 0.22, 0), Vector3(0.44, 0.02, 0.38), tint)
-## fields in rows aligned east-west, so neighbouring farms read as one stretch of countryside
-func _fields(kit: MeshKit, b: Dictionary, tint: Color) -> void:
-	var rows := 7
-	for k in rows:
-		var z := -0.78 + 1.56 * (k + 0.5) / rows
-		var az := absf(z) + 0.5 * 1.56 / rows
-		var half := 0.8 if az <= 0.5 else 0.8 * maxf(0.0, (1.0 - az) / 0.5)
-		if half <= 0.05:
-			continue
-		var crop := Color(1, 1, 1).lerp(Color(0.85, 0.78, 0.55), float((int(b.t) + k) % 3) * 0.3)
-		for segment in 8:
-			var x0:=lerpf(-half,half,segment/8.0); var x1:=lerpf(-half,half,(segment+1)/8.0)
-			var half_row:=(1.56/rows-.01)*.5
-			var points:=[kit.xf(Vector3(x0,0,z-half_row)),kit.xf(Vector3(x1,0,z-half_row)),kit.xf(Vector3(x1,0,z+half_row)),kit.xf(Vector3(x0,0,z+half_row))]
-			var footprint:=[]; var fits:=true
-			for point in points:
-				footprint.append(Vector2(point.x,point.z))
-				if world.grid.tile_at(point.x,point.z)!=int(b.t): fits=false
-			if not fits or not composition.sites.clear_of_water(int(b.t),footprint,.04): continue
-			for i in 4: points[i].y=world.ground_height(points[i].x,points[i].z)+.012
-			kit.quad("crop" if k%2==0 else "soil",points[0],points[1],points[2],points[3],crop*tint,Vector3.UP)
-	_foundation(kit,Vector2(.10,.07))
-	kit.box("timber", Vector3(0.12, 0.025, 0.05), Vector3(0.2, 0.12, 0.14), tint * Color(0.85, 0.55, 0.45))
-	kit.gable("roof_slate", Vector3(0.12, 0.145, 0.05), 0.14, 0.2, 0.08, tint, PI * 0.5)
-	kit.cylinder("concrete", Vector3(-0.02, 0.025, 0.08), 0.04, 0.2, 8, tint, 0.0)
+## Cultivated ground is part of the shared terrain shader. The authored parcel contains only
+## its buildings/yard details; neighboring farms no longer draw separate alternating tile stripes.
+func _fields(kit:MeshKit,b:Dictionary,tint:Color) -> void:
+	_foundation(kit,Vector2(.16,.11))
+	kit.box("timber",Vector3(.035,.025,0),Vector3(.30,.18,.20),tint*Color(.86,.65,.50))
+	kit.gable("roof_slate",Vector3(.035,.205,0),.20,.30,.075,tint,PI*.5)
+	kit.box("char",Vector3(.187,.03,0),Vector3(.005,.12,.08))
+	for x in [-.045,.075]:
+		for z in [-.102,.102]: kit.box("glass",Vector3(x,.11,z),Vector3(.04,.045,.004))
+	kit.cylinder("steel",Vector3(-.155,.025,.05),.055,.21,12,tint*Color(.84,.85,.78))
+	kit.cone("steel",Vector3(-.155,.235,.05),.058,.045,12,tint)
+	for z in [-.095,-.055]: kit.box("timber",Vector3(-.14,.025,z),Vector3(.09,.025,.025))
 
 
 func _ore_outcrop(kit: MeshKit, rng: RandomNumberGenerator, tint: Color) -> void:

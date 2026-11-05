@@ -47,15 +47,19 @@ var shell:NativeAppShell
 var automated:=false
 var atmosphere_validation:AtmosphereValidation
 var ui_validation:NativeUIValidation
+var surface_validation:SurfaceValidation
 var commands:=CommandRegistry.new()
 var command_dock:NativeCommandDock
 var map_overlay:NativeMapOverlay
 var resource_strip:NativeResourceStrip
+var world_labels:NativeWorldLabels
+var observer_bar:NativeObserverBar
+var production_feedback:NativeProductionFeedback
 
 
 func _ready() -> void:
 	args = _parse_args(OS.get_cmdline_user_args())
-	automated=args.has("bench") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test")
+	automated=args.has("bench") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test") or args.has("surface-test")
 	if not automated: preferences.load_from(str(args.get("settings-file","user://settings.cfg")))
 	else: preferences.path=str(args.get("settings-file","user://test-settings.cfg"))
 	if args.has("server"): preferences.values.server=str(args.server)
@@ -141,7 +145,7 @@ func _ready() -> void:
 	commands.setup(world,net,hud.show_toast)
 	workspace.commands=commands
 	workspace.setup(world,net,cam,settlements,military,hud.show_toast)
-	command_tools.commands=commands; command_tools.settlements=settlements; command_tools.infrastructure=infra
+	command_tools.commands=commands; command_tools.settlements=settlements; command_tools.infrastructure=infra; command_tools.terrain=terrain
 	input.commands=commands
 	commands.finished.connect(func(command,reply):
 		if command.get("c")=="army" and command.get("op")=="create" and int(reply.get("id",-1))>=0: input.selected_army=int(reply.id)
@@ -151,7 +155,11 @@ func _ready() -> void:
 	shell=NativeAppShell.new(); add_child(shell); shell.setup(self,preferences,automated)
 	command_dock=NativeCommandDock.new(); add_child(command_dock); command_dock.setup(self)
 	map_overlay=NativeMapOverlay.new(); hud.root.add_child(map_overlay); map_overlay.setup(self)
+	world_labels=NativeWorldLabels.new(); hud.root.add_child(world_labels); world_labels.setup(self)
+	input.labels=world_labels
 	resource_strip=NativeResourceStrip.new(); hud.root.add_child(resource_strip); resource_strip.setup(self)
+	observer_bar=NativeObserverBar.new(); hud.root.add_child(observer_bar); observer_bar.setup(self)
+	production_feedback=NativeProductionFeedback.new(); hud.root.add_child(production_feedback); production_feedback.setup(self)
 	diag = Diagnostics.new()
 	diag.name = "Diagnostics"
 	add_child(diag)
@@ -188,6 +196,8 @@ func _ready() -> void:
 		atmosphere_validation=AtmosphereValidation.new(); atmosphere_validation.run(self,str(args["water-test"]))
 	if args.has("ui-test"):
 		ui_validation=NativeUIValidation.new(); ui_validation.run(self,str(args["ui-test"]))
+	if args.has("surface-test"):
+		surface_validation=SurfaceValidation.new(); surface_validation.run(self,str(args["surface-test"]))
 	if args.has("mode"):
 		start({"mode": args.mode, "url": args.get("server", "ws://127.0.0.1:8137/ws"), "name": args.get("name", "Native"), "seed": args.get("seed", ""), "map": args.get("map", ""), "match": args.get("match", "")})
 	else:

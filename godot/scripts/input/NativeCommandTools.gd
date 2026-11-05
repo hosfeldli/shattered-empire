@@ -9,6 +9,7 @@ var commands:CommandRegistry
 var preferences:NativePreferences
 var settlements:SettlementRenderer
 var infrastructure:InfrastructureRenderer
+var terrain:WorldRenderer
 var placement:WorldPlacementPreview
 var site_details:={}
 var hover_serial:=0
@@ -27,7 +28,7 @@ var drawing := false
 var revision := 0
 var mesh: MeshInstance3D
 var last_hover := -1
-var status := "Select a tool, then draw on the map. Enter confirms a server preview; Esc cancels."
+var status := "Select a tool, then draw on the map. Enter confirms; Esc cancels."
 var formation := "line"
 var input_enabled:=true
 var road_auto:=true
@@ -37,6 +38,7 @@ var target_kind:="point"
 var target_title:=""
 var target_preview:=false
 var target_enemy:={}
+var right_dragging:=false
 
 func target_command(command:Dictionary,title:String,kind:="point",server_preview:=false,require_confirmation:=true) -> void:
 	cancel()
@@ -61,7 +63,7 @@ func activate(kind: String, option: Variant = "") -> void:
 		feedback.emit("Spectators cannot issue orders", false)
 		return
 	mode = kind; value = option
-	status = "Click to place" if kind == "build" else "Draw a line, then press Enter to confirm the server preview"
+	status = "Click to place" if kind == "build" else "Draw a line, then press Enter to confirm"
 	if mode == "build":
 		var token := revision
 		_submit({"c": "placement", "type": value}, func(reply: Dictionary):
@@ -78,18 +80,23 @@ func activate(kind: String, option: Variant = "") -> void:
 
 
 func cancel() -> void:
+	right_dragging=false
 	revision += 1; hover_serial+=1; site_details.clear()
+	if terrain: terrain.terrain_mat.set_shader_parameter("farm_preview_active",0.0)
 	if placement: placement.mesh=null; placement.tile=-1
 	mode = "select"; points.clear(); preview.clear(); valid_tiles.clear(); drawing = false
 	target_payload.clear(); target_enemy.clear()
 	last_hover = -1
 	if mesh: mesh.mesh = null
-	status = "Select a tool, then draw on the map. Enter confirms a server preview; Esc cancels."
+	status = "Select a tool, then draw on the map. Enter confirms; Esc cancels."
 	changed.emit()
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not input_enabled or mode == "select" or world.grid == null: return
+	# InputController owns the right-drag gesture through release. Consuming its release here
+	# leaves the placement tool stuck and prevents the deployment order from being submitted.
+	if right_dragging and (event is InputEventMouseMotion or event is InputEventMouseButton and event.button_index==MOUSE_BUTTON_RIGHT): return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_BACKSPACE:
 		if not points.is_empty(): points.pop_back(); preview.clear(); request_preview()
 		get_viewport().set_input_as_handled(); return
@@ -126,7 +133,7 @@ func _unhandled_input(event: InputEvent) -> void:
 							feedback.emit("Construction sites queued" if reply.get("error")==null else str(reply.error),reply.get("error")==null)
 							if reply.get("error")==null and not repeat_: cancel())
 					elif sites.size()==1: _place(sites[0],event.shift_pressed)
-					else: feedback.emit("Choose a server-approved building site",false)
+					else: feedback.emit("Choose a valid building site",false)
 				else:
 					request_preview()
 					if mode=="target" and not target_confirm and not target_preview: commit()
@@ -176,14 +183,14 @@ func request_preview() -> void:
 	var token := revision
 	var command := _command(false)
 	if command.is_empty(): return
-	status = "Waiting for the server preview…"; changed.emit()
+	status = "Preparing preview…"; changed.emit()
 	_submit(command, func(reply: Dictionary):
 		if token != revision: return
 		preview = reply
 		if mode=="target":
 			var outcome:Dictionary=reply.get("missile",reply.get("rebuild",{}))
 			if outcome.get("inRange",true)==false or outcome.get("ok",true)==false: preview.error=outcome.get("why","Target unavailable or out of range")
-			status=str(preview.error) if preview.get("error")!=null else "%s · %s · Enter confirms"%[target_title.capitalize(),"Flight %s seconds · interception %d%%"%[str(outcome.get("eta",0)),int(float(outcome.get("odds",0))*100)] if reply.has("missile") else "server preview ready"]
+			status=str(preview.error) if preview.get("error")!=null else "%s · %s · Enter confirms"%[target_title.capitalize(),"Flight %s seconds · interception %d%%"%[str(outcome.get("eta",0)),int(float(outcome.get("odds",0))*100)] if reply.has("missile") else "Preview ready"]
 			_draw(points,preview.get("error")==null); changed.emit(); return
 		var error: Variant = reply.get("error")
 		var plan: Dictionary = reply.get("plan", reply.get("trench", reply.get("deploy", {})))
@@ -206,13 +213,13 @@ func commit() -> void:
 	preview.clear(); revision += 1
 	_submit(command, func(reply: Dictionary):
 		var ok: bool = reply.get("error") == null
-		feedback.emit("Order accepted" if ok else str(reply.error), ok)
+		if not ok: feedback.emit(str(reply.error),false)
 		if revision == token + 1: cancel())
 
 
 func _place(tile: int,repeat_:=false) -> void:
 	if not valid_tiles.has(tile):
-		feedback.emit("Choose a server-approved site", false); return
+		feedback.emit("Choose a valid building site", false); return
 	var building_type := str(value)
 	valid_tiles.erase(tile)
 	_submit({"c": "build", "tile": tile, "type": building_type, "plan": true}, func(reply: Dictionary):
@@ -235,6 +242,14 @@ func _preview_build(tile:int) -> void:
 		site_details=reply.get("site",{})
 		if site_details.is_empty(): status="This server needs the placement preview update"; changed.emit(); return
 		var valid:bool=site_details.get("valid",false)
+		if terrain:
+			terrain.terrain_mat.set_shader_parameter("farm_preview_active",1.0 if type=="farm" and valid else 0.0)
+			terrain.terrain_mat.set_shader_parameter("farm_preview_cell",Vector2i(tile%world.grid.w,tile/world.grid.w))
+			var links:=0
+			for direction in 6:
+				var neighbor:=world.grid.nb[tile*6+direction]
+				if terrain.surface_fields.farms.has(neighbor) and int(terrain.surface_fields.farms[neighbor][0])==world.civ_id: links|=1<<direction
+			terrain.terrain_mat.set_shader_parameter("farm_preview_links",links)
 		if valid: valid_tiles[tile]=true
 		else: valid_tiles.erase(tile)
 		var costs:=[]; var missing:=[]

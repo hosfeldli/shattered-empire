@@ -327,8 +327,10 @@ export function economyStep(g, dt) {
           if (def.consume) for (const k in def.consume) { const need = def.consume[k] * n * pm * dt * tempo(g, 'production'); if (need > 0) { const r = Math.max(0, (pool(k) + cd[k]) / need); if (r < ok) { ok = r; short = k; } } }
           if (ok < 0.5) b.why = 'input:' + short;
           if (def.consume) for (const k in def.consume) { const v = def.consume[k] * n * pm * dt * tempo(g, 'production') * ok; cd[k] -= v; book(civ, 'operations', k, -v); }
-          powerGen += def.power * n * outMul(b) * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
-          if (b.type === 'fusion_plant') research += 0.1 * n;
+          const generatedPower = def.power * n * outMul(b) * ok * damaged * (gov === 'technocracy' ? 1.1 : 1);
+          powerGen += generatedPower;
+          made('power', generatedPower * dt); // presentation metadata; no new stockpile or simulation effect
+          if (b.type === 'fusion_plant') { research += 0.1 * n; made('research', 0.1 * n); }
           continue;
         }
         let ratio = damaged;

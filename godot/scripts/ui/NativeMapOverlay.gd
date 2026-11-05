@@ -86,7 +86,10 @@ func _process(dt:float) -> void:
 		queue_redraw()
 	tooltip.visible=settled>.45 and hover>=0 and get_viewport().gui_get_hovered_control()==null
 	if tooltip.visible:
-		body_label.text=_describe(hover)
+		var resource:Dictionary=app.world_labels.marker_at(mouse)
+		var banner:Dictionary=app.world_labels.banner_at(mouse)
+		body_label.text=resource.text+" deposit · click for production and shortage details" if not resource.is_empty() else banner.text+" · click to select" if not banner.is_empty() else _describe(hover)
+		tooltip.reset_size()
 		tooltip.position=mouse+Vector2(20,22)
 		tooltip.position.x=minf(tooltip.position.x,size.x-tooltip.size.x-8)
 		tooltip.position.y=minf(tooltip.position.y,size.y-tooltip.size.y-8)

@@ -34,6 +34,7 @@ static var _team := {}
 static var _surface_shader:Shader
 static var _wet_texture:Texture2D
 static var _cloud_state:={}
+static var _visibility_state:={}
 static var _weather_extent:=Vector2(221.7,192.0)
 
 
@@ -59,13 +60,14 @@ static func get_mat(key: String) -> Material:
 		m.set_shader_parameter("weather_extent",_weather_extent)
 		m.set_shader_parameter("weather_ready",1.0)
 	for parameter in _cloud_state: m.set_shader_parameter(parameter,_cloud_state[parameter])
+	for parameter in _visibility_state: m.set_shader_parameter(parameter,_visibility_state[parameter])
 	_cache[key] = m
 	return m
 
 
 static func bind_weather(texture:Texture2D,extent:Vector2) -> void:
 	_wet_texture=texture; _weather_extent=extent
-	for material in _cache.values():
+	for material in _cache.values()+_team.values():
 		if material is ShaderMaterial:
 			material.set_shader_parameter("wet_map",texture)
 			material.set_shader_parameter("weather_extent",extent)
@@ -74,19 +76,28 @@ static func bind_weather(texture:Texture2D,extent:Vector2) -> void:
 
 static func bind_clouds(parameters:Dictionary) -> void:
 	_cloud_state.merge(parameters,true)
-	for material in _cache.values():
+	for material in _cache.values()+_team.values():
+		if material is ShaderMaterial:
+			for key in parameters: material.set_shader_parameter(key,parameters[key])
+
+static func bind_visibility(parameters:Dictionary) -> void:
+	_visibility_state=parameters
+	for material in _cache.values()+_team.values():
 		if material is ShaderMaterial:
 			for key in parameters: material.set_shader_parameter(key,parameters[key])
 
 ## a civilization's colour, for flags, bands and markings (restrained: slightly desaturated)
 static func team(color: Color) -> Material:
+	if _surface_shader==null: _surface_shader=load("res://shaders/world_surface.gdshader")
 	var key := color.to_html(false)
 	if _team.has(key):
 		return _team[key]
-	var m := StandardMaterial3D.new()
-	m.albedo_color = color.lerp(Color(0.5, 0.5, 0.5), 0.15)
-	m.vertex_color_use_as_albedo = true
-	m.roughness = 0.7
+	var m:=ShaderMaterial.new(); m.shader=_surface_shader; m.resource_name="team:"+key
+	m.set_shader_parameter("base_color",color.lerp(Color(.5,.5,.5),.15)); m.set_shader_parameter("base_roughness",.7)
+	if _wet_texture:
+		m.set_shader_parameter("wet_map",_wet_texture); m.set_shader_parameter("weather_extent",_weather_extent); m.set_shader_parameter("weather_ready",1.0)
+	for parameter in _cloud_state: m.set_shader_parameter(parameter,_cloud_state[parameter])
+	for parameter in _visibility_state: m.set_shader_parameter(parameter,_visibility_state[parameter])
 	_team[key] = m
 	return m
 

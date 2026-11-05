@@ -75,7 +75,7 @@ func show_view(kind:String) -> void:
 		"new": _new_game("ai")
 		"multiplayer": _multiplayer()
 		"pause":
-			_base("Command menu","The match continues online unless the server accepts a pause.")
+			_base("Command menu","Online matches continue unless paused.")
 			if app.world.ruleset!="native-v1": NativeUI.label(content,"Legacy campaign · original gameplay rules are preserved.",16,NativeUI.GOLD)
 			if not app.world.ready_: show_view("main"); return
 			if not app.world.paused and not app.world.spectator and app.world.can_pause and not menu_pause_pending:
@@ -93,13 +93,13 @@ func show_view(kind:String) -> void:
 			NativeUI.button(content,"Quit to desktop",func():app.get_tree().quit())
 		"settings": _settings()
 		"help":
-			_base("Field guide","All orders are checked by the game server.")
+			_base("Field guide","Select in the world. Right-click to give orders.")
 			NativeUI.label(content,controls_text(),16)
 			NativeUI.button(content,"Back",func():show_view(previous))
 		"search": _search()
 		"connecting":
 			_base("Connecting","Preparing your place in the world…")
-			status=NativeUI.label(content,"Connecting to "+str(prefs.values.server),16)
+			status=NativeUI.label(content,"Joining your match…",16)
 			NativeUI.button(content,"Cancel and return",return_to_menu)
 		"room": _room()
 
@@ -116,7 +116,7 @@ func return_to_menu() -> void:
 	show_view("main")
 
 func _new_game(mode:String) -> void:
-	_base("New campaign" if mode=="ai" else "AI exhibition","Choose the world and opponents. Your campaign is saved by the server.")
+	_base("New campaign" if mode=="ai" else "AI exhibition","Choose the world and opponents. Progress is saved automatically.")
 	var player:=LineEdit.new(); player.text=str(prefs.values.player); NativeUI.field(content,"Your name").add_child(player); player.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	var seed:=LineEdit.new(); seed.placeholder_text="Random"; NativeUI.field(content,"World seed").add_child(seed)
 	var size_:=NativeUI.options(NativeUI.field(content,"Map size"),[["small","Small · 128 × 128"],["medium","Medium · 192 × 192"],["large","Large · 256 × 256"]]); size_.select(1)
@@ -279,7 +279,7 @@ func _input(event:InputEvent) -> void:
 
 func _process(_dt:float) -> void:
 	var bounds:=root.get_viewport_rect().size
-	navigation.visible=app.world.ready_ and not is_blocking() and not world_hidden
+	navigation.visible=app.world.ready_ and not app.world.spectator and not is_blocking() and not world_hidden
 	navigation.position=Vector2(10,53)
 	app.hud.root.visible=not world_hidden and app.world.ready_
 	app.strategic.selector.visible=false
@@ -293,4 +293,4 @@ func _process(_dt:float) -> void:
 		status.text="Still connecting. Check the game-server address in Settings, or cancel to return."
 
 static func controls_text() -> String:
-	return "WASD / arrows — pan · middle drag — pan · wheel / + / − — zoom\nShift — faster pan / add selection / queue orders\nLeft click — select · drag — select a group · double-click — same type on screen\nRight click — move, attack enemy, or rally selected facilities\nRight drag — deployment frontage · Tab — reverse facing while drawing\nCtrl/Cmd + right click — attack-move / focus fire\n1–9 — recall group · Ctrl/Cmd + 1–9 — assign · double tap — center\nQ — combat units on screen · Shift+Q — all owned combat units\nE / Ctrl+A — attack-move target · X — withdraw · H — hold\nF — cycle movement formation / found city with a colonist · G — form army\nB — construction · R — road tool · Enter — confirm preview · Backspace — undo\nT — research · F2 — empire workspaces · / or Ctrl+K — search\nSpace — center selection/capital · P — pause · M — mute\nL — cycle map lens · K — field guide · F11 — fullscreen · Esc — cancel/back/menu\nObserver: [ / ] change civilization · , / . change speed · V toggle fog\n\nWorld, Build, Cities, Military, Economy, Research, Rivals and Chronicle are available from the command rail. F10 hides the interface. Select a record in a workspace to inspect it and choose an action. Orders requiring a location return you to the map to choose a target. Costs and refusals come from the server."
+	return "WASD / arrows — pan · middle drag — pan · wheel / + / − — zoom\nShift — faster pan / add selection / queue orders\nLeft click — select · drag — select a group · double-click — same type on screen\nRight click — move, attack enemy, or rally selected facilities\nRight drag — draw and deploy on release · Tab — reverse facing while drawing\nCtrl/Cmd + right click — attack-move / focus fire\n1–9 — recall group · Ctrl/Cmd + 1–9 — assign · double tap — center\nQ — combat units on screen · Shift+Q — all owned combat units\nE / Ctrl+A — attack-move target · X — withdraw · H — hold\nF — cycle movement formation / found city with a colonist · G — form army\nB — construction · R — road tool · Enter — confirm preview · Backspace — undo\nT — research · F2 — empire workspaces · / or Ctrl+K — search\nSpace — center selection/capital · P — pause · M — mute\nL — cycle map lens · K — field guide · F11 — fullscreen · Esc — cancel/back/menu\nObserver: [ / ] change civilization · , / . change speed · V toggle fog\n\nBuild, Army and Research are the main tools. Overview contains cities, economy, rivals and history. Double-click a building to select matching buildings, then Upgrade selected. Troop icons show the composition on each tile; hover for names. F10 hides the interface."

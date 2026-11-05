@@ -16,6 +16,7 @@ var recruit_open:=false
 var queue_label:Label
 var selection_key:=""
 var deselect:Button
+var behavior_buttons:={}
 
 func setup(game:Node) -> void:
 	app=game; layer=18
@@ -48,8 +49,13 @@ func _army_target(kind:String) -> void:
 
 func _rebuild() -> void:
 	NativeUI.clear(cards); NativeUI.clear(orders); NativeUI.clear(details); confirm_button=null; queue_label=null
+	behavior_buttons.clear()
 	var world:WorldState=app.world; var selected:Dictionary=app.military.selected
 	var units:Array=app.input._owned_units()
+	if world.spectator:
+		if not selected.is_empty(): _button("Unit details",func():_workspace("Military"))
+		elif app.settlements.selected_building>=0: _button("City details",func():_workspace("Cities"))
+		return
 	if app.command_tools.mode!="select":
 		if app.command_tools.mode!="build": confirm_button=_button("Confirm · Enter",func():app.command_tools.commit(),"Apply the previewed order")
 		_button("Cancel · Esc",func():app.command_tools.cancel())
@@ -93,6 +99,14 @@ func _rebuild() -> void:
 					app.input.selection_changed.emit()})
 		NativeUI.menu(orders,"Orders ▾",extra)
 		for button in orders.get_children(): button.disabled=units.is_empty() or world.spectator
+		var combat:Array=units.filter(func(id):return not world.defs.get("UNITS",{}).get(world.units[id].type,{}).get("civilian",false) and not world.defs.get("UNITS",{}).get(world.units[id].type,{}).get("air",false))
+		if not combat.is_empty() and app.input.selected_army<0:
+			var row:=HBoxContainer.new(); details.add_child(row)
+			var explanation:=NativeUI.label(row,"When idle",14,NativeUI.MUTED); explanation.autowrap_mode=TextServer.AUTOWRAP_OFF
+			for record in [["Attack","aggressive","Engage nearby visible enemies. Direct orders take priority."],["Defend","defensive","Defend nearby ground without chasing. Direct orders take priority."],["Explore","explore","Automatically scout unexplored ground, then revisit old sightings. Direct orders take priority."]]:
+				var stance:String=record[1]
+				var button:=NativeUI.compact_button(row,record[0],func():app.commands.issue("stance",{"units":combat,"stance":stance}),record[2])
+				button.toggle_mode=true; button.disabled=world.spectator; behavior_buttons[stance]=button
 	elif app.settlements.selected_building>=0 and world.buildings.has(app.settlements.selected_building):
 		var building:Dictionary=world.buildings[app.settlements.selected_building]
 		var id:=int(building.id)
@@ -114,7 +128,9 @@ func _rebuild() -> void:
 				_button("Train troops",func():recruit_open=not recruit_open; signature="")
 				_button("Rally point",func():app.command_tools.target_command({"c":"rally","building":id,"tile":"@map"},"Set rally point","point",false,false))
 			if building.has("uc") or building.ty=="house" and int(building.get("lv",1))<3 and int(building.get("d",0))==1:
-				_button("Upgrade",func():app.commands.issue("upgrade",{"building":id}))
+				var facilities:Array=app.input.selected_buildings.keys()
+				if facilities.is_empty(): facilities=[id]
+				_button("Upgrade %d selected"%facilities.size() if facilities.size()>1 else "Upgrade",func():app.commands.upgrade(facilities),"Upgrade selected buildings where affordable. Double-click selects matching buildings on screen.")
 			if float(building.get("hp",100))<100: _button("Repair",func():app.commands.issue("repair",{"building":id}))
 			var extra:=[{"label":"Building details","action":func():_workspace("Buildings")}]
 			if not city.is_empty(): extra.append({"label":"City details","action":func():_workspace("Cities")})
@@ -173,6 +189,11 @@ func _refresh() -> void:
 			health+=float(unit.hp); supply+=float(unit.get("supply",0)); morale+=float(unit.get("morale",100)); valid+=1
 		title.text=str(world.defs.get("UNITS",{}).get(world.units.get(ids[0],{}).get("type",""),{}).get("name","Unit")) if valid==1 else "%d units selected"%valid
 		state.text="Health %d%% · Supply %d%% · Morale %d%%"%[int(health/maxi(valid,1)),int(supply/maxi(valid,1)),int(morale/maxi(valid,1))]
+		var stances:={}
+		for id in ids:
+			var unit:Dictionary=world.units.get(id,{})
+			if not world.defs.get("UNITS",{}).get(unit.get("type",""),{}).get("civilian",false): stances[str(unit.get("stance",""))]=true
+		for stance in behavior_buttons: (behavior_buttons[stance] as Button).set_pressed_no_signal(stances.size()==1 and stances.has(stance))
 		if app.input.selected_army>=0:
 			for army in world.econ.get("armies",[]):
 				if int(army.id)==app.input.selected_army: title.text=str(army.name); state.text+=" · "+str(army.get("order",{}).get("kind","Hold")).capitalize()
@@ -181,8 +202,9 @@ func _refresh() -> void:
 		title.text=str(world.cities.get(int(building.get("c",-1)),{}).get("n",info.get("name",building.ty))) if building.ty=="town" else str(info.get("name",building.ty))
 		if building.ty=="town":
 			var city:Dictionary=world.cities.get(int(building.get("c",-1)),{})
-			state.text="%s people · %s\n%s"%[str(snappedf(float(city.get("pop",0)),.1)),"Growing" if float(city.get("gr",0))>0 else "Stable",str(city.get("development",{}).get("activity") if city.get("development",{}).get("activity")!=null else "No construction active")]
+			state.text="%s people · %s\n%s"%[str(snappedf(float(city.get("pop",0)),.1)),"Growing" if float(city.get("gr",0))>0 else "Stable",CityPresentation.work(world,city)]
 		else: state.text="Health %d%% · %s"%[int(building.hp),"Ready to train" if info.has("trains") and int(building.get("d",0))==1 else str(building.st).capitalize()]
+		if app.input.selected_buildings.size()>1: title.text="%d × %s"%[app.input.selected_buildings.size(),str(info.get("name",building.ty))]
 		if is_instance_valid(queue_label):
 			var queue:Array=building.get("q",[]); queue_label.visible=not queue.is_empty()
 			queue_label.text="Training: "+" · ".join(queue.map(func(item):return str(world.defs.get("UNITS",{}).get(item[0],{}).get("name",item[0]))+" (~%s sec)"%str(item[1])))

@@ -183,7 +183,7 @@
   {
     "page": "Buildings",
     "id": "batch_upgrade",
-    "title": "Upgrade selected housing",
+    "title": "Upgrade selected buildings",
     "command": {
       "c": "batchUpgrade",
       "ids": "@buildings",
@@ -663,7 +663,8 @@
     "command": {
       "c": "stance",
       "units": "@units",
-      "stance": "@stance"
+      "stance": "@stance",
+      "releaseFormation": true
     },
     "fields": [
       {

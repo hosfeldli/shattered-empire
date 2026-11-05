@@ -42,6 +42,7 @@ var wx_updates := 0
 var props := {}            # chunk id -> { trees: MultiMeshInstance3D, rocks: MeshInstance3D, x0 }
 var props_dirty := {}
 var built_tiles := {}
+var work_tiles:={}
 var tree_mesh: ArrayMesh
 var tree_count := 0
 var shadows_allowed := true
@@ -66,7 +67,7 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 	env = WorldEnvironment.new()
 	var e := Environment.new()
 	e.background_mode = Environment.BG_COLOR
-	e.background_color = Color(0.11, 0.12, 0.13)
+	e.background_color = Color(.034,.044,.046)
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	e.ambient_light_color = Color(0.62, 0.67, 0.74)
 	e.ambient_light_energy = 0.6
@@ -98,6 +99,7 @@ func _clear() -> void:
 	tree_count = 0
 	props_dirty.clear()
 	built_tiles.clear()
+	work_tiles.clear()
 	# A rejoin can receive geometry before the next weather packet. Do not blend the old
 	# world's clouds/wetness into the new visibility mask during that interval.
 	cloud_clock=0; previous_age=0; cloud_drift=Vector2.ZERO; wind_world=Vector2.ZERO
@@ -131,6 +133,14 @@ func _on_econ() -> void:
 		if not now.has(t):
 			props_dirty[world._chunk_of(t)] = true
 	built_tiles = now
+	var works:={}
+	for record:Array in world.fw:
+		if int(record[4])>0: works[int(record[0])]=record
+	for tile in works:
+		if not work_tiles.has(tile) or TrenchPresentation.routes(work_tiles[tile],world.grid)!=TrenchPresentation.routes(works[tile],world.grid): props_dirty[world._chunk_of(tile)]=true
+	for tile in work_tiles:
+		if not works.has(tile): props_dirty[world._chunk_of(tile)]=true
+	work_tiles=works
 
 
 func update(dt: float) -> void:
@@ -367,9 +377,10 @@ func _build_props(cid: int) -> void:
 			if world.is_river(i):
 				n = mini(n, 4)
 			if b == 4:
-				canopy.set_frame(Vector3(c.x, world.tile_height(i) + 0.055, c.y), 0.0)
 				var quilt := Color(0.72, 0.86, 0.62).darkened(rng.randf_range(0.0, 0.16))
-				canopy.hex_plate("foliage", Vector3.ZERO, 0.82, quilt, 0.025)
+				if not work_tiles.has(i):
+					canopy.set_frame(Vector3(c.x, world.tile_height(i) + 0.055, c.y), 0.0)
+					canopy.hex_plate("foliage", Vector3.ZERO, 0.82, quilt, 0.025)
 			for k in n:
 				var a := rng.randf() * TAU
 				var d := sqrt(rng.randf()) * 0.82
@@ -380,8 +391,10 @@ func _build_props(cid: int) -> void:
 				if y < 0.02:
 					continue
 				var s := rng.randf_range(0.75, 1.35) * (0.8 if b == 7 else 1.0)
-				xforms.append(Transform3D(Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s * rng.randf_range(0.9, 1.2), s)), Vector3(x, y - 0.01, z)))
-				cols.append(Color(1, 1, 1).darkened(rng.randf() * 0.25).lerp(Color(0.9, 0.95, 0.7), rng.randf() * 0.2))
+				var transform:=Transform3D(Basis(Vector3.UP,rng.randf()*TAU).scaled(Vector3(s,s*rng.randf_range(.9,1.2),s)),Vector3(x,y-.01,z))
+				var tint:=Color(1,1,1).darkened(rng.randf()*.25).lerp(Color(.9,.95,.7),rng.randf()*.2)
+				if work_tiles.has(i) and TrenchPresentation.distance_to_route(work_tiles[i],g,Vector2(x,z))<.22: continue
+				xforms.append(transform); cols.append(tint)
 			_deposit(rocks, i, c, rng)
 	var rec: Dictionary = props.get(cid, {})
 	if rec.is_empty():

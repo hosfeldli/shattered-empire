@@ -1,6 +1,7 @@
 shader_type spatial;
 render_mode blend_mix, cull_back, depth_draw_opaque, specular_schlick_ggx;
 #include "res://shaders/weather_clouds.gdshaderinc"
+#include "res://shaders/visibility_fields.gdshaderinc"
 uniform sampler2D vis_bits : filter_nearest;
 uniform float vis_on=1.0;
 uniform vec2 world_cells=vec2(128.0);
@@ -102,11 +103,12 @@ void fragment() {
     color=mix(color,mix(vec3(.11,.16,.19),vec3(.15,.17,.18),cloud_coverage(world_position.xz)),.035+fresnel*.08);
     color=mix(color,vec3(.30,.34,.32),clamp(foam,0.0,.1)*water_detail);
     color*=cloud_shadow(world_position);
-    float seen=visible_water(world_position.xz);
-    ALBEDO=mix(color*vec3(.6,.64,.72),color,seen);
+    vec2 knowledge=surface_visibility(world_position.xz);
+    ALBEDO=remembered_surface(color,knowledge.y)*knowledge.x;
+    EMISSION=fog_ink(world_position.xz)*(1.0-knowledge.x);
     ALPHA=1.0;
     ROUGHNESS=mix(.31,.52,foam)+.035*cross_ripple;
-    SPECULAR=.12;
+    SPECULAR=.12*knowledge.x;
 }
 
 void light() {
@@ -114,6 +116,6 @@ void light() {
     DIFFUSE_LIGHT+=LIGHT_COLOR*ATTENUATION*diffuse/PI;
     // A restrained solar reflection on the fine pressure/capillary slopes, never white blobs.
     vec3 halfway=normalize(LIGHT+VIEW);
-    float reflection=pow(max(dot(NORMAL,halfway),0.0),96.0);
+    float reflection=pow(max(dot(NORMAL,halfway),0.0),96.0)*clamp(dot(ALBEDO,vec3(.333))*8.0,0.0,1.0);
     SPECULAR_LIGHT+=LIGHT_COLOR*ATTENUATION*reflection*.006;
 }

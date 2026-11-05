@@ -34,7 +34,18 @@ func submit(command:Dictionary,callback:=Callable()) -> void:
 	net.cmd(command,func(reply):
 		pending=maxi(0,pending-1); finished.emit(command,reply)
 		if callback.is_valid(): callback.call(reply)
-		elif report.is_valid(): report.call(str(reply.error) if reply.get("error")!=null else "Order accepted",reply.get("error")==null))
+		elif report.is_valid() and reply.get("error")!=null: report.call(str(reply.error),false))
+
+func upgrade(buildings:Array) -> void:
+	var ids:=buildings.filter(func(id):return world.buildings.has(id) and int(world.buildings[id].o)==world.civ_id)
+	if ids.is_empty(): return
+	var command:={"c":"batchUpgrade","ids":ids,"policy":"affordable","requestId":"native-upgrades-%d"%Time.get_ticks_usec()}
+	submit(command,func(reply):
+		if not report.is_valid(): return
+		if reply.get("error")!=null: report.call(str(reply.error),false); return
+		var result:Dictionary=reply.get("upgrade",{})
+		var done:=int(result.get("upgraded",[]).size()); var skipped:Array=result.get("skipped",[])
+		report.call("%d buildings upgraded"%done+(" · %d skipped: %s"%[skipped.size(),str(skipped[0].get("reason","unavailable"))] if not skipped.is_empty() else ""),done>0))
 
 func train(buildings:Array,type:String,count:=1,per_building:=false,repeat_:=false) -> void:
 	var facilities:=buildings.filter(func(id):return world.buildings.has(id) and int(world.buildings[id].o)==world.civ_id and type in world.defs.get("BUILDINGS",{}).get(world.buildings[id].ty,{}).get("trains",[]))

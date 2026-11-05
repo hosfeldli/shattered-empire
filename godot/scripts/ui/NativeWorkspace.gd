@@ -107,6 +107,13 @@ func open_page(title:String) -> void:
 	panel.show(); sidebar.select(PAGES.find(page)); filter.text=""; current.clear(); last_reply.clear(); reply_tree.hide()
 	records.clear()
 	if page in ["Buildings","Production"] and settlements.selected_building>=0: current={"key":settlements.selected_building}
+	if page=="Research":
+		var model:=ResearchPresentation.new(world)
+		var key:String=str(world.econ.get("research","")) if world.econ.get("research")!=null else ""
+		if key.is_empty():
+			for technology:String in world.defs.get("TECHS",{}):
+				if model.ready(technology): key=technology; break
+		if not key.is_empty(): current={"key":key}
 	if page in ["Cities"] and world.buildings.has(settlements.selected_building): current={"key":world.buildings[settlements.selected_building].get("c",-1)}
 	elif page in ["Cities"] and selected_city>=0: current={"key":selected_city}
 	heading.text="Build" if page=="Construction" else "Chronicle" if page=="Alerts" else page; _records_signature=""; _detail_signature=""
@@ -419,7 +426,7 @@ func _perform(preview:bool) -> void:
 	if active_action.has("map"):
 		tools.target_command(command,str(active_action.title),str(active_action.map),bool(active_action.get("preview",false))); panel.hide(); return
 	if active_action.get("confirm",false) and not preview:
-		pending=command; confirm.dialog_text=str(active_action.title).capitalize()+"?\nThis order will be applied by the game server."; confirm.popup_centered(); return
+		pending=command; confirm.dialog_text=str(active_action.title).capitalize()+"?"; confirm.popup_centered(); return
 	_dispatch(command)
 
 func _dispatch(command:Dictionary) -> void:
@@ -432,7 +439,7 @@ func _dispatch(command:Dictionary) -> void:
 		_fill_tree(reply_tree,visible_reply)
 		reply_tree.visible=not visible_reply.is_empty()
 		if dashboard and dashboard.visible: dashboard.show_response(reply)
-		feedback.call(str(reply.error) if reply.get("error")!=null else "Order accepted",reply.get("error")==null)
+		if reply.get("error")!=null: feedback.call(str(reply.error),false)
 		if reply.has("scenario"):
 			military.selected.clear()
 			for id in reply.scenario.get("A",[]): military.selected[int(id)]=true

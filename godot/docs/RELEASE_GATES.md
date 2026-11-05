@@ -24,7 +24,7 @@ retain their rules. The remaining LWE acceptance and platform/release gates stil
   queued movement, rally points, road undo/waypoints, deployment spacing/depth/facing controls.
 - [ ] Complete the explicit old-build feature/command audit and close remaining discrepancies.
 - [x] Rendered compact selection/palette/drawer review, all contextual pages and larger UI scale.
-  Packaged macOS: 50 UI checks. Windows interactive review remains open.
+  Packaged macOS: 73 UI checks, including batch upgrade, deployment gestures and moving activity. Windows interactive review remains open.
 - [ ] Validate keyboard/mouse modality, target previews, destructive confirmations and stale replies.
 - [ ] Multiplayer host/join/rejoin and observer controls verified through native menus.
 - [ ] Windows and macOS packaged application checks, including saved preferences/fullscreen.

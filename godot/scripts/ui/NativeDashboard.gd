@@ -13,6 +13,10 @@ var response_panel:PanelContainer
 var city_tab:="Overview"
 var build_group:="City"
 var thumbnail_jobs:Array=[]
+var research_query:=""
+var research_filter:=0
+var research_era:=-1
+var research_graph:NativeResearchTree
 
 func setup(owner_:NativeWorkspace) -> void:
 	workspace=owner_; world=owner_.world
@@ -110,6 +114,8 @@ func _build() -> void:
 
 func show_response(reply:Dictionary) -> void:
 	if is_instance_valid(response_panel): body.remove_child(response_panel); response_panel.queue_free()
+	response_panel=null
+	if reply.get("error")==null and not reply.has("plan") and not reply.has("preview"): return
 	var card:=_card(body,"Latest result"); response_panel=card.get_parent()
 	if reply.get("error")!=null:
 		NativeUI.label(card,str(reply.error),18,Color("e6a08a")); return
@@ -126,7 +132,6 @@ func show_response(reply:Dictionary) -> void:
 		NativeUI.label(card,"Preview of worker allocation",22)
 		for change in reply.preview.get("changes",[]): NativeUI.label(card,"%s · %s → %s workers"%[workspace._name("BUILDINGS",change.type),str(change.from),str(change.to)],17)
 
-	else: NativeUI.label(card,"Your order has been accepted.",18)
 
 func _economy() -> void:
 	var resources:=_card(body,"Stockpiles · net per second")
@@ -206,7 +211,7 @@ func _city() -> void:
 			_metric(stats,"Growth / minute",func():return "%+.1f"%float(_data().get("gr",0)))
 			var conditions:=_card(body,"City conditions")
 			_bind(conditions,func():return "Labor force %s · Unemployed %s\nAvailable recruits %s\n%s"%[_number(_data().get("lab",0)),_number(_data().get("un",0)),_number(_data().get("rec",0)),"Isolated from the supply network" if int(_data().get("iso",0)) else "Connected to the supply network"],16)
-			_bind(conditions,func():return str(_data().get("development",{}).get("activity") if _data().get("development",{}).get("activity")!=null else "No routine construction active"),15,NativeUI.MUTED)
+			_bind(conditions,func():return CityPresentation.work(world,_data()),15,NativeUI.MUTED)
 			_button(body,"Center on city",workspace._center_current)
 		"Development":
 			NativeUI.label(body,"Routine staffing, repairs and basic needs are managed locally. Choose the city's development priority.",16,NativeUI.MUTED)
@@ -247,13 +252,16 @@ func _rivals() -> void:
 		elif status=="war": NativeUI.label(card,"Use Withdraw or Hold to disengage your forces. Enemy forces may continue fighting.",15,NativeUI.MUTED)
 
 func _research() -> void:
+	var model:=ResearchPresentation.new(world)
 	var progress:=_card(body,"Current research")
 	_bind(progress,func():return workspace._name("TECHS",world.econ.get("research","Choose a technology")),21)
-	_bind(progress,func():return "%s points · %.2f / sec · %d queued"%[str(world.econ.get("progress",0)),float(world.econ.get("researchRate",0)),world.econ.get("queue",[]).size()],15,NativeUI.MUTED)
+	_bind(progress,func():return model.estimate(str(world.econ.get("research","")))+" · %.2f points / sec"%float(world.econ.get("researchRate",0)),15,NativeUI.MUTED)
 	if not world.econ.get("queue",[]).is_empty():
 		var queue:=_card(body,"Research queue")
+		var queue_scroll:=ScrollContainer.new(); queue_scroll.custom_minimum_size.y=mini(world.econ.queue.size()*36,100); queue_scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; queue.add_child(queue_scroll)
+		var queue_list:=VBoxContainer.new(); queue_list.size_flags_horizontal=Control.SIZE_EXPAND_FILL; queue_scroll.add_child(queue_list)
 		for technology in world.econ.queue:
-			var key:String=technology; var row:=HBoxContainer.new(); queue.add_child(row)
+			var key:String=technology; var row:=HBoxContainer.new(); queue_list.add_child(row)
 			var name_:=NativeUI.label(row,workspace._name("TECHS",key),16); name_.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 			_button(row,"First",func():_action("research_front",{"tech":key}))
 			_button(row,"Remove",func():_action("research_remove",{"tech":key}))
@@ -262,11 +270,21 @@ func _research() -> void:
 		_record_picker()
 		research_details=_card(body,"Selected technology")
 	else:
-		var columns:=HSplitContainer.new(); columns.custom_minimum_size.y=500; body.add_child(columns)
-		var graph_scroll:=ScrollContainer.new(); graph_scroll.size_flags_horizontal=Control.SIZE_EXPAND_FILL; graph_scroll.custom_minimum_size.x=360; columns.add_child(graph_scroll)
-		var graph:=NativeResearchTree.new(); graph.setup(world); graph_scroll.add_child(graph)
-		research_details=_card(columns,"Technology"); research_details.custom_minimum_size.x=260
-		graph.technology_selected.connect(func(key):_select_key(key); _research_detail())
+		var tools:=HFlowContainer.new(); body.add_child(tools)
+		var search:=LineEdit.new(); search.custom_minimum_size=Vector2(220,34); search.placeholder_text="Find a technology or unlock…"; search.text=research_query; tools.add_child(search)
+		var filter:=NativeUI.options(tools,[[0,"Available now"],[1,"All technologies"],[2,"Completed"]]); filter.select(research_filter)
+		var eras:=[[ -1,"All eras"]]
+		for age:Dictionary in world.defs.get("AGES",[]): eras.append([int(age.id),str(age.name)])
+		var era_choice:=NativeUI.options(tools,eras); era_choice.select(research_era+1)
+		var columns:=HSplitContainer.new(); columns.custom_minimum_size.y=370; body.add_child(columns)
+		var graph_scroll:=ScrollContainer.new(); graph_scroll.size_flags_horizontal=Control.SIZE_EXPAND_FILL; graph_scroll.custom_minimum_size.x=320; columns.add_child(graph_scroll)
+		research_graph=NativeResearchTree.new(); research_graph.setup(world); graph_scroll.add_child(research_graph)
+		research_graph.selected=str(workspace.current.get("key","")); research_graph.configure(research_query,research_filter,research_era)
+		research_details=_card(columns,"Technology"); research_details.custom_minimum_size.x=260; research_details.size_flags_horizontal=Control.SIZE_FILL
+		research_graph.technology_selected.connect(func(key):_select_key(key); _research_detail())
+		search.text_changed.connect(func(text):research_query=text; research_graph.configure(research_query,research_filter,research_era))
+		filter.item_selected.connect(func(index):research_filter=index; research_graph.configure(research_query,research_filter,research_era))
+		era_choice.item_selected.connect(func(index):research_era=int(era_choice.get_item_metadata(index)); research_graph.configure(research_query,research_filter,research_era))
 	_research_detail()
 
 func _number(value:Variant) -> String:
@@ -278,22 +296,32 @@ func _number(value:Variant) -> String:
 func _research_detail() -> void:
 	if not is_instance_valid(research_details): return
 	NativeUI.clear(research_details)
-	var info:=_data(); var key:=str(workspace.current.get("key",""))
+	var key:=str(workspace.current.get("key","")); var info:Dictionary=world.defs.get("TECHS",{}).get(key,{})
+	var model:=ResearchPresentation.new(world)
+	if info.is_empty(): NativeUI.label(research_details,"Choose a technology to see its unlocks and research path.",18); return
 	NativeUI.label(research_details,str(info.get("name","Choose a technology")),25)
 	NativeUI.label(research_details,str(info.get("desc","")),17,NativeUI.MUTED)
-	NativeUI.label(research_details,"%s points · %s"%[str(info.get("cost",0)),str(info.get("status",""))],15,NativeUI.GOLD)
-	for prerequisite in info.get("req",[]): NativeUI.label(research_details,"Requires "+workspace._name("TECHS",prerequisite),15,NativeUI.MUTED)
-	var unlocks:=[]
-	for catalog in ["BUILDINGS","UNITS"]:
-		for item in world.defs.get(catalog,{}).values():
-			if item.get("tech")==key: unlocks.append(str(item.get("name","")))
-	if not unlocks.is_empty(): NativeUI.label(research_details,"Unlocks: "+", ".join(unlocks),15,NativeUI.MUTED)
-	var rate:=float(world.econ.get("researchRate",0))
-	if rate>0: NativeUI.label(research_details,"~%d seconds at current research output"%ceili(maxf(0,float(info.get("cost",0))-float(info.get("earned_points",0)))/rate),14,NativeUI.MUTED)
+	NativeUI.label(research_details,model.status(key)+" · %s points"%str(info.get("cost",0)),15,NativeUI.GOLD)
+	var unlocks:=model.unlocks(key)
+	if not unlocks.is_empty():
+		NativeUI.label(research_details,"UNLOCKS",12,NativeUI.GOLD)
+		for item in unlocks: NativeUI.label(research_details,"• "+item,16)
+	if not info.get("req",[]).is_empty(): NativeUI.label(research_details,"PREREQUISITES · CLICK TO INSPECT",12,NativeUI.MUTED)
+	for prerequisite in info.get("req",[]):
+		var target:String=prerequisite
+		_button(research_details,("✓ " if target in world.econ.get("techs",[]) else "→ ")+workspace._name("TECHS",target),func():
+			_select_key(target); _research_detail()
+			if is_instance_valid(research_graph): research_graph.selected=target; research_graph.queue_redraw())
+	NativeUI.label(research_details,model.estimate(key)+" at current output",14,NativeUI.MUTED)
 	var complete:bool=key in world.econ.get("techs",[])
-	_button(research_details,"Research",func():_action("research_now",{"tech":key}),true).disabled=complete
-	_button(research_details,"Add to research queue",func():_action("research_add",{"tech":key})).disabled=complete
-	NativeUI.menu(research_details,"Research options ▾",[{"label":"Research prerequisites automatically","disabled":complete,"action":func():_action("research_goal",{"tech":key})}])
+	var active:bool=world.econ.get("research")==key; var queued:bool=key in world.econ.get("queue",[])
+	if model.ready(key):
+		_button(research_details,"Researching" if active else "Start research",func():_action("research_now",{"tech":key}),true).disabled=active or complete
+		_button(research_details,"Queued" if queued else "Queue next",func():_action("research_add",{"tech":key})).disabled=complete or active or queued
+	elif not complete:
+		var path:=model.path(key)
+		NativeUI.label(research_details,"%d technologies on this path. The queue handles prerequisites in order; later eras must still be reached."%path.size(),14,NativeUI.MUTED)
+		_button(research_details,"Queued" if queued else "Queue prerequisites & goal",func():_action("research_goal",{"tech":key}),true).disabled=queued
 
 func _building() -> void:
 	_record_picker()

@@ -1,6 +1,6 @@
 # Shattered Empires: native client (Godot 4.7.2)
 
-A second client for the same authoritative Node.js server. It draws an orthographic 3D world with a
+A native client for the authoritative Node.js server. It draws an orthographic 3D world with a
 2D interface on top. Gameplay is simulated by the server; bounded water, weather and activity
 simulation on the client is cosmetic.
 Godot is the development target. The PixiJS / Electron sources in `client/` and `desktop/` are kept
@@ -15,6 +15,7 @@ The [streamlined redesign](docs/NATIVE_REDESIGN.md) supersedes government/treaty
 all trading from new, versioned native matches. Older saves retain explicit legacy rules.
 The [simple native UI](docs/SIMPLE_UI.md) uses Build, Army and Research with contextual cards;
 the minimap is removed. Its visual catalogue covers the five eras, supported building levels and all troop types.
+The [current development list](docs/CURRENT_WORK.md) retains the latest world, activity, icon and control requests.
 
 ## Running it
 
@@ -38,6 +39,7 @@ directory). Command-line options (after `--`):
 | `--probe=SECONDS [--probe-out=PATH] [--order-test=S] [--pick-test]` | report what was synchronized, then quit |
 | `--tour=DIR [--tour-wait=T]` | save screenshots at several zoom levels and across the seam |
 | `--water-test=DIR` | developer water/cloud captures; use `node godot/tests/lwe-live.mjs --water --visible` |
+| `--surface-test=DIR` | lake/fog/district/defense/observer captures; use `node godot/tests/lwe-live.mjs --surface --visible` |
 | `--session-file=PATH` | isolate test/rejoin session storage from the player's session |
 
 Native benchmarks start a clean port-8139 server for each scene. Existing Pixi measurements remain
@@ -66,6 +68,9 @@ Renderer regression checks (no server or display required):
 godot --headless --path godot -s res://tests/render_regressions.gd
 godot --headless --path godot -s res://tests/composition_regressions.gd
 godot --headless --path godot -s res://tests/lwe_regressions.gd
+godot --headless --path godot -s res://tests/development_regressions.gd
+godot --headless --path godot -s res://tests/surface_fields_regressions.gd
+godot --headless --path godot -s res://tests/water_weather_regressions.gd
 node godot/tests/lwe-live.mjs
 node godot/tests/network-smoke.mjs
 ```
@@ -73,7 +78,8 @@ node godot/tests/network-smoke.mjs
 The live check builds/trains/draws infrastructure through existing server commands and verifies
 same-match reload. The network check restarts its isolated server and verifies protocol/geo,
 picking, a real move order and automatic rejoin. Large JSON packets decode in workers; results are
-applied in wire order on the main thread. The protocol and server commands are unchanged.
+applied in wire order on the main thread. Existing wire formats stay compatible; optional native
+presentation data and command options retain server authority.
 
 Actual-GPU visual checks (temporary native test windows; run these one at a time):
 

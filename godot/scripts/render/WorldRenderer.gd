@@ -42,6 +42,9 @@ var last_build_ms := 0.0
 var max_build_ms := 0.0
 var build_job := {}             # one chunk's arrays, filled incrementally across frames
 var urban_mask := PackedByteArray()
+var surface_fields:=WorldPresentationFields.new()
+var fog_planes:Array=[]
+var fog_material:ShaderMaterial
 
 
 func setup(w: WorldState) -> void:
@@ -55,6 +58,7 @@ func setup(w: WorldState) -> void:
 	world.vis_changed.connect(_on_vis)
 	world.reset.connect(_on_welcome)
 	world.econ_applied.connect(_on_economy)
+	surface_fields.setup(world,[terrain_mat,water_mat])
 
 
 func _on_welcome() -> void:
@@ -80,6 +84,7 @@ func _on_welcome() -> void:
 		m.set_shader_parameter("vis_on", 0.0 if world.spectator else 1.0)
 	water_mat.set_shader_parameter("world_cells", Vector2(g.w, g.h))
 	colors.resize(g.n)
+	_setup_fog_backdrop()
 
 
 func _on_vis(bits: PackedByteArray) -> void:
@@ -121,6 +126,8 @@ func update_view(camera_x: float, view_half_width: float) -> void:
 	cam_x = camera_x
 	half_w = view_half_width
 	_build_some()
+	if world.grid:
+		for index in fog_planes.size(): fog_planes[index].position.x=world.grid.near_x(world.grid.period*.5,cam_x)+(index-1)*world.grid.period
 	for c in chunks.values():
 		_place(c)
 
@@ -319,8 +326,16 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 		for k in 6:
 			kit.tri_colors("water", centre, pts[k], pts[(k + 1) % 6], cc, cols[k], cols[(k + 1) % 6], Vector3.UP)
 	elif world.is_lake(i):
-		var col := Color(0.17, 0.25, 0.27, 0.94)
-		kit.hex_plate("water", Vector3(c2.x, world.water_level(i), c2.y), 1.0, col)
+		var level:=world.water_level(i); var col:=_lake_color(i)
+		var center:=Vector3(c2.x,level,c2.y); var points:=[]; var colors_:=[]
+		for corner in 6:
+			var offset:=g.corners[corner]; points.append(Vector3(c2.x+offset.x,level,c2.y+offset.y))
+			var color:=col; var count:=1.0
+			for direction in HexGrid.CORNER_DIRS[corner]:
+				var neighbor:=g.nb[i*6+int(direction)]
+				if neighbor>=0 and world.known[neighbor] and world.is_lake(neighbor): color+=_lake_color(neighbor); count+=1
+			colors_.append(color/count)
+		for corner in 6: kit.tri_colors("water",center,points[corner],points[(corner+1)%6],col,colors_[corner],colors_[(corner+1)%6],Vector3.UP)
 	elif world.is_river(i):
 		var col:=Color(.20,.265,.25,.96)
 		var sections:=RiverGeometry.ribbon(world,i)
@@ -333,6 +348,10 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 			kit.quad("water",left[index],right[index],right[index+1],left[index+1],col,Vector3.UP)
 		# A confluence shares one filled center; ribbons meet without triangular holes.
 		if sections.is_empty(): kit.cylinder("water",Vector3(c2.x,world.ground_height(c2.x,c2.y)+.028,c2.y),RiverGeometry.width(world,i)*.45,.001,12,col,RiverGeometry.width(world,i)*.45)
+
+func _lake_color(tile:int) -> Color:
+	var depth:=maxf(0.0,world.water_level(tile)-world.height[tile])
+	return Color(.21,.285,.265).lerp(Color(.12,.205,.23),clampf(depth/.65,0,1))
 
 func _river_point(point:Vector2) -> Vector3:
 	var tile:=world.grid.tile_at(point.x,point.y)
@@ -402,6 +421,8 @@ uniform sampler2D vis_bits : filter_nearest;
 uniform float vis_on = 1.0;
 uniform sampler2D wet_tex : filter_linear, repeat_enable, hint_default_black;
 #include "res://shaders/weather_clouds.gdshaderinc"
+#include "res://shaders/visibility_fields.gdshaderinc"
+#include "res://shaders/development_fields.gdshaderinc"
 uniform sampler2D strategic_overlay : filter_nearest, hint_default_black;
 uniform float overlay_strength = 0.0;
 uniform sampler2D battle_scar : filter_linear, repeat_enable, hint_default_black;
@@ -463,6 +484,7 @@ void fragment() {
 	vec3 weights = pow(abs(wn), vec3(4.0)); weights /= max(dot(weights, vec3(1.0)), 0.0001);
 	float n = (noise(wpos.zy * 5.0)*weights.x + noise(wpos.xz * 5.0)*weights.y + noise(wpos.xy * 5.0)*weights.z)*0.45 + noise(wpos.xz * 1.3)*0.55;
 	base *= 0.9 + 0.2 * n;
+	float river_margin=0.0;
 	if (river_bank_active>.0) {
 		float period=weather_extent.x;
 		vec2 relative=wpos.xz-river_bank_origin;
@@ -470,13 +492,15 @@ void fragment() {
 		vec2 uv=relative/river_bank_extent;
 		if (all(greaterThan(uv,vec2(0))) && all(lessThan(uv,vec2(1)))) {
 			vec4 bank=texture(river_bank_field,uv);
+			river_margin=bank.a;
 			float fade=smoothstep(.0,.1,min(min(uv.x,uv.y),min(1.0-uv.x,1.0-uv.y)));
 			base=mix(base,vec3(.12,.105,.075),bank.a*(1.0-bank.b)*fade*river_bank_active*.45);
 		}
 	}
+	base=developed_ground(base,wpos.xz,river_margin);
 	vec3 rock = vec3(0.43, 0.41, 0.38) * (0.88 + 0.24 * n);
 	base = mix(base, rock, smoothstep(0.22, 0.42, slope) * step(0.05, wpos.y));
-	float snow = smoothstep(2.3, 2.7, wpos.y + n * 0.3) * (1.0 - smoothstep(0.35, 0.6, slope));
+	float snow = smoothstep(3.8, 4.5, wpos.y + n * 0.3) * (1.0 - smoothstep(0.35, 0.6, slope));
 	base = mix(base, vec3(0.72, 0.74, 0.77), snow);
 	vec2 wuv = vec2(wpos.x / weather_extent.x, wpos.z / weather_extent.y);
 	float wet = texture(wet_tex, wuv).r * step(0.0, wpos.y);
@@ -486,9 +510,8 @@ void fragment() {
 	wet = max(wet,scar*wet);
 	base *= 1.0 - 0.3 * wet;
 	float shade = cloud_shadow(wpos);
-	float v = mix(1.0, seen(tile), vis_on);
-	vec3 remembered = mix(vec3(dot(base, vec3(0.3, 0.59, 0.11))), base, 0.45) * vec3(0.62, 0.65, 0.72);
-	ALBEDO = mix(remembered, base, v) * shade;
+	vec2 knowledge=surface_visibility(wpos.xz);
+	ALBEDO=remembered_surface(base,knowledge.y)*shade;
 	// An inactive lens may still have the default 1x1 texture. Out-of-range texelFetch is
 	// undefined (and NaN * 0 can poison the terrain colour even with a zero-strength lens).
 	if (overlay_strength > 0.0) {
@@ -497,8 +520,10 @@ void fragment() {
 		vec4 overlay=texelFetch(strategic_overlay,sample_tile,0);
 		ALBEDO=mix(ALBEDO,overlay.rgb,overlay.a*overlay_strength);
 	}
+	ALBEDO*=knowledge.x;
+	EMISSION=fog_ink(wpos.xz)*(1.0-knowledge.x);
 	ROUGHNESS = mix(0.93, 0.35, wet);
-	SPECULAR = 0.25 + 0.35 * wet;
+	SPECULAR = (0.25 + 0.35 * wet)*knowledge.x;
 }
 """
 	return s
@@ -506,3 +531,14 @@ void fragment() {
 
 func _water_shader() -> Shader:
 	return load("res://shaders/living_water.gdshader")
+
+func _setup_fog_backdrop() -> void:
+	for plane:MeshInstance3D in fog_planes: plane.queue_free()
+	fog_planes.clear()
+	if fog_material==null:
+		fog_material=ShaderMaterial.new(); fog_material.shader=load("res://shaders/fog_backdrop.gdshader")
+	fog_material.set_shader_parameter("visibility_cells",Vector2(world.grid.w,world.grid.h))
+	var mesh:=PlaneMesh.new(); mesh.size=Vector2(world.grid.period,world.grid.depth+2); mesh.material=fog_material
+	for index in 3:
+		var plane:=MeshInstance3D.new(); plane.mesh=mesh; plane.position=Vector3(world.grid.period*(index-.5),-2.5,world.grid.depth*.5)
+		plane.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF; add_child(plane); fog_planes.append(plane)
