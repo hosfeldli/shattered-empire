@@ -1,9 +1,9 @@
 # Native production gate
 
-The user authorized publishing Windows/macOS builds and updating Cloud Run, then explicitly made
-that deployment conditional on closing UI/gameplay parity and world-generation acceptance gaps.
-**Do not publish a new native release or deploy production while required gates remain open.**
-Local development builds, isolated tests and CI artifacts are not a production deployment.
+The user explicitly requested that the current Windows/macOS builds be published as a native
+preview on game.liamhosfeld.com. This authorizes the preview and its compatible server update;
+it does not mark the UI/gameplay parity and world-generation gates below as passed or authorize
+describing the preview as a finished native release. Preserve the existing desktop downloads.
 
 The [streamlined native redesign](NATIVE_REDESIGN.md) supersedes old government, treaty and
 trading parity requirements. Those systems are deliberately removed in `native-v1`; legacy saves

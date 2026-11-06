@@ -202,11 +202,15 @@ func terrain_changed(chunks: PackedInt32Array) -> void:
 	for cid in chunks:
 		for id in _by_chunk.get(cid, {}):
 			ids[id] = true
+	var dirty_districts := {}
 	for id in ids:
-		if _refresh_context(id):
-			var key := str(district_of.get(id, ""))
-			if key != "":
-				district_invalidated.emit(key, CHANGE.CONTEXT)
+		_refresh_context(id)
+		# A neighboring height can change a shared terrain corner without changing this
+		# building's own semantic context. Its sampled site and foundations still need work.
+		var key := str(district_of.get(id, ""))
+		if key != "": dirty_districts[key] = true
+	for key in dirty_districts:
+		district_invalidated.emit(key, CHANGE.CONTEXT)
 
 
 func roads_changed(tiles: PackedInt32Array) -> void:

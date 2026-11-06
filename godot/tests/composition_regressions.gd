@@ -84,6 +84,9 @@ func _run() -> void:
 	w.height[101] = 2
 	graph.terrain_changed(PackedInt32Array([w._chunk_of(100)]))
 	check(graph.edges["building:1"].has("located_on_slope") and graph.edges["building:1"].has("near_river"), "newly authorized geography did not update local relationships")
+	invalidations.clear()
+	graph.terrain_changed(PackedInt32Array([w._chunk_of(100)]))
+	check(invalidations.any(func(event):return event[0]=="1" and int(event[1])==WorldStateAdapter.Change.CONTEXT),"terrain changes must reproject a building even if its semantic context is unchanged")
 	for links in graph.edges.values():
 		for targets in links.values():
 			for target in targets:

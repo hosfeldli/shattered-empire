@@ -79,8 +79,11 @@ func _clear() -> void:
 	fw_version = -1
 	defense_version=-1; defense_signature=""; trench_geo_version=-1
 	trenches.mesh=null
+	field.mesh=null; smoke_list.clear(); smoke.multimesh.visible_instance_count=0
 	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",0.0)
 	for e in fx:
+		(e.node as MeshInstance3D).transparency = 0.0
+		(e.node as Node3D).scale = Vector3.ONE
 		(e.node as Node3D).visible = false
 		fx_pool.append(e.node)
 	fx.clear()
@@ -125,6 +128,7 @@ func _build_field() -> void:
 	var craters: Array = bf.get("c", [])
 	var wrecks: Array = bf.get("w", [])
 	var scorch: Array = bf.get("i", [])
+	_collect_smoke(bf,wrecks)
 	var first := -1
 	for list in [craters, wrecks, scorch]:
 		if not (list as Array).is_empty():
@@ -173,6 +177,9 @@ func _build_field() -> void:
 		kit.box("char", Vector3(-0.03, 0.06, 0.02), Vector3(0.12, 0.04, 0.1), Color(0.8, 0.75, 0.7), 0.4)
 		kit.box("steel", Vector3(0.12, 0.08, 0.06), Vector3(0.16, 0.014, 0.014), Color(0.4, 0.38, 0.36), 0.7)
 	field.mesh = kit.commit() if not kit.is_empty() else null
+
+
+func _collect_smoke(bf:Dictionary,wrecks:Array) -> void:
 	smoke_list.clear()
 	for s in bf.get("s", []):
 		var c := world.grid.center(int(s[0]))
@@ -236,11 +243,13 @@ func _on_events(ev: Array) -> void:
 			"fire":
 				if a >= 0:
 					_spawn("flash", _tile_point(a, 0.12), Vector3.ZERO, 0.09, Color(1.0, 0.85, 0.45), 0.09)
+					if cam.size<35: _spawn("smoke",_tile_point(a,.12),Vector3.ZERO,1.5,Color(.58,.57,.54),.12)
 				if a >= 0 and b >= 0 and g.dist(a, b) <= 3:
 					_spawn("tracer", _tile_point(a, 0.1), _tile_point(b, 0.06), 0.15, Color(1.0, 0.9, 0.6), 0.0)
 			"launch":
 				if a >= 0:
 					_spawn("flash", _tile_point(a, 0.15), Vector3.ZERO, 0.14, Color(1.0, 0.75, 0.35), 0.14)
+					if cam.size<35: _spawn("smoke",_tile_point(a,.14),Vector3.ZERO,2.2,Color(.52,.50,.47),.20)
 				if b >= 0:
 					var src := _tile_point(a, 0.15) if a >= 0 else _tile_point(b, 4.0)
 					var flight := clampf(float(e.get("f", 1.0)), 0.3, 6.0)
@@ -250,6 +259,10 @@ func _on_events(ev: Array) -> void:
 					var big := float(e.get("r", 0)) > 0.0
 					_spawn("blast", _tile_point(b, 0.08, int(e.get("p", 0))), Vector3.ZERO, 0.4 if big else 0.28, Color(1.0, 0.55, 0.2), 0.2 if big else 0.12)
 					_spawn("dust", _tile_point(b, 0.1, int(e.get("p", 0))), Vector3.ZERO, 1.6, Color(0.55, 0.5, 0.44), 0.3)
+					if big and cam.size<40:
+						_spawn("dust", _tile_point(b, 0.08, int(e.get("p", 0))+7), Vector3.ZERO, 1.9, Color(0.47, 0.43, 0.38), 0.22)
+						_spawn("smoke",_tile_point(b,.13,int(e.get("p",0))),Vector3.ZERO,2.6,Color(.36,.35,.34),.20)
+						_spawn("flame",_tile_point(b,.1,int(e.get("p",0))),Vector3.ZERO,.35,Color(1.0,.28,.06),.13)
 			"hit", "bhit":
 				if b >= 0:
 					_spawn("flash", _tile_point(b, 0.1, int(e.get("t", 0))), Vector3.ZERO, 0.08, Color(1.0, 0.95, 0.75), 0.06)
@@ -257,6 +270,10 @@ func _on_events(ev: Array) -> void:
 				if b >= 0:
 					_spawn("blast", _tile_point(b, 0.1), Vector3.ZERO, 0.55, Color(1.0, 0.48, 0.18), 0.26)
 					_spawn("dust", _tile_point(b, 0.15), Vector3.ZERO, 2.4, Color(0.3, 0.28, 0.26), 0.45)
+					if cam.size<40:
+						_spawn("dust", _tile_point(b, 0.09, 17), Vector3.ZERO, 2.0, Color(0.46, 0.41, 0.35), 0.25)
+						_spawn("smoke",_tile_point(b,.14),Vector3.ZERO,3.0,Color(.28,.28,.27),.25)
+						_spawn("flame",_tile_point(b,.13),Vector3.ZERO,.75,Color(1.0,.28,.04),.14)
 
 
 ## a point on hex t (base image), jittered per salt so salvos spread
@@ -289,9 +306,9 @@ func _spawn(kind: String, a: Vector3, b: Vector3, life: float, col: Color, size:
 			bm.size = Vector3(1, 0.012, 0.012)
 			node.mesh = bm
 			node.material_override = MaterialLibrary.glow(col, 0.9)
-		"dust":
+		"dust", "smoke":
 			node.mesh = flash_mesh
-			node.material_override = MaterialLibrary.smoke(col, 0.5)
+			node.material_override = MaterialLibrary.smoke(col, 0.32 if kind=="smoke" else 0.5)
 		_:
 			node.mesh = flash_mesh
 			node.material_override = MaterialLibrary.glow(col, 0.7)
@@ -333,6 +350,18 @@ func _update_fx(dt: float) -> void:
 				node.position = a + Vector3(shift, u * 0.25, 0)
 				node.scale = Vector3(s, s * 0.6, s)
 				node.transparency = u
+			"smoke":
+				var wind:=composition.weather.wind_at_world(Vector2(a.x,a.z)) if composition else Vector2.ZERO
+				var drift:=wind*float(e.t)*.12
+				var s:=float(e.h)*(.65+u*1.4)
+				node.position=a+Vector3(shift+drift.x,u*.35,drift.y)
+				node.scale=Vector3(s*1.2,s*.85,s*1.2)
+				node.transparency=smoothstep(.35,1.0,u)
+			"flame":
+				var s:=float(e.h)*(1.0-u)*(.8+.2*sin(float(e.t)*35.0))
+				node.position=a+Vector3(shift,u*.12,0)
+				node.scale=Vector3(s*.65,s*1.4,s*.65)
+				node.transparency=u*.85
 			_:
 				var s := float(e.h) * (0.5 + u * 0.9)
 				node.position = a + Vector3(shift, 0, 0)

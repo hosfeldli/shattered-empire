@@ -23,6 +23,13 @@ func _world() -> WorldState:
 
 
 func _run() -> void:
+	for name_ in ["steel","canvas","bark","paving","ballast"]:
+		var material:=MaterialLibrary.get_mat(name_) as ShaderMaterial
+		check(material.get_shader_parameter("albedo_map")!=null,"missing baked material for "+name_)
+	var civilians:=CivilianActivitySystem.new()
+	var stance:=civilians._person(false); var step:=civilians._person(true)
+	check(stance.get_surface_count()>0 and step.get_surface_count()>0 and stance.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]!=step.surface_get_arrays(0)[Mesh.ARRAY_VERTEX],"walking poses must contain distinct geometry")
+	civilians.free()
 	var w := _world()
 	root.add_child(w)
 	var cam := CameraController.new()
@@ -75,6 +82,12 @@ func _run() -> void:
 		settlements.update(0.016)
 	check(settlements.rebuilt == rebuilt, "activity update rebuilt a completed building")
 	check(settlements.building_at(100) == 1, "queued building remains selectable by hex")
+	var completed:=[false]
+	settlements.composition.scheduler.enqueue("district:rapid-test",1,GenerationScheduler.Priority.CRITICAL,func():return true,func():completed[0]=true)
+	for frame in 12:
+		w.buildings_version+=1
+		settlements.update(.016)
+	check(completed[0],"frequent economy snapshots starved queued district generation")
 	var old_node:MeshInstance3D=settlements.districts["1"].node
 	var old_mesh:=old_node.mesh
 	var parcel:=settlements.parcel_transform(b)

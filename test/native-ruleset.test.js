@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Game } from '../server/sim/game.js';
 import { serializeGame, restoreGame, stateHash } from '../server/sim/persist.js';
-import { NATIVE_RULESET, LEGACY_RULESET, TEMPO, movementRate, REMOVED_COMMANDS } from '../server/sim/rulesets.js';
+import { NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, LEGACY_RULESET, TEMPO, DELIBERATE_TEMPO, EXPANSIVE_TEMPO, tempo, movementRate, REMOVED_COMMANDS } from '../server/sim/rulesets.js';
+import { economyStep } from '../server/sim/economy.js';
+import { rebuildProblem } from '../server/sim/cities.js';
+import { RebelAI } from '../server/sim/rebels.js';
 import { BUILDINGS, TECHS, UNITS, T } from '../server/sim/constants.js';
 import { growthRate } from '../server/sim/population.js';
 import { fieldworksStep, fieldworksFor, commitTrench, planTrench, trenchCover } from '../server/sim/fieldworks.js';
@@ -65,6 +68,43 @@ test('movement and growth use distinct authoritative tempo rates', () => {
   const a = growthRate(g, civ, city, context);
   const b = growthRate(legacy, { ...civ, ruleset: LEGACY_RULESET }, city, context);
   assert.ok(Math.abs(a / b - .65) < 1e-9);
+});
+
+test('new deliberate matches are slower without changing saved native or legacy pacing', () => {
+  const old = create(NATIVE_RULESET), next = create(DELIBERATE_RULESET), legacy = create(LEGACY_RULESET);
+  for (const key of ['infantryMovement', 'wheeledMovement', 'trackedMovement', 'logisticsMovement', 'aircraftMovement', 'research', 'construction', 'training', 'infrastructureConstruction', 'trenchConstruction']) {
+    assert.ok(DELIBERATE_TEMPO[key] < TEMPO[key], key);
+    assert.equal(tempo(old, key), TEMPO[key]);
+    assert.equal(tempo(legacy, key), 1);
+    assert.equal(tempo(next, key), DELIBERATE_TEMPO[key]);
+  }
+  assert.equal(tempo(next, 'production'), tempo(old, 'production'));
+  assert.equal(tempo(next, 'populationGrowth'), tempo(old, 'populationGrowth'));
+  assert.equal(next.defs.RULESET.id, DELIBERATE_RULESET);
+  assert.deepEqual(next.defs.RULESET.tempo, DELIBERATE_TEMPO);
+  assert.equal(restoreGame(serializeGame(old)).ruleset, NATIVE_RULESET);
+  const reloaded = restoreGame(serializeGame(next));
+  assert.equal(reloaded.ruleset, DELIBERATE_RULESET);
+  assert.equal(movementRate(reloaded, { move: 'infantry' }), .60);
+  assert.ok(reloaded.command(0, { c: 'import', good: 'food' }).error);
+});
+
+test('native-v3 slows new matches and keeps earlier match rates and saves intact', () => {
+  const previous = create(DELIBERATE_RULESET), current = create(EXPANSIVE_RULESET);
+  for (const key of Object.keys(EXPANSIVE_TEMPO)) {
+    assert.ok(EXPANSIVE_TEMPO[key] < DELIBERATE_TEMPO[key], key);
+    assert.equal(tempo(previous, key), DELIBERATE_TEMPO[key]);
+    assert.equal(tempo(current, key), EXPANSIVE_TEMPO[key]);
+  }
+  assert.deepEqual(current.defs.RULESET.tempo, EXPANSIVE_TEMPO);
+  assert.equal(restoreGame(serializeGame(previous)).ruleset, DELIBERATE_RULESET);
+  assert.equal(restoreGame(serializeGame(current)).ruleset, EXPANSIVE_RULESET);
+  // On identical starting cities, both food production and ordinary food consumption scale
+  // together. The short-term balance therefore scales rather than flipping into a deficit.
+  economyStep(previous, 1); economyStep(current, 1);
+  const a = previous.capital(previous.civs[0]).foodBal;
+  const b = current.capital(current.civs[0]).foodBal;
+  assert.ok(Math.abs(b - a * EXPANSIVE_TEMPO.production / DELIBERATE_TEMPO.production) < 1e-6, `${a} versus ${b}`);
 });
 
 test('automatic city development has a small explicit command surface and rejects foreign cities', () => {
@@ -159,4 +199,37 @@ test('placement previews are authoritative, visibility filtered and do not const
   civ.explored[occupied] = 0;
   const hidden = g.command(0, { c: 'placement', type: 'house', tile: occupied }).reply.site;
   assert.deepEqual(hidden, { tile: occupied, valid: false, reason: 'Explore this site first' });
+});
+
+test('rivers reject new buildings and settlements, with clear placement feedback', () => {
+  const g = create(EXPANSIVE_RULESET), civ = g.civs[0];
+  const tile = g.command(0, { c: 'placement', type: 'house' }).reply.tiles[0];
+  assert.ok(Number.isInteger(tile));
+  const before = g.buildings.size;
+  g.world.river[tile] = 1;
+  assert.equal(g.canPlace(civ, 'house', tile, true), false);
+  assert.match(g.command(0, { c: 'placement', type: 'house', tile }).reply.site.reason, /dry land/i);
+  assert.match(g.command(0, { c: 'build', type: 'house', tile }).error, /river/i);
+  assert.ok(!g.command(0, { c: 'placement', type: 'house' }).reply.tiles.includes(tile));
+  assert.match(g.canFound(civ, tile), /river/i);
+  assert.equal(g.buildings.size, before);
+  g.ruins.set(tile, { type: 'town' });
+  assert.match(rebuildProblem(g, civ, tile), /river/i);
+  g.ruins.delete(tile);
+  // Existing structures remain part of an old save even if hydrology later changes.
+  const capital = g.capital(civ), town = g.buildingAtTile(capital.tile);
+  g.world.river[capital.tile] = 1;
+  const reloaded = restoreGame(serializeGame(g));
+  assert.equal(reloaded.buildingAtTile(capital.tile).id, town.id);
+  assert.equal(reloaded.capital(reloaded.civs[0]).id, capital.id);
+});
+
+test('rebel camps and ruin resettlement cannot create buildings on rivers', () => {
+  const g = create(EXPANSIVE_RULESET), ai = new RebelAI(g, g.civs[1]);
+  const ruin = [...g.world.river.keys()].find((tile) => g.tileB[tile] < 0);
+  g.world.river.fill(1); g.world.owner[ruin] = -1;
+  g.ruins.set(ruin, { type: 'town', name: 'Old Town' });
+  assert.deepEqual(ai.campSites(), []);
+  assert.equal(ai.newCamp(), false);
+  assert.ok(g.ruins.has(ruin), 'a prohibited resettlement must not consume the old ruin');
 });

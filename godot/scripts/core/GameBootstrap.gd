@@ -152,6 +152,7 @@ func _ready() -> void:
 		if command.get("c") in ["move","deploy","army"]: military.path_until=Time.get_ticks_msec()+3500)
 	workspace.tools=command_tools; workspace.input_ref=input
 	input.selection_changed.connect(workspace.follow_selection)
+	input.selection_changed.connect(workspace.cancel_pending_scenario_selection)
 	shell=NativeAppShell.new(); add_child(shell); shell.setup(self,preferences,automated)
 	command_dock=NativeCommandDock.new(); add_child(command_dock); command_dock.setup(self)
 	map_overlay=NativeMapOverlay.new(); hud.root.add_child(map_overlay); map_overlay.setup(self)
@@ -372,7 +373,7 @@ func start(opts: Dictionary) -> void:
 	elif pending_mode in ["spectate","join"]:
 		net.send({"t": pending_mode, "match": str(opts.get("match", "")), "name": str(opts.name)})
 	else:
-		var msg := {"t": "create", "mode": pending_mode, "name": str(opts.name), "ruleset":"native-v1"}
+		var msg := {"t": "create", "mode": pending_mode, "name": str(opts.name), "ruleset":"native-v3"}
 		if pending_mode == "observe":
 			msg.ais = 3
 		else:
@@ -403,7 +404,7 @@ func _on_message(m: Dictionary) -> void:
 			if str(m.get("status", "")) == "lobby":
 				hud.show_lobby(true, "Waiting in the match lobby…")
 		"welcome":
-			if pending_mode not in ["rejoin","join","spectate"] and str(m.get("ruleset","legacy-v1"))!="native-v1":
+			if pending_mode not in ["rejoin","join","spectate"] and str(m.get("ruleset","legacy-v1"))!="native-v3":
 				net.close(); shell.show_view("main")
 				NativeUI.label(shell.content,"This server needs the native ruleset update. Choose an updated server in Settings to start a new campaign.",16,NativeUI.GOLD)
 				return

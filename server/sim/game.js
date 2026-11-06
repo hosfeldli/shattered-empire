@@ -115,7 +115,7 @@ export class Game {
     this.worldStyle = style || null;
     this.slotsDef = slots.map((s) => ({ human: !!s.human, name: s.name, leader: s.leader, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay }));
     this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, LEVELS: { max: MAX_LEVEL, jobs: LEVEL_JOBS, out: LEVEL_OUT, age: LEVEL_AGE, tiers: CITY_TIERS }, CITY_STATES, REBUILD_COST, BRIDGE_CLASSES, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
-    if (nativeRules(this)) this.defs = nativeDefinitions(this.defs);
+    if (nativeRules(this)) this.defs = nativeDefinitions(this.defs, this.ruleset);
     this.rng = mulberry32(seed ^ 0x9e3779b9);
     this.world = new World(seed, { style });
     this.world.generate(slots.length);
@@ -286,7 +286,7 @@ export class Game {
     if (this.tileB[t] >= 0) return false;
     const ruin = this.ruins.get(t);
     if (ruin && ruin.type !== type) return false;            // clear the rubble first (engineers / governor)
-    if (isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return false;
+    if (w.river[t] || isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return false;
     if (def.anywhere) { if (w.owner[t] !== civ.id && !civ.supply[t]) return false; if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return false; }
     else if (w.owner[t] !== civ.id) return false;
     if (def.wonder && [...this.buildings.values()].some((b) => b.type === 'wonder' && b.owner === civ.id)) return false;
@@ -304,7 +304,7 @@ export class Game {
   terrainOk(def, t) {
     const w = this.world, ter = w.terr[t];
     switch (def.place) {
-      case 'farm': return [T.GRASS, T.PLAINS, T.ASH, T.MARSH, T.TUNDRA, T.HILLS, T.FOREST].includes(ter) || (ter === T.DESERT && !!w.river[t]);   // hills are terraced, forest cleared (lower yield)
+      case 'farm': return [T.GRASS, T.PLAINS, T.ASH, T.MARSH, T.TUNDRA, T.HILLS, T.FOREST].includes(ter) || (ter === T.DESERT && Array.from({ length: 6 }, (_, d) => NB[t * 6 + d]).some((n) => n >= 0 && w.river[n])); // irrigated desert farms sit beside a river
       case 'forest': return ter === T.FOREST;
       case 'quarry': return ter === T.HILLS || ter === T.MOUNTAIN || w.res[t] === RES.STONE;
       case 'mine': return [RES.IRON, RES.COAL].includes(w.res[t]) || ((ter === T.HILLS || ter === T.MOUNTAIN) && !w.res[t]);   // a shaft into bare rock yields less (see economy)
@@ -1091,7 +1091,7 @@ export class Game {
         }
         case 'build': {
           if (BUILDINGS[cmd.type]?.obsolete) return { error: `${BUILDINGS[cmd.type].name} is no longer needed: troops are always supplied` };
-          if (!this.canPlace(civ, cmd.type, cmd.tile, true)) return { error: 'Cannot build there' };
+          if (!this.canPlace(civ, cmd.type, cmd.tile, true)) return { error: this.world.river[cmd.tile] ? 'Choose dry land beside the river' : 'Cannot build there' };
           if (this.isAutomated(civ, cmd) && !ESSENTIAL.has(cmd.type) && !cmd.national && !this.enablesSavings(civ, cmd.type) && this.breaksSavings(civ, this.buildingCost(civ, cmd.type, cmd.tile))) return { error: 'saving for the next era' };
           const affordable = this.canAfford(civ, this.buildingCost(civ, cmd.type, cmd.tile), cmd.tile);
           // a player's order is never refused for want of funds: it joins the construction queue and
@@ -1108,7 +1108,7 @@ export class Game {
             if (!Number.isInteger(tile) || tile < 0 || tile >= N || !civ.explored[tile] || !def) return { reply: { t: 'placement', site: { tile, valid: false, reason: 'Explore this site first' } } };
             const valid = this.canPlace(civ, cmd.type, tile, true), cost = this.buildingCost(civ, cmd.type, tile);
             let reason = '';
-            if (!valid) reason = this.tileB[tile] >= 0 ? 'This site already has a building' : def.tech && !civ.techs.has(def.tech) ? 'Research ' + TECHS[def.tech].name + ' first' : def.age > civ.age ? 'Requires a later era' : isWater(this.world.terr[tile]) ? 'Choose dry land beside the water' : !this.terrainOk(def, tile) ? 'Requires suitable terrain or a resource deposit' : this.world.owner[tile] !== civ.id ? 'Choose a site in your territory' : 'Site unavailable: check city capacity or clear the ruins';
+            if (!valid) reason = this.tileB[tile] >= 0 ? 'This site already has a building' : def.tech && !civ.techs.has(def.tech) ? 'Research ' + TECHS[def.tech].name + ' first' : def.age > civ.age ? 'Requires a later era' : isWater(this.world.terr[tile]) || this.world.river[tile] ? 'Choose dry land beside the water' : !this.terrainOk(def, tile) ? 'Requires suitable terrain or a resource deposit' : this.world.owner[tile] !== civ.id ? 'Choose a site in your territory' : 'Site unavailable: check city capacity or clear the ruins';
             const local = this.poolAt(civ, tile);
             const missing = Object.fromEntries(Object.entries(cost).map(([key, amount]) => [key, Math.max(0, amount - ((local && key !== 'credits' ? local[key] : civ.res[key]) || 0))]).filter(([, amount]) => amount > 0));
             return { reply: { t: 'placement', site: { tile, valid, reason, cost, missing, queued: valid && !this.canAfford(civ, cost, tile), seconds: Math.ceil(def.time / (tempo(this, 'construction') * (1 + (techFx(civ).build || 0)))) } } };
@@ -1485,6 +1485,7 @@ export class Game {
 
   canFound(civ, t) {
     const w = this.world;
+    if (w.river[t]) return 'Choose dry land beside the river';
     if (isWater(w.terr[t]) || !Number.isFinite(TERRAIN[w.terr[t]].move) || w.terr[t] === T.MOUNTAIN) return 'unsuitable terrain';
     if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return 'inside foreign territory';
     if (this.tileB[t] >= 0) return 'tile occupied';

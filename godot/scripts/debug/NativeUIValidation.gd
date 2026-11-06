@@ -19,11 +19,14 @@ func frames(count:=4) -> void:
 
 func banner_zoom() -> void:
 	await request({"c":"pause","on":true}); await frames(12)
-	var original:float=app.cam.size; var keys:={}; var aligned:=true; var stable:=true
+	var original:float=app.cam.size; var keys:={}; var aligned:=true; var stable:=true; var clouds_clear:=true
 	app.world_labels.refresh()
 	for key in app.world_labels.groups: keys[key]=app.world_labels.groups[key].ids.duplicate()
 	for zoom in [6.0,16.0,30.0,50.0,80.0,40.0,10.0]:
 		app.cam.size=zoom; app.cam.goal_size=zoom; app.cam._apply(); await frames(2)
+		var opacity:float=app.environment.cloud_mat.get_shader_parameter("opacity")
+		clouds_clear=clouds_clear and is_equal_approx(opacity,EnvironmentRenderer.cloud_opacity(zoom)) and opacity<=.10001
+		if zoom<=28.0: clouds_clear=clouds_clear and not app.environment.clouds.visible
 		for key in keys:
 			stable=stable and app.world_labels.groups.has(key) and app.world_labels.groups[key].ids==keys[key]
 		for banner:Dictionary in app.world_labels.banners:
@@ -32,6 +35,7 @@ func banner_zoom() -> void:
 			anchor/=banner.ids.size(); aligned=aligned and anchor.distance_to(banner.anchor)<.5
 	checks.zoom_preserves_banner_membership=stable
 	checks.banners_follow_camera_each_frame=aligned
+	checks.clouds_fade_with_zoom=clouds_clear
 	app.cam.size=original; app.cam.goal_size=original; app.cam._apply(); await frames()
 
 func city_activity() -> void:
@@ -56,9 +60,9 @@ func city_activity() -> void:
 	checks.measured_production_available=not producer.is_empty()
 	if not producer.is_empty():
 		app.cam.focus_tile(int(producer.t),6); app.cam.size=6; app.cam.goal_size=6; app.cam._apply()
-		app.production_feedback.clock=fposmod(.7-float(int(producer.id)%29)*.31,5.0)
+		app.production_feedback.clock=fposmod(.7-NativeProductionFeedback.phase_at(0.0,int(producer.id)),NativeProductionFeedback.CYCLE_SECONDS)
 		await frames(4)
-		checks.production_icons_bounded=app.production_feedback.shown.size()>0 and app.production_feedback.shown.size()<=12
+		checks.production_icons_bounded=app.production_feedback.shown.size()>0 and app.production_feedback.shown.size()<=NativeProductionFeedback.MAX_VISIBLE
 		await shot("production-icons")
 	checks.no_routine_connection_status=not app.hud.conn.visible
 	await request({"c":"pause","on":true})
@@ -134,6 +138,8 @@ func compact_layout() -> void:
 	var selected:Dictionary=app.military.selected.duplicate()
 	for unit in app.world.units.values():
 		if int(unit.owner)==app.world.civ_id: app.military.selected[int(unit.id)]=true
+	var original_zoom:float=app.cam.goal_size
+	app.cam.size=34.0; app.cam.goal_size=34.0; app.cam._apply()
 	var before_zoom:float=app.cam.goal_size
 	var inside:Vector2=app.workspace.heading.get_global_rect().get_center()
 	mouse_button(inside,MOUSE_BUTTON_WHEEL_UP,true); await frames()
@@ -145,7 +151,7 @@ func compact_layout() -> void:
 	mouse_button(outside,MOUSE_BUTTON_WHEEL_UP,true); await frames()
 	checks.map_zooms_beside_drawer=app.cam.goal_size<before_zoom
 	app.military.selected=selected
-	app.cam.goal_size=before_zoom
+	app.cam.goal_size=original_zoom
 	await shot("cities")
 	app.workspace.dashboard.city_tab="Development"; app.workspace.dashboard.signature=""; app.workspace.dashboard.sync(); await shot("city-development")
 	app.workspace.open_page("Economy"); await shot("economy")
@@ -261,7 +267,7 @@ func run(game:Node,out:String) -> void:
 	var city_id:=-1
 	for city in app.world.cities.values():
 		if int(city.o)==app.world.civ_id: city_id=int(city.id); break
-	checks.native_ruleset=app.world.ruleset=="native-v1"
+	checks.native_ruleset=app.world.ruleset=="native-v3"
 	checks.removed_controls=not ids.has("tax") and not ids.has("import") and not ids.has("diplo_trade")
 	var development:=await action("city_development",{"city":city_id,"on":true,"priority":"industry"})
 	checks.development_command=development.get("error")==null and not development.is_empty()
@@ -297,6 +303,11 @@ func run(game:Node,out:String) -> void:
 	var formed:=await action("army_create",{"name":"UI validation force"})
 	checks.army_command=formed.get("id",-1)>=0
 	app.workspace.panel.hide()
+	# The selection card refreshes on a timer; a fixed number of rendered frames can
+	# be shorter than that interval on a fast machine.
+	var army_card_until:=Time.get_ticks_msec()+2000
+	while Time.get_ticks_msec()<army_card_until and not app.command_dock.orders.get_children().any(func(button):return button.text=="Defend"):
+		await frames()
 	await shot("tactical-command")
 	checks.compact_selection=app.command_dock.panel.size.x<=440 and app.command_dock.panel.size.y<200
 	checks.army_specific_actions=app.command_dock.orders.get_children().any(func(button):return button.text=="Defend") and app.command_dock.orders.get_children().any(func(button):return button.text=="Attack")
@@ -310,7 +321,9 @@ func run(game:Node,out:String) -> void:
 	app.input.selected_army=-1
 	var ground:=await action("scenario",{"scenario":"mixed"})
 	checks.ground_scenario=ground.has("scenario")
-	await app.get_tree().create_timer(.6).timeout
+	var scenario_until:=Time.get_ticks_msec()+8000
+	while app.input._owned_units().is_empty() and Time.get_ticks_msec()<scenario_until: await frames()
+	await app.get_tree().create_timer(.15).timeout
 	app.workspace.panel.hide(); await shot("ground-selection")
 	checks.ground_specific_actions=app.command_dock.orders.get_children().any(func(button):return button.text=="Attack-move") and not app.command_dock.orders.get_children().any(func(button):return button.text=="Air strike…")
 	checks.unit_behavior_choices=app.command_dock.behavior_buttons.size()==3
@@ -323,10 +336,14 @@ func run(game:Node,out:String) -> void:
 		(app.command_dock.behavior_buttons.defensive as Button).pressed.emit(); await frames()
 	app.world_labels.refresh()
 	checks.bounded_troop_banners=not app.world_labels.banners.is_empty() and app.world_labels.banners.size()<=48
-	if not app.world_labels.banners.is_empty():
-		var banner:Dictionary=app.world_labels.banners[0]
+	var clickable:Array=app.world_labels.banners.filter(func(record):
+		var point:Vector2=(record.rect as Rect2).get_center()
+		return point.y>55 and not app.shell.navigation.get_global_rect().has_point(point) and not app.command_dock.panel.get_global_rect().has_point(point))
+	if not clickable.is_empty():
+		var banner:Dictionary=clickable[0]
 		mouse_button((banner.rect as Rect2).get_center(),MOUSE_BUTTON_LEFT,true); mouse_button((banner.rect as Rect2).get_center(),MOUSE_BUTTON_LEFT,false); await frames()
 		checks.banner_selects_real_units=banner.ids.all(func(id):return app.military.selected.has(id))
+	else: checks.banner_selects_real_units=false
 	checks.resource_icons_only=app.world_labels.markers.all(func(record):return (record.rect as Rect2).size==Vector2(20,20) and app.world_labels.icons.has(record.resource))
 	checks.compact_troop_composition_icons=app.world_labels.banners.all(func(record):return (record.rect as Rect2).size==Vector2(26,26) and app.world_labels.unit_icons.has(record.type))
 	checks.unit_card_behavior_compact=app.command_dock.panel.size.y<220
@@ -341,7 +358,11 @@ func run(game:Node,out:String) -> void:
 		if int(building.o)==app.world.civ_id: building_id=int(building.id); break
 	app.settlements.selected_building=building_id; app.input.selected_buildings[building_id]=true; app.input.selection_changed.emit(); await frames()
 	checks.city_follows_map_selection=app.workspace.current.get("key")==app.world.buildings[building_id].get("c")
-	app.workspace.panel.hide(); await shot("building-selection")
+	app.workspace.panel.hide()
+	var building_card_until:=Time.get_ticks_msec()+2000
+	while Time.get_ticks_msec()<building_card_until and not app.command_dock.orders.get_children().any(func(button):return button.text=="Manage" or button.text=="More ▾"):
+		await frames()
+	await shot("building-selection")
 	checks.building_specific_actions=app.command_dock.orders.get_children().any(func(button):return button.text=="Manage" or button.text=="More ▾")
 	app.input.cancel(); await shot("world")
 	await direct_placement()

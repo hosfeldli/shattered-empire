@@ -49,12 +49,15 @@ static func get_mat(key: String) -> Material:
 	m.set_shader_parameter("base_roughness",spec.get("r",.9))
 	m.set_shader_parameter("base_metallic",spec.get("m",0.0))
 	m.resource_name = key
-	var path := "res://assets/materials/%s_" % key
-	if ResourceLoader.exists(path + "albedo.png"):
-		m.set_shader_parameter("albedo_map",load(path+"albedo.png"))
-		m.set_shader_parameter("normal_map",load(path+"normal.png"))
-		m.set_shader_parameter("roughness_map",load(path+"roughness.png"))
+	var texture_key:String={"paving":"asphalt","ballast":"stone","ore":"rock","char":"rock","olive":"steel"}.get(key,key)
+	var path := "res://assets/materials/%s_" % texture_key
+	var extension:="png" if ResourceLoader.exists(path+"albedo.png") else "jpg"
+	if ResourceLoader.exists(path + "albedo."+extension):
+		m.set_shader_parameter("albedo_map",load(path+"albedo."+extension))
+		if ResourceLoader.exists(path+"normal."+extension): m.set_shader_parameter("normal_map",load(path+"normal."+extension))
+		if ResourceLoader.exists(path+"roughness."+extension): m.set_shader_parameter("roughness_map",load(path+"roughness."+extension))
 		m.set_shader_parameter("normal_strength",.35)
+		if texture_key in ["steel","canvas"]: m.set_shader_parameter("texture_mix",.45)
 	if _wet_texture:
 		m.set_shader_parameter("wet_map",_wet_texture)
 		m.set_shader_parameter("weather_extent",_weather_extent)

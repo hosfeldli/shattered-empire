@@ -89,6 +89,12 @@ func _run() -> void:
 	var dry:=composition.sites.plan(100,Vector2.ZERO,.2,Vector2(.25,.2))
 	check(dry.valid and dry.max_height>dry.min_height,"sloped site did not sample its footprint")
 	check(dry.transform.origin.y>=dry.max_height,"building sits below the sampled terrain")
+	var grounder:=SettlementRenderer.new(); grounder.world=world; grounder.site_records[1]=dry
+	var support:=MeshKit.new(); support.origin=dry.transform.origin; support.basis=dry.transform.basis
+	grounder._site_foundation(support,1)
+	var vertices:Array=support.parts.get("stone",[[]])[0]
+	check(not vertices.is_empty() and vertices.any(func(v):return absf(v.y-world.ground_height(v.x,v.z))<.025),"sloped foundations do not meet the sampled ground")
+	grounder.free()
 	for tile in [99,100,101]:
 		world.geo[tile*6+3]=1; world.geo[tile*6+5]=1; world.geo[tile*6+4]=3<<4
 	world.geo_version+=1

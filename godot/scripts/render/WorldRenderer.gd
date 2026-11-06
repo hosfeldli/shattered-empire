@@ -51,6 +51,7 @@ func setup(w: WorldState) -> void:
 	world = w
 	terrain_mat = ShaderMaterial.new()
 	terrain_mat.shader = _terrain_shader()
+	terrain_mat.set_shader_parameter("ground_detail",load("res://assets/materials/ground_natural_albedo.jpg"))
 	water_mat = ShaderMaterial.new()
 	water_mat.shader = _water_shader()
 	world.welcomed.connect(_on_welcome)
@@ -420,6 +421,7 @@ render_mode cull_back, diffuse_burley, specular_schlick_ggx;
 uniform sampler2D vis_bits : filter_nearest;
 uniform float vis_on = 1.0;
 uniform sampler2D wet_tex : filter_linear, repeat_enable, hint_default_black;
+uniform sampler2D ground_detail : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 #include "res://shaders/weather_clouds.gdshaderinc"
 #include "res://shaders/visibility_fields.gdshaderinc"
 #include "res://shaders/development_fields.gdshaderinc"
@@ -484,6 +486,11 @@ void fragment() {
 	vec3 weights = pow(abs(wn), vec3(4.0)); weights /= max(dot(weights, vec3(1.0)), 0.0001);
 	float n = (noise(wpos.zy * 5.0)*weights.x + noise(wpos.xz * 5.0)*weights.y + noise(wpos.xy * 5.0)*weights.z)*0.45 + noise(wpos.xz * 1.3)*0.55;
 	base *= 0.9 + 0.2 * n;
+	// Wrapped world-space sampling avoids a discontinuity at the horizontal map seam.
+	vec2 ground_uv=vec2(wpos.x/weather_extent.x*max(1.0,round(weather_extent.x*.7)),wpos.z*.7);
+	vec3 surface=texture(ground_detail,ground_uv).rgb;
+	float micro=clamp(dot(surface,vec3(.299,.587,.114))*5.0,.6,1.35);
+	base*=mix(1.0,micro,.42*weights.y);
 	float river_margin=0.0;
 	if (river_bank_active>.0) {
 		float period=weather_extent.x;

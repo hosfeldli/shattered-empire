@@ -10,6 +10,12 @@ func energy(sim:WaterSurfaceSimulation) -> float:
 	for value in sim.height: total+=value*value
 	return total
 func _run() -> void:
+	check(EnvironmentRenderer.cloud_opacity(10.0)==0.0 and EnvironmentRenderer.cloud_opacity(28.0)==0.0,"clouds obscure close-up gameplay")
+	check(EnvironmentRenderer.cloud_opacity(50.0)>0.0 and EnvironmentRenderer.cloud_opacity(50.0)<EnvironmentRenderer.cloud_opacity(80.0),"clouds do not fade smoothly with zoom")
+	check(EnvironmentRenderer.cloud_opacity(500.0)<=.10001,"distant clouds exceed the visibility budget")
+	check(NativeProductionFeedback.CYCLE_SECONDS>=15.0 and NativeProductionFeedback.DISPLAY_SECONDS>=3.0 and NativeProductionFeedback.MAX_VISIBLE<=4,"production feedback is too frequent or crowded")
+	check(is_equal_approx(NativeProductionFeedback.phase_at(2.0,42),NativeProductionFeedback.phase_at(2.0+NativeProductionFeedback.CYCLE_SECONDS,42)),"production indicator timing is unstable")
+	check(NativeProductionFeedback.phase_at(2.0,42)!=NativeProductionFeedback.phase_at(2.0,43),"neighboring production indicators pulse together")
 	var a:=WaterSurfaceSimulation.new(); a.reset(32); a.wet.fill(1)
 	var b:=WaterSurfaceSimulation.new(); b.reset(32); b.wet.fill(1)
 	a.impulse(Vector2(4.8,4.8),.5); b.impulse(Vector2(4.8,4.8),.5)

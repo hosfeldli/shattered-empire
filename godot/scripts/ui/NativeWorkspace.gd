@@ -47,6 +47,7 @@ var selected_city:=-1
 var expanded:=false
 var expand_button:Button
 var records_context:VBoxContainer
+var pending_scenario_units:Array=[]
 
 func setup(w:WorldState,n:NetworkClient,cam:CameraController,s:SettlementRenderer,m:MilitaryRenderer,report:Callable) -> void:
 	world=w; net=n; camera=cam; settlements=s; military=m; feedback=report; layer=30
@@ -93,9 +94,10 @@ func setup(w:WorldState,n:NetworkClient,cam:CameraController,s:SettlementRendere
 	dashboard=NativeDashboard.new(); host.add_child(dashboard); dashboard.setup(self)
 	show_all_orders(false)
 	world.welcomed.connect(_reset); world.reset.connect(_reset)
+	world.snapshot_applied.connect(_select_scenario_units)
 
 func _reset() -> void:
-	current.clear(); last_reply.clear(); selected_city=-1; _records_signature=""; busy=false
+	current.clear(); last_reply.clear(); pending_scenario_units.clear(); selected_city=-1; _records_signature=""; busy=false
 	if panel.visible: open_page(page)
 
 func open_page(title:String) -> void:
@@ -442,9 +444,24 @@ func _dispatch(command:Dictionary) -> void:
 		if reply.get("error")!=null: feedback.call(str(reply.error),false)
 		if reply.has("scenario"):
 			military.selected.clear()
-			for id in reply.scenario.get("A",[]): military.selected[int(id)]=true
+			if input_ref:
+				input_ref.selected_army=-1; input_ref.selected_buildings.clear()
+			settlements.selected_building=-1
+			pending_scenario_units=reply.scenario.get("A",[]).duplicate()
+			_select_scenario_units()
 			camera.focus_tile(int(reply.scenario.arena),24); panel.hide()
 		_refresh())
+
+func _select_scenario_units() -> void:
+	if pending_scenario_units.is_empty(): return
+	if not pending_scenario_units.any(func(id):return world.units.has(int(id))): return
+	for id in pending_scenario_units:
+		if world.units.has(int(id)): military.selected[int(id)]=true
+	pending_scenario_units.clear()
+	if input_ref: input_ref.selection_changed.emit()
+
+func cancel_pending_scenario_selection() -> void:
+	pending_scenario_units.clear()
 
 func _send(command:Dictionary) -> void: _dispatch(command)
 
@@ -465,10 +482,10 @@ func _unhandled_input(event:InputEvent) -> void:
 func _process(dt:float) -> void:
 	if not panel.visible: return
 	var bounds:=get_viewport().get_visible_rect().size
-	var width:=minf(1080,bounds.x-32) if expanded else 300.0 if page in ["Construction","Armies"] and not inspector_view.visible else clampf(bounds.x*.26,340,390)
+	var width:=minf(1080,bounds.x-132) if expanded else 300.0 if page in ["Construction","Armies"] and not inspector_view.visible else clampf(bounds.x*.26,340,390)
 	var content_height:=inspector_view.get_combined_minimum_size().y if inspector_view.visible else dashboard.body.get_combined_minimum_size().y
 	var height:=minf(760,bounds.y-111) if expanded else minf(content_height+120,minf(760,bounds.y-111))
-	panel.size=Vector2(width,maxf(220,height)); panel.position=Vector2(10,91)
+	panel.size=Vector2(width,maxf(220,height)); panel.position=Vector2(118,53)
 	expand_button.text="Compact" if expanded else "Expand"
 	timer+=dt
 	if timer>=1: timer=0; _refresh()

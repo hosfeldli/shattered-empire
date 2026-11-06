@@ -45,6 +45,7 @@ export function spawnGroup(g, civId, type, center, n) {
 }
 
 const offset = (t, dq) => { const q = (t % W) + dq, r = (t / W) | 0; return r * W + Math.max(1, Math.min(W - 2, q)); };
+const buildingSite = (g, t) => disk(t, 3).find((x) => passable(g, x) && !g.world.river[x] && g.tileB[x] < 0 && g.world.terr[x] !== T.MOUNTAIN);
 
 export function clearForces(g) { for (const u of [...g.units.values()]) if (u.owner <= 1) g.units.delete(u.id); g.projectiles.clear(); g.pending.clear(); g.rebuildTileUnits(); }
 
@@ -58,34 +59,36 @@ export const SCENARIOS = {
   } },
   armor: { name: 'Tank platoon vs fortified position', run(g, a) {
     const B = spawnGroup(g, 1, 'rifle_squad', offset(a, 4), 4);
-    g.placeBuilding(g.civs[1], 'bunker', offset(a, 4), true);
+    const site = buildingSite(g, offset(a, 4)); if (site !== undefined) g.placeBuilding(g.civs[1], 'bunker', site, true);
     return [spawnGroup(g, 0, 'tank', offset(a, -4), 6), B];
   } },
   artillery: { name: 'Artillery bombardment of a position', run(g, a) {
     return [spawnGroup(g, 0, 'sp_artillery', offset(a, -6), 6), spawnGroup(g, 1, 'rifle_squad', offset(a, 2), 9)];
   } },
   air: { name: 'Air operations: airfield, fighters, bomber, helicopter, drones vs troops and AA', run(g, a) {
-    const free = (t) => disk(t, 3).find((x) => passable(g, x) && g.tileB[x] < 0 && g.world.terr[x] !== T.MOUNTAIN) ?? t;
+    const free = (t) => buildingSite(g, t);
     for (const k of ['aviation', 'air_operations', 'drones', 'air_defense']) { g.civs[0].techs.add(k); g.civs[1].techs.add(k); }
-    const af = g.placeBuilding(g.civs[0], 'airfield', free(offset(a, -9)), true);
-    const dw = g.placeBuilding(g.civs[0], 'drone_works', free(offset(a, -7)), true);
+    const airSite = free(offset(a, -9));
+    const af = airSite === undefined ? null : g.placeBuilding(g.civs[0], 'airfield', airSite, true);
+    const droneSite = free(offset(a, -7));
+    const dw = droneSite === undefined ? null : g.placeBuilding(g.civs[0], 'drone_works', droneSite, true);
     const A = [];
     const based = (type, b, n) => { for (let i = 0; i < n; i++) { const u = spawnUnit(g, g.civs[0], type, b.tile); onAircraftBuilt(g, u, b); A.push(u); } };
     if (af) { based('fighter', af, 2); based('bomber', af, 1); based('helicopter', af, 1); }
     if (dw) { based('recon_drone', dw, 1); based('oneway_drone', dw, 2); }
     A.push(...spawnGroup(g, 0, 'rifle_squad', offset(a, -4), 3));
     const B = [...spawnGroup(g, 1, 'rifle_squad', offset(a, 5), 6), ...spawnGroup(g, 1, 'tank', offset(a, 6), 2)];
-    g.placeBuilding(g.civs[1], 'aa_battery', free(offset(a, 7)), true);
+    const aaSite = free(offset(a, 7)); if (aaSite !== undefined) g.placeBuilding(g.civs[1], 'aa_battery', aaSite, true);
     for (const u of B) u.stance = 'defensive';
     g.rebuildTileUnits();
     return [A, B];
   } },
   strategic: { name: 'Strategic missiles: a stocked silo, an enemy army and upgraded AA', run(g, a) {
-    const free = (t) => disk(t, 3).find((x) => passable(g, x) && g.tileB[x] < 0 && g.world.terr[x] !== T.MOUNTAIN) ?? t;
+    const free = (t) => buildingSite(g, t);
     for (const k of ['strategic_missiles', 'air_defense', 'missile_defense']) { g.civs[0].techs.add(k); g.civs[1].techs.add(k); }
-    const silo = g.placeBuilding(g.civs[0], 'missile_silo', free(offset(a, -10)), true); if (silo) silo.missiles = 2;
+    const siloSite = free(offset(a, -10)); const silo = siloSite === undefined ? null : g.placeBuilding(g.civs[0], 'missile_silo', siloSite, true); if (silo) silo.missiles = 2;
     const B = [...spawnGroup(g, 1, 'tank', offset(a, 6), 9), ...spawnGroup(g, 1, 'rifle_squad', offset(a, 8), 6)];
-    const aa = g.placeBuilding(g.civs[1], 'aa_battery', free(offset(a, 9)), true); if (aa) aa.upgraded = true;
+    const aaSite = free(offset(a, 9)); const aa = aaSite === undefined ? null : g.placeBuilding(g.civs[1], 'aa_battery', aaSite, true); if (aa) aa.upgraded = true;
     for (const u of B) u.stance = 'hold';
     return [spawnGroup(g, 0, 'rifle_squad', offset(a, -6), 2), B];
   } },

@@ -24,7 +24,7 @@ export class RebelAI {
     for (let k = 0; k < 600 && cands.length < 40; k++) {
       const t = rng.int(N);
       const ter = w.terr[t];
-      if (isWater(ter) || ter === T.PEAK || ter === T.LAVA || ter === T.MOUNTAIN || w.owner[t] >= 0 || g.tileB[t] >= 0) continue;
+      if (w.river[t] || isWater(ter) || ter === T.PEAK || ter === T.LAVA || ter === T.MOUNTAIN || w.owner[t] >= 0 || g.tileB[t] >= 0) continue;
       if (cities.some((c) => dist(c.tile, t) < 13) || w.starts.some((s) => dist(s, t) < 16) || camps.some((c) => dist(c.tile, t) < 12)) continue;
       cands.push(t);
     }
@@ -35,7 +35,7 @@ export class RebelAI {
     const g = this.g, w = g.world;
     // prefer re-occupying the ruins of a fallen town
     for (const [t, r] of g.ruins) {
-      if (r.type !== 'town' || w.owner[t] >= 0) continue;
+      if (r.type !== 'town' || w.owner[t] >= 0 || w.river[t]) continue;
       g.ruins.delete(t);
       const c = g.foundCity(this.civ, t, 3);
       c.name = 'Free ' + (r.name || c.name);

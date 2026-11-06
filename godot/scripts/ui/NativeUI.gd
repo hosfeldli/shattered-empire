@@ -2,7 +2,7 @@ class_name NativeUI
 extends RefCounted
 ## Native controls share one restrained palette and spacing system.
 const GOLD:=Color("d8b977")
-const INK:=Color("11191f")
+const INK:=Color("11171d")
 const TEXT:=Color("e8e4d9")
 const MUTED:=Color("a2afb5")
 static var font_scale:=1.0
@@ -26,12 +26,12 @@ static func theme(scale_:=1.0) -> Theme:
 	result.set_color("font_hover_color","Button",GOLD)
 	result.set_color("font_disabled_color","Button",Color("74818a"))
 	for type in ["Button","OptionButton","MenuButton"]:
-		result.set_stylebox("normal",type,style(Color("202d34")))
-		result.set_stylebox("hover",type,style(Color("2c3e46"),GOLD))
-		result.set_stylebox("pressed",type,style(Color("35484d"),GOLD))
+		result.set_stylebox("normal",type,style(Color("202830"),Color("3c454a")))
+		result.set_stylebox("hover",type,style(Color("303b43"),GOLD))
+		result.set_stylebox("pressed",type,style(Color("39454b"),GOLD))
 		result.set_stylebox("disabled",type,style(Color("172126")))
 		result.set_stylebox("focus",type,style(Color(0,0,0,0),GOLD,0))
-	result.set_stylebox("panel","PanelContainer",style(Color("172229")))
+	result.set_stylebox("panel","PanelContainer",style(Color("171e24"),Color("4b5357")))
 	for type in ["LineEdit","TextEdit","ItemList","Tree"]:
 		result.set_stylebox("normal",type,style(INK))
 		result.set_stylebox("panel",type,style(INK))

@@ -368,6 +368,9 @@ func _build_catalog(catalog:VBoxContainer,query:String,category:String) -> void:
 		var open:bool=category==group or not query.is_empty()
 		var heading:=_button(catalog,("▾ " if open else "▸ ")+group,func():build_group="" if build_group==section else section; _build_catalog(catalog,query,build_group),open)
 		heading.alignment=HORIZONTAL_ALIGNMENT_LEFT
+		if open:
+			heading.add_theme_stylebox_override("normal",NativeUI.style(Color("2b4052"),Color("53738d"),6))
+			heading.add_theme_color_override("font_color",NativeUI.TEXT)
 		if not open: continue
 		if group=="Roads":
 			var road:=NativeUI.options(catalog,[[1,"Dirt road"],[2,"Paved road"],[3,"Highway"],[4,"Railway"]])

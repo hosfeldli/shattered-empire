@@ -12,6 +12,10 @@ const FADE_S := 2.5
 const TREE_LOD_SIZE := 60.0
 const SHADOW_MAX_SIZE := 120.0
 
+# Overhead clouds are a distant atmospheric cue, never a veil over close-up play.
+static func cloud_opacity(camera_size:float) -> float:
+	return .10*smoothstep(28.0,70.0,camera_size)
+
 var water:=WaterDynamics.new()
 var cloud_clock:=0.0
 var previous_age:=0.0
@@ -153,7 +157,8 @@ func update(dt: float) -> void:
 	sun.directional_shadow_max_distance = CameraController.DISTANCE + minf(cam.size * 0.75, 90.0)
 	# clouds drift with the wind between authoritative updates, then cross-fade to the new field
 	var visual_dt:=0.0 if world.paused or reduced_motion else dt*world.play_rate
-	clouds.visible=effects_enabled
+	var overhead_opacity:=cloud_opacity(cam.size) if effects_enabled else 0.0
+	clouds.visible=overhead_opacity>0.001
 	since += visual_dt
 	cloud_clock+=visual_dt
 	if composition: wind_world=wind_world.lerp(composition.weather.wind_at_world(Vector2(cam.focus.x,cam.focus.z)),minf(1.0,dt*.6))
@@ -162,7 +167,7 @@ func update(dt: float) -> void:
 	off_prev += wind * visual_dt
 	var blend := clampf(since / .8, 0.0, 1.0)
 	var toward_sun:=sun.global_transform.basis.z
-	var cloud_parameters:={"cloud_shadow_strength":.27 if effects_enabled else 0.0,"cloud_age":since,"cloud_age_prev":since+previous_age,"cloud_off":off,"cloud_off_prev":off_prev,"cloud_blend":blend,"cloud_time":cloud_clock,"cloud_drift":cloud_drift,"cloud_light_slant":Vector2(toward_sun.x,toward_sun.z)/maxf(.2,toward_sun.y)}
+	var cloud_parameters:={"cloud_shadow_strength":.16 if effects_enabled else 0.0,"cloud_age":since,"cloud_age_prev":since+previous_age,"cloud_off":off,"cloud_off_prev":off_prev,"cloud_blend":blend,"cloud_time":cloud_clock,"cloud_drift":cloud_drift,"cloud_light_slant":Vector2(toward_sun.x,toward_sun.z)/maxf(.2,toward_sun.y)}
 	for material in [terrain.terrain_mat,cloud_mat,terrain.water_mat]:
 		for key in cloud_parameters: material.set_shader_parameter(key,cloud_parameters[key])
 	MaterialLibrary.bind_clouds(cloud_parameters)
@@ -173,7 +178,7 @@ func update(dt: float) -> void:
 	if terrain.known_tex:
 		cloud_mat.set_shader_parameter("known_tex", terrain.known_tex)
 		cloud_mat.set_shader_parameter("world_size", Vector2(g.period, g.depth))
-	cloud_mat.set_shader_parameter("opacity", lerpf(0.24, 0.40, clampf((cam.size - 10.0) / 80.0, 0.0, 1.0)))
+	cloud_mat.set_shader_parameter("opacity",overhead_opacity)
 	cloud_mat.set_shader_parameter("cloud_steps",9 if composition and composition.lod.quality in ["high","ultra"] else 6)
 	var f := cam.focus
 	clouds.position = Vector3(f.x, CLOUD_HEIGHT, f.z)
@@ -315,11 +320,10 @@ func _update_rain(f:Vector3) -> void:
 	var local_weather:=composition.weather.at_tile(world.grid.tile_at(f.x,f.z)) if composition else {}
 	var r:=float(local_weather.get("rain",0.0))
 	var snowing:=float(local_weather.get("snow",0.0))>.001
-	var fog:=float(local_weather.get("fog",0.0))
-	var target_density:=fog*.00008
-	env.environment.fog_enabled=effects_enabled and fog>.04
-	env.environment.fog_density=lerpf(env.environment.fog_density,target_density,.03)
-	env.environment.fog_light_color=Color(.62,.68,.73)
+	# Weather fog must not wash out controls or tactical detail. Fog of war is handled
+	# independently by the visibility shaders and remains authoritative.
+	env.environment.fog_enabled=false
+	env.environment.fog_density=0.0
 	rain.emitting=effects_enabled and not reduced_motion and r>.10 and cam.size<24.0 and not world.paused
 	if rain.emitting:
 		rain.draw_pass_1=snow_mesh if snowing else rain_mesh

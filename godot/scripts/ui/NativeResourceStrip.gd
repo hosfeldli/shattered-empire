@@ -76,7 +76,7 @@ func _process(dt:float) -> void:
 		var problem:bool=world.econ.get("resources",{}).get(key,{}).get("status","") in ["empty","deficit"]
 		if problem: declining+=1
 		if values.has(key):
-			var button:Button=values[key]; button.text=key.capitalize()+" "+number
+			var button:Button=values[key]; button.text=number+"  "+("%+.1f"%rate if absf(rate)>=.05 else "")
 			button.tooltip_text=description+"\nClick to explain production, consumption and shortages"
 			button.add_theme_color_override("font_color",Color("e4ad88") if problem else NativeUI.TEXT)
 	resource_menu.text="Resources ▾" if declining==0 else "Resources · %d short ▾"%declining

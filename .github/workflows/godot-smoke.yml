@@ -35,6 +35,7 @@ jobs:
           godot --headless --path godot -s res://tests/development_regressions.gd
           godot --headless --path godot -s res://tests/surface_fields_regressions.gd
           godot --headless --path godot -s res://tests/water_weather_regressions.gd
+          godot --headless --path godot -s res://tests/battle_presentation_regressions.gd
       - name: Live commands and reconnect
         run: |
           node godot/tests/lwe-live.mjs

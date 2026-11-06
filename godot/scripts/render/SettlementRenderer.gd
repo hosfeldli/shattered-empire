@@ -122,8 +122,9 @@ func update(_dt: float, allow_rebuild := true) -> void:
 			for id in site_records.keys():
 				if not world.buildings.has(id): site_records.erase(id)
 			_rebuild()
-		else:
-			_build_some()
+		# Snapshots can arrive faster than a large district is composed. Always give queued
+		# generation a slice, including frames which received another economic update.
+		_build_some()
 	var cx := cam.focus.x
 	var g := world.grid
 	for d in districts.values()+retiring:
@@ -286,6 +287,7 @@ func _on_district_invalidated(key: String, flags: int) -> void:
 	if districts.has(key):
 		if flags & WorldStateAdapter.Change.CONTEXT:
 			districts[key].structure_sig = ""
+			districts[key].progress_sig = ""
 		_queue_refresh(key)
 
 
@@ -412,7 +414,8 @@ func _append_building(b: Dictionary, job: Dictionary, skip_model := false) -> vo
 	kit.set_frame(lc, 0.0)
 	if int(b.get("d", 0)) == 1 and not skip_model:
 		if not _parcel_frame(kit,b): return
-		if str(b.ty)!="house" and str(b.ty)!="farm": _foundation(kit,Vector2(.25,.20))
+		if str(b.ty)!="house" and str(b.ty)!="farm":
+			_site_foundation(kit,int(b.id))
 		_building(kit, b, _tint(b))
 	if group != "":
 		for d in [0, 4, 5]:
@@ -484,7 +487,7 @@ func preview_mesh(type:String,tile:int,adjacency:=true,level:=1,tier:=0,hp:=100,
 	var kit:=MeshKit.new(); var center:=world.grid.center(tile)
 	kit.set_frame(Vector3(center.x,world.tile_height(tile),center.y),0)
 	if not _parcel_frame(kit,record): return null
-	if not type in ["house","farm"]: _foundation(kit,Vector2(.25,.20))
+	if not type in ["house","farm"]: _site_foundation(kit,int(record.id))
 	_building(kit,record,Color.WHITE)
 	var group:=str(GROUP.get(type,""))
 	if adjacency and not group.is_empty():
@@ -541,7 +544,26 @@ func _parcel_frame(kit:MeshKit,b:Dictionary) -> bool:
 
 
 # ------------------------------------------------------------------ foundations and connections
+func _site_foundation(kit:MeshKit,id:int) -> void:
+	var site:Dictionary=site_records.get(id,{})
+	var half:Vector2=site.get("half_size",Vector2(.25,.20))
+	_foundation(kit,half/maxf(.01,float(site.get("scale",1.0))))
+
+
 func _foundation(kit:MeshKit,half:Vector2) -> void:
+	# A narrow retaining wall follows the actual terrain around each footprint. Unlike a
+	# broad base plate, it only fills the gap below the structure on sloping ground.
+	var corners:=[Vector2(-half.x,-half.y),Vector2(half.x,-half.y),Vector2(half.x,half.y),Vector2(-half.x,half.y)]
+	for edge in 4:
+		var a:Vector2=corners[edge]; var b:Vector2=corners[(edge+1)%4]
+		for part in 2:
+			var pa:Vector2=a.lerp(b,float(part)/2.0); var pb:Vector2=a.lerp(b,float(part+1)/2.0)
+			var top_a:=kit.xf(Vector3(pa.x,0,pa.y)); var top_b:=kit.xf(Vector3(pb.x,0,pb.y))
+			var bottom_a:=Vector3(top_a.x,minf(top_a.y,world.ground_height(top_a.x,top_a.z))-.01,top_a.z)
+			var bottom_b:=Vector3(top_b.x,minf(top_b.y,world.ground_height(top_b.x,top_b.z))-.01,top_b.z)
+			if maxf(top_a.y-bottom_a.y,top_b.y-bottom_b.y)>.028:
+				var outward:=Vector3((top_a.x+top_b.x)*.5-kit.origin.x,0,(top_a.z+top_b.z)*.5-kit.origin.z).normalized()
+				kit.quad("stone",bottom_a,bottom_b,top_b,top_a,Color.WHITE,outward)
 	for x in [-half.x,half.x]:
 		for z in [-half.y,half.y]:
 			var point:=kit.xf(Vector3(x,0,z))

@@ -1,4 +1,38 @@
-# Local native checkpoint
+# Local native verification
+
+## Reference-image interface and river-placement pass
+
+The server suite passed 149 tests, including authoritative river-placement and resettlement
+checks. Headless rendering passed 50 checks and battle presentation passed 10 checks, including
+wind direction and smoke-only/reset behavior. The real-window source client passed 74 UI checks
+against a local server, with runtime hash
+`53b484d4365a4ad9b7a06a9a7759b10b95760e35c07329a9de4b4eb55bbb021f`, unchanged during the run.
+The source fingerprint now includes JPEG and WebP runtime assets.
+These checks establish functional behavior; they do not establish visual parity with the
+reference images or complete material, model, battle-simulation and large-map art review.
+
+## Previous terrain, pacing and interface checks
+
+The native-v3 server suite passed 146 tests. Native headless checks passed for rendering (44),
+composition (34), Living World/site placement (63), and water/weather and feedback timing (24).
+The real-window source client passed 74 UI checks against a local server, including close-zoom
+cloud fading and bounded resource indicators. The run used runtime source hash
+`0cb4bd8cc2851ef77f3e27aae87279f8d2b68463560b0954746dbe143992f33c`, unchanged during the run.
+It was a source-client run, not an export or platform certification. Long-match pacing, large
+city terrain grounding and sustained high-load rendering remain open gameplay quality gates.
+
+## Previous pacing and battle presentation checkpoint
+
+The current source checkpoint adds the `native-v2` ruleset for new matches while preserving the
+pace of existing saves. The full server suite passed 145 tests, including ruleset and save
+compatibility. The Godot LWE regression passed 62 checks and the battle presentation regression
+passed 6 checks. The rendered source and packaged macOS UI each passed 73 checks against a local
+server. Both development exports completed, and the macOS package passed its live command and
+reconnect smoke checks. Windows was exported but not run; the macOS package is ad-hoc signed.
+The UI runs used runtime source hash `a494a3e54687320ff690be208e495f3add4e62cb4f12761019031848da6cbbe5`.
+See [tempo notes](TEMPO_V2.md) for the adjustments and the outstanding balance work.
+
+## Previous native checkpoint
 
 Runtime source hash: `5a71c7179d66b991679bc7b08131fe0c628d9e028c99899a94fc99eeae21bd29`.
 Windows/macOS development exports share this hash, unchanged during export and packaged tests.

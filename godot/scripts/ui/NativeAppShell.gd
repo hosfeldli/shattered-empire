@@ -7,7 +7,7 @@ var root:Control
 var veil:ColorRect
 var card:PanelContainer
 var content:VBoxContainer
-var navigation:HBoxContainer
+var navigation:VBoxContainer
 var world_hidden:=false
 var rail_buttons:={}
 var status:Label
@@ -32,14 +32,19 @@ func setup(game:Node,settings:NativePreferences,is_automated:bool) -> void:
 	card=PanelContainer.new(); root.add_child(card)
 	var scroll:=ScrollContainer.new(); scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; card.add_child(scroll)
 	content=VBoxContainer.new(); content.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(content)
-	navigation=HBoxContainer.new(); root.add_child(navigation)
+	navigation=VBoxContainer.new(); root.add_child(navigation)
 	navigation.add_theme_constant_override("separation",5)
 	for title in ["Build","Army","Research"]:
 		var target:String={"Build":"Construction","Army":"Armies","Research":"Research"}[title]
-		var button:=NativeUI.compact_button(navigation,title+(" · B" if title=="Build" else " · T" if title=="Research" else ""),func():
+		var button:=NativeUI.compact_button(navigation,title,func():
 			app.command_panel.panel.hide()
 			if app.workspace.panel.visible and app.workspace.page==target: app.workspace.panel.hide()
 			else: app.workspace.open_page(target),"Open "+title.to_lower()+" controls")
+		button.custom_minimum_size=Vector2(98,40)
+		button.alignment=HORIZONTAL_ALIGNMENT_RIGHT
+		var glyph:=NativeRailIcon.new(); glyph.title="Military" if title=="Army" else title
+		glyph.position=Vector2(9,8); glyph.size=Vector2(24,24); glyph.mouse_filter=Control.MOUSE_FILTER_IGNORE; button.add_child(glyph)
+		if title!="Army": button.tooltip_text+=" · "+("B" if title=="Build" else "T")
 		rail_buttons[title]=button
 	app.net.message.connect(_message)
 	if automated: show_view("")
@@ -76,7 +81,7 @@ func show_view(kind:String) -> void:
 		"multiplayer": _multiplayer()
 		"pause":
 			_base("Command menu","Online matches continue unless paused.")
-			if app.world.ruleset!="native-v1": NativeUI.label(content,"Legacy campaign · original gameplay rules are preserved.",16,NativeUI.GOLD)
+			if app.world.ruleset=="legacy-v1": NativeUI.label(content,"Legacy campaign · original gameplay rules are preserved.",16,NativeUI.GOLD)
 			if not app.world.ready_: show_view("main"); return
 			if not app.world.paused and not app.world.spectator and app.world.can_pause and not menu_pause_pending:
 				menu_pause_pending=true

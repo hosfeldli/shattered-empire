@@ -102,6 +102,7 @@ export function ruinCity(g, city, byCivId, cause = 'combat') {
 export function rebuildProblem(g, civ, tile) {
   const r = g.ruins.get(tile);
   if (!r || r.type !== 'town') return 'no town ruins here';
+  if (g.world.river[tile]) return 'Choose dry land beside the river';
   const o = g.world.owner[tile];
   if (o >= 0 && o !== civ.id) return 'the ruins are inside another nation\'s borders';
   if (o < 0 && !disk(tile, 3).some((t) => g.world.owner[t] === civ.id)) return 'the ruins must be inside or next to your borders';
