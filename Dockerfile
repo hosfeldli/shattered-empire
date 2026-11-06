@@ -10,7 +10,9 @@ ENV NODE_ENV=production PORT=8080
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
-COPY server ./server
+COPY --chown=node:node server ./server
 USER node
+# Verify the runtime user can load the simulation before deploying the image.
+RUN node --input-type=module -e "await import('./server/sim/game.js')"
 EXPOSE 8080
 CMD ["node", "server/index.js"]
