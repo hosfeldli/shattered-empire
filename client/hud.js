@@ -313,8 +313,14 @@ export class Hud {
     html += `<span class="bb-hd">Defenses</span><button class="bb-toggle${this.showLocked ? ' on' : ''}" data-showlocked="1" title="Show defenses you have not unlocked yet, and what they need">${this.showLocked ? 'Hide' : 'Show'} locked</button>`;
     html += `<button class="buildbtn tool${S.mode?.kind === 'trench' ? ' active' : ''}" data-tool="trench" title="Trench Line: draw a connected defensive line across the map; crews build it without troops. Cover and low supply use for infantry holding it."><span class="g">\u{26CF}</span><span class="n">Trench Line</span><small>${techs.has('fortification') ? '6–10' : '6'} materials per hex</small></button>`;
     for (const k of DEF) { const d = D.BUILDINGS[k]; const ok = unlocked([k, d]); if (ok || this.showLocked) html += btn([k, d], !ok); }
-    const key = html.length + '|' + JSON.stringify(Object.values(e.res).map((v) => Math.floor(v / 10))) + S.mode?.kind + S.mode?.type + this.showLocked;
+    // Rebuild the palette only when its structure changes (unlocks, tool, locked toggle);
+    // affordability updates in place, so a button is never replaced while it is being clicked.
+    const key = items.map(([k]) => k).join(',') + '|' + [...techs].length + '|' + S.mode?.kind + S.mode?.type + this.showLocked;
     if (key !== this.bbKey) { this.bbKey = key; $('buildbar').innerHTML = html; }
+    for (const b of $('buildbar').querySelectorAll('[data-build]')) {
+      const d = D.BUILDINGS[b.dataset.build]; if (!d) continue;
+      const poor = !afford(d.cost); if (b.classList.contains('poor') !== poor) b.classList.toggle('poor', poor);
+    }
   }
 
   // ------------------------------------------------------------ spectator bar
@@ -335,7 +341,16 @@ export class Hud {
     h += `<div class="seg spec-speed" role="group" aria-label="Match speed">${[[0, 'Pause'], [1, '1×'], [2, '2×'], [4, '4×'], [8, '8×']].map(([v, n]) => `<button class="${o.speed === v ? 'on' : ''}" data-speed="${v}" title="${v ? `Run at ${v}× speed` : 'Pause the match'} (P pause, , and . step)">${n}</button>`).join('')}</div>`;
     h += `<button class="btn small ghost" data-aidiag="1" title="The followed AI's plan, objectives, memory and decision record">AI plan</button>`;
     h += `<div class="seg spec-fog" role="group" aria-label="Fog of war"><button class="${o.fog ? '' : 'on'}" data-fog="0" title="Reveal the whole continent (V toggles)">No fog</button><button class="${o.fog ? 'on' : ''}" data-fog="1" title="See only what the followed empire sees (V toggles)">Their fog</button></div>`;
-    if (h !== this.specHtml) { this.specHtml = h; el.innerHTML = h; }
+    // Rebuild only on structural changes; live summaries update in place so chips stay clickable.
+    const key = JSON.stringify([civs.map((c) => [c.id, c.alive === false, c.id === S.civId]), o.speed, o.fog]);
+    if (key !== this.specKey || !el.firstChild) { this.specKey = key; this.specHtml = h; el.innerHTML = h; }
+    else {
+      for (const c of civs) {
+        const sm = c.summary || {}, small = el.querySelector(`[data-follow="${c.id}"] small`); if (!small || c.alive === false) continue;
+        const text = `${sm.cities ?? '?'} ${sm.cities === 1 ? 'city' : 'cities'} · ${sm.pop ?? '?'} pop · era ${(c.age ?? 0) + 1}${sm.posture ? ' · ' + sm.posture : ''}`;
+        if (small.textContent !== text) small.textContent = text;
+      }
+    }
   }
 
   // the developer inspector for spectators: the followed AI's full plan and decision record
