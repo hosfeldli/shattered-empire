@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Game } from '../server/sim/game.js';
 import { makeSandbox, findArena, spawnGroup } from '../server/sim/sandbox.js';
-import { addIntensity, intensityStage, scarCost, FIELD_POS } from '../server/sim/battlefield.js';
+import { addCrater, addIntensity, addWreck, battlefieldSnapshot, rememberBattlefield, intensityStage, scarCost, FIELD_POS } from '../server/sim/battlefield.js';
 import { coverAt } from '../server/sim/combat.js';
 import { serializeGame, restoreGame } from '../server/sim/persist.js';
 
@@ -60,4 +60,31 @@ test('smoke over our own land keeps the land in view but hides what stands in it
   assert.equal(me.smokeHide[t], 1, 'but what stands in the smoke is hidden from us');
   g.smoke.delete(t); g.refreshVisibility(false);
   assert.equal(me.smokeHide[t], 0, 'and shown again once it clears');
+});
+
+test('battlefield history freezes outside sight, persists, and reconciles when seen again', () => {
+  const g = sandbox(), civ = g.civs[0], t = findArena(g);
+  civ.visible.fill(0); civ.explored.fill(0); civ.visible[t] = 1; civ.explored[t] = 1;
+  addCrater(g, t, 1); addWreck(g, t, 'tank', 1); addIntensity(g, t, 20);
+  rememberBattlefield(g, civ);
+  const snapshot = () => battlefieldSnapshot(g, civ.visible, civ.explored, civ.battlefieldMemory);
+  const initial = snapshot();
+  assert.deepEqual(initial.c.find(([tile]) => tile === t), [t, 1]);
+  assert.ok(initial.w.some(([tile]) => tile === t));
+  civ.visible[t] = 0;
+  addCrater(g, t, 2); g.wrecks.delete(t); addIntensity(g, t, 75);
+  rememberBattlefield(g, civ);
+  const unseen = snapshot();
+  assert.deepEqual(unseen.c, initial.c, 'new hidden impacts must not leak');
+  assert.deepEqual(unseen.w, initial.w, 'hidden wreck removal must not leak');
+  assert.deepEqual(unseen.i, initial.i, 'hidden battlefield intensity must not leak');
+  const saved = serializeGame(g); snapshot();
+  assert.deepEqual(serializeGame(g), saved, 'snapshot reads must not mutate persistent knowledge');
+  const restored = restoreGame(saved), remembered = restored.civs[0];
+  assert.deepEqual(battlefieldSnapshot(restored, remembered.visible, remembered.explored, remembered.battlefieldMemory).c, initial.c);
+  civ.visible[t] = 1; rememberBattlefield(g, civ);
+  const updated = snapshot();
+  assert.deepEqual(updated.c.find(([tile]) => tile === t), [t, 3]);
+  assert.ok(!updated.w.some(([tile]) => tile === t), 'visible wreck removal should be reconciled');
+  assert.equal(updated.i.find(([tile]) => tile === t)[1], 3);
 });

@@ -60,7 +60,7 @@ export function afterCapture(g, c, fromId) {
     if (b.owner !== fromId || b.type === 'town' || b.type === 'camp') continue;
     if (g.world.owner[b.tile] !== c.owner) continue;
     if (dist(b.tile, c.tile) > (c.radius || 3) + 3) continue;
-    b.owner = c.owner; b.cityId = c.id; b.queue = []; b.rally = -1; moved++;
+    b.owner = c.owner; b.cityId = c.id; b.queue = []; b.rally = -1; delete b.works; b.upgrading = false; moved++;
   }
   g.stats.captures = (g.stats.captures || 0) + 1;
   return moved;

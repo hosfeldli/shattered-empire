@@ -81,5 +81,5 @@ performance or final art acceptance. Review [RELEASE_GATES.md](RELEASE_GATES.md)
 [CURRENT_WORK.md](CURRENT_WORK.md) for the complete outstanding work.
 
 macOS has an ad-hoc development signature; Windows is unsigned. Signing/notarization, Windows
-runtime review and broader balance/soak/art/performance gates remain open. No native production
-release has been uploaded and Cloud Run has not been changed.
+runtime review and broader balance/soak/art/performance gates remain open. An opt-in preview and
+compatible server were published as documented in [NATIVE_PREVIEW_RELEASE.md](NATIVE_PREVIEW_RELEASE.md).

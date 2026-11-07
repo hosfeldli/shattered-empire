@@ -8,6 +8,8 @@ extends Node
 signal message(m: Dictionary)
 signal status_changed(state: String)
 signal handshake_done(info: Dictionary)
+## every command reply, with the command that produced it (presentation cues listen here)
+signal command_result(command: Dictionary, reply: Dictionary)
 
 const PROTOCOL := 2
 const WANT_CAPS := ["geo"]
@@ -211,6 +213,7 @@ func _on_message(m: Dictionary) -> void:
 			var p: Dictionary = _pending[rid]
 			_pending.erase(rid)
 			(p.cb as Callable).call(m)
+			command_result.emit(p.get("cmd", {}), m)
 			if t == "ack":
 				return
 	message.emit(m)
@@ -227,7 +230,7 @@ func send(o: Dictionary) -> void:
 func cmd(c: Dictionary, cb: Callable = Callable()) -> int:
 	var rid := _rid
 	_rid += 1
-	_pending[rid] = {"cb": cb if cb.is_valid() else func(_r): pass, "at": Time.get_ticks_msec() / 1000.0}
+	_pending[rid] = {"cb": cb if cb.is_valid() else func(_r): pass, "at": Time.get_ticks_msec() / 1000.0, "cmd": c}
 	send({"t": "cmd", "rid": rid, "cmd": c})
 	return rid
 

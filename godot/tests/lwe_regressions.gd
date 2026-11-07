@@ -77,6 +77,19 @@ func _run() -> void:
 	check(tools.valid_tiles.is_empty() and tools.mode=="select", "cancelled placement accepted a stale preview")
 	tools.mode="road"; tools.value=2; tools.points=[100,102]
 	check(tools._command(false)=={"c":"roadPlan","tiles":[100,102],"type":2,"auto":true,"commit":false}, "native road tool changed the server command contract")
+	tools.request_preview()
+	var road_reply:Callable=network.requests[-1].cb
+	road_reply.call({"plan":{"tiles":[100,101,102],"buildable":1,"segments":[{"a":100,"b":101,"ok":true},{"a":101,"b":102,"ok":false,"reason":"impassable"}]}})
+	check(tools.blocked_edges.has("101:102") and tools.status.contains("impassable") and tools.can_commit(),"road preview did not identify its blocked segment")
+	tools.commit()
+	var rejected:Callable=network.requests[-1].cb
+	rejected.call({"error":"project limit reached"})
+	check(tools.mode=="road" and tools.points.size()==2 and tools.status.contains("project limit reached") and tools.can_commit(),"rejected road order lost its editable preview")
+	tools.mode="trench"; tools.points=[100,102]; tools.preview.clear()
+	tools.request_preview()
+	var trench_reply:Callable=network.requests[-1].cb
+	trench_reply.call({"trench":{"tiles":[100,101,102],"build":2,"invalid":1,"segments":[{"t":100,"ok":true},{"t":101,"ok":false,"reason":"river"},{"t":102,"ok":true}]}})
+	check(tools.blocked_tiles.has(101) and tools.status.contains("river") and not tools.can_commit(),"invalid trench is not identified or can still be committed")
 	tools.mode="deploy"
 	check(tools._command(true).c=="deploy", "native deployment does not use the existing server command")
 	# A sloped, river-crossed authoritative parcel must produce dry, level visual sites.
@@ -88,7 +101,8 @@ func _run() -> void:
 	world.geometry_revision+=1
 	var dry:=composition.sites.plan(100,Vector2.ZERO,.2,Vector2(.25,.2))
 	check(dry.valid and dry.max_height>dry.min_height,"sloped site did not sample its footprint")
-	check(dry.transform.origin.y>=dry.max_height,"building sits below the sampled terrain")
+	check(dry.transform.origin.y>dry.min_height and dry.transform.origin.y<dry.max_height+.001,"building is not seated into its sampled terrain")
+	check(dry.transform.origin.y-dry.min_height<=(dry.max_height-dry.min_height)*.25+.01,"building is propped above its slope instead of cut into it")
 	var grounder:=SettlementRenderer.new(); grounder.world=world; grounder.site_records[1]=dry
 	var support:=MeshKit.new(); support.origin=dry.transform.origin; support.basis=dry.transform.basis
 	grounder._site_foundation(support,1)

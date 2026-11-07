@@ -89,6 +89,20 @@ static func bind_visibility(parameters:Dictionary) -> void:
 		if material is ShaderMaterial:
 			for key in parameters: material.set_shader_parameter(key,parameters[key])
 
+## the foliage surface with wind sway (trees); shares every parameter and later binding
+static func sway_foliage() -> Material:
+	if _cache.has("foliage_sway"): return _cache["foliage_sway"]
+	var base:ShaderMaterial=get_mat("foliage")
+	var m:=ShaderMaterial.new(); m.shader=load("res://shaders/foliage_sway.gdshader"); m.resource_name="foliage_sway"
+	for uniform in base.shader.get_shader_uniform_list():
+		var value:Variant=base.get_shader_parameter(uniform.name)
+		if value!=null: m.set_shader_parameter(uniform.name,value)
+	for parameter in _cloud_state: m.set_shader_parameter(parameter,_cloud_state[parameter])
+	for parameter in _visibility_state: m.set_shader_parameter(parameter,_visibility_state[parameter])
+	_cache["foliage_sway"]=m
+	return m
+
+
 ## a civilization's colour, for flags, bands and markings (restrained: slightly desaturated)
 static func team(color: Color) -> Material:
 	if _surface_shader==null: _surface_shader=load("res://shaders/world_surface.gdshader")
@@ -122,8 +136,9 @@ static func glow(color: Color, alpha := 1.0) -> Material:
 
 
 ## soft translucent material (smoke, dust)
-static func smoke(color: Color, alpha: float) -> Material:
-	var key := "smoke_" + color.to_html(false) + str(alpha)
+## plain translucent material for small weather particles (rain streaks, snow)
+static func particle(color: Color, alpha: float) -> Material:
+	var key := "particle_" + color.to_html(false) + str(alpha)
 	if _cache.has(key):
 		return _cache[key]
 	var m := StandardMaterial3D.new()
@@ -131,6 +146,17 @@ static func smoke(color: Color, alpha: float) -> Material:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.vertex_color_use_as_albedo = true
 	m.roughness = 1.0
-	m.shadow_to_opacity = false
+	_cache[key] = m
+	return m
+
+
+static func smoke(color: Color, alpha: float) -> Material:
+	var key := "smoke_" + color.to_html(false) + str(alpha)
+	if _cache.has(key):
+		return _cache[key]
+	var m := ShaderMaterial.new()
+	m.shader = load("res://shaders/smoke_puff.gdshader")
+	m.set_shader_parameter("tint", color)
+	m.set_shader_parameter("opacity", alpha)
 	_cache[key] = m
 	return m

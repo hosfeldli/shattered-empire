@@ -30,6 +30,8 @@ var flash_mesh: SphereMesh
 var shell_mesh: SphereMesh
 var composition: WorldCompositionSystem
 var director: CombatPresentationDirector
+var military: MilitaryRenderer
+var dust_clock := 0.0
 var audio: AudioDirector
 
 
@@ -49,8 +51,8 @@ func setup(w: WorldState, c: CameraController) -> void:
 	var puff := SphereMesh.new()
 	puff.radius = 0.25
 	puff.height = 0.35
-	puff.radial_segments = 8
-	puff.rings = 4
+	puff.radial_segments = 16
+	puff.rings = 8
 	puff.material = MaterialLibrary.smoke(Color(0.62, 0.6, 0.57), 0.45)
 	mm.mesh = puff
 	mm.instance_count = 600
@@ -61,8 +63,8 @@ func setup(w: WorldState, c: CameraController) -> void:
 	flash_mesh = SphereMesh.new()
 	flash_mesh.radius = 0.5
 	flash_mesh.height = 1.0
-	flash_mesh.radial_segments = 10
-	flash_mesh.rings = 5
+	flash_mesh.radial_segments = 14
+	flash_mesh.rings = 7
 	shell_mesh = SphereMesh.new()
 	shell_mesh.radius = 0.025
 	shell_mesh.height = 0.05
@@ -114,6 +116,7 @@ func update(dt: float) -> void:
 	trenches.position = Vector3(g.near_x(trench_anchor.x, cx) - trench_anchor.x, 0, 0)
 	_update_smoke()
 	_update_fx(dt)
+	_vehicle_dust(dt)
 
 
 func _local(t: int, anchor: Vector2) -> Vector3:
@@ -138,33 +141,9 @@ func _build_field() -> void:
 		field.mesh = null
 		return
 	field_anchor = world.grid.center(first)
-	for s in scorch:
-		var t := int(s[0])
-		var p := _local(t, field_anchor)
-		var a := clampf(float(s[1]) / 3.0, 0.2, 1.0)
-		var rng := RandomNumberGenerator.new()
-		rng.seed = t * 59
-		# churned, scorched ground: a few irregular dark patches rather than one plate
-		for k in 3 + int(a * 3.0):
-			var off := Vector3(rng.randf_range(-0.5, 0.5), 0, rng.randf_range(-0.5, 0.5))
-			var y := world.ground_height(p.x + off.x, p.z + off.z)
-			kit.set_frame(Vector3(p.x + off.x, y, p.z + off.z), rng.randf() * TAU)
-			kit.cylinder("soil", Vector3(0, 0.0, 0), rng.randf_range(0.12, 0.28) * (0.6 + a * 0.5), 0.012, 9, Color(0.55, 0.5, 0.45).lerp(Color(0.3, 0.27, 0.25), a))
-	for cr in craters:
-		var t := int(cr[0])
-		var depth := float(cr[1])
-		var p := _local(t, field_anchor)
-		var rng := RandomNumberGenerator.new()
-		rng.seed = t * 131
-		var n := clampi(int(depth * 4.0) + 2, 2, 9)
-		for k in n:
-			var off := Vector3(rng.randf_range(-0.55, 0.55), 0, rng.randf_range(-0.55, 0.55))
-			var r := rng.randf_range(0.06, 0.12) * (0.8 + depth * 0.4)
-			var y := world.ground_height(p.x + off.x, p.z + off.z)
-			kit.set_frame(Vector3(p.x + off.x, y, p.z + off.z), 0.0)
-			# raised rim and a dark pit
-			kit.cylinder("soil", Vector3(0, -0.01, 0), r * 1.35, 0.035, 9, Color(0.8, 0.72, 0.62), r * 1.0)
-			kit.cylinder("char", Vector3(0, 0.0, 0), r, 0.028, 9, Color(1, 1, 1), r * 0.6)
+	# The continuous terrain scar field supplies disturbed soil; separate raised soil disks
+	# duplicate it and make a battlefield look like a collection of molehills.
+	# Physical crater depressions live in the locally rebuilt terrain, not raised marker meshes.
 	for wr in wrecks:
 		var t := int(wr[0])
 		var p := _local(t, field_anchor)
@@ -177,6 +156,21 @@ func _build_field() -> void:
 		kit.box("char", Vector3(-0.03, 0.06, 0.02), Vector3(0.12, 0.04, 0.1), Color(0.8, 0.75, 0.7), 0.4)
 		kit.box("steel", Vector3(0.12, 0.08, 0.06), Vector3(0.16, 0.014, 0.014), Color(0.4, 0.38, 0.36), 0.7)
 	field.mesh = kit.commit() if not kit.is_empty() else null
+
+
+## Irregular terrain-following marks are intentionally flat; true depressions require a shared
+## terrain deformation field, not stacked cylinders pretending to be holes.
+func _crater_mark(kit:MeshKit,center:Vector2,radius:float,rng:RandomNumberGenerator) -> void:
+	var inner:=Color(.34,.29,.24); var outer:=Color(.64,.58,.48)
+	var middle:=Vector3(center.x,world.ground_height(center.x,center.y)+.022,center.y)
+	var rim:Array[Vector3]=[]
+	var rotation:=rng.randf()*TAU
+	for i in 9:
+		var angle:=rotation+TAU*float(i)/9.0
+		var point:=center+Vector2(cos(angle),sin(angle))*radius*rng.randf_range(.7,1.25)
+		rim.append(Vector3(point.x,world.ground_height(point.x,point.y)+.022,point.y))
+	for i in 9:
+		kit.tri_colors("soil",middle,rim[i],rim[(i+1)%9],inner,outer,outer,Vector3.UP)
 
 
 func _collect_smoke(bf:Dictionary,wrecks:Array) -> void:
@@ -242,16 +236,16 @@ func _on_events(ev: Array) -> void:
 		match k:
 			"fire":
 				if a >= 0:
-					_spawn("flash", _tile_point(a, 0.12), Vector3.ZERO, 0.09, Color(1.0, 0.85, 0.45), 0.09)
-					if cam.size<35: _spawn("smoke",_tile_point(a,.12),Vector3.ZERO,1.5,Color(.58,.57,.54),.12)
+					_spawn("flash", _source_point(e,0.12), Vector3.ZERO, 0.09, Color(1.0, 0.85, 0.45), 0.09)
+					if cam.size<35: _spawn("smoke",_source_point(e,.12),Vector3.ZERO,1.5,Color(.58,.57,.54),.12)
 				if a >= 0 and b >= 0 and g.dist(a, b) <= 3:
-					_spawn("tracer", _tile_point(a, 0.1), _tile_point(b, 0.06), 0.15, Color(1.0, 0.9, 0.6), 0.0)
+					_spawn("tracer", _source_point(e,0.1), _tile_point(b, 0.06), 0.15, Color(1.0, 0.9, 0.6), 0.0)
 			"launch":
 				if a >= 0:
-					_spawn("flash", _tile_point(a, 0.15), Vector3.ZERO, 0.14, Color(1.0, 0.75, 0.35), 0.14)
-					if cam.size<35: _spawn("smoke",_tile_point(a,.14),Vector3.ZERO,2.2,Color(.52,.50,.47),.20)
+					_spawn("flash", _source_point(e,0.15), Vector3.ZERO, 0.14, Color(1.0, 0.75, 0.35), 0.14)
+					if cam.size<35: _spawn("smoke",_source_point(e,.14),Vector3.ZERO,2.2,Color(.52,.50,.47),.20)
 				if b >= 0:
-					var src := _tile_point(a, 0.15) if a >= 0 else _tile_point(b, 4.0)
+					var src := _source_point(e,0.15) if a >= 0 else _tile_point(b, 4.0)
 					var flight := clampf(float(e.get("f", 1.0)), 0.3, 6.0)
 					_spawn("shell", src, _tile_point(b, 0.05), flight, Color.WHITE, minf(3.0, 0.6 + float(g.dist(maxi(a, 0), b)) * 0.25))
 			"impact":
@@ -276,6 +270,23 @@ func _on_events(ev: Array) -> void:
 						_spawn("flame",_tile_point(b,.13),Vector3.ZERO,.75,Color(1.0,.28,.04),.14)
 
 
+## Use only an authorized, currently rendered source; fog-filtered events intentionally lack it.
+func _source_point(event:Dictionary,lift:float) -> Vector3:
+	var tile:=int(event.get("a",-1))
+	var id:=int(event.get("s",-1))
+	if tile>=0 and int(event.get("sb",0))==0 and military and military.draw_positions.has(id) and world.units.has(id):
+		var unit:Dictionary=world.units[id]
+		if world.grid.dist(int(unit.get("tile",-1)),tile)<=1:
+			var pos:Vector3=military.draw_positions[id]
+			var target:=int(event.get("b",-1))
+			if target>=0:
+				var end:=world.grid.center(target)
+				var heading:=Vector2(world.grid.dx_wrap(pos.x,end.x),end.y-pos.z).normalized()
+				pos.x+=heading.x*.08; pos.z+=heading.y*.08
+			return pos+Vector3.UP*lift
+	return _tile_point(tile,lift)
+
+
 ## a point on hex t (base image), jittered per salt so salvos spread
 func _tile_point(t: int, lift: float, salt := 0) -> Vector3:
 	var c := world.grid.center(t)
@@ -284,6 +295,28 @@ func _tile_point(t: int, lift: float, salt := 0) -> Vector3:
 	var x := c.x + (h - 0.5) * 0.6
 	var z := c.y + (h2 - 0.5) * 0.6
 	return Vector3(x, maxf(world.ground_height(x, z), 0.0) + lift, z)
+
+
+## Moving wheeled and tracked vehicles kick up a thin dust trail on dry, unpaved ground at close
+## zoom (visible units only; rain and wet ground settle it). Presentation of real movement only.
+func _vehicle_dust(dt: float) -> void:
+	dust_clock -= dt
+	if dust_clock > 0.0 or cam.size > 24.0 or military == null or world.paused: return
+	dust_clock = 0.35
+	var defs: Dictionary = world.defs.get("UNITS", {})
+	var spawned := 0
+	for id in military.draw_positions:
+		if spawned >= 10: break
+		var u: Dictionary = world.units.get(id, {})
+		if u.is_empty() or int(u.get("next", -1)) < 0: continue
+		var d: Dictionary = defs.get(str(u.type), {})
+		if bool(d.get("air", false)) or not str(d.get("move", "")) in ["wheeled", "tracked"]: continue
+		var t := int(u.tile)
+		if not world.is_visible(t) or world.road[t] != 0 or not world.biome(t) in [3, 5, 6, 8, 12]: continue
+		if composition and float(composition.weather.at_tile(t).get("wet", 0.0)) > 0.3: continue
+		var p: Vector3 = military.draw_positions[id]
+		_spawn("smoke", p + Vector3(randf_range(-.04, .04), .02, randf_range(-.04, .04)), Vector3.ZERO, 1.4, Color(.72, .64, .5), .07)
+		spawned += 1
 
 
 func _spawn(kind: String, a: Vector3, b: Vector3, life: float, col: Color, size: float) -> void:

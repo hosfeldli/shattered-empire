@@ -1,4 +1,4 @@
-import { movementRate } from './rulesets.js';
+import { movementRate, durability } from './rulesets.js';
 // Units: movement (flow fields, formations, tile/bridge capacity), combat (incl. air),
 // supply networks & attrition, engineers, and damage that persists in the world.
 import { book } from './ledger.js';
@@ -17,7 +17,7 @@ import { addWreck, engineerClear, scarCost } from './battlefield.js';
 
 export function spawnUnit(g, civ, type, tile) {
   const def = UNITS[type];
-  const maxHp = Math.round(def.hp);
+  const maxHp = Math.round(def.hp * durability(g, def));
   const u = { id: g.id_(), owner: civ.id, type, tile, next: -1, prog: 0, path: [], goal: -1, slot: -1, hp: maxHp, maxHp, supply: 100, cooldown: 0,
     order: { kind: 'idle' }, lastCombat: -99, outOfSupply: false, repathAt: 0, home: tile, stance: def.civilian ? 'passive' : 'defensive', field: false, wait: 0, status: 'ok', groupSpeed: 0,
     supp: 0, morale: 100, cstat: 0, tgt: 0, auth: '', queue: [] };

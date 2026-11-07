@@ -9,6 +9,7 @@ import { RebelAI } from './rebels.js';
 import { getNextArmyId, setNextArmyId } from './armies.js';
 import { serializeBattlefield, restoreBattlefield } from './battlefield.js';
 import { serializeFieldworks, restoreFieldworks } from './fieldworks.js';
+import { battleBacklog } from './battles.js';
 
 const WORLD_ARRAYS = ['elev', 'stab', 'moist', 'temp', 'rate', 'stress', 'plate', 'terr', 'res', 'river', 'lake', 'flowDir', 'flow', 'road', 'soil', 'lava', 'ash', 'drought', 'owner', 'ver'];
 const CIV_ARRAYS = ['explored', 'lastOwner', 'visible', 'detect', 'supply', 'airSupply'];
@@ -51,7 +52,7 @@ export function serializeGame(g) {
     fieldworks: serializeFieldworks(g), logistics: { caches: [...(g.caches || new Map())], seq: g.convoySeq || 0 },
     formations: { list: [...(g.formations || new Map()).values()], nextId: g.nextFormationId || 0 },
     weather: g.weather ? g.weather.serialize() : null,
-    combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g), missiles: g.missiles || [], fallout: [...(g.fallout || new Map())], missileSeq: g.missileSeq || 1 },
+    combat: { projectiles: [...g.projectiles.values()], pending: [...g.pending.entries()], eventSeq: g.eventSeq, battlefield: serializeBattlefield(g), missiles: g.missiles || [], fallout: [...(g.fallout || new Map())], missileSeq: g.missileSeq || 1, battles: g.battles || [], nextBattle: g.nextBattle || 1, battleSeq: g.battleSeq || 0, battleBacklog: battleBacklog(g) },
     units: [...g.units.values()], buildings: [...g.buildings.values()], cities: [...g.cities.values()], ruins: mapOut(g.ruins),
     civs, diplomacy: { pairs: diplo, nextProposal: g.diplomacy.nextProposal },
   };
@@ -87,6 +88,7 @@ export function restoreGame(data) {
   restoreBattlefield(g, cb.battlefield);
   if (g.weather) { g.weather.climate(); if (data.weather) g.weather.load(data.weather); }
   g.missiles = cb.missiles || []; g.fallout = new Map(cb.fallout || []); g.missileSeq = cb.missileSeq || 1;
+  g.battles = cb.battles || []; g.nextBattle = cb.nextBattle || 1; g.battleSeq = cb.battleSeq ?? g.eventSeq; g.battleBacklog = cb.battleBacklog || [];
   restoreFieldworks(g, data.fieldworks);
   g.caches = new Map(data.logistics?.caches || []); g.convoySeq = data.logistics?.seq || 0;
   g.formations = new Map((data.formations?.list || []).map((f) => [f.id, f])); g.nextFormationId = data.formations?.nextId || 0;

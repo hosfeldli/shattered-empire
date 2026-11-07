@@ -7,9 +7,19 @@ import { WEAPONS, UNIT_WEAPON, ARMORED } from './weapons.js';
 
 const RADIUS = 6;
 
+const BATTLE_EVENTS = new Set(['hit', 'impact', 'bhit', 'kill']);
+// Battle-relevant events not yet folded into battles (the step runs once a second). Saved with
+// the match so a restored game reports the same engagement exactly as an uninterrupted one.
+export function battleBacklog(g) {
+  const from = g.battleSeq || 0;
+  return [...(g.battleBacklog || []), ...g.events.filter((e) => e.i > from && BATTLE_EVENTS.has(e.k) && e.b >= 0)]
+    .map((e) => ({ i: e.i, k: e.k, b: e.b, ow: e.ow, s: e.s, sb: e.sb, so: e.s != null && !e.sb ? g.units.get(e.s)?.owner : undefined }));
+}
+
 export function battlesStep(g) {
   const from = g.battleSeq || 0;
-  for (const e of g.events) {
+  const backlog = g.battleBacklog || []; g.battleBacklog = [];
+  for (const e of backlog.length ? [...backlog, ...g.events] : g.events) {
     if (e.i <= from) continue;
     if ((e.k !== 'hit' && e.k !== 'impact' && e.k !== 'bhit' && e.k !== 'kill') || !(e.b >= 0)) continue;
     let bt = null, bd = Infinity;
@@ -21,14 +31,18 @@ export function battlesStep(g) {
     bt.sq += dqWrap(bt.q0, e.b % W); bt.sr += (e.b / W) | 0; bt.n++;
     if (bt.n >= 4) bt.tile = idx(Math.round(bt.q0 + bt.sq / bt.n), Math.round(bt.sr / bt.n));
     if (e.k === 'kill' && e.ow >= 0) bt.losses[e.ow] = (bt.losses[e.ow] || 0) + 1;
+    const parties = bt.parties || (bt.parties = []);
+    const shooter = e.so !== undefined ? e.so : e.s != null && !e.sb ? g.units.get(e.s)?.owner : undefined;
+    for (const o of [e.ow, shooter]) if (o != null && o >= 0 && !parties.includes(o)) parties.push(o);
   }
   g.battleSeq = g.eventSeq;
   for (const b of g.battles) b.heat *= 0.8;
   // merge battles that drifted together; end quiet ones
   for (let i = 0; i < g.battles.length; i++) for (let j = g.battles.length - 1; j > i; j--) {
     const a = g.battles[i], b = g.battles[j];
-    if (dist(a.tile, b.tile) <= 4) { for (const [k, v] of Object.entries(b.losses)) a.losses[k] = (a.losses[k] || 0) + v; a.since = Math.min(a.since, b.since); a.last = Math.max(a.last, b.last); g.battles.splice(j, 1); }
+    if (dist(a.tile, b.tile) <= 4) { for (const [k, v] of Object.entries(b.losses)) a.losses[k] = (a.losses[k] || 0) + v; for (const o of b.parties || []) if (!(a.parties || (a.parties = [])).includes(o)) a.parties.push(o); a.since = Math.min(a.since, b.since); a.last = Math.max(a.last, b.last); g.battles.splice(j, 1); }
   }
+  for (const b of g.battles) if (g.time - b.last >= 20) reportBattle(g, b);
   g.battles = g.battles.filter((b) => g.time - b.last < 20);
 }
 
@@ -106,4 +120,24 @@ export function assignTargets(g, civ, units, target) {
     plan.set(u.id, best.c.tg);
   }
   return plan;
+}
+
+// After-action report: a named, sizeable engagement that has fallen quiet is written into each
+// human participant's notices and chronicle. Only that side's own losses and the losses it
+// inflicted are reported; nothing about forces it never engaged.
+export function reportBattle(g, b) {
+  const total = Object.values(b.losses).reduce((s, v) => s + v, 0);
+  if (total < 3 && g.time - b.since < 40) return;
+  let place = null, best = Infinity;
+  for (const c of g.cities.values()) { const d = dist(c.tile, b.tile); if (d < best && d <= 8) { best = d; place = c.name; } }
+  const name = place ? `Battle of ${place}` : 'Field battle';
+  const minutes = Math.max(1, Math.round((b.last - b.since) / 60));
+  for (const id of b.parties || []) {
+    const civ = g.civs[id]; if (!civ || !civ.human) continue;
+    const lost = b.losses[id] || 0, inflicted = total - lost;
+    const verdict = inflicted > lost * 1.5 ? 'a hard-won success' : lost > inflicted * 1.5 ? 'a costly setback' : 'inconclusive';
+    const text = `${name} has ended (${minutes} min, ${verdict}): ${lost} of our units lost, ${inflicted} enemy losses.`;
+    g.notify(id, text, { kind: 'battle', tile: b.tile, level: 'info' });
+    g.history?.(civ, 'world', text);
+  }
 }

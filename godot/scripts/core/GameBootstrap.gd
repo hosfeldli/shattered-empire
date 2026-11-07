@@ -14,6 +14,7 @@ const SESSION_FILE := "user://session.json"
 var session_file:=SESSION_FILE
 
 var net: NetworkClient
+var wildlife: WildlifePresentation
 var world: WorldState
 var composition: WorldCompositionSystem
 var cam: CameraController
@@ -108,16 +109,23 @@ func _ready() -> void:
 	combat.name = "CombatRenderer"
 	add_child(combat)
 	combat.setup(world, cam)
+	combat.military=military
 	combat.terrain=terrain
 	civilians = CivilianActivitySystem.new()
 	add_child(civilians)
 	civilians.setup(composition, cam)
+	wildlife = WildlifePresentation.new(); add_child(wildlife); wildlife.setup(world, cam, composition)
 	combat.composition = composition
 	combat.director = CombatPresentationDirector.new()
 	combat.director.world = world; combat.director.camera = cam; combat.director.lod = composition.lod
 	battlefield_composer = BattlefieldComposer.new()
 	battlefield_composer.setup(composition,terrain)
 	audio=AudioDirector.new(); add_child(audio); audio.setup(world,cam)
+	audio.weather=composition.weather
+	net.command_result.connect(audio.on_command_result)
+	net.message.connect(audio.on_message)
+	wildlife.audio = audio
+	environment.lightning.connect(audio.thunder)
 	combat.audio=audio
 	input = InputController.new()
 	input.name = "InputController"
@@ -228,6 +236,10 @@ func _tour(dir: String) -> void:
 		await get_tree().process_frame
 	await get_tree().create_timer(1.0).timeout
 	var shots := [["close", 9.0, 0.0], ["city", 16.0, 0.0], ["mid", 34.0, 0.0], ["far", 200.0, 0.0], ["seam", 30.0, -1.0]]
+	if args.has("tour-sizes"):   # e.g. --tour-sizes=4,9,60 for focused captures
+		shots = []
+		for z in str(args["tour-sizes"]).split(","):
+			shots.append(["z" + z, float(z), 0.0])
 	for s in shots:
 		if s[2] < 0.0:
 			cam.focus.x = 0.5   # look straight at the east-west seam
@@ -373,7 +385,7 @@ func start(opts: Dictionary) -> void:
 	elif pending_mode in ["spectate","join"]:
 		net.send({"t": pending_mode, "match": str(opts.get("match", "")), "name": str(opts.name)})
 	else:
-		var msg := {"t": "create", "mode": pending_mode, "name": str(opts.name), "ruleset":"native-v3"}
+		var msg := {"t": "create", "mode": pending_mode, "name": str(opts.name), "ruleset":"native-v4"}
 		if pending_mode == "observe":
 			msg.ais = 3
 		else:
@@ -404,7 +416,7 @@ func _on_message(m: Dictionary) -> void:
 			if str(m.get("status", "")) == "lobby":
 				hud.show_lobby(true, "Waiting in the match lobby…")
 		"welcome":
-			if pending_mode not in ["rejoin","join","spectate"] and str(m.get("ruleset","legacy-v1"))!="native-v3":
+			if pending_mode not in ["rejoin","join","spectate"] and not str(m.get("ruleset","legacy-v1")) in ["native-v3","native-v4"]:
 				net.close(); shell.show_view("main")
 				NativeUI.label(shell.content,"This server needs the native ruleset update. Choose an updated server in Settings to start a new campaign.",16,NativeUI.GOLD)
 				return

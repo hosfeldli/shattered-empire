@@ -87,6 +87,9 @@ func _rebuild() -> void:
 				extra.append({"label":"Create army · G","action":func():app.input._simple("army",{"op":"create"})})
 				extra.append({"label":"Set combat stance…","action":func():_workspace("Military","stance")})
 		extra.append({"label":"Inspect selected forces","action":func():_workspace("Air" if aircraft else "Military")})
+		if not units.is_empty():
+			var follow:=int(units[0])
+			extra.append({"label":"Stop following" if app.cam.follow_id==follow else "Follow selected unit", "action":func():app.cam.follow_id=-1 if app.cam.follow_id==follow else follow; signature=""})
 		var types:={}
 		for id in selected:
 			var type:=str(world.units.get(id,{}).get("type","")); types[type]=int(types.get(type,0))+1
@@ -113,6 +116,9 @@ func _rebuild() -> void:
 		var own:=int(building.o)==world.civ_id and not world.spectator
 		var info:Dictionary=world.defs.get("BUILDINGS",{}).get(building.ty,{})
 		var city:Dictionary=world.cities.get(int(building.get("c",-1)),{})
+		if int(building.get("mem",0))==1:
+			var ago:=maxi(0,int(world.server_time)-int(building.get("ls",0)))
+			NativeUI.label(details,"Out of sight · as last seen %d:%02d ago. It may have been damaged, upgraded or destroyed since."%[ago/60,ago%60],14,NativeUI.MUTED)
 		if building.ty=="town":
 			_button("Build · B",func():_workspace("Construction"))
 			_button("Manage",func():_workspace("Cities"); app.workspace.dashboard.city_tab="Development"; app.workspace.dashboard.signature=""; app.workspace.dashboard.sync())
@@ -127,11 +133,25 @@ func _rebuild() -> void:
 			if info.has("trains"):
 				_button("Train troops",func():recruit_open=not recruit_open; signature="")
 				_button("Rally point",func():app.command_tools.target_command({"c":"rally","building":id,"tile":"@map"},"Set rally point","point",false,false))
-			if building.has("uc") or building.ty=="house" and int(building.get("lv",1))<3 and int(building.get("d",0))==1:
+			var works:Array=building.get("wk",[])
+			if not works.is_empty():
+				var doing:="Repairing" if str(works[0])=="r" else "Upgrading to level %d"%(int(building.get("lv",1))+1)
+				var note:=" · halted under fire" if works.size()>2 and int(works[2])==1 else ""
+				var eta:=int(works[3]) if works.size()>3 else -1
+				var remaining:=" · about %d:%02d left"%[eta/60,eta%60] if eta>=0 and note.is_empty() else ""
+				NativeUI.label(details,"%s · %d%%%s%s"%[doing,int(works[1]),remaining,note],15,Color("e4ad88") if not note.is_empty() else NativeUI.GOLD)
+				NativeUI.label(details,"Engineers within two hexes speed up the works.",13,NativeUI.MUTED)
+				if own: _button("Cancel works",func():app.commands.issue("cancel_works",{"building":id}),"Stop the works. Half of the unspent cost is refunded.")
+			elif building.has("uc") or building.ty=="house" and int(building.get("lv",1))<3 and int(building.get("d",0))==1:
 				var facilities:Array=app.input.selected_buildings.keys()
 				if facilities.is_empty(): facilities=[id]
-				_button("Upgrade %d selected"%facilities.size() if facilities.size()>1 else "Upgrade",func():app.commands.upgrade(facilities),"Upgrade selected buildings where affordable. Double-click selects matching buildings on screen.")
-			if float(building.get("hp",100))<100: _button("Repair",func():app.commands.issue("repair",{"building":id}))
+				var upgrade_hint:="Upgrade selected buildings where affordable. Double-click selects matching buildings on screen."
+				if building.has("uc"):
+					var parts:=[]
+					for good in building.uc: parts.append("%s %s"%[str(building.uc[good]),good])
+					upgrade_hint="Cost: %s.%s\n%s"%[", ".join(parts)," Works take about %d:%02d; engineers nearby speed them up."%[int(building.ut)/60,int(building.ut)%60] if building.has("ut") else "",upgrade_hint]
+				_button("Upgrade %d selected"%facilities.size() if facilities.size()>1 else "Upgrade",func():app.commands.upgrade(facilities),upgrade_hint)
+			if float(building.get("hp",100))<100 and works.is_empty(): _button("Repair",func():app.commands.issue("repair",{"building":id}),"Cost: %s materials.%s Crews rebuild the damage over time; engineers nearby speed them up."%[str(building.get("rc","?"))," About %d:%02d."%[int(building.rt)/60,int(building.rt)%60] if building.has("rt") else ""])
 			var extra:=[{"label":"Building details","action":func():_workspace("Buildings")}]
 			if not city.is_empty(): extra.append({"label":"City details","action":func():_workspace("Cities")})
 			if int(building.get("d",0))==0: extra.append({"label":"Prioritize construction","action":func():app.commands.issue("fund_next",{"building":id})})
@@ -180,7 +200,7 @@ func _refresh() -> void:
 		var mode:String=app.command_tools.mode
 		title.text=app.command_tools.target_title.capitalize() if mode=="target" else "Place "+str(world.defs.get("BUILDINGS",{}).get(app.command_tools.value,{}).get("name",app.command_tools.value)) if mode=="build" else {"road":"Draw road","bridge":"Draw bridge","trench":"Draw trench line","deploy":"Deploy formation"}.get(mode,mode.capitalize())
 		state.text=app.command_tools.status
-		if is_instance_valid(confirm_button): confirm_button.disabled=app.command_tools.points.is_empty() or app.command_tools.preview.is_empty() or app.command_tools.preview.has("error")
+		if is_instance_valid(confirm_button): confirm_button.disabled=not app.command_tools.can_commit()
 	elif not ids.is_empty():
 		var health:=0.0; var supply:=0.0; var morale:=0.0; var valid:=0
 		for id in ids:

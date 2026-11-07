@@ -12,8 +12,11 @@
 // automation only picks up units that have been idle for a few seconds).
 import { UNITS, TERRAIN, BUILDINGS, isWater } from './constants.js';
 import { disk, dist } from './hex.js';
+import { findPath } from './path.js';
 
 const IDLE_BEFORE = { explore: 1, aggressive: 2, defensive: 3, engineer: 6 };
+// Failed destinations are transient navigation hints, never serialized or shared between units.
+const exploreFailures = new WeakMap();
 
 const ground = (g, t) => { const ter = g.world.terr[t]; return !isWater(ter) && Number.isFinite(TERRAIN[ter].move); };
 const idle = (u) => u.order.kind === 'idle' && !u.path.length && !u.field && !(u.formation && !u.detached);
@@ -47,22 +50,35 @@ export function autonomyStep(g) {
 
 function explore(g, civ, u, claim, claimed) {
   const ex = civ.explored;
-  let target = -1;
-  for (const r of [6, 10, 16, 24, 34, 46]) {
-    let bd = Infinity;
-    for (const t of disk(u.tile, r)) { if (ex[t] || claimed(civ, t) || !ground(g, t)) continue; const d = dist(u.tile, t); if (d < bd) { bd = d; target = t; } }
-    if (target >= 0) break;
+  let failures = exploreFailures.get(u);
+  if (!failures) exploreFailures.set(u, failures = new Map());
+  for (const [tile, until] of failures) if (until <= g.time) failures.delete(tile);
+  const options = [];
+  for (const t of disk(u.tile, 46)) {
+    if (t === u.tile || claimed(civ, t) || failures.has(t) || !ground(g, t)) continue;
+    const d = dist(u.tile, t);
+    if (!ex[t]) options.push({ t, score: d });
+    else if (d >= 4) options.push({ t, score: 100 + (civ.seenAt?.[t] || 0) * .001 + d * .01 });
   }
-  if (target < 0) {
-    // everything near is known: revisit what has gone unseen the longest
-    const seen = civ.seenAt; let best = Infinity;
-    for (const t of disk(u.tile, 30)) { if (!ground(g, t) || claimed(civ, t) || dist(u.tile, t) < 4) continue; const s = seen ? seen[t] : 0; if (s < best) { best = s; target = t; } }
+  options.sort((a, b) => a.score - b.score || a.t - b.t);
+  // Never issue an impossible or partial order: doing so leaves the unit standing on the
+  // same shoreline with a non-idle order forever. Limit work per autonomy pass.
+  for (const { t } of options.slice(0, 8)) {
+    const path = findPath(g, civ, u.tile, t, u.type, 1200);
+    if (!path || path.partial) { failures.set(t, g.time + 45); continue; }
+    const r = g.orderMove(civ, [u.id], t, false, 'line', { auth: 'auto' });
+    const result = r?.reply?.order || r?.order;
+    if (r?.error || result?.unreachable || result?.partial) {
+      // Return to idle if the authoritative route changed between checking and ordering.
+      u.order = { kind: 'idle' }; u.path = []; u.field = false;
+      failures.set(t, g.time + 45);
+      continue;
+    }
+    claim(civ, t);
+    for (const near of disk(t, 3)) claim(civ, near);
+    return;
   }
-  if (target < 0) return;
-  claim(civ, target);
-  for (const t of disk(target, 3)) claim(civ, t);              // explorers fan out instead of bunching
-  const r = g.orderMove(civ, [u.id], target, false, 'line', { auth: 'auto' });
-  if (r?.reply?.order?.unreachable || r?.order?.unreachable) u.idleSince = g.time + 4;
+  u.idleSince = g.time + 4;
 }
 
 function hunt(g, civ, u, claim, claimed) {

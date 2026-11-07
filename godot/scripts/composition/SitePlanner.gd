@@ -63,9 +63,12 @@ func plan(tile:int, preferred:Vector2, heading:float, half_size:Vector2, reserve
 				for point in corners+[center+offset]:
 					var height:=world.ground_height(point.x,point.y)
 					high=maxf(high,height); low=minf(low,height)
-				return {"valid":true,"offset":offset,"yaw":yaw,"scale":scale_,"radius":radius,"half_size":half,
+				# Seat the structure into the slope (a local ground cut) instead of propping it on the
+				# highest corner: at most a quarter of the relief is left as a skirt on the downhill side.
+				var seat:=low+(high-low)*.25+.006
+				return {"valid":true,"seat_height":seat,"offset":offset,"yaw":yaw,"scale":scale_,"radius":radius,"half_size":half,
 					"corners":corners,"min_height":low,"max_height":high,"river_near":not river.is_empty(),
-					"transform":Transform3D(Basis(Vector3.UP,float(yaw)).scaled(Vector3.ONE*scale_),Vector3(center.x+offset.x,high+.012,center.y+offset.y))}
+					"transform":Transform3D(Basis(Vector3.UP,float(yaw)).scaled(Vector3.ONE*scale_),Vector3(center.x+offset.x,seat,center.y+offset.y))}
 	return {"valid":false,"reason":"No dry footprint inside the received building parcel"}
 
 

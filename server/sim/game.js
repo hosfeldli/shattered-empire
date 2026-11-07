@@ -1,4 +1,4 @@
-import { LEGACY_RULESET, nativeRules, validateRuleset, normalizeNativeCiv, nativeDefinitions, tempo, movementRate, techEnabled, REMOVED_COMMANDS } from './rulesets.js';
+import { LEGACY_RULESET, nativeRules, validateRuleset, normalizeNativeCiv, nativeDefinitions, tempo, movementRate, techEnabled, timedWorks, REMOVED_COMMANDS } from './rulesets.js';
 import { rivalIntel } from './rivals.js';
 // Authoritative match simulation. One Game per match; clients only send intents.
 import { Scheduler } from './scheduler.js';
@@ -16,7 +16,7 @@ import { MODES, PRIORITY, CATEGORIES, defaultWorkforce } from './workforce.js';
 import { missilesInit, missilesStep, siloStep, startMissile, launchMissile, interceptors, interceptOdds, inventory, missilesSnapshot, MISSILE } from './missiles.js';
 import { BRIDGE_CLASSES, planBridge } from './bridges.js';
 import { Weather } from './weather.js';
-import { upgradable, upgradeCost as levelUpgradeCost, upgradeProblem, jobSlots, outMul, MAX_LEVEL, LEVEL_JOBS, LEVEL_OUT, LEVEL_AGE, CITY_TIERS } from './levels.js';
+import { upgradable, upgradeCost as levelUpgradeCost, upgradeProblem, upgradeTime, jobSlots, outMul, MAX_LEVEL, LEVEL_JOBS, LEVEL_OUT, LEVEL_AGE, CITY_TIERS } from './levels.js';
 import { cityState, CITY_STATES, rebuildSettlement, rebuildProblem, cityDiagnostics, REBUILD_COST } from './cities.js';
 import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, damageUnit, damageBuilding, resolveDeadlocks, shieldStep } from './military.js';
 import { Diplomacy } from './diplomacy.js';
@@ -30,7 +30,7 @@ import { recoveryStep } from './recovery.js';
 import { projectilesStep, moraleStep, eventsFor, CS, vetLevel, testImpact, fireUnit, detonate } from './combat.js';
 import { airStep, airMission, autoSelect, onAircraftBuilt, onBuildingLost, airSnapshot, stateCode, canFly, MISSIONS, AIR_STATES } from './airOperations.js';
 import { canHit } from './military.js';
-import { bfInit, battlefieldStep, battlefieldSnapshot, concealBySmoke } from './battlefield.js';
+import { bfInit, battlefieldStep, battlefieldSnapshot, concealBySmoke, rememberBattlefield } from './battlefield.js';
 import { battlesStep, battlesFor, assignTargets } from './battles.js';
 import { runScenario, spawnGroup, clearForces, SCENARIOS } from './sandbox.js';
 import { rebuildEntering } from './tacticalOccupancy.js';
@@ -160,7 +160,7 @@ export class Game {
       age: 0, advancing: 0, gov: 'council', govCooldown: 0, policies: new Set(), tax: 1, focus: 'balanced',
       weariness: 0, casualties: 0, kills: 0, popTotal: 0, powerGen: 0, powerUse: 0, powerRatio: 1,
       knownVer: new Uint16Array(N), knownOwner: new Int8Array(N).fill(-2), visible: new Uint8Array(N), detect: new Uint8Array(N), supply: new Uint8Array(N), airSupply: new Uint8Array(N),
-      explored: new Uint8Array(N), lastOwner: new Int8Array(N).fill(-2), knownCities: new Map(), intel: {},
+      explored: new Uint8Array(N), lastOwner: new Int8Array(N).fill(-2), knownCities: new Map(), battlefieldMemory: new Map(), intel: {},
       visKey: '', proposals: [], wonder: null, armies: new Map(), cmdlog: [],
     };
   }
@@ -502,6 +502,7 @@ export class Game {
           const city = this.cities.get(b.cityId), men = UNITS[b.repeat].pop || 0;
           if (this.canAfford(civ, dbl, b.tile) && (!men || !city || recruitable(civ, city) >= men * 2) && !this.canTrainBatch(civ, b, b.repeat)) this.trainBatch(civ, [b.id], b.repeat, 1, {});
         }
+        if (b.works) this.worksStep(civ, b, dt, engineers);
         // natural upkeep only keeps sound buildings sound; damaged ones need repair (governor, engineers, or you)
         if (b.hp < b.maxHp && b.hp >= b.maxHp * 0.5 && !b.fire && this.time - (b.lastHit || -99) > 15) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.002 * dt);
         this.refreshState(b);
@@ -523,12 +524,66 @@ export class Game {
 
   repairBuilding(civ, b, by = 'you') {
     if (!b || b.owner !== civ.id || !b.done || b.hp >= b.maxHp) return { error: 'Nothing to repair' };
+    if (b.works) return { error: b.works.k === 'repair' ? 'Repairs are already under way' : 'Works are already under way here' };
     const cost = { materials: Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) };
     if (!this.canAfford(civ, cost, b.tile)) return { error: `Repair needs ${cost.materials} materials` };
     this.pay(civ, cost, b.tile, 'maintenance');
+    if (timedWorks(this)) {
+      // Crews put out fires at once; the structure itself is rebuilt over time.
+      b.fire = 0;
+      this.startWorks(b, 'repair', cost, this.repairSeconds(b), { heal: b.maxHp * 0.4 });
+      this.refreshState(b); this.world.touch(b.tile);
+      this.history(civ, by, `Began repairing ${BUILDINGS[b.type].name}`);
+      return null;
+    }
     b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4); b.fire = 0; this.refreshState(b); this.world.touch(b.tile);
     this.history(civ, by, `Repaired ${BUILDINGS[b.type].name}`);
     return null;
+  }
+
+  // Timed works (native-v4): upgrades and repairs are projects paid up front that take time.
+  // Engineers within two hexes speed them up; fire on the site halts work until it is quiet.
+  // A level only takes effect when its works complete, so no bonus arrives early.
+  repairSeconds(b) { return Math.max(10, Math.round((BUILDINGS[b.type].time || 20) * 0.35)); }
+  worksSeconds(b) { return b.type === 'house' ? Math.round((BUILDINGS.house.time || 20) * (0.9 + 0.5 * (b.level || 1))) : upgradeTime(b.type, b.level || 1); }
+  startWorks(b, kind, cost, seconds, extra = {}) {
+    b.works = { k: kind, left: seconds, total: seconds, cost: { ...cost }, ...extra };
+    if (kind === 'upgrade') b.upgrading = true;
+  }
+  worksStep(civ, b, dt, engineers) {
+    const w = b.works;
+    if (this.time - (b.lastHit || -99) < 5) {
+      if (!w.halt) this.notify(civ.id, `Works on the ${BUILDINGS[b.type].name} halted: the site is under fire.`, { kind: 'build', tile: b.tile, quiet: true, level: 'warning' });
+      w.halt = 1; return;
+    }
+    w.halt = 0;
+    const eng = engineers.filter((u) => u.owner === b.owner && dist(u.tile, b.tile) <= 2).length;
+    const rate = tempo(this, 'construction') * (1 + 0.6 * Math.min(3, eng)) * (1 + (techFx(civ).build || 0));
+    const step = Math.min(w.left, dt * rate);
+    w.left -= step;
+    if (w.k === 'repair') b.hp = Math.min(b.maxHp, b.hp + w.heal * step / w.total);
+    w.rate = rate;
+    if (w.left > 1e-6 && !(w.k === 'repair' && b.hp >= b.maxHp)) return;
+    delete b.works; b.upgrading = false;
+    if (w.k === 'repair') this.notify(civ.id, `${BUILDINGS[b.type].name} repaired.`, { kind: 'build', tile: b.tile, quiet: true, level: 'info' });
+    if (w.k === 'upgrade') {
+      this.applyLevel(b);
+      this.notify(civ.id, `${BUILDINGS[b.type].name} upgraded to level ${b.level}.`, { kind: 'build', tile: b.tile, quiet: true, level: 'info' });
+    }
+    this.refreshState(b); this.world.touch(b.tile);
+  }
+  applyLevel(b) {
+    const lv = b.level || 1, base = BUILDINGS[b.type].hp, k = b.type === 'house' ? 0.5 : 0.4;
+    b.level = lv + 1; b.maxHp = Math.round(base * (1 + k * lv)); b.hp = Math.min(b.maxHp, b.hp + base * k);
+    b.upgradedAt = this.time;
+  }
+  cancelWorks(civ, b) {
+    if (!b || b.owner !== civ.id || !b.works) return { error: 'No works to cancel here' };
+    const w = b.works, refund = {};
+    for (const [k, v] of Object.entries(w.cost || {})) refund[k] = Math.floor(v * 0.5 * (w.left / w.total));
+    for (const [k, v] of Object.entries(refund)) if (v > 0) civ.res[k] = (civ.res[k] || 0) + v;
+    delete b.works; b.upgrading = false; this.world.touch(b.tile);
+    return { reply: { t: 'ack', cancelled: w.k, refund } };
   }
 
   // Research. Eras are not bought: a nation that knows enough of its era's technologies moves on
@@ -661,12 +716,39 @@ export class Game {
       for (const a of allies) if (a !== civ.id) { const ov = own[a].v, od = own[a].d; for (let i = 0; i < N; i++) { vis[i] |= ov[i]; det[i] |= od[i]; } }
       if (this.smoke.size) concealBySmoke(this, civ, vis, allies); else civ.smokeHide?.fill(0);
       if (this.sandboxReveal && civ.human) vis.fill(1);      // developer sandbox matches see the whole field
+      rememberBattlefield(this, civ);
+      this.rememberStructures(civ);
       const ex = civ.explored, lo = civ.lastOwner, seenOwners = new Set();
       // when each hex was last seen (in 4-second steps): explorers revisit what has gone unseen longest
       if (!civ.seenAt) Object.defineProperty(civ, 'seenAt', { value: new Uint16Array(N), writable: true, enumerable: false });   // not saved: rebuilt as the map is seen
       const sa = civ.seenAt, stamp = Math.min(65535, 1 + Math.floor(this.time / 4));
       for (let i = 0; i < N; i++) if (vis[i]) { ex[i] = 1; sa[i] = stamp; const o = w.owner[i]; lo[i] = o; if (o >= 0) seenOwners.add(o); }
       if (intel) { this.updateIntel(civ); this.diplomacy.checkContact(civ, seenOwners); }
+    }
+  }
+
+  // Last-seen structures: each human viewer keeps a bounded, frozen record of foreign buildings
+  // as they last appeared. Out of sight they are drawn from this memory without activity; any
+  // capture, damage, upgrade or destruction is learned only when the ground is seen again.
+  rememberStructures(civ) {
+    if (!civ.human || !civ.alive) return;
+    const vis = civ.visible;
+    const mem = civ.seenB || (civ.seenB = new Map());
+    for (const [id, r] of mem) {
+      if (!vis[r.t]) continue;
+      const b = this.buildings.get(id);
+      if (!b || b.tile !== r.t || b.owner === civ.id || this.allied(civ.id, b.owner)) mem.delete(id);
+    }
+    for (const b of this.buildings.values()) {
+      if (b.owner === civ.id || !vis[b.tile] || this.allied(civ.id, b.owner)) continue;
+      const hp = Math.round((100 * b.hp) / b.maxHp), lv = b.level > 1 ? b.level : undefined, p = Math.round(b.progress * 100);
+      const r = mem.get(b.id);
+      if (r && r.o === b.owner && r.hp === hp && r.lv === lv && r.p === p && r.d === (b.done ? 1 : 0) && r.st === b.state) { r.ls = Math.round(this.time); continue; }
+      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: b.type === 'town' && b.tier ? b.tier : undefined, ls: Math.round(this.time) });
+    }
+    if (mem.size > 4000) {
+      const oldest = [...mem.values()].sort((a, b) => a.ls - b.ls).slice(0, mem.size - 4000);
+      for (const r of oldest) mem.delete(r.id);
     }
   }
 
@@ -812,8 +894,10 @@ export class Game {
       const own = b.owner === civ.id || god;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2), qw: !b.done && b.waiting ? b.waiting : undefined, qn: own && !b.done ? b.qn ?? b.id : undefined,
-        lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
+        lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ut: own && timedWorks(this) && b.done && !b.works && (b.type === 'house' ? (b.level || 1) < 3 : upgradable(b.type) && (b.level || 1) < MAX_LEVEL) ? Math.ceil(this.worksSeconds(b) / tempo(this, 'construction')) : undefined, rc: own && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) : undefined, rt: own && timedWorks(this) && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(this.repairSeconds(b) / tempo(this, 'construction')) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, wk: b.works ? [b.works.k === 'repair' ? 'r' : 'u', Math.round(100 * (1 - b.works.left / b.works.total)), b.works.halt ? 1 : 0, b.owner === civ.id && b.works.rate ? Math.ceil(b.works.left / b.works.rate) : -1] : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
+    // remembered foreign structures out of sight: frozen, quiet, marked as memory
+    if (!god && civ.seenB) for (const r of civ.seenB.values()) if (!vis[r.t]) buildings.push({ ...r, a: 0, f: 0, mem: 1 });
     const cities = [];
     for (const c of this.cities.values()) {
       if (c.owner !== civ.id && !vis[c.tile]) continue;
@@ -870,7 +954,7 @@ export class Game {
       return { ...base, age: c.isRebel ? undefined : c.age, posture: c.ai && !c.isRebel ? c.posture : undefined, rel: { state: rel.state, trade: rel.trade, borders: rel.borders, until: rel.until ? Math.round(rel.until - this.time) : undefined }, known: { cities: knownCities } };
     });
     const out = { econ: me, buildings, cities, civs, ruins, traffic, supply: packBits(civ.supply).toString('base64'),
-      bf: battlefieldSnapshot(this, vis, god ? vis : civ.explored), battles: battlesFor(this, civ, vis, god), ms: missilesSnapshot(this, civ, vis) };
+      bf: battlefieldSnapshot(this, vis, god ? vis : civ.explored, civ.battlefieldMemory || new Map(), god), battles: battlesFor(this, civ, vis, god), ms: missilesSnapshot(this, civ, vis) };
     if (god) out.campaigns = this.campaignSummary();
     return out;
   }
@@ -1376,7 +1460,9 @@ export class Game {
             const cost = levelUpgradeCost(b.type, b.level || 1);
             if (this.isAutomated(civ, cmd) && this.breaksSavings(civ, cost)) return { error: 'saving for the next era' };
             if (!this.canAfford(civ, cost, b.tile)) return { error: 'cannot afford the upgrade: ' + Object.entries(cost).map(([k, v]) => `${v} ${k}`).join(', ') };
+            if (b.works) return { error: 'works are already under way here' };
             this.pay(civ, cost, b.tile);
+            if (timedWorks(this)) { this.startWorks(b, 'upgrade', cost, this.worksSeconds(b)); this.world.touch(b.tile); return { reply: { t: 'ack', level: b.level || 1, works: b.works.total, cost } }; }
             const lv = b.level || 1;
             b.level = lv + 1; b.maxHp = Math.round(BUILDINGS[b.type].hp * (1 + 0.4 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS[b.type].hp * 0.4);
             b.upgradedAt = this.time; this.world.touch(b.tile);
@@ -1385,10 +1471,12 @@ export class Game {
           if (!b || b.owner !== civ.id || b.type !== 'house' || !b.done) return { error: 'only finished buildings can be upgraded' };
           const lv = b.level || 1;
           if (lv >= 3) return { error: 'already at the highest density' };
+          if (b.works) return { error: 'works are already under way here' };
           const cost = this.upgradeCost(civ, b);
           if (this.isAutomated(civ, cmd) && this.breaksSavings(civ, cost)) return { error: 'saving for the next era' };
           if (!this.canAfford(civ, cost, b.tile)) return { error: 'cannot afford the upgrade' };
           this.pay(civ, cost, b.tile);
+          if (timedWorks(this)) { this.startWorks(b, 'upgrade', cost, this.worksSeconds(b)); this.world.touch(b.tile); return null; }
           b.level = lv + 1; b.maxHp = Math.round(BUILDINGS.house.hp * (1 + 0.5 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS.house.hp * 0.5);
           b.upgradedAt = this.time; this.world.touch(b.tile);
           return null;
@@ -1466,6 +1554,7 @@ export class Game {
         }
         case 'autoSettle': { const u = this.units.get(cmd.unit); if (!u || u.owner !== civ.id || u.type !== 'colonist') return { error: 'need a colonist convoy' }; u.auto = true; return null; }
         case 'repair': return this.repairBuilding(civ, this.buildings.get(cmd.id), cmd.by || 'you');
+        case 'cancelWorks': return this.cancelWorks(civ, this.buildings.get(cmd.id));
         case 'rallyAll': {
           let n = 0;
           for (const b of this.buildings.values()) if (b.owner === civ.id && BUILDINGS[b.type].trains && (!cmd.cat || BUILDINGS[b.type].cat === cmd.cat)) { b.rally = cmd.tile; b.rallyArmy = cmd.army || 0; n++; }
@@ -1546,6 +1635,7 @@ export class Game {
       if (b.type !== 'house') { const why = upgradeProblem(civ, b); if (why) { skipped.push({ id, reason: why }); continue; } eligible.push(b); continue; }
       if (!b.done) { skipped.push({ id, reason: 'unfinished' }); continue; }
       if ((b.level || 1) >= 3) { skipped.push({ id, reason: 'already at maximum density' }); continue; }
+      if (b.works) { skipped.push({ id, reason: 'works already under way' }); continue; }
       eligible.push(b);
     }
     eligible.sort((a, b) => (a.level || 1) - (b.level || 1) || a.id - b.id);
@@ -1562,6 +1652,11 @@ export class Game {
       if (!this.canAfford(civ, x.cost, x.b.tile)) { skipped.push({ id: x.b.id, reason: 'cannot afford' }); continue; }
       this.pay(civ, x.cost, x.b.tile, 'construction');
       for (const [k, v] of Object.entries(x.cost)) spent[k] = (spent[k] || 0) + v;
+      if (timedWorks(this)) {
+        this.startWorks(x.b, 'upgrade', x.cost, this.worksSeconds(x.b)); this.world.touch(x.b.tile);
+        upgraded.push({ id: x.b.id, level: (x.b.level || 1) + 1, works: x.b.works.total });
+        continue;
+      }
       const lv = x.b.level || 1, base = BUILDINGS[x.b.type].hp, k = x.b.type === 'house' ? 0.5 : 0.4;
       x.b.level = lv + 1; x.b.maxHp = Math.round(base * (1 + k * lv)); x.b.hp = Math.min(x.b.maxHp, x.b.hp + base * k);
       x.b.upgradedAt = this.time; this.world.touch(x.b.tile);

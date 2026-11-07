@@ -32,12 +32,52 @@ func _run() -> void:
 	civilians.free()
 	var w := _world()
 	root.add_child(w)
+	var landscape:=EnvironmentRenderer.new(); landscape.world=w
+	var road_tile:=100; var road_center:=w.grid.center(road_tile)
+	w.road[road_tile]=1
+	check(landscape._road_clearance(road_tile,road_center)<0.0,"trees were not cleared at the road center")
+	check(landscape._road_clearance(road_tile,road_center+Vector2(0,.8))>.09,"road clearing removed distant forest")
+	landscape._on_tiles(PackedInt32Array(),PackedInt32Array([road_tile]))
+	check(landscape.props_dirty.has(w._chunk_of(road_tile)),"new roads did not invalidate forest decoration")
+	w.road[road_tile]=0; landscape.free()
 	var cam := CameraController.new()
 	root.add_child(cam)
 	cam.setup(w)
 	cam.set_process(false)
 	cam.input_enabled = false
 	cam.focus = Vector3(20, 0, 12)
+	var sound:=AudioDirector.new(); root.add_child(sound); sound.setup(w,cam); sound.set_process(false)
+	w.ready_=true; w.known[100]=1; w.geo[100*6+1]=4
+	var audio_tile:=w.grid.center(100); cam.focus=Vector3(audio_tile.x,0,audio_tile.y); cam.size=10
+	sound._process(.5)
+	var country:Dictionary=sound.beds.countryside
+	check(float(country.gain)>0.0 and (country.player as AudioStreamPlayer).playing,"known forest did not produce outdoor ambience")
+	# A town is heard only while it is in sight; a remembered (out-of-sight) record stays silent.
+	w.buildings[9001]={"id":9001,"ty":"house","t":100,"o":w.civ_id+1,"d":1,"lv":2,"mem":1}
+	sound._scan()
+	check(float(sound.beds.city.target)==0.0,"a remembered building produced town ambience")
+	w.buildings[9001].erase("mem"); w.vis_bits.fill(255)
+	sound._scan()
+	check(float(sound.beds.city.target)>0.0,"a visible town produced no town ambience")
+	w.buildings.erase(9001); w.vis_bits.fill(0)
+	w.known[100]=0
+	sound._process(8.0)
+	check(float(country.gain)<.002 and not (country.player as AudioStreamPlayer).playing,"unknown ground continued producing outdoor ambience")
+	sound.stop(); sound.queue_free(); w.ready_=false; w.geo[100*6+1]=0
+	cam.focus = Vector3(20, 0, 12)
+	cam.size=34.0
+	cam._pan_step(Vector2.RIGHT,1.0/60.0)
+	check(cam.pan_velocity.x>0.0 and cam.pan_velocity.x<cam.size*CameraController.PAN_SPEED,"keyboard pan must accelerate smoothly")
+	cam.focus=Vector3.ZERO; cam.pan_velocity=Vector2.ZERO
+	for i in 60: cam._pan_step(Vector2.RIGHT,1.0/60.0)
+	var travel_60:=cam.focus.x
+	cam.focus=Vector3.ZERO; cam.pan_velocity=Vector2.ZERO
+	for i in 30: cam._pan_step(Vector2.RIGHT,1.0/30.0)
+	check(absf(cam.focus.x-travel_60)<0.001,"keyboard pan varies with frame rate")
+	var before_release:=cam.pan_velocity.x
+	cam._pan_step(Vector2.ZERO,1.0/60.0)
+	check(cam.pan_velocity.x>0.0 and cam.pan_velocity.x<before_release,"keyboard pan must decelerate smoothly")
+	cam.focus = Vector3(20, 0, 12); cam.pan_velocity=Vector2.ZERO
 	var ratios: Array[float] = []
 	for zoom in [7.0, 16.0, 34.0, 80.0, 220.0]:
 		cam.size = zoom
@@ -119,6 +159,13 @@ func _run() -> void:
 	var z := w.grid.center(96)
 	check(absf(w.grid.dx_wrap(a.x, p.x) - w.grid.dx_wrap(a.x, z.x) * 0.5) < 0.001, "interpolation took the long path across the seam")
 	check(w.unit_position(1) == p, "cached bracket changed within one frame")
+	w.units[1]={"id":1,"tile":127}; cam.follow_id=1
+	cam.focus.x=p.x+w.grid.period-.5; cam.focus.z=p.y
+	var follow_before:=absf(w.grid.dx_wrap(cam.focus.x,p.x))
+	cam._follow_step(.2)
+	check(absf(w.grid.dx_wrap(cam.focus.x,p.x))<follow_before,"follow camera did not take the short path across the seam")
+	w.units.erase(1); cam._follow_step(.1)
+	check(cam.follow_id<0,"follow camera retained a removed unit")
 	w.render_time = 0.75
 	check(w.unit_position(1) != p, "cached bracket did not follow render clock")
 

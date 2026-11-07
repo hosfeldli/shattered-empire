@@ -174,14 +174,43 @@ export function concealBySmoke(g, civ, vis, allies) {
   }
 }
 
-export function battlefieldSnapshot(g, vis, explored) {
+// Freeze each civilization's last observed persistent battlefield state. Update during the
+// authoritative visibility pass, not while serializing a snapshot, so reads cannot change saves.
+// Old saves have no memory; they learn a tile again only when it is visible.
+export function rememberBattlefield(g, civ) {
+  const memory = civ.battlefieldMemory || (civ.battlefieldMemory = new Map());
+  const candidates = new Set([...memory.keys(), ...g.craters.keys(), ...g.wrecks.keys(), ...g.intensity.keys()]);
+  for (const t of candidates) {
+    if (!civ.visible[t]) continue;
+    const cr = g.craters.get(t);
+    const wrecks = g.wrecks.get(t);
+    const stage = g.intensity.get(t)?.st || 0;
+    if (!cr && !wrecks?.length && !stage) { memory.delete(t); continue; }
+    memory.set(t, { crater: cr?.d || 0, intensity: stage,
+      wrecks: (wrecks || []).map((wr) => [wr.type, wr.burn > 0 ? 1 : 0, wr.owner]) });
+  }
+}
+
+export function battlefieldSnapshot(g, vis, explored, memory = null, god = false) {
   const c = [], w = [], s = [];
-  for (const [t, cr] of g.craters) if (vis[t] || explored[t]) c.push([t, cr.d]);
-  for (const [t, list] of g.wrecks) if (vis[t] || explored[t]) for (const wr of list) w.push([t, wr.type, wr.burn > 0 ? 1 : 0, wr.owner]);
+  if (god || !memory) {
+    for (const [t, cr] of g.craters) if (vis[t] || explored[t]) c.push([t, cr.d]);
+    for (const [t, list] of g.wrecks) if (vis[t] || explored[t]) for (const wr of list) w.push([t, wr.type, wr.burn > 0 ? 1 : 0, wr.owner]);
+  } else {
+    for (const [t, known] of memory) {
+      if (!explored[t] && !vis[t]) continue;
+      if (known.crater > 0) c.push([t, known.crater]);
+      for (const wr of known.wrecks || []) w.push([t, ...wr]);
+    }
+  }
   // smoke is seen where we can see; a dense screen also at the edge of what we see (it hides what is in it)
   for (const [t, sm] of g.smoke) if (vis[t] || (sm.d >= 0.6 && disk(t, 1).some((n) => vis[n]))) s.push([t, Math.round(sm.d * 10)]);
   const i = [], fp = [];
-  for (const [t, e] of g.intensity) if (e.st && (vis[t] || explored[t])) i.push([t, e.st]);
+  if (god || !memory) {
+    for (const [t, e] of g.intensity) if (e.st && (vis[t] || explored[t])) i.push([t, e.st]);
+  } else {
+    for (const [t, known] of memory) if (known.intensity && (vis[t] || explored[t])) i.push([t, known.intensity]);
+  }
   for (const [t, f] of g.fieldPos) if (vis[t]) fp.push([t, f.o]);
   return { c, w, s, i, fp };
 }

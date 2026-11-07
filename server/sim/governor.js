@@ -56,6 +56,9 @@ export function governorCanSpend(civ, gv, cost, c = null) {
 function count(g, c, type) { let n = 0; for (const b of g.buildings.values()) if (b.cityId === c.id && b.type === type && b.owner === c.owner) n++; return n; }
 function civCount(g, civ, type) { let n = 0; for (const b of g.buildings.values()) if (b.type === type && b.owner === civ.id) n++; return n; }
 const unlocked = (civ, type) => { const d = BUILDINGS[type]; return d && d.age <= civ.age && (!d.tech || civ.techs.has(d.tech)); };
+// Routine development can address production and research bottlenecks, but major military and
+// advanced industrial projects remain player decisions. Existing scoring and budgets still apply.
+const NATIVE_AUTOMATIC_BUILDINGS = new Set(['farm', 'house', 'lumber', 'quarry', 'mine', 'market', 'academy']);
 
 // Ranked wish-list for a city: [type, reason]. Specialization reorders and adds priorities.
 export function pickTile(g, civ, c, type, gv) {
@@ -149,7 +152,7 @@ function develop(g, civ, c, gv, level) {
     if (cand.kind === 'none' || cand.u <= none) break;
     if (gv.rejected?.[cand.type] && g.time < gv.rejected[cand.type]) continue;
     const routine = isRoutine(cand.type);
-    if (nativeRules(g) && civ.human && (!routine || cand.kind === 'upgrade')) continue;
+    if (nativeRules(g) && civ.human && (!NATIVE_AUTOMATIC_BUILDINGS.has(cand.type) || cand.kind === 'upgrade')) continue;
     if (cand.kind === 'upgrade') {
       if (!(level === 'autonomous' || level === 'managed')) { propose(g, civ, c, gv, { action: 'upgrade', type: cand.type, id: cand.id, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: 0.8 }); return false; }
       if (!governorCanSpend(civ, gv, cand.cost, c)) continue;

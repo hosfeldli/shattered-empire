@@ -46,9 +46,19 @@ static func build(world:WorldState,anchor:Vector2) -> Dictionary:
 				var left_a:=_point(world,a+side*half_width,0); var right_a:=_point(world,a-side*half_width,0)
 				var left_b:=_point(world,b+side*half_width,0); var right_b:=_point(world,b-side*half_width,0)
 				var drop:=Vector3(0,depth,0)
-				kit.quad("soil",left_a-drop,right_a-drop,right_b-drop,left_b-drop,Color(.48,.4,.3),Vector3.UP)
-				kit.quad("soil",left_a,left_a-drop,left_b-drop,left_b,Color(.7,.6,.46),Vector3(-side.x,0,-side.y))
-				kit.quad("soil",right_a,right_b,right_b-drop,right_a-drop,Color(.65,.55,.43),Vector3(side.x,0,side.y))
+				# Excavated earth: walls darken toward a damp, shadowed floor (simple occlusion),
+				# so the cut reads as a ditch at every zoom instead of a flat brown ribbon.
+				var lip:=Color(.66,.57,.43); var foot:=Color(.30,.25,.19); var floor_:=Color(.24,.20,.15)
+				kit.quad("soil",left_a-drop,right_a-drop,right_b-drop,left_b-drop,floor_,Vector3.UP)
+				kit.tri_colors("soil",left_a,left_a-drop,left_b-drop,lip,foot,foot,Vector3(-side.x,0,-side.y))
+				kit.tri_colors("soil",left_a,left_b-drop,left_b,lip,foot,lip,Vector3(-side.x,0,-side.y))
+				kit.tri_colors("soil",right_a,right_b,right_b-drop,lip*.94,lip*.94,foot,Vector3(side.x,0,side.y))
+				kit.tri_colors("soil",right_a,right_b-drop,right_a-drop,lip*.94,foot,foot,Vector3(side.x,0,side.y))
+				if progress>=.75:
+					for slat in 3:   # duckboards along the floor of a finished trench
+						var t:=(float(slat)+.5)/3.0
+						var p:=a.lerp(b,t)
+						kit.strip("timber",_point(world,p+side*half_width*.7,-depth+.006),_point(world,p-side*half_width*.7,-depth+.006),.018,Color(.55,.44,.30))
 				var front:=side if side.dot(facing)>0 else -side
 				if absf(side.dot(facing))<.001: front=side if side.y<0 or is_zero_approx(side.y) and side.x>0 else -side
 				var berm_offset:=front*(half_width+.05)

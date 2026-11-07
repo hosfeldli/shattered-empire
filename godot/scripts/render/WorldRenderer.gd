@@ -45,6 +45,7 @@ var urban_mask := PackedByteArray()
 var surface_fields:=WorldPresentationFields.new()
 var fog_planes:Array=[]
 var fog_material:ShaderMaterial
+var territory:TerritoryField
 
 
 func setup(w: WorldState) -> void:
@@ -56,10 +57,12 @@ func setup(w: WorldState) -> void:
 	water_mat.shader = _water_shader()
 	world.welcomed.connect(_on_welcome)
 	world.geo_changed.connect(_on_geo)
+	world.battlefield_terrain_changed.connect(_on_battlefield_terrain)
 	world.vis_changed.connect(_on_vis)
 	world.reset.connect(_on_welcome)
 	world.econ_applied.connect(_on_economy)
 	surface_fields.setup(world,[terrain_mat,water_mat])
+	territory=TerritoryField.new(); territory.setup(world,terrain_mat); add_child(territory)
 
 
 func _on_welcome() -> void:
@@ -101,6 +104,12 @@ func _on_geo(list: PackedInt32Array) -> void:
 		dirty[cid] = int(dirty.get(cid, 0)) + 1
 	if known_tex:
 		known_tex.update(Image.create_from_data(world.grid.w, world.grid.h, false, Image.FORMAT_R8, world.known_mask))
+
+
+func _on_battlefield_terrain(tiles:PackedInt32Array) -> void:
+	for tile in tiles:
+		var cid:=world._chunk_of(tile)
+		dirty[cid]=int(dirty.get(cid,0))+1
 
 
 func _on_economy() -> void:
@@ -266,11 +275,43 @@ func _append_tile(i: int) -> void:
 	var col := colors[i]
 	for k in 6:
 		var k2 := (k + 1) % 6
+		if world.visual_craters.has(i):
+			_append_crater_triangle(i,c,pc[k],pc[k2],cn,pn[k],pn[k2],col,pcol[k],pcol[k2],uv)
+			continue
 		vt.append(c); vt.append(pc[k]); vt.append(pc[k2])
 		nt.append(cn); nt.append(pn[k]); nt.append(pn[k2])
 		ct.append(col); ct.append(pcol[k]); ct.append(pcol[k2])
 		ut.append(uv); ut.append(uv); ut.append(uv)
 	_water_for(i, c2, build_job.water)
+
+
+## Subdivide only cratered hexes. The profile tapers to zero before every hex edge, so existing
+## neighbors and chunk seams remain continuous without globally increasing terrain resolution.
+func _append_crater_triangle(tile:int,c:Vector3,a:Vector3,b:Vector3,nc:Vector3,na:Vector3,nb:Vector3,cc:Color,ca:Color,cb:Color,uv:Vector2) -> void:
+	const STEPS:=6
+	for row in STEPS:
+		for column in STEPS-row:
+			var p0:=Vector2(float(row)/STEPS,float(column)/STEPS)
+			var p1:=Vector2(float(row+1)/STEPS,float(column)/STEPS)
+			var p2:=Vector2(float(row)/STEPS,float(column+1)/STEPS)
+			for p in [p0,p1,p2]: _append_crater_vertex(tile,c,a,b,nc,na,nb,cc,ca,cb,uv,p)
+			if row+column<STEPS-1:
+				var p3:=Vector2(float(row+1)/STEPS,float(column+1)/STEPS)
+				for p in [p1,p3,p2]: _append_crater_vertex(tile,c,a,b,nc,na,nb,cc,ca,cb,uv,p)
+
+
+func _append_crater_vertex(tile:int,c:Vector3,a:Vector3,b:Vector3,nc:Vector3,na:Vector3,nb:Vector3,cc:Color,ca:Color,cb:Color,uv:Vector2,p:Vector2) -> void:
+	var weight:=1.0-p.x-p.y
+	var vertex:=c*weight+a*p.x+b*p.y
+	var normal:Vector3=(nc*weight+na*p.x+nb*p.y).normalized()
+	var step:=.015
+	var dx:float=(world.visual_crater_delta(tile,vertex.x+step,vertex.z)-world.visual_crater_delta(tile,vertex.x-step,vertex.z))/(2.0*step)
+	var dz:float=(world.visual_crater_delta(tile,vertex.x,vertex.z+step)-world.visual_crater_delta(tile,vertex.x,vertex.z-step))/(2.0*step)
+	vertex.y+=world.visual_crater_delta(tile,vertex.x,vertex.z)
+	(build_job.vt as Array).append(vertex)
+	(build_job.nt as Array).append(Vector3(normal.x-dx*normal.y,normal.y,normal.z-dz*normal.y).normalized())
+	(build_job.ct as Array).append(cc*weight+ca*p.x+cb*p.y)
+	(build_job.ut as Array).append(uv)
 
 
 func _commit_chunk() -> void:
@@ -338,7 +379,7 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 			colors_.append(color/count)
 		for corner in 6: kit.tri_colors("water",center,points[corner],points[(corner+1)%6],col,colors_[corner],colors_[(corner+1)%6],Vector3.UP)
 	elif world.is_river(i):
-		var col:=Color(.20,.265,.25,.96)
+		var col:=Color(.16,.29,.30,.96)
 		var sections:=RiverGeometry.ribbon(world,i)
 		var left:Array[Vector3]=[]; var right:Array[Vector3]=[]
 		for section in sections:
@@ -352,7 +393,7 @@ func _water_for(i: int, c2: Vector2, kit: MeshKit) -> void:
 
 func _lake_color(tile:int) -> Color:
 	var depth:=maxf(0.0,world.water_level(tile)-world.height[tile])
-	return Color(.21,.285,.265).lerp(Color(.12,.205,.23),clampf(depth/.65,0,1))
+	return Color(.17,.31,.30).lerp(Color(.07,.19,.25),clampf(depth/.65,0,1))
 
 func _river_point(point:Vector2) -> Vector3:
 	var tile:=world.grid.tile_at(point.x,point.y)
@@ -363,7 +404,7 @@ func _river_point(point:Vector2) -> Vector3:
 
 func _sea_color(i: int) -> Color:
 	var depth := world.geo[i * 6 + 2] / 255.0
-	var col := Color(0.22, 0.30, 0.30).lerp(Color(0.10, 0.18, 0.235), clampf(depth * 2.2, 0.0, 1.0))
+	var col := Color(0.17, 0.33, 0.34).lerp(Color(0.05, 0.16, 0.24), clampf(depth * 2.2, 0.0, 1.0))
 	col.a = lerpf(0.88, 0.96, clampf(depth * 2.0, 0.0, 1.0))
 	return col
 
@@ -424,6 +465,7 @@ uniform sampler2D wet_tex : filter_linear, repeat_enable, hint_default_black;
 uniform sampler2D ground_detail : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 #include "res://shaders/weather_clouds.gdshaderinc"
 #include "res://shaders/visibility_fields.gdshaderinc"
+#include "res://shaders/territory_fields.gdshaderinc"
 #include "res://shaders/development_fields.gdshaderinc"
 uniform sampler2D strategic_overlay : filter_nearest, hint_default_black;
 uniform float overlay_strength = 0.0;
@@ -516,6 +558,7 @@ void fragment() {
 	base = mix(base,vec3(.24,.20,.15)*(0.8+0.3*n),scar*.8);
 	wet = max(wet,scar*wet);
 	base *= 1.0 - 0.3 * wet;
+	base = territory_tint(base, wpos.xz);
 	float shade = cloud_shadow(wpos);
 	vec2 knowledge=surface_visibility(wpos.xz);
 	ALBEDO=remembered_surface(base,knowledge.y)*shade;

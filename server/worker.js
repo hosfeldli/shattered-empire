@@ -50,6 +50,10 @@ const OBSERVE = !!workerData.observe;
 game.speed = 1;
 const timer = setInterval(() => {
   try {
+    // A connected observer is a human too: exhibitions continue while watched. Keep the
+    // requested speed intact so reconnecting resumes the same match, including a manual pause.
+    // The manager later saves and parks the worker after its existing idle timeout.
+    if (!game.civs.some((c) => c.human && c.connected) && !game.observer?.connected) return;
     const t0 = performance.now();
     // at higher speeds, run several ticks per interval but never let one interval overrun
     let n = 0;

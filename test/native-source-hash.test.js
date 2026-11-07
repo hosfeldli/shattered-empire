@@ -19,3 +19,15 @@ test('native source hashes include baked image assets but exclude test artifacts
     assert.notEqual(nativeSourceHash(root), initial);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('native source fingerprints include compressed audio assets', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-audio-hash-'));
+  try {
+    fs.mkdirSync(path.join(root, 'godot'));
+    const audio = path.join(root, 'godot', 'ambience.mp3');
+    fs.writeFileSync(audio, 'first');
+    const before = nativeSourceHash(root);
+    fs.writeFileSync(audio, 'second');
+    assert.notEqual(nativeSourceHash(root), before);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -65,7 +65,7 @@ func _process(dt:float) -> void:
 	var world:WorldState=app.world
 	empire.text=str(world.civ_by_id.get(world.civ_id,{}).get("name","Empire"))
 	var eras:Array=world.defs.get("AGES",[]); var era:=int(world.econ.get("age",0))
-	age.text=(str(eras[era].get("name","")) if era<eras.size() else "")+" · "+app.hud._clock(world.server_time)+( " · Paused" if world.paused else "")
+	age.text=(str(eras[era].get("name","")) if era<eras.size() else "")+" · "+app.hud._clock(world.server_time)+( " · Paused" if world.paused else "")+_weather()
 	var declining:=0
 	for index in GameHUD.GOODS.size():
 		var key:String=GameHUD.GOODS[index]
@@ -87,3 +87,27 @@ func _process(dt:float) -> void:
 	if next!=alert_signature:
 		alert_signature=next; alerts.get_popup().clear()
 		for note in alert_records: alerts.get_popup().add_item(str(note.get("text","Alert")))
+
+
+## Local weather where the camera is looking: what a commander would note at a glance.
+func _weather() -> String:
+	var world:WorldState=app.world
+	if world.grid==null or app.composition==null: return ""
+	var tile:=world.grid.tile_at(app.cam.focus.x,app.cam.focus.z)
+	if tile<0 or not world.known[tile]: return ""
+	var here:Dictionary=app.composition.weather.at_tile(tile)
+	var words:=[]
+	if float(here.get("storm",0))>.35: words.append("Storm")
+	elif float(here.get("snow",0))>.3: words.append("Snow")
+	elif float(here.get("rain",0))>.25: words.append("Rain")
+	elif float(here.get("fog",0))>.5: words.append("Fog")
+	elif float(here.get("cloud",0))>.6: words.append("Overcast")
+	else: words.append("Clear")
+	var wind:Vector2=app.composition.weather.wind
+	if wind.length()>.05:
+		var compass:=["E","NE","N","NW","W","SW","S","SE"]
+		# wind blows toward this vector; name where it comes from (z points south)
+		var from:=-wind
+		var index:=posmod(int(round(atan2(-from.y,from.x)/(PI/4.0))),8)
+		words.append("wind from %s%s"%[compass[index]," (strong)" if wind.length()>.9 else ""])
+	return " · "+", ".join(words)

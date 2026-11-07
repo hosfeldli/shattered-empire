@@ -49,6 +49,13 @@ export function resolvePersonality(value, id = 0) {
   return Object.hasOwn(TECH_PREF, value) ? value : ['merchant', 'warlord', 'builder'][((id % 3) + 3) % 3];
 }
 
+// Early settlements should have time to develop. Captured cities are never removed or blocked;
+// this is only the AI's preferred count when deciding whether to train another colonist.
+export function desiredCityCount(civ, personality) {
+  const original = ({ builder: 4, merchant: 3, warlord: 3 }[personality] || 3) + Math.min(3, civ.age);
+  return nativeRules(civ) ? Math.min(original, [2, 3, 4, 6, 8][Math.max(0, Math.min(4, civ.age))]) : original;
+}
+
 export class AI {
   constructor(g, civ) {
     this.g = g; this.civ = civ; this.p = resolvePersonality(civ.personality, civ.id); civ.personality = this.p;
@@ -164,7 +171,7 @@ export class AI {
 
   expand() {
     const g = this.g, civ = this.civ;
-    const want = { builder: 4, merchant: 3, warlord: 3 }[this.p] + Math.min(3, civ.age);
+    const want = desiredCityCount(civ, this.p);
     const colonists = this.myUnits.filter((u) => u.type === 'colonist');
     const cap = g.capital(civ);
     const queued = [...g.buildings.values()].some((b) => b.owner === civ.id && b.queue.some((q) => q.unit === 'colonist'));

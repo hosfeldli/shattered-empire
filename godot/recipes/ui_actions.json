@@ -105,6 +105,24 @@
   },
   {
     "page": "Buildings",
+    "id": "cancel_works",
+    "title": "Cancel upgrade or repair",
+    "command": {
+      "c": "cancelWorks",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Buildings",
     "id": "fund_next",
     "title": "Fund this site next",
     "command": {

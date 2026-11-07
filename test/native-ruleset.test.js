@@ -6,11 +6,13 @@ import { NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, LEGACY_RULESET, 
 import { economyStep } from '../server/sim/economy.js';
 import { rebuildProblem } from '../server/sim/cities.js';
 import { RebelAI } from '../server/sim/rebels.js';
-import { BUILDINGS, TECHS, UNITS, T } from '../server/sim/constants.js';
+import { BUILDINGS, TECHS, UNITS, T, RES } from '../server/sim/constants.js';
 import { growthRate } from '../server/sim/population.js';
 import { fieldworksStep, fieldworksFor, commitTrench, planTrench, trenchCover } from '../server/sim/fieldworks.js';
-import { idx, NB } from '../server/sim/hex.js';
+import { idx, NB, disk } from '../server/sim/hex.js';
 import { rivalIntel } from '../server/sim/rivals.js';
+import { governorStep } from '../server/sim/governor.js';
+import { desiredCityCount } from '../server/sim/ai.js';
 const create = (ruleset = NATIVE_RULESET) => new Game({ id: 'rules', seed: 4, slots: [{ human: true }, { human: true }], rebels: false, ruleset });
 
 test('rulesets survive saves; old saves remain legacy; unsupported rules fail explicitly', () => {
@@ -114,6 +116,45 @@ test('automatic city development has a small explicit command surface and reject
   assert.equal(city.development, 'agriculture');
   assert.ok(g.command(1, { c: 'cityDevelopment', city: city.id, on: true }).error);
   assert.ok(g.command(0, { c: 'cityDevelopment', city: city.id, priority: 'commerce' }).error);
+});
+
+test('automatic city development addresses material shortages and respects being switched off', () => {
+  const g = new Game({ id: 'mayor', seed: 7, slots: [{ human: true }, { human: true }], rebels: false, ruleset: NATIVE_RULESET });
+  const civ = g.civs[0], city = g.capital(civ);
+  city.pop = 120; city.housing = 200; city.unassigned = 100; city.growth = 1;
+  civ.res.materials = 500; civ.res.food = 1000; civ.storage = 1500; civ.short = new Set(['materials']);
+  const quarrySite = disk(city.tile, 3).find(t => g.world.owner[t] === 0 && g.tileB[t] < 0 && !g.world.river[t] && !g.world.lake[t]);
+  assert.ok(Number.isInteger(quarrySite));
+  g.world.terr[quarrySite] = T.HILLS; g.world.res[quarrySite] = RES.STONE;
+  assert.equal(g.command(0, { c: 'cityDevelopment', city: city.id, on: false }), null);
+  const before = [...g.buildings.values()].filter(b => b.owner === 0).length;
+  governorStep(g, 1);
+  assert.equal([...g.buildings.values()].filter(b => b.owner === 0).length, before, 'disabled city automation must not build');
+  assert.equal(g.command(0, { c: 'cityDevelopment', city: city.id, on: true }), null);
+  governorStep(g, 1);
+  const built = [...g.buildings.values()].filter(b => b.owner === 0 && !b.done);
+  assert.ok(built.some(b => ['lumber', 'quarry'].includes(b.type)), 'the mayor should invest in needed material production');
+  assert.ok(built.every(b => !['barracks', 'motor_works', 'heavy_assembly'].includes(b.type)), 'major military projects stay under player control');
+});
+
+test('new maps do not generate resource deposits on river hexes', () => {
+  for (const seed of [3, 7, 19, 42]) {
+    const g = new Game({ id: `river-resources-${seed}`, seed, slots: [{ human: true }, { human: true }], rebels: false, ruleset: NATIVE_RULESET });
+    for (let tile = 0; tile < g.world.res.length; tile++) {
+      assert.ok(!(g.world.river[tile] && g.world.res[tile]), `seed ${seed}, tile ${tile}`);
+    }
+  }
+});
+
+test('native AI expands settlements gradually instead of racing to four cities in the first era', () => {
+  for (const personality of ['builder', 'merchant', 'warlord']) {
+    const counts = Array.from({ length: 5 }, (_, age) => desiredCityCount({ ruleset: NATIVE_RULESET, age }, personality));
+    assert.equal(counts[0], 2);
+    assert.ok(counts[2] >= 3 && counts[2] <= 4);
+    assert.ok(counts[4] >= 5 && counts[4] <= 8);
+    assert.ok(counts.every((count, age) => age === 0 || count >= counts[age - 1]));
+  }
+  assert.equal(desiredCityCount({ ruleset: LEGACY_RULESET, age: 0 }, 'builder'), 4, 'legacy matches retain their expansion preference');
 });
 
 function trenchFixture() {

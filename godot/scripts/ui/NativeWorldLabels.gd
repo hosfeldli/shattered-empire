@@ -82,6 +82,14 @@ func _members() -> void:
 	for key in slots.keys():
 		if not groups.has(key): slots.erase(key)
 
+
+func _show_deposits() -> bool:
+	if app.command_tools.mode=="build": return true
+	for id in app.military.selected:
+		if str(app.world.units.get(id,{}).get("type",""))=="colonist": return true
+	return false
+
+
 func refresh() -> void:
 	banners.clear(); markers.clear()
 	active=app.world.ready_ and not app.shell.is_blocking() and not app.shell.world_hidden
@@ -97,6 +105,7 @@ func refresh() -> void:
 				if int(unit.owner)!=world.civ_id and not world.is_visible(int(unit.tile)): continue
 				var point:Vector3=app.military.draw_positions[id]
 				anchor+=app.cam.to_screen(point+Vector3(0,.22,0)); hp+=float(unit.hp); count+=1; selected=selected or app.military.selected.has(id)
+				group.veteran=maxi(int(group.get("veteran",0)),int(unit.get("veteran",0)))
 			if count==0: continue
 			anchor/=count
 			if not viewport.has_point(anchor): continue
@@ -112,7 +121,7 @@ func refresh() -> void:
 		var rect:=_badge(group.key,group.anchor,group.offset,occupied)
 		if rect.size==Vector2.ZERO: continue
 		group.rect=rect; group.text=text; banners.append(group)
-	if app.strategic.resource_markers and app.cam.size<52:
+	if app.strategic.resource_markers and app.cam.size<52 and _show_deposits():
 		var resources:=[]
 		for list in app.strategic.deposits.values():
 			for tile:int in list:
@@ -150,6 +159,11 @@ func _draw() -> void:
 			var point:=rect.position+Vector2(19,27); var text:=str(record.ids.size())
 			draw_string_outline(font,point,text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,4,Color("11191f"))
 			draw_string(font,point,text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,NativeUI.TEXT)
+		# veterancy: up to three gold chevrons above the badge, earned in combat (server rank)
+		for rank in int(record.get("veteran",0)):
+			var c:=Vector2(rect.get_center().x,rect.position.y-3-rank*4)
+			draw_polyline(PackedVector2Array([c+Vector2(-5,1),c+Vector2(0,-2),c+Vector2(5,1)]),Color("11191f"),3.2,true)
+			draw_polyline(PackedVector2Array([c+Vector2(-5,1),c+Vector2(0,-2),c+Vector2(5,1)]),NativeUI.GOLD,1.6,true)
 		if record.selected or float(record.hp)<75:
 			draw_rect(Rect2(rect.position+Vector2(5,rect.size.y-3),Vector2(rect.size.x-6,2)),Color("273338"))
 			draw_rect(Rect2(rect.position+Vector2(5,rect.size.y-3),Vector2((rect.size.x-6)*clampf(record.hp/100.0,0,1),2)),Color("deac82") if record.hp<50 else edge)

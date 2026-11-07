@@ -111,8 +111,10 @@ func mass_upgrade() -> void:
 	var buttons:Array=app.command_dock.orders.get_children().filter(func(button):return str(button.text).begins_with("Upgrade"))
 	if not buttons.is_empty(): (buttons[0] as Button).pressed.emit()
 	until=Time.get_ticks_msec()+5000
-	while eligible.any(func(id):return int(world.buildings[id].get("lv",1))==1) and Time.get_ticks_msec()<until: await frames()
-	checks.mass_upgrade_authoritative=eligible.size()>=2 and eligible.all(func(id):return int(world.buildings[id].get("lv",1))==2)
+	# native-v4: an accepted upgrade starts timed works (server "wk"); the level follows on completion
+	var started:=func(id): return int(world.buildings[id].get("lv",1))==2 or not (world.buildings[id].get("wk",[]) as Array).is_empty()
+	while not eligible.all(started) and Time.get_ticks_msec()<until: await frames()
+	checks.mass_upgrade_authoritative=eligible.size()>=2 and eligible.all(started)
 	checks.mass_upgrade_keeps_selection=app.input.selected_buildings.keys()==selected
 	await shot("mass-upgrade")
 
@@ -267,7 +269,7 @@ func run(game:Node,out:String) -> void:
 	var city_id:=-1
 	for city in app.world.cities.values():
 		if int(city.o)==app.world.civ_id: city_id=int(city.id); break
-	checks.native_ruleset=app.world.ruleset=="native-v3"
+	checks.native_ruleset=app.world.ruleset=="native-v4"
 	checks.removed_controls=not ids.has("tax") and not ids.has("import") and not ids.has("diplo_trade")
 	var development:=await action("city_development",{"city":city_id,"on":true,"priority":"industry"})
 	checks.development_command=development.get("error")==null and not development.is_empty()

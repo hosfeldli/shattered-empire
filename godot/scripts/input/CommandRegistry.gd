@@ -45,7 +45,8 @@ func upgrade(buildings:Array) -> void:
 		if reply.get("error")!=null: report.call(str(reply.error),false); return
 		var result:Dictionary=reply.get("upgrade",{})
 		var done:=int(result.get("upgraded",[]).size()); var skipped:Array=result.get("skipped",[])
-		report.call("%d buildings upgraded"%done+(" · %d skipped: %s"%[skipped.size(),str(skipped[0].get("reason","unavailable"))] if not skipped.is_empty() else ""),done>0))
+		var timed:=done>0 and (result.upgraded[0] as Dictionary).has("works")
+		report.call(("Upgrade works started on %d buildings"%done if timed else "%d buildings upgraded"%done)+(" · %d skipped: %s"%[skipped.size(),str(skipped[0].get("reason","unavailable"))] if not skipped.is_empty() else ""),done>0))
 
 func train(buildings:Array,type:String,count:=1,per_building:=false,repeat_:=false) -> void:
 	var facilities:=buildings.filter(func(id):return world.buildings.has(id) and int(world.buildings[id].o)==world.civ_id and type in world.defs.get("BUILDINGS",{}).get(world.buildings[id].ty,{}).get("trains",[]))

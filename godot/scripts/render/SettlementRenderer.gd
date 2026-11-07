@@ -153,15 +153,17 @@ func _update_plumes() -> void:
 			var base: Vector3 = s[0]
 			var col: Color = s[1]
 			var x0 := g.near_x(base.x, cx)
-			for k in 6:
+			var scale_ := float(s[2]) if s.size() > 2 else 1.0
+			if scale_ < 1.0 and cam.size > 30.0: continue   # domestic plumes only matter up close
+			for k in (3 if scale_ < 1.0 else 6):
 				if n >= cap:
 					break
 				var u := fposmod(now * 0.22 + k / 6.0 + base.z * 0.37, 1.0)
 				var drift := composition.weather.wind * u * .4
-				var p := Vector3(x0 + drift.x, base.y + u * 0.7, base.z + drift.y)
-				var sc := 0.6 + u * 1.8
+				var p := Vector3(x0 + drift.x, base.y + u * 0.7 * scale_, base.z + drift.y)
+				var sc := (0.6 + u * 1.8) * scale_
 				mm.set_instance_transform(n, Transform3D(Basis().scaled(Vector3.ONE * sc), p))
-				mm.set_instance_color(n, Color(col, (1.0 - u) * 0.8))
+				mm.set_instance_color(n, Color(col, (1.0 - u) * (0.8 if scale_ >= 1.0 else 0.45)))
 				n += 1
 	mm.visible_instance_count = n
 
@@ -322,7 +324,8 @@ func _structure_signature(list: Array) -> String:
 func _progress_signature(list: Array) -> String:
 	var parts := PackedStringArray()
 	for b in list:
-		parts.append("%d:%d:%d:%d" % [int(b.id), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0))])
+		var works:Array=b.get("wk",[])
+		parts.append("%d:%d:%d:%d:%s" % [int(b.id), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0)), ("%s%d" % [works[0], int(works[1]) / 10]) if works.size() >= 2 else ""])
 	return "|".join(parts)
 
 
@@ -445,9 +448,44 @@ func _build_progress(rec: Dictionary, list: Array) -> void:
 			_construction(kit, b, _tint(b))
 		if int(b.get("f", 0)) == 1:
 			kit.box("glow:ff8a2a", Vector3(0, 0.05, 0), Vector3(0.3, 0.12, 0.25), Color.WHITE)
+		if int(b.get("d", 0)) == 1 and not (b.get("wk", []) as Array).is_empty():
+			_works_scaffold(kit, b)
 		_append_smoke(smokes, b, Transform3D(kit.basis,kit.origin))
 	(rec.fx as MeshInstance3D).mesh = kit.commit() if not kit.is_empty() else null
 	rec.smoke = smokes
+
+
+## Timed upgrade/repair works (server "wk": kind, percent, halted). Scaffold towers rise around the
+## footprint with the works' progress; upgrades add a small slewing jib crane and material stacks,
+## repairs a tarpaulin over the damaged side. Halted works show no crane load. Presentation only.
+func _works_scaffold(kit: MeshKit, b: Dictionary) -> void:
+	var works: Array = b.wk
+	var progress := clampf(float(works[1]) / 100.0, 0.0, 1.0)
+	var site: Dictionary = site_records.get(int(b.id), {})
+	var half: Vector2 = site.get("half_size", Vector2(.26, .22)) / maxf(.01, float(site.get("scale", 1.0)))
+	half += Vector2(.03, .03)
+	var height := 0.12 + 0.22 * (0.35 + 0.65 * progress)
+	var pole := Color(.78, .74, .62)
+	for x in [-half.x, half.x]:
+		for z in [-half.y, half.y]:
+			kit.box("steel", Vector3(x, 0.0, z), Vector3(.012, height, .012), pole)
+	for level in int(height / .08):
+		var y := 0.07 + level * 0.08
+		for side in [-1.0, 1.0]:
+			kit.box("timber", Vector3(0, y, half.y * side), Vector3(half.x * 2.0, .008, .03), Color(.82, .7, .5))
+			kit.box("steel", Vector3(half.x * side, y, 0), Vector3(.008, .008, half.y * 2.0), pole)
+	if str(works[0]) == "r":
+		kit.box("canvas", Vector3(0, height * 0.35, -half.y - 0.004), Vector3(half.x * 1.6, height * 0.6, .004), Color(.42, .52, .46))
+	else:
+		var halted := works.size() > 2 and int(works[2]) == 1
+		var mast := Vector3(half.x + .07, 0, -half.y + .02)
+		kit.box("steel", mast, Vector3(.02, height + .16, .02), Color(.95, .72, .2))
+		kit.box("steel", mast + Vector3(-.12, height + .14, 0), Vector3(.30, .016, .016), Color(.95, .72, .2))
+		if not halted:
+			kit.box("steel", mast + Vector3(-.22, height + .02, 0), Vector3(.004, .12, .004), Color(.3, .3, .3))
+			kit.box("timber", mast + Vector3(-.22, height - .01, 0), Vector3(.05, .03, .04), Color(.8, .66, .48))
+		for k in 2:
+			kit.box("timber", Vector3(-half.x + .05 + k * .07, 0.0, half.y + .06), Vector3(.06, .03 + k * .015, .04), Color(.8, .68, .5))
 
 
 func _append_smoke(smokes: Array, b: Dictionary, frame: Transform3D) -> void:
@@ -461,6 +499,12 @@ func _append_smoke(smokes: Array, b: Dictionary, frame: Transform3D) -> void:
 			smokes.append([frame * Vector3(0.2, 0.425, z), Color(0.86, 0.86, 0.86)])
 	if int(b.get("f", 0)) == 1:
 		smokes.append([frame * Vector3(0, 0.3, 0), Color(0.2, 0.18, 0.17)])
+	# Wood stoves: a third of lived-in homes (stable per building) show a thin chimney plume;
+	# in cold country most of them do. Damaged or unfinished homes stay cold.
+	if ty == "house" and int(b.get("d", 0)) == 1 and int(b.get("hp", 100)) >= 60:
+		var cold := world.biome(int(b.t)) in [6, 10]
+		if posmod(int(b.id) * 7919, 3) == 0 or cold and posmod(int(b.id), 5) != 0:
+			smokes.append([frame * Vector3(0.06, 0.34 + 0.08 * int(b.get("lv", 1)), 0.04), Color(0.82, 0.82, 0.8), 0.3])
 
 
 func _tint(b: Dictionary) -> Color:
@@ -551,27 +595,23 @@ func _site_foundation(kit:MeshKit,id:int) -> void:
 
 
 func _foundation(kit:MeshKit,half:Vector2) -> void:
-	# A narrow retaining wall follows the actual terrain around each footprint. Unlike a
-	# broad base plate, it only fills the gap below the structure on sloping ground.
+	# Buildings are seated into the terrain by SitePlanner. Where the ground still falls away below
+	# the footprint, a continuous masonry skirt follows the actual terrain down to (and slightly
+	# into) the ground. There are no plates, plinths or corner stilts: on level ground nothing is
+	# drawn at all, and the skirt never rises above the structure's own floor.
 	var corners:=[Vector2(-half.x,-half.y),Vector2(half.x,-half.y),Vector2(half.x,half.y),Vector2(-half.x,half.y)]
+	const PARTS:=4
 	for edge in 4:
 		var a:Vector2=corners[edge]; var b:Vector2=corners[(edge+1)%4]
-		for part in 2:
-			var pa:Vector2=a.lerp(b,float(part)/2.0); var pb:Vector2=a.lerp(b,float(part+1)/2.0)
+		for part in PARTS:
+			var pa:Vector2=a.lerp(b,float(part)/PARTS); var pb:Vector2=a.lerp(b,float(part+1)/PARTS)
 			var top_a:=kit.xf(Vector3(pa.x,0,pa.y)); var top_b:=kit.xf(Vector3(pb.x,0,pb.y))
-			var bottom_a:=Vector3(top_a.x,minf(top_a.y,world.ground_height(top_a.x,top_a.z))-.01,top_a.z)
-			var bottom_b:=Vector3(top_b.x,minf(top_b.y,world.ground_height(top_b.x,top_b.z))-.01,top_b.z)
-			if maxf(top_a.y-bottom_a.y,top_b.y-bottom_b.y)>.028:
-				var outward:=Vector3((top_a.x+top_b.x)*.5-kit.origin.x,0,(top_a.z+top_b.z)*.5-kit.origin.z).normalized()
-				kit.quad("stone",bottom_a,bottom_b,top_b,top_a,Color.WHITE,outward)
-	for x in [-half.x,half.x]:
-		for z in [-half.y,half.y]:
-			var point:=kit.xf(Vector3(x,0,z))
-			var ground:=world.ground_height(point.x,point.z)
-			var depth:=maxf(0.0,point.y-ground)
-			if depth>.018:
-				var scale_:float=kit.basis.get_scale().y
-				kit.box("stone",Vector3(x,-depth/scale_,z),Vector3(.045,depth/scale_+.015,.045))
+			var ground_a:=world.ground_height(top_a.x,top_a.z); var ground_b:=world.ground_height(top_b.x,top_b.z)
+			if maxf(top_a.y-ground_a,top_b.y-ground_b)<=.004: continue
+			var bottom_a:=Vector3(top_a.x,minf(top_a.y,ground_a)-.03,top_a.z)
+			var bottom_b:=Vector3(top_b.x,minf(top_b.y,ground_b)-.03,top_b.z)
+			var outward:=Vector3((top_a.x+top_b.x)*.5-kit.origin.x,0,(top_a.z+top_b.z)*.5-kit.origin.z).normalized()
+			kit.quad("stone",bottom_a,bottom_b,top_b,top_a,Color(.78,.75,.70),outward)
 
 
 func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionary, bb: Dictionary) -> void:
@@ -597,12 +637,22 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 				kit.gable(_roof_mat(rng), Vector3(p.x, ground + 0.17 + 0.05 * int(ba.get("lv", 1)), p.z), 0.15, 0.26, 0.08, Color(1, 1, 1), yaw + PI * 0.5)
 		"ind":
 			# a pipe run on trestles and a rail spur between the plants
+			# A low, slim, galvanised utility pipe rack running only between the two plants'
+			# yards (never through either building), beside a shared paved service yard.
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
-			kit.box("steel", Vector3(mid.x, y + 0.2, mid.z) + across * 0.25, Vector3(len, 0.035, 0.035), Color(0.9, 0.9, 0.9), yaw)
-			for f in [-0.3, 0.0, 0.3]:
-				var p: Vector3 = mid + along * (f * len) + across * 0.25
-				kit.box("steel", Vector3(p.x, y, p.z), Vector3(0.025, 0.2, 0.025), Color(0.8, 0.8, 0.8))
+			var span := maxf(0.0, len - 0.7)
 			_ground_path(kit,a,b,.28,"paving",Color(.86,.85,.80))
+			if span > 0.1:
+				var rack := mid + across * 0.22
+				var ground := world.ground_height(rack.x, rack.z)
+				for pipe in 2:
+					kit.box("steel", Vector3(rack.x, ground + 0.085 + pipe * 0.022, rack.z) + across * (pipe * 0.02), Vector3(span, 0.014, 0.014), Color(1.55, 1.55, 1.5), yaw)
+				var supports := maxi(2, int(span / 0.24) + 1)
+				for k in supports:
+					var p: Vector3 = rack + along * ((float(k) / float(supports - 1) - 0.5) * span)
+					var g2 := world.ground_height(p.x, p.z)
+					kit.box("steel", Vector3(p.x, g2, p.z), Vector3(0.012, 0.1, 0.012), Color(1.3, 1.3, 1.25))
+					kit.box("steel", Vector3(p.x, g2 + 0.08, p.z), Vector3(0.012, 0.012, 0.06), Color(1.3, 1.3, 1.25), yaw + PI * 0.5)
 		"civ":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
 			_ground_path(kit,a,b,.4,"paving",Color(.95,.94,.9))
@@ -611,11 +661,16 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 				kit.cylinder("bark", Vector3(p.x, y, p.z), 0.015, 0.1, 5)
 				kit.cone("foliage", Vector3(p.x, y + 0.08, p.z), 0.08, 0.2, 6)
 		"com":
+			# A paved shopping street joins neighbouring commercial halls, lined with a few
+			# aligned kiosks facing the walkway.
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
-			for k in 3:
-				var p := mid + along * ((k - 1) * len * 0.25) + across * 0.18
-				kit.box("timber", Vector3(p.x, y, p.z), Vector3(0.14, 0.08, 0.1), Color(1, 1, 1), yaw)
-				kit.gable("canvas", Vector3(p.x, y + 0.08, p.z), 0.12, 0.16, 0.05, _awning(rng), yaw)
+			_ground_path(kit,a,b,.24,"paving",Color(.9,.88,.84))
+			for k in 2:
+				var p := mid + along * ((k - 0.5) * len * 0.22) + across * 0.2
+				var gy := world.ground_height(p.x, p.z)
+				var shade := _awning(rng)
+				kit.box("steel", Vector3(p.x, gy, p.z), Vector3(0.1, 0.065, 0.06), Color(.62,.6,.55).lerp(shade,.35), yaw)
+				kit.box("canvas", Vector3(p.x, gy + 0.07, p.z) - across * 0.035, Vector3(0.11, 0.006, 0.04), shade, yaw)
 		"ext":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
 			_ground_path(kit,a,b,.16,"soil",Color(.9,.85,.78))
@@ -724,6 +779,7 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 	var definition:Dictionary=world.defs.get("BUILDINGS",{}).get(str(b.ty),{})
 	DevelopedBuildingLibrary.development(kit,b,definition,tint)
 	if DevelopedBuildingLibrary.compose(kit,b,ty,tint): return
+	if ModernBuildingLibrary.compose(kit,b,ty,tint,world.civ_color(int(b.o))): return
 	match ty:
 		"house":
 			var n := 2 + mini(lv, 3)
@@ -757,13 +813,7 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 			kit.cylinder("steel", Vector3(0, 0.1, 0), 0.06, 0.9, 4, tint, 0.012)
 			kit.cylinder("steel", Vector3(0.05, 0.7, 0), 0.07, 0.02, 10, tint)
 		"market":
-			for k in 6:
-				var a := TAU * k / 6.0
-				var p := Vector3(cos(a) * 0.38, 0.03, sin(a) * 0.38)
-				kit.box("timber", p, Vector3(0.14, 0.08, 0.12), tint, -a)
-				kit.gable("canvas", p + Vector3(0, 0.08, 0), 0.12, 0.16, 0.05, _awning(rng), -a + PI * 0.5)
-			kit.box("brick", Vector3(0, 0.03, 0), Vector3(0.3, 0.2, 0.22), tint)
-			kit.gable("roof_tile", Vector3(0, 0.23, 0), 0.22, 0.3, 0.1, tint, PI * 0.5)
+			_market(kit,rng,lv,tint)
 		"port":
 			kit.box("timber", Vector3(0.5, 0.0, 0), Vector3(0.7, 0.04, 0.16), tint)
 			kit.box("brick", Vector3(-0.2, 0.03, 0), Vector3(0.36, 0.18, 0.26), tint)
@@ -895,6 +945,31 @@ func _fields(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 	for z in [-.095,-.055]: kit.box("timber",Vector3(-.14,.025,z),Vector3(.09,.025,.025))
 
 
+## A repaired covered commercial hall facing a small paved plaza, with a disciplined row of
+## repurposed shipping-container shopfronts and awnings. Upgrades add a second shop row and an
+## upper floor without moving the original hall. Domestic commerce only; no trading imagery.
+func _market(kit:MeshKit,rng:RandomNumberGenerator,lv:int,tint:Color) -> void:
+	kit.box("concrete",Vector3(-.02,.002,.12),Vector3(.62,.012,.24),tint*Color(.86,.85,.82))   # plaza paving
+	var hall_h:=.17+(.10 if lv>=3 else 0.0)
+	kit.box("concrete",Vector3(0,.02,-.13),Vector3(.50,hall_h,.22),tint)
+	kit.box("glass",Vector3(0,.05,-.019),Vector3(.44,.075,.005),tint)                        # shop windows
+	kit.box("glass",Vector3(0,hall_h-.035,-.019),Vector3(.46,.025,.005),tint)                # clerestory band
+	kit.sawtooth("steel","glass",Vector3(0,.02+hall_h,-.13),.50,.22,.05,4,tint,PI*.5)
+	kit.box("canvas",Vector3(0,.115,.0),Vector3(.48,.008,.05),_awning(rng))                  # entrance canopy
+	var rows:Array=[.20] if lv<2 else [.20,.31]
+	for z in rows:
+		for k in 4:
+			var x:float=-.21+k*.14
+			var shade:=_awning(rng)
+			kit.box("steel",Vector3(x,.014,z),Vector3(.11,.07,.065),Color(.62,.6,.55).lerp(shade,.35))
+			kit.box("char",Vector3(x,.022,z-.033),Vector3(.085,.05,.003))                       # open shutter
+			var awning_z:float=z-.05
+			kit.quad("canvas",kit.xf(Vector3(x-.055,.082,z-.03)),kit.xf(Vector3(x+.055,.082,z-.03)),kit.xf(Vector3(x+.055,.064,awning_z-.02)),kit.xf(Vector3(x-.055,.064,awning_z-.02)),shade,kit.basis*Vector3.UP)
+	for k in 3:   # benches/planters along the plaza
+		kit.box("timber",Vector3(-.18+k*.18,.012,.085),Vector3(.06,.015,.018),tint*Color(.8,.7,.55))
+		kit.box("foliage",Vector3(-.09+k*.18,.012,.085),Vector3(.03,.035,.03),Color(.6,.75,.5))
+
+
 func _ore_outcrop(kit: MeshKit, rng: RandomNumberGenerator, tint: Color) -> void:
 	for k in 4:
 		var p := Vector3(rng.randf_range(-0.5, 0.5), 0.0, rng.randf_range(-0.5, 0.5))
@@ -921,7 +996,12 @@ func _build_ruins() -> void:
 		rng.seed = t
 		var overgrown := (int(r[2]) & 4) != 0
 		kit.set_frame(lc, 0.0)
-		kit.hex_plate("soil", Vector3(0, 0.01, 0), 0.7, Color(0.7, 0.68, 0.64), 0.2)
+		# Irregular rubble heaps on the actual ground (no plate): broken slabs, a fallen wall and
+		# scattered debris, following the terrain under each piece.
+		for heap in 3:
+			var hp_ := Vector3(rng.randf_range(-0.28, 0.28), 0.0, rng.randf_range(-0.28, 0.28))
+			hp_.y = world.ground_height(lc.x + hp_.x, lc.z + hp_.z) - lc.y - 0.01
+			kit.cone("stone", hp_, rng.randf_range(0.12, 0.2), rng.randf_range(0.05, 0.1), 7, Color(0.66, 0.63, 0.58))
 		for k in 7:
 			var p := Vector3(rng.randf_range(-0.4, 0.4), 0.01, rng.randf_range(-0.4, 0.4))
 			kit.box("stone" if k % 2 == 0 else "char", p, Vector3(0.1 + rng.randf() * 0.1, 0.04 + rng.randf() * 0.08, 0.08 + rng.randf() * 0.1), Color(0.7, 0.68, 0.64), rng.randf() * TAU)

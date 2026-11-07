@@ -60,4 +60,7 @@ there remains open unless replaced by specific tested evidence. Module existence
 Production inspected read-only: Cloud Run `shattered-empires`, `us-east1`, project `stem-471602`;
 existing revision `shattered-empires-00012-mjc` runs server image `8c03ba7d6056`. Downloads currently
 use `gs://stem-471602-se-snapshots/downloads/manifest.json` (Electron 0.1.8). No production write
-has been performed during the native application/UI work.
+had been performed at the time of that earlier inspection. This historical observation is
+superseded by [the native preview release record](NATIVE_PREVIEW_RELEASE.md); later local work is
+not included in that release. See [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md) for outstanding
+gameplay, art, performance and release work.

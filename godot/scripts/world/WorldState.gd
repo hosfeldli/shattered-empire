@@ -13,6 +13,7 @@ signal snapshot_applied
 signal econ_applied
 signal weather_changed(wx: Dictionary)
 signal combat_events(ev: Array)
+signal battlefield_terrain_changed(tiles: PackedInt32Array)
 signal note(m: Dictionary)
 
 ## world-space heights (one unit = one hex radius)
@@ -82,6 +83,8 @@ var ruins: Array = []
 var traffic: Array = []
 var bf := {}
 var bf_version := 0
+var battlefield_terrain_version := 0
+var visual_craters := {}
 var fw: Array = []
 var fw_version := 0
 var econ := {}
@@ -153,7 +156,7 @@ func _clear_map() -> void:
 	res = PackedByteArray(); res.resize(n)
 	vis_bits = PackedByteArray(); vis_bits.resize(n / 8)
 	urban_bits = PackedByteArray(); urban_bits.resize(n / 8)
-	units.clear(); snaps.clear(); buildings.clear(); cities.clear(); ruins = []; traffic = []; bf = {}; fw = []
+	units.clear(); snaps.clear(); buildings.clear(); cities.clear(); ruins = []; traffic = []; bf = {}; fw = []; visual_craters.clear(); battlefield_terrain_version+=1
 	buildings_version += 1
 	bf_version += 1
 	fw_version += 1
@@ -196,6 +199,7 @@ func apply_snapshot(m: Dictionary) -> void:
 	snapshot_count += 1
 	server_time = float(m.get("time", server_time))
 	tick = int(m.get("tick", tick))
+	var roads_changed:=false
 	if m.has("tiles"):
 		var changed := PackedInt32Array()
 		var roads := PackedInt32Array()
@@ -206,6 +210,7 @@ func apply_snapshot(m: Dictionary) -> void:
 			var rd := int(t[4])
 			if road[i] != rd:
 				roads.append(i)
+				roads_changed=true
 			road[i] = rd
 			flags[i] = int(t[5])
 			tile_owner[i] = int(t[8])
@@ -258,6 +263,8 @@ func apply_snapshot(m: Dictionary) -> void:
 		combat_events.emit(m.ev)
 	if m.has("econ"):
 		_apply_econ(m)
+	elif roads_changed:
+		_refresh_visual_craters()
 	snapshot_applied.emit()
 
 
@@ -286,6 +293,7 @@ func _apply_econ(m: Dictionary) -> void:
 		if fw != m.fw:
 			fw = m.fw
 			fw_version += 1
+	_refresh_visual_craters()
 	if m.has("urban"):
 		var u := Marshalls.base64_to_raw(m.urban)
 		if u.size() == urban_bits.size():
@@ -354,6 +362,7 @@ func apply_geo(m: Dictionary) -> void:
 	for cid in touched.keys():
 		out.append(cid)
 	geo_changed.emit(out)
+	_refresh_visual_craters()
 
 
 func _chunk_of(i: int) -> int:
@@ -480,7 +489,52 @@ func ground_height(x: float, z: float) -> float:
 		return height[t]
 	var u := (dx * B.y - dz * B.x) / det
 	var v := (A.x * dz - A.y * dx) / det
-	return (1.0 - u - v) * height[t] + u * corner_height(t, k) + v * corner_height(t, k2)
+	return (1.0 - u - v) * height[t] + u * corner_height(t, k) + v * corner_height(t, k2) + visual_crater_delta(t,x,z)
+
+
+## The server supplies an aggregate crater depth per hex, not exact local impact locations.
+## This stable presentation profile is cosmetic; server movement and cover remain authoritative.
+## It tapers to zero well inside the hex so neighboring meshes and wrapped chunks still meet.
+func visual_crater_delta(tile:int,x:float,z:float) -> float:
+	if not visual_craters.has(tile): return 0.0
+	var center:=grid.center(tile)
+	var local:=Vector2(grid.dx_wrap(center.x,x),z-center.y)
+	var seed_:int=absi(int((tile*1103515245+world_seed*12345)&0x7fffffff))
+	var offset:=Vector2(float(seed_%201)/1000.0-.1,float((seed_/201)%201)/1000.0-.1)
+	var p:=local-offset
+	var depth:=clampf(float(visual_craters[tile]),0.0,3.0)
+	var radius:=.29+depth*.025
+	var angle:=atan2(p.y,p.x)
+	var irregular:=1.0+.08*sin(angle*3.0+float(seed_%31))+.045*sin(angle*5.0+float(seed_%17))
+	var r:=p.length()/maxf(radius*irregular,.01)
+	if r>=1.25: return 0.0
+	var bowl:=-(.055+.035*depth)*(1.0-smoothstep(.15,.9,r))
+	var rim:=.014*depth*smoothstep(.68,.93,r)*(1.0-smoothstep(.98,1.25,r))
+	return bowl+rim
+
+
+## Avoid moving the visible ground under existing buildings, roads, rivers or functional trenches.
+## These authoritative features require their own damage geometry, not cosmetic height changes.
+func _refresh_visual_craters() -> void:
+	if grid==null: return
+	var blocked:={}
+	for building in buildings.values(): blocked[int(building.get("t",-1))]=true
+	for record in fw:
+		if record is Array and not record.is_empty(): blocked[int(record[0])]=true
+	var next:={}
+	for record in bf.get("c",[]):
+		if not record is Array or record.size()<2: continue
+		var tile:=int(record[0]); var depth:=float(record[1])
+		if tile<0 or tile>=grid.n or not known[tile] or blocked.has(tile) or road[tile]!=0 or is_river(tile) or is_lake(tile) or is_sea(tile) or depth<=0.0: continue
+		next[tile]=depth
+	var changes:=PackedInt32Array()
+	for tile in visual_craters:
+		if not next.has(tile) or next[tile]!=visual_craters[tile]: changes.append(int(tile))
+	for tile in next:
+		if not visual_craters.has(tile): changes.append(int(tile))
+	if changes.is_empty(): return
+	visual_craters=next; battlefield_terrain_version+=1
+	battlefield_terrain_changed.emit(changes)
 
 
 # ------------------------------------------------------------------ units over time

@@ -62,9 +62,19 @@ func _clear() -> void:
 func _routes() -> void:
 	routes.clear()
 	var ids:=composition.adapter.buildings.keys(); ids.sort()
+	# Civilians take shelter where the server reports active fighting: the streets of a contested
+	# district (and its neighbours) empty until the battle moves on.
+	var sheltering:={}
+	for record in world.bf.get("i",[]):
+		if float(record[1])<1.0: continue
+		var t:=int(record[0]); sheltering[t]=true
+		for d in 6:
+			var nb:=world.grid.nb[t*6+d]
+			if nb>=0: sheltering[nb]=true
 	for id in ids:
 		var b:WorldStateAdapter.BuildingRecord=composition.adapter.buildings[id]
 		if not b.complete or b.hp<35 or b.fire or b.lifecycle in ["ruined","planned"] or not world.is_visible(b.tile): continue
+		if sheltering.has(b.tile): continue
 		var city:Dictionary=world.cities.get(b.city,{})
 		if city.is_empty() or float(city.get("pop",0))<=0: continue
 		if b.group not in ["res","com","civ"] and not b.active: continue

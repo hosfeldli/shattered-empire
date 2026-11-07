@@ -508,7 +508,7 @@ export function transferCity(g, c, to) {
   const fromId = c.owner;
   c.owner = to.id; c.capital = false; c.stability = 30; c.occupied = 30;
   if (c.governor) { c.governor.enabled = !!to.isAI; c.governor.level = to.isAI ? 'autonomous' : 'off'; c.governor.log = []; c.governor.queue = []; c.governor.proposals = []; }
-  for (const b of g.buildings.values()) if (b.cityId === c.id && b.owner === fromId) { b.owner = to.id; b.queue = []; b.rally = -1; }
+  for (const b of g.buildings.values()) if (b.cityId === c.id && b.owner === fromId) { b.owner = to.id; b.queue = []; b.rally = -1; delete b.works; b.upgrading = false; }
   recomputeTerritory(g);
   afterCapture(g, c, fromId);
   const fromCiv = g.civs[fromId];

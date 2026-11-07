@@ -3,6 +3,9 @@
 The streamlined native design supersedes the earlier requirement for government/diplomacy UI
 parity and the earlier prohibition on balance changes. The later correction removes **all trading**,
 including neutral imports. The server remains authoritative. Browser/Electron code is reference only.
+This document records earlier checkpoints; see [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md)
+for later requests and [CURRENT_WORK.md](CURRENT_WORK.md) for the latest local state. In
+particular, newer native matches request `native-v3`, rather than the earlier `native-v1` noted below.
 
 ## Ruleset boundary
 

@@ -10,7 +10,7 @@ export function nativeSourceHash(root) {
       if(['.godot','docs','tests'].includes(item.name)) continue;
       const file=path.join(directory,item.name);
       if(item.isDirectory()) visit(file);
-      else if(/\.(gd|gdshader|gdshaderinc|glsl|tscn|tres|json|glb|png|jpe?g|webp|svg|wav|ttf|godot|cfg)$/i.test(item.name)) {
+      else if(/\.(gd|gdshader|gdshaderinc|glsl|tscn|tres|json|glb|png|jpe?g|webp|svg|wav|mp3|ogg|flac|ttf|godot|cfg)$/i.test(item.name)) {
         hash.update(path.relative(root,file));hash.update(fs.readFileSync(file));
       }
     }

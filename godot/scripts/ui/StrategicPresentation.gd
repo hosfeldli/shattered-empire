@@ -116,7 +116,11 @@ func _draw() -> void:
 		var p := _point(int(city.t))
 		var color := world.civ_color(int(city.o))
 		if camera.size >= 72: draw_circle(p,4,color)
-		_text(p+Vector2(7,-5),str(city.n),Color(.95,.94,.86),14)
+		var tier_names:=["","City","Metropolis","Megacity"]
+		var tier:=int(city.get("ti",0))
+		var title:=str(city.n)+(" ★" if int(city.get("cap",0))==1 else "")
+		_text(p+Vector2(7,-5),title,Color(.95,.94,.86),15 if tier>=2 or int(city.get("cap",0))==1 else 14)
+		if tier>0 and camera.size<90: _text(p+Vector2(7+title.length()*7.6,-5),tier_names[mini(tier,3)],Color(.78,.72,.55),11)
 		if camera.size<40 and (int(city.o)==world.civ_id or world.spectator):
 			var state:="%d people · %s homes"%[int(city.pop),str(city.get("h","—"))]
 			if int(city.get("fs",0)): state+=" · FOOD SHORTAGE"

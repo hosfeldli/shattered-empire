@@ -157,6 +157,7 @@ export class World {
     this.placeVolcanoes(rng);
     this.placeResources(rng);
     this.starts = this.pickStarts(nCivs, rng);
+    this.moveRiverResources();
     this.dirty.clear();
   }
 
@@ -299,6 +300,23 @@ export class World {
         if (coast && y < 0.08) r = RES.FISH;
       }
       this.res[i] = r;
+    }
+  }
+
+  // Keep the original seeded placement and starting-site calculations stable, then move any
+  // river deposits to nearby dry terrain without consuming simulation randomness.
+  moveRiverResources() {
+    for (let i = 0; i < N; i++) {
+      if (!this.river[i] || !this.res[i]) continue;
+      const resource = this.res[i], terrain = this.terr[i];
+      let target = -1;
+      for (const radius of [2, 4, 8]) {
+        const dry = disk(i, radius).filter((t) => !this.river[t] && !this.res[t] && !isWater(this.terr[t]) && this.terr[t] !== T.PEAK && this.terr[t] !== T.LAVA);
+        target = dry.find((t) => this.terr[t] === terrain) ?? dry[0] ?? -1;
+        if (target >= 0) break;
+      }
+      this.res[i] = RES.NONE;
+      if (target >= 0) this.res[target] = resource;
     }
   }
 

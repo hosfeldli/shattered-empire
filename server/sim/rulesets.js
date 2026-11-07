@@ -3,6 +3,8 @@ export const LEGACY_RULESET = 'legacy-v1';
 export const NATIVE_RULESET = 'native-v1';
 export const DELIBERATE_RULESET = 'native-v2';
 export const EXPANSIVE_RULESET = 'native-v3';
+// native-v4: the v3 tempo plus timed upgrade and repair works (no instant level-ups or heals).
+export const WORKS_RULESET = 'native-v4';
 export const TEMPO = Object.freeze({
   infantryMovement: .65, wheeledMovement: .70, trackedMovement: .70,
   logisticsMovement: .75, aircraftMovement: .85, production: .70,
@@ -26,17 +28,22 @@ export const EXPANSIVE_TEMPO = Object.freeze({ ...DELIBERATE_TEMPO,
 });
 export const REMOVED_TECHS = new Set(['corporate_charter', 'federal_union']);
 export const REMOVED_COMMANDS = new Set(['gov', 'policy', 'tax', 'focus', 'import', 'importQuote', 'respond', 'workforce', 'workforcePreview', 'workerLock', 'govProposal']);
-export const nativeRules = (subject) => [NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET].includes(subject?.ruleset);
+export const nativeRules = (subject) => [NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET].includes(subject?.ruleset);
+export const timedWorks = (subject) => subject?.ruleset === WORKS_RULESET;
 export function validateRuleset(id = LEGACY_RULESET) {
-  if (![LEGACY_RULESET, NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET].includes(id)) throw new Error(`Unsupported match ruleset: ${id}`);
+  if (![LEGACY_RULESET, NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET].includes(id)) throw new Error(`Unsupported match ruleset: ${id}`);
   return id;
 }
-export const tempo = (subject, key) => subject?.ruleset === EXPANSIVE_RULESET ? EXPANSIVE_TEMPO[key] : subject?.ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO[key] : subject?.ruleset === NATIVE_RULESET ? TEMPO[key] : 1;
+export const tempo = (subject, key) => subject?.ruleset === EXPANSIVE_RULESET || subject?.ruleset === WORKS_RULESET ? EXPANSIVE_TEMPO[key] : subject?.ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO[key] : subject?.ruleset === NATIVE_RULESET ? TEMPO[key] : 1;
 export const techEnabled = (civ, key) => !nativeRules(civ) || !REMOVED_TECHS.has(key);
+// native-v4: indirect-fire crews haul guns, tubes and ammunition. They move more slowly and are
+// more fragile than comparable line troops, so they belong behind the front, not leading it.
+export const SUPPORT_FIRE = Object.freeze({ movement: .82, durability: .85 });
 export function movementRate(g, def) {
   const key = def.air ? 'aircraftMovement' : def.logistics || def.cat === 'support' && def.move === 'wheeled' ? 'logisticsMovement' : def.move === 'tracked' ? 'trackedMovement' : def.move === 'wheeled' ? 'wheeledMovement' : 'infantryMovement';
-  return tempo(g, key);
+  return tempo(g, key) * (timedWorks(g) && def.cat === 'artillery' ? SUPPORT_FIRE.movement : 1);
 }
+export const durability = (g, def) => (timedWorks(g) && def.cat === 'artillery' ? SUPPORT_FIRE.durability : 1);
 export function normalizeNativeCiv(civ) {
   // Inert compatibility containers for shared legacy code; no native decisions or bonuses.
   civ.gov = null; civ.govCooldown = 0; civ.policies = new Set(); civ.tax = 0; civ.focus = null;
@@ -62,6 +69,6 @@ export function nativeDefinitions(defs, ruleset = NATIVE_RULESET) {
     const after = Object.values(out.TECHS).filter((t) => t.age === age - 1).length;
     out.AGES[age].techsNeeded = Math.max(1, Math.min(after, Math.floor(defs.AGES[age].techsNeeded * after / before)));
   }
-  out.RULESET = { id: ruleset, tempo: ruleset === EXPANSIVE_RULESET ? EXPANSIVE_TEMPO : ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO : TEMPO, trading: false, administration: 'automatic' };
+  out.RULESET = { id: ruleset, tempo: ruleset === EXPANSIVE_RULESET || ruleset === WORKS_RULESET ? EXPANSIVE_TEMPO : ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO : TEMPO, trading: false, administration: 'automatic', timedWorks: ruleset === WORKS_RULESET };
   return out;
 }

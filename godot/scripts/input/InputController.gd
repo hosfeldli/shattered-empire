@@ -276,6 +276,17 @@ func center_selection() -> void:
 
 func _select_same_type(pos:Vector2,whole_map:bool) -> void:
 	selected_army=-1
+	var on_unit_badge:=labels!=null and not labels.banner_at(pos).is_empty()
+	var tile:=cam.pick_tile(pos); var bid:=settlements.building_at(tile)
+	# A unit parked on a building must not steal the building's double-click. Its explicit
+	# unit badge remains available when the player intends to select matching troops.
+	if bid>=0 and not on_unit_badge and int(world.buildings[bid].o)==world.civ_id:
+		selected_buildings.clear(); military.selected.clear()
+		for building in world.buildings.values():
+			if int(building.o)!=world.civ_id or building.ty!=world.buildings[bid].ty: continue
+			var p:=world.grid.center(int(building.t))
+			if whole_map or get_viewport().get_visible_rect().has_point(cam.to_screen(Vector3(world.grid.near_x(p.x,cam.focus.x),world.tile_height(int(building.t)),p.y))): selected_buildings[int(building.id)]=true
+		settlements.selected_building=bid; selection_changed.emit(); return
 	if labels: pos=labels.order_point(pos)
 	var hits:=military.units_near_screen(pos,18)
 	if not hits.is_empty():
@@ -284,7 +295,7 @@ func _select_same_type(pos:Vector2,whole_map:bool) -> void:
 			if int(unit.owner)!=world.civ_id or unit.type!=type: continue
 			if whole_map or (military.draw_positions.has(unit.id) and get_viewport().get_visible_rect().has_point(cam.to_screen(military.draw_positions[unit.id]))): military.selected[int(unit.id)]=true
 	else:
-		var tile:=cam.pick_tile(pos); var bid:=settlements.building_at(tile)
+		tile=cam.pick_tile(pos); bid=settlements.building_at(tile)
 		if bid<0: return
 		selected_buildings.clear(); military.selected.clear()
 		for building in world.buildings.values():

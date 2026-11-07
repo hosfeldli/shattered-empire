@@ -5,6 +5,12 @@ including later corrections. The design describes the intended result; this chec
 what is actually present and what still needs acceptance. A working first pass is not a passed
 production-quality gate.
 
+The newer [consolidated backlog](DEVELOPMENT_BACKLOG.md) records subsequent requests and resolves
+or flags conflicts. In particular, the later explicit rejection of visible foundations supersedes
+the older foundation instructions below; the earlier minimap-removal request conflicts with the
+newly pasted design's minimap and is flagged for resolution. Older checked boxes describe the
+checkpoint at the time, not acceptance of the updated art direction.
+
 The later [native redesign](NATIVE_REDESIGN.md) explicitly authorizes versioned pacing and
 gameplay simplification: native matches remove government/treaty management and all trading.
 Those instructions supersede the original administration-parity and unchanged-balance goals.

@@ -28,6 +28,13 @@ func run() -> void:
 	renderer._on_events([{"k":"fire","a":100,"b":101}])
 	check(renderer.fx.any(func(effect):return effect.kind=="smoke"),"gunfire did not produce event-driven smoke")
 	renderer._clear()
+	var military:=MilitaryRenderer.new(); renderer.military=military
+	world.units[5]={"id":5,"tile":100}
+	military.draw_positions[5]=Vector3(7.0,2.0,5.0)
+	renderer._on_events([{"k":"launch","a":100,"b":101,"s":5,"f":1.0}])
+	var projectile:Dictionary=renderer.fx.filter(func(effect):return effect.kind=="shell")[0]
+	check((projectile.a as Vector3).distance_to(military.draw_positions[5])<.2,"artillery projectile did not originate at the visible unit")
+	renderer._clear(); military.free()
 	var composition:=WorldCompositionSystem.new(); composition.setup(world)
 	composition.weather.columns=1; composition.weather.rows=1; composition.weather.wind_direction=Vector2.RIGHT
 	renderer.composition=composition

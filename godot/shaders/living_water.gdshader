@@ -18,6 +18,7 @@ uniform float water_time=0.0;
 uniform float water_detail=1.0;
 uniform sampler2D depth_texture : hint_depth_texture, repeat_disable, filter_nearest;
 varying vec3 world_position;
+float water_detail_floor() { return .45+.55*water_detail; }
 
 ivec2 water_cell(vec2 p) {
     float x=.577350269*p.x-p.y/3.0, z=2.0/3.0*p.y;
@@ -98,10 +99,32 @@ void fragment() {
     float thickness=max(0.0,-scene.z/scene.w+VERTEX.z);
     float shore=1.0-smoothstep(.025,.19,thickness);
     float foam=shore*(1.0-step(.75,data.b))*smoothstep(.8,.97,ripples)*.018;
-    float fresnel=pow(1.0-clamp(dot(NORMAL,VIEW),0.0,1.0),4.0);
-    vec3 color=pow(COLOR.rgb,vec3(2.2))*(.99+.015*ripples);
-    color=mix(color,mix(vec3(.11,.16,.19),vec3(.15,.17,.18),cloud_coverage(world_position.xz)),.035+fresnel*.08);
-    color=mix(color,vec3(.30,.34,.32),clamp(foam,0.0,.1)*water_detail);
+    float river=step(.75,data.b);
+    // Sky reflection: the ripple normal tilts the reflected ray between the zenith and the
+    // horizon; drifting clouds reflect as soft lighter patches. Strength stays modest so the
+    // depth colour still reads through.
+    vec3 world_normal=normalize(bump);
+    vec3 view_dir=normalize(vec3(0.0,-.866,-.5));
+    vec3 reflected=reflect(view_dir,world_normal);
+    float horizon=1.0-clamp(reflected.y,0.0,1.0);
+    vec3 sky=mix(vec3(.36,.47,.56),vec3(.62,.68,.72),horizon*horizon);
+    float overcast=cloud_coverage(world_position.xz);
+    sky=mix(sky,vec3(.58,.60,.62),overcast*.7);
+    float fresnel=.10+.22*pow(horizon,3.0);
+    vec3 color=pow(COLOR.rgb,vec3(2.2))*(.98+.03*ripples);
+    // Shallow water near banks shows the bed; deep water absorbs to blue-green.
+    float shallow=1.0-smoothstep(.02,.32,thickness);
+    color=mix(color,color*vec3(1.25,1.18,.92)+vec3(.018,.016,.008),shallow*.55);
+    // Rivers: faint streaks stretched along the current make the flow direction legible.
+    if(river>.5) {
+        vec2 along=normalize(flow+vec2(1e-4));
+        vec2 across=vec2(-along.y,along.x);
+        vec2 sp=vec2(dot(world_position.xz,along)*1.6-water_time*.9,dot(world_position.xz,across)*9.0);
+        float streak=cloud_noise(sp,world_cells.x*40.0)*cloud_noise(sp*vec2(.5,1.7)+3.1,world_cells.x*40.0);
+        color+=vec3(.035,.04,.038)*smoothstep(.25,.6,streak)*water_detail;
+    }
+    color=mix(color,sky*.42,fresnel*water_detail_floor());
+    color=mix(color,vec3(.42,.45,.43),clamp(foam,0.0,.1)*water_detail);
     color*=cloud_shadow(world_position);
     vec2 knowledge=surface_visibility(world_position.xz);
     ALBEDO=remembered_surface(color,knowledge.y)*knowledge.x;
@@ -116,6 +139,6 @@ void light() {
     DIFFUSE_LIGHT+=LIGHT_COLOR*ATTENUATION*diffuse/PI;
     // A restrained solar reflection on the fine pressure/capillary slopes, never white blobs.
     vec3 halfway=normalize(LIGHT+VIEW);
-    float reflection=pow(max(dot(NORMAL,halfway),0.0),96.0)*clamp(dot(ALBEDO,vec3(.333))*8.0,0.0,1.0);
-    SPECULAR_LIGHT+=LIGHT_COLOR*ATTENUATION*reflection*.006;
+    float reflection=pow(max(dot(NORMAL,halfway),0.0),160.0)*clamp(dot(ALBEDO,vec3(.333))*8.0,0.0,1.0);
+    SPECULAR_LIGHT+=LIGHT_COLOR*ATTENUATION*reflection*.035;
 }

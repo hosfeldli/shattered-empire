@@ -168,6 +168,8 @@ func _settings() -> void:
 	var vsync:=CheckButton.new(); vsync.text="Vertical sync"; vsync.button_pressed=prefs.values.vsync; content.add_child(vsync)
 	var fps:=NativeUI.options(NativeUI.field(content,"Frame limit"),[[30,"30 FPS"],[60,"60 FPS"],[120,"120 FPS"],[144,"144 FPS"],[0,"Unlimited"]]); _select(fps,prefs.values.fps)
 	var volume:=_slider("Master volume",0,100,5,float(prefs.values.volume))
+	var ambience_volume:=_slider("Ambience",0,100,5,float(prefs.values.ambience_volume))
+	var effects_volume:=_slider("Battle & effects",0,100,5,float(prefs.values.effects_volume))
 	var mute:=CheckButton.new(); mute.text="Mute audio"; mute.button_pressed=prefs.values.mute; content.add_child(mute)
 	var ui_scale:=_slider("Interface scale",.8,1.5,.1,float(prefs.values.ui_scale))
 	var pan:=_slider("Pan speed",.3,3,.1,float(prefs.values.pan_speed))
@@ -178,7 +180,7 @@ func _settings() -> void:
 	NativeUI.compact_button(content,"World & accessibility options…",func():presentation.visible=not presentation.visible)
 	content.add_child(presentation)
 	var switches:={}
-	for pair in [["weather_effects","Weather effects"],["screen_shake","Screen shake"],["reduced_motion","Reduced motion"],["high_contrast","High-contrast selection"],["unit_labels","Unit labels"],["resource_markers","Resource markers"]]:
+	for pair in [["weather_effects","Weather effects"],["screen_shake","Screen shake"],["reduced_motion","Reduced motion"],["high_contrast","High-contrast selection"],["unit_labels","Unit labels"],["resource_markers","Resource markers"],["territory_borders","Territory borders"],["wildlife","Livestock and birds"]]:
 		var toggle:=CheckButton.new(); toggle.text=pair[1]; toggle.button_pressed=bool(prefs.values[pair[0]]); presentation.add_child(toggle); switches[pair[0]]=toggle
 	var particles:=NativeUI.options(NativeUI.field(presentation,"Particle density"),[[0.0,"Minimal"],[.5,"Reduced"],[1.0,"Full"]]); _select(particles,prefs.values.particle_density)
 	var shortcuts:=VBoxContainer.new(); shortcuts.hide()
@@ -193,7 +195,7 @@ func _settings() -> void:
 	NativeUI.button(content,"Apply & save",func():
 		var address:=server.text.strip_edges()
 		if not address.begins_with("ws://") and not address.begins_with("wss://"): status.text="Use a ws:// or wss:// game-server address."; return
-		prefs.values.merge({"fullscreen":fullscreen.button_pressed,"resolution":NativeUI.value(resolution),"quality":NativeUI.value(quality),"vsync":vsync.button_pressed,"fps":NativeUI.value(fps),"volume":volume.value,"mute":mute.button_pressed,"ui_scale":ui_scale.value,"pan_speed":pan.value,"zoom_speed":zoom.value,"invert_zoom":invert.button_pressed,"edge_pan":edges.button_pressed,"server":address},true)
+		prefs.values.merge({"fullscreen":fullscreen.button_pressed,"resolution":NativeUI.value(resolution),"quality":NativeUI.value(quality),"vsync":vsync.button_pressed,"fps":NativeUI.value(fps),"volume":volume.value,"ambience_volume":ambience_volume.value,"effects_volume":effects_volume.value,"mute":mute.button_pressed,"ui_scale":ui_scale.value,"pan_speed":pan.value,"zoom_speed":zoom.value,"invert_zoom":invert.button_pressed,"edge_pan":edges.button_pressed,"server":address},true)
 		for key in switches: prefs.values[key]=(switches[key] as CheckButton).button_pressed
 		prefs.values.particle_density=NativeUI.value(particles)
 		var error:=prefs.save(); prefs.apply(app); root.theme=NativeUI.theme()

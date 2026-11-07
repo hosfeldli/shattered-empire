@@ -89,6 +89,8 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 	tree_mesh = _tree_model()
 	world.weather_changed.connect(_on_weather)
 	world.geo_changed.connect(_on_geo)
+	world.battlefield_terrain_changed.connect(_on_battlefield_terrain)
+	world.tiles_changed.connect(_on_tiles)
 	world.econ_applied.connect(_on_econ)
 	world.welcomed.connect(_clear)
 	world.reset.connect(_clear)
@@ -126,6 +128,14 @@ func _on_geo(list: PackedInt32Array) -> void:
 		props_dirty[cid] = true
 
 
+func _on_battlefield_terrain(tiles:PackedInt32Array) -> void:
+	for tile in tiles: props_dirty[world._chunk_of(tile)]=true
+
+
+func _on_tiles(_tiles:PackedInt32Array,roads:PackedInt32Array) -> void:
+	for tile in roads: props_dirty[world._chunk_of(tile)]=true
+
+
 func _on_econ() -> void:
 	var now := {}
 	for b in world.buildings.values():
@@ -151,6 +161,8 @@ func update(dt: float) -> void:
 	if world.grid == null:
 		return
 	var g := world.grid
+	if composition: RenderingServer.global_shader_parameter_set(&"wind_vector", composition.weather.wind * (0.0 if reduced_motion else 1.0))
+	_lightning(dt)
 	# Sun shadows follow the visible footprint and disappear once they are sub-pixel at map zoom.
 	var shadow_size := float(LODManager.PRESETS[composition.lod.quality].shadow_size) if composition else SHADOW_MAX_SIZE
 	sun.shadow_enabled = shadows_allowed and cam.size < shadow_size
@@ -254,6 +266,31 @@ func _on_weather(wx: Dictionary) -> void:
 	terrain.terrain_mat.set_shader_parameter("wet_tex", wet_tex)
 
 
+## Storm lightning over the camera's area: brief sky flashes (never with reduced motion) and a
+## signal the soundscape answers with thunder after a light-speed-vs-sound delay.
+signal lightning(strength: float, delay: float)
+var flash := 0.0
+var flash_wait := 3.0
+var sun_energy := -1.0
+func _lightning(dt: float) -> void:
+	if sun_energy < 0.0: sun_energy = sun.light_energy
+	flash = maxf(0.0, flash - dt * 7.0)
+	sun.light_energy = sun_energy * (1.0 + flash * 1.6)
+	if composition == null or world.paused or not effects_enabled: return
+	var tile := world.grid.tile_at(cam.focus.x, cam.focus.z)
+	if tile < 0: return
+	var storm := float(composition.weather.at_tile(tile).get("storm", 0.0))
+	if storm < 0.35:
+		flash_wait = maxf(flash_wait, 2.0)
+		return
+	flash_wait -= dt * storm
+	if flash_wait > 0.0: return
+	flash_wait = randf_range(4.0, 14.0)
+	var strength := randf_range(0.5, 1.0) * storm
+	if not reduced_motion: flash = strength
+	lightning.emit(strength, randf_range(0.6, 3.5))
+
+
 func rain_at(x: float, z: float) -> float:
 	if rain_img == null:
 		return 0.0
@@ -308,9 +345,9 @@ func _make_rain() -> void:
 	rain.process_material = pm
 	var streak := BoxMesh.new()
 	streak.size = Vector3(0.012, 0.25, 0.012)
-	streak.material = MaterialLibrary.smoke(Color(0.7, 0.75, 0.82), 0.22)
+	streak.material = MaterialLibrary.particle(Color(0.7, 0.75, 0.82), 0.22)
 	rain_mesh=streak
-	snow_mesh=SphereMesh.new(); snow_mesh.radius=.02; snow_mesh.height=.04; snow_mesh.radial_segments=4; snow_mesh.rings=2; snow_mesh.material=MaterialLibrary.smoke(Color(.9,.94,.98),.65)
+	snow_mesh=SphereMesh.new(); snow_mesh.radius=.02; snow_mesh.height=.04; snow_mesh.radial_segments=4; snow_mesh.rings=2; snow_mesh.material=MaterialLibrary.particle(Color(.9,.94,.98),.65)
 	rain.draw_pass_1 = streak
 	rain.emitting = false
 	add_child(rain)
@@ -341,10 +378,32 @@ func _update_rain(f:Vector3) -> void:
 
 # ------------------------------------------------------------------ natural cover
 func _tree_model() -> ArrayMesh:
+	# A three-tier conifer with a visible trunk and lighter new growth toward the tip.
 	var k := MeshKit.new()
-	k.cylinder("bark", Vector3.ZERO, 0.016, 0.06, 4, Color.WHITE, -1.0)
-	k.cone("foliage", Vector3(0, 0.045, 0), 0.085, 0.26, 6)
-	return k.commit()
+	k.cylinder("bark", Vector3.ZERO, 0.017, 0.1, 6, Color.WHITE, 0.011)
+	k.cone("foliage", Vector3(0, 0.05, 0), 0.098, 0.14, 9, Color(.74,.84,.70))
+	k.cone("foliage", Vector3(0, 0.105, 0), 0.08, 0.13, 9, Color(.84,.93,.80))
+	k.cone("foliage", Vector3(0, 0.16, 0), 0.058, 0.12, 8, Color(.95,1,.9))
+	var mesh := k.commit()
+	# Crowns sway in the wind; the trunk keeps the shared static surface material.
+	for surface in mesh.get_surface_count():
+		var material := mesh.surface_get_material(surface)
+		if material and material.resource_name == "foliage":
+			mesh.surface_set_material(surface, MaterialLibrary.sway_foliage())
+	return mesh
+
+
+func _road_clearance(tile:int,point:Vector2) -> float:
+	var encoded:=int(world.road[tile]); var center:=world.grid.center(tile)
+	var local:=Vector2(world.grid.dx_wrap(center.x,point.x),point.y-center.y)
+	var closest:=INF
+	for direction in 6:
+		var type: int=(encoded>>(direction*4))&7
+		if type<=0 or type>=InfrastructureRenderer.WIDTH.size(): continue
+		var end:Vector2=world.grid.dir_vec[direction]*(SQRT3*.5)
+		var projection:=end*clampf(local.dot(end)/end.length_squared(),0,1)
+		closest=minf(closest,local.distance_to(projection)-InfrastructureRenderer.WIDTH[type]*.5)
+	return closest
 
 
 func _build_props(cid: int) -> void:
@@ -373,7 +432,7 @@ func _build_props(cid: int) -> void:
 			var c := g.center(i)
 			var n := 0
 			match b:
-				4: n = 9
+				4: n = 11
 				2: n = 2 if rng.randf() < 0.35 else 0
 				7: n = 3
 				8: n = 3 if rng.randf() < 0.5 else 0
@@ -382,9 +441,19 @@ func _build_props(cid: int) -> void:
 				n = mini(n, 4)
 			if b == 4:
 				var quilt := Color(0.72, 0.86, 0.62).darkened(rng.randf_range(0.0, 0.16))
-				if not work_tiles.has(i):
-					canopy.set_frame(Vector3(c.x, world.tile_height(i) + 0.055, c.y), 0.0)
-					canopy.hex_plate("foliage", Vector3.ZERO, 0.82, quilt, 0.025)
+				if not work_tiles.has(i) and world.road[i]==0:
+					# Distant canopy as overlapping irregular crowns: forest edges read as natural
+					# woodland, never as a tiled hex quilt.
+					var crown := RandomNumberGenerator.new()
+					crown.seed = hash([world.world_seed, i, "canopy"])
+					for clump in 6:
+						var ca := crown.randf() * TAU
+						var cd := 0.0 if clump == 0 else sqrt(crown.randf()) * 0.62
+						var cx2 := c.x + cos(ca) * cd
+						var cz2 := c.y + sin(ca) * cd
+						var cr := crown.randf_range(0.30, 0.46)
+						canopy.set_frame(Vector3(cx2, world.ground_height(cx2, cz2) + 0.05, cz2), crown.randf() * TAU)
+						canopy.cylinder("foliage", Vector3.ZERO, cr, 0.02 + crown.randf() * 0.03, 9, quilt.darkened(crown.randf() * 0.1), cr * 0.86)
 			for k in n:
 				var a := rng.randf() * TAU
 				var d := sqrt(rng.randf()) * 0.82
@@ -398,8 +467,10 @@ func _build_props(cid: int) -> void:
 				var transform:=Transform3D(Basis(Vector3.UP,rng.randf()*TAU).scaled(Vector3(s,s*rng.randf_range(.9,1.2),s)),Vector3(x,y-.01,z))
 				var tint:=Color(1,1,1).darkened(rng.randf()*.25).lerp(Color(.9,.95,.7),rng.randf()*.2)
 				if work_tiles.has(i) and TrenchPresentation.distance_to_route(work_tiles[i],g,Vector2(x,z))<.22: continue
+				if world.road[i]!=0 and _road_clearance(i,Vector2(x,z))<.09: continue
 				xforms.append(transform); cols.append(tint)
 			_deposit(rocks, i, c, rng)
+			_derelict(rocks, i, c)
 	var rec: Dictionary = props.get(cid, {})
 	if rec.is_empty():
 		var mmi := MultiMeshInstance3D.new()
@@ -430,13 +501,46 @@ func _build_props(cid: int) -> void:
 ## a visible sign of what lies in the ground (iron, coal, stone, oil, rare earths)
 func _deposit(kit: MeshKit, i: int, c: Vector2, rng: RandomNumberGenerator) -> void:
 	var dep := world.deposit(i)
-	if dep == 0 or dep >= 6:
+	if dep == 0 or dep > 7:
 		return
 	var y := world.tile_height(i)
 	kit.set_frame(Vector3(c.x, y, c.y), 0.0)
 	match dep:
-		1:   # oil seep
-			kit.cylinder("char", Vector3(0.25, 0.01, 0.2), 0.18, 0.01, 10, Color(0.6, 0.6, 0.65), 0.18)
+		6:   # fishing grounds: a rusted marker buoy and a line of net floats on the surface
+			var level := world.water_level(i)
+			if level <= -1e6: return
+			var at := Vector3(rng.randf_range(-0.3, 0.3), level - y, rng.randf_range(-0.3, 0.3))
+			kit.cylinder("steel", at, 0.025, 0.07, 8, Color(0.75, 0.38, 0.25))
+			kit.cone("steel", at + Vector3(0, 0.07, 0), 0.02, 0.04, 6, Color(0.8, 0.75, 0.3))
+			var dir := Vector3(cos(rng.randf() * TAU), 0, sin(rng.randf() * TAU))
+			for k in 6:
+				kit.cylinder("canvas", at + dir * (0.08 + k * 0.05) + Vector3(0, -0.004, 0), 0.008, 0.012, 6, Color(0.95, 0.6, 0.2))
+		7:   # old-world ruins: a collapsed concrete frame, exposed rebar, rubble and a rusted car
+			var at := Vector3(rng.randf_range(-0.2, 0.2), 0.0, rng.randf_range(-0.2, 0.2))
+			var g0 := world.ground_height(c.x + at.x, c.y + at.z) - y - 0.01
+			var yaw := rng.randf() * TAU
+			var frame := Transform3D(Basis(Vector3.UP, yaw), at + Vector3(0, g0, 0))
+			for col in 4:
+				var p: Vector3 = frame * Vector3(-0.14 + (col % 2) * 0.28, 0, -0.1 + (col / 2) * 0.2)
+				var h := 0.08 + rng.randf() * 0.2 if col != 3 else 0.04
+				kit.box("concrete", p, Vector3(0.035, h, 0.035), Color(0.72, 0.7, 0.66))
+				if h > 0.15: kit.box("steel", p + Vector3(0, h, 0), Vector3(0.006, 0.05, 0.006), Color(0.55, 0.32, 0.22))
+			kit.box("concrete", frame * Vector3(0, 0.2, -0.1), Vector3(0.3, 0.025, 0.04), Color(0.7, 0.68, 0.64), yaw)       # surviving beam
+			kit.box("concrete", frame * Vector3(0.04, 0.0, 0.03), Vector3(0.24, 0.03, 0.16), Color(0.66, 0.64, 0.6), yaw + 0.25)  # fallen slab
+			for k in 5:
+				kit.box("stone", frame * Vector3(rng.randf_range(-0.25, 0.25), 0, rng.randf_range(-0.22, 0.22)), Vector3(0.04 + rng.randf() * 0.04, 0.02 + rng.randf() * 0.03, 0.04), Color(0.68, 0.66, 0.62), rng.randf() * TAU)
+			_car_hulk(kit, frame * Vector3(0.28, 0, 0.2), yaw + 1.1)
+			kit.cone("foliage", frame * Vector3(-0.2, 0, 0.18), 0.07, 0.12, 6, Color(0.8, 0.9, 0.7))
+		1:   # oil seep: stained ground, a small dark pool and a rusted old-world capped wellhead
+			var spot := Vector3(rng.randf_range(-0.25, 0.25), 0.0, rng.randf_range(-0.25, 0.25))
+			var ground := world.ground_height(c.x + spot.x, c.y + spot.z) - y
+			kit.cylinder("soil", spot + Vector3(0, ground + 0.004, 0), 0.17, 0.004, 14, Color(0.62, 0.56, 0.47), 0.17)
+			kit.cylinder("char", spot + Vector3(0.03, ground + 0.008, -0.02), 0.075, 0.003, 12, Color(0.55, 0.55, 0.6), 0.075)
+			kit.cylinder("steel", spot + Vector3(-0.07, ground, 0.05), 0.022, 0.07, 8, Color(0.62, 0.42, 0.3))
+			kit.box("steel", spot + Vector3(-0.07, ground + 0.07, 0.05), Vector3(0.06, 0.012, 0.014), Color(0.55, 0.38, 0.28))
+			for k in 2:
+				var barrel := spot + Vector3(0.09 + k * 0.045, ground, 0.07 - k * 0.03)
+				kit.cylinder("steel", barrel, 0.017, 0.045, 8, Color(0.5, 0.36, 0.26) if k == 0 else Color(0.32, 0.38, 0.33))
 		2, 3, 4, 5:
 			var col: Color = {2: Color(0.85, 0.55, 0.42), 3: Color(0.35, 0.33, 0.32), 4: Color(0.7, 0.8, 0.85), 5: Color(1.25, 1.22, 1.15)}[dep]
 			var mat := "ore" if dep != 5 else "stone"
@@ -445,6 +549,27 @@ func _deposit(kit: MeshKit, i: int, c: Vector2, rng: RandomNumberGenerator) -> v
 				var p := Vector3(spot.x + rng.randf_range(-0.16, 0.16), -0.02, spot.y + rng.randf_range(-0.16, 0.16))
 				var s := rng.randf_range(0.05, 0.1)
 				kit.box(mat, Vector3(p.x, world.ground_height(c.x + p.x, c.y + p.z) - y - 0.02, p.z), Vector3(s, s * rng.randf_range(0.6, 1.2), s * 0.8), col, rng.randf() * TAU)
+
+
+## A rusted, wheel-less car hulk from before the collapse (decorative scenery only).
+func _car_hulk(kit: MeshKit, p: Vector3, yaw: float) -> void:
+	var rust := Color(0.52, 0.34, 0.24)
+	kit.box("steel", p, Vector3(0.13, 0.035, 0.06), rust, yaw)
+	kit.box("steel", p + Vector3(0, 0.035, 0), Vector3(0.07, 0.025, 0.055), rust.darkened(0.15), yaw)
+	kit.box("char", p + Vector3(0, 0.037, 0), Vector3(0.072, 0.018, 0.057), Color(0.4, 0.4, 0.42), yaw)
+
+
+## Rare deterministic remnants of the old world in open country: one rusted car hulk on roughly
+## one tile in sixty, never on roads, building sites, trenches, water or mountains.
+func _derelict(kit: MeshKit, i: int, c: Vector2) -> void:
+	if world.road[i] != 0 or work_tiles.has(i) or built_tiles.has(i) or world.is_river(i) or world.is_sea(i) or world.is_lake(i): return
+	if not world.biome(i) in [2, 3, 5, 6, 7]: return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([world.world_seed, i, "derelict"])
+	if rng.randf() > 1.0 / 60.0: return
+	var p := Vector2(c.x + rng.randf_range(-0.45, 0.45), c.y + rng.randf_range(-0.45, 0.45))
+	kit.set_frame(Vector3.ZERO, 0.0)
+	_car_hulk(kit, Vector3(p.x, world.ground_height(p.x, p.y) - 0.005, p.y), rng.randf() * TAU)
 
 
 func _exit_tree() -> void:

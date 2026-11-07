@@ -27,6 +27,10 @@ var valid_tiles := {}
 var drawing := false
 var revision := 0
 var mesh: MeshInstance3D
+var legal_mesh: MeshInstance3D
+var legal_view:=Vector3.INF
+var blocked_tiles:={}
+var blocked_edges:={}
 var last_hover := -1
 var status := "Select a tool, then draw on the map. Enter confirms; Esc cancels."
 var formation := "line"
@@ -52,6 +56,9 @@ func setup(w: WorldState, n: NetworkClient, c: CameraController, m: MilitaryRend
 	mesh = MeshInstance3D.new()
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mesh)
+	legal_mesh=MeshInstance3D.new()
+	legal_mesh.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(legal_mesh)
 	cam.cancel_pressed.connect(cancel)
 	world.welcomed.connect(cancel)
 	world.reset.connect(cancel)
@@ -70,6 +77,7 @@ func activate(kind: String, option: Variant = "") -> void:
 			if revision != token: return
 			valid_tiles.clear()
 			for tile in reply.get("tiles", []): valid_tiles[int(tile)] = true
+			_refresh_legal_sites()
 			status = "%d legal sites · %s" % [valid_tiles.size(), "affordable" if reply.get("afford", false) else "will join the construction queue"]
 			changed.emit())
 	if kind=="build" and settlements!=null:
@@ -81,13 +89,15 @@ func activate(kind: String, option: Variant = "") -> void:
 
 func cancel() -> void:
 	right_dragging=false
-	revision += 1; hover_serial+=1; site_details.clear()
+	revision += 1; hover_serial+=1; site_details.clear(); blocked_tiles.clear(); blocked_edges.clear()
 	if terrain: terrain.terrain_mat.set_shader_parameter("farm_preview_active",0.0)
 	if placement: placement.mesh=null; placement.tile=-1
 	mode = "select"; points.clear(); preview.clear(); valid_tiles.clear(); drawing = false
 	target_payload.clear(); target_enemy.clear()
 	last_hover = -1
 	if mesh: mesh.mesh = null
+	if legal_mesh: legal_mesh.mesh=null
+	legal_view=Vector3.INF
 	status = "Select a tool, then draw on the map. Enter confirms; Esc cancels."
 	changed.emit()
 
@@ -187,6 +197,7 @@ func request_preview() -> void:
 	_submit(command, func(reply: Dictionary):
 		if token != revision: return
 		preview = reply
+		blocked_tiles.clear(); blocked_edges.clear()
 		if mode=="target":
 			var outcome:Dictionary=reply.get("missile",reply.get("rebuild",{}))
 			if outcome.get("inRange",true)==false or outcome.get("ok",true)==false: preview.error=outcome.get("why","Target unavailable or out of range")
@@ -199,22 +210,45 @@ func request_preview() -> void:
 			var costs:=[]
 			for good in plan.get("cost",{}): costs.append("%s %s"%[str(plan.cost[good]),str(good)])
 			status="%s · %s · %s · Enter confirms · Esc cancels"%[mode.capitalize(),", ".join(costs) if not costs.is_empty() else "No resource cost","%s seconds"%str(plan.get("seconds",plan.get("time","—")))]
+			var reasons:=[]
+			for segment in plan.get("segments",[]):
+				if segment.get("ok",true): continue
+				if segment.has("t"): blocked_tiles[int(segment.t)]=true
+				if segment.has("a") and segment.has("b"): blocked_edges["%s:%s"%[segment.a,segment.b]]=true
+				var reason:=str(segment.get("reason","blocked ground"))
+				if not reasons.has(reason): reasons.append(reason)
+			if not reasons.is_empty(): status="Blocked: "+", ".join(reasons)+" · Red sections need a different route"
 		var route:Array=plan.get("tiles",points)
-		_draw(route, error == null and plan.get("buildable", true) != false)
+		_draw(route, error == null)
 		changed.emit())
 
 
+func can_commit() -> bool:
+	if points.is_empty() or preview.is_empty() or preview.get("error")!=null: return false
+	var plan:Dictionary=preview.get("plan",preview.get("trench",{}))
+	if mode=="trench": return int(plan.get("build",0))>0 and int(plan.get("invalid",0))==0
+	if mode=="road": return int(plan.get("buildable",0))>0
+	return true
+
+
 func commit() -> void:
-	if points.is_empty() or preview.is_empty() or preview.get("error") != null: return
+	if not can_commit(): return
 	var command := _command(true)
 	if command.is_empty(): return
 	var token := revision
 	# Invalidate the preview immediately so repeated Enter cannot duplicate a project.
+	var previous_preview:=preview.duplicate(true)
 	preview.clear(); revision += 1
+	status="Submitting order…"; changed.emit()
 	_submit(command, func(reply: Dictionary):
 		var ok: bool = reply.get("error") == null
-		if not ok: feedback.emit(str(reply.error),false)
-		if revision == token + 1: cancel())
+		if revision != token + 1: return
+		if ok:
+			feedback.emit("Order confirmed",true); cancel()
+		else:
+			preview=previous_preview
+			status="Order rejected: "+str(reply.error)+" · Adjust the route and retry"
+			feedback.emit(status,false); _draw(preview.get("plan",preview.get("trench",{})).get("tiles",points),false); changed.emit())
 
 
 func _place(tile: int,repeat_:=false) -> void:
@@ -269,17 +303,21 @@ func _draw(tiles: Array, ok: bool) -> void:
 		var p := world.grid.center(int(tile))
 		var x := world.grid.near_x(p.x, cam.focus.x)
 		kit.set_frame(Vector3(x, world.tile_height(int(tile)) + .035, p.y), 0)
+		var tile_color:String="glow:ed766a" if blocked_tiles.has(int(tile)) else color
 		for k in 6:
 			var a: Vector2 = world.grid.corners[k] * .86
 			var b: Vector2 = world.grid.corners[(k+1)%6] * .86
 			var start:=kit.xf(Vector3(a.x,0,a.y)); var end:=kit.xf(Vector3(b.x,0,b.y))
 			start.y=world.ground_height(start.x,start.z)+.035; end.y=world.ground_height(end.x,end.z)+.035
-			kit.strip(color,start,end,.025)
+			kit.strip(tile_color,start,end,.025)
 	if mode in ["road","bridge"] and tiles.size()>1 and infrastructure:
 		for index in range(tiles.size()-1):
 			var first:=int(tiles[index]); var second:=int(tiles[index+1]); var a:=world.grid.center(first); var b:=world.grid.center(second)
 			a.x=world.grid.near_x(a.x,cam.focus.x); b.x=a.x+world.grid.dx_wrap(a.x,b.x)
 			var midpoint:Vector2=(a+b)*.5; kit.set_frame(Vector3.ZERO,0)
+			if blocked_edges.has("%s:%s"%[first,second]):
+				kit.strip("glow:ed766a",Vector3(a.x,world.tile_height(first)+.08,a.y),Vector3(b.x,world.tile_height(second)+.08,b.y),.08)
+				continue
 			for side in [[first,a,midpoint],[second,b,midpoint]]:
 				var wet:bool=world.is_river(side[0]) or world.is_sea(side[0]) or world.is_lake(side[0])
 				var road_type:=int(value) if mode=="road" else 2
@@ -292,6 +330,32 @@ func _draw(tiles: Array, ok: bool) -> void:
 			kit.strip("soil",start,finish,.14,Color(.5,.4,.3)); var side:Vector3=(finish-start).normalized().cross(Vector3.UP)*.13
 			kit.strip("soil",start+side,finish+side,.09,Color(.85,.75,.6))
 	mesh.mesh = kit.commit() if not kit.is_empty() else null
+
+
+func _process(_dt:float) -> void:
+	if mode!="build" or world.grid==null or valid_tiles.is_empty(): return
+	var view:=Vector3(cam.focus.x,cam.focus.z,cam.size)
+	if legal_view==Vector3.INF or Vector2(view.x-legal_view.x,view.y-legal_view.y).length()>3.0 or absf(view.z-legal_view.z)>3.0:
+		_refresh_legal_sites()
+
+
+func _refresh_legal_sites() -> void:
+	if not legal_mesh or not world.grid: return
+	legal_view=Vector3(cam.focus.x,cam.focus.z,cam.size)
+	var kit:=MeshKit.new(); var count:=0
+	var radius:=cam.view_half_width()+3.0
+	for raw in valid_tiles:
+		var tile:=int(raw)
+		if tile<0 or tile>=world.grid.n or world.known[tile]==0: continue
+		var p:=world.grid.center(tile)
+		p.x=world.grid.near_x(p.x,cam.focus.x)
+		if absf(p.x-cam.focus.x)>radius or absf(p.y-cam.focus.z)>cam.size+3.0: continue
+		for k in 6:
+			var a:Vector2=p+world.grid.corners[k]*.92; var b:Vector2=p+world.grid.corners[(k+1)%6]*.92
+			kit.strip("glow:75d59b",Vector3(a.x,world.ground_height(a.x,a.y)+.025,a.y),Vector3(b.x,world.ground_height(b.x,b.y)+.025,b.y),.012)
+		count+=1
+		if count>=600: break
+	legal_mesh.mesh=kit.commit() if not kit.is_empty() else null
 
 
 func train(building: int, unit_type: String) -> void:

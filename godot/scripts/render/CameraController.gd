@@ -14,6 +14,7 @@ const DISTANCE := 300.0
 const PAN_SPEED := 0.9          # view heights per second
 const ZOOM_STEP := 1.15
 const ZOOM_EASE := 14.0
+const PAN_EASE := 12.0
 
 var world: WorldState
 var cam: Camera3D
@@ -27,6 +28,8 @@ var drag_last := Vector2.ZERO
 var input_enabled := true
 var recentred := 0
 var pan_multiplier:=1.0
+var pan_velocity:=Vector2.ZERO
+var follow_id:=-1
 var zoom_multiplier:=1.0
 var invert_zoom:=false
 var edge_pan:=false
@@ -44,12 +47,15 @@ func setup(w: WorldState) -> void:
 	cam.far = 2000.0
 	cam.current = true
 	add_child(cam)
+	w.reset.connect(func():follow_id=-1)
 	_apply()
 
 
 func on_world() -> void:
 	var g := world.grid
-	max_size = minf(g.depth * 0.95, g.period * 0.5)
+	# The tilted orthographic view covers size/sin(pitch) of ground north-south; never zoom out so
+	# far that the empty space beyond the poles becomes visible.
+	max_size = minf(g.depth * sin(deg_to_rad(PITCH)) * 0.98, g.period * 0.5)
 	goal_size = clampf(goal_size, MIN_SIZE, max_size)
 	size = goal_size
 
@@ -58,6 +64,8 @@ func focus_tile(i: int, zoom := -1.0) -> void:
 	if world.grid == null or i < 0:
 		return
 	var c := world.grid.center(i)
+	pan_velocity = Vector2.ZERO
+	follow_id=-1
 	focus = Vector3(c.x, world.tile_height(i), c.y)
 	if zoom > 0.0:
 		size = clampf(zoom, MIN_SIZE, max_size)
@@ -92,6 +100,7 @@ func _apply() -> void:
 
 
 func _process(dt: float) -> void:
+	RenderingServer.global_shader_parameter_set(&"fog_view_size", size)
 	if world == null or world.grid == null:
 		return
 	shake_time=maxf(0,shake_time-dt)
@@ -111,11 +120,11 @@ func _process(dt: float) -> void:
 				if mouse.x>bounds.x-8: v.x+=1
 				if mouse.y<8: v.y-=1
 				if mouse.y>bounds.y-8: v.y+=1
-		if v != Vector2.ZERO:
-			var sp := size * PAN_SPEED * pan_multiplier * dt * (2.0 if Input.is_key_pressed(KEY_SHIFT) else 1.0)
-			var tilt := 1.0 / maxf(sin(deg_to_rad(pitch_deg())), 0.3)
-			focus.x += v.normalized().x * sp
-			focus.z += v.normalized().y * sp * tilt
+		if v!=Vector2.ZERO: follow_id=-1
+		_pan_step(v, dt, Input.is_key_pressed(KEY_SHIFT))
+	else:
+		pan_velocity = Vector2.ZERO
+	_follow_step(dt)
 	# eased zoom, keeping the ground under the anchor fixed on screen every frame
 	if absf(goal_size - size) > 1e-3:
 		var before := ground_at(anchor_screen) if anchor_screen.x >= 0.0 else Vector3.INF
@@ -128,12 +137,38 @@ func _process(dt: float) -> void:
 			if after != Vector3.INF:
 				focus.x += world.grid.dx_wrap(after.x, before.x)
 				focus.z += before.z - after.z
-	_settle()
+	_settle(dt)
 	_apply()
 
 
+## Integrate the eased velocity analytically, keeping travel consistent across frame rates.
+func _pan_step(direction:Vector2, dt:float, fast:=false) -> void:
+	var speed:=size*PAN_SPEED*pan_multiplier*(2.0 if fast else 1.0)
+	var target:=direction.normalized()*speed
+	target.y/=maxf(sin(deg_to_rad(pitch_deg())),0.3)
+	var elapsed:=maxf(dt,0.0)
+	var alpha:=1.0-exp(-PAN_EASE*elapsed)
+	var travel:=target*elapsed+(pan_velocity-target)*(alpha/PAN_EASE)
+	if reduced_motion:
+		travel=target*elapsed
+	focus.x+=travel.x
+	focus.z+=travel.y
+	pan_velocity=target if reduced_motion else pan_velocity.lerp(target,alpha)
+
+
+func _follow_step(dt:float) -> void:
+	if follow_id<0: return
+	if not world.units.has(follow_id): follow_id=-1; return
+	var target:=world.unit_position(follow_id)
+	if target==Vector2.INF: return
+	pan_velocity=Vector2.ZERO
+	var alpha:=1.0-exp(-6.0*maxf(dt,0.0))
+	focus.x+=world.grid.dx_wrap(focus.x,target.x)*alpha
+	focus.z=lerpf(focus.z,target.y,alpha)
+
+
 ## keep the focus inside the map: north-south clamp, east-west fold by exact periods
-func _settle() -> void:
+func _settle(dt:=1.0/60.0) -> void:
 	var g := world.grid
 	if g.wrap:
 		if focus.x >= g.period or focus.x < 0.0:
@@ -141,8 +176,14 @@ func _settle() -> void:
 			recentred += 1
 	else:
 		focus.x = clampf(focus.x, 0.0, g.period)
-	focus.z = clampf(focus.z, 0.0, g.depth)
-	focus.y = lerpf(focus.y, world.ground_height(focus.x, focus.z), 0.1)
+	# Keep the visible ground inside the map north-south (a small margin shows the polar edge).
+	var half_depth := size * 0.5 / sin(deg_to_rad(pitch_deg()))
+	var margin := 1.2
+	if g.depth + margin * 2.0 > half_depth * 2.0:
+		focus.z = clampf(focus.z, half_depth - margin, g.depth - half_depth + margin)
+	else:
+		focus.z = g.depth * 0.5
+	focus.y = lerpf(focus.y, world.ground_height(focus.x, focus.z), 1.0-exp(-6.32163*maxf(dt,0.0)))
 
 
 func _unhandled_input(e: InputEvent) -> void:
@@ -158,6 +199,8 @@ func _unhandled_input(e: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
 			dragging = mb.pressed
+			if mb.pressed: follow_id=-1
+			pan_velocity = Vector2.ZERO
 			drag_last = mb.position
 			get_viewport().set_input_as_handled()
 	elif e is InputEventMouseMotion and dragging:

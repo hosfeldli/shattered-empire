@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { Game } from '../server/sim/game.js';
 import { economyStep } from '../server/sim/economy.js';
 import { NATIVE_RULESET } from '../server/sim/rulesets.js';
-import { disk } from '../server/sim/hex.js';
+import { disk, dist } from '../server/sim/hex.js';
+import { T } from '../server/sim/constants.js';
+import { autonomyStep } from '../server/sim/autonomy.js';
 
 test('power production feedback reports actual generation without creating a power stockpile',()=>{
  const g=new Game({id:'output',seed:7,slots:[{human:true},{human:true}],rebels:false,ruleset:NATIVE_RULESET});
@@ -38,4 +40,22 @@ test('Explore can release selected units from a deployment while preserving thei
   assert.deepEqual(units[i].path,before[i].path,'the direct movement still finishes first');
   assert.deepEqual(units[i].order,before[i].order);
  }
+});
+
+test('Explore chooses a reachable unexplored destination instead of becoming stuck at an isolated one',()=>{
+ const g=new Game({id:'explore-reachable',seed:7,slots:[{human:true},{human:true}],rebels:false,ruleset:NATIVE_RULESET});
+ const civ=g.civs[0], u=[...g.units.values()].find(x=>x.owner===0&&x.type==='militia');
+ g.world.terr.fill(T.PLAINS); g.world.owner.fill(-1); civ.explored.fill(1);
+ const center=u.tile;
+ const island=disk(center,4).find(t=>dist(center,t)===4);
+ const shore=new Set(disk(island,1).filter(t=>t!==island));
+ const reachable=disk(center,6).find(t=>dist(center,t)===6&&!shore.has(t)&&dist(t,island)>3);
+ assert.ok(Number.isInteger(reachable));
+ for(const t of shore)g.world.terr[t]=T.DEEP;
+ civ.explored[island]=0; civ.explored[reachable]=0;
+ g.roads.usable=()=>null;
+ u.order={kind:'idle'};u.path=[];u.field=false;u.formation=0;u.stance='explore';u.idleSince=-10;
+ autonomyStep(g);
+ assert.equal(u.goal,reachable,'the isolated destination should not trap the explorer');
+ assert.ok(u.path.length>0,'exploration should result in a real movement path');
 });

@@ -22,6 +22,7 @@ var motions := {}        # id -> { last: Vector2, yaw: float }
 var draw_positions := {} # id -> Vector3, also used by picking and path drawing
 var ring_batch: MultiMeshInstance3D
 var ground_cache := {}
+var dug_in: MultiMeshInstance3D   # sandbag crescents under fortified ground troops (cosmetic)
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -44,6 +45,8 @@ func setup(w: WorldState, c: CameraController) -> void:
 	add_child(path_inst)
 	world.reset.connect(_clear)
 	world.welcomed.connect(_clear)
+	var mm:=MultiMesh.new(); mm.transform_format=MultiMesh.TRANSFORM_3D; mm.mesh=_dug_in_mesh(); mm.instance_count=256; mm.visible_instance_count=0
+	dug_in=MultiMeshInstance3D.new(); dug_in.multimesh=mm; dug_in.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_ON; add_child(dug_in)
 
 
 func _clear() -> void:
@@ -78,6 +81,7 @@ func update(dt: float) -> void:
 	if batched:
 		_update_batched(dt)
 		_draw_paths()
+		_update_dug_in()
 		return
 	var g := world.grid
 	var cx := cam.focus.x
@@ -127,14 +131,46 @@ func update(dt: float) -> void:
 		(r.ring as Node3D).visible = selected.has(id)
 		drawn += 1
 	_draw_paths()
+	_update_dug_in()
 
 
 func _ground_for(id: int, p: Vector2) -> float:
 	var cache: Dictionary = ground_cache.get(id, {})
-	if cache.is_empty() or cache.pos != p or int(cache.revision) != world.geo_version:
-		cache = {"pos": p, "revision": world.geo_version, "height": maxf(world.ground_height(p.x, p.y), 0.0)}
+	if cache.is_empty() or cache.pos != p or int(cache.revision) != world.geo_version or int(cache.get("battlefield_revision",-1)) != world.battlefield_terrain_version:
+		cache = {"pos": p, "revision": world.geo_version, "battlefield_revision":world.battlefield_terrain_version, "height": maxf(world.ground_height(p.x, p.y), 0.0)}
 		ground_cache[id] = cache
 	return float(cache.height)
+
+
+## A shallow scrape and a crescent of sandbags facing the unit's front: how a fortified squad or
+## gun crew reads at a glance. Presentation of the server's fortified flag only; the server alone
+## decides cover. Vehicles and aircraft are skipped; hidden enemies are never drawn.
+func _dug_in_mesh() -> ArrayMesh:
+	var k:=MeshKit.new()
+	k.cylinder("soil",Vector3(0,-.004,0),.2,.006,12,Color(.62,.52,.38),.2)
+	for i in 7:
+		var a:=-PI*.55+PI*1.1*float(i)/6.0
+		var p:=Vector3(cos(a)*.2,0,sin(a)*.2)
+		k.box("canvas",p,Vector3(.075,.032,.04),Color(.80,.75,.56),-a+PI*.5)
+		k.box("canvas",p*.97+Vector3(0,.032,0),Vector3(.065,.026,.036),Color(.76,.71,.53),-a+PI*.5+.2)
+	return k.commit()
+
+
+func _update_dug_in() -> void:
+	var mm:=dug_in.multimesh; var n:=0
+	if cam.size>30.0: mm.visible_instance_count=0; return
+	for id in draw_positions:
+		if n>=mm.instance_count: break
+		var u:Dictionary=world.units.get(id,{})
+		if u.is_empty() or (int(u.get("flags",0))&32)==0 or int(u.get("next",-1))>=0: continue
+		var d:=unit_def(str(u.type))
+		if bool(d.get("air",false)) or str(d.get("move","")) in ["tracked","wheeled"] and str(d.get("cat",""))!="artillery": continue
+		if int(u.owner)!=world.civ_id and not world.is_visible(int(u.tile)): continue
+		var p:Vector3=draw_positions[id]
+		var yaw:=float(motions.get(id,nodes.get(id,{})).get("yaw",0.0))
+		mm.set_instance_transform(n,Transform3D(Basis(Vector3.UP,yaw),Vector3(p.x,world.ground_height(p.x,p.z),p.z)))
+		n+=1
+	mm.visible_instance_count=n
 
 
 func _clear_batches() -> void:

@@ -3,8 +3,8 @@ extends RefCounted
 ## Local presentation preferences only. Gameplay state remains on the server.
 const SHORTCUTS:={"build":KEY_B,"research":KEY_T,"hold":KEY_H,"withdraw":KEY_X,"attack_move":KEY_E,"select_combat":KEY_Q,"form_army":KEY_G,"road":KEY_R,"center":KEY_SPACE,"pause":KEY_P}
 const DEFAULTS:={"fullscreen":true,"resolution":"1600x900","quality":"medium","vsync":true,"fps":60,
-	"volume":70.0,"mute":false,"ui_scale":1.0,"pan_speed":1.0,"zoom_speed":1.0,"invert_zoom":false,"edge_pan":false,
-	"weather_effects":true,"particle_density":1.0,"screen_shake":false,"reduced_motion":false,"high_contrast":false,"unit_labels":true,"resource_markers":true,"bindings":{},
+	"volume":70.0,"ambience_volume":80.0,"effects_volume":85.0,"mute":false,"ui_scale":1.0,"pan_speed":1.0,"zoom_speed":1.0,"invert_zoom":false,"edge_pan":false,
+	"weather_effects":true,"particle_density":1.0,"screen_shake":false,"reduced_motion":false,"high_contrast":false,"unit_labels":true,"resource_markers":true,"territory_borders":true,"wildlife":true,"bindings":{},
 	"server":"wss://game.liamhosfeld.com/ws","player":"Commander"}
 var values:=DEFAULTS.duplicate(true)
 var path:="user://settings.cfg"
@@ -18,6 +18,8 @@ func load_from(file:String) -> void:
 	values.pan_speed=clampf(float(values.pan_speed),.3,3)
 	values.zoom_speed=clampf(float(values.zoom_speed),.3,3)
 	values.volume=clampf(float(values.volume),0,100)
+	values.ambience_volume=clampf(float(values.ambience_volume),0,100)
+	values.effects_volume=clampf(float(values.effects_volume),0,100)
 	if not str(values.quality) in LODManager.PRESETS: values.quality="medium"
 	if not str(values.resolution) in ["1280x720","1600x900","1920x1080","2560x1440"]: values.resolution="1600x900"
 	if not int(values.fps) in [0,30,60,120,144]: values.fps=60
@@ -36,9 +38,12 @@ func apply(app:Node,windowed:=false) -> void:
 	app.composition.lod.particle_scale=float(values.particle_density)
 	app.strategic.unit_labels=bool(values.unit_labels); app.strategic.resource_markers=bool(values.resource_markers)
 	app.map_overlay.high_contrast=bool(values.high_contrast)
+	app.terrain.territory.set_strength(1.0 if values.territory_borders else 0.0)
+	app.wildlife.visible=bool(values.wildlife)
 	app.military.ring_mesh.material=MaterialLibrary.glow(Color("77e7ff") if values.high_contrast else Color(.9,.92,.55))
 	app.cam.invert_zoom=bool(values.invert_zoom); app.cam.edge_pan=bool(values.edge_pan)
 	app.audio.enabled=not bool(values.mute)
+	app.audio.set_levels(float(values.ambience_volume),float(values.effects_volume))
 	AudioServer.set_bus_volume_db(0,linear_to_db(maxf(float(values.volume)/100.0,.001)))
 	AudioServer.set_bus_mute(0,bool(values.mute) or float(values.volume)==0)
 	Engine.max_fps=int(values.fps)

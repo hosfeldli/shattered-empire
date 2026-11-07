@@ -220,6 +220,7 @@ func _refresh_sel() -> void:
 		var n := 0
 		var forms := {}
 		var stance := ""
+		var veterans := 0
 		for id in military.selected.keys():
 			var u: Dictionary = world.units.get(id, {})
 			if u.is_empty():
@@ -231,6 +232,9 @@ func _refresh_sel() -> void:
 			if int(u.get("formation", 0)) > 0:
 				forms[int(u.formation)] = true
 			stance = str(u.get("stance", ""))
+			veterans += 1 if int(u.get("veteran", 0)) > 0 else 0
+		if n > 0 and veterans > 0:
+			lines.append("%d veteran%s · combat experience improves their fire and steadiness" % [veterans, "s" if veterans > 1 else ""])
 		if n > 0:
 			lines.append("%d selected · health %d%% · stance %s%s" % [n, hp / n, stance, (" · formation " + ",".join(forms.keys().map(func(x): return str(x)))) if not forms.is_empty() else ""])
 			for k in by_type.keys():
