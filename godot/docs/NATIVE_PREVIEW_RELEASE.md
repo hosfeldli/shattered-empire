@@ -1,4 +1,18 @@
-# Native preview published 2026-11-06
+# Native preview published 2026-11-07
+
+- Download page: https://game.liamhosfeld.com/download (the old preview's files remain in storage).
+- Windows portable x86-64: `ShatteredEmpires-Native-Preview-5ad0792ce9d8-Windows-x64.exe`,
+  SHA-256 `cb80f84f16915002c58f2eb1832c8d632b05fc4fdd76babbe7d7ed6285e7e0ed`.
+- macOS universal app ZIP: `ShatteredEmpires-Native-Preview-5ad0792ce9d8-macOS-universal.zip`,
+  SHA-256 `b528fb3880ddefdcc62aa5ba6333b8fc731bcf8f2d0bce25f1c5c20237276734`.
+- Client source hash `5ad0792ce9d89bf1fc18b87402eba5d3ab0d3e94d76dbc9ea5d5f357163d72ab`, built from
+  `4a40245`. Server deployed from `main` at `b9ef675` by the Test & deploy workflow (unit, e2e
+  and deploy jobs passed; the e2e job needed one rerun after flaky timeouts on the shared runner).
+- Both publicly streamed downloads matched their SHA-256 values. The live server accepted a
+  native-v4 match and reports the new research tempo (0.21).
+- macOS is ad-hoc signed and not notarized; Windows is unsigned and was not run on Windows.
+
+# Earlier native preview published 2026-11-06
 
 - Download page: https://game.liamhosfeld.com/download
 - Windows portable x86-64: `ShatteredEmpires-Native-Preview-53b484d4365a-Windows-x64.exe`,
