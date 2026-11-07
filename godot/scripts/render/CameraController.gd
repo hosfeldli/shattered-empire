@@ -8,7 +8,7 @@ extends Node3D
 
 signal cancel_pressed
 
-const MIN_SIZE := 7.0
+const MIN_SIZE := 2.5        # close enough to see people, vehicles and building detail
 const PITCH := 60.0
 const DISTANCE := 300.0
 const PAN_SPEED := 0.9          # view heights per second

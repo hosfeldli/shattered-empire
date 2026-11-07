@@ -248,7 +248,9 @@ func _rivals() -> void:
 		NativeUI.label(card,str(intel.get("activity","No current observations")),16,NativeUI.MUTED)
 		if status in ["peaceful","hostile"]:
 			_button(card,"Initiate Attack…",func():_action("diplo_war",{"nation":id}))
-		elif status=="war": NativeUI.label(card,"Use Withdraw or Hold to disengage your forces. Enemy forces may continue fighting.",15,NativeUI.MUTED)
+		if status in ["war","hostile"]:
+			_button(card,"Disengage and pull back…",func():_action("diplo_disengage",{"nation":id}))
+			NativeUI.label(card,"Your troops leave their territory and stop attacking. The war ends once the front stays quiet; their forces may still press on.",15,NativeUI.MUTED)
 
 func _research() -> void:
 	var model:=ResearchPresentation.new(world)
@@ -396,7 +398,11 @@ func _build_catalog(catalog:VBoxContainer,query:String,category:String) -> void:
 			var thumbnail:=NativeModelThumbnail.new(); thumbnail.custom_minimum_size=Vector2(64,48); row.add_child(thumbnail)
 			var text:=VBoxContainer.new(); text.mouse_filter=Control.MOUSE_FILTER_IGNORE; text.size_flags_horizontal=Control.SIZE_EXPAND_FILL; text.add_theme_constant_override("separation",0); row.add_child(text)
 			NativeUI.label(text,name_,16).mouse_filter=Control.MOUSE_FILTER_IGNORE
-			NativeUI.label(text,_cost(definition.get("cost",{})) if unlocked else "Requires "+workspace._name("TECHS",tech) if not tech.is_empty() else "Requires a later era",12,NativeUI.MUTED).mouse_filter=Control.MOUSE_FILTER_IGNORE
+			var affordable:=true
+			for good in definition.get("cost",{}):
+				if float(world.econ.get("res",{}).get(good,0))<float(definition.cost[good]): affordable=false
+			var detail:=_cost(definition.get("cost",{}))+" · ~%ss"%str(definition.get("time","?"))+("" if affordable else " · waits for materials") if unlocked else "Requires "+workspace._name("TECHS",tech) if not tech.is_empty() else "Requires a later era"
+			NativeUI.label(text,detail,12,NativeUI.MUTED if affordable or not unlocked else Color(NativeUI.GOLD,.9)).mouse_filter=Control.MOUSE_FILTER_IGNORE
 			button.tooltip_text="Place "+name_+" on the map" if unlocked else "Requires "+workspace._name("TECHS",tech) if not tech.is_empty() else "Requires a later era"
 			thumbnail_jobs.append(func():
 				if is_instance_valid(thumbnail): thumbnail.setup(workspace.settlements.preview_mesh(key,world.start_tile,false)))

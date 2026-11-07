@@ -57,6 +57,7 @@ var resource_strip:NativeResourceStrip
 var onboarding:NativeOnboarding
 var recipe_inspector:NativeRecipeInspector
 var follow_pill:NativeFollowPill
+var alert_feed:NativeAlertFeed
 var world_labels:NativeWorldLabels
 var observer_bar:NativeObserverBar
 var production_feedback:NativeProductionFeedback
@@ -179,6 +180,7 @@ func _ready() -> void:
 	onboarding=NativeOnboarding.new(); hud.root.add_child(onboarding); onboarding.setup(self)
 	recipe_inspector=NativeRecipeInspector.new(); hud.root.add_child(recipe_inspector); recipe_inspector.setup(self)
 	follow_pill=NativeFollowPill.new(); hud.root.add_child(follow_pill); follow_pill.setup(self)
+	alert_feed=NativeAlertFeed.new(); hud.root.add_child(alert_feed); alert_feed.setup(self)
 	observer_bar=NativeObserverBar.new(); hud.root.add_child(observer_bar); observer_bar.setup(self)
 	production_feedback=NativeProductionFeedback.new(); hud.root.add_child(production_feedback); production_feedback.setup(self)
 	diag = Diagnostics.new()

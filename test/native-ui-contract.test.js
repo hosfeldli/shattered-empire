@@ -30,6 +30,6 @@ test('every retained native gameplay command has a native UI or map interaction'
 });
 
 test('streamlined native UI contains no trading or administration controls',()=>{
-  for(const a of actions){ assert.ok(!REMOVED_COMMANDS.has(a.command.c),a.id); assert.notEqual(a.command.c,'governor'); if(a.command.c==='diplo')assert.equal(a.command.action,'war'); }
+  for(const a of actions){ assert.ok(!REMOVED_COMMANDS.has(a.command.c),a.id); assert.notEqual(a.command.c,'governor'); if(a.command.c==='diplo')assert.ok(['war','disengage'].includes(a.command.action),'only hostilities and disengagement: '+a.command.action); }
   const nav=file('ui/NativeSectionNav.gd'); for(const title of ['World','Build','Cities','Military','Economy','Research','Rivals','Chronicle'])assert.ok(nav.includes('\"'+title+'\"'));
 });

@@ -58,7 +58,10 @@ function civCount(g, civ, type) { let n = 0; for (const b of g.buildings.values(
 const unlocked = (civ, type) => { const d = BUILDINGS[type]; return d && d.age <= civ.age && (!d.tech || civ.techs.has(d.tech)); };
 // Routine development can address production and research bottlenecks, but major military and
 // advanced industrial projects remain player decisions. Existing scoring and budgets still apply.
-const NATIVE_AUTOMATIC_BUILDINGS = new Set(['farm', 'house', 'lumber', 'quarry', 'mine', 'market', 'academy']);
+const NATIVE_AUTOMATIC_BUILDINGS = new Set(['farm', 'house', 'lumber', 'quarry', 'mine', 'market', 'academy', 'salvage', 'power_plant', 'oil_well']);
+// Upgrades a player's city development may undertake by itself (timed works, within its budget):
+// housing density when crowded and the productive buildings above. Never military or national projects.
+const NATIVE_AUTOMATIC_UPGRADES = new Set(['house', 'farm', 'lumber', 'quarry', 'mine', 'market', 'salvage', 'power_plant']);
 
 // Ranked wish-list for a city: [type, reason]. Specialization reorders and adds priorities.
 export function pickTile(g, civ, c, type, gv) {
@@ -152,7 +155,7 @@ function develop(g, civ, c, gv, level) {
     if (cand.kind === 'none' || cand.u <= none) break;
     if (gv.rejected?.[cand.type] && g.time < gv.rejected[cand.type]) continue;
     const routine = isRoutine(cand.type);
-    if (nativeRules(g) && civ.human && (!NATIVE_AUTOMATIC_BUILDINGS.has(cand.type) || cand.kind === 'upgrade')) continue;
+    if (nativeRules(g) && civ.human && (cand.kind === 'upgrade' ? !NATIVE_AUTOMATIC_UPGRADES.has(cand.type) : !NATIVE_AUTOMATIC_BUILDINGS.has(cand.type))) continue;
     if (cand.kind === 'upgrade') {
       if (!(level === 'autonomous' || level === 'managed')) { propose(g, civ, c, gv, { action: 'upgrade', type: cand.type, id: cand.id, cost: cand.cost, reason: cand.reason, benefit: Math.round(cand.u), confidence: 0.8 }); return false; }
       if (!governorCanSpend(civ, gv, cand.cost, c)) continue;

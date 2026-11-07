@@ -8,7 +8,7 @@ extends RefCounted
 ## powered frames; engineers hard hats, hi-vis vests and tools; gun crews light kit; civilians
 ## everyday clothes. Forward is +X. Team colour appears only as a shoulder patch.
 
-const VARIANTS := ["rifle", "militia", "special", "exo", "engineer", "crew", "civilian"]
+const VARIANTS := ["rifle", "militia", "special", "exo", "engineer", "crew", "civilian", "civilian_bag", "civilian_coat", "civilian_pack"]
 const POSES := ["stand", "walk_a", "walk_b", "kneel", "prone"]
 const SKIN := Color(1.0, .97, .95)
 
@@ -24,7 +24,9 @@ static func mesh(variant: String, pose: String, team: Color) -> ArrayMesh:
 	return _cache[key]
 
 
-static func build(k: MeshKit, variant: String, pose: String, team: Color) -> void:
+static func build(k: MeshKit, full_variant: String, pose: String, team: Color) -> void:
+	# civilian sub-variants share the civilian body and add their own clothing and carried items
+	var variant := "civilian" if full_variant.begins_with("civilian") else full_variant
 	var cloth: Color = {"rifle": Color(.62, .66, .5), "militia": Color(.58, .5, .4), "special": Color(.32, .35, .33),
 		"exo": Color(.5, .54, .52), "engineer": Color(.55, .58, .6), "crew": Color(.6, .64, .5), "civilian": Color(.72, .7, .66)}[variant]
 	var trousers: Color = Color(.4, .44, .55) if variant in ["militia", "civilian"] else cloth * Color(.9, .9, .9)
@@ -83,6 +85,16 @@ static func build(k: MeshKit, variant: String, pose: String, team: Color) -> voi
 			k.box("painted_metal", Vector3(0, torso_y + .008, 0), Vector3(.018, .018, .026), Color(1.35, .7, .25))     # hi-vis vest
 		"civilian":
 			k.box("canvas", Vector3(-.001, head_top - .002, 0), Vector3(.013, .005, .013), Color(.32, .27, .22))       # hair
+			k.box("canvas", Vector3(-.006, head_top - .009, 0), Vector3(.004, .008, .012), Color(.32, .27, .22))
+			match full_variant:
+				"civilian_coat":
+					k.box("canvas", Vector3(0, torso_y - .016, 0), Vector3(.018, .018, .026), cloth * Color(.7, .72, .78))   # long coat skirt
+					k.box("canvas", Vector3(0, torso_y + .02, 0), Vector3(.018, .012, .027), cloth * Color(.7, .72, .78))
+				"civilian_bag":
+					k.box("canvas", Vector3(0, torso_y + .004, -.017), Vector3(.016, .014, .006), Color(.5, .38, .28))     # shoulder bag
+					k.box("canvas", Vector3(0, torso_y + .02, -.006), Vector3(.003, .02, .02), Color(.45, .34, .25), .6)
+				"civilian_pack":
+					k.box("canvas", Vector3(-.014, torso_y + .008, 0), Vector3(.01, .02, .018), Color(.35, .45, .55))     # rucksack
 	# shoulder patch in the owner's colour (not for civilians)
 	if variant != "civilian":
 		k.box("team:" + team.to_html(false), Vector3(0, torso_y + .022, .0125 * bulk), Vector3(.006, .006, .002))

@@ -176,7 +176,9 @@ export class AI {
     const cap = g.capital(civ);
     const queued = [...g.buildings.values()].some((b) => b.owner === civ.id && b.queue.some((q) => q.unit === 'colonist'));
     const hub = this.hub(12);
-    if (this.cities.length + colonists.length < want && !queued && !colonists.length && civ.res.food > 100 && hub && !this.enemiesNear().length) {
+    // captured cities count half: conquest does not replace founding the empire's own towns
+    const held = this.cities.reduce((n, c) => n + (c.capturedAt != null ? 0.5 : 1), 0);
+    if (held + colonists.length < want && !queued && !colonists.length && civ.res.food > 100 && hub && !this.enemiesNear().length) {
       this.cmd({ c: 'train', building: hub.buildingId, unit: 'colonist' });
     }
     void cap;

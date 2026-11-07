@@ -24,6 +24,7 @@ var beams: MultiMeshInstance3D
 var wells: Array = []          # [site transform, phase]
 var harbours: Array = []       # [water point Vector2, phase, fishing]
 var birds: MultiMeshInstance3D
+var flock_anchors := {}   # "flock:epoch" -> fixed world centre of that flock
 var farm_scan := 0.0
 var farms: Array = []          # [id, center Vector2, ground y]
 var time := 0.0
@@ -167,7 +168,14 @@ func _update_birds() -> void:
 		var epoch := floori((time + f * 23.0) / 70.0)
 		var rng := RandomNumberGenerator.new()
 		rng.seed = hash([world.world_seed, f, epoch])
-		var anchor := Vector2(cam.focus.x, cam.focus.z) + Vector2(rng.randf_range(-1, 1), rng.randf_range(-0.7, 0.7)) * cam.size * 0.45
+		# The flock's centre is chosen once, near where the camera is when the flock appears, and
+		# then stays fixed in the world: scrolling away leaves it behind instead of dragging it along.
+		var key := "%d:%d" % [f, epoch]
+		if not flock_anchors.has(key):
+			for old_key in flock_anchors.keys():
+				if str(old_key).begins_with("%d:" % f): flock_anchors.erase(old_key)
+			flock_anchors[key] = Vector2(g.base_x(cam.focus.x), cam.focus.z) + Vector2(rng.randf_range(-1, 1), rng.randf_range(-0.7, 0.7)) * cam.size * 0.45
+		var anchor: Vector2 = flock_anchors[key]
 		var tile := g.tile_at(anchor.x, anchor.y)
 		if tile < 0 or not world.known[tile] or world.is_sea(tile) or not calm: continue
 		if composition and float(composition.weather.at_tile(tile).get("storm", 0.0)) > 0.3: continue

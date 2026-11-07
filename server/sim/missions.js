@@ -8,6 +8,9 @@ import { lineAcross } from './deploy.js';
 
 const COMMIT = { defend: 15, offensive: 90, scout: 60 };
 
+/** seconds before a new threat near a city is answered, by skill level 0..4 */
+export const reactionDelay = (level = 1) => [18, 10, 6, 4, 2][Math.max(0, Math.min(4, level | 0))];
+
 export class MilitaryPlanner {
   constructor(ai) { this.ai = ai; this.missions = new Map(); this.nextId = 1; this.memory = new Map(); this.cooldown = {}; this.reversals = 0; }
 
@@ -78,9 +81,16 @@ export class MilitaryPlanner {
 
     // ---------------------------------------------------------------- defense
     const regions = this.assess(threats);
+    // Human-like reaction: a new threat near a city is noticed and answered after a delay that
+    // shrinks with skill (a relaxed AI is caught out for a while; an expert reacts quickly).
+    // Existing defence missions keep responding without delay.
+    const noticed = this.noticed || (this.noticed = new Map());
+    for (const id of [...noticed.keys()]) if (!regions.has(id)) noticed.delete(id);
     for (const [cityId, r] of regions) {
       const city = g.cities.get(cityId); if (!city) continue;
+      if (!noticed.has(cityId)) noticed.set(cityId, g.time);
       let m = [...this.missions.values()].find((x) => x.kind === 'defend' && x.city === cityId);
+      if (!m && g.time - noticed.get(cityId) < reactionDelay(T.level)) continue;
       if (!m) { m = { id: this.nextId++, kind: 'defend', city: cityId, zone: city.tile, radius: 6, units: new Set(), commitUntil: g.time + COMMIT.defend * T.commit, state: 'respond', created: g.time }; this.missions.set(m.id, m); }
       m.lastThreat = g.time;
       const need = r.str * T.react;

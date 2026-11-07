@@ -5,6 +5,54 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## AI and pacing (J), interface (K) and leftovers (2026-11-07)
+
+**J. AI and pacing**
+- Human-like reactions: a new threat near an AI city is answered after a delay by skill
+  (18 s relaxed → 2 s brutal); existing defences keep responding. Skill-scaled estimates,
+  commitment and the trench lines toward known enemies were already in place.
+- Settlement targets stay era-based (2 / 3 / 4 / 6 / 8); captured cities count half, so conquest
+  does not stop an AI founding its own towns.
+- Player city development (mayors) may now also build salvage yards, power plants and oil wells
+  and undertake timed upgrades of housing and production within its budget, so growth no longer
+  stalls at the housing cap. Military and national projects stay with the player.
+- Rivals: "Disengage and pull back" (confirmed) withdraws your troops from their territory and
+  stands aggressive units down; the war ends once the front stays quiet. Only hostilities and
+  disengagement exist: no treaties, payments or trade.
+- Pacing measured with `tools/pace-report.mjs` (AI-only native-v4 matches): eras arrived at
+  9–16 / 15–24 / 30–41 / 46–58 min against targets of 18–25 / 30–45 / 50–75 / 75–110, so
+  native-v4 research was slowed from 0.45 to 0.21, with later eras researching more slowly still
+  (`ERA_RESEARCH` 1 / .9 / .72 / .62 / .62). Measured after the change (2 seeds, 4 AIs each): eras at
+  16–31 / 24–45 / 42–59 / 65–104 min. The fastest AIs are still a few minutes early in later eras;
+  one AI stalled at a single city with flat population from about minute 60 (follow-up).
+
+**K. Interface**
+- Alert feed (`NativeAlertFeed`): critical events show a banner, major and warning events a short
+  pill, both with Go-to and dismiss; minor and informational events stay in the chronicle.
+- Training: cost, time and affordability per unit; a queue with the training progress bar and a
+  cancel button per item (full refund while waiting, half once started).
+- Build menu: build time and "waits for materials" per building.
+- Feature parity matrix: `docs/PARITY_MATRIX.md`.
+
+**Requested during this pass**
+- Bird flocks pick their centre once, when they appear, and stay fixed in the world instead of
+  following the camera.
+- Trees: a spruce-like conifer with six ragged whorls and a broadleaf with a forked trunk and
+  nine shaded crown lobes; per-tree girth and height variety; forests about twice as dense
+  (30 per interior forest hex, thinning to 20 at edges; vegetation recipe v3); fewer, duller logs.
+- Closer zoom: the minimum view is 2.5 instead of 7, so people, vehicles and building detail
+  can be inspected.
+- Civilians: four everyday figure variants (plain, shoulder bag, long coat, rucksack) and errand
+  walking with eased starts and stops, pauses at both ends, gently curved paths, some walking in
+  pairs, and stride frames that follow the walking speed.
+
+**Leftovers**
+- E: a local street plan joins neighbouring urban hexes of different kinds (homes, market,
+  campus, hub) with streets, sidewalks and lights, decorative only. Residents walk between
+  their homes and a nearby workplace, market, campus or hub.
+- N: the F9 inspector draws the hovered building's district, its planned parcel and the real
+  road edges in the world.
+
 ## Quick fixes and units/civilians overhaul (2026-11-07)
 
 - **Server refusals are visible:** a match refused before the world arrives (for example

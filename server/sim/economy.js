@@ -1,4 +1,4 @@
-import { nativeRules, tempo, movementRate, techEnabled } from './rulesets.js';
+import { nativeRules, tempo, movementRate, techEnabled, timedWorks } from './rulesets.js';
 // Economy & population: jobs, production chains with a power grid, food, taxes, stability,
 // growth, unrest & rebellion, migration, territory, and road-connected trade routes.
 import { jobSlots, outMul, cityTier, CITY_TIERS } from './levels.js';
@@ -20,6 +20,7 @@ const FOCUS_BONUS = {
   military: { munitions_plant: 45, steel_mill: 40, mine: 30, oil_well: 30 },
 };
 
+export const ERA_RESEARCH = [1, .9, .72, .62, .62];
 export function recomputeTerritory(g) {
   const w = g.world;
   const best = new Float32Array(N).fill(Infinity);
@@ -423,7 +424,8 @@ export function economyStep(g, dt) {
     research /= 1 + 0.1 * civ.techs.size;
     if (gov === 'junta') research *= 0.85;
     if (civ.isAI && !civ.isRebel) research *= aiProfile(civ).adv.research;
-    civ.researchRate = research * tempo(g, 'research');
+    // native-v4: later eras research more slowly as research capacity multiplies (measured pacing)
+    civ.researchRate = research * tempo(g, 'research') * (timedWorks(g) ? ERA_RESEARCH[Math.max(0, Math.min(4, civ.age))] : 1);
     // storage capacity: warehouses in each city plus depots; credits are a treasury and uncapped
     let depots = 0; for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === 'depot' && b.done) depots++;
     civ.storage = 1500 + 800 * cities.length + 500 * depots;

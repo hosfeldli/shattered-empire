@@ -31,7 +31,9 @@ export const EXPANSIVE_TEMPO = Object.freeze({ ...DELIBERATE_TEMPO,
 export const WORKS_TEMPO = Object.freeze({ ...EXPANSIVE_TEMPO,
   infantryMovement: .42, wheeledMovement: .47, trackedMovement: .47,
   logisticsMovement: .52, aircraftMovement: .70, production: .50,
-  research: .45, construction: .45, training: .50, populationGrowth: .50,
+  // research measured against the era targets (tools/pace-report.mjs): Industrial Recovery 18-25
+  // min, Mechanization 30-45, Networked Warfare 50-75, Advanced Systems 75-110
+  research: .21, construction: .45, training: .50, populationGrowth: .50,
   infrastructureConstruction: .50, trenchConstruction: .42,
 });
 export const REMOVED_TECHS = new Set(['corporate_charter', 'federal_union']);

@@ -165,8 +165,7 @@ func _on_note(m: Dictionary) -> void:
 	note_lines.push_front("[%s] %s" % [_clock(float(m.get("time", 0))), str(m.get("text", ""))])
 	while note_lines.size() > 6:
 		note_lines.pop_back()
-	if str(m.get("level",""))=="critical":
-		notes.text=note_lines[0]; notes_until=Time.get_ticks_msec()/1000.0+10.0
+	# urgent events are shown by NativeAlertFeed (banner with a go-to button); notes stay a log
 
 
 func _clock(t: float) -> String:

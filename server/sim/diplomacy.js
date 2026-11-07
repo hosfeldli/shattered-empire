@@ -80,6 +80,19 @@ export class Diplomacy {
     if (!other || other === civ || !other.alive) return { error: 'invalid civilization' };
     const r = this.rel(civ.id, to);
     if (nativeRules(g)) {
+      if (action === 'disengage') {
+        // Disengage: withdraw your troops from their territory and stop attacking; the war ends by
+        // itself once the front has been quiet long enough (the same rule as any war).
+        if (r.state !== 'war' && r.state !== 'hostile') return { error: 'you are not fighting them' };
+        const ids = [];
+        for (const u of g.units.values()) if (u.owner === civ.id && g.world.owner[u.tile] === to) ids.push(u.id);
+        if (ids.length) g.command(civ.id, { c: 'withdraw', units: ids });
+        for (const u of g.units.values()) if (u.owner === civ.id && u.stance === 'aggressive') u.stance = 'defensive';
+        r.disengaging = civ.id; r.disengageAt = g.time;
+        g.notify(civ.id, `Disengaging from ${other.name}: ${ids.length} unit${ids.length === 1 ? '' : 's'} withdrawing. The war ends once the front stays quiet.`, { kind: 'war', level: 'info' });
+        g.notify(to, `${civ.name} is pulling back its forces.`, { kind: 'war', level: 'info' });
+        return { reply: { t: 'ack', withdrawing: ids.length } };
+      }
       if (action !== 'war') return { error: 'Treaties, payments and trading are not part of this ruleset' };
       if (r.state === 'unmet') return { error: 'you have not met them yet' };
       if (r.state === 'war') return { error: 'already at war' };

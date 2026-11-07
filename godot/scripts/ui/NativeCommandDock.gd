@@ -14,6 +14,8 @@ var confirm_button:Button
 var details:VBoxContainer
 var recruit_open:=false
 var queue_label:Label
+var queue_box:VBoxContainer
+var queue_signature:=""
 var selection_key:=""
 var deselect:Button
 var behavior_buttons:={}
@@ -56,7 +58,7 @@ func _army_target(kind:String) -> void:
 	app.command_tools.target_command({"c":"army","op":"order","id":app.input.selected_army,"kind":kind,"radius":4,"tile":"@map"},"Army "+kind.capitalize(),"point",false,false)
 
 func _rebuild() -> void:
-	NativeUI.clear(cards); NativeUI.clear(orders); NativeUI.clear(details); confirm_button=null; queue_label=null
+	NativeUI.clear(cards); NativeUI.clear(orders); NativeUI.clear(details); confirm_button=null; queue_label=null; queue_box=null; queue_signature=""
 	behavior_buttons.clear()
 	var world:WorldState=app.world; var selected:Dictionary=app.military.selected
 	var units:Array=app.input._owned_units()
@@ -208,12 +210,38 @@ func _recruitment(building:Dictionary) -> void:
 		NativeUI.label(text,str(info.get("name",key)),16)
 		var costs:=[]
 		for good in info.get("cost",{}): costs.append("%s %s"%[str(info.cost[good]),good])
-		NativeUI.label(text," · ".join(costs),12,NativeUI.MUTED)
+		var affordable:=true
+		for good in info.get("cost",{}):
+			if float(world.econ.get("res",{}).get(good,0))<float(info.cost[good]): affordable=false
+		NativeUI.label(text," · ".join(costs)+" · %ss"%str(info.get("time","?"))+("" if affordable else " · short of materials"),12,NativeUI.MUTED if affordable else NativeUI.BAD.lightened(.15))
 		var train:=NativeUI.compact_button(row,"Train",func():app.commands.train(facilities,key,maxi(5,int(quantity.value)) if Input.is_key_pressed(KEY_SHIFT) else int(quantity.value),per_building.button_pressed,repeat_.button_pressed))
 		var tech:=str(info.get("tech",""))
 		train.disabled=int(building.get("d",0))!=1 or int(info.get("age",0))>int(world.econ.get("age",0)) or not tech.is_empty() and not tech in world.econ.get("techs",[])
 		train.tooltip_text="Requires completed training facility and appropriate technology" if train.disabled else "Queue one unit · Shift-click queues five"
 	queue_label=NativeUI.label(details,"",14,NativeUI.MUTED)
+	queue_box=VBoxContainer.new(); queue_box.add_theme_constant_override("separation",2); details.add_child(queue_box)
+
+
+## The training queue of the selected facility: the unit in training with its progress bar, the
+## rest waiting, each with a cancel button (full refund before training starts, half after).
+func _render_queue(building:Dictionary) -> void:
+	var queue:Array=building.get("q",[])
+	var sig:=str([building.get("id"),queue.map(func(item):return item[0]),int(building.get("tr",0))/5])
+	if sig==queue_signature or not is_instance_valid(queue_box): return
+	queue_signature=sig
+	NativeUI.clear(queue_box)
+	var world:WorldState=app.world; var id:=int(building.id)
+	for index in queue.size():
+		var item:Array=queue[index]; var slot:=index
+		var row:=HBoxContainer.new(); row.add_theme_constant_override("separation",6); queue_box.add_child(row)
+		var name_:=str(world.defs.get("UNITS",{}).get(item[0],{}).get("name",item[0]))
+		var label:=NativeUI.label(row,name_+(" · training" if index==0 else " · waiting"),13,NativeUI.TEXT if index==0 else NativeUI.MUTED)
+		label.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+		if index==0:
+			var bar:=ProgressBar.new(); bar.custom_minimum_size=Vector2(70,8); bar.show_percentage=false; bar.value=float(building.get("tr",0)); bar.size_flags_vertical=Control.SIZE_SHRINK_CENTER; row.add_child(bar)
+		NativeUI.label(row,"~%ss"%str(item[1]),12,NativeUI.MUTED)
+		NativeUI.icon_button(row,"close","Cancel (full refund while waiting, half once training)",func():app.commands.submit({"c":"cancelTrain","building":id,"index":slot},func(reply):app.hud.show_toast("Training cancelled" if reply.get("error")==null else str(reply.error),reply.get("error")==null)),20)
+
 
 func _refresh() -> void:
 	var world:WorldState=app.world
@@ -254,7 +282,8 @@ func _refresh() -> void:
 		if app.input.selected_buildings.size()>1: title.text="%d × %s"%[app.input.selected_buildings.size(),str(info.get("name",building.ty))]
 		if is_instance_valid(queue_label):
 			var queue:Array=building.get("q",[]); queue_label.visible=not queue.is_empty()
-			queue_label.text="Training: "+" · ".join(queue.map(func(item):return str(world.defs.get("UNITS",{}).get(item[0],{}).get("name",item[0]))+" (~%s sec)"%str(item[1])))
+			queue_label.text="Training queue (%d)"%queue.size()
+			_render_queue(building)
 	hint.hide()
 	_health_and_owner(ids,building)
 

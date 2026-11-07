@@ -1679,6 +1679,25 @@
     "confirm": true
   },
   {
+    "page": "Rivals",
+    "id": "diplo_disengage",
+    "title": "Disengage and pull back",
+    "command": {
+      "c": "diplo",
+      "to": "@nation",
+      "action": "disengage"
+    },
+    "fields": [
+      {
+        "key": "nation",
+        "label": "Nation",
+        "source": "nations",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
     "page": "Observer",
     "id": "observer_follow",
     "title": "Follow civilization",

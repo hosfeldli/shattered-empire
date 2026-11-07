@@ -410,6 +410,8 @@ after the earlier truncated message and should be read together with the tasks i
 
 ## J. AI, city automation, economy and pacing
 
+> **Implemented 2026-11-07:** skill-scaled reaction delay, half-weight captured cities, mayors that upgrade housing/production, Disengage, measured pacing with research retuned. Remaining: playtest calibration of difficulty with real players.
+
 - [ ] AI is for player enjoyment: imperfect, human-like, understandable and varied by personality
   and difficulty; it should make believable mistakes and create memorable challenges without
   cheating fog, changing orders constantly or playing with perfect information. Calibrate and
@@ -452,6 +454,8 @@ after the earlier truncated message and should be read together with the tasks i
   treaties, tribute, negotiations, gifts or invented hidden AI information.
 
 ## K. Compact native UI and gameplay parity
+
+> **Implemented 2026-11-07:** alert levels with go-to, training queue with progress/cancel, build time/affordability, parity matrix (`PARITY_MATRIX.md`). Remaining: selecting road/bridge segments, testing with real players.
 
 - [ ] Match the supplied dark, restrained reference-image UI while keeping the living world
   dominant. Use a compact top bar (civ/era, essential resource icons/totals, research, time,
@@ -534,6 +538,8 @@ after the earlier truncated message and should be read together with the tasks i
   separate release considerations, not a reason to skip game quality or gameplay validation.
 
 ## N. Tooling, acceptance and execution order
+
+> **Partly implemented 2026-11-07:** F9 world overlays (district, parcel, road edges); `tools/pace-report.mjs` pacing measurement. Remaining: fixed-seed scene set, vertical slice.
 
 - [ ] Developer recipe inspector: entity ID, selected rules/preconditions, geography/adjacency,
   seed/version, materials, damage, LOD, cache revision, invalidation dependencies and generation

@@ -401,30 +401,47 @@ func _update_rain(f:Vector3) -> void:
 
 # ------------------------------------------------------------------ natural cover
 func _tree_model() -> ArrayMesh:
-	# A three-tier conifer with a visible trunk and lighter new growth toward the tip.
+	# A spruce-like conifer: a tapering trunk and six whorls of foliage that narrow and shorten
+	# toward a spire, each turned and slightly offset so the silhouette is ragged rather than a
+	# stack of cones; lower whorls are darker (self-shading), new growth lighter at the tip.
 	var k := MeshKit.new()
-	k.cylinder("bark", Vector3.ZERO, 0.017, 0.1, 6, Color.WHITE, 0.011)
-	k.cone("foliage", Vector3(0, 0.05, 0), 0.098, 0.14, 9, Color(.74,.84,.70))
-	k.cone("foliage", Vector3(0, 0.105, 0), 0.08, 0.13, 9, Color(.84,.93,.80))
-	k.cone("foliage", Vector3(0, 0.16, 0), 0.058, 0.12, 8, Color(.95,1,.9))
-	var mesh := k.commit()
-	# Crowns sway in the wind; the trunk keeps the shared static surface material.
-	for surface in mesh.get_surface_count():
-		var material := mesh.surface_get_material(surface)
-		if material and material.resource_name == "foliage":
-			mesh.surface_set_material(surface, MaterialLibrary.sway_foliage())
-	return mesh
+	k.cylinder("bark", Vector3.ZERO, 0.016, 0.09, 6, Color.WHITE, 0.008)
+	var whorls := 6
+	for i in whorls:
+		var t := float(i) / (whorls - 1)
+		var radius := lerpf(0.11, 0.028, pow(t, 0.85))
+		var height := lerpf(0.085, 0.06, t)
+		var y := 0.035 + i * 0.038
+		var offset := Vector3(sin(i * 2.3) * 0.006, 0, cos(i * 1.7) * 0.006)
+		k.set_frame(offset, i * 0.6)
+		k.cone("foliage", Vector3(0, y, 0), radius, height, 9, Color(.66, .78, .64).lerp(Color(.96, 1.0, .9), t))
+		k.set_frame(Vector3.ZERO, 0)
+	k.cone("foliage", Vector3(0, 0.035 + whorls * 0.038, 0), 0.016, 0.05, 6, Color(.98, 1.0, .92))
+	return _sway(k.commit())
 
 
 func _broadleaf_model() -> ArrayMesh:
-	# A rounded deciduous crown of a few overlapping lobes on a short trunk (open-country trees).
+	# A rounded deciduous tree: a trunk forking into two limbs and a crown of nine overlapping,
+	# faceted lobes at varied heights, darker underneath and lighter where the sun catches the top.
 	var k := MeshKit.new()
-	k.cylinder("bark", Vector3.ZERO, 0.016, 0.09, 6, Color.WHITE, 0.011)
-	for lobe in [[Vector3(0, 0.1, 0), 0.075], [Vector3(0.04, 0.085, 0.02), 0.055], [Vector3(-0.035, 0.09, -0.025), 0.058], [Vector3(0.0, 0.14, 0.0), 0.05]]:
+	k.cylinder("bark", Vector3.ZERO, 0.015, 0.075, 6, Color.WHITE, 0.01)
+	k.box("bark", Vector3(0.012, 0.06, 0), Vector3(0.008, 0.045, 0.008), Color.WHITE, 0.0)
+	k.box("bark", Vector3(-0.01, 0.06, 0.006), Vector3(0.008, 0.04, 0.008), Color.WHITE, 0.6)
+	var lobes := [[Vector3(0, .1, 0), .07], [Vector3(.045, .09, .02), .052], [Vector3(-.04, .095, -.025), .055], [Vector3(.01, .085, -.05), .048],
+		[Vector3(-.03, .088, .045), .05], [Vector3(.03, .13, -.015), .05], [Vector3(-.02, .135, .02), .048], [Vector3(.0, .155, .0), .04], [Vector3(.05, .115, .04), .04]]
+	for lobe in lobes:
 		var c: Vector3 = lobe[0]; var r: float = lobe[1]
-		k.cylinder("foliage", c - Vector3(0, r * 0.55, 0), r * 0.7, r * 0.55, 9, Color(.86, .95, .74), r)
-		k.cylinder("foliage", c, r, r * 0.55, 9, Color(.92, 1.0, .8), r * 0.55)
-	var mesh := k.commit()
+		var shade := clampf((c.y - 0.08) / 0.08, 0.0, 1.0)
+		var lower := Color(.68, .8, .6).lerp(Color(.85, .95, .74), shade)
+		var upper := Color(.82, .93, .7).lerp(Color(1.0, 1.05, .85), shade)
+		k.cylinder("foliage", c - Vector3(0, r * 0.6, 0), r * 0.62, r * 0.6, 8, lower, r)
+		k.cylinder("foliage", c, r, r * 0.5, 8, upper, r * 0.6)
+		k.cylinder("foliage", c + Vector3(0, r * 0.5, 0), r * 0.6, r * 0.25, 8, upper * 1.04, r * 0.15)
+	return _sway(k.commit())
+
+
+func _sway(mesh: ArrayMesh) -> ArrayMesh:
+	# crowns sway in the wind; the trunk keeps the shared static surface material
 	for surface in mesh.get_surface_count():
 		var material := mesh.surface_get_material(surface)
 		if material and material.resource_name == "foliage": mesh.surface_set_material(surface, MaterialLibrary.sway_foliage())
@@ -516,8 +533,9 @@ func _build_props(cid: int) -> void:
 				# forest edges thin out with younger trees; the interior stays dense and tall
 				if b == 4 and k >= int(vegetation.get("edge_base_trees", 5)) + woodland_neighbours: continue
 				var edge_min := float(vegetation.get("edge_scale_min", 0.78))
-				var s := rng.randf_range(0.75, 1.35) * (0.8 if b == 7 else 1.0) * (edge_min + (1.0 - edge_min) * woodland_neighbours / 6.0 if b == 4 else 1.0)
-				var transform:=Transform3D(Basis(Vector3.UP,rng.randf()*TAU).scaled(Vector3(s,s*rng.randf_range(.9,1.2),s)),Vector3(x,y-.01,z))
+				var s := (rng.randf_range(0.95, 1.4) if b == 4 else rng.randf_range(0.75, 1.35)) * (0.8 if b == 7 else 1.0) * (edge_min + (1.0 - edge_min) * woodland_neighbours / 6.0 if b == 4 else 1.0)
+				var girth:=rng.randf_range(.8,1.15)
+				var transform:=Transform3D(Basis(Vector3.UP,rng.randf()*TAU).scaled(Vector3(s*girth,s*rng.randf_range(.85,1.3)/sqrt(girth),s*girth)),Vector3(x,y-.01,z))
 				var tint:=Color(1,1,1).darkened(rng.randf()*.25).lerp(Color(.9,.95,.7),rng.randf()*.2)
 				if work_tiles.has(i) and TrenchPresentation.distance_to_route(work_tiles[i],g,Vector2(x,z))<.22: continue
 				if world.road[i]!=0 and _road_clearance(i,Vector2(x,z))<.09: continue
@@ -676,9 +694,9 @@ func _undergrowth(kit: MeshKit, i: int, c: Vector2, b: int, woodland_neighbours:
 		else:
 			var r := rng.randf_range(.025, .045)
 			kit.cylinder("foliage", Vector3(p.x, gy - .005, p.y), r, r * .9, 7, Color(.62, .74, .5).darkened(rng.randf() * .2), r * .55)
-	if b == 4 and woodland_neighbours >= 4:
+	if b == 4 and woodland_neighbours >= 4 and posmod(hash([i, "deadwood"]), 3) == 0:
 		var p := c + Vector2.from_angle(rng.randf() * TAU) * .4
-		kit.box("bark", Vector3(p.x, world.ground_height(p.x, p.y) - .004, p.y), Vector3(.14, .016, .016), Color(.5, .42, .34), rng.randf() * TAU)
+		kit.box("bark", Vector3(p.x, world.ground_height(p.x, p.y) - .006, p.y), Vector3(.11, .012, .012), Color(.42, .38, .34), rng.randf() * TAU)
 
 
 ## River banks: reeds along slow lowland reaches and water-worn stones on upland reaches, set

@@ -458,6 +458,35 @@ func _append_building(b: Dictionary, job: Dictionary, skip_model := false) -> vo
 				_connect(kit, group, lc, lc2, b, by_tile[nb])
 	if group == "ind" and int(b.get("d", 0)) == 1:
 		_compound_fence(kit, b, lc, by_tile)
+	if int(b.get("d", 0)) == 1 and str(b.ty) in URBAN:
+		_town_streets(kit, b, lc, by_tile)
+
+
+const URBAN := ["house", "market", "academy", "university", "town"]
+
+## The settlement's local street plan between urban hexes of different kinds (homes to the market,
+## the campus, the civic hub): each side draws the half street to the shared edge, with sidewalks
+## and a streetlight. Real roads are drawn by the infrastructure layer and take precedence; these
+## decorative streets never grant a route or a crossing and stop at water.
+func _town_streets(kit: MeshKit, b: Dictionary, lc: Vector3, by_tile: Dictionary) -> void:
+	var g := world.grid
+	var t := int(b.t)
+	for d in 6:
+		var nb := g.nb[t * 6 + d]
+		if nb < 0 or by_tile.has(nb) or ((world.road[t] >> (d * 4)) & 7) != 0: continue
+		var other: Dictionary = world.buildings.get(at_tile.get(nb, -1), {})
+		if other.is_empty() or not str(other.ty) in URBAN or int(other.get("o", -2)) != int(b.get("o", -1)) or int(other.get("d", 0)) != 1: continue
+		var c := Vector2(lc.x, lc.z)
+		var edge := c + g.dir_vec[d] * (HexGrid.SQRT3 * .5)
+		var start := c + g.dir_vec[d] * .42
+		if composition.sites.crosses_water(t, start, edge, .1): continue
+		kit.set_frame(Vector3.ZERO, 0.0)
+		var a3 := Vector3(start.x, 0, start.y); var b3 := Vector3(edge.x, 0, edge.y)
+		_ground_path(kit, a3, b3, .08, "asphalt", Color(.92, .92, .92))
+		var side := Vector3(-g.dir_vec[d].y, 0, g.dir_vec[d].x)
+		for s in [-1.0, 1.0]: _ground_path(kit, a3 + side * .055 * s, b3 + side * .055 * s, .022, "paving", Color(1.05, 1.03, 1.0))
+		var lamp: Vector3 = a3.lerp(b3, .5) + side * .07
+		kit.part("streetlight", Vector3(lamp.x, world.ground_height(lamp.x, lamp.z) + .012, lamp.z), atan2(-g.dir_vec[d].y, g.dir_vec[d].x) + PI * .5, 1.0)
 
 
 ## An industrial compound is fenced on its outer boundary only (shared yards stay open), with a
