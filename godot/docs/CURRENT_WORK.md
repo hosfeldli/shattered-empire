@@ -5,6 +5,26 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## Long-game rendering fix and second backlog pass (2026-11-07)
+
+- **Buildings stopped rendering in long games:** every frame whose network work exceeded 0.5 ms
+  skipped all building updates, and late games decode large snapshots nearly every frame. Updates
+  may now be postponed for at most two frames. Also fixed: a missing-building lookup that could
+  abort district refreshes, a scheduler that re-sorted every job per step, refresh work starving
+  mesh generation (generation now gets at least 60 % of a backlog-scaled budget), long district
+  jobs that restarted on every change (they now finish, then the newest revision runs), and a
+  district hand-off that could hide buildings indefinitely (4 s limit). Regression added.
+- **Gameplay (native-v4):** garrisons (fort 6, bunker 3, guard post 2 places; defensive troops
+  seek free places as cover; card shows occupancy), pause/resume for timed works, idle engineers
+  assist upgrade works, threatened artillery falls back within range, veteran promotion notices.
+- **World:** animated pumpjacks, boats at ports and fishing grounds, deer in quiet woodland,
+  broadleaf trees in open country, thinning forest edges, battle-felled trees with stumps and
+  logs, snow settling on roofs and open ground, smouldering heavily damaged buildings, contrails,
+  modern port terminal, strategic battle markers, city development areas while building.
+- **Audio:** jet passes, helicopter rotor bed, air-raid siren for strikes near own cities.
+- **UI:** unit callsigns, unit list in the hover inspector, owner/defence in Alt details,
+  city-wide "Repair damaged".
+
 ## Immersion, world-building and gameplay pass (2026-11-07)
 
 Local, uncommitted development; not in the published preview or deployed server.

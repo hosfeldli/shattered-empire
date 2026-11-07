@@ -125,6 +125,7 @@ func _ready() -> void:
 	net.command_result.connect(audio.on_command_result)
 	net.message.connect(audio.on_message)
 	wildlife.audio = audio
+	wildlife.settlements = settlements
 	environment.lightning.connect(audio.thunder)
 	combat.audio=audio
 	input = InputController.new()

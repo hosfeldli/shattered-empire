@@ -19,11 +19,12 @@ const AMBIENCE := {
 	"battle": "res://assets/audio/synth/amb_battle.ogg",
 	"engines": "res://assets/audio/synth/amb_engines.ogg",
 	"birds": "res://assets/audio/synth/amb_birds.ogg",
+	"rotor": "res://assets/audio/synth/amb_rotor.ogg",
 }
 ## base level of each bed at full presence (dB); beds are deliberately quiet under effects
-const AMBIENCE_DB := {"countryside": -30.0, "wind": -31.0, "rain": -27.0, "water": -30.0, "city": -31.0, "industry": -33.0, "construction": -32.0, "battle": -29.0, "engines": -31.0, "birds": -33.0}
-const EFFECTS := ["rifle", "mg", "autocannon", "cannon", "mortar", "artillery", "rocket", "explosion", "explosion_big", "collapse", "thunder"]
-const CUES := ["radio", "build", "chime", "fanfare", "drum"]
+const AMBIENCE_DB := {"countryside": -30.0, "wind": -31.0, "rain": -27.0, "water": -30.0, "city": -31.0, "industry": -33.0, "construction": -32.0, "battle": -29.0, "engines": -31.0, "birds": -33.0, "rotor": -27.0}
+const EFFECTS := ["rifle", "mg", "autocannon", "cannon", "mortar", "artillery", "rocket", "explosion", "explosion_big", "collapse", "thunder", "jet"]
+const CUES := ["radio", "build", "chime", "fanfare", "drum", "siren"]
 ## orders acknowledged over the radio; placements answered with a stake being driven
 const RADIO_COMMANDS := ["move", "attack", "fortify", "hold", "withdraw", "stance", "formation", "deploy", "armyMove", "armyOrder", "patrol", "explore", "rally"]
 const BUILD_COMMANDS := ["build", "road", "trench", "bridge", "upgrade", "batchUpgrade", "repair", "found"]
@@ -51,6 +52,8 @@ var effects_bus := 0
 var cue_player: AudioStreamPlayer
 var last_cue := {}
 var own_state := {}      # own building id -> "done:level" (completion chimes)
+var jet_heard := {}      # aircraft id -> last time a pass was heard
+var siren_at := -999.0
 
 
 func setup(w:WorldState,cam:CameraController) -> void:
@@ -191,6 +194,36 @@ func _scan() -> void:
 		if d>radius: continue
 		engines+=(1.0-d/radius)*(1.0 if int(unit.get("next",-1))>=0 else .35)
 	_target("engines",clampf(engines/2.5,0,1)*near*(1.0-smoothstep(14.0,34.0,camera.size)))
+	# aircraft overhead: rotor beat for helicopters, a jet pass for fast movers (once per 25 s each)
+	var rotors:=0.0
+	var now:=Time.get_ticks_msec()/1000.0
+	for unit in world.units.values():
+		var def:Dictionary=unit_defs.get(str(unit.type),{})
+		if not bool(def.get("air",false)): continue
+		var t:=int(unit.tile)
+		if int(unit.owner)!=world.civ_id and not world.is_visible(t): continue
+		var p:=g.center(t)
+		var d:=Vector2(g.dx_wrap(focus.x,p.x),p.y-focus.y).length()
+		if d>radius*1.4: continue
+		if str(unit.type)=="helicopter": rotors+=1.0-d/(radius*1.4)
+		elif str(unit.type) in ["fighter","bomber"] and int(unit.get("next",-1))>=0 and now-float(jet_heard.get(int(unit.id),-99.0))>25.0:
+			jet_heard[int(unit.id)]=now
+			var voice:=_free_voice("jet")
+			if voice and streams.has("jet"):
+				voice.stream=streams.jet; voice.volume_db=-18.0-d/maxf(radius,1.0)*8.0; voice.pitch_scale=randf_range(.92,1.06); voice.play()
+	_target("rotor",clampf(rotors,0,1)*(1.0-smoothstep(30.0,60.0,camera.size)))
+	# air-raid warning: visible hostile strike aircraft or missiles closing on one of our cities
+	if now-siren_at>60.0:
+		for unit in world.units.values():
+			if int(unit.owner)==world.civ_id or not str(unit.type) in ["bomber","oneway_drone","strike_swarm"] or not world.is_visible(int(unit.tile)): continue
+			var threat:=g.center(int(unit.tile))
+			var near_city:=false
+			for city in world.cities.values():
+				if int(city.o)!=world.civ_id: continue
+				var cp:=g.center(int(city.t))
+				if Vector2(g.dx_wrap(threat.x,cp.x),cp.y-threat.y).length()<9.0: near_city=true; break
+			if near_city:
+				siren_at=now; cue("siren",-17.0); break
 	# birdsong in known woodland and meadows; birds fall silent while fighting is heard
 	if samples>0.0: _target("birds",clampf(land/samples,0,1)*near*(1.0-clampf(recent_fire/4.0,0,1))*(1.0-rain))
 

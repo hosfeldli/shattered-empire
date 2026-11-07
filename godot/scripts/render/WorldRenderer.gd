@@ -466,6 +466,7 @@ uniform sampler2D ground_detail : source_color, filter_linear_mipmap_anisotropic
 #include "res://shaders/weather_clouds.gdshaderinc"
 #include "res://shaders/visibility_fields.gdshaderinc"
 #include "res://shaders/territory_fields.gdshaderinc"
+global uniform float snow_cover;
 #include "res://shaders/development_fields.gdshaderinc"
 uniform sampler2D strategic_overlay : filter_nearest, hint_default_black;
 uniform float overlay_strength = 0.0;
@@ -558,6 +559,7 @@ void fragment() {
 	base = mix(base,vec3(.24,.20,.15)*(0.8+0.3*n),scar*.8);
 	wet = max(wet,scar*wet);
 	base *= 1.0 - 0.3 * wet;
+	base = mix(base, vec3(.80,.82,.85)*(.92+.1*n), snow_cover*(1.0-smoothstep(.15,.4,slope))*step(.01,wpos.y)*.8);
 	base = territory_tint(base, wpos.xz);
 	float shade = cloud_shadow(wpos);
 	vec2 knowledge=surface_visibility(wpos.xz);

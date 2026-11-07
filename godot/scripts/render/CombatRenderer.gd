@@ -301,12 +301,12 @@ func _tile_point(t: int, lift: float, salt := 0) -> Vector3:
 ## zoom (visible units only; rain and wet ground settle it). Presentation of real movement only.
 func _vehicle_dust(dt: float) -> void:
 	dust_clock -= dt
-	if dust_clock > 0.0 or cam.size > 24.0 or military == null or world.paused: return
+	if dust_clock > 0.0 or cam.size > 45.0 or military == null or world.paused: return
 	dust_clock = 0.35
 	var defs: Dictionary = world.defs.get("UNITS", {})
 	var spawned := 0
 	for id in military.draw_positions:
-		if spawned >= 10: break
+		if spawned >= 10 or cam.size > 24.0: break
 		var u: Dictionary = world.units.get(id, {})
 		if u.is_empty() or int(u.get("next", -1)) < 0: continue
 		var d: Dictionary = defs.get(str(u.type), {})
@@ -316,6 +316,16 @@ func _vehicle_dust(dt: float) -> void:
 		if composition and float(composition.weather.at_tile(t).get("wet", 0.0)) > 0.3: continue
 		var p: Vector3 = military.draw_positions[id]
 		_spawn("smoke", p + Vector3(randf_range(-.04, .04), .02, randf_range(-.04, .04)), Vector3.ZERO, 1.4, Color(.72, .64, .5), .07)
+		spawned += 1
+	# contrails behind fast aircraft in flight (visible ones only)
+	for id in military.draw_positions:
+		if spawned >= 16: break
+		var u: Dictionary = world.units.get(id, {})
+		if u.is_empty() or int(u.get("next", -1)) < 0 or not str(u.type) in ["fighter", "bomber"]: continue
+		if int(u.owner) != world.civ_id and not world.is_visible(int(u.tile)): continue
+		var p: Vector3 = military.draw_positions[id]
+		if p.y < world.ground_height(p.x, p.z) + .6: continue
+		_spawn("smoke", p + Vector3(0, -.02, 0), Vector3.ZERO, 2.2, Color(.95, .95, .95), .035)
 		spawned += 1
 
 

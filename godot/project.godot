@@ -18,6 +18,10 @@ fog_view_size={
 "value": 34.0
 }
 
+snow_cover={
+"type": "float",
+"value": 0.0
+}
 wind_vector={
 "type": "vec2",
 "value": Vector2(0.4, 0.1)

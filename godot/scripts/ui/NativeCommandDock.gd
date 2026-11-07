@@ -123,6 +123,14 @@ func _rebuild() -> void:
 			_button("Build · B",func():_workspace("Construction"))
 			_button("Manage",func():_workspace("Cities"); app.workspace.dashboard.city_tab="Development"; app.workspace.dashboard.signature=""; app.workspace.dashboard.sync())
 			_button("View production",func():_workspace("Cities"); app.workspace.dashboard.city_tab="Buildings"; app.workspace.dashboard.signature=""; app.workspace.dashboard.sync())
+			# one click starts repairs on every damaged building of this city (each is its own works)
+			var damaged:=[]
+			for other in world.buildings.values():
+				if int(other.o)==world.civ_id and int(other.get("c",-1))==int(building.get("c",-2)) and int(other.get("d",0))==1 and float(other.get("hp",100))<100 and (other.get("wk",[]) as Array).is_empty():
+					damaged.append(int(other.id))
+			if not damaged.is_empty():
+				_button("Repair damaged (%d)"%damaged.size(),func():
+					for target in damaged: app.commands.issue("repair",{"building":target}),"Start repairs on every damaged building in this city, as materials allow.")
 			if int(city.get("fs",0))>0:
 				NativeUI.label(details,"Food shortage · farms are not supplying enough food.",15,Color("e4ad88"))
 				NativeUI.compact_button(details,"Build Farm",func():app.command_tools.activate("build","farm"))
@@ -133,14 +141,23 @@ func _rebuild() -> void:
 			if info.has("trains"):
 				_button("Train troops",func():recruit_open=not recruit_open; signature="")
 				_button("Rally point",func():app.command_tools.target_command({"c":"rally","building":id,"tile":"@map"},"Set rally point","point",false,false))
+			# garrison places (native-v4): own ground troops standing in the emplacement
+			var garrison_caps:={"fort":6,"bunker":3,"guard_post":2}
+			if world.ruleset=="native-v4" and garrison_caps.has(str(building.ty)) and int(building.get("d",0))==1 and int(building.o)==world.civ_id:
+				var inside:=0
+				for unit in world.units.values():
+					if int(unit.tile)==int(building.t) and int(unit.owner)==world.civ_id and not bool(world.defs.get("UNITS",{}).get(str(unit.type),{}).get("air",false)): inside+=1
+				NativeUI.label(details,"Garrison %d of %d · troops inside fight with stronger protection"%[mini(inside,int(garrison_caps[building.ty])),int(garrison_caps[building.ty])],14,NativeUI.MUTED)
 			var works:Array=building.get("wk",[])
 			if not works.is_empty():
 				var doing:="Repairing" if str(works[0])=="r" else "Upgrading to level %d"%(int(building.get("lv",1))+1)
-				var note:=" · halted under fire" if works.size()>2 and int(works[2])==1 else ""
+				var paused_works:=works.size()>4 and int(works[4])==1
+				var note:=" · paused" if paused_works else " · halted under fire" if works.size()>2 and int(works[2])==1 else ""
 				var eta:=int(works[3]) if works.size()>3 else -1
 				var remaining:=" · about %d:%02d left"%[eta/60,eta%60] if eta>=0 and note.is_empty() else ""
 				NativeUI.label(details,"%s · %d%%%s%s"%[doing,int(works[1]),remaining,note],15,Color("e4ad88") if not note.is_empty() else NativeUI.GOLD)
 				NativeUI.label(details,"Engineers within two hexes speed up the works.",13,NativeUI.MUTED)
+				if own: _button("Resume works" if paused_works else "Pause works",func():app.commands.issue("pause_works",{"building":id}),"Pausing keeps progress and frees crews and engineers for other sites.")
 				if own: _button("Cancel works",func():app.commands.issue("cancel_works",{"building":id}),"Stop the works. Half of the unspent cost is refunded.")
 			elif building.has("uc") or building.ty=="house" and int(building.get("lv",1))<3 and int(building.get("d",0))==1:
 				var facilities:Array=app.input.selected_buildings.keys()
@@ -207,7 +224,7 @@ func _refresh() -> void:
 			var unit:Dictionary=world.units.get(id,{})
 			if unit.is_empty(): continue
 			health+=float(unit.hp); supply+=float(unit.get("supply",0)); morale+=float(unit.get("morale",100)); valid+=1
-		title.text=str(world.defs.get("UNITS",{}).get(world.units.get(ids[0],{}).get("type",""),{}).get("name","Unit")) if valid==1 else "%d units selected"%valid
+		title.text=str(world.defs.get("UNITS",{}).get(world.units.get(ids[0],{}).get("type",""),{}).get("name","Unit"))+" · "+callsign(int(ids[0])) if valid==1 else "%d units selected"%valid
 		state.text="Health %d%% · Supply %d%% · Morale %d%%"%[int(health/maxi(valid,1)),int(supply/maxi(valid,1)),int(morale/maxi(valid,1))]
 		var stances:={}
 		for id in ids:
@@ -238,3 +255,9 @@ func _process(dt:float) -> void:
 	panel.position=Vector2(10,bounds.y-panel.size.y-12)
 	timer+=dt
 	if timer>=.1: timer=0; _refresh()
+
+
+## A stable radio callsign for a unit (presentation only; derived from its server id).
+const CALLSIGNS := ["Kestrel","Granite","Harrow","Juniper","Lantern","Marrow","Nettle","Osprey","Pilgrim","Quarry","Rook","Saber","Thistle","Umber","Vesper","Warden","Yarrow","Zephyr","Anvil","Bracken","Cinder","Drover","Ember","Falcon"]
+static func callsign(id:int) -> String:
+	return "%s-%d"%[CALLSIGNS[posmod(id*2654435761,CALLSIGNS.size())],posmod(id,9)+1]

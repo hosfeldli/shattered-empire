@@ -306,6 +306,31 @@ function drum() { // a distant muffled drum roll for battle reports
   return normalize(fade(reverb(x, 1.6, 0.3), 0.001, 0.6), 0.5);
 }
 
+function jet() { // a fast jet pass: rising then falling roar with a doppler sweep
+  const r = rng(211), len = Math.round(4.5 * RATE), x = pink(len, r);
+  const y = biquad(x, 'bp', (i) => { const t = i / len; return 700 + 1800 * Math.exp(-((t - 0.42) ** 2) / 0.02) - 400 * t; }, 0.8);
+  env(y, (t) => Math.exp(-((t - 1.9) ** 2) / 0.9));
+  mix(y, env(biquad(brown(len, r), 'lp', 160), (t) => Math.exp(-((t - 2.0) ** 2) / 1.2)), 0, 1.5);
+  return normalize(fade(y, 0.05, 0.6), 0.8);
+}
+function rotor() { // helicopter: blade-slap pulse train over turbine whine
+  const r = rng(223), n = buf(12).length, x = new Float32Array(n), rate = 5.6;
+  for (let at = 0; at < n; at += Math.round(RATE / rate)) { const l = Math.round(RATE * 0.09), d = brown(l, r); env(d, (t) => Math.exp(-t * 45)); mix(x, biquad(d, 'lp', 260), at, 1.5); }
+  let ph = 0; for (let i = 0; i < n; i++) { ph += 2 * Math.PI * 3100 / RATE; x[i] += Math.sin(ph) * 0.03; }
+  mix(x, biquad(pink(n, r), 'bp', 900, 0.6), 0, 0.15);
+  return normalize(loopify(x, 1), 0.6);
+}
+
+function siren() { // a distant civil-defence siren: two slow rising and falling wails
+  const len = Math.round(9 * RATE), x = new Float32Array(len); let ph = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / RATE, cycle = (t % 4.5) / 4.5, f = 300 + 420 * Math.sin(Math.PI * cycle) ** 0.7;
+    ph += 2 * Math.PI * f / RATE;
+    x[i] = (Math.sin(ph) + 0.4 * Math.sin(2 * ph) + 0.2 * Math.sin(3 * ph)) * Math.min(1, t * 2, (9 - t) * 1.5);
+  }
+  return normalize(fade(reverb(biquad(x, 'lp', 1800), 2.8, 0.45, 0.6), 0.2, 1.2), 0.6);
+}
+
 // ------------------------------------------------------------------ output
 function writeWav(file, x) {
   const n = x.length, b = Buffer.alloc(44 + n * 2);
@@ -318,7 +343,7 @@ const SOUNDS = {
   amb_wind: wind, amb_rain: rain, amb_water: water, amb_city: city, amb_industry: industry, amb_construction: construction, amb_battle: battleDistant,
   sfx_rifle: rifle, sfx_mg: mg, sfx_autocannon: autocannon, sfx_cannon: cannon, sfx_mortar: mortar, sfx_artillery: artillery, sfx_rocket: rocket,
   sfx_explosion: () => explosion(149, false), sfx_explosion_big: () => explosion(151, true), sfx_collapse: collapse,
-  sfx_thunder: thunder, ui_radio: radio, ui_build: build, ui_chime: chime, ui_fanfare: fanfare, ui_drum: drum, amb_engines: engines, amb_birds: birdsong,
+  sfx_thunder: thunder, ui_radio: radio, ui_build: build, ui_chime: chime, ui_fanfare: fanfare, ui_drum: drum, sfx_jet: jet, amb_rotor: rotor, ui_siren: siren, amb_engines: engines, amb_birds: birdsong,
 };
 fs.mkdirSync(OUT, { recursive: true });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'se-synth-'));

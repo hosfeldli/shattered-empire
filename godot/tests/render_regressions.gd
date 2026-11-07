@@ -149,6 +149,10 @@ func _run() -> void:
 	var copies:Array=settlements.districts["1,2"].get("copies",[])
 	check(copies.any(func(pair):return (pair[0] as Node3D).visible),"wide seam view omitted the adjacent wrapped building image")
 	check(copies.all(func(pair):return (pair[0] as MeshInstance3D).mesh==(settlements.districts["1,2"].node as MeshInstance3D).mesh),"wrapped buildings failed to share the stable district mesh")
+	# Long games decode large snapshots every frame: building updates may be postponed, never stopped.
+	w.buildings_version+=1
+	for frame in 6: settlements.update(.016,false)
+	check(settlements.version==w.buildings_version,"busy network frames starved building updates indefinitely")
 
 	# Two positions across the cylinder seam must interpolate by the short path.
 	w.snaps = [{"t": 0.0, "pos": {1: Vector3(127, -1, 0)}}, {"t": 1.0, "pos": {1: Vector3(96, -1, 0)}}]

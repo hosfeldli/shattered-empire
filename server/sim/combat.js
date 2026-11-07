@@ -1,10 +1,10 @@
-import { nativeRules, tempo } from './rulesets.js';
+import { nativeRules, tempo, timedWorks } from './rulesets.js';
 // Combat resolution: weapons fire (hitscan volleys or authoritative projectiles that damage on
 // impact), area blasts, suppression and morale, cover and line of fire, target choice with
 // overkill avoidance, and a sequenced combat-event stream that clients replay.
 import { book } from './ledger.js';
 import { trenchCover, damageFieldworks } from './fieldworks.js';
-import { UNITS, BUILDINGS, TERRAIN, T, isWater, techFx } from './constants.js';
+import { UNITS, BUILDINGS, TERRAIN, T, isWater, techFx, VET_NAMES } from './constants.js';
 import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS, ARMORED, weaponVs } from './weapons.js';
 import { disk, dist, hexLine } from './hex.js';
 import { damageUnit, damageBuilding, canHit } from './military.js';
@@ -218,7 +218,9 @@ function resolveHit(g, src, wpn, strength, acc, tg, tt, factor) {
     if (src.bonus && src.bonus[ed.cat]) a *= src.bonus[ed.cat];
     if (ARMORED.has(ed.cat)) a *= wpn.vsArmor;
     let d = ed.def * (ed.air ? 1 : 1 + TERRAIN[w.terr[e.tile]].def) * (1 + 0.08 * vetLevel(e));
-    const fortB = g.buildingAtTile(e.tile); if (fortB && fortB.owner === e.owner && (fortB.type === 'fort' || fortB.type === 'bunker')) d *= 1.5;
+    const fortB = g.buildingAtTile(e.tile);
+    if (timedWorks(g)) d *= garrisonBonus(g, e, fortB);
+    else if (fortB && fortB.owner === e.owner && (fortB.type === 'fort' || fortB.type === 'bunker')) d *= 1.5;
     if (isWater(w.terr[e.tile]) && !ed.air) d *= 0.5;
     const cover = coverAt(g, e, src.tile, !!wpn.arc);
     const dmg = a * 1.6 * rand * (10 / (10 + d)) * acc * factor * (1 - cover);
@@ -227,7 +229,7 @@ function resolveHit(g, src, wpn, strength, acc, tg, tt, factor) {
     e.morale = Math.max(0, (e.morale ?? 100) - (dmg / e.maxHp) * 25);
     const dies = e.hp - dmg <= 0;
     emit(g, { k: 'hit', s: src.obj.id, t: e.id, a: src.tile, b: e.tile, d: Math.round(dmg), o: dies ? 'destroyed' : 'hit', c: cover >= 0.25 ? 1 : 0 });
-    if (src.kind === 'unit') src.obj.xp = (src.obj.xp || 0) + dmg * 0.15 + (dies ? 8 : 0);
+    if (src.kind === 'unit') { src.obj.xp = (src.obj.xp || 0) + dmg * 0.15 + (dies ? 8 : 0); promote(g, src.obj); }
     e.xp = (e.xp || 0) + 0.5;                       // surviving fire is experience too
     damageUnit(g, e, dmg, src.owner, 'combat');
     return dmg;
@@ -430,4 +432,24 @@ export function coverPosition(g, u, threatTile) {
     if (c > bc) { bc = c; best = t; }
   }
   return best;
+}
+
+// Garrisons (native-v4): a finished, standing emplacement shelters a limited number of its
+// owner's ground troops; the first arrivals (by unit id, deterministic) fill the places.
+export const GARRISON = Object.freeze({ fort: { cap: 6, def: 1.5 }, bunker: { cap: 3, def: 1.5 }, guard_post: { cap: 2, def: 1.25 } });
+export function garrisonBonus(g, u, b) {
+  const spec = b && GARRISON[b.type];
+  if (!spec || b.owner !== u.owner || !b.done || b.hp < b.maxHp * 0.25 || UNITS[u.type].air) return 1;
+  const ids = (g.tileUnits.get(u.tile) || []).filter((id) => { const o = g.units.get(id); return o && o.owner === u.owner && !UNITS[o.type].air && !UNITS[o.type].civilian; }).sort((a, b2) => a - b2);
+  const rank = ids.indexOf(u.id);
+  return rank >= 0 && rank < spec.cap ? spec.def : 1;
+}
+
+// A quiet notice when one of a player's units earns a new veteran rank.
+function promote(g, u) {
+  const level = vetLevel(u);
+  if (level <= (u.rank || 0)) return;
+  u.rank = level;
+  const civ = g.civs[u.owner];
+  if (civ?.human) g.notify(u.owner, `${UNITS[u.type].name} is now ${VET_NAMES[level]}: steadier and more accurate under fire.`, { kind: 'unit', tile: u.tile, quiet: true, level: 'info' });
 }

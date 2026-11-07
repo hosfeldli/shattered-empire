@@ -108,13 +108,19 @@ func _clear() -> void:
 	version = -1
 
 
+var deferred_frames := 0
+
 func update(_dt: float, allow_rebuild := true) -> void:
 	if world.grid == null:
 		return
 	composition.sync()
 	at_tile = composition.graph.at_tile
 	district_of = composition.graph.district_of
-	if allow_rebuild:
+	# Heavy network frames may postpone building work, but only briefly. Late games decode large
+	# snapshots nearly every frame; skipping unconditionally stopped buildings from updating.
+	deferred_frames = 0 if allow_rebuild else deferred_frames + 1
+	if allow_rebuild or deferred_frames >= 3:
+		deferred_frames = 0
 		if version != world.buildings_version:
 			version = world.buildings_version
 			for id in home_sites.keys():
@@ -205,6 +211,7 @@ func _on_districts_reconciled(upserted: Array, removed: Array) -> void:
 			continue
 		var old:Dictionary=districts[key]
 		if (old.node as MeshInstance3D).mesh!=null:
+			old.retired_at=Time.get_ticks_msec()
 			retiring.append(old)
 		else:
 			(old.node as Node).queue_free(); (old.fx as Node).queue_free()
@@ -233,8 +240,11 @@ func _try_handoff() -> void:
 	if retiring.is_empty(): return
 	var keep:=[]
 	for old in retiring:
+		# Never hold a hand-off for long: after 4 s the replacements show as they are, so a
+		# replacement that cannot be built (or a changed district key) cannot hide buildings.
+		var timed_out:=Time.get_ticks_msec()-int(old.get("retired_at",0))>4000
 		var ready:=true
-		for id in old.ids:
+		for id in ([] if timed_out else old.ids):
 			var key:=str(composition.graph.district_of.get(id,""))
 			if key!="" and (not districts.has(key) or not districts[key].get("ready",false)):
 				ready=false; break
@@ -317,7 +327,7 @@ func _structure_signature(list: Array) -> String:
 	var parts := PackedStringArray()
 	for b in list:
 		# Damage stages alter the static tint, but progress, fire and activity never rebuild this mesh.
-		parts.append("%d:%s:%d:%d:%s:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), (0 if int(b.get("hp",100))>=85 else 1 if int(b.get("hp",100))>=60 else 2 if int(b.get("hp",100))>=35 else 3), int(b.get("ti", 0))])
+		parts.append("%d:%s:%d:%d:%s:%d:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), (0 if int(b.get("hp",100))>=85 else 1 if int(b.get("hp",100))>=60 else 2 if int(b.get("hp",100))>=35 else 3), int(b.get("ti", 0)), int(b.get("a", 0)) if str(b.ty) == "oil_well" else 0])
 	return "|".join(parts)
 
 
@@ -342,17 +352,20 @@ func _queue_build(key: String, list: Array) -> void:
 
 func _build_some() -> void:
 	var t0 := Time.get_ticks_usec()
-	while not refresh_queue.is_empty() and Time.get_ticks_usec() - t0 < REBUILD_BUDGET_US:
+	# Big late-game backlogs get a larger slice; geometry generation always gets at least 60%,
+	# so signature refreshes can never starve mesh building.
+	var backlog := refresh_queue.size() + composition.scheduler._jobs.size()
+	var budget := REBUILD_BUDGET_US * (1 + mini(backlog / 40, 3))
+	while not refresh_queue.is_empty() and Time.get_ticks_usec() - t0 < budget * 2 / 5:
 		var key: String = refresh_queue.pop_front()
 		refresh_pending.erase(key)
 		if districts.has(key):
 			var list := []
 			for id in districts[key].ids:
-				list.append(world.buildings[id])
-			_refresh_district(key, list)
-	var remaining := REBUILD_BUDGET_US - (Time.get_ticks_usec() - t0)
-	if remaining > 0:
-		composition.scheduler.tick(remaining)
+				# a building can vanish between graph reconciliation and this refresh
+				if world.buildings.has(id): list.append(world.buildings[id])
+			if not list.is_empty(): _refresh_district(key, list)
+	composition.scheduler.tick(maxi(budget - (Time.get_ticks_usec() - t0), budget * 3 / 5))
 
 
 func _begin_district(key: String, list: Array) -> Dictionary:
@@ -367,7 +380,9 @@ func _begin_district(key: String, list: Array) -> Dictionary:
 
 
 func _step_district(job: Dictionary) -> bool:
-	if not districts.has(job.key) or int(districts[job.key].get("generation", -1)) != int(job.generation):
+	# A newer generation is deferred by the scheduler; this one keeps going so the district is
+	# never left without geometry. Only a removed district abandons its work.
+	if not districts.has(job.key):
 		return true
 	var list: Array = job.list
 	if int(job.next) >= list.size():
@@ -397,9 +412,11 @@ func _step_district(job: Dictionary) -> bool:
 
 
 func _commit_district(job: Dictionary) -> void:
-	if not districts.has(job.key) or int(districts[job.key].get("generation", -1)) != int(job.generation):
+	if not districts.has(job.key) or not job.has("mesh"):
 		return
 	(districts[job.key].node as MeshInstance3D).mesh = job.get("mesh")
+	# Stale geometry is shown until the deferred newer generation commits; it counts as ready
+	# for hand-off so replaced districts never stay hidden behind a busy rebuild.
 	districts[job.key].ready=true
 	_try_handoff()
 	rebuilt += 1
@@ -499,6 +516,8 @@ func _append_smoke(smokes: Array, b: Dictionary, frame: Transform3D) -> void:
 			smokes.append([frame * Vector3(0.2, 0.425, z), Color(0.86, 0.86, 0.86)])
 	if int(b.get("f", 0)) == 1:
 		smokes.append([frame * Vector3(0, 0.3, 0), Color(0.2, 0.18, 0.17)])
+	elif int(b.get("d", 0)) == 1 and int(b.get("hp", 100)) < 35 and str(b.get("st", "")) != "ruined" and int(b.get("mem", 0)) == 0:
+		smokes.append([frame * Vector3(0.05, 0.2, -0.04), Color(0.32, 0.3, 0.29), 0.55])   # smouldering damage
 	# Wood stoves: a third of lived-in homes (stable per building) show a thin chimney plume;
 	# in cold country most of them do. Damaged or unfinished homes stay cold.
 	if ty == "house" and int(b.get("d", 0)) == 1 and int(b.get("hp", 100)) >= 60:

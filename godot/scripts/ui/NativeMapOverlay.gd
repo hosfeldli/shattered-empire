@@ -32,6 +32,7 @@ func _outline(tile:int,color:Color,width:=1.5) -> void:
 func _draw() -> void:
 	if not app.world.ready_ or app.shell.is_blocking(): return
 	if hover>=0 and app.command_tools.mode=="select": _outline(hover,Color(1,1,.9,.4),1)
+	if app.command_tools.mode=="build" and not app.world.spectator: _development_edges()
 	for id in app.input.selected_buildings:
 		if app.world.buildings.has(id): _outline(int(app.world.buildings[id].t),Color("77e7ff") if high_contrast else NativeUI.GOLD,3 if high_contrast else 2)
 	if app.cam.size<40:
@@ -73,6 +74,15 @@ func _describe(tile:int,detailed:=false) -> String:
 		elif not (building.get("wk",[]) as Array).is_empty():
 			var works:Array=building.wk
 			lines.append("%s · %d%%"%["Under repair" if str(works[0])=="r" else "Upgrade works",int(works[1])])
+	# visible units on this hex: type, callsign and earned rank
+	var listed:=0
+	var ranks:Array=world.defs.get("VET_NAMES",["","","Veteran","Elite"])
+	for unit in world.units.values():
+		if listed>=4 or int(unit.tile)!=tile: continue
+		if int(unit.owner)!=world.civ_id and not world.is_visible(tile): continue
+		var rank:=int(unit.get("veteran",0))
+		lines.append("%s · %s%s%s"%[str(world.defs.get("UNITS",{}).get(str(unit.type),{}).get("name",unit.type)),NativeCommandDock.callsign(int(unit.id))," · "+str(ranks[rank]) if rank>=2 and rank<ranks.size() else "","" if int(unit.owner)==world.civ_id else " · "+str(world.civ_by_id.get(int(unit.owner),{}).get("name","foreign"))])
+		listed+=1
 	var terrain:Variant=world.defs.get("TERRAIN",[])
 	var biome:=world.biome(tile)
 	if terrain is Array and biome<terrain.size():
@@ -82,6 +92,11 @@ func _describe(tile:int,detailed:=false) -> String:
 			var move:Variant=definition.get("move")
 			lines.append("Base movement: %s× · varies by unit and roads"%str(move) if move is float or move is int else "Movement: depends on crossing and unit type")
 			lines.append("Terrain fertility: %d%% · site rules still apply"%int(float(definition.get("fert",0))*100))
+			var defense:=float(definition.get("def",0))
+			if absf(defense)>.001: lines.append("Defensive cover: %+d%% for troops holding this ground"%int(defense*100))
+			var owner:=int(world.tile_owner[tile]) if tile<world.tile_owner.size() else -1
+			if owner>=0: lines.append("Territory: %s%s"%[str(world.civ_by_id.get(owner,{}).get("name","Unknown"))," (last known)" if not world.is_visible(tile) else ""])
+			else: lines.append("Territory: unclaimed")
 	if world.is_river(tile): lines.append("River · use an authorized crossing")
 	if world.deposit(tile)>0:
 		var resources:Variant=world.defs.get("RESOURCE",[])
@@ -111,3 +126,37 @@ func _process(dt:float) -> void:
 		tooltip.position=mouse+Vector2(20,22)
 		tooltip.position.x=minf(tooltip.position.x,size.x-tooltip.size.x-8)
 		tooltip.position.y=minf(tooltip.position.y,size.y-tooltip.size.y-8)
+
+
+## While placing a building, each own city's authoritative development area (the server's city
+## radius in hexes) is outlined along its true hex boundary, so it is clear which city a site
+## belongs to and where development stops. Placement legality itself still comes from the server.
+func _development_edges() -> void:
+	var world:WorldState=app.world; var g:=world.grid
+	var edge_corners:={}
+	for corner in 6:
+		for direction in HexGrid.CORNER_DIRS[corner]:
+			if not edge_corners.has(direction): edge_corners[direction]=[]
+			edge_corners[direction].append(corner)
+	for city in world.cities.values():
+		if int(city.o)!=world.civ_id: continue
+		var centre:=int(city.t); var radius:=int(city.get("r",3))
+		var area:={centre:true}; var frontier:=[centre]
+		for step in radius:
+			var next:=[]
+			for t in frontier:
+				for d in 6:
+					var nb:=g.nb[int(t)*6+d]
+					if nb>=0 and not area.has(nb): area[nb]=true; next.append(nb)
+			frontier=next
+		var color:=world.civ_color(world.civ_id).lightened(.35); color.a=.75
+		for t in area:
+			if not world.known[int(t)]: continue
+			for d in 6:
+				var nb:=g.nb[int(t)*6+d]
+				if nb>=0 and area.has(nb): continue
+				var corners:Array=edge_corners[d]
+				draw_line(_point(int(t),int(corners[0])),_point(int(t),int(corners[1])),color,2.0,true)
+		var label_point:=_point(centre)+Vector2(-40,-34)
+		draw_string_outline(get_theme_default_font(),label_point,"%s development area"%str(city.n),HORIZONTAL_ALIGNMENT_LEFT,-1,12,4,Color("11191f"))
+		draw_string(get_theme_default_font(),label_point,"%s development area"%str(city.n),HORIZONTAL_ALIGNMENT_LEFT,-1,12,color)

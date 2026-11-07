@@ -14,6 +14,7 @@ uniform sampler2D wet_map : filter_linear, repeat_enable, hint_default_black;
 #include "res://shaders/weather_clouds.gdshaderinc"
 #include "res://shaders/visibility_fields.gdshaderinc"
 uniform float weather_ready = 0.0;
+global uniform float snow_cover;
 varying vec3 world_position;
 
 // Foliage bends with the shared wind: the crown moves, the trunk base stays planted. Each tree
@@ -43,6 +44,8 @@ void fragment() {
                 + texture(roughness_map,p.xy).r * weights.z;
     float wet = texture(wet_map,world_position.xz/weather_extent).r * weather_ready;
     ALBEDO = base_color.rgb * mix(vec3(1.0),detail,texture_mix) * pow(COLOR.rgb,vec3(2.2)) * (1.0-.24*wet) * cloud_shadow(world_position);
+    // settled snow on roofs and other upward faces while it snows here (camera-local weather)
+    ALBEDO=mix(ALBEDO,vec3(.86,.88,.9),snow_cover*smoothstep(.55,.9,wn.y)*.85);
     vec2 knowledge=surface_visibility(world_position.xz);
     ALBEDO=remembered_surface(ALBEDO,knowledge.y)*knowledge.x;
     EMISSION=fog_ink(world_position.xz)*(1.0-knowledge.x);

@@ -48,6 +48,7 @@ var props_dirty := {}
 var built_tiles := {}
 var work_tiles:={}
 var tree_mesh: ArrayMesh
+var broadleaf_mesh: ArrayMesh
 var tree_count := 0
 var shadows_allowed := true
 var hide_trees := false
@@ -87,6 +88,7 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 	_make_clouds()
 	_make_rain()
 	tree_mesh = _tree_model()
+	broadleaf_mesh = _broadleaf_model()
 	world.weather_changed.connect(_on_weather)
 	world.geo_changed.connect(_on_geo)
 	world.battlefield_terrain_changed.connect(_on_battlefield_terrain)
@@ -99,6 +101,7 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 func _clear() -> void:
 	for p in props.values():
 		(p.trees as Node).queue_free()
+		if p.has("broad"): (p.broad as Node).queue_free()
 		(p.rocks as Node).queue_free()
 		(p.canopy as Node).queue_free()
 	props.clear()
@@ -163,6 +166,7 @@ func update(dt: float) -> void:
 	var g := world.grid
 	if composition: RenderingServer.global_shader_parameter_set(&"wind_vector", composition.weather.wind * (0.0 if reduced_motion else 1.0))
 	_lightning(dt)
+	_snow(dt)
 	# Sun shadows follow the visible footprint and disappear once they are sub-pixel at map zoom.
 	var shadow_size := float(LODManager.PRESETS[composition.lod.quality].shadow_size) if composition else SHADOW_MAX_SIZE
 	sun.shadow_enabled = shadows_allowed and cam.size < shadow_size
@@ -215,6 +219,9 @@ func update(dt: float) -> void:
 		var x0: float = float(p.x0)
 		var off_x := g.near_x(x0, f.x) - x0
 		trees.position = Vector3(off_x, 0, 0)
+		if p.has("broad"):
+			var broad := p.broad as MultiMeshInstance3D
+			broad.visible = trees.visible; broad.cast_shadow = tree_shadows; broad.position = trees.position
 		(p.rocks as Node3D).position = Vector3(off_x, 0, 0)
 		canopy.position = Vector3(off_x, 0, 0)
 
@@ -264,6 +271,18 @@ func _on_weather(wx: Dictionary) -> void:
 			m.set_shader_parameter("cloud_velocity_ready",1.0)
 	MaterialLibrary.bind_clouds({"cloud_tex":cloud_tex,"cloud_prev":cloud_prev,"cloud_ready":1.0,"weather_extent":extent,"cloud_velocity":composition.weather.wind_texture if composition else null,"cloud_velocity_ready":1.0 if composition else 0.0})
 	terrain.terrain_mat.set_shader_parameter("wet_tex", wet_tex)
+
+
+## Snow settles on roofs and open ground while it snows around the camera, and melts away slowly
+## after; at strategic zoom (many regions at once) it fades out instead of painting everything.
+var snow_level := 0.0
+func _snow(dt: float) -> void:
+	var want := 0.0
+	if composition and effects_enabled:
+		var tile := world.grid.tile_at(cam.focus.x, cam.focus.z)
+		if tile >= 0: want = clampf(float(composition.weather.at_tile(tile).get("snow", 0.0)) * 1.4, 0.0, 1.0)
+	snow_level = move_toward(snow_level, want, dt * (0.02 if want > snow_level else 0.01))
+	RenderingServer.global_shader_parameter_set(&"snow_cover", snow_level * (1.0 - smoothstep(35.0, 70.0, cam.size)))
 
 
 ## Storm lightning over the camera's area: brief sky flashes (never with reduced motion) and a
@@ -393,6 +412,21 @@ func _tree_model() -> ArrayMesh:
 	return mesh
 
 
+func _broadleaf_model() -> ArrayMesh:
+	# A rounded deciduous crown of a few overlapping lobes on a short trunk (open-country trees).
+	var k := MeshKit.new()
+	k.cylinder("bark", Vector3.ZERO, 0.016, 0.09, 6, Color.WHITE, 0.011)
+	for lobe in [[Vector3(0, 0.1, 0), 0.075], [Vector3(0.04, 0.085, 0.02), 0.055], [Vector3(-0.035, 0.09, -0.025), 0.058], [Vector3(0.0, 0.14, 0.0), 0.05]]:
+		var c: Vector3 = lobe[0]; var r: float = lobe[1]
+		k.cylinder("foliage", c - Vector3(0, r * 0.55, 0), r * 0.7, r * 0.55, 9, Color(.86, .95, .74), r)
+		k.cylinder("foliage", c, r, r * 0.55, 9, Color(.92, 1.0, .8), r * 0.55)
+	var mesh := k.commit()
+	for surface in mesh.get_surface_count():
+		var material := mesh.surface_get_material(surface)
+		if material and material.resource_name == "foliage": mesh.surface_set_material(surface, MaterialLibrary.sway_foliage())
+	return mesh
+
+
 func _road_clearance(tile:int,point:Vector2) -> float:
 	var encoded:=int(world.road[tile]); var center:=world.grid.center(tile)
 	var local:=Vector2(world.grid.dx_wrap(center.x,point.x),point.y-center.y)
@@ -412,9 +446,14 @@ func _build_props(cid: int) -> void:
 	var cx := cid % world.chunks_w
 	var cy := cid / world.chunks_w
 	var xforms: Array[Transform3D] = []
+	var broad_xforms: Array[Transform3D] = []
+	var broad_cols: Array[Color] = []
 	var cols: Array[Color] = []
 	var rocks := MeshKit.new()
 	var canopy := MeshKit.new()
+	# authoritative battlefield intensity per hex: sustained fighting fells and shatters trees
+	var scarred := {}
+	for record in world.bf.get("i", []): scarred[int(record[0])] = float(record[1])
 	for lr in cs:
 		var r := cy * cs + lr
 		if r >= g.h:
@@ -439,6 +478,12 @@ func _build_props(cid: int) -> void:
 				6: n = 1 if rng.randf() < 0.3 else 0
 			if world.is_river(i):
 				n = mini(n, 4)
+			var woodland_neighbours := 6
+			if b == 4:
+				woodland_neighbours = 0
+				for d in 6:
+					var nb := g.nb[i * 6 + d]
+					if nb >= 0 and world.biome(nb) == 4: woodland_neighbours += 1
 			if b == 4:
 				var quilt := Color(0.72, 0.86, 0.62).darkened(rng.randf_range(0.0, 0.16))
 				if not work_tiles.has(i) and world.road[i]==0:
@@ -463,12 +508,23 @@ func _build_props(cid: int) -> void:
 				var y := world.ground_height(x, z)
 				if y < 0.02:
 					continue
-				var s := rng.randf_range(0.75, 1.35) * (0.8 if b == 7 else 1.0)
+				# forest edges thin out with younger trees; the interior stays dense and tall
+				if b == 4 and k >= 5 + woodland_neighbours: continue
+				var s := rng.randf_range(0.75, 1.35) * (0.8 if b == 7 else 1.0) * (0.78 + 0.22 * woodland_neighbours / 6.0 if b == 4 else 1.0)
 				var transform:=Transform3D(Basis(Vector3.UP,rng.randf()*TAU).scaled(Vector3(s,s*rng.randf_range(.9,1.2),s)),Vector3(x,y-.01,z))
 				var tint:=Color(1,1,1).darkened(rng.randf()*.25).lerp(Color(.9,.95,.7),rng.randf()*.2)
 				if work_tiles.has(i) and TrenchPresentation.distance_to_route(work_tiles[i],g,Vector2(x,z))<.22: continue
 				if world.road[i]!=0 and _road_clearance(i,Vector2(x,z))<.09: continue
-				xforms.append(transform); cols.append(tint)
+				if scarred.has(i):
+					var keep := 1.0 - clampf(float(scarred[i]) / 3.0, 0.0, 0.85)
+					if float(posmod(hash([i, k, "scar"]), 1000)) / 1000.0 > keep:
+						rocks.set_frame(Vector3.ZERO, 0.0)
+						rocks.cylinder("bark", Vector3(x, y - 0.01, z), 0.017, 0.03 + 0.03 * float(posmod(hash([i, k]), 3)), 5, Color(0.45, 0.38, 0.3), 0.012)
+						if posmod(hash([i, k, "log"]), 2) == 0:
+							rocks.box("bark", Vector3(x + 0.05, y - 0.005, z), Vector3(0.12, 0.018, 0.018), Color(0.4, 0.34, 0.28), float(posmod(hash([i, k, "yaw"]), 628)) / 100.0)
+						continue
+				if b == 4 or b == 6: xforms.append(transform); cols.append(tint)
+				else: broad_xforms.append(transform); broad_cols.append(tint)
 			_deposit(rocks, i, c, rng)
 			_derelict(rocks, i, c)
 	var rec: Dictionary = props.get(cid, {})
@@ -481,7 +537,9 @@ func _build_props(cid: int) -> void:
 		add_child(mmi)
 		add_child(mi)
 		add_child(far)
-		rec = {"trees": mmi, "rocks": mi, "canopy": far, "x0": (cx + 0.5) * cs * SQRT3}
+		var broad := MultiMeshInstance3D.new()
+		add_child(broad)
+		rec = {"trees": mmi, "broad": broad, "rocks": mi, "canopy": far, "x0": (cx + 0.5) * cs * SQRT3}
 		props[cid] = rec
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -494,6 +552,14 @@ func _build_props(cid: int) -> void:
 	tree_count += xforms.size() - int(rec.get("n", 0))
 	rec.n = xforms.size()
 	(rec.trees as MultiMeshInstance3D).multimesh = mm
+	var bm := MultiMesh.new()
+	bm.transform_format = MultiMesh.TRANSFORM_3D
+	bm.use_colors = true
+	bm.mesh = broadleaf_mesh
+	bm.instance_count = broad_xforms.size()
+	for k in broad_xforms.size():
+		bm.set_instance_transform(k, broad_xforms[k]); bm.set_instance_color(k, broad_cols[k])
+	(rec.broad as MultiMeshInstance3D).multimesh = bm
 	(rec.rocks as MeshInstance3D).mesh = rocks.commit() if not rocks.is_empty() else null
 	(rec.canopy as MeshInstance3D).mesh = canopy.commit() if not canopy.is_empty() else null
 

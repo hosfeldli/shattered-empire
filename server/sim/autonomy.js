@@ -13,6 +13,8 @@
 import { UNITS, TERRAIN, BUILDINGS, isWater } from './constants.js';
 import { disk, dist } from './hex.js';
 import { findPath } from './path.js';
+import { GARRISON } from './combat.js';
+import { timedWorks } from './rulesets.js';
 
 const IDLE_BEFORE = { explore: 1, aggressive: 2, defensive: 3, engineer: 6 };
 // Failed destinations are transient navigation hints, never serialized or shared between units.
@@ -22,10 +24,15 @@ const ground = (g, t) => { const ter = g.world.terr[t]; return !isWater(ter) && 
 const idle = (u) => u.order.kind === 'idle' && !u.path.length && !u.field && !(u.formation && !u.detached);
 
 // how good a hex is to fight from
-function cover(g, t) {
+function cover(g, t, civ = null) {
   let c = TERRAIN[g.world.terr[t]].def || 0;
   const f = g.fieldworks?.get(t); if (f && f.progress >= 1) c += f.type === 'reinforced' ? 0.6 : 0.4;
   const b = g.tileB[t] >= 0 ? g.buildings.get(g.tileB[t]) : null; if (b && b.type === 'town') c += 0.3;
+  // an own emplacement with free garrison places is the best cover there is (native-v4)
+  if (civ && b && b.owner === civ.id && b.done && GARRISON[b.type] && timedWorks(g)) {
+    const inside = (g.tileUnits.get(t) || []).filter((id) => g.units.get(id)?.owner === civ.id).length;
+    if (inside < GARRISON[b.type].cap) c += GARRISON[b.type].def - 0.6;
+  }
   return c;
 }
 
@@ -90,16 +97,22 @@ function hunt(g, civ, u, claim, claimed) {
     if (d <= 8 && d < fd && !UNITS[e.type].civilian) { fd = d; foe = e; }
   }
   if (foe) {
-    // artillery keeps its distance: it moves only until the target is in range
+    // artillery threatened at close quarters falls back two to three hexes, away from the threat,
+    // to keep firing from behind the line; otherwise it moves only until the target is in range
+    if (def.cat === 'artillery' && fd <= 2 && def.range > 2) {
+      let best = -1, bd = -1;
+      for (const t of disk(u.tile, 3)) { if (!ground(g, t) || claimed(civ, t)) continue; const d = dist(t, foe.tile); if (d > bd && d <= def.range) { bd = d; best = t; } }
+      if (best >= 0 && bd > fd) { claim(civ, best); g.orderMove(civ, [u.id], best, false, 'line', { auth: 'auto' }); return; }
+    }
     if (def.cat === 'artillery' && fd <= def.range) return;
     g.orderMove(civ, [u.id], foe.tile, true, 'line', { auth: 'auto' });
     return;
   }
   if (near > 14) return;                                      // nothing about: stay put
   // enemies about but out of reach: take the best cover close by
-  const here = cover(g, u.tile);
+  const here = cover(g, u.tile, civ);
   let best = -1, bc = here + 0.15;
-  for (const t of disk(u.tile, 2)) { if (t === u.tile || !ground(g, t) || claimed(civ, t)) continue; const c = cover(g, t); if (c > bc) { bc = c; best = t; } }
+  for (const t of disk(u.tile, 2)) { if (t === u.tile || !ground(g, t) || claimed(civ, t)) continue; const c = cover(g, t, civ); if (c > bc) { bc = c; best = t; } }
   if (best >= 0) { claim(civ, best); g.orderMove(civ, [u.id], best, false, 'line', { auth: 'auto' }); }
 }
 
@@ -123,6 +136,7 @@ function engineer(g, civ, u, claim, claimed) {
     let s;
     if (b.done && (b.hp < b.maxHp * 0.95 || b.fire > 0)) s = 100 + (1 - b.hp / b.maxHp) * 100 + (b.fire > 0 ? 80 : 0);
     else if (!b.done && b.funded !== false && !b.waiting) s = 40 + (BUILDINGS[b.type].time || 20) * 0.5;
+    else if (b.done && b.works && !b.works.paused) s = 60 + Math.min(40, b.works.left * 0.5);      // timed upgrade works (native-v4)
     else continue;
     s -= d * 3;
     if (s > score) { score = s; target = b; }

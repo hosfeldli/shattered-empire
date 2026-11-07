@@ -123,6 +123,24 @@
   },
   {
     "page": "Buildings",
+    "id": "pause_works",
+    "title": "Pause or resume works",
+    "command": {
+      "c": "pauseWorks",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
     "id": "fund_next",
     "title": "Fund this site next",
     "command": {

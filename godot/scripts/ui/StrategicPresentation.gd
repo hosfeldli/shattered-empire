@@ -112,6 +112,21 @@ func _text(point: Vector2, message: String, color: Color, pixels := 14) -> void:
 
 func _draw() -> void:
 	if not world.ready_ or world.grid == null: return
+	# Active battles the viewer knows about: crossed swords pulsing with the fighting's heat.
+	if camera.size >= 26:
+		var pulse := .5 + .5 * sin(Time.get_ticks_msec() / 260.0)
+		for battle in world.battles:
+			var tile := int(battle.get("t", -1))
+			if tile < 0: continue
+			var p := _point(tile)
+			var heat := clampf(float(battle.get("heat", 1)) / 12.0, .25, 1.0)
+			var r := 9.0 + 3.0 * pulse * heat
+			draw_circle(p, r + 3, Color(.08, .06, .05, .55))
+			var col := Color(.95, .42, .28).lerp(Color(1, .8, .45), pulse * .4)
+			draw_line(p + Vector2(-r * .6, -r * .6), p + Vector2(r * .6, r * .6), col, 2.2, true)
+			draw_line(p + Vector2(r * .6, -r * .6), p + Vector2(-r * .6, r * .6), col, 2.2, true)
+			draw_arc(p, r + 1, 0, TAU, 24, Color(col, .5 + .3 * pulse), 1.2, true)
+			if camera.size >= 45: _text(p + Vector2(r + 5, 4), str(battle.get("name", "Battle")), Color(.98, .78, .62), 12)
 	for city in world.cities.values():
 		var p := _point(int(city.t))
 		var color := world.civ_color(int(city.o))

@@ -4,7 +4,7 @@ extends RefCounted
 ## earlier medieval-looking placeholders (stone castle fort, timber watchtower, temple academy).
 ## Visual language: repaired concrete, prefabricated modules, containers, steel and earthworks.
 ## Every element stays inside the authoritative parcel; nothing here changes gameplay.
-const TYPES := ["fort", "guard_post", "bunker", "barracks", "camp", "academy", "university", "oil_well", "airfield", "aa_battery", "comms_tower"]
+const TYPES := ["fort", "guard_post", "bunker", "barracks", "camp", "academy", "university", "oil_well", "airfield", "aa_battery", "comms_tower", "port"]
 const OLIVE := Color(.58, .6, .5)
 const HAZARD := Color(.92, .72, .22)
 
@@ -21,10 +21,11 @@ static func compose(k: MeshKit, b: Dictionary, type: String, tint: Color, team: 
 		"camp": _camp(k, tint)
 		"academy": _campus(k, tint, false)
 		"university": _campus(k, tint, true)
-		"oil_well": _pumpjack(k, tint, lv)
+		"oil_well": _pumpjack(k, tint, lv, int(b.get("a", 0)) if int(b.get("d", 0)) == 1 and int(b.get("hp", 100)) >= 35 else 0)
 		"airfield": _airfield(k, tint, flag)
 		"aa_battery": _aa(k, tint)
 		"comms_tower": _mast(k, tint)
+		"port": _port(k, tint, lv)
 	return true
 
 
@@ -133,12 +134,15 @@ static func _campus(k: MeshKit, tint: Color, university: bool) -> void:
 
 ## A working pumpjack: walking beam on an A-frame, horse head, crank and counterweight, wellhead
 ## and storage tanks. (The beam pose is static here; motion comes from activity presentation.)
-static func _pumpjack(k: MeshKit, tint: Color, lv: int) -> void:
+static func _pumpjack(k: MeshKit, tint: Color, lv: int, b_active := 0) -> void:
 	k.box("concrete", Vector3(0, 0, 0), Vector3(.36, .02, .1), Color(.8, .79, .75))
 	for z in [-.03, .03]:
 		k.box("steel", Vector3(.0, .02, z), Vector3(.02, .17, .02), HAZARD, 0.0)
-	k.box("steel", Vector3(.01, .19, 0), Vector3(.32, .025, .03), HAZARD)
-	k.box("steel", Vector3(.17, .15, 0), Vector3(.04, .08, .035), tint * Color(.4, .4, .4))           # horse head
+	# The walking beam and horse head are animated separately (WildlifePresentation) when the
+	# well is producing; an idle well shows them at rest here only when not animated.
+	if int(b_active) == 0:
+		k.box("steel", Vector3(.01, .19, 0), Vector3(.32, .025, .03), HAZARD)
+		k.box("steel", Vector3(.17, .15, 0), Vector3(.04, .08, .035), tint * Color(.4, .4, .4))       # horse head
 	k.box("steel", Vector3(.18, .02, 0), Vector3(.008, .12, .008), Color(.3, .3, .3))                  # polished rod
 	k.box("steel", Vector3(-.13, .05, 0), Vector3(.06, .07, .05), Color(.35, .35, .35))               # counterweight
 	k.cylinder("steel", Vector3(.18, .02, 0), .02, .03, 8, Color(.5, .45, .4))
@@ -192,3 +196,25 @@ static func _mast(k: MeshKit, tint: Color) -> void:
 	for i in 2:
 		k.cylinder("steel", Vector3(.05 - i * .1, .7 - i * .15, .05), .04, .012, 10, Color(.92, .92, .9))
 	k.box("glow:ff5a3a", Vector3(0, .9, 0), Vector3(.02, .02, .02))
+
+
+## A modern working harbour: concrete quay and pier toward the water side (+x), a gantry crane
+## over the berth, a warehouse and stacked shipping containers; upgrades add stacks and a crane.
+static func _port(k: MeshKit, tint: Color, lv: int) -> void:
+	k.box("concrete", Vector3(.12, -.01, 0), Vector3(.5, .03, .5), Color(.78, .77, .74))
+	k.box("concrete", Vector3(.55, -.02, -.05), Vector3(.5, .03, .14), Color(.76, .75, .72))          # pier
+	for i in 5: k.box("concrete", Vector3(.36 + i * .1, -.06, .02), Vector3(.025, .05, .025), Color(.6, .6, .58))
+	k.box("steel", Vector3(-.22, 0, -.12), Vector3(.26, .15, .22), tint * Color(.85, .87, .88))       # warehouse
+	k.gable("steel", Vector3(-.22, .15, -.12), .22, .26, .05, tint * .9, PI * .5)
+	k.box("char", Vector3(-.22, .0, -.009), Vector3(.12, .09, .004))
+	var palette := [Color(.72, .32, .24), Color(.24, .42, .58), Color(.82, .62, .22), Color(.38, .5, .36)]
+	for i in 3 + lv * 2:
+		var col := i % 3; var row := i / 3
+		k.box("steel", Vector3(-.05 + col * .07, row * .035, .16), Vector3(.065, .033, .12), palette[i % 4])
+	for crane in mini(lv, 2):
+		var z := -.05 + crane * .16
+		for x in [.42, .56]:
+			k.box("steel", Vector3(x, 0, z - .05), Vector3(.012, .26, .012), HAZARD)
+			k.box("steel", Vector3(x, 0, z + .05), Vector3(.012, .26, .012), HAZARD)
+		k.box("steel", Vector3(.5, .26, z), Vector3(.36, .02, .11), HAZARD)
+		k.box("steel", Vector3(.58, .2, z), Vector3(.012, .06, .012), Color(.3, .3, .3))
