@@ -163,7 +163,7 @@ func _run() -> void:
 	var z := w.grid.center(96)
 	check(absf(w.grid.dx_wrap(a.x, p.x) - w.grid.dx_wrap(a.x, z.x) * 0.5) < 0.001, "interpolation took the long path across the seam")
 	check(w.unit_position(1) == p, "cached bracket changed within one frame")
-	w.units[1]={"id":1,"tile":127}; cam.follow_id=1
+	w.units[1]={"id":1,"tile":127,"owner":w.civ_id}; cam.follow_id=1
 	cam.focus.x=p.x+w.grid.period-.5; cam.focus.z=p.y
 	var follow_before:=absf(w.grid.dx_wrap(cam.focus.x,p.x))
 	cam._follow_step(.2)
@@ -227,7 +227,17 @@ func _run() -> void:
 	check(terrain.dirty.is_empty() and terrain.build_job.is_empty(), "incremental chunk build did not drain")
 	check(terrain.chunks_built == 2, "update received mid-build was discarded")
 	var mesh: ArrayMesh = terrain.chunks[0].terrain
-	check(mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX].size() == 16 * 16 * 18, "incremental terrain lost vertices")
+	# subdivided indexed sectors: 25 shared vertices and 36 triangles per hex
+	check(mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX].size() == 16 * 16 * 25, "incremental terrain lost vertices")
+	check(mesh.surface_get_arrays(0)[Mesh.ARRAY_INDEX].size() == 16 * 16 * 108, "subdivided terrain lost triangles")
+	# the height query follows exactly the same subdivided triangles as the mesh
+	var probe_tile := 3 * w.grid.w + 4
+	var probe_center := w.grid.center(probe_tile)
+	var probe := probe_center + w.grid.corners[1] * .5 + w.grid.corners[2] * .2
+	var sector := 1
+	var expected := w.sector_point(probe_tile, sector, .5, .2)
+	check(absf(w.ground_height(probe.x, probe.y) - expected) < .0001, "ground height does not follow the subdivided terrain")
+	check(absf(w.edge_height(probe_tile, 0) - (w.height[probe_tile] + w.height[w.grid.nb[probe_tile * 6 + 1]]) * .5) < .0001, "shared edge midpoint is not the mean of both hexes")
 	var environment := EnvironmentRenderer.new()
 	root.add_child(environment)
 	environment.setup(w, cam, terrain)

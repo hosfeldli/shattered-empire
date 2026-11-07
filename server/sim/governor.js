@@ -1,4 +1,4 @@
-import { nativeRules } from './rulesets.js';
+import { nativeRules, timedWorks } from './rulesets.js';
 // City governors: per-city automation that players delegate to, and that AI empires use for
 // every city. Governors obey the same placement checks, costs and research as manual orders,
 // respect a resource reserve and explicit permissions, and log why they did everything.
@@ -214,9 +214,11 @@ export function answerProposal(g, civ, c, id, answer) {
 
 function repair(g, civ, c, gv, level = 'autonomous') {
   for (const b of g.buildings.values()) {
-    if (b.cityId !== c.id || b.owner !== civ.id || !b.done || b.hp >= b.maxHp * 0.7 || g.time - (b.lastHit || -99) < 8) continue;
+    if (b.cityId !== c.id || b.owner !== civ.id || !b.done || b.works || b.hp >= b.maxHp * 0.7 || g.time - (b.lastHit || -99) < 8) continue;
     const cost = { materials: Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) };
     if (!governorCanSpend(civ, gv, cost, c)) return false;
+    // timed works rulesets: the same repair project a player orders, never an instant heal
+    if (timedWorks(g)) { if (g.repairBuilding(civ, b, 'governor:' + c.name)) return false; log(g, c, `Repairing ${BUILDINGS[b.type].name} (${Math.round((100 * b.hp) / b.maxHp)}%) for ${cost.materials} materials.`); return true; }
     g.pay(civ, cost, b.tile, 'maintenance'); b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.4);
     log(g, c, `Repaired ${BUILDINGS[b.type].name} (${Math.round((100 * b.hp) / b.maxHp)}%) for ${cost.materials} materials.`);
     return true;

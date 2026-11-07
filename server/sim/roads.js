@@ -167,7 +167,7 @@ export class RoadNet {
         if (why) { seg.blocked = why; p.blockedCount = (p.blockedCount || 0) + 1; p.i++; p.status = 'blocked'; continue; }
         const { cost, time } = this.segmentCost(civ, seg.a, seg.b, p.type);
         if (!g.canAfford(civ, cost)) { p.status = 'paused'; continue; }
-        g.pay(civ, cost); p.paid = true; p.t = time; p.status = 'constructing';
+        g.pay(civ, cost); p.paid = true; p.t = time; p.total = time; p.status = 'constructing';
       }
       p.t -= dt * tempo(g, 'infrastructureConstruction') * ((!nativeRules(civ) && civ.policies.has('public_works')) ? 2 : 1);
       if (p.t <= 0) {
@@ -184,7 +184,7 @@ export class RoadNet {
   }
 
   projectsFor(civId) {
-    return this.projects.filter((p) => p.owner === civId).map((p) => ({ id: p.id, type: p.type, bridge: p.bridge ? 1 : undefined, status: p.done ? (p.blockedCount ? 'blocked' : 'complete') : p.status, done: p.i, total: p.segs.length, tiles: p.segs.slice(p.i).flatMap((s, k) => (k === 0 ? [s.a, s.b] : [s.b])), by: p.by }));
+    return this.projects.filter((p) => p.owner === civId).map((p) => ({ id: p.id, type: p.type, bridge: p.bridge ? 1 : undefined, status: p.done ? (p.blockedCount ? 'blocked' : 'complete') : p.status, done: p.i, total: p.segs.length, tiles: p.segs.slice(p.i).flatMap((s, k) => (k === 0 ? [s.a, s.b] : [s.b])), by: p.by, ...(p.paid && p.segs[p.i] ? { seg: [p.segs[p.i].a, p.segs[p.i].b], prog: Math.round(100 * (1 - Math.max(0, p.t) / (p.total || 1))) } : {}) }));
   }
 
   serialize() { return { edges: [...this.edges.values()].map((e) => [e.a, e.b, e.type, Math.round(e.cond)]), projects: this.projects, nextPid: this.nextPid }; }

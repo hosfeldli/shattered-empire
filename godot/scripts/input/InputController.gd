@@ -5,7 +5,7 @@ var preferences:NativePreferences
 ## Selection and orders. Left click selects your unit under the cursor (or the building on the
 ## picked hex), left-drag box-selects, Shift adds. Right click orders the selected units to the hex
 ## under the cursor (picked against the terrain, so hills and valleys resolve to the right hex);
-## Ctrl + right click is an attack-move. H holds, T toggles defensive / aggressive stance, Escape
+## Ctrl + right click is an attack-move. H holds, Y toggles defensive / aggressive stance, Escape
 ## cancels. Every order is an intent the server may refuse; nothing moves until it says so.
 
 signal selection_changed
@@ -121,7 +121,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		var k:int=preferences.canonical_key(e.keycode) if preferences else e.keycode
 		if k == KEY_H:
 			_simple("hold", {})
-		elif k == KEY_T:
+		elif k == KEY_Y:
+			# T opens Research (app shell); the stance toggle has its own key so neither is dead.
 			var any_def := false
 			for id in military.selected.keys():
 				if str(world.units.get(id, {}).get("stance", "")) == "defensive":

@@ -83,6 +83,8 @@ after the earlier truncated message and should be read together with the tasks i
 
 ## B. Camera, selection, visibility and input
 
+> **Implemented 2026-11-07 (see CURRENT_WORK.md, B–G pass):** camera hitch cap and typing guard, follow pill and safe release, ground kept across same-world reloads, Alt movement/farm rules, authoritative buildable-area outline, remembered-building tint, shortcut conflict (T/Y) resolved. Remaining: in-game review of camera feel, formation line, fog clouds and territory at all zooms.
+
 - [ ] **WASD/camera — local partial:** review accelerated/decelerated, frame-rate-independent pan
   for feel on keyboard, edge pan, drag, focus, zoom anchor, wrap and camera boundaries. Remove
   residual jolt, drift, velocity carry-over and excessive movement when opening panels or changing
@@ -126,6 +128,8 @@ after the earlier truncated message and should be read together with the tasks i
 
 ## C. Building, road, bridge and trench tools
 
+> **Implemented 2026-11-07:** footprint outline, cursor tooltip, pending/refused sites with per-site reasons, curved class-specific roads and rails, class-specific bridges with approaches and server condition, road works progress, continuous staged trenches with crews at real fronts, typed emplacement entrances. Remaining: in-game review and large-map/low-FPS validation.
+
 - [ ] **Build placement — local partial:** show all relevant nearby authorized legal hexes, the
   recognizable actual finished 3D model, correct footprint/orientation/terrain, costs/time and
   green/red/amber outlines and concise server-derived reasons. Do not obscure it with a solid
@@ -158,6 +162,8 @@ after the earlier truncated message and should be read together with the tasks i
   destroyed, occupied and upgraded structures separately.
 
 ## D. Terrain, hydrology, resources and environment
+
+> **Implemented 2026-11-07:** subdivided continuous terrain with ridges and rounded mass (height queries match), forest glades/species/undergrowth, river-bank reeds and stones, recognisable deposits, puddles on level wet surfaces. Remaining: in-game review of mountains at strategic zoom, lakes and ocean.
 
 - [ ] Continuous shared-edge, chunked authoritative terrain: connected mountains/ridges and
   passes, hills, valleys, plains, wetlands, deserts, tundra, volcanic soils/landmarks, shorelines,
@@ -193,6 +199,8 @@ after the earlier truncated message and should be read together with the tasks i
 
 ## E. Cities, districts, history and civilian life
 
+> **Implemented 2026-11-07:** tiered settlement hub, apartment levels, residential streets with terraces, one farmstead per estate, fenced industrial compounds with active-only yards, campus lawns, deposit-specific mines, freight trains, no traffic over destroyed spans. Remaining: full settlement street plan, pedestrian paths by purpose, in-game review.
+
 - [ ] Derive a stable settlement plan from actual center, tier, roads, buildings, terrain,
   waterways, population, era and history. Real roads anchor development; decorative streets may
   fill valid land but never grant a route/crossing or suggest functional infrastructure.
@@ -223,6 +231,8 @@ after the earlier truncated message and should be read together with the tasks i
   subtle, infrequent, slow enough to read, bounded, and never imply fabricated rewards.
 
 ## F. Era-specific art, building assets and materials
+
+> **Implemented 2026-11-07:** visual language locked and 34-building audit (`ASSET_AUDIT.md`), 36 authored glTF components with stable ids (`recipes/assets.json`), civic/extraction/power buildings rebuilt, mud and composite materials. Remaining: art review in play; more authored detail on industrial halls.
 
 - [ ] Lock visual language to stylized realism and a **modern post-collapse** setting. Reclamation
   uses repaired contemporary concrete, containers, salvaged steel/glass, modular housing and
@@ -264,6 +274,8 @@ after the earlier truncated message and should be read together with the tasks i
 
 ## G. Construction, repair, damage and recovery
 
+> **Implemented 2026-11-07:** staged construction driven by progress/crew/waiting, machinery only while working, impact-side damage with scorch/rebar/fallen slabs, works priority, governor repairs through timed works. Remaining: in-game review and balance.
+
 - [ ] Show server-driven site preparation → ground work → structure/frame → exterior/equipment →
   complete, with materials, workers and machinery where actual progress/activity allows. Small
   and large buildings, roads and bridges need appropriate variants; stalled or cancelled work
@@ -284,6 +296,21 @@ after the earlier truncated message and should be read together with the tasks i
   destruction, roads/bridges, fieldworks, movement or defense changes come from the server.
 
 ## H. Military units, formations, control and emplacements
+
+> **Implemented 2026-11-07:** troop, crew and civilian figures; free-moving soldiers within a unit; stacked units spread within a hex; rebuilt vehicles and aircraft with animated wheels and tracks, suspension bob, turret traverse and recoil; artillery set-up before firing. Formation shapes (line/column/wedge/box) dropped: formations are drawn by the player. Remaining: in-game review, idle behaviour beyond presentation.
+
+- [ ] **Troop and civilian visual overhaul (requested 2026-11-07):** rebuild infantry, crews,
+  vehicles, aircraft and civilians to the same modern post-collapse standard, scale, materials
+  and component approach as the new buildings (`ComponentKit`, CC0 materials, `ASSET_AUDIT.md`).
+  Civilians, cars, vans and freight must look like they belong to the redesigned cities.
+- [ ] **Free-moving soldiers within a unit (requested 2026-11-07):** a unit stays one
+  authoritative troop on the server, but when it is drawn as several soldiers or vehicles, each
+  figure moves on its own: individual spacing, slight lead and lag, small detours around
+  obstacles and each other, different gait timing and facing, spreading into cover when halted
+  and bunching on roads, rather than a rigid block sliding as one. This is presentation only:
+  position, cover, combat and orders stay with the server's single unit, every figure stays
+  within the unit's footprint, and the motion is bounded, deterministic per figure and cheap at
+  scale.
 
 - [ ] Production-audit all **23 authoritative unit types** for silhouette, scale, faction markings,
   terrain fit, movement/idle/deploy/fire/reload/suppression/retreat/repair animations, health and

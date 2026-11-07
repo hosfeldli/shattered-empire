@@ -24,6 +24,8 @@ var ring_batch: MultiMeshInstance3D
 var ground_cache := {}
 var recoils := {}        # unit id -> msec of its last direct-fire shot (recoil presentation)
 var dug_in: MultiMeshInstance3D   # sandbag crescents under fortified ground troops (cosmetic)
+var stack_now := {}      # unit id -> current eased offset inside a shared hex (presentation)
+var stack_target := {}
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -71,6 +73,7 @@ func update(dt: float) -> void:
 	if world.grid == null:
 		return
 	world.prepare_unit_frame()
+	_stack_layout(dt)
 	var want_batched := world.units.size() > BATCH_THRESHOLD
 	if want_batched != batched:
 		batched = want_batched
@@ -103,11 +106,11 @@ func update(dt: float) -> void:
 				(r.node as Node).queue_free()
 			r = _make(u, key)
 			nodes[id] = r
-		var p := world.unit_position(id)
+		var p := world.unit_position(id) + (stack_now.get(id, Vector2.ZERO) as Vector2)
 		var d: Dictionary = unit_def(u.type)
 		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
 		var x := g.near_x(p.x, cx)
-		var y := _ground_for(id, p)
+		var y := _ground_for(id, p) + _bob(u, d)
 		var pose := MilitaryPresentationState.pose(u, int(u.next)>=0, d)
 		var animation:=_animation(u,d)
 		var mesh_key:=key+("|"+animation if animation!="idle" else "")
@@ -140,6 +143,45 @@ func update(dt: float) -> void:
 		drawn += 1
 	_draw_paths()
 	_update_dug_in()
+
+
+## Units sharing a hex (within the server's capacity) stand apart: each stationary ground unit
+## takes a stable place around the hex centre by id; moving units travel the centre line. The
+## offset eases, so arriving or leaving never jumps. Presentation only.
+func _stack_layout(dt: float) -> void:
+	var by_tile := {}
+	for id in world.units:
+		var u: Dictionary = world.units[id]
+		if int(u.get("next", -1)) >= 0: continue
+		var d := unit_def(str(u.type))
+		if bool(d.get("air", false)): continue
+		var tile := int(u.tile)
+		if not by_tile.has(tile): by_tile[tile] = []
+		(by_tile[tile] as Array).append(int(id))
+	stack_target.clear()
+	for tile in by_tile:
+		var ids: Array = by_tile[tile]
+		if ids.size() < 2: continue
+		ids.sort()
+		for k in ids.size():
+			var angle := TAU * k / ids.size() + .5
+			stack_target[ids[k]] = Vector2(cos(angle), sin(angle)) * (.22 if ids.size() <= 3 else .3)
+	var ease := 1.0 - exp(-4.0 * dt)
+	for id in stack_now.keys():
+		if not world.units.has(id): stack_now.erase(id)
+	for id in world.units:
+		var goal: Vector2 = stack_target.get(id, Vector2.ZERO)
+		var now: Vector2 = stack_now.get(id, Vector2.ZERO)
+		if now == goal and goal == Vector2.ZERO: continue
+		now = now.lerp(goal, ease)
+		if now.length() < .001 and goal == Vector2.ZERO: stack_now.erase(id)
+		else: stack_now[id] = now
+
+
+## a slight suspension bob for moving ground vehicles
+func _bob(u: Dictionary, d: Dictionary) -> float:
+	if int(u.get("next", -1)) < 0 or not str(d.get("move", "")) in ["wheeled", "tracked"] or bool(d.get("air", false)): return 0.0
+	return sin(world.render_time * 13.0 + int(u.id)) * .0035
 
 
 func _ground_for(id: int, p: Vector2) -> float:
@@ -205,11 +247,11 @@ func _update_batched(dt: float) -> void:
 	for id in world.units.keys():
 		seen[id] = true
 		var u: Dictionary = world.units[id]
-		var p := world.unit_position(id)
+		var p := world.unit_position(id) + (stack_now.get(id, Vector2.ZERO) as Vector2)
 		var d: Dictionary = unit_def(u.type)
 		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
 		var x := g.near_x(p.x, cx)
-		var y := _ground_for(id, p)
+		var y := _ground_for(id, p) + _bob(u, d)
 		var pose := MilitaryPresentationState.pose(u,int(u.next)>=0,d)
 		if air and not pose.grounded:
 			y += 1.4
@@ -355,6 +397,10 @@ func _build_turret(color:Color,type:="tank") -> ArrayMesh:
 
 func _animation(unit:Dictionary,definition:Dictionary) -> String:
 	if unit.type=="helicopter" and not world.paused and cam.size<25: return "rotor_%d"%posmod(int(world.render_time*8),2)
+	# squads drawn as free-moving people (SquadPresentation): the unit model keeps only equipment
+	if SquadPresentation.active(str(unit.type),cam.size): return "kit"
+	if str(definition.get("move","")) in ["wheeled","tracked"] and not bool(definition.get("air",false)) and cam.size<25.0 and int(unit.get("next",-1))>=0 and not world.paused:
+		return "roll_%d"%posmod(int(world.render_time*7)+int(unit.id),2)
 	if str(definition.get("cat",""))!="infantry" and unit.type!="engineer" or cam.size>25.0: return "idle"
 	if int(unit.get("supp",0))>60: return "cover"
 	if int(unit.get("next",-1))>=0: return "walk_%d"%posmod(int(world.render_time*4)+int(unit.id),2)

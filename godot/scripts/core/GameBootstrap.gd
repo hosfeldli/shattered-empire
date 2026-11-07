@@ -31,6 +31,7 @@ var generation_diag: GenerationDiagnostics
 var command_tools: NativeCommandTools
 var command_panel: NativeCommandPanel
 var civilians: CivilianActivitySystem
+var squads: SquadPresentation
 var strategic: StrategicPresentation
 var workspace: NativeWorkspace
 var live_validation: LiveValidation
@@ -55,6 +56,7 @@ var map_overlay:NativeMapOverlay
 var resource_strip:NativeResourceStrip
 var onboarding:NativeOnboarding
 var recipe_inspector:NativeRecipeInspector
+var follow_pill:NativeFollowPill
 var world_labels:NativeWorldLabels
 var observer_bar:NativeObserverBar
 var production_feedback:NativeProductionFeedback
@@ -116,6 +118,9 @@ func _ready() -> void:
 	civilians = CivilianActivitySystem.new()
 	add_child(civilians)
 	civilians.setup(composition, cam)
+	squads = SquadPresentation.new()
+	add_child(squads)
+	squads.setup(world, cam, military, settlements)
 	wildlife = WildlifePresentation.new(); add_child(wildlife); wildlife.setup(world, cam, composition)
 	combat.composition = composition
 	combat.director = CombatPresentationDirector.new()
@@ -173,6 +178,7 @@ func _ready() -> void:
 	terrain.territory.scheduler=composition.scheduler
 	onboarding=NativeOnboarding.new(); hud.root.add_child(onboarding); onboarding.setup(self)
 	recipe_inspector=NativeRecipeInspector.new(); hud.root.add_child(recipe_inspector); recipe_inspector.setup(self)
+	follow_pill=NativeFollowPill.new(); hud.root.add_child(follow_pill); follow_pill.setup(self)
 	observer_bar=NativeObserverBar.new(); hud.root.add_child(observer_bar); observer_bar.setup(self)
 	production_feedback=NativeProductionFeedback.new(); hud.root.add_child(production_feedback); production_feedback.setup(self)
 	diag = Diagnostics.new()
@@ -440,6 +446,8 @@ func _on_message(m: Dictionary) -> void:
 				hud.show_toast(err, false)
 			else:
 				hud.show_lobby(true, err)
+				# command-line starts (--mode) never went through the menu; show it on the card too
+				if shell and shell.view!="connecting": shell.show_error(err)
 			if err.contains("no longer exists") or err.contains("Invalid session"):
 				_save_session({})
 		"over":
@@ -475,6 +483,7 @@ func _process(dt: float) -> void:
 	settlements.update(dt, net.frame_work_us < 500)
 	var t5 := Time.get_ticks_usec()
 	military.update(dt)
+	squads.update(dt)
 	var t6 := Time.get_ticks_usec()
 	combat.update(dt)
 	civilians.update(dt)

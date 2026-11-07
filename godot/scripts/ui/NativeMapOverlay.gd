@@ -89,9 +89,8 @@ func _describe(tile:int,detailed:=false) -> String:
 		var definition:Dictionary=terrain[biome]
 		lines.append(str(definition.get("name","Terrain")))
 		if detailed:
-			var move:Variant=definition.get("move")
-			lines.append("Base movement: %s× · varies by unit and roads"%str(move) if move is float or move is int else "Movement: depends on crossing and unit type")
-			lines.append("Terrain fertility: %d%% · site rules still apply"%int(float(definition.get("fert",0))*100))
+			lines.append_array(_movement_lines(tile,biome))
+			lines.append(_farm_line(tile,biome,float(definition.get("fert",0))))
 			var defense:=float(definition.get("def",0))
 			if absf(defense)>.001: lines.append("Defensive cover: %+d%% for troops holding this ground"%int(defense*100))
 			var owner:=int(world.tile_owner[tile]) if tile<world.tile_owner.size() else -1
@@ -114,6 +113,47 @@ func _describe(tile:int,detailed:=false) -> String:
 		if resources is Array and world.deposit(tile)<resources.size(): lines.append(str(resources[world.deposit(tile)].get("name","Resource deposit")))
 	if not world.is_visible(tile): lines.append("Last explored information · outside current sight")
 	return "\n".join(lines)
+
+## Movement cost by class from the server's movement rules (terrain, best usable road, river
+## fords). Only explored information; Infinity arrives as null and reads as impassable.
+func _movement_lines(tile:int,biome:int) -> Array:
+	var world:WorldState=app.world
+	var rules:Dictionary=world.defs.get("MOVE",{})
+	if world.is_sea(tile) or world.is_lake(tile): return ["Water · ships and aircraft only"]
+	if rules.is_empty(): return []
+	var road:=0
+	for direction in 6:
+		var edge:int=(world.road[tile]>>(direction*4))&15
+		if (edge&8)==0: road=maxi(road,edge&7)
+	var parts:=[]
+	for kind in [["infantry","Infantry"],["wheeled","Wheeled"],["tracked","Tracked"]]:
+		var rule:Dictionary=rules.get(kind[0],{})
+		var costs:Array=rule.get("terrain",[])
+		var cost:Variant=costs[biome] if biome<costs.size() else null
+		if cost==null: parts.append("%s impassable"%kind[1]); continue
+		var value:=float(cost)
+		if road>0 and road<(rule.get("road",[]) as Array).size(): value*=float(rule.road[road])
+		var text:="%s %.1f×"%[kind[1],value]
+		if world.is_river(tile) and road==0:
+			var ford:Variant=rule.get("majorFord" if world.flow_bucket(tile)>=2 else "ford")
+			text+=" (+ford %s)"%("impassable" if ford==null else "%.1f"%float(ford))
+		parts.append(text)
+	return ["Movement: "+" · ".join(parts)+(" · on road" if road>0 else "")]
+
+
+## Whether a farm is allowed by the same terrain rule as the server (territory and city
+## capacity are checked when placing).
+func _farm_line(tile:int,biome:int,fertility:float) -> String:
+	var world:WorldState=app.world
+	if world.is_river(tile) or world.is_sea(tile) or world.is_lake(tile): return "Farming: not on water · use dry land beside it"
+	var ok:=biome in [2,3,12,7,6,8,4]
+	if biome==5:
+		for direction in 6:
+			var neighbor:=world.grid.nb[tile*6+direction]
+			if neighbor>=0 and world.known[neighbor] and world.is_river(neighbor): ok=true
+	if not ok: return "Farming: unsuitable terrain"+(" · desert needs a river beside it" if biome==5 else "")
+	return "Farming: allowed · fertility %d%% · territory and city capacity apply"%int(fertility*100)
+
 
 func _process(dt:float) -> void:
 	if not app.world.ready_ or app.shell.is_blocking(): tooltip.hide(); return

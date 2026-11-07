@@ -38,6 +38,8 @@ image content is otherwise unmodified.
 | `timber` | [Planks037A](https://ambientcg.com/view?id=Planks037A) |
 | `painted_metal` | [PaintedMetal006](https://ambientcg.com/view?id=PaintedMetal006) |
 | `corrugated` | [CorrugatedSteel005](https://ambientcg.com/view?id=CorrugatedSteel005) |
+| `mud` | [Ground048](https://ambientcg.com/view?id=Ground048) |
+| `composite` | [Plastic010](https://ambientcg.com/view?id=Plastic010) |
 | `paving` | [PavingStones138](https://ambientcg.com/view?id=PavingStones138) |
 
 Terrain blends the `grass`, `soil`, `sand`, `rock` and `snow` colour maps by biome palette, slope

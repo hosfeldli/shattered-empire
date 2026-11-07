@@ -141,6 +141,24 @@
   },
   {
     "page": "Buildings",
+    "id": "prioritise_works",
+    "title": "Prioritise these works",
+    "command": {
+      "c": "worksPriority",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
     "id": "fund_next",
     "title": "Fund this site next",
     "command": {

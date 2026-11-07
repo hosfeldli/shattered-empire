@@ -58,7 +58,12 @@ void fragment() {
     vec2 knowledge=surface_visibility(world_position.xz);
     ALBEDO=remembered_surface(ALBEDO,knowledge.y)*knowledge.x;
     EMISSION=fog_ink(world_position.xz)*(1.0-knowledge.x);
-    ROUGHNESS = mix(clamp(base_roughness*rough,.04,1.0),.24,wet*.85);
+    // standing water: on level upward faces (roads, yards, flat roofs) heavy rain gathers in
+    // shallow mottled puddles that read as a mirror-dark sheen; walls only darken
+    float level_face = smoothstep(.93,.99,wn.y);
+    float puddle = smoothstep(.55,.75,fog_noise(world_position.xz*3.1, 4096.0)) * smoothstep(.45,.85,wet) * level_face;
+    ALBEDO *= 1.0 - .28*puddle;
+    ROUGHNESS = mix(mix(clamp(base_roughness*rough,.04,1.0),.24,wet*.85), .05, puddle);
     METALLIC = base_metallic;
     SPECULAR = mix(.35,.65,wet)*knowledge.x;
     if (normal_strength > .0) {

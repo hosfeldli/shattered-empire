@@ -155,10 +155,12 @@ func _multiplayer() -> void:
 	NativeUI.button(content,"Host match",func():_connect({"mode":"pvp","humans":int(humans.value),"ais":int(ais.value)}))
 	NativeUI.button(content,"Back",func():show_view("main"))
 
+var failed:=false
+
 func _connect(options:Dictionary) -> void:
 	if not options.has("url"): options.url=str(prefs.values.server)
 	if not options.has("name"): options.name=str(prefs.values.player)
-	connection_pending=true; connection_started=Time.get_ticks_msec()
+	connection_pending=true; connection_started=Time.get_ticks_msec(); failed=false
 	show_view("connecting"); app.start(options)
 
 func _room() -> void:
@@ -239,7 +241,18 @@ func _search() -> void:
 func _message(record:Dictionary) -> void:
 	if record.get("t")=="room": room=record; connection_pending=false; show_view("room")
 	elif record.get("t")=="welcome": connection_pending=false; show_view("")
-	elif record.get("t")=="error" and view=="connecting" and is_instance_valid(status): status.text=str(record.get("error","Connection failed"))
+	elif record.get("t")=="error" and not app.world.ready_: show_error(str(record.get("error","Connection failed")))
+
+
+## A server refusal before the world arrives (no memory for another match, unknown match, old
+## session) is shown on the connecting card with a way back, never left as an empty black screen.
+func show_error(text:String) -> void:
+	connection_pending=false
+	if view!="connecting": show_view("connecting")
+	if is_instance_valid(status):
+		status.text=text
+		status.add_theme_color_override("font_color",NativeUI.BAD.lightened(.2))
+	failed=true
 
 func _input(event:InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo: return
@@ -282,7 +295,7 @@ func _input(event:InputEvent) -> void:
 		if app.workspace.panel.visible and app.workspace.page=="Research": app.workspace.panel.hide()
 		else: app.workspace.open_page("Research")
 		app.get_viewport().set_input_as_handled()
-	elif code==KEY_V and not event.ctrl_pressed and not event.meta_pressed and not app.world.spectator:
+	elif code==KEY_V and not app.world.spectator and not event.ctrl_pressed and not event.meta_pressed and not app.world.spectator:
 		# V: follow the selected unit with the camera, or stop following
 		var picked:Array=app.military.selected.keys()
 		if app.cam.follow_id>=0: app.cam.follow_id=-1
@@ -315,8 +328,8 @@ func _process(_dt:float) -> void:
 	app.hud.lobby.visible=false
 	app.hud.root.visible=app.world.ready_ and not world_hidden
 	if connection_pending and app.world.ready_: connection_pending=false; show_view("")
-	if view=="connecting" and is_instance_valid(status) and Time.get_ticks_msec()-connection_started>15000:
+	if view=="connecting" and not failed and is_instance_valid(status) and Time.get_ticks_msec()-connection_started>15000:
 		status.text="Still connecting. Check the game-server address in Settings, or cancel to return."
 
 static func controls_text() -> String:
-	return "WASD / arrows — pan · middle drag — pan · wheel / + / − — zoom\nShift — faster pan / add selection / queue orders\nLeft click — select · drag — select a group · double-click — same type on screen\nRight click — move, attack enemy, or rally selected facilities\nRight drag — draw and deploy on release · Tab — reverse facing while drawing\nCtrl/Cmd + right click — attack-move / focus fire\n1–9 — recall group · Ctrl/Cmd + 1–9 — assign · double tap — center\nQ — combat units on screen · Shift+Q — all owned combat units\nE / Ctrl+A — attack-move target · X — withdraw · H — hold\nF — cycle movement formation / found city with a colonist · G — form army\nB — construction · R — road tool · Enter — confirm preview · Backspace — undo\nT — research · F2 — empire workspaces · / or Ctrl+K — search\nSpace — center selection/capital · P — pause · M — mute\nL — cycle map lens · K — field guide · F11 — fullscreen · Esc — cancel/back/menu\nObserver: [ / ] change civilization · , / . change speed · V toggle fog\n\nBuild, Army and Research are the main tools. Overview contains cities, economy, rivals and history. Double-click a building to select matching buildings, then Upgrade selected. Troop icons show the composition on each tile; hover for names. F10 hides the interface."
+	return "WASD / arrows — pan · middle drag — pan · wheel / + / − — zoom\nShift — faster pan / add selection / queue orders / keep placing buildings\nLeft click — select · drag — select a group · double-click — same type on screen\nRight click — move, attack enemy, or rally selected facilities\nRight drag — draw and deploy on release · Tab — reverse facing while drawing\nCtrl/Cmd + right click — attack-move / focus fire\n1–9 — recall group · Ctrl/Cmd + 1–9 — assign · double tap — center\nQ — combat units on screen · Shift+Q — all owned combat units\nE / Ctrl+A — attack-move target · X — withdraw · H — hold · Y — defensive/aggressive stance\nV — follow the selected unit (pan or V again to stop) · Alt — terrain and crossing details\nF — cycle movement formation / found city with a colonist · G — form army\nB — construction · R — road tool · Enter — confirm preview · Backspace — undo\nT — research · F2 — empire workspaces · / or Ctrl+K — search\nSpace — center selection/capital · P — pause · M — mute\nL — cycle map lens · K — field guide · F11 — fullscreen · Esc — cancel/back/menu\nObserver: [ / ] change civilization · , / . change speed · V toggle fog\n\nBuild, Army and Research are the main tools. Overview contains cities, economy, rivals and history. Double-click a building to select matching buildings, then Upgrade selected. Troop icons show the composition on each tile; hover for names. F10 hides the interface."

@@ -5,6 +5,133 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## Quick fixes and units/civilians overhaul (2026-11-07)
+
+- **Server refusals are visible:** a match refused before the world arrives (for example
+  "short of memory", an unknown match or an expired session) now shows on the connecting card
+  with a way back, including for command-line starts, instead of an empty black screen.
+- **Industrial halls:** a concrete plinth, pilaster bays, a clerestory band, roller doors with
+  ribs, a personnel door, corner downpipes and roof vents on every hall.
+- **Figures (`FigureKit`):** human-proportioned soldiers, crews and civilians in five poses
+  (stand, two walk frames, kneel, prone). Kit by role: rifle troops wear helmets, plate carriers
+  and packs; militia wear caps and jackets; special forces wear dark kit with night optics; exo
+  infantry wear powered frames; engineers wear hard hats and hi-vis vests and carry tools; crews
+  carry ammunition cases; civilians wear everyday clothes. Owner colour appears only as a
+  shoulder patch. Skin uses its own material.
+- **Free-moving soldiers (`SquadPresentation`):** one server unit, many people. Each figure has
+  its own place, follow rate (some lead, some lag), gait and facing, and its own small wander.
+  Halted squads shift position now and then. Marching squads string out in loose pairs; halted
+  squads form a loose line; under fire they spread out and go prone, and when firing they kneel
+  toward the target. Figures keep apart, step around water and building cores, and never leave
+  the unit's footprint. Gun and mortar crews stay at their weapon and kneel once it is deployed.
+  Casualties thin the group with health. Used up to operational zoom; wider views keep the baked
+  squad. Presentation only.
+- **Units sharing a hex** take stable, eased places around it instead of overlapping (presentation
+  of the server's capacity rule).
+- **Vehicles and aircraft (`MilitaryModelLibrary` rewrite):** sloped-glacis tracked hulls with
+  track runs, road wheels and side skirts. Separate turrets with mantlet, long barrel, hatch and
+  smoke dischargers. An 8-wheel armoured car, a covered cargo truck, an open scout buggy with a
+  roll cage, a towed howitzer with split trail and shield, a mortar with baseplate and bipod, a
+  casemate self-propelled gun, missile and air-defence trucks, a settler van with trailer, a
+  helicopter with stub wings and skids, and swept-wing aircraft. Wheel hubs and track links
+  animate while moving, and moving vehicles bob slightly on their suspension. Military paint
+  keeps its olive drab.
+- **Civilians:** pedestrians use the same figure style with varied clothing; traffic uses the
+  city components (cars, delivery vans, handcarts in the first era) in real car colours.
+- **Artillery (server, native-v4):** indirect-fire guns and mortars must halt for 6 s to set up
+  before firing, and cannot fire on the move. The deployed state is sent as unit flag 64.
+- Troop group shapes (line/column/wedge/box) were dropped at the user's request: formations are
+  drawn by the player.
+
+Verification: server 170/170, Godot development 244 (new figure, roll-frame, kit and free-moving
+squad checks), render 66, composition 34, LWE 67, surface 27, water 24, battle 11, warzone 14.
+Sandbox screenshots reviewed: tanks, stacked squads and individual soldiers.
+
+## Backlog B–G pass: controls, construction tools, terrain, cities, art and damage (2026-11-07)
+
+**B. Camera, selection and visibility**
+- Camera steps are capped after hitches, WASD no longer pans while typing, follow-camera releases
+  without a jump when the unit dies, leaves sight or changes owner, and a "Following …" pill
+  with a one-click stop (`NativeFollowPill`) makes following visible. V (follow) and Y (stance)
+  are remappable; the dead T stance toggle (T opens Research) moved to Y. Controls guide updated.
+- Rejoining the same world keeps the existing ground until each chunk is rebuilt from the fresh
+  geometry, so reloads no longer drop the map around the camera.
+- Alt inspector: movement cost per class (infantry/wheeled/tracked, roads, river fords) from the
+  server's movement rules, and farm legality by the server's farm terrain rule.
+- Building placement draws the authoritative buildable area as one continuous outline (gaps at
+  rivers, occupied hexes, overlaps) and names the city a site belongs to.
+- Remembered foreign buildings are drawn in a cool, desaturated tone.
+
+**C. Building, road, bridge and trench tools**
+- Placement: ground-following footprint outline of the real planned parcel (green / amber waiting
+  for materials / red refused), a cursor tooltip with name, city, cost, time or the exact refusal
+  reason, pending sites marked until the server's building appears (no duplicate orders), and
+  group placement reports each refused hex with its reason (`buildMany.failedTiles`).
+- Roads: through-hexes follow one smooth curve; dirt tracks with mud ruts, paved roads with gravel
+  shoulders, edge lines and dashed centre lines, divided highways with a raised median, railways
+  with ballast, sleepers and two rails; destroyed segments end in debris. Vegetation clears the
+  exact drawn corridor (`InfrastructureRenderer.clearance`).
+- Bridges: timber trestle, reinforced concrete deck with parapets and piers, steel rail girder;
+  graded approach embankments on both banks; damaged spans from the server's bridge condition
+  (`bridges`, visible crossings only); collapsed spans drop into the water. Previews use the exact
+  class construction before confirmation.
+- Road works show their real segment and progress (`seg`, `prog`): survey stakes, graded earth,
+  base course, surfacing and a roller; bridge segments raise piers and falsework first.
+- Trenches: one continuous curved channel per through-hex (terrain cut matches), survey tape →
+  spoil heaps → spoil bank → revetments, sandbags and duckboards → firing step and occasional fire
+  bays; crews and a small excavator only at real project fronts; works waiting for materials are
+  idle; damaged segments slump; mud floors pool with rain. Bunker/fort, AA and guard-post entrances
+  differ by type and upgrade level.
+
+**D. Terrain and environment**
+- Continuous terrain: every hex sector is subdivided (indexed, 25 vertices/36 triangles per hex);
+  shared edge midpoints carry the mean of both hexes so adjacent mountains form ridges, and an inner
+  ring rounds hills and peaks into mass instead of one pyramid per hex. `ground_height` follows the
+  exact same triangles, so everything stays seated.
+- Forests: stable glades, altitude/climate species mix, smaller high-altitude conifers, shrubs at
+  edges and in glades, deadwood, marsh sedge. River banks get reeds (lowland) or stones (upland).
+- Deposits: iron rust outcrops, layered coal seams with spoil, pale rare-earth rock with mineral
+  glints, pale stone shelves and boulders.
+- Weather: standing water gathers in puddles on level wet surfaces (roads, yards, flat roofs);
+  shore foam slightly stronger.
+
+**E. Cities and civilian life**
+- Settlement hub by tier: municipal block, forecourt and bus stop; City adds plaza and apartments;
+  Metropolis adds offices and streetlights; Megacity adds towers. Tiers only add.
+- Housing levels 2–3 add modern apartment blocks; neighbouring housing hexes form a local street
+  with sidewalks, a terrace under one roofline, parked cars and streetlights (decorative, no route).
+- Farms: one farmstead per estate (oldest farm) with barn, silos, shed, tractor and hay; other farms
+  carry irrigation pivots or field kit; farm tracks join them; greenhouses at level 3.
+- Industry: outer-boundary compound fences with gates at real roads, shared yard stock only when
+  both plants are working. Campuses join with lawns and paths.
+- Traffic never crosses destroyed spans; busy railway edges run freight trains.
+
+**F. Art and materials**
+- 36 reusable modern components (containers, tanks, chimney stacks, cooling towers, pipe racks,
+  roof plant, solar, dishes, radar, streetlights, fences, gantry and tower cranes, conveyors,
+  headframe, excavator, bulldozer, cars, vans, trucks, tractor, silo, greenhouse, hay, irrigation
+  pivot, logs, office and apartment blocks, shop row, pallets, wind turbine, transformer, bus
+  shelter) authored in `ComponentKit`, exported to `assets/components/*.glb` by
+  `tools/build_components.gd`, listed with stable ids in `recipes/assets.json`.
+- `CivicBuildingLibrary`: hub, farm, sawmill, deposit-specific mines, quarry, power station and depot
+  rebuilt from those components (replacing timber-and-gable placeholders). Industrial and
+  communications buildings gained stacks, tanks, roof plant, dishes, radar and vehicles.
+- New CC0 materials: mud (Ground048) for trench floors and ruts; composite (Plastic010) for
+  Advanced Systems buildings. Visual language and a 34-building audit: `docs/ASSET_AUDIT.md`.
+
+**G. Construction, repair and damage**
+- Construction stages from server progress, crew and waiting state: site preparation, ground work
+  (slab, rebar), frame, exterior in scaffolding, finishing; machinery (tower crane on tall
+  buildings), workers and material only while a crew works; waiting sites are visibly idle.
+- Damage: missing panels cluster on the side recorded impacts struck, scorch on walls, bent rebar on
+  concrete, a fallen slab when severe; deterministic and save-stable.
+- Works priority (one per city: faster, the city's other works slow slightly), button on the card.
+  Governors now repair through timed works under native-v4 instead of an instant 40 % heal.
+
+Verification: server 169/169 (`ADMIT_OFF=1`, 4 new infrastructure tests), Godot render 66,
+composition 34, LWE 67, development 191 (new component, civic, construction, impact-damage and
+trench-curve checks), surface 27, water 24, battle 11, warzone 14.
+
 ## Architecture (A) and texture overhaul (F) (2026-11-07)
 
 **Architecture**

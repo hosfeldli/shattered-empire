@@ -43,6 +43,11 @@ var target_title:=""
 var target_preview:=false
 var target_enemy:={}
 var right_dragging:=false
+var pending_sites:={}     # tile -> [type, msec]: accepted by the server, waiting for its building
+var refused_sites:={}     # tile -> [reason, msec]: refused sites of a group placement
+var footprint_mesh:MeshInstance3D
+var cursor_tip:PanelContainer
+var cursor_label:Label
 
 func target_command(command:Dictionary,title:String,kind:="point",server_preview:=false,require_confirmation:=true) -> void:
 	cancel()
@@ -59,9 +64,19 @@ func setup(w: WorldState, n: NetworkClient, c: CameraController, m: MilitaryRend
 	legal_mesh=MeshInstance3D.new()
 	legal_mesh.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(legal_mesh)
+	footprint_mesh=MeshInstance3D.new()
+	footprint_mesh.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(footprint_mesh)
+	var layer:=CanvasLayer.new(); layer.layer=5; add_child(layer)
+	cursor_tip=PanelContainer.new(); cursor_tip.mouse_filter=Control.MOUSE_FILTER_IGNORE
+	cursor_tip.add_theme_stylebox_override("panel",NativeUI.style(Color(NativeUI.PANEL,.92),Color(1,1,1,.14),8,6,true))
+	cursor_label=Label.new(); cursor_label.add_theme_font_size_override("font_size",12); cursor_label.add_theme_color_override("font_color",NativeUI.TEXT)
+	cursor_tip.add_child(cursor_label); layer.add_child(cursor_tip); cursor_tip.hide()
 	cam.cancel_pressed.connect(cancel)
 	world.welcomed.connect(cancel)
 	world.reset.connect(cancel)
+	world.welcomed.connect(func(): pending_sites.clear(); refused_sites.clear())
+	world.econ_applied.connect(_reconcile_pending)
 
 
 func activate(kind: String, option: Variant = "") -> void:
@@ -97,6 +112,8 @@ func cancel() -> void:
 	last_hover = -1
 	if mesh: mesh.mesh = null
 	if legal_mesh: legal_mesh.mesh=null
+	if footprint_mesh: footprint_mesh.mesh=null
+	if cursor_tip: cursor_tip.hide()
 	legal_view=Vector3.INF
 	status = "Select a tool, then draw on the map. Enter confirms; Esc cancels."
 	changed.emit()
@@ -139,9 +156,22 @@ func _unhandled_input(event: InputEvent) -> void:
 					var sites:=points.filter(func(t):return valid_tiles.has(t))
 					if sites.size()>1:
 						var repeat_:bool=event.shift_pressed
+						for site in sites: pending_sites[int(site)]=[str(value),Time.get_ticks_msec()]
 						_submit({"c":"buildMany","type":value,"tiles":sites},func(reply):
-							feedback.emit("Construction sites queued" if reply.get("error")==null else str(reply.error),reply.get("error")==null)
-							if reply.get("error")==null and not repeat_: cancel())
+							if reply.get("error")!=null:
+								for site in sites: pending_sites.erase(int(site))
+								feedback.emit(str(reply.error),false); _refresh_legal_sites(); return
+							var many:Dictionary=reply.get("many",{})
+							var reasons:={}
+							for failed in many.get("failedTiles",[]):
+								pending_sites.erase(int(failed[0])); refused_sites[int(failed[0])]=[str(failed[1]),Time.get_ticks_msec()]
+								reasons[str(failed[1])]=true
+							var text:="%d site%s placed"%[int(many.get("placed",sites.size())),"" if int(many.get("placed",0))==1 else "s"]
+							if int(many.get("planned",0))>0: text+=" · %d wait for materials"%int(many.planned)
+							if int(many.get("failed",0))>0: text+=" · %d refused: %s"%[int(many.failed),", ".join(reasons.keys())]
+							feedback.emit(text,int(many.get("placed",0))>0)
+							_refresh_legal_sites()
+							if int(many.get("failed",0))==0 and not repeat_: cancel())
 					elif sites.size()==1: _place(sites[0],event.shift_pressed)
 					else: feedback.emit("Choose a valid building site",false)
 				else:
@@ -218,6 +248,7 @@ func request_preview() -> void:
 				var reason:=str(segment.get("reason","blocked ground"))
 				if not reasons.has(reason): reasons.append(reason)
 			if not reasons.is_empty(): status="Blocked: "+", ".join(reasons)+" · Red sections need a different route"
+		if mode in ["road","bridge","trench"]: _tip_text(status.replace(" · ","\n"),error==null and blocked_tiles.is_empty() and blocked_edges.is_empty())
 		var route:Array=plan.get("tiles",points)
 		_draw(route, error == null)
 		changed.emit())
@@ -252,16 +283,36 @@ func commit() -> void:
 
 
 func _place(tile: int,repeat_:=false) -> void:
+	if pending_sites.has(tile): return     # already submitted; never send a duplicate order
 	if not valid_tiles.has(tile):
-		feedback.emit("Choose a valid building site", false); return
+		feedback.emit(str(site_details.get("reason","Choose a valid building site")) if int(site_details.get("tile",-1))==tile else "Choose a valid building site", false); return
 	var building_type := str(value)
 	valid_tiles.erase(tile)
+	pending_sites[tile]=[building_type,Time.get_ticks_msec()]
+	_refresh_legal_sites()
 	_submit({"c": "build", "tile": tile, "type": building_type, "plan": true}, func(reply: Dictionary):
 		var ok: bool = reply.get("error") == null
-		feedback.emit("Construction queued" if ok else str(reply.error), ok)
+		if not ok:
+			pending_sites.erase(tile); refused_sites[tile]=[str(reply.error),Time.get_ticks_msec()]
+		var built:Dictionary=reply.get("built",{})
+		feedback.emit(("Site placed · waiting for materials" if bool(built.get("planned",false)) else "Construction site placed") if ok else str(reply.error), ok)
 		if mode == "build" and value == building_type:
 			if ok and not repeat_: cancel()
 			else: activate("build", building_type))
+
+
+## A submitted site stays marked until the server's building appears there (or a short timeout),
+## so a click never looks like a fake success or silently vanishes.
+func _reconcile_pending() -> void:
+	if pending_sites.is_empty() and refused_sites.is_empty(): return
+	var built:={}
+	for building in world.buildings.values(): built[int(building.t)]=true
+	var now:=Time.get_ticks_msec()
+	for tile in pending_sites.keys():
+		if built.has(int(tile)) or now-int(pending_sites[tile][1])>12000: pending_sites.erase(tile)
+	for tile in refused_sites.keys():
+		if now-int(refused_sites[tile][1])>6000: refused_sites.erase(tile)
+	if mode=="build": _refresh_legal_sites()
 
 
 func _preview_build(tile:int) -> void:
@@ -292,6 +343,8 @@ func _preview_build(tile:int) -> void:
 		status=str(site_details.get("reason","Choose a legal site")) if not valid else " · ".join(costs)+" · ~%s sec"%str(site_details.get("seconds","—"))
 		if valid and not missing.is_empty(): status+=" · Missing "+", ".join(missing)+"; click to queue"
 		_draw([tile],valid)
+		_draw_footprint(valid,bool(site_details.get("queued",false)))
+		_show_tip(type,valid,costs,missing)
 		changed.emit())
 
 
@@ -318,11 +371,11 @@ func _draw(tiles: Array, ok: bool) -> void:
 			if blocked_edges.has("%s:%s"%[first,second]):
 				kit.strip("glow:ed766a",Vector3(a.x,world.tile_height(first)+.08,a.y),Vector3(b.x,world.tile_height(second)+.08,b.y),.08)
 				continue
-			for side in [[first,a,midpoint],[second,b,midpoint]]:
-				var wet:bool=world.is_river(side[0]) or world.is_sea(side[0]) or world.is_lake(side[0])
-				var road_type:=int(value) if mode=="road" else 2
-				if wet: infrastructure._bridge(kit,side[0],side[1],side[2],road_type,false)
-				else: infrastructure._road(kit,side[1],side[2],road_type,false)
+			# The exact class construction the finished road or bridge will have (timber, reinforced
+			# or rail deck), previewed before confirmation.
+			var road_type:int=int(value) if mode=="road" else int({"timber":1,"road":2,"rail":4}.get(str(value),2))
+			infrastructure.preview_half(kit,first,second,road_type)
+			infrastructure.preview_half(kit,second,first,road_type)
 	elif mode=="trench" and tiles.size()>1:
 		for index in range(tiles.size()-1):
 			var a:=world.grid.center(int(tiles[index])); var b:=world.grid.center(int(tiles[index+1])); a.x=world.grid.near_x(a.x,cam.focus.x); b.x=a.x+world.grid.dx_wrap(a.x,b.x)
@@ -333,6 +386,11 @@ func _draw(tiles: Array, ok: bool) -> void:
 
 
 func _process(_dt:float) -> void:
+	if cursor_tip and cursor_tip.visible:
+		if mode=="select" or mode=="deploy" or mode=="target": cursor_tip.hide()
+		else:
+			var mouse:=get_viewport().get_mouse_position(); var bounds:=get_viewport().get_visible_rect().size
+			cursor_tip.position=Vector2(minf(mouse.x+18,bounds.x-cursor_tip.size.x-8),minf(mouse.y+18,bounds.y-cursor_tip.size.y-8))
 	if mode!="build" or world.grid==null or valid_tiles.is_empty(): return
 	var view:=Vector3(cam.focus.x,cam.focus.z,cam.size)
 	if legal_view==Vector3.INF or Vector2(view.x-legal_view.x,view.y-legal_view.y).length()>3.0 or absf(view.z-legal_view.z)>3.0:
@@ -350,12 +408,84 @@ func _refresh_legal_sites() -> void:
 		var p:=world.grid.center(tile)
 		p.x=world.grid.near_x(p.x,cam.focus.x)
 		if absf(p.x-cam.focus.x)>radius or absf(p.y-cam.focus.z)>cam.size+3.0: continue
+		# The authoritative buildable area as one continuous outline: only edges toward hexes that
+		# are not legal sites are drawn, so overlapping cities, rivers and occupied hexes show as
+		# real gaps in the area instead of a guessed circle. A faint inner mark keeps each site legible.
 		for k in 6:
-			var a:Vector2=p+world.grid.corners[k]*.92; var b:Vector2=p+world.grid.corners[(k+1)%6]*.92
-			kit.strip("glow:75d59b",Vector3(a.x,world.ground_height(a.x,a.y)+.025,a.y),Vector3(b.x,world.ground_height(b.x,b.y)+.025,b.y),.012)
+			var neighbor:=world.grid.nb[tile*6+posmod(1-k,6)]
+			var a:Vector2=p+world.grid.corners[k]*.97; var b:Vector2=p+world.grid.corners[(k+1)%6]*.97
+			if neighbor<0 or not valid_tiles.has(neighbor):
+				kit.strip("glow:75d59b",Vector3(a.x,world.ground_height(a.x,a.y)+.025,a.y),Vector3(b.x,world.ground_height(b.x,b.y)+.025,b.y),.03)
+		kit.cylinder("glow:75d59b",Vector3(p.x,world.ground_height(p.x,p.y)+.02,p.y),.05,.002,6,Color(1,1,1,.6))
 		count+=1
 		if count>=600: break
+	for group in [[pending_sites,"glow:e4bd76",.035],[refused_sites,"glow:ed766a",.03]]:
+		for raw in group[0]:
+			var tile:=int(raw)
+			if tile<0 or tile>=world.grid.n: continue
+			var p:=world.grid.center(tile); p.x=world.grid.near_x(p.x,cam.focus.x)
+			for k in 6:
+				var a:Vector2=p+world.grid.corners[k]*.8; var b:Vector2=p+world.grid.corners[(k+1)%6]*.8
+				kit.strip(str(group[1]),Vector3(a.x,world.ground_height(a.x,a.y)+.03,a.y),Vector3(b.x,world.ground_height(b.x,b.y)+.03,b.y),float(group[2]))
 	legal_mesh.mesh=kit.commit() if not kit.is_empty() else null
+
+
+## The planned footprint of the preview (the same parcel the finished building will use), as a
+## ground-following outline: green legal, amber legal but waiting for materials, red refused.
+func _draw_footprint(valid:bool,queued:bool) -> void:
+	footprint_mesh.mesh=null
+	if placement==null or placement.site.is_empty(): return
+	var corners:Array=placement.site.get("corners",[])
+	if corners.is_empty() and placement.site.has("transform"):
+		var frame:Transform3D=placement.site.transform; var half:Vector2=placement.site.get("half_size",Vector2(.4,.4))
+		for q in [Vector2(-1,-1),Vector2(1,-1),Vector2(1,1),Vector2(-1,1)]:
+			var p:=frame*Vector3(half.x*q.x,0,half.y*q.y); corners.append(Vector2(p.x,p.z))
+	if corners.size()<3: return
+	var color:="glow:75d59b" if valid and not queued else "glow:e4bd76" if valid else "glow:ed766a"
+	var kit:=MeshKit.new()
+	var anchor:float=world.grid.near_x((corners[0] as Vector2).x,cam.focus.x)-(corners[0] as Vector2).x
+	for k in corners.size():
+		var a:Vector2=corners[k]; var b:Vector2=corners[(k+1)%corners.size()]
+		for part in 4:
+			var p:=a.lerp(b,part/4.0); var q:=a.lerp(b,(part+1)/4.0)
+			kit.strip(color,Vector3(p.x+anchor,world.ground_height(p.x,p.y)+.03,p.y),Vector3(q.x+anchor,world.ground_height(q.x,q.y)+.03,q.y),.018)
+	footprint_mesh.mesh=kit.commit()
+
+
+## a compact tooltip at the cursor: what, cost and time, or exactly why the site is refused
+func _show_tip(type:String,valid:bool,costs:Array,missing:Array) -> void:
+	var definition:Dictionary=world.defs.get("BUILDINGS",{}).get(type,{})
+	var lines:=[str(definition.get("name",type.capitalize()))]
+	var city:=_city_for(last_hover)
+	if not city.is_empty(): lines[0]+=" · "+str(city.get("n","city"))
+	if valid:
+		lines.append(" · ".join(costs) if not costs.is_empty() else "No cost")
+		lines.append("~%s s to build"%str(site_details.get("seconds","—")))
+		if not missing.is_empty(): lines.append("Waits for "+", ".join(missing))
+		lines.append("Click to place · Shift keeps placing")
+	else:
+		lines.append(str(site_details.get("reason","Not a legal site")))
+	cursor_label.text="\n".join(lines)
+	cursor_label.add_theme_color_override("font_color",NativeUI.TEXT if valid else NativeUI.BAD.lightened(.25))
+	cursor_tip.show()
+	cursor_tip.reset_size()
+
+
+## the own city a site would belong to (nearest own city centre), for the placement tooltip
+func _city_for(tile:int) -> Dictionary:
+	if tile<0: return {}
+	var best:={}; var best_d:=1<<30
+	for city in world.cities.values():
+		if int(city.get("o",-1))!=world.civ_id: continue
+		var d:=world.grid.dist(tile,int(city.t))
+		if d<best_d: best_d=d; best=city
+	return best
+
+
+func _tip_text(text:String,ok:bool) -> void:
+	cursor_label.text=text
+	cursor_label.add_theme_color_override("font_color",NativeUI.TEXT if ok else NativeUI.BAD.lightened(.25))
+	cursor_tip.show(); cursor_tip.reset_size()
 
 
 func train(building: int, unit_type: String) -> void:

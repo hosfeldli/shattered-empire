@@ -169,7 +169,7 @@ export function unitsStep(g, dt) {
     // ------------------------------------------------ movement with capacity queues
     if (u.path.length) {
       const nxt = u.path[0];
-      if (u.next !== nxt) { u.next = nxt; u.prog = 0; }
+      if (u.next !== nxt) { u.next = nxt; u.prog = 0; u.movedAt = g.time; }
       const c = stepCost(g, civ, u.tile, nxt, u.type);
       if (!Number.isFinite(c)) {
         // terrain changed under us (lava, collapsed pass, ruined bridge, flooding) or border closed: re-route
@@ -221,7 +221,7 @@ export function unitsStep(g, dt) {
       u.prog += (spd * dt) / c;
       if (u.prog >= 1) {
         if (!isAir(u)) g.roads.noteTraffic(u.tile, nxt, def.move === 'infantry' ? 0.5 : 1);
-        u.tile = nxt; u.path.shift(); u.prog = 0; u.next = -1; u.blockTries = 0;
+        u.tile = nxt; u.path.shift(); u.prog = 0; u.next = -1; u.blockTries = 0; u.movedAt = g.time;
         if (!def.air) addWear(g, nxt, def.move);
 
       }

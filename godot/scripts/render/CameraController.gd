@@ -107,7 +107,10 @@ func _process(dt: float) -> void:
 	if cam:
 		cam.h_offset=sin(shake_time*140)*shake_time*.08 if shake_enabled else 0.0
 		cam.v_offset=sin(shake_time*110)*shake_time*.04 if shake_enabled else 0.0
-	if input_enabled:
+	# A hitch (loading, a modal, a long frame) must never fling the camera: cap the step.
+	dt = minf(dt, 0.1)
+	var typing := get_viewport().gui_get_focus_owner() is LineEdit or get_viewport().gui_get_focus_owner() is TextEdit
+	if input_enabled and not typing:
 		var v := Vector2.ZERO
 		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP): v.y -= 1
 		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): v.y += 1
@@ -158,11 +161,14 @@ func _pan_step(direction:Vector2, dt:float, fast:=false) -> void:
 
 func _follow_step(dt:float) -> void:
 	if follow_id<0: return
-	if not world.units.has(follow_id): follow_id=-1; return
+	# a unit that died, left sight or changed owner releases the camera where it is (no jump)
+	var unit:Dictionary=world.units.get(follow_id,{})
+	if unit.is_empty() or int(unit.get("owner",-1))!=world.civ_id and not world.spectator: follow_id=-1; return
 	var target:=world.unit_position(follow_id)
 	if target==Vector2.INF: return
 	pan_velocity=Vector2.ZERO
-	var alpha:=1.0-exp(-6.0*maxf(dt,0.0))
+	# Interpolated authoritative motion, eased; across the seam the shortest wrapped offset is used.
+	var alpha:=1.0-exp(-(14.0 if reduced_motion else 6.0)*maxf(dt,0.0))
 	focus.x+=world.grid.dx_wrap(focus.x,target.x)*alpha
 	focus.z=lerpf(focus.z,target.y,alpha)
 

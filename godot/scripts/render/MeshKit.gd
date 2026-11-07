@@ -118,6 +118,11 @@ func component(surfaces: Array, transform: Transform3D, tint := Color.WHITE, dam
 			p[3].append(uvs[i] if i < uvs.size() else Vector2.ZERO)
 
 
+## place a library component (AssetLibrary.component) at p in the current frame
+func part(id: String, p: Vector3, yaw := 0.0, s := 1.0, tint := Color.WHITE) -> void:
+	component(AssetLibrary.component(id), Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3.ONE * s), p), tint)
+
+
 ## a, b, c, d around the quad; outward tells which side is the front
 func quad(mat: String, a: Vector3, b: Vector3, c: Vector3, d: Vector3, col: Color, outward: Vector3) -> void:
 	tri(mat, a, b, c, col, outward)

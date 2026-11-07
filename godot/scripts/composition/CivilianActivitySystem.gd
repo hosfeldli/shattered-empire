@@ -9,6 +9,7 @@ var people:MultiMeshInstance3D
 var people_step:MultiMeshInstance3D
 var carts:MultiMeshInstance3D
 var cars:MultiMeshInstance3D
+var vans:MultiMeshInstance3D
 var routes:Array=[]
 var elapsed:=1.0
 var drawn:=0
@@ -25,39 +26,29 @@ func _batch(mesh:Mesh,count:int) -> MultiMeshInstance3D:
 func setup(system:WorldCompositionSystem,cam:CameraController) -> void:
 	composition=system; world=system.world; camera=cam
 	people=_batch(_person(false),200); people_step=_batch(_person(true),200)
-	carts=_batch(_vehicle(false),64); cars=_batch(_vehicle(true),64)
+	carts=_batch(_vehicle(false),64); cars=_batch(_vehicle(true),64); vans=_batch(_vehicle(true,true),32)
 	world.welcomed.connect(_clear); world.reset.connect(_clear)
 
+## Everyday people in the same figure style as the troops (FigureKit "civilian"); clothing colour
+## varies per person through the instance colour.
 func _person(step:bool) -> ArrayMesh:
-	var kit:=MeshKit.new()
-	for side in [-1.0,1.0]:
-		var stride:float=float(side)*(.012 if step else -.012)
-		kit.box("char",Vector3(stride,0,side*.011),Vector3(.014,.038,.014))
-		kit.box("char",Vector3(stride+.008,0,side*.011),Vector3(.022,.008,.015))
-		kit.box("canvas",Vector3(-stride,.038,side*.029),Vector3(.014,.04,.014))
-	kit.box("canvas",Vector3(0,.032,0),Vector3(.035,.045,.047))
-	kit.cylinder("plaster",Vector3(0,.077,0),.015,.022,7)
-	kit.box("timber",Vector3(-.003,.096,0),Vector3(.024,.006,.024),Color(.55,.45,.35))
-	return kit.commit()
+	return FigureKit.mesh("civilian","walk_a" if step else "walk_b",Color.WHITE)
 
-func _vehicle(motor:bool) -> ArrayMesh:
+## Local traffic from the shared component library: modern cars and delivery vans, and light
+## handcarts in the earliest era; the same models parked in the cities.
+func _vehicle(motor:bool,van:=false) -> ArrayMesh:
 	var kit:=MeshKit.new()
-	kit.box("steel" if motor else "timber",Vector3(0,.035,0),Vector3(.19,.055,.10),Color(.75,.73,.64))
-	if motor:
-		kit.box("steel",Vector3(.045,.09,0),Vector3(.07,.055,.09),Color(.68,.72,.67))
-		kit.box("glass",Vector3(.081,.11,0),Vector3(.004,.025,.068))
-		for side in [-.047,.047]: kit.box("glass",Vector3(.04,.108,side),Vector3(.055,.026,.003))
-		kit.box("steel",Vector3(-.04,.09,0),Vector3(.08,.008,.075),Color(.56,.57,.54))
+	if motor: kit.part("van" if van else "parked_car",Vector3.ZERO,0.0,1.15)
 	else:
-		kit.box("timber",Vector3(-.015,.09,0),Vector3(.07,.05,.075))
-		kit.box("timber",Vector3(.15,.05,0),Vector3(.12,.012,.018))
-	for x in [-.063,.063]:
-		for z in [-.057,.057]: kit.box("char",Vector3(x,.015,z),Vector3(.041,.045,.018))
+		kit.box("timber",Vector3(0,.016,0),Vector3(.06,.012,.04),Color(.8,.68,.5))
+		kit.box("canvas",Vector3(-.004,.028,0),Vector3(.045,.018,.036),Color(.82,.76,.6))
+		for z in [-.022,.022]: kit.cylinder("char",Vector3(0,0,z),.012,.004,8)
+		kit.box("timber",Vector3(.045,.02,0),Vector3(.04,.004,.004))
 	return kit.commit()
 
 func _clear() -> void:
 	routes.clear(); drawn=0; vehicles_drawn=0; elapsed=1.0; clock=0.0
-	for instance in [people,people_step,carts,cars]: instance.multimesh.visible_instance_count=0
+	for instance in [people,people_step,carts,cars,vans]: instance.multimesh.visible_instance_count=0
 
 func _routes() -> void:
 	routes.clear()
@@ -94,17 +85,17 @@ func _routes() -> void:
 		intensity*=1.0-clampf(float(city.get("dmg",0))/100.0,0,.9)
 		for index in maxi(1,roundi(5*intensity)):
 			var offset:=Vector2(0,rng.randf_range(-.025,.025))
-			routes.append({"a":a+offset,"b":z+offset,"tile":b.tile,"road":road_dir,"kind":0,"phase":rng.randf()*2,"speed":rng.randf_range(.12,.18),"tint":Color.from_hsv(rng.randf(),.22,.8)})
+			routes.append({"a":a+offset,"b":z+offset,"tile":b.tile,"road":road_dir,"kind":0,"phase":rng.randf()*2,"speed":rng.randf_range(.12,.18),"tint":Color.from_hsv(rng.randf(),rng.randf_range(.15,.45),rng.randf_range(.55,1.0))})
 		if b.active or b.group in ["com","civ"]:
 			var era:=int(world.civ_by_id.get(b.owner,{}).get("age",world.econ.get("age",0) if b.owner==world.civ_id else 0))
-			routes.append({"a":a,"b":z,"tile":b.tile,"road":road_dir,"kind":2 if era>=1 and road_dir>=0 else 1,"phase":rng.randf()*2,"speed":rng.randf_range(.07,.11),"tint":Color(.83,.80,.72)})
+			routes.append({"a":a,"b":z,"tile":b.tile,"road":road_dir,"kind":2 if era>=1 and road_dir>=0 else 1,"phase":rng.randf()*2,"speed":rng.randf_range(.07,.11),"tint":[Color(.85,.85,.83),Color(.3,.33,.38),Color(.7,.25,.2),Color(.35,.45,.6),Color(.6,.62,.55)][rng.randi()%5]})
 		if routes.size()>=264: break
 
 func update(dt:float) -> void:
 	var budget:=composition.lod.budget("pedestrians",camera.size)
 	var vehicle_budget:=composition.lod.budget("vehicles",camera.size)
 	if budget==0 or camera.size>48:
-		for instance in [people,people_step,carts,cars]: instance.multimesh.visible_instance_count=0
+		for instance in [people,people_step,carts,cars,vans]: instance.multimesh.visible_instance_count=0
 		drawn=0; vehicles_drawn=0; return
 	if not world.paused: clock+=dt
 	elapsed+=dt
@@ -117,7 +108,7 @@ func update(dt:float) -> void:
 		if not nearby.has(tile): continue
 		if not occupied.has(tile): occupied[tile]=[]
 		occupied[tile].append(world.unit_position(int(unit.id)))
-	drawn=0; vehicles_drawn=0; var standing_count:=0; var stepping_count:=0; var cart_count:=0; var car_count:=0; actor_positions.clear()
+	drawn=0; vehicles_drawn=0; var standing_count:=0; var stepping_count:=0; var cart_count:=0; var car_count:=0; var van_count:=0; actor_positions.clear()
 	for route:Dictionary in routes:
 		if not world.is_visible(route.tile): continue
 		if route.road>=0 and (world.road[route.tile]>>(int(route.road)*4))&8: continue
@@ -141,8 +132,10 @@ func update(dt:float) -> void:
 			drawn+=1
 		elif route.kind==1:
 			carts.multimesh.set_instance_transform(cart_count,transform); carts.multimesh.set_instance_color(cart_count,route.tint); cart_count+=1; vehicles_drawn+=1
+		elif fposmod(float(route.phase),1.0)<.3 and van_count<32:
+			vans.multimesh.set_instance_transform(van_count,transform); vans.multimesh.set_instance_color(van_count,route.tint); van_count+=1; vehicles_drawn+=1
 		else:
 			cars.multimesh.set_instance_transform(car_count,transform); cars.multimesh.set_instance_color(car_count,route.tint); car_count+=1; vehicles_drawn+=1
 		actor_positions.append(transform.origin)
 	people.multimesh.visible_instance_count=standing_count; people_step.multimesh.visible_instance_count=stepping_count
-	carts.multimesh.visible_instance_count=cart_count; cars.multimesh.visible_instance_count=car_count
+	carts.multimesh.visible_instance_count=cart_count; cars.multimesh.visible_instance_count=car_count; vans.multimesh.visible_instance_count=van_count

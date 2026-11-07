@@ -68,11 +68,20 @@ func setup(w: WorldState) -> void:
 	territory=TerritoryField.new(); territory.setup(world,terrain_mat); add_child(territory)
 
 
+var world_key := ""
+
 func _on_welcome() -> void:
-	for c in chunks.values():
-		for m in c.inst + c.winst:
-			(m as Node).queue_free()
-	chunks.clear()
+	# Rejoining the same world (reload, reconnect) keeps the existing ground on screen until each
+	# chunk is rebuilt from the fresh geometry, so the map never drops out around the camera.
+	# A different world clears everything.
+	var key := "%s:%d:%d" % [world.match_id, world.grid.w if world.grid else 0, world.grid.h if world.grid else 0]
+	if key != world_key or world.match_id == "":
+		for c in chunks.values():
+			for m in c.inst + c.winst:
+				(m as Node).queue_free()
+		chunks.clear()
+	# (kept chunks are rebuilt when the full geometry arrives: apply_geo marks every chunk)
+	world_key = key
 	dirty.clear()
 	build_job.clear()
 	urban_mask=world.urban_bits.duplicate()
@@ -251,7 +260,7 @@ func _begin_chunk(cid: int) -> void:
 			var nb := g.nb[i * 6 + d]
 			if nb >= 0 and world.known[nb]:
 				colors[nb] = _tile_color(nb)
-	build_job = {"cid": cid, "revision": dirty[cid], "tiles": tiles, "next": 0, "vt": [], "nt": [], "ct": [], "ut": [], "water": MeshKit.new()}
+	build_job = {"cid": cid, "revision": dirty[cid], "tiles": tiles, "next": 0, "vt": [], "nt": [], "ct": [], "ut": [], "it": [], "water": MeshKit.new()}
 
 
 func _append_tile(i: int) -> void:
@@ -260,15 +269,12 @@ func _append_tile(i: int) -> void:
 	var nt: Array = build_job.nt
 	var ct: Array = build_job.ct
 	var ut: Array = build_job.ut
+	var it: Array = build_job.it
 	var c2 := g.center(i)
-	var c := Vector3(c2.x, world.height[i], c2.y)
 	var cn := Vector3.ZERO
-	var pc: Array[Vector3] = []
 	var pn: Array[Vector3] = []
 	var pcol: Array[Color] = []
 	for k in 6:
-		var o := g.corners[k]
-		pc.append(Vector3(c2.x + o.x, world.corner_height(i, k), c2.y + o.y))
 		var nk := _corner_normal(i, k)
 		pn.append(nk)
 		cn += nk
@@ -276,15 +282,37 @@ func _append_tile(i: int) -> void:
 	cn = cn.normalized()
 	var uv := Vector2(i % g.w, i / g.w)
 	var col := colors[i]
+	if world.visual_craters.has(i):
+		for k in 6:
+			var k2 := (k + 1) % 6
+			var a := Vector3(c2.x + g.corners[k].x, world.corner_height(i, k), c2.y + g.corners[k].y)
+			var b := Vector3(c2.x + g.corners[k2].x, world.corner_height(i, k2), c2.y + g.corners[k2].y)
+			_append_crater_triangle(i, Vector3(c2.x, world.height[i], c2.y), a, b, cn, pn[k], pn[k2], col, pcol[k], pcol[k2], uv)
+		_water_for(i, c2, build_job.water)
+		return
+	# Indexed, subdivided sectors (WorldState.SECTOR_UV): the centre, then per sector its corner A,
+	# edge midpoint M, inner corner point a and inner edge point m. B and b are the next sector's.
+	var base := vt.size()
+	vt.append(Vector3(c2.x, world.height[i], c2.y)); nt.append(cn); ct.append(col); ut.append(uv)
 	for k in 6:
 		var k2 := (k + 1) % 6
-		if world.visual_craters.has(i):
-			_append_crater_triangle(i,c,pc[k],pc[k2],cn,pn[k],pn[k2],col,pcol[k],pcol[k2],uv)
-			continue
-		vt.append(c); vt.append(pc[k]); vt.append(pc[k2])
-		nt.append(cn); nt.append(pn[k]); nt.append(pn[k2])
-		ct.append(col); ct.append(pcol[k]); ct.append(pcol[k2])
-		ut.append(uv); ut.append(uv); ut.append(uv)
+		var h := world.sector_heights(i, k)
+		var A := g.corners[k]; var B := g.corners[k2]
+		var M := (A + B) * 0.5
+		var nb := g.nb[i * 6 + posmod(1 - k, 6)]
+		var edge_col := (col + colors[nb]) * 0.5 if nb >= 0 and world.known[nb] else col
+		var nm := (pn[k] + pn[k2]).normalized()
+		vt.append(Vector3(c2.x + A.x, h[1], c2.y + A.y)); nt.append(pn[k]); ct.append(pcol[k]); ut.append(uv)
+		vt.append(Vector3(c2.x + M.x, h[3], c2.y + M.y)); nt.append(nm); ct.append(edge_col); ut.append(uv)
+		vt.append(Vector3(c2.x + A.x * .5, h[4], c2.y + A.y * .5)); nt.append((cn + pn[k]).normalized()); ct.append(col.lerp(pcol[k], .5)); ut.append(uv)
+		vt.append(Vector3(c2.x + M.x * .5, h[6], c2.y + M.y * .5)); nt.append((cn + nm).normalized()); ct.append(col.lerp(edge_col, .5)); ut.append(uv)
+	for k in 6:
+		var s := base + 1 + k * 4
+		var n := base + 1 + ((k + 1) % 6) * 4
+		# local indices: C, A, B, M, a, b, m
+		var index := [base, s, n, s + 1, s + 2, n + 2, s + 3]
+		for tri in WorldState.SECTOR_TRIS:
+			it.append(index[tri[0]]); it.append(index[tri[1]]); it.append(index[tri[2]])
 	_water_for(i, c2, build_job.water)
 
 
@@ -310,7 +338,9 @@ func _append_crater_vertex(tile:int,c:Vector3,a:Vector3,b:Vector3,nc:Vector3,na:
 	var step:=.015
 	var dx:float=(world.visual_crater_delta(tile,vertex.x+step,vertex.z)-world.visual_crater_delta(tile,vertex.x-step,vertex.z))/(2.0*step)
 	var dz:float=(world.visual_crater_delta(tile,vertex.x,vertex.z+step)-world.visual_crater_delta(tile,vertex.x,vertex.z-step))/(2.0*step)
-	vertex.y+=world.visual_crater_delta(tile,vertex.x,vertex.z)
+	# the same subdivided surface as everywhere else, plus the crater relief
+	vertex.y=world.ground_height(vertex.x,vertex.z)
+	(build_job.it as Array).append((build_job.vt as Array).size())
 	(build_job.vt as Array).append(vertex)
 	(build_job.nt as Array).append(Vector3(normal.x-dx*normal.y,normal.y,normal.z-dz*normal.y).normalized())
 	# vertex alpha carries the crater bowl (1 = level ground) so rain can pool in real hollows
@@ -337,6 +367,7 @@ func _commit_chunk() -> void:
 		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(build_job.nt)
 		arrays[Mesh.ARRAY_COLOR] = PackedColorArray(build_job.ct)
 		arrays[Mesh.ARRAY_TEX_UV2] = PackedVector2Array(build_job.ut)
+		arrays[Mesh.ARRAY_INDEX] = PackedInt32Array(build_job.it)
 		mesh = ArrayMesh.new()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		mesh.surface_set_material(0, terrain_mat)
@@ -540,10 +571,26 @@ void fragment() {
 			local.x-=round(local.x/period)*period;
 			int bits=int(route.g*255.0+.5);
 			float nearest=100.0;
+			int count=0; vec2 ends[2];
 			for (int d=0;d<6;d++) if ((bits & (1<<d))!=0) {
 				float angle=-float(d)*1.04719755; vec2 endpoint=vec2(cos(angle),sin(angle))*.8660254;
+				if (count<2) ends[count]=endpoint;
+				count++;
 				float along=clamp(dot(local,endpoint)/dot(endpoint,endpoint),0.0,1.0);
 				nearest=min(nearest,length(local-endpoint*along));
+			}
+			if (count==2) {
+				// a through trench follows one smooth curve between its two edges (TrenchPresentation)
+				nearest=100.0; vec2 previous=ends[0]; float at=0.0;
+				for (int k=1;k<=10;k++) {
+					float t=float(k)/10.0; vec2 q=ends[0]*(1.0-t)*(1.0-t)+ends[1]*t*t;
+					vec2 e=q-previous; float h=clamp(dot(local-previous,e)/max(dot(e,e),1e-6),0.0,1.0);
+					float l=length(local-previous-e*h);
+					if (l<nearest) { nearest=l; at=(float(k)-1.0+h)/10.0; }
+					previous=q;
+				}
+				// completed through trenches widen into a fire bay on some hexes (TrenchPresentation.bay)
+				if (route.r>.99 && (cell.x*7+cell.y*13)%3==0) nearest/=1.0+.6*smoothstep(.3,.4,at)*(1.0-smoothstep(.6,.7,at));
 			}
 			if (nearest<.043+.03*route.r) discard;
 		}

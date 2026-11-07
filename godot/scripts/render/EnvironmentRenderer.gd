@@ -432,16 +432,7 @@ func _broadleaf_model() -> ArrayMesh:
 
 
 func _road_clearance(tile:int,point:Vector2) -> float:
-	var encoded:=int(world.road[tile]); var center:=world.grid.center(tile)
-	var local:=Vector2(world.grid.dx_wrap(center.x,point.x),point.y-center.y)
-	var closest:=INF
-	for direction in 6:
-		var type: int=(encoded>>(direction*4))&7
-		if type<=0 or type>=InfrastructureRenderer.WIDTH.size(): continue
-		var end:Vector2=world.grid.dir_vec[direction]*(SQRT3*.5)
-		var projection:=end*clampf(local.dot(end)/end.length_squared(),0,1)
-		closest=minf(closest,local.distance_to(projection)-InfrastructureRenderer.WIDTH[type]*.5)
-	return closest
+	return InfrastructureRenderer.clearance(world,tile,point)
 
 
 func _build_props(cid: int) -> void:
@@ -503,11 +494,21 @@ func _build_props(cid: int) -> void:
 						var cr := crown.randf_range(0.30, 0.46)
 						canopy.set_frame(Vector3(cx2, world.ground_height(cx2, cz2) + 0.05, cz2), crown.randf() * TAU)
 						canopy.cylinder("foliage", Vector3.ZERO, cr, 0.02 + crown.randf() * 0.03, 9, quilt.darkened(crown.randf() * 0.1), cr * 0.86)
+			# Woodland structure: a stable glade in roughly one forest hex in seven (never at the
+			# forest edge), and species by altitude and climate: broadleaf mixes into low, warm
+			# forest; high ground and cold country stay coniferous and smaller.
+			var glade := Vector3.INF
+			if b == 4 and woodland_neighbours >= 5 and posmod(hash([world.world_seed, i, "glade"]), 7) == 0:
+				var ga := float(posmod(hash([i, "glade-a"]), 628)) / 100.0
+				glade = Vector3(c.x + cos(ga) * .25, 0, c.y + sin(ga) * .25); glade.y = .22 + float(posmod(hash([i, "glade-r"]), 12)) / 100.0
+			var altitude := world.height[i]
+			var broad_share := 0.0 if b == 6 or altitude > 1.6 else clampf(.45 - altitude * .25, 0.0, .45)
 			for k in n:
 				var a := rng.randf() * TAU
 				var d := sqrt(rng.randf()) * 0.82
 				var x := c.x + cos(a) * d
 				var z := c.y + sin(a) * d
+				if glade != Vector3.INF and Vector2(x - glade.x, z - glade.z).length() < glade.y: continue
 				if composition and not composition.sites.clear_of_water(i,[Vector2(x-.06,z-.06),Vector2(x+.06,z-.06),Vector2(x+.06,z+.06),Vector2(x-.06,z+.06)],.04): continue
 				var y := world.ground_height(x, z)
 				if y < 0.02:
@@ -528,8 +529,12 @@ func _build_props(cid: int) -> void:
 						if posmod(hash([i, k, "log"]), 2) == 0:
 							rocks.box("bark", Vector3(x + 0.05, y - 0.005, z), Vector3(0.12, 0.018, 0.018), Color(0.4, 0.34, 0.28), float(posmod(hash([i, k, "yaw"]), 628)) / 100.0)
 						continue
-				if b in (vegetation.get("conifer_biomes", [4, 6]) as Array): xforms.append(transform); cols.append(tint)
-				else: broad_xforms.append(transform); broad_cols.append(tint)
+				if altitude > 1.6 and b == 4: transform.basis = transform.basis.scaled(Vector3.ONE * .82)
+				var conifer: bool = b in (vegetation.get("conifer_biomes", [4, 6]) as Array) and float(posmod(hash([i, k, "species"]), 1000)) / 1000.0 >= broad_share
+				if conifer: xforms.append(transform); cols.append(tint)
+				else: broad_xforms.append(transform); broad_cols.append(tint.lerp(Color(.95, .9, .7), .08 if b == 4 else 0.0))
+			_undergrowth(rocks, i, c, b, woodland_neighbours, glade)
+			_river_banks(rocks, i)
 			_deposit(rocks, i, c, rng)
 			_derelict(rocks, i, c)
 	var rec: Dictionary = props.get(cid, {})
@@ -612,14 +617,95 @@ func _deposit(kit: MeshKit, i: int, c: Vector2, rng: RandomNumberGenerator) -> v
 			for k in 2:
 				var barrel := spot + Vector3(0.09 + k * 0.045, ground, 0.07 - k * 0.03)
 				kit.cylinder("steel", barrel, 0.017, 0.045, 8, Color(0.5, 0.36, 0.26) if k == 0 else Color(0.32, 0.38, 0.33))
-		2, 3, 4, 5:
-			var col: Color = {2: Color(0.85, 0.55, 0.42), 3: Color(0.35, 0.33, 0.32), 4: Color(0.7, 0.8, 0.85), 5: Color(1.25, 1.22, 1.15)}[dep]
-			var mat := "ore" if dep != 5 else "stone"
-			var spot := Vector2(rng.randf_range(-0.3, 0.3), rng.randf_range(-0.3, 0.3))
-			for k in 4:
-				var p := Vector3(spot.x + rng.randf_range(-0.16, 0.16), -0.02, spot.y + rng.randf_range(-0.16, 0.16))
-				var s := rng.randf_range(0.05, 0.1)
-				kit.box(mat, Vector3(p.x, world.ground_height(c.x + p.x, c.y + p.z) - y - 0.02, p.z), Vector3(s, s * rng.randf_range(0.6, 1.2), s * 0.8), col, rng.randf() * TAU)
+		2, 3:
+			# Iron: a rust-stained outcrop and weathered red scree. Coal: a dark layered seam
+			# exposed in a low cut bank with black spoil. Visible geology, not a banner.
+			var spot := Vector2(rng.randf_range(-0.25, 0.25), rng.randf_range(-0.25, 0.25))
+			var g0 := world.ground_height(c.x + spot.x, c.y + spot.y) - y
+			var yaw := rng.randf() * TAU
+			var frame := Transform3D(Basis(Vector3.UP, yaw), Vector3(spot.x, g0 - 0.02, spot.y))
+			var host := Color(.72, .68, .62) if dep == 3 else Color(.78, .6, .5)
+			kit.box("rock", frame * Vector3.ZERO, Vector3(.26, .09, .1), host, yaw)
+			for band in 3:
+				var seam := Color(.18, .17, .17) if dep == 3 else Color(.72, .36, .24)
+				kit.box("ore", frame * Vector3(0, .018 + band * .026, .051), Vector3(.24, .011 if dep == 3 else .008, .004), seam, yaw)
+			kit.box("rock", frame * Vector3(-.09, 0, -.05), Vector3(.1, .13, .09), host.darkened(.08), yaw + .4)
+			for k in 6:
+				var p := frame * Vector3(rng.randf_range(-.18, .18), 0, rng.randf_range(.06, .22))
+				var sz := rng.randf_range(.022, .05)
+				kit.box("ore", Vector3(p.x, world.ground_height(c.x + p.x, c.y + p.z) - y - .008, p.z), Vector3(sz, sz * .7, sz), Color(.25, .23, .22) if dep == 3 else Color(.8, .48, .34), rng.randf() * TAU)
+		4:
+			# Rare earths: pale altered rock with glinting mineral veins in a small pit.
+			var spot := Vector2(rng.randf_range(-0.25, 0.25), rng.randf_range(-0.25, 0.25))
+			for k in 5:
+				var p := Vector3(spot.x + rng.randf_range(-.14, .14), 0, spot.y + rng.randf_range(-.14, .14))
+				var sz := rng.randf_range(.05, .09)
+				var gy := world.ground_height(c.x + p.x, c.y + p.z) - y - .02
+				kit.box("rock", Vector3(p.x, gy, p.z), Vector3(sz, sz * rng.randf_range(.6, 1.1), sz * .8), Color(.86, .86, .82), rng.randf() * TAU)
+				kit.box("glass", Vector3(p.x, gy + sz * .5, p.z), Vector3(sz * .8, .006, .01), Color(.6, .85, .95), rng.randf() * TAU)
+		5:
+			# Stone: a pale exposed bedrock shelf and scattered boulders.
+			var spot := Vector2(rng.randf_range(-0.25, 0.25), rng.randf_range(-0.25, 0.25))
+			var gy := world.ground_height(c.x + spot.x, c.y + spot.y) - y
+			kit.box("rock", Vector3(spot.x, gy - .03, spot.y), Vector3(.3, .07, .2), Color(1.18, 1.15, 1.08), rng.randf() * TAU)
+			for k in 6:
+				var p := Vector3(spot.x + rng.randf_range(-.28, .28), 0, spot.y + rng.randf_range(-.28, .28))
+				var sz := rng.randf_range(.03, .07)
+				kit.box("stone", Vector3(p.x, world.ground_height(c.x + p.x, c.y + p.z) - y - .01, p.z), Vector3(sz, sz * .8, sz), Color(1.2, 1.17, 1.1), rng.randf() * TAU)
+
+
+## Forest floor and edges: low shrubs along woodland edges and in glades, fallen deadwood inside
+## dense forest, and sedge tussocks in marsh. Decoration only; never on roads, water or sites.
+func _undergrowth(kit: MeshKit, i: int, c: Vector2, b: int, woodland_neighbours: int, glade: Vector3) -> void:
+	if not b in [2, 4, 7, 8] or world.road[i] != 0 or work_tiles.has(i): return
+	var rng := RandomNumberGenerator.new(); rng.seed = hash([world.world_seed, i, "undergrowth"])
+	var count := 0
+	if b == 4: count = 2 + (6 - woodland_neighbours) + (4 if glade != Vector3.INF else 0)
+	elif b == 7: count = 6
+	elif rng.randf() < .3: count = 2
+	kit.set_frame(Vector3.ZERO, 0.0)
+	for k in count:
+		var p := c + Vector2.from_angle(rng.randf() * TAU) * sqrt(rng.randf()) * .8
+		if glade != Vector3.INF and k >= count - 4: p = Vector2(glade.x, glade.z) + Vector2.from_angle(rng.randf() * TAU) * glade.y * rng.randf_range(.6, 1.0)
+		if world.grid.tile_at(p.x, p.y) != i: continue
+		if composition and not composition.sites.clear_of_water(i, [p + Vector2(-.03, -.03), p + Vector2(.03, -.03), p + Vector2(.03, .03), p + Vector2(-.03, .03)], .02): continue
+		var gy := world.ground_height(p.x, p.y)
+		if gy < .02: continue
+		if b == 7:
+			for blade in 3: kit.cone("foliage", Vector3(p.x + (blade - 1) * .01, gy, p.y), .012, .05 + rng.randf() * .03, 4, Color(.78, .82, .5))
+		else:
+			var r := rng.randf_range(.025, .045)
+			kit.cylinder("foliage", Vector3(p.x, gy - .005, p.y), r, r * .9, 7, Color(.62, .74, .5).darkened(rng.randf() * .2), r * .55)
+	if b == 4 and woodland_neighbours >= 4:
+		var p := c + Vector2.from_angle(rng.randf() * TAU) * .4
+		kit.box("bark", Vector3(p.x, world.ground_height(p.x, p.y) - .004, p.y), Vector3(.14, .016, .016), Color(.5, .42, .34), rng.randf() * TAU)
+
+
+## River banks: reeds along slow lowland reaches and water-worn stones on upland reaches, set
+## just beyond the actual channel edge. Presentation only; no crossing is implied.
+func _river_banks(kit: MeshKit, i: int) -> void:
+	if not world.is_river(i) or world.road[i] != 0 or work_tiles.has(i): return
+	var upland := world.biome(i) in [8, 9, 6] or world.height[i] > 1.4
+	var rng := RandomNumberGenerator.new(); rng.seed = hash([world.world_seed, i, "banks"])
+	kit.set_frame(Vector3.ZERO, 0.0)
+	for segment in RiverGeometry.segments(world, i):
+		var a: Vector2 = segment.a; var b: Vector2 = segment.b
+		b.x = a.x + world.grid.dx_wrap(a.x, b.x)
+		var along := b - a; var length := along.length()
+		if length < .05: continue
+		var side := Vector2(-along.y, along.x) / length
+		for k in 3:
+			var t := rng.randf_range(.1, .9)
+			var s := 1.0 if rng.randf() < .5 else -1.0
+			var p := a.lerp(b, t) + side * s * (float(segment.width) + rng.randf_range(.02, .06))
+			if world.grid.tile_at(p.x, p.y) < 0: continue
+			var gy := world.ground_height(p.x, p.y)
+			if upland:
+				var sz := rng.randf_range(.018, .035)
+				kit.box("rock", Vector3(p.x, gy - .008, p.y), Vector3(sz, sz * .6, sz * .8), Color(.86, .84, .8), rng.randf() * TAU)
+			else:
+				for blade in 4:
+					kit.cone("foliage", Vector3(p.x + rng.randf_range(-.015, .015), gy - .004, p.y + rng.randf_range(-.015, .015)), .007, .055 + rng.randf() * .035, 4, Color(.82, .84, .52))
 
 
 ## A rusted, wheel-less car hulk from before the collapse (decorative scenery only).

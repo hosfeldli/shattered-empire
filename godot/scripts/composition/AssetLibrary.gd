@@ -10,6 +10,24 @@ static func residential(variant: int) -> Array:
 	return _load_component("res://assets/buildings/residential_%d.glb" % posmod(variant, 3))
 
 
+## A reusable modern component by stable id (assets/components/<id>.glb, authored from
+## ComponentKit). A missing asset falls back to the source definition so nothing disappears.
+static func component(id:String) -> Array:
+	var path:="res://assets/components/%s.glb"%id
+	if _cache.has(path): return _cache[path]
+	if ResourceLoader.exists(path): return _load_component(path)
+	var kit:=ComponentKit.build(id)
+	var merged:=[]
+	for material in kit.parts:
+		var part:Array=kit.parts[material]
+		var arrays:=[]; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX]=PackedVector3Array(part[0]); arrays[Mesh.ARRAY_NORMAL]=PackedVector3Array(part[1])
+		arrays[Mesh.ARRAY_TEX_UV]=PackedVector2Array(part[3])
+		merged.append({"material":material,"arrays":arrays,"transform":Transform3D.IDENTITY})
+	_cache[path]=merged
+	return merged
+
+
 static func unit_component(name:String) -> Array:
 	return _load_component("res://assets/units/%s.glb"%name)
 

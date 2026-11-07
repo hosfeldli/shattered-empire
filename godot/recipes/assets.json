@@ -1,0 +1,318 @@
+{
+  "schema": 1,
+  "notes": "Reusable modern post-collapse components. Units: hex radius (1 \u2248 25 m, stylized realism). Pivot: centre of the base; +Y up; front faces +Z. Source: scripts/composition/ComponentKit.gd; exported by tools/build_components.gd to assets/components/<id>.glb. Material slot names are MaterialLibrary keys.",
+  "components": {
+    "container": {
+      "path": "res://assets/components/container.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "depot",
+        "salvage (yards)",
+        "market",
+        "industrial compounds",
+        "port"
+      ]
+    },
+    "storage_tank": {
+      "path": "res://assets/components/storage_tank.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "refinery"
+      ]
+    },
+    "chimney_stack": {
+      "path": "res://assets/components/chimney_stack.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "power_plant"
+      ]
+    },
+    "cooling_tower": {
+      "path": "res://assets/components/cooling_tower.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "power_plant"
+      ]
+    },
+    "pipe_rack": {
+      "path": "res://assets/components/pipe_rack.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "steel_mill",
+        "refinery",
+        "power_plant"
+      ]
+    },
+    "rooftop_hvac": {
+      "path": "res://assets/components/rooftop_hvac.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "steel_mill",
+        "munitions_plant",
+        "motor_works",
+        "robotics_complex"
+      ]
+    },
+    "water_tank": {
+      "path": "res://assets/components/water_tank.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": []
+    },
+    "solar_array": {
+      "path": "res://assets/components/solar_array.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town",
+        "electronics_plant"
+      ]
+    },
+    "satellite_dish": {
+      "path": "res://assets/components/satellite_dish.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town (Megacity)",
+        "electronics_plant",
+        "comms_tower"
+      ]
+    },
+    "radar": {
+      "path": "res://assets/components/radar.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "drone_works"
+      ]
+    },
+    "streetlight": {
+      "path": "res://assets/components/streetlight.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town (Metropolis)",
+        "housing streets"
+      ]
+    },
+    "fence_panel": {
+      "path": "res://assets/components/fence_panel.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "industrial compounds",
+        "munitions_plant",
+        "comms_tower"
+      ]
+    },
+    "gantry_crane": {
+      "path": "res://assets/components/gantry_crane.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "port (ashore, sandbox)"
+      ]
+    },
+    "tower_crane": {
+      "path": "res://assets/components/tower_crane.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "construction sites (tall buildings)"
+      ]
+    },
+    "conveyor": {
+      "path": "res://assets/components/conveyor.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "lumber",
+        "mine",
+        "quarry"
+      ]
+    },
+    "headframe": {
+      "path": "res://assets/components/headframe.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "mine (iron, coal)"
+      ]
+    },
+    "excavator": {
+      "path": "res://assets/components/excavator.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "construction",
+        "lumber",
+        "quarry"
+      ]
+    },
+    "bulldozer": {
+      "path": "res://assets/components/bulldozer.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "construction (site preparation)"
+      ]
+    },
+    "parked_car": {
+      "path": "res://assets/components/parked_car.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town",
+        "housing",
+        "housing streets"
+      ]
+    },
+    "van": {
+      "path": "res://assets/components/van.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "motor_works"
+      ]
+    },
+    "cargo_truck": {
+      "path": "res://assets/components/cargo_truck.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "mine",
+        "quarry",
+        "depot",
+        "heavy_assembly"
+      ]
+    },
+    "tractor": {
+      "path": "res://assets/components/tractor.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "farm"
+      ]
+    },
+    "silo": {
+      "path": "res://assets/components/silo.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "farm",
+        "mine"
+      ]
+    },
+    "greenhouse": {
+      "path": "res://assets/components/greenhouse.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "farm (level 3)"
+      ]
+    },
+    "hay_bales": {
+      "path": "res://assets/components/hay_bales.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "farm"
+      ]
+    },
+    "center_pivot": {
+      "path": "res://assets/components/center_pivot.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "farm (fields)"
+      ]
+    },
+    "log_pile": {
+      "path": "res://assets/components/log_pile.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "lumber"
+      ]
+    },
+    "office_low": {
+      "path": "res://assets/components/office_low.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town"
+      ]
+    },
+    "office_tall": {
+      "path": "res://assets/components/office_tall.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town (Metropolis, Megacity)"
+      ]
+    },
+    "apartment_block": {
+      "path": "res://assets/components/apartment_block.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town (City)",
+        "house (level 2)"
+      ]
+    },
+    "apartment_tall": {
+      "path": "res://assets/components/apartment_tall.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town (Metropolis)",
+        "house (level 3)"
+      ]
+    },
+    "shop_row": {
+      "path": "res://assets/components/shop_row.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": []
+    },
+    "pallet_stack": {
+      "path": "res://assets/components/pallet_stack.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "construction",
+        "depot",
+        "industrial yards"
+      ]
+    },
+    "wind_turbine": {
+      "path": "res://assets/components/wind_turbine.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": []
+    },
+    "transformer": {
+      "path": "res://assets/components/transformer.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "power_plant",
+        "comms_tower"
+      ]
+    },
+    "bus_shelter": {
+      "path": "res://assets/components/bus_shelter.glb",
+      "pivot": "base-centre",
+      "front": "+Z",
+      "used_by": [
+        "town"
+      ]
+    }
+  }
+}

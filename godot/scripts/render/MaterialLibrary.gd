@@ -25,6 +25,9 @@ const SPECS := {
 	"gravel": {"c": Color(0.55, 0.53, 0.50), "r": 1.0, "s": 4.0},
 	"rubble": {"c": Color(0.52, 0.50, 0.47), "r": 1.0, "s": 4.0},
 	"soil": {"c": Color(0.48, 0.38, 0.27), "r": 1.0, "s": 3.0},
+	"skin": {"c": Color(0.74, 0.57, 0.46), "r": 0.75},
+	"mud": {"c": Color(0.36, 0.29, 0.22), "r": 0.7, "s": 3.0},
+	"composite": {"c": Color(0.78, 0.8, 0.82), "r": 0.45, "m": 0.05, "s": 3.0, "w": 0.3},
 	"sand": {"c": Color(0.76, 0.67, 0.50), "r": 1.0, "s": 3.0},
 	"snow": {"c": Color(0.90, 0.92, 0.95), "r": 0.6, "s": 2.0},
 	"crop": {"c": Color(0.62, 0.62, 0.32), "r": 0.95},
@@ -69,7 +72,9 @@ static func get_mat(key: String) -> Material:
 		if ResourceLoader.exists(path+"roughness."+extension): m.set_shader_parameter("roughness_map",load(path+"roughness."+extension))
 		m.set_shader_parameter("normal_strength",.45)
 		m.set_shader_parameter("texture_normalize",2.0 if texture_key=="painted_metal" else 1.0)
-		m.set_shader_parameter("texture_mix",.55 if texture_key in ["steel","canvas"] else .85)
+		# military paint keeps its olive drab: the painted-metal map adds only wear, not its own colour
+		m.set_shader_parameter("texture_mix",.3 if key=="olive" else .55 if texture_key in ["steel","canvas"] else .85)
+		if key=="olive": m.set_shader_parameter("texture_normalize",1.0)
 	if _wet_texture:
 		m.set_shader_parameter("wet_map",_wet_texture)
 		m.set_shader_parameter("weather_extent",_weather_extent)

@@ -81,6 +81,9 @@ var buildings_version := 0
 var cities := {}
 var ruins: Array = []
 var traffic: Array = []
+var bridge_condition := {}    # "a:b" (a < b) -> condition 0..100 for crossings in sight
+var bridges_version := 0
+var road_works: Array = []    # own road projects being built: [[a, b, percent], ...]
 var bf := {}
 var bf_version := 0
 var battlefield_terrain_version := 0
@@ -157,7 +160,7 @@ func _clear_map() -> void:
 	res = PackedByteArray(); res.resize(n)
 	vis_bits = PackedByteArray(); vis_bits.resize(n / 8)
 	urban_bits = PackedByteArray(); urban_bits.resize(n / 8)
-	units.clear(); snaps.clear(); buildings.clear(); cities.clear(); ruins = []; traffic = []; bf = {}; fw = []; visual_craters.clear(); visual_impacts.clear(); battlefield_terrain_version+=1
+	units.clear(); snaps.clear(); buildings.clear(); cities.clear(); ruins = []; traffic = []; bridge_condition = {}; road_works = []; bf = {}; fw = []; visual_craters.clear(); visual_impacts.clear(); battlefield_terrain_version+=1
 	buildings_version += 1
 	bf_version += 1
 	fw_version += 1
@@ -286,6 +289,14 @@ func _apply_econ(m: Dictionary) -> void:
 	cities = cl
 	ruins = m.get("ruins", [])
 	traffic = m.get("traffic", [])
+	var conditions := {}
+	for record in m.get("bridges", []):
+		conditions["%d:%d" % [mini(int(record[0]), int(record[1])), maxi(int(record[0]), int(record[1]))]] = int(record[3])
+	var works := []
+	for project in (econ.get("roads", []) if econ is Dictionary else []):
+		if project.has("seg"): works.append([int(project.seg[0]), int(project.seg[1]), int(project.get("prog", 0)), bool(project.get("bridge", false))])
+	if conditions != bridge_condition or works != road_works:
+		bridge_condition = conditions; road_works = works; bridges_version += 1
 	if m.has("bf"):
 		if bf != m.bf:
 			bf = m.bf
@@ -472,6 +483,40 @@ func corner_height(i: int, k: int) -> float:
 	return result
 
 
+## Each hex sector (centre C toward corners k and k+1) is subdivided so the land is continuous and
+## massed rather than one pyramid per hex: the shared edge midpoint M carries the mean of the two
+## hexes that meet there (adjacent mountains form one ridge instead of separate cones), and an
+## inner ring (a, m, b) bulges convex hills and peaks into rounded mass. Points are (u, v) toward
+## corners A (k) and B (k+1): C, A, B, M, a, b, m. The mesh and every height query use exactly the
+## same six triangles, so buildings, roads, trees and units sit on the drawn ground.
+const SECTOR_UV := [Vector2(0,0),Vector2(1,0),Vector2(0,1),Vector2(.5,.5),Vector2(.5,0),Vector2(0,.5),Vector2(.25,.25)]
+const SECTOR_TRIS := [[0,4,6],[0,6,5],[4,1,3],[4,3,6],[5,3,2],[5,6,3]]
+
+
+## height at the midpoint of the edge between corners k and k+1 (shared with the neighbour there)
+func edge_height(i: int, k: int) -> float:
+	var nb := grid.nb[i * 6 + posmod(1 - k, 6)]
+	if nb < 0 or not known[nb]: return height[i]
+	var result := (height[i] + height[nb]) * 0.5
+	if is_lake(i) and is_lake(nb): result = minf(result, water_level(i) - .035)
+	return result
+
+
+## an inner-ring point between the centre (c) and an outer point (x) of hex i
+func _inner(i: int, c: float, x: float) -> float:
+	if c <= x or is_sea(i) or is_lake(i) or is_river(i): return (c + x) * 0.5
+	return x + (c - x) * 0.68
+
+
+## the seven sector heights in SECTOR_UV order
+func sector_heights(i: int, k: int) -> PackedFloat32Array:
+	var c := height[i]
+	var a := corner_height(i, k)
+	var b := corner_height(i, (k + 1) % 6)
+	var m := edge_height(i, k)
+	return PackedFloat32Array([c, a, b, m, _inner(i, c, a), _inner(i, c, b), _inner(i, c, m)])
+
+
 ## ground height under (x, z) in any image: the same triangles the terrain mesh is built from
 func ground_height(x: float, z: float) -> float:
 	var t := grid.tile_at(x, z)
@@ -480,8 +525,8 @@ func ground_height(x: float, z: float) -> float:
 	var c := grid.center(t)
 	var dx := grid.dx_wrap(c.x, x)
 	var dz := z - c.y
-	var a := rad_to_deg(atan2(dz, dx))
-	var k := posmod(int(floor((a + 90.0) / 60.0)), 6)
+	var angle := rad_to_deg(atan2(dz, dx))
+	var k := posmod(int(floor((angle + 90.0) / 60.0)), 6)
 	var k2 := (k + 1) % 6
 	var A := grid.corners[k]
 	var B := grid.corners[k2]
@@ -490,7 +535,23 @@ func ground_height(x: float, z: float) -> float:
 		return height[t]
 	var u := (dx * B.y - dz * B.x) / det
 	var v := (A.x * dz - A.y * dx) / det
-	return (1.0 - u - v) * height[t] + u * corner_height(t, k) + v * corner_height(t, k2) + visual_crater_delta(t,x,z)
+	return sector_point(t, k, u, v) + visual_crater_delta(t, x, z)
+
+
+## interpolated height inside sector k at (u, v); matches the subdivided terrain mesh exactly
+func sector_point(t: int, k: int, u: float, v: float) -> float:
+	var h := sector_heights(t, k)
+	var tri: Array
+	if u + v <= .5: tri = SECTOR_TRIS[0] if u >= v else SECTOR_TRIS[1]
+	elif u >= v: tri = SECTOR_TRIS[2] if u >= .5 else SECTOR_TRIS[3]
+	else: tri = SECTOR_TRIS[4] if v >= .5 else SECTOR_TRIS[5]
+	var p0: Vector2 = SECTOR_UV[tri[0]]; var p1: Vector2 = SECTOR_UV[tri[1]]; var p2: Vector2 = SECTOR_UV[tri[2]]
+	var e1 := p1 - p0; var e2 := p2 - p0; var q := Vector2(u, v) - p0
+	var d := e1.x * e2.y - e1.y * e2.x
+	if absf(d) < 1e-9: return h[tri[0]]
+	var s := (q.x * e2.y - q.y * e2.x) / d
+	var r := (e1.x * q.y - e1.y * q.x) / d
+	return h[tri[0]] * (1.0 - s - r) + h[tri[1]] * s + h[tri[2]] * r
 
 
 ## Crater relief from the server's recorded impacts (class, stable local position, severity);
@@ -562,7 +623,10 @@ func _refresh_visual_craters() -> void:
 		if not next.has(tile) or next[tile]!=visual_craters[tile] or str(impacts.get(tile,[]))!=str(visual_impacts.get(tile,[])): changes.append(int(tile))
 	for tile in next:
 		if not visual_craters.has(tile): changes.append(int(tile))
-	if changes.is_empty(): return
+	if changes.is_empty():
+		# impacts on built hexes still matter for where buildings show their damage
+		if impacts.size()!=visual_impacts.size() or str(impacts)!=str(visual_impacts): visual_impacts=impacts
+		return
 	visual_craters=next; visual_impacts=impacts; battlefield_terrain_version+=1
 	battlefield_terrain_changed.emit(changes)
 

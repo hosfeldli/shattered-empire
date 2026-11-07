@@ -130,11 +130,20 @@ function unitStrength(g, u) {
   return a;
 }
 
+export const ARTILLERY_SETUP = 6;      // seconds stationary before indirect fire (native-v4)
+export function artilleryReady(g, u, def = UNITS[u.type], wpn = WEAPONS[UNIT_WEAPON[u.type] || 'carbine']) {
+  if (!timedWorks(g) || def.cat !== 'artillery' || !wpn?.arc || def.air) return true;
+  return u.next < 0 && g.time - (u.movedAt ?? -1e9) >= ARTILLERY_SETUP;
+}
+
 export function fireUnit(g, u, tg, tt) {
   const def = UNITS[u.type];
   const wk = UNIT_WEAPON[u.type] || 'carbine', wpn = WEAPONS[wk];
   if (u.air && def.ammo && u.air.ammo <= 0) return false;          // aircraft carry finite ammunition per sortie
   if (u.grounded) return false;
+  // native-v4: indirect-fire guns and mortars must halt and set up (spades, baseplate, laying)
+  // before they can fire; a battery on the move cannot shoot.
+  if (!artilleryReady(g, u, def, wpn)) return false;
   const lof = lineOfFire(g, u.tile, tt, !!wpn.arc, !!def.air || (tg.kind === 'unit' && !!UNITS[g.units.get(tg.id)?.type]?.air));
   if (!lof.ok) return false;
   const strength = unitStrength(g, u);

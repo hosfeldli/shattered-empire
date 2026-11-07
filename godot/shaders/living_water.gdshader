@@ -98,7 +98,7 @@ void fragment() {
     vec4 scene=INV_PROJECTION_MATRIX*vec4(SCREEN_UV*2.0-1.0,depth,1.0);
     float thickness=max(0.0,-scene.z/scene.w+VERTEX.z);
     float shore=1.0-smoothstep(.025,.19,thickness);
-    float foam=shore*(1.0-step(.75,data.b))*smoothstep(.8,.97,ripples)*.018;
+    float foam=shore*(1.0-step(.75,data.b))*smoothstep(.8,.97,ripples)*.032;
     float river=step(.75,data.b);
     // Sky reflection: the ripple normal tilts the reflected ray between the zenith and the
     // horizon; drifting clouds reflect as soft lighter patches. Strength stays modest so the

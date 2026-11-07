@@ -196,6 +196,9 @@ static func _mast(k: MeshKit, tint: Color) -> void:
 	for i in 2:
 		k.cylinder("steel", Vector3(.05 - i * .1, .7 - i * .15, .05), .04, .012, 10, Color(.92, .92, .9))
 	k.box("glow:ff5a3a", Vector3(0, .9, 0), Vector3(.02, .02, .02))
+	k.part("satellite_dish", Vector3(-.2, 0, .14), .8, 1.1, tint)
+	k.part("transformer", Vector3(.2, 0, -.15), 0.0, 1.0)
+	k.part("fence_panel", Vector3(.0, 0, .3), 0.0, 1.4)
 
 
 ## A modern working harbour: concrete quay and pier toward the water side (+x), a gantry crane

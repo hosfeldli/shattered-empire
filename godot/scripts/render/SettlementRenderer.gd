@@ -23,6 +23,7 @@ var refresh_pending := {}
 var retiring: Array = []     # old district batches stay visible until all replacements are ready
 var home_sites:={}
 var site_records:={}
+var last_preview_site:={}   # the planned footprint of the latest placement preview
 var _next_generation := 0
 var selected_building := -1
 var select_mark: MeshInstance3D
@@ -327,7 +328,8 @@ func _structure_signature(list: Array) -> String:
 	var parts := PackedStringArray()
 	for b in list:
 		# Damage stages alter the static tint, but progress, fire and activity never rebuild this mesh.
-		parts.append("%d:%s:%d:%d:%s:%d:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), _damage_band(int(b.get("hp",100))), int(b.get("ti", 0)), int(b.get("a", 0)) if str(b.ty) == "oil_well" else 0])
+		var remembered := ":m" if int(b.get("mem", 0)) == 1 else ""
+		parts.append(remembered + "%d:%s:%d:%d:%s:%d:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), _damage_band(int(b.get("hp",100))), int(b.get("ti", 0)), int(b.get("a", 0)) if str(b.ty) == "oil_well" else 0])
 	return "|".join(parts)
 
 
@@ -335,7 +337,8 @@ func _progress_signature(list: Array) -> String:
 	var parts := PackedStringArray()
 	for b in list:
 		var works:Array=b.get("wk",[])
-		parts.append("%d:%d:%d:%d:%s" % [int(b.id), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0)), ("%s%d" % [works[0], int(works[1]) / 10]) if works.size() >= 2 else ""])
+		var crew := "w" if b.get("qw") != null else "c" if float(b.get("cr", 0)) > 0.0 else "-"
+		parts.append(crew + "%d:%d:%d:%d:%s" % [int(b.id), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0)), ("%s%d" % [works[0], int(works[1]) / 10]) if works.size() >= 2 else ""])
 	return "|".join(parts)
 
 
@@ -453,6 +456,28 @@ func _append_building(b: Dictionary, job: Dictionary, skip_model := false) -> vo
 				var lc2 := Vector3(lc.x + g.dx_wrap(c2.x, c3.x), world.tile_height(nb), c3.y)
 				kit.set_frame(Vector3.ZERO, 0.0)
 				_connect(kit, group, lc, lc2, b, by_tile[nb])
+	if group == "ind" and int(b.get("d", 0)) == 1:
+		_compound_fence(kit, b, lc, by_tile)
+
+
+## An industrial compound is fenced on its outer boundary only (shared yards stay open), with a
+## gate gap wherever a real road leaves the compound. Cosmetic; no collision or route.
+func _compound_fence(kit: MeshKit, b: Dictionary, lc: Vector3, by_tile: Dictionary) -> void:
+	var g := world.grid
+	var t := int(b.t)
+	kit.set_frame(Vector3.ZERO, 0.0)
+	for d in 6:
+		var nb := g.nb[t * 6 + d]
+		if by_tile.has(nb) or ((world.road[t] >> (d * 4)) & 7) != 0: continue
+		if nb >= 0 and (world.is_river(nb) or world.is_sea(nb) or world.is_lake(nb)): continue
+		var k := posmod(1 - d, 6)
+		var a2: Vector2 = Vector2(lc.x, lc.z) + g.corners[k] * .9
+		var b2: Vector2 = Vector2(lc.x, lc.z) + g.corners[(k + 1) % 6] * .9
+		var yaw := atan2(-(b2.y - a2.y), b2.x - a2.x)
+		for part in 4:
+			var p := a2.lerp(b2, (part + .5) / 4.0)
+			if not composition.sites.clear_of_water(t, [p + Vector2(-.02, -.02), p + Vector2(.02, -.02), p + Vector2(.02, .02), p + Vector2(-.02, .02)], .02): continue
+			kit.part("fence_panel", Vector3(p.x, world.ground_height(p.x, p.y) - .002, p.y), yaw, 1.08)
 
 
 ## Frequently changing progress, fire and activity stay out of the district mesh. Construction and
@@ -540,6 +565,10 @@ func _tint(b: Dictionary) -> Color:
 	var c := Color.WHITE
 	if st == "damaged" or hp < 50:
 		c = Color(0.62, 0.58, 0.55)
+	# Remembered foreign structures (out of sight) are a frozen record: drawn as last seen, in a
+	# cool desaturated tone so they never read as live, current information.
+	if int(b.get("mem", 0)) == 1:
+		c = c * Color(0.7, 0.75, 0.82)
 	return c
 
 
@@ -573,6 +602,7 @@ func preview_mesh(type:String,tile:int,adjacency:=true,level:=1,tier:=0,hp:=100,
 			if direction in [0,4,5]: _connect(kit,group,a,b,record,other)
 			else: _connect(kit,group,b,a,other,record)
 	# Temporary records are render-only and never enter the authoritative graph or picking map.
+	last_preview_site=site_records.get(record.id,{})
 	home_sites.erase(record.id); site_records.erase(record.id)
 	return kit.commit() if not kit.is_empty() else null
 
@@ -676,15 +706,33 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 	var rng := composition.identities.rng_for(edge, "connection." + group, 1, "layout")
 	match group:
 		"res":
-			# a terrace of row houses straddling the shared edge, facing the street
+			# A local residential street along the shared parcel edge (decorative paving, never a
+			# route), sidewalks and streetlights, with a terrace of attached homes under one shared
+			# roofline facing it and cars parked at the kerb. Both buildings keep their own IDs.
 			var walls := _wall_mat(rng)
-			var n := 3
-			for k in n:
-				var off := (k - (n - 1) * 0.5) * 0.17
-				var p := mid + across * off
-				var ground:=world.ground_height(p.x,p.z)+.016
-				kit.box(walls, Vector3(p.x, ground, p.z), Vector3(0.26, 0.17 + 0.05 * int(ba.get("lv", 1)), 0.15), Color(1, 1, 1).darkened(rng.randf() * 0.12), yaw)
-				kit.gable(_roof_mat(rng), Vector3(p.x, ground + 0.17 + 0.05 * int(ba.get("lv", 1)), p.z), 0.15, 0.26, 0.08, Color(1, 1, 1), yaw + PI * 0.5)
+			var level := int(mini(int(ba.get("lv", 1)), int(bb.get("lv", 1))))
+			var s0 := mid - across * .42; var s1 := mid + across * .42
+			_ground_path(kit, s0, s1, .1, "asphalt", Color(.9, .9, .9))
+			for side in [-1.0, 1.0]:
+				_ground_path(kit, s0 + along * .065 * side, s1 + along * .065 * side, .025, "paving", Color(1.05, 1.03, 1.0))
+			var row := mid - along * .15
+			var ground := minf(world.ground_height(row.x - across.x * .25, row.z - across.z * .25), world.ground_height(row.x + across.x * .25, row.z + across.z * .25)) + .012
+			var height := .14 + .05 * level
+			var tone := Color(1, 1, 1).darkened(rng.randf() * .1)
+			kit.box(walls, Vector3(row.x, ground, row.z), Vector3(.13, height, .5), tone, yaw)
+			kit.gable(_roof_mat(rng), Vector3(row.x, ground + height, row.z), .13, .5, .06, Color.WHITE, yaw, .02)
+			var face := row + along * .066
+			for k in 4:
+				var p := face + across * ((k - 1.5) * .12)
+				kit.box("timber", Vector3(p.x, ground, p.z), Vector3(.003, .06, .03), Color(.6, .45, .35), yaw)
+				for floor_ in level:
+					kit.box("glass", Vector3(p.x, ground + .085 + floor_ * .05, p.z) + across * .03, Vector3(.003, .03, .03), Color.WHITE, yaw)
+			for k in 2:
+				var car := mid + along * .035 + across * (-.2 + k * .38)
+				kit.part("parked_car", Vector3(car.x, world.ground_height(car.x, car.z) + .016, car.z), yaw + PI * .5, 1.0, Color(.55, .6, .7).darkened(rng.randf() * .45).lerp(Color(.7, .3, .25), float(k) * rng.randf() * .6))
+			for side in [-1.0, 1.0]:
+				var lamp: Vector3 = mid + along * .09 + across * .3 * side
+				kit.part("streetlight", Vector3(lamp.x, world.ground_height(lamp.x, lamp.z) + .016, lamp.z), yaw + PI * .5, 1.0)
 		"ind":
 			# a pipe run on trestles and a rail spur between the plants
 			# A low, slim, galvanised utility pipe rack running only between the two plants'
@@ -703,9 +751,15 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 					var g2 := world.ground_height(p.x, p.z)
 					kit.box("steel", Vector3(p.x, g2, p.z), Vector3(0.012, 0.1, 0.012), Color(1.3, 1.3, 1.25))
 					kit.box("steel", Vector3(p.x, g2 + 0.08, p.z), Vector3(0.012, 0.012, 0.06), Color(1.3, 1.3, 1.25), yaw + PI * 0.5)
+			if int(ba.get("a", 0)) == 1 and int(bb.get("a", 0)) == 1:
+				var yard := mid - across * 0.16
+				var gy := world.ground_height(yard.x, yard.z) + .016
+				kit.part("container", Vector3(yard.x, gy, yard.z), yaw, 1.0, [Color(.7, .3, .25), Color(.3, .45, .6), Color(.55, .6, .4)][rng.randi() % 3])
+				kit.part("pallet_stack", Vector3(yard.x, gy, yard.z) + along * .14, yaw, 1.0)
 		"civ":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
-			_ground_path(kit,a,b,.4,"paving",Color(.95,.94,.9))
+			_ground_path(kit,a,b,.5,"grass",Color(1.05,1.1,1.0))
+			_ground_path(kit,a,b,.12,"paving",Color(.95,.94,.9))
 			for s in [-1.0, 1.0]:
 				var p: Vector3 = mid + across * (0.3 * s)
 				kit.cylinder("bark", Vector3(p.x, y, p.z), 0.015, 0.1, 5)
@@ -725,7 +779,8 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
 			_ground_path(kit,a,b,.16,"soil",Color(.9,.85,.78))
 		"farm":
-			pass
+			# a farm track joining the estate's fields; no hedge between them (one estate)
+			_ground_path(kit, a, b, .05, "soil", Color(.95, .86, .72))
 
 
 # ------------------------------------------------------------------ buildings
@@ -795,13 +850,11 @@ func _compose_house_part(kit: MeshKit, b: Dictionary, index: int, tint: Color) -
 	if index<3:
 		kit.component(AssetLibrary.residential(variant),Transform3D(Basis().scaled(Vector3.ONE*.72*float(site.scale)),Vector3.ZERO),color,damage)
 	else:
-		var height:=.28 if index==3 else .42
-		kit.box("brick",Vector3(0,.02,0),Vector3(.23,height,.27),color)
-		kit.box("roof_slate",Vector3(0,height+.02,0),Vector3(.25,.02,.29),color)
-		for floor_ in 2 if index==3 else 3:
-			for x in [-.065,.065]:
-				for z in [-.136,.136]: kit.box("glass",Vector3(x,.07+floor_*.12,z),Vector3(.045,.055,.004))
-			for x in [-.116,.116]: kit.box("glass",Vector3(x,.07+floor_*.12,0),Vector3(.004,.055,.07))
+		# Denser housing at higher levels: modern four- and six-storey apartment blocks with
+		# balconies and a small parking court, added beside the original homes (never replacing them).
+		if index==3: kit.part("apartment_block",Vector3(0,.02,0),PI*.5,float(site.scale)*.95,color)
+		else: kit.part("apartment_tall",Vector3(0,.02,0),PI*.5,float(site.scale)*.75,color)
+		kit.part("parked_car",Vector3(.13,.02,.0),0.0,float(site.scale),Color(.55,.6,.7).darkened(rng.randf()*.4))
 	kit.basis=parent.basis; kit.origin=parent.origin
 
 
@@ -819,7 +872,19 @@ func _ground_path(kit:MeshKit,a:Vector3,b:Vector3,width:float,material:String,co
 func _building(kit: MeshKit, b: Dictionary, tint: Color) -> void:
 	var structure:=MeshKit.new(); structure.basis=kit.basis; structure.origin=kit.origin
 	_compose_building(structure,b,tint)
-	BuildingLifecycle.append(kit,structure,b)
+	BuildingLifecycle.append(kit,structure,_with_impacts(b,kit.origin))
+
+
+## Recorded impacts on this hex (server battlefield records, fog-filtered) in the frame the
+## district is built in, so damage clusters on the side that was actually hit. None: deterministic.
+func _with_impacts(b:Dictionary,origin:Vector3) -> Dictionary:
+	if int(b.get("hp",100))>=85 or not world.visual_impacts.has(int(b.t)): return b
+	var center:=world.grid.center(int(b.t))
+	var x:=world.grid.near_x(center.x,origin.x)
+	var points:=[]
+	for impact in world.visual_impacts[int(b.t)]: points.append(Vector2(x+float(impact[1]),center.y+float(impact[2])))
+	var record:=b.duplicate(); record._impacts=points
+	return record
 
 func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 	var rng := _rng(b)
@@ -827,8 +892,9 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 	var recipe: Dictionary = composition.graph.matches.get(int(b.id), {})
 	var ty: String = str(recipe.get("grammar", b.ty))
 	var definition:Dictionary=world.defs.get("BUILDINGS",{}).get(str(b.ty),{})
-	DevelopedBuildingLibrary.development(kit,b,definition,tint)
+	if not ty in CivicBuildingLibrary.TYPES: DevelopedBuildingLibrary.development(kit,b,definition,tint)
 	if DevelopedBuildingLibrary.compose(kit,b,ty,tint): return
+	if CivicBuildingLibrary.compose(kit,b,ty,tint,{"seat":_estate_seat(b),"deposit":world.deposit(int(b.t)) if world.grid else 0,"active":int(b.get("a",0))==1 and int(b.get("mem",0))==0,"team":world.civ_color(int(b.get("o",-1))),"tier":int(b.get("ti",0))}): return
 	if ty=="port" and is_water_port(b):
 		# piled concrete deck standing in the water, under the terminal
 		kit.box("concrete",Vector3(.05,-.07,0),Vector3(1.0,.05,.82),Color(.74,.73,.7))
@@ -986,6 +1052,19 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 		_:
 			kit.box("concrete", Vector3(0, 0.02, 0), Vector3(0.42, 0.2, 0.36), tint)
 			kit.box("steel", Vector3(0, 0.22, 0), Vector3(0.44, 0.02, 0.38), tint)
+## A connected farm district has one estate seat (its oldest farm) that carries the farmstead;
+## the others carry field equipment. Stable while farms are added; a destroyed seat passes it on.
+func _estate_seat(b:Dictionary) -> bool:
+	if str(b.ty)!="farm": return true
+	var key:=str(composition.graph.district_of.get(int(b.id),""))
+	if key=="" or not composition.graph.districts.has(key): return true
+	var lowest:=int(b.id)
+	for id in composition.graph.districts[key].ids:
+		var other:Dictionary=world.buildings.get(int(id),{})
+		if str(other.get("ty",""))=="farm" and str(other.get("st",""))!="ruined" and int(id)<lowest: lowest=int(id)
+	return lowest==int(b.id)
+
+
 ## Cultivated ground is part of the shared terrain shader. The authored parcel contains only
 ## its buildings/yard details; neighboring farms no longer draw separate alternating tile stripes.
 func _fields(kit:MeshKit,b:Dictionary,tint:Color) -> void:

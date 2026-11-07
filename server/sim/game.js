@@ -14,7 +14,7 @@ import { RoadNet } from './roads.js';
 import { economyStep, recomputeTerritory, recomputeTradeNetwork, migrationStep, allocationFor } from './economy.js';
 import { MODES, PRIORITY, CATEGORIES, defaultWorkforce } from './workforce.js';
 import { missilesInit, missilesStep, siloStep, startMissile, launchMissile, interceptors, interceptOdds, inventory, missilesSnapshot, MISSILE } from './missiles.js';
-import { BRIDGE_CLASSES, planBridge } from './bridges.js';
+import { BRIDGE_CLASSES, planBridge, bridgesFor } from './bridges.js';
 import { Weather } from './weather.js';
 import { upgradable, upgradeCost as levelUpgradeCost, upgradeProblem, upgradeTime, jobSlots, outMul, MAX_LEVEL, LEVEL_JOBS, LEVEL_OUT, LEVEL_AGE, CITY_TIERS } from './levels.js';
 import { cityState, CITY_STATES, rebuildSettlement, rebuildProblem, cityDiagnostics, REBUILD_COST } from './cities.js';
@@ -27,7 +27,7 @@ import { defaultGovernor, governorStep, autoColonists, migrateGovernor, answerPr
 import { GOALS, readiness, candidates } from './planner.js';
 import { armyCommand, armiesStep, armySummary } from './armies.js';
 import { recoveryStep } from './recovery.js';
-import { projectilesStep, moraleStep, eventsFor, CS, vetLevel, testImpact, fireUnit, detonate } from './combat.js';
+import { projectilesStep, moraleStep, eventsFor, CS, vetLevel, testImpact, fireUnit, detonate, artilleryReady } from './combat.js';
 import { airStep, airMission, autoSelect, onAircraftBuilt, onBuildingLost, airSnapshot, stateCode, canFly, MISSIONS, AIR_STATES } from './airOperations.js';
 import { canHit } from './military.js';
 import { bfInit, battlefieldStep, battlefieldSnapshot, concealBySmoke, rememberBattlefield } from './battlefield.js';
@@ -571,7 +571,10 @@ export class Game {
     }
     w.halt = 0;
     const eng = engineers.filter((u) => u.owner === b.owner && dist(u.tile, b.tile) <= 2).length;
-    const rate = tempo(this, 'construction') * (1 + 0.6 * Math.min(3, eng)) * (1 + (techFx(civ).build || 0));
+    let crews = 1;
+    if (w.priority) crews = 1.35;
+    else for (const o of this.buildings.values()) if (o !== b && o.works?.priority && o.owner === b.owner && o.cityId === b.cityId) { crews = 0.85; break; }
+    const rate = tempo(this, 'construction') * crews * (1 + 0.6 * Math.min(3, eng)) * (1 + (techFx(civ).build || 0));
     const step = Math.min(w.left, dt * rate);
     w.left -= step;
     if (w.k === 'repair') b.hp = Math.min(b.maxHp, b.hp + w.heal * step / w.total);
@@ -862,7 +865,7 @@ export class Game {
     for (const u of this.units.values()) {
       if (!view.god && u.owner !== civ.id && (!vis[u.tile] || civ.smokeHide?.[u.tile] || !this.detects(civ.id, u))) continue;   // smoke over our own land hides what is in it
       units.push([u.id, u.owner, u.type, u.tile, u.next ?? -1, Math.round(u.prog * 100), Math.round((100 * u.hp) / u.maxHp), Math.round(u.supply),
-        (this.time - u.lastCombat < 1.5 ? 1 : 0) | (isWater(w.terr[u.tile]) && !UNITS[u.type].air && !this.roads.edgesOf(u.tile).some((e) => e.cond > 0) ? 2 : 0) | (u.outOfSupply ? 4 : 0) | (u.status === 'waiting' ? 8 : 0) | (u.status === 'blocked' ? 16 : 0) | (u.field ? 32 : 0),
+        (this.time - u.lastCombat < 1.5 ? 1 : 0) | (isWater(w.terr[u.tile]) && !UNITS[u.type].air && !this.roads.edgesOf(u.tile).some((e) => e.cond > 0) ? 2 : 0) | (u.outOfSupply ? 4 : 0) | (u.status === 'waiting' ? 8 : 0) | (u.status === 'blocked' ? 16 : 0) | (u.field ? 32 : 0) | (UNITS[u.type].cat === 'artillery' && artilleryReady(this, u) ? 64 : 0),
         u.owner === civ.id || view.god ? u.stance : undefined,
         u.owner === civ.id || view.god ? u.cstat || 0 : undefined, u.owner === civ.id || view.god ? u.tgt || 0 : undefined,
         Math.round(u.supp || 0), u.owner === civ.id || view.god ? Math.round(u.morale ?? 100) : undefined,
@@ -907,7 +910,7 @@ export class Game {
       const own = b.owner === civ.id || god;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2), qw: !b.done && b.waiting ? b.waiting : undefined, qn: own && !b.done ? b.qn ?? b.id : undefined,
-        lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ut: own && timedWorks(this) && b.done && !b.works && (b.type === 'house' ? (b.level || 1) < 3 : upgradable(b.type) && (b.level || 1) < MAX_LEVEL) ? Math.ceil(this.worksSeconds(b) / tempo(this, 'construction')) : undefined, rc: own && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) : undefined, rt: own && timedWorks(this) && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(this.repairSeconds(b) / tempo(this, 'construction')) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, wk: b.works ? [b.works.k === 'repair' ? 'r' : 'u', Math.round(100 * (1 - b.works.left / b.works.total)), b.works.halt ? 1 : 0, b.owner === civ.id && b.works.rate ? Math.ceil(b.works.left / b.works.rate) : -1, b.works.paused ? 1 : 0] : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
+        lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ut: own && timedWorks(this) && b.done && !b.works && (b.type === 'house' ? (b.level || 1) < 3 : upgradable(b.type) && (b.level || 1) < MAX_LEVEL) ? Math.ceil(this.worksSeconds(b) / tempo(this, 'construction')) : undefined, rc: own && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) : undefined, rt: own && timedWorks(this) && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(this.repairSeconds(b) / tempo(this, 'construction')) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, wk: b.works ? [b.works.k === 'repair' ? 'r' : 'u', Math.round(100 * (1 - b.works.left / b.works.total)), b.works.halt ? 1 : 0, b.owner === civ.id && b.works.rate ? Math.ceil(b.works.left / b.works.rate) : -1, b.works.paused ? 1 : 0, b.works.priority ? 1 : 0] : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
     // remembered foreign structures out of sight: frozen, quiet, marked as memory
     if (!god && civ.seenB) for (const r of civ.seenB.values()) if (!vis[r.t]) buildings.push({ ...r, a: 0, f: 0, mem: 1 });
@@ -966,7 +969,9 @@ export class Game {
       // a met AI nation's posture is public (what it is visibly doing); its plans are not
       return { ...base, age: c.isRebel ? undefined : c.age, posture: c.ai && !c.isRebel ? c.posture : undefined, rel: { state: rel.state, trade: rel.trade, borders: rel.borders, until: rel.until ? Math.round(rel.until - this.time) : undefined }, known: { cities: knownCities } };
     });
-    const out = { econ: me, buildings, cities, civs, ruins, traffic, supply: packBits(civ.supply).toString('base64'),
+    // bridge condition for crossings in sight (damaged spans read as damaged, never hidden ones)
+    const bridges = bridgesFor(this, civ, vis).filter((b) => god || vis[b[0]] || vis[b[1]]);
+    const out = { econ: me, buildings, cities, civs, ruins, traffic, bridges, supply: packBits(civ.supply).toString('base64'),
       bf: battlefieldSnapshot(this, vis, god ? vis : civ.explored, civ.battlefieldMemory || new Map(), god), battles: battlesFor(this, civ, vis, god), ms: missilesSnapshot(this, civ, vis) };
     if (god) out.campaigns = this.campaignSummary();
     return out;
@@ -1242,11 +1247,11 @@ export class Game {
           for (const t of tiles) {
             const r = this.commandInner(civ, { c: 'build', type: cmd.type, tile: t, plan: true });
             const b = r?.reply?.built;
-            if (!b) { failed.push(t); continue; }
+            if (!b) { failed.push([t, r?.error || 'Cannot build there']); continue; }
             placed++; if (b.planned) planned++;
             for (const [k, v] of Object.entries(b.cost || {})) cost[k] = (cost[k] || 0) + v;
           }
-          return { reply: { t: 'ack', many: { placed, planned, failed: failed.length, cost } } };
+          return { reply: { t: 'ack', many: { placed, planned, failed: failed.length, failedTiles: failed.slice(0, 60), cost } } };
         }
         case 'buildNext': {
           // move a site to the front of the construction queue (funding and crews)
@@ -1569,6 +1574,16 @@ export class Game {
         case 'autoSettle': { const u = this.units.get(cmd.unit); if (!u || u.owner !== civ.id || u.type !== 'colonist') return { error: 'need a colonist convoy' }; u.auto = true; return null; }
         case 'repair': return this.repairBuilding(civ, this.buildings.get(cmd.id), cmd.by || 'you');
         case 'cancelWorks': return this.cancelWorks(civ, this.buildings.get(cmd.id));
+        case 'worksPriority': {
+          // Priority works get first call on the city's crews: faster, while the city's other
+          // works slow a little. One priority per city; choosing another moves it.
+          const b = this.buildings.get(cmd.id);
+          if (!b || b.owner !== civ.id || !b.works) return { error: 'No works to prioritise here' };
+          const on = !b.works.priority;
+          for (const o of this.buildings.values()) if (o.owner === civ.id && o.cityId === b.cityId && o.works) o.works.priority = false;
+          b.works.priority = on; this.world.touch(b.tile);
+          return { reply: { t: 'ack', priority: on } };
+        }
         case 'pauseWorks': {
           const b = this.buildings.get(cmd.id);
           if (!b || b.owner !== civ.id || !b.works) return { error: 'No works to pause here' };

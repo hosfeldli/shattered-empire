@@ -166,6 +166,8 @@ func _rebuild() -> void:
 				NativeUI.label(details,"%s · %d%%%s%s"%[doing,int(works[1]),remaining,note],15,NativeUI.BAD if not note.is_empty() else NativeUI.GOLD)
 				NativeUI.label(details,"Engineers within two hexes speed up the works.",13,NativeUI.MUTED)
 				if own: _button("Resume works" if paused_works else "Pause works",func():app.commands.issue("pause_works",{"building":id}),"Pausing keeps progress and frees crews and engineers for other sites.")
+				var priority:=works.size()>5 and int(works[5])==1
+				if own: _button("Normal priority" if priority else "Prioritise",func():app.commands.issue("prioritise_works",{"building":id}),"Priority works get first call on the city's crews (faster); the city's other works slow a little.")
 				if own: _button("Cancel works",func():app.commands.issue("cancel_works",{"building":id}),"Stop the works. Half of the unspent cost is refunded.")
 			elif building.has("uc") or building.ty=="house" and int(building.get("lv",1))<3 and int(building.get("d",0))==1:
 				var facilities:Array=app.input.selected_buildings.keys()

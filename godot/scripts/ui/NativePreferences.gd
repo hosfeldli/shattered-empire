@@ -1,7 +1,7 @@
 class_name NativePreferences
 extends RefCounted
 ## Local presentation preferences only. Gameplay state remains on the server.
-const SHORTCUTS:={"build":KEY_B,"research":KEY_T,"hold":KEY_H,"withdraw":KEY_X,"attack_move":KEY_E,"select_combat":KEY_Q,"form_army":KEY_G,"road":KEY_R,"center":KEY_SPACE,"pause":KEY_P}
+const SHORTCUTS:={"build":KEY_B,"research":KEY_T,"hold":KEY_H,"withdraw":KEY_X,"attack_move":KEY_E,"select_combat":KEY_Q,"form_army":KEY_G,"road":KEY_R,"center":KEY_SPACE,"pause":KEY_P,"follow":KEY_V,"stance":KEY_Y}
 const DEFAULTS:={"fullscreen":true,"resolution":"1600x900","quality":"medium","vsync":true,"fps":60,
 	"volume":70.0,"ambience_volume":80.0,"effects_volume":85.0,"mute":false,"ui_scale":1.0,"pan_speed":1.0,"zoom_speed":1.0,"invert_zoom":false,"edge_pan":false,
 	"weather_effects":true,"particle_density":1.0,"screen_shake":false,"reduced_motion":false,"high_contrast":false,"unit_labels":true,"resource_markers":true,"territory_borders":true,"wildlife":true,"onboarding_done":false,"bindings":{},

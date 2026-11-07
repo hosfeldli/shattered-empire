@@ -9,6 +9,7 @@ var tile:=-1
 var origin_x:=0.0
 var base_offset:=Vector3.ZERO
 var generated:=0
+var site:={}
 
 func setup(w:WorldState,c:CameraController,s:SettlementRenderer) -> void:
 	world=w; camera=c; renderer=s; cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -33,8 +34,8 @@ func show_building(type:String,at:int) -> void:
 			model=renderer.preview_mesh(type,world.start_tile,false)
 			var a:=world.grid.center(at); var b:=world.grid.center(world.start_tile)
 			offset=Vector3(a.x-b.x,world.tile_height(at)-world.tile_height(world.start_tile),a.y-b.y)
-		cache[key]={"mesh":model,"offset":offset}; generated+=1
-	mesh=cache[key].mesh; base_offset=cache[key].offset; position=base_offset; tile=at
+		cache[key]={"mesh":model,"offset":offset,"site":renderer.last_preview_site.duplicate() if offset==Vector3.ZERO else {}}; generated+=1
+	mesh=cache[key].mesh; base_offset=cache[key].offset; position=base_offset; tile=at; site=cache[key].site
 	origin_x=world.grid.center(at).x
 	position.x+=world.grid.near_x(origin_x,camera.focus.x)-origin_x
 
