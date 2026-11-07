@@ -89,10 +89,18 @@ export function recomputeTradeNetwork(g) {
         const nw = Math.min(wd, ROAD_TYPES[e.type].freight * (e.cond < 50 ? 0.5 : 1));
         if (nw > width[n]) { width[n] = nw; parent[n] = i; heap.push([nw, n]); }
       }
+      // a shore port, or a land hex beside one of our water-hex ports, links the sea lanes
       const b = g.buildingAtTile(i);
-      if (!portsLinked && b && b.type === 'port' && b.owner === civ.id && b.done) {
+      let atPort = b && b.type === 'port' && b.owner === civ.id && b.done;
+      if (!atPort && !isWater(g.world.terr[i])) for (const o of ports) if (isWater(g.world.terr[o.tile]) && NB.slice(o.tile * 6, o.tile * 6 + 6).includes(i)) { atPort = true; break; }
+      if (!portsLinked && atPort) {
         portsLinked = true;
-        for (const o of ports) { const nw = Math.min(wd, PORT_FREIGHT); if (nw > width[o.tile]) { width[o.tile] = nw; parent[o.tile] = i; heap.push([nw, o.tile]); } }
+        for (const o of ports) {
+          const nw = Math.min(wd, PORT_FREIGHT);
+          // a water-hex port hands freight to its shore hexes; a shore port is itself the landing
+          const landings = isWater(g.world.terr[o.tile]) ? [...NB.slice(o.tile * 6, o.tile * 6 + 6)].filter((n) => n >= 0 && !isWater(g.world.terr[n])) : [o.tile];
+          for (const l of landings) if (nw > width[l]) { width[l] = nw; parent[l] = i; heap.push([nw, l]); }
+        }
       }
     }
     // overland link: cities inside one unbroken stretch of our territory reach the capital by cart

@@ -98,6 +98,17 @@ func _describe(tile:int,detailed:=false) -> String:
 			if owner>=0: lines.append("Territory: %s%s"%[str(world.civ_by_id.get(owner,{}).get("name","Unknown"))," (last known)" if not world.is_visible(tile) else ""])
 			else: lines.append("Territory: unclaimed")
 	if world.is_river(tile): lines.append("River · use an authorized crossing")
+	# battlefield condition (warzone brief §18), from the authorized battlefield record
+	for record in world.bf.get("c",[]):
+		if int(record[0])==tile: lines.append("Cratered ground · vehicles slowed · limited infantry cover"); break
+	var stages:=["","Churned ground","Contested ground · vehicles bog down","No man's land · vehicles badly slowed"]
+	for record in world.bf.get("i",[]):
+		if int(record[0])==tile and int(record[1])>0 and int(record[1])<stages.size(): lines.append(stages[int(record[1])]); break
+	for record in world.bf.get("w",[]):
+		if int(record[0])==tile:
+			lines.append("%s wreck%s · obstacle and cover · engineers can clear it"%[str(world.defs.get("UNITS",{}).get(str(record[1]),{}).get("name","Vehicle"))," (burning)" if int(record[2])==1 else ""]); break
+	for record in world.bf.get("wr",[]):
+		if int(record[0])==tile and int(record[1])>=4: lines.append("Worn tracks · heavy vehicle traffic" if int(record[2])==2 else "Worn ground · regular traffic"); break
 	if world.deposit(tile)>0:
 		var resources:Variant=world.defs.get("RESOURCE",[])
 		if resources is Array and world.deposit(tile)<resources.size(): lines.append(str(resources[world.deposit(tile)].get("name","Resource deposit")))

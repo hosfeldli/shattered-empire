@@ -85,6 +85,7 @@ var bf := {}
 var bf_version := 0
 var battlefield_terrain_version := 0
 var visual_craters := {}
+var visual_impacts := {}   # tile -> [[class, x, z, severity, seed], ...] (recorded server impacts)
 var fw: Array = []
 var fw_version := 0
 var econ := {}
@@ -156,7 +157,7 @@ func _clear_map() -> void:
 	res = PackedByteArray(); res.resize(n)
 	vis_bits = PackedByteArray(); vis_bits.resize(n / 8)
 	urban_bits = PackedByteArray(); urban_bits.resize(n / 8)
-	units.clear(); snaps.clear(); buildings.clear(); cities.clear(); ruins = []; traffic = []; bf = {}; fw = []; visual_craters.clear(); battlefield_terrain_version+=1
+	units.clear(); snaps.clear(); buildings.clear(); cities.clear(); ruins = []; traffic = []; bf = {}; fw = []; visual_craters.clear(); visual_impacts.clear(); battlefield_terrain_version+=1
 	buildings_version += 1
 	bf_version += 1
 	fw_version += 1
@@ -492,25 +493,45 @@ func ground_height(x: float, z: float) -> float:
 	return (1.0 - u - v) * height[t] + u * corner_height(t, k) + v * corner_height(t, k2) + visual_crater_delta(t,x,z)
 
 
-## The server supplies an aggregate crater depth per hex, not exact local impact locations.
-## This stable presentation profile is cosmetic; server movement and cover remain authoritative.
-## It tapers to zero well inside the hex so neighboring meshes and wrapped chunks still meet.
+## Crater relief from the server's recorded impacts (class, stable local position, severity);
+## older saves fall back to the aggregate crater depth per hex. Overlapping bowls combine into a
+## shared basin (summed, softly limited); rims only rise where no other bowl cuts them. The profile
+## tapers to zero well inside the hex so neighbours and wrapped chunks still meet exactly.
+## Presentation only: movement and cover remain the server's crater rules.
+const IMPACT_SHAPE := {"mortar":[.13,.045],"shell":[.19,.075],"bomb":[.27,.11],"missile":[.22,.085],"strategic":[.34,.14]}
 func visual_crater_delta(tile:int,x:float,z:float) -> float:
 	if not visual_craters.has(tile): return 0.0
 	var center:=grid.center(tile)
 	var local:=Vector2(grid.dx_wrap(center.x,x),z-center.y)
-	var seed_:int=absi(int((tile*1103515245+world_seed*12345)&0x7fffffff))
-	var offset:=Vector2(float(seed_%201)/1000.0-.1,float((seed_/201)%201)/1000.0-.1)
-	var p:=local-offset
-	var depth:=clampf(float(visual_craters[tile]),0.0,3.0)
-	var radius:=.29+depth*.025
-	var angle:=atan2(p.y,p.x)
-	var irregular:=1.0+.08*sin(angle*3.0+float(seed_%31))+.045*sin(angle*5.0+float(seed_%17))
-	var r:=p.length()/maxf(radius*irregular,.01)
-	if r>=1.25: return 0.0
-	var bowl:=-(.055+.035*depth)*(1.0-smoothstep(.15,.9,r))
-	var rim:=.014*depth*smoothstep(.68,.93,r)*(1.0-smoothstep(.98,1.25,r))
-	return bowl+rim
+	var edge:=1.0-smoothstep(.6,.82,local.length())
+	if edge<=0.0: return 0.0
+	var rock:=biome(tile) in [9,10]
+	var impacts:Array=visual_impacts.get(tile,[])
+	if impacts.is_empty():
+		var seed_:int=absi(int((tile*1103515245+world_seed*12345)&0x7fffffff))
+		impacts=[["shell",float(seed_%201)/1000.0-.1,float((seed_/201)%201)/1000.0-.1,clampf(float(visual_craters[tile])/3.0,.2,1.0),seed_%1000]]
+	var bowl:=0.0; var rim:=0.0
+	for impact in impacts:
+		var shape:Array=IMPACT_SHAPE.get(str(impact[0]),IMPACT_SHAPE.shell)
+		var severity:=clampf(float(impact[3]),.2,1.0)
+		var radius:=float(shape[0])*(.75+.35*severity)
+		var depth:=float(shape[1])*(.7+.5*severity)*(.45 if rock else 1.0)
+		var p:=local-Vector2(float(impact[1]),float(impact[2]))
+		var s:=float(int(impact[4])%97)
+		var angle:=atan2(p.y,p.x)
+		var irregular:=1.0+.09*sin(angle*3.0+s)+.05*sin(angle*5.0+s*1.7)
+		var r:=p.length()/maxf(radius*irregular,.01)
+		if r>=1.3: continue
+		bowl+=depth*(1.0-smoothstep(.1,.92,r))
+		rim=maxf(rim,depth*.22*smoothstep(.7,.95,r)*(1.0-smoothstep(1.0,1.3,r)))
+	# basins: deep overlaps saturate instead of punching through; rims are cut by neighbouring bowls
+	bowl=.16*(1.0-exp(-bowl/.16))
+	return (-bowl+rim*(1.0-smoothstep(.0,.04,bowl)*.8))*edge
+
+
+## 0 at level ground, toward 1 at the bottom of a crater bowl (rainwater pooling, damp soil)
+func crater_bowl(tile:int,x:float,z:float) -> float:
+	return clampf(-visual_crater_delta(tile,x,z)/.09,0.0,1.0)
 
 
 ## Avoid moving the visible ground under existing buildings, roads, rivers or functional trenches.
@@ -521,6 +542,12 @@ func _refresh_visual_craters() -> void:
 	for building in buildings.values(): blocked[int(building.get("t",-1))]=true
 	for record in fw:
 		if record is Array and not record.is_empty(): blocked[int(record[0])]=true
+	var impacts:={}
+	for record in bf.get("m",[]):
+		if not record is Array or record.size()<6: continue
+		var t:=int(record[0])
+		if not impacts.has(t): impacts[t]=[]
+		(impacts[t] as Array).append([record[1],record[2],record[3],record[4],record[5]])
 	var next:={}
 	for record in bf.get("c",[]):
 		if not record is Array or record.size()<2: continue
@@ -529,11 +556,11 @@ func _refresh_visual_craters() -> void:
 		next[tile]=depth
 	var changes:=PackedInt32Array()
 	for tile in visual_craters:
-		if not next.has(tile) or next[tile]!=visual_craters[tile]: changes.append(int(tile))
+		if not next.has(tile) or next[tile]!=visual_craters[tile] or str(impacts.get(tile,[]))!=str(visual_impacts.get(tile,[])): changes.append(int(tile))
 	for tile in next:
 		if not visual_craters.has(tile): changes.append(int(tile))
 	if changes.is_empty(): return
-	visual_craters=next; battlefield_terrain_version+=1
+	visual_craters=next; visual_impacts=impacts; battlefield_terrain_version+=1
 	battlefield_terrain_changed.emit(changes)
 
 

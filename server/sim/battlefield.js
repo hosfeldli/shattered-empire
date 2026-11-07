@@ -6,7 +6,7 @@ import { book } from './ledger.js';
 import { UNITS, T, isWater } from './constants.js';
 import { disk } from './hex.js';
 
-export function bfInit(g) { g.craters = new Map(); g.wrecks = new Map(); g.smoke = new Map(); g.intensity = new Map(); g.fieldPos = new Map(); g.bfVer = 0; }
+export function bfInit(g) { g.craters = new Map(); g.wrecks = new Map(); g.smoke = new Map(); g.intensity = new Map(); g.fieldPos = new Map(); g.impacts = new Map(); g.scorch = new Map(); g.wear = new Map(); g.bfVer = 0; }
 
 // ---------------------------------------------------------------- battlefield intensity
 // Every shell, wreck and death adds intensity to the ground around it. Sustained fighting turns
@@ -32,12 +32,60 @@ export const intensityAt = (g, t) => g.intensity.get(t)?.v || 0;
 // substitute for trenches: no construction, a little cover, gone soon after they are abandoned.
 export const FIELD_POS = { perCiv: 24, total: 120, cover: 0.12, after: 15, abandon: 90 };
 
-export function addCrater(g, t, depth) {
+// Significant impacts (warzone brief §5, §15): each recorded crater keeps its weapon class, a
+// stable position inside the hex, severity and seed, so clients rebuild the same overlapping
+// depressions after save, reload or reconnect. Bounded per hex and in total; insignificant
+// overlaps merge into the aggregate crater depth. Position comes from a hash, never the game RNG.
+export const IMPACT = Object.freeze({ perTile: 6, total: 6000 });
+export const IMPACT_CLASSES = ['mortar', 'shell', 'bomb', 'missile', 'strategic'];
+function recordImpact(g, t, cls, severity) {
+  const list = g.impacts.get(t) || [];
+  const seed = ((t * 2654435761) ^ (g.eventSeq * 40503) ^ (g.tickN * 97)) >>> 0;
+  const x = ((seed % 1000) / 1000 - 0.5) * 0.44, z = (((seed >>> 10) % 1000) / 1000 - 0.5) * 0.44;
+  list.push({ c: cls, x: +x.toFixed(3), z: +z.toFixed(3), s: +Math.min(1, severity).toFixed(2), seed: seed % 100000, at: g.time });
+  while (list.length > IMPACT.perTile) list.shift();
+  g.impacts.set(t, list);
+  g.impactCount = (g.impactCount || 0) + 1;
+  if (g.impactCount > IMPACT.total && g.impacts.size > IMPACT.total / IMPACT.perTile) {
+    let oldest = -1, at = Infinity;
+    for (const [tile, l] of g.impacts) if (l[0].at < at) { at = l[0].at; oldest = tile; }
+    if (oldest >= 0) { g.impactCount -= g.impacts.get(oldest).length; g.impacts.delete(oldest); }
+  }
+}
+function forgetImpact(g, t, all = false) {
+  const list = g.impacts.get(t); if (!list) return;
+  if (all) { g.impactCount = Math.max(0, (g.impactCount || 0) - list.length); g.impacts.delete(t); return; }
+  list.shift(); g.impactCount = Math.max(0, (g.impactCount || 0) - 1);
+  if (!list.length) g.impacts.delete(t);
+}
+
+export function addCrater(g, t, depth, cls = 'shell') {
   if (isWater(g.world.terr[t]) || g.world.terr[t] === T.PEAK) return;
   const c = g.craters.get(t) || { d: 0, at: 0 };
   c.d = Math.min(3, c.d + depth); c.at = g.time;
   addIntensity(g, t, 2.5 * depth);
+  recordImpact(g, t, cls, depth / 3);
+  addScorch(g, t, cls === 'strategic' || cls === 'bomb' ? 0.45 : 0.2);
   g.craters.set(t, c); g.world.dirty.add(t); g.bfVer++;
+}
+
+// Material channels (§4): scorch from explosions, fires and burning wrecks; aggregated ground
+// wear from vehicles (tracked > wheeled) and massed infantry off the roads (§10). Both fade slowly.
+export function addScorch(g, t, v) {
+  if (t < 0 || isWater(g.world.terr[t])) return;
+  const e = g.scorch.get(t) || { v: 0, at: 0 };
+  e.v = Math.min(1, e.v + v); e.at = g.time; g.scorch.set(t, e);
+}
+export const WEAR = Object.freeze({ tracked: 0.05, wheeled: 0.03, infantry: 0.006, cap: 8000 });
+export function addWear(g, t, move) {
+  const w = g.world;
+  if (t < 0 || isWater(w.terr[t]) || w.road[t] || !WEAR[move]) return;
+  const e = g.wear.get(t);
+  if (!e && g.wear.size >= WEAR.cap) return;
+  const r = e || { v: 0, at: 0, k: move };
+  r.v = Math.min(1, r.v + WEAR[move]); r.at = g.time;
+  if (WEAR[move] > WEAR[r.k] || 0) r.k = move;
+  g.wear.set(t, r);
 }
 
 export function addWreck(g, t, type, owner) {
@@ -50,6 +98,7 @@ export function addWreck(g, t, type, owner) {
   addIntensity(g, t, 4);
   g.wrecks.set(t, list); g.world.dirty.add(t); g.bfVer++;
   addSmoke(g, t, 0.55, 30);
+  addScorch(g, t, 0.35);
 }
 
 export function addSmoke(g, t, density, seconds) {
@@ -105,8 +154,12 @@ export function battlefieldStep(g, dt) {
   // craters soften over time (faster on roads, which crews patch)
   for (const [t, c] of g.craters) {
     const age = g.time - c.at;
-    if (age > (g.world.road[t] ? 300 : 900)) { c.d -= 1; c.at = g.time; g.world.dirty.add(t); g.bfVer++; if (c.d <= 0) g.craters.delete(t); }
+    if (age > (g.world.road[t] ? 300 : 900)) { c.d -= 1; c.at = g.time; g.world.dirty.add(t); g.bfVer++; forgetImpact(g, t, c.d <= 0); if (c.d <= 0) g.craters.delete(t); }
   }
+  // scorch weathers away over many minutes; wear fades once traffic stops (historical traces last)
+  for (const b of g.buildings.values()) if (b.fire > 0) addScorch(g, b.tile, 0.01 * dt);
+  for (const [t, e] of g.scorch) if (g.time - e.at > 120) { e.v -= 0.0015 * dt; if (e.v <= 0.03) g.scorch.delete(t); }
+  for (const [t, e] of g.wear) if (g.time - e.at > 60) { e.v -= 0.001 * dt; if (e.v <= 0.05) g.wear.delete(t); }
 }
 
 function fieldPositionsStep(g, dt) {
@@ -149,7 +202,7 @@ export function engineerClear(g, u, dt) {
     const wr = g.wrecks.get(t);
     if (wr && wr.length && wr[0].burn <= 0) { wr[0].clear = (wr[0].clear || 0) + dt; if (wr[0].clear >= 8) { wr.shift(); if (!wr.length) g.wrecks.delete(t); g.world.dirty.add(t); g.bfVer++; } return true; }
     const cr = g.craters.get(t);
-    if (cr && civ.res.materials >= 1 * dt && (g.world.owner[t] === u.owner || g.world.road[t])) { cr.fill = (cr.fill || 0) + dt; civ.res.materials -= dt; book(civ, 'maintenance', 'materials', -dt); if (cr.fill >= 5) { cr.d -= 1; cr.fill = 0; if (cr.d <= 0) g.craters.delete(t); g.world.dirty.add(t); g.bfVer++; } return true; }
+    if (cr && civ.res.materials >= 1 * dt && (g.world.owner[t] === u.owner || g.world.road[t])) { cr.fill = (cr.fill || 0) + dt; civ.res.materials -= dt; book(civ, 'maintenance', 'materials', -dt); if (cr.fill >= 5) { cr.d -= 1; cr.fill = 0; forgetImpact(g, t, cr.d <= 0); if (cr.d <= 0) g.craters.delete(t); g.world.dirty.add(t); g.bfVer++; } return true; }
   }
   return false;
 }
@@ -185,9 +238,21 @@ export function rememberBattlefield(g, civ) {
     const cr = g.craters.get(t);
     const wrecks = g.wrecks.get(t);
     const stage = g.intensity.get(t)?.st || 0;
-    if (!cr && !wrecks?.length && !stage) { memory.delete(t); continue; }
+    if (!cr && !wrecks?.length && !stage && !g.scorch.has(t) && !g.wear.has(t)) { memory.delete(t); continue; }
     memory.set(t, { crater: cr?.d || 0, intensity: stage,
-      wrecks: (wrecks || []).map((wr) => [wr.type, wr.burn > 0 ? 1 : 0, wr.owner]) });
+      wrecks: (wrecks || []).map((wr) => [wr.type, wr.burn > 0 ? 1 : 0, wr.owner]),
+      impacts: (g.impacts.get(t) || []).map((m) => [m.c, m.x, m.z, m.s, m.seed]),
+      scorch: Math.round((g.scorch.get(t)?.v || 0) * 10), wear: Math.round((g.wear.get(t)?.v || 0) * 10) });
+  }
+  // scorch and track wear are remembered only where they were seen; refreshed every few seconds
+  if (civ.human && (g.tickN % 30 === 0)) {
+    for (const map of [g.scorch, g.wear]) for (const t of map.keys()) {
+      if (!civ.visible[t]) continue;
+      const known = memory.get(t) || { crater: 0, intensity: 0, wrecks: [], impacts: [] };
+      known.scorch = Math.round((g.scorch.get(t)?.v || 0) * 10); known.wear = Math.round((g.wear.get(t)?.v || 0) * 10);
+      known.wk = g.wear.get(t)?.k;
+      memory.set(t, known);
+    }
   }
 }
 
@@ -212,15 +277,43 @@ export function battlefieldSnapshot(g, vis, explored, memory = null, god = false
     for (const [t, known] of memory) if (known.intensity && (vis[t] || explored[t])) i.push([t, known.intensity]);
   }
   for (const [t, f] of g.fieldPos) if (vis[t]) fp.push([t, f.o]);
-  return { c, w, s, i, fp };
+  // impacts, scorch and wear: live where seen now, remembered elsewhere (never hidden fresh activity)
+  const m = [], sc = [], wr = [];
+  const WK = { tracked: 2, wheeled: 1, infantry: 0 };
+  if (god || !memory) {
+    for (const [t, list] of g.impacts) if (vis[t] || explored[t]) for (const x of list) m.push([t, x.c, x.x, x.z, x.s, x.seed]);
+    for (const [t, e] of g.scorch) if (vis[t] || explored[t]) sc.push([t, Math.round(e.v * 10)]);
+    for (const [t, e] of g.wear) if (vis[t] || explored[t]) wr.push([t, Math.round(e.v * 10), WK[e.k] ?? 0]);
+  } else {
+    for (const [t, known] of memory) {
+      if (!explored[t] && !vis[t]) continue;
+      if (vis[t]) {
+        for (const x of g.impacts.get(t) || []) m.push([t, x.c, x.x, x.z, x.s, x.seed]);
+        const se = g.scorch.get(t), we = g.wear.get(t);
+        if (se) sc.push([t, Math.round(se.v * 10)]);
+        if (we) wr.push([t, Math.round(we.v * 10), WK[we.k] ?? 0]);
+        continue;
+      }
+      for (const x of known.impacts || []) m.push([t, ...x]);
+      if (known.scorch) sc.push([t, known.scorch]);
+      if (known.wear) wr.push([t, known.wear, WK[known.wk] ?? 0]);
+    }
+    for (const [t, e] of g.scorch) if (vis[t] && !memory.has(t)) sc.push([t, Math.round(e.v * 10)]);
+    for (const [t, e] of g.wear) if (vis[t] && !memory.has(t)) wr.push([t, Math.round(e.v * 10), WK[e.k] ?? 0]);
+  }
+  return { c, w, s, i, fp, m, sc, wr };
 }
 
 export function serializeBattlefield(g) {
-  return { craters: [...g.craters.entries()], wrecks: [...g.wrecks.entries()], smoke: [...g.smoke.entries()], intensity: [...g.intensity.entries()], fieldPos: [...g.fieldPos.entries()] };
+  return { v: 2, craters: [...g.craters.entries()], wrecks: [...g.wrecks.entries()], smoke: [...g.smoke.entries()], intensity: [...g.intensity.entries()], fieldPos: [...g.fieldPos.entries()],
+    impacts: [...g.impacts.entries()], impactCount: g.impactCount || 0, scorch: [...g.scorch.entries()], wear: [...g.wear.entries()] };
 }
 export function restoreBattlefield(g, d) {
   bfInit(g);
   if (!d) return;
   g.craters = new Map(d.craters); g.wrecks = new Map(d.wrecks); g.smoke = new Map(d.smoke);
   g.intensity = new Map(d.intensity || []); g.fieldPos = new Map(d.fieldPos || []);
+  // warzone format v2: older saves have no impact records, scorch or wear; craters still show
+  // through their aggregate depth and new impacts start recording from here on
+  g.impacts = new Map(d.impacts || []); g.impactCount = d.impactCount || 0; g.scorch = new Map(d.scorch || []); g.wear = new Map(d.wear || []);
 }

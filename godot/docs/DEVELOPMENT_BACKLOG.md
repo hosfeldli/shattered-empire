@@ -40,17 +40,14 @@ after the earlier truncated message and should be read together with the tasks i
   bible also mentions foundations/platforms; apply terrain-conforming site grading, local ground
   cuts or unobtrusive structural integration without reintroducing the rejected building bases.
   Any necessary technical solution must preserve authoritative footprints and readable terrain.
-- **Minimap conflict:** the prior direct instruction explicitly removed it and the current native
-  HUD has none; the newly pasted art bible specifies a small, expandable/hideable minimap. Record
-  both requests; keep the current removed behavior until this contradiction is resolved instead of
-  silently adding it. Map lenses/navigation and their accessibility remain required either way.
+- **Minimap (resolved 2026-11-07):** removed. Map lenses/navigation and their accessibility remain
+  required.
 - **Fog distinction:** atmospheric clouds and weather fog must fade at close zoom and not obscure
   play. The new request for thick clouds applies to *unseen fog of war*; implement it without
   exposing unknown terrain or obscuring units and orders in legitimately visible areas.
-- **Port tile wording:** require an actual ocean shoreline and docks that reach actual ocean water.
-  Resolve whether the authoritative port occupies a shoreline land hex or a water hex through a
-  versioned placement/design decision; do not silently enable arbitrary inland lakes or rivers,
-  change embarkation, or make current saves invalid.
+- **Ports (resolved 2026-11-07):** ports sit on the ocean water hex (native-v4): an owned ocean hex
+  beside an owned dry shore hex; no lakes or rivers. Units embark by entering the port hex; freight
+  lands on the adjacent shore. Earlier rulesets keep shore-hex ports and their saves.
 - The initially truncated warzone brief was subsequently supplied in full; its terrain-specific
   damage, tracks, recovery, architecture, server changes, performance, UI, tests and definitive
   battlefield scenario are captured in [PERSISTENT_WARZONE_BRIEF.md](PERSISTENT_WARZONE_BRIEF.md).

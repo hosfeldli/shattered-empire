@@ -128,7 +128,7 @@ export function detonateMissile(g, m) {
       g.damageBuilding(b, MISSILE.bBlast[r], m.owner, 'combat');
     }
     addIntensity(g, x, r === 0 ? 100 : r === 1 ? 70 : 40);
-    if (!isWater(g.world.terr[x])) { if (r <= 1) addCrater(g, x, 3 - r); addSmoke(g, x, 1, 60 - r * 15); g.roads.damageTile(x, 60 - r * 20, null, 1); }
+    if (!isWater(g.world.terr[x])) { if (r <= 1) addCrater(g, x, 3 - r, 'strategic'); addSmoke(g, x, 1, 60 - r * 15); g.roads.damageTile(x, 60 - r * 20, null, 1); }
     if (r <= MISSILE.falloutRadius && !isWater(g.world.terr[x])) { g.fallout.set(x, g.time + MISSILE.fallout * (r === 0 ? 1 : 0.7)); g.world.dirty.add(x); }
   }
   const victim = g.world.owner[t];

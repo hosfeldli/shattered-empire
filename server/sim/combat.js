@@ -281,7 +281,7 @@ function impact(g, p) {
   if (wpn.he >= 0.5 && g.fieldworks?.size) for (const t of disk(to, wpn.blast || 0)) if (g.fieldworks.has(t)) damageFieldworks(g, t, (t === to ? 14 : 6) * wpn.he);
   if (wpn.he >= 0.5) addIntensity(g, to, 0.8 * wpn.he);     // every explosion adds to the battlefield's wear
   if (wpn.he >= 1 && !isWater(g.world.terr[to])) {
-    if (g.rng() < 0.35 * wpn.he) addCrater(g, to, wpn.he >= 1.5 ? 2 : 1);
+    if (g.rng() < 0.35 * wpn.he && !wpn.airburst) addCrater(g, to, wpn.he >= 1.5 ? 2 : 1, IMPACT_CLASS[p.w] || (wpn.he >= 1.5 ? 'bomb' : 'shell'));
     if (g.rng() < 0.3) g.roads.damageTile(to, 10 * wpn.he, g.rng, 0.5);
     addSmoke(g, to, 0.25 + 0.15 * wpn.he, 8 + 6 * wpn.he);
   } else if (wpn.he >= 0.5) addSmoke(g, to, 0.15, 5);
@@ -453,3 +453,6 @@ function promote(g, u) {
   const civ = g.civs[u.owner];
   if (civ?.human) g.notify(u.owner, `${UNITS[u.type].name} is now ${VET_NAMES[level]}: steadier and more accurate under fire.`, { kind: 'unit', tile: u.tile, quiet: true, level: 'info' });
 }
+
+// weapon -> recorded impact class (warzone brief §5.2); unlisted explosives fall back by power
+const IMPACT_CLASS = { mortar: 'mortar', howitzer: 'shell', cannon: 'shell', fortgun: 'shell', rockets: 'shell', bombs: 'bomb', missile: 'missile', warhead: 'missile', drone_strike: 'missile' };

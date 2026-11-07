@@ -90,12 +90,13 @@ test('works survive save/restore and earlier rulesets keep instant upgrades', ()
 });
 
 test('native-v4 indirect-fire crews are slower and more fragile; earlier rulesets unchanged', async () => {
-  const { movementRate, SUPPORT_FIRE } = await import('../server/sim/rulesets.js');
+  const { movementRate, SUPPORT_FIRE, WORKS_TEMPO, EXPANSIVE_TEMPO } = await import('../server/sim/rulesets.js');
   const { UNITS } = await import('../server/sim/constants.js');
   const v4 = newGame(), v3 = newGame(EXPANSIVE_RULESET);
   const mortar = UNITS.mortar_team, rifles = UNITS.rifle_squad;
-  assert.ok(Math.abs(movementRate(v4, mortar) - movementRate(v3, mortar) * SUPPORT_FIRE.movement) < 1e-9);
-  assert.equal(movementRate(v4, rifles), movementRate(v3, rifles), 'line infantry keep their pace');
+  assert.ok(Math.abs(movementRate(v4, mortar) - WORKS_TEMPO.infantryMovement * SUPPORT_FIRE.movement) < 1e-9);
+  assert.equal(movementRate(v4, rifles), WORKS_TEMPO.infantryMovement, 'line infantry use the v4 pace');
+  assert.equal(movementRate(v3, rifles), EXPANSIVE_TEMPO.infantryMovement, 'native-v3 keeps its pace');
   const a = spawnUnit(v4, v4.civs[0], 'mortar_team', v4.capital(v4.civs[0]).tile);
   const b = spawnUnit(v3, v3.civs[0], 'mortar_team', v3.capital(v3.civs[0]).tile);
   assert.ok(a.maxHp < b.maxHp, 'mortar crews are less durable in native-v4');

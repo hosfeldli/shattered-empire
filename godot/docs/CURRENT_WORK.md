@@ -5,6 +5,25 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## Decisions, pace, direct fire, water ports and warzone pass (2026-11-07)
+
+- **Decisions:** ports on the ocean hex; minimap stays removed; 10 Hz simulation; the warzone
+  brief file is the source. The native-v4 ruleset is still unreleased, so these were folded into it.
+- **Pace and AI:** `WORKS_TEMPO` (infantry 0.42, wheeled/tracked 0.47, construction and research
+  0.45, production/training/growth 0.50); AI empires plan every 4 s (rebels 6 s).
+- **Direct fire:** tank and fortress guns fire flat, fast shots with heavy muzzle blast, dust,
+  recoil on the firing vehicle and a penetrating impact; artillery keeps its arcs.
+- **Water ports:** placement on owned ocean hexes beside owned shore, embarkation by entering the
+  port hex, freight landing on the shore, AI/governor via the same rule, piled deck rendering.
+- **Warzone (brief §4–§11, §15, §18):** bounded saved impact records (class, local position,
+  severity, seed) with fog-safe memory; scorch and aggregated vehicle/infantry wear channels;
+  per-impact crater bowls that merge into basins, shallower on rock; rain pooling in bowls;
+  terrain-specific scar colour (soil, rock, sand, wetland, urban rubble), scorch, ruts;
+  type-specific wrecks; battlefield conditions in the hover inspector. Save format v2 migrates
+  older battlefields (no impacts recorded until new fighting).
+- **Also:** zoom-scaled hillshade for mountain mass, civic plaza at city tier 1+, presentation
+  state reset on reload, V follows the selected unit.
+
 ## Long-game rendering fix and second backlog pass (2026-11-07)
 
 - **Buildings stopped rendering in long games:** every frame whose network work exceeded 0.5 ms

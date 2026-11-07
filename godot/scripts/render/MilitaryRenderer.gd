@@ -22,6 +22,7 @@ var motions := {}        # id -> { last: Vector2, yaw: float }
 var draw_positions := {} # id -> Vector3, also used by picking and path drawing
 var ring_batch: MultiMeshInstance3D
 var ground_cache := {}
+var recoils := {}        # unit id -> msec of its last direct-fire shot (recoil presentation)
 var dug_in: MultiMeshInstance3D   # sandbag crescents under fortified ground troops (cosmetic)
 
 
@@ -125,6 +126,13 @@ func update(dt: float) -> void:
 		node.position = Vector3(x, y, p.y)
 		draw_positions[id] = node.position
 		(r.mesh as Node3D).rotation = Vector3(0, float(r.yaw), 0)
+		# direct-fire recoil: the hull rocks back and settles within a third of a second
+		var kick:=0.0
+		if recoils.has(id):
+			var age:=(Time.get_ticks_msec()-int(recoils[id]))/1000.0
+			if age>.35: recoils.erase(id)
+			else: kick=sin(minf(age/.35,1.0)*PI)*.035*(1.0-age/.35)
+		(r.mesh as Node3D).position=Vector3(-cos(float(r.yaw))*kick,0,sin(float(r.yaw))*kick)
 		(r.mesh as Node3D).scale = Vector3(1,1.0 if animation=="cover" else float(pose.height_scale),1)
 		if r.get("turret")!=null:
 			(r.turret as Node3D).rotation.y=_target_yaw(u,p,float(r.yaw))
@@ -171,6 +179,10 @@ func _update_dug_in() -> void:
 		mm.set_instance_transform(n,Transform3D(Basis(Vector3.UP,yaw),Vector3(p.x,world.ground_height(p.x,p.z),p.z)))
 		n+=1
 	mm.visible_instance_count=n
+
+
+func recoil(id:int) -> void:
+	if world.units.has(id): recoils[id]=Time.get_ticks_msec()
 
 
 func _clear_batches() -> void:

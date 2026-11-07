@@ -32,6 +32,7 @@ var composition: WorldCompositionSystem
 var director: CombatPresentationDirector
 var military: MilitaryRenderer
 var dust_clock := 0.0
+const DIRECT_FIRE := ["cannon", "fortgun"]
 var audio: AudioDirector
 
 
@@ -152,10 +153,49 @@ func _build_field() -> void:
 		var off := Vector3(rng.randf_range(-0.4, 0.4), 0, rng.randf_range(-0.4, 0.4))
 		var y := world.ground_height(p.x + off.x, p.z + off.z)
 		kit.set_frame(Vector3(p.x + off.x, y, p.z + off.z), rng.randf() * TAU)
-		kit.box("char", Vector3(0, 0, 0), Vector3(0.28, 0.06, 0.15), Color(0.9, 0.85, 0.8))
-		kit.box("char", Vector3(-0.03, 0.06, 0.02), Vector3(0.12, 0.04, 0.1), Color(0.8, 0.75, 0.7), 0.4)
-		kit.box("steel", Vector3(0.12, 0.08, 0.06), Vector3(0.16, 0.014, 0.014), Color(0.4, 0.38, 0.36), 0.7)
+		_wreck(kit, str(wr[1]), int(wr[2]) == 1, rng)
 	field.mesh = kit.commit() if not kit.is_empty() else null
+
+
+## Recognizable remains by recorded unit type (warzone brief §9): burnt, broken and settled,
+## never a generic box. Burning wrecks (server state) glow at their core.
+func _wreck(kit: MeshKit, type: String, burning: bool, rng: RandomNumberGenerator) -> void:
+	var burnt := Color(0.42, 0.38, 0.34); var rust := Color(0.5, 0.36, 0.26)
+	match type:
+		"tank", "autonomous_tank", "sp_artillery", "mech_infantry":
+			kit.box("char", Vector3(0, 0, 0), Vector3(0.3, 0.06, 0.17), burnt)
+			for z in [-0.075, 0.075]: kit.box("char", Vector3(0, 0, z), Vector3(0.31, 0.035, 0.03), Color(0.3, 0.29, 0.28))
+			if type != "mech_infantry":
+				# the turret blown off and lying beside the hull, its barrel askew
+				var thrown := Vector3(rng.randf_range(0.12, 0.2), 0, rng.randf_range(-0.16, 0.16))
+				kit.box("char", thrown, Vector3(0.11, 0.045, 0.1), burnt, rng.randf() * TAU)
+				kit.box("steel", thrown + Vector3(0.07, 0.02, 0.02), Vector3(0.16, 0.013, 0.013), Color(0.35, 0.33, 0.31), rng.randf_range(-0.6, 0.6))
+			else:
+				kit.box("char", Vector3(-0.02, 0.06, 0), Vector3(0.18, 0.04, 0.14), burnt)
+		"armored_car", "air_defense", "scout_buggy", "supply_truck", "missile_battery":
+			kit.box("char", Vector3(0, 0.02, 0), Vector3(0.24, 0.05, 0.12), rust, 0.08)
+			for x in [-0.08, 0.08]:
+				for z in [-0.065, 0.065]: kit.cylinder("char", Vector3(x, 0, z), 0.025, 0.012, 6, Color(0.2, 0.2, 0.2))
+			if type == "supply_truck": kit.box("steel", Vector3(-0.05, 0.07, 0), Vector3(0.12, 0.012, 0.12), Color(0.45, 0.42, 0.38), 0.2)
+		"helicopter":
+			kit.box("char", Vector3(0, 0, 0), Vector3(0.22, 0.06, 0.07), burnt, 0.3)
+			kit.box("char", Vector3(-0.17, 0.0, 0.03), Vector3(0.14, 0.02, 0.02), burnt, 0.6)
+			kit.box("steel", Vector3(0.05, 0.065, 0.0), Vector3(0.3, 0.004, 0.02), Color(0.3, 0.3, 0.3), 1.1)
+		"fighter", "bomber", "recon_drone", "oneway_drone":
+			var s := 1.4 if type == "bomber" else 1.0 if type == "fighter" else 0.5
+			kit.box("char", Vector3(0, 0, 0), Vector3(0.24 * s, 0.03, 0.05 * s), burnt)
+			kit.box("char", Vector3(0.12 * s, 0, 0.12 * s), Vector3(0.1 * s, 0.01, 0.16 * s), burnt, 0.5)
+			for k in 4: kit.box("steel", Vector3(rng.randf_range(-0.3, 0.3), 0, rng.randf_range(-0.25, 0.25)), Vector3(0.04, 0.008, 0.03), Color(0.5, 0.5, 0.5), rng.randf() * TAU)
+		"field_gun":
+			kit.box("char", Vector3(0, 0.0, 0), Vector3(0.1, 0.04, 0.12), burnt)
+			kit.box("steel", Vector3(0.08, 0.03, 0), Vector3(0.18, 0.014, 0.014), Color(0.35, 0.33, 0.31), 0.35)
+			kit.cylinder("char", Vector3(0, 0, 0.08), 0.03, 0.01, 8, Color(0.2, 0.2, 0.2))
+		_:
+			kit.box("char", Vector3(0, 0, 0), Vector3(0.22, 0.05, 0.13), burnt)
+			kit.box("steel", Vector3(0.09, 0.06, 0.04), Vector3(0.12, 0.014, 0.014), Color(0.4, 0.38, 0.36), 0.7)
+	for k in 3:   # small scattered debris; settled, not simulated
+		kit.box("steel", Vector3(rng.randf_range(-0.25, 0.25), 0, rng.randf_range(-0.22, 0.22)), Vector3(0.03, 0.01, 0.025), Color(0.4, 0.38, 0.35), rng.randf() * TAU)
+	if burning: kit.box("glow:ff7a2a", Vector3(0, 0.03, 0), Vector3(0.12, 0.05, 0.08), Color.WHITE)
 
 
 ## Irregular terrain-following marks are intentionally flat; true depressions require a shared
@@ -245,11 +285,29 @@ func _on_events(ev: Array) -> void:
 					_spawn("flash", _source_point(e,0.15), Vector3.ZERO, 0.14, Color(1.0, 0.75, 0.35), 0.14)
 					if cam.size<35: _spawn("smoke",_source_point(e,.14),Vector3.ZERO,2.2,Color(.52,.50,.47),.20)
 				if b >= 0:
-					var src := _source_point(e,0.15) if a >= 0 else _tile_point(b, 4.0)
-					var flight := clampf(float(e.get("f", 1.0)), 0.3, 6.0)
-					_spawn("shell", src, _tile_point(b, 0.05), flight, Color.WHITE, minf(3.0, 0.6 + float(g.dist(maxi(a, 0), b)) * 0.25))
+					var weapon := _weapon(e)
+					if weapon in DIRECT_FIRE and a >= 0:
+						# Tank and fortress guns fire flat: a fast straight shot, heavy muzzle blast,
+						# ground dust thrown by the blast and recoil on the firing vehicle.
+						var muzzle := _source_point(e, 0.1)
+						var aim := _tile_point(b, 0.07)
+						_spawn("flash", muzzle, Vector3.ZERO, 0.12, Color(1.0, 0.9, 0.55), 0.2)
+						_spawn("dust", muzzle - Vector3(0, 0.07, 0), Vector3.ZERO, 1.1, Color(0.62, 0.56, 0.47), 0.22)
+						_spawn("shell", muzzle, aim, clampf(float(g.dist(a, b)) * 0.06, 0.08, 0.35), Color.WHITE, 0.0)
+						_spawn("tracer", muzzle, aim, 0.12, Color(1.0, 0.8, 0.45), 0.0)
+						if military and int(e.get("sb", 0)) == 0: military.recoil(int(e.get("s", -1)))
+						if cam.shake_enabled and muzzle.distance_to(cam.focus) < 10: cam.shake_time = maxf(cam.shake_time, .12)
+					else:
+						var src := _source_point(e,0.15) if a >= 0 else _tile_point(b, 4.0)
+						var flight := clampf(float(e.get("f", 1.0)), 0.3, 6.0)
+						_spawn("shell", src, _tile_point(b, 0.05), flight, Color.WHITE, minf(3.0, 0.6 + float(g.dist(maxi(a, 0), b)) * 0.25))
 			"impact":
-				if b >= 0:
+				if b >= 0 and _weapon(e) in DIRECT_FIRE:
+					var at := _tile_point(b, 0.08, int(e.get("p", 0)))
+					_spawn("blast", at, Vector3.ZERO, 0.22, Color(1.0, 0.75, 0.4), 0.16)
+					_spawn("dust", at, Vector3.ZERO, 1.3, Color(0.5, 0.45, 0.38), 0.24)
+					if cam.size < 30: _spawn("smoke", at + Vector3(0, .04, 0), Vector3.ZERO, 1.8, Color(.4, .39, .37), .12)
+				elif b >= 0:
 					var big := float(e.get("r", 0)) > 0.0
 					_spawn("blast", _tile_point(b, 0.08, int(e.get("p", 0))), Vector3.ZERO, 0.4 if big else 0.28, Color(1.0, 0.55, 0.2), 0.2 if big else 0.12)
 					_spawn("dust", _tile_point(b, 0.1, int(e.get("p", 0))), Vector3.ZERO, 1.6, Color(0.55, 0.5, 0.44), 0.3)
@@ -268,6 +326,12 @@ func _on_events(ev: Array) -> void:
 						_spawn("dust", _tile_point(b, 0.09, 17), Vector3.ZERO, 2.0, Color(0.46, 0.41, 0.35), 0.25)
 						_spawn("smoke",_tile_point(b,.14),Vector3.ZERO,3.0,Color(.28,.28,.27),.25)
 						_spawn("flame",_tile_point(b,.13),Vector3.ZERO,.75,Color(1.0,.28,.04),.14)
+
+
+func _weapon(event: Dictionary) -> String:
+	var keys: Array = world.defs.get("WEAPON_KEYS", [])
+	var index := int(event.get("w", -1))
+	return str(keys[index]) if index >= 0 and index < keys.size() else ""
 
 
 ## Use only an authorized, currently rendered source; fog-filtered events intentionally lack it.

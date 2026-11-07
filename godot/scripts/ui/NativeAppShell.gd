@@ -275,6 +275,12 @@ func _input(event:InputEvent) -> void:
 		if app.workspace.panel.visible and app.workspace.page=="Research": app.workspace.panel.hide()
 		else: app.workspace.open_page("Research")
 		app.get_viewport().set_input_as_handled()
+	elif code==KEY_V and not event.ctrl_pressed and not event.meta_pressed and not app.world.spectator:
+		# V: follow the selected unit with the camera, or stop following
+		var picked:Array=app.military.selected.keys()
+		if app.cam.follow_id>=0: app.cam.follow_id=-1
+		elif not picked.is_empty(): app.cam.follow_id=int(picked[0])
+		app.get_viewport().set_input_as_handled()
 	elif code==KEY_M:
 		prefs.values.mute=not bool(prefs.values.mute); prefs.save()
 		app.audio.enabled=not bool(prefs.values.mute); AudioServer.set_bus_mute(0,bool(prefs.values.mute))

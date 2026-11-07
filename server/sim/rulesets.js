@@ -26,6 +26,14 @@ export const EXPANSIVE_TEMPO = Object.freeze({ ...DELIBERATE_TEMPO,
   research: .55, construction: .55, training: .60, populationGrowth: .60,
   infrastructureConstruction: .60, trenchConstruction: .50,
 });
+// native-v4 pace: a further slowdown on top of v3 for movement, building, research, training and
+// growth. Production and its matching consumption move together, preserving the food balance.
+export const WORKS_TEMPO = Object.freeze({ ...EXPANSIVE_TEMPO,
+  infantryMovement: .42, wheeledMovement: .47, trackedMovement: .47,
+  logisticsMovement: .52, aircraftMovement: .70, production: .50,
+  research: .45, construction: .45, training: .50, populationGrowth: .50,
+  infrastructureConstruction: .50, trenchConstruction: .42,
+});
 export const REMOVED_TECHS = new Set(['corporate_charter', 'federal_union']);
 export const REMOVED_COMMANDS = new Set(['gov', 'policy', 'tax', 'focus', 'import', 'importQuote', 'respond', 'workforce', 'workforcePreview', 'workerLock', 'govProposal']);
 export const nativeRules = (subject) => [NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET].includes(subject?.ruleset);
@@ -34,7 +42,7 @@ export function validateRuleset(id = LEGACY_RULESET) {
   if (![LEGACY_RULESET, NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET].includes(id)) throw new Error(`Unsupported match ruleset: ${id}`);
   return id;
 }
-export const tempo = (subject, key) => subject?.ruleset === EXPANSIVE_RULESET || subject?.ruleset === WORKS_RULESET ? EXPANSIVE_TEMPO[key] : subject?.ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO[key] : subject?.ruleset === NATIVE_RULESET ? TEMPO[key] : 1;
+export const tempo = (subject, key) => subject?.ruleset === WORKS_RULESET ? WORKS_TEMPO[key] : subject?.ruleset === EXPANSIVE_RULESET ? EXPANSIVE_TEMPO[key] : subject?.ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO[key] : subject?.ruleset === NATIVE_RULESET ? TEMPO[key] : 1;
 export const techEnabled = (civ, key) => !nativeRules(civ) || !REMOVED_TECHS.has(key);
 // native-v4: indirect-fire crews haul guns, tubes and ammunition. They move more slowly and are
 // more fragile than comparable line troops, so they belong behind the front, not leading it.
@@ -69,6 +77,6 @@ export function nativeDefinitions(defs, ruleset = NATIVE_RULESET) {
     const after = Object.values(out.TECHS).filter((t) => t.age === age - 1).length;
     out.AGES[age].techsNeeded = Math.max(1, Math.min(after, Math.floor(defs.AGES[age].techsNeeded * after / before)));
   }
-  out.RULESET = { id: ruleset, tempo: ruleset === EXPANSIVE_RULESET || ruleset === WORKS_RULESET ? EXPANSIVE_TEMPO : ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO : TEMPO, trading: false, administration: 'automatic', timedWorks: ruleset === WORKS_RULESET };
+  out.RULESET = { id: ruleset, tempo: ruleset === WORKS_RULESET ? WORKS_TEMPO : ruleset === EXPANSIVE_RULESET ? EXPANSIVE_TEMPO : ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO : TEMPO, trading: false, administration: 'automatic', timedWorks: ruleset === WORKS_RULESET };
   return out;
 }

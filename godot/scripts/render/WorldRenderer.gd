@@ -310,7 +310,10 @@ func _append_crater_vertex(tile:int,c:Vector3,a:Vector3,b:Vector3,nc:Vector3,na:
 	vertex.y+=world.visual_crater_delta(tile,vertex.x,vertex.z)
 	(build_job.vt as Array).append(vertex)
 	(build_job.nt as Array).append(Vector3(normal.x-dx*normal.y,normal.y,normal.z-dz*normal.y).normalized())
-	(build_job.ct as Array).append(cc*weight+ca*p.x+cb*p.y)
+	# vertex alpha carries the crater bowl (1 = level ground) so rain can pool in real hollows
+	var tint:Color=cc*weight+ca*p.x+cb*p.y
+	tint.a=1.0-world.crater_bowl(tile,vertex.x,vertex.z)
+	(build_job.ct as Array).append(tint)
 	(build_job.ut as Array).append(uv)
 
 
@@ -555,12 +558,30 @@ void fragment() {
 	vec2 wuv = vec2(wpos.x / weather_extent.x, wpos.z / weather_extent.y);
 	float wet = texture(wet_tex, wuv).r * step(0.0, wpos.y);
 	vec2 battle_uv = vec2(wpos.x/1.7320508 - .5*mod(floor(wpos.z/1.5+.5),2.0), wpos.z/1.5);
-	float scar = texture(battle_scar,(battle_uv+vec2(.5))/battle_cells).r * battle_active * step(.01,wpos.y);
-	base = mix(base,vec3(.24,.20,.15)*(0.8+0.3*n),scar*.8);
+	// Warzone material field: scar colour follows the ground it damages (soil, rock/scree, sand,
+	// wetland mud, urban rubble); scorch blackens, tracks rut the soil, and rain pools in bowls.
+	vec4 field = texture(battle_scar,(battle_uv+vec2(.5))/battle_cells) * battle_active * step(.01,wpos.y);
+	vec4 cls_texel = texelFetch(battle_scar, clamp(ivec2(battle_uv+vec2(.5)), ivec2(0), ivec2(battle_cells)-ivec2(1)), 0);
+	int ground_class = int(round(cls_texel.a*4.0));
+	vec3 scar_color = vec3(.24,.20,.15);
+	if (ground_class==1) scar_color = vec3(.40,.38,.35);
+	else if (ground_class==2) scar_color = vec3(.58,.50,.37);
+	else if (ground_class==3) scar_color = vec3(.15,.14,.11);
+	else if (ground_class==4) scar_color = vec3(.42,.41,.39);
+	float scar = field.r;
+	base = mix(base,scar_color*(0.8+0.3*n),scar*.8);
+	base = mix(base,vec3(.06,.055,.05)*(0.85+0.3*n),smoothstep(.05,.9,field.g)*.75);
+	float ruts = smoothstep(.55,.95,abs(sin(dot(wpos.xz,vec2(.83,.56))*38.0+noise(wpos.xz*2.0)*3.0)));
+	base = mix(base,scar_color*1.1,field.b*(.35+.45*ruts)*(ground_class==4?0.0:1.0));
 	wet = max(wet,scar*wet);
+	float pooled = smoothstep(.25,.75,1.0-COLOR.a) * smoothstep(.2,.6,wet) * battle_active;
+	base = mix(base,vec3(.10,.12,.12),pooled*.85);
 	base *= 1.0 - 0.3 * wet;
 	base = mix(base, vec3(.80,.82,.85)*(.92+.1*n), snow_cover*(1.0-smoothstep(.15,.4,slope))*step(.01,wpos.y)*.8);
 	base = territory_tint(base, wpos.xz);
+	// hillshade grows with zoom-out so ridges and massifs keep their form at strategic scale
+	float relief = clamp(dot(wn, normalize(vec3(-.55,.72,-.42))), 0.0, 1.0);
+	base *= mix(1.0, .62 + .62 * relief, clamp((fog_view_size - 25.0) / 90.0, 0.0, .85) * smoothstep(.04, .25, slope));
 	float shade = cloud_shadow(wpos);
 	vec2 knowledge=surface_visibility(wpos.xz);
 	ALBEDO=remembered_surface(base,knowledge.y)*shade;

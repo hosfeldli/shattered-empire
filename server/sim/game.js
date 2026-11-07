@@ -79,8 +79,8 @@ function makeScheduler(g) {
     { name: 'trade', every: 50, phase: 47, fn: () => { recomputeTradeNetwork(g); g.roads.decayTraffic(); }, budget: 15 },
     { name: 'migration', every: 100, phase: 89, fn: () => migrationStep(g), budget: 5 },
     { name: 'recovery', every: 300, phase: 283, fn: () => recoveryStep(g), budget: 10 },
-    // AI planning: each empire thinks every 2 s, staggered; deferrable when a tick runs long
-    { name: 'aiQueue', budget: 1, fn: (gg, t) => { const due = gg.aiDue || (gg.aiDue = new Set()); for (const civ of gg.civs) if (civ.ai && civ.alive && (t + civ.id * 7) % (civ.isRebel ? 30 : 20) === 0) due.add(civ.id); } },
+    // AI planning: each empire thinks every 2 s (4 s in native-v4), staggered; deferrable when a tick runs long
+    { name: 'aiQueue', budget: 1, fn: (gg, t) => { const due = gg.aiDue || (gg.aiDue = new Set()); for (const civ of gg.civs) if (civ.ai && civ.alive && (t + civ.id * 7) % ((civ.isRebel ? 30 : 20) * (timedWorks(gg) ? 2 : 1)) === 0) due.add(civ.id); } },
     { name: 'ai', deferrable: true, budget: 20, fn: (gg) => {
       const due = gg.aiDue; if (!due || !due.size) return;
       for (const id of [...due].sort((a, b) => a - b)) { const civ = gg.civs[id]; if (civ.ai && civ.alive) civ.ai.think(); }
@@ -286,7 +286,10 @@ export class Game {
     if (this.tileB[t] >= 0) return false;
     const ruin = this.ruins.get(t);
     if (ruin && ruin.type !== type) return false;            // clear the rubble first (engineers / governor)
-    if (w.river[t] || isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return false;
+    // native-v4: a port is built on the coastal ocean hex itself, its quay against our shore
+    const waterPort = type === 'port' && timedWorks(this);
+    if (waterPort) { if (!this.waterPortSite(civ, t)) return false; }
+    else if (w.river[t] || isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return false;
     if (def.anywhere) { if (w.owner[t] !== civ.id && !civ.supply[t]) return false; if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return false; }
     else if (w.owner[t] !== civ.id) return false;
     if (def.wonder && [...this.buildings.values()].some((b) => b.type === 'wonder' && b.owner === civ.id)) return false;
@@ -295,9 +298,16 @@ export class Game {
       let n = 0; for (const b of this.buildings.values()) if (b.type === 'house' && b.cityId === cid) n++;
       if (n >= this.maxHouses(civ)) return false;
     }
-    if (!this.terrainOk(def, t)) return false;
+    if (!waterPort && !this.terrainOk(def, t)) return false;
     if (!ignoreCost && !this.canAfford(civ, this.buildingCost(civ, type, t), t)) return false;
     return true;
+  }
+  // an ocean (not lake or river) hex in our waters with a dry shore hex of ours beside it
+  waterPortSite(civ, t) {
+    const w = this.world;
+    if (!isWater(w.terr[t]) || w.lake[t] || w.river[t] || w.owner[t] !== civ.id) return false;
+    for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && !isWater(w.terr[n]) && !w.river[n] && w.owner[n] === civ.id && Number.isFinite(TERRAIN[w.terr[n]].move)) return true; }
+    return false;
   }
 
   // the building's terrain or deposit rule (shared by placement, previews and resource advice)
@@ -1194,6 +1204,7 @@ export class Game {
             const valid = this.canPlace(civ, cmd.type, tile, true), cost = this.buildingCost(civ, cmd.type, tile);
             let reason = '';
             if (!valid) reason = this.tileB[tile] >= 0 ? 'This site already has a building' : def.tech && !civ.techs.has(def.tech) ? 'Research ' + TECHS[def.tech].name + ' first' : def.age > civ.age ? 'Requires a later era' : isWater(this.world.terr[tile]) || this.world.river[tile] ? 'Choose dry land beside the water' : !this.terrainOk(def, tile) ? 'Requires suitable terrain or a resource deposit' : this.world.owner[tile] !== civ.id ? 'Choose a site in your territory' : 'Site unavailable: check city capacity or clear the ruins';
+            if (!valid && cmd.type === 'port' && timedWorks(this) && this.tileB[tile] < 0 && def.age <= civ.age) reason = 'Ports are built on an ocean hex in your waters, beside your own shore';
             const local = this.poolAt(civ, tile);
             const missing = Object.fromEntries(Object.entries(cost).map(([key, amount]) => [key, Math.max(0, amount - ((local && key !== 'credits' ? local[key] : civ.res[key]) || 0))]).filter(([, amount]) => amount > 0));
             return { reply: { t: 'placement', site: { tile, valid, reason, cost, missing, queued: valid && !this.canAfford(civ, cost, tile), seconds: Math.ceil(def.time / (tempo(this, 'construction') * (1 + (techFx(civ).build || 0)))) } } };

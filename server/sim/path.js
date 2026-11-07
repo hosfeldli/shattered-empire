@@ -33,8 +33,9 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
   if (isWater(tb)) {
     if (!civ.techs.has('seafaring')) return Infinity;
     if (!isWater(ta)) {
-      const pb = game.buildingAtTile(a);
-      if (!pb || pb.type !== 'port' || pb.owner !== civ.id || (pb.state !== 'operational' && pb.state !== 'damaged')) return Infinity; // embark only at own ports
+      // embark only at own ports: a shore port (older rules) or a port on the water hex entered
+      const usable = (pb) => pb && pb.type === 'port' && pb.owner === civ.id && (pb.state === 'operational' || pb.state === 'damaged');
+      if (!usable(game.buildingAtTile(a)) && !usable(game.buildingAtTile(b))) return Infinity;
     }
     return tb === T.DEEP ? 0.6 : 0.7;
   }

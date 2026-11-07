@@ -13,7 +13,7 @@ import { transferCity, recomputeTerritory } from './economy.js';
 import { siegeDamage } from './cities.js';
 import { fireUnit, fireBuilding, chooseTarget, firingPosition, coverPosition, emit, onUnitLost, CS, lineOfFire } from './combat.js';
 import { UNIT_WEAPON, WEAPONS, BUILDING_WEAPON, weaponVs } from './weapons.js';
-import { addWreck, engineerClear, scarCost } from './battlefield.js';
+import { addWreck, engineerClear, scarCost, addWear } from './battlefield.js';
 
 export function spawnUnit(g, civ, type, tile) {
   const def = UNITS[type];
@@ -222,6 +222,7 @@ export function unitsStep(g, dt) {
       if (u.prog >= 1) {
         if (!isAir(u)) g.roads.noteTraffic(u.tile, nxt, def.move === 'infantry' ? 0.5 : 1);
         u.tile = nxt; u.path.shift(); u.prog = 0; u.next = -1; u.blockTries = 0;
+        if (!def.air) addWear(g, nxt, def.move);
 
       }
     } else if (!u.field) {

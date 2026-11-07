@@ -434,7 +434,7 @@ func _append_building(b: Dictionary, job: Dictionary, skip_model := false) -> vo
 	kit.set_frame(lc, 0.0)
 	if int(b.get("d", 0)) == 1 and not skip_model:
 		if not _parcel_frame(kit,b): return
-		if str(b.ty)!="house" and str(b.ty)!="farm":
+		if str(b.ty)!="house" and str(b.ty)!="farm" and not is_water_port(b):
 			_site_foundation(kit,int(b.id))
 		_building(kit, b, _tint(b))
 	if group != "":
@@ -550,7 +550,7 @@ func preview_mesh(type:String,tile:int,adjacency:=true,level:=1,tier:=0,hp:=100,
 	var kit:=MeshKit.new(); var center:=world.grid.center(tile)
 	kit.set_frame(Vector3(center.x,world.tile_height(tile),center.y),0)
 	if not _parcel_frame(kit,record): return null
-	if not type in ["house","farm"]: _site_foundation(kit,int(record.id))
+	if not type in ["house","farm"] and not is_water_port(record): _site_foundation(kit,int(record.id))
 	_building(kit,record,Color.WHITE)
 	var group:=str(GROUP.get(type,""))
 	if adjacency and not group.is_empty():
@@ -584,7 +584,30 @@ func parcel_transform(b:Dictionary) -> Transform3D:
 	return Transform3D(Basis(Vector3.UP,yaw),offset)
 
 
+## A port on an ocean hex: a piled deck at water level, warehouse side toward our shore.
+func _water_port_frame(kit:MeshKit,b:Dictionary) -> bool:
+	var tile:=int(b.t); var g:=world.grid; var center:=g.center(tile)
+	var shore:=Vector2.ZERO; var count:=0
+	for d in 6:
+		var nb:=g.nb[tile*6+d]
+		if nb>=0 and world.known[nb] and not world.is_sea(nb) and not world.is_lake(nb): shore+=g.dir_vec[d]; count+=1
+	if count==0: shore=Vector2.LEFT
+	var away:=-shore.normalized()
+	var yaw:=atan2(-away.y,away.x)
+	var level:=world.water_level(tile)
+	if level<=-1e6: level=world.tile_height(tile)
+	var origin:=Vector3(g.near_x(center.x,kit.origin.x),level+.03,center.y)
+	kit.basis=Basis(Vector3.UP,yaw); kit.origin=origin
+	site_records[int(b.id)]={"valid":true,"transform":Transform3D(kit.basis,origin),"half_size":Vector2(.5,.45),"scale":1.0,"water":true}
+	return true
+
+
+func is_water_port(b:Dictionary) -> bool:
+	return str(b.ty)=="port" and world.grid!=null and world.is_sea(int(b.t))
+
+
 func _parcel_frame(kit:MeshKit,b:Dictionary) -> bool:
+	if is_water_port(b): return _water_port_frame(kit,b)
 	var variation:=parcel_transform(b)
 	if str(b.ty)!="house":
 		var half:=Vector2(.54,.44)
@@ -798,6 +821,11 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 	var definition:Dictionary=world.defs.get("BUILDINGS",{}).get(str(b.ty),{})
 	DevelopedBuildingLibrary.development(kit,b,definition,tint)
 	if DevelopedBuildingLibrary.compose(kit,b,ty,tint): return
+	if ty=="port" and is_water_port(b):
+		# piled concrete deck standing in the water, under the terminal
+		kit.box("concrete",Vector3(.05,-.07,0),Vector3(1.0,.05,.82),Color(.74,.73,.7))
+		for x in [-.4,-.13,.14,.41]:
+			for z in [-.34,0,.34]: kit.cylinder("concrete",Vector3(x,-.3,z),.025,.25,6,Color(.6,.6,.58))
 	if ModernBuildingLibrary.compose(kit,b,ty,tint,world.civ_color(int(b.o))): return
 	match ty:
 		"house":
@@ -1031,6 +1059,13 @@ func _build_ruins() -> void:
 
 func _city_growth(kit:MeshKit,tier:int,tint:Color) -> void:
 	if tier>=1:
+		# a civic plaza in front of the hub: paving, a memorial to the old world and young trees
+		kit.box("paving",Vector3(0,.004,.3),Vector3(.42,.01,.2),Color(.88,.86,.82))
+		kit.box("stone",Vector3(0,.01,.3),Vector3(.05,.05,.05),Color(.8,.78,.74))
+		kit.box("stone",Vector3(0,.06,.3),Vector3(.022,.11,.022),Color(.84,.82,.78))
+		for x in [-.17,.17]:
+			kit.cylinder("bark",Vector3(x,.01,.34),.008,.05,5)
+			kit.cone("foliage",Vector3(x,.05,.34),.04,.09,7,Color(.8,.95,.75))
 		kit.box("brick",Vector3(-.26,.025,.25),Vector3(.22,.17,.18),tint)
 		kit.gable("roof_tile",Vector3(-.26,.195,.25),.18,.22,.07,tint)
 	if tier>=2:

@@ -99,6 +99,9 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 
 
 func _clear() -> void:
+	# a reload or new world starts from clean presentation state: no stale snow, flash or wind
+	snow_level = 0.0; flash = 0.0
+	RenderingServer.global_shader_parameter_set(&"snow_cover", 0.0)
 	for p in props.values():
 		(p.trees as Node).queue_free()
 		if p.has("broad"): (p.broad as Node).queue_free()
