@@ -152,7 +152,7 @@ func _road(kit: MeshKit, a: Vector2, b: Vector2, ty: int, broken: bool) -> void:
 		else:
 			kit.strip(MAT[ty], prev, p, w, col)
 			if ty >= 2:
-				kit.strip("paving", prev + Vector3(0, 0.002, 0), p + Vector3(0, 0.002, 0), 0.008, Color(1.3, 1.3, 1.2))
+				kit.strip("concrete", prev + Vector3(0, 0.002, 0), p + Vector3(0, 0.002, 0), 0.008, Color(1.3, 1.3, 1.2))
 		prev = p
 
 

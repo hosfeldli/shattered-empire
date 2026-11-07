@@ -165,15 +165,11 @@ test('buildings go operational -> damaged -> ruined, ruins can be rebuilt at hal
   assert.equal(planned.state, 'construction');
 });
 
-test('rebels raise camps in the wilds, never near starting empires', () => {
+test('rebel factions are removed: no rebel civilization or camps exist', () => {
   const g = new Game({ id: 'reb', seed: 5, slots: [{ personality: 'builder' }, { personality: 'warlord' }] });
-  const rebels = g.rebelCiv();
-  assert.ok(rebels);
-  const camps = [...g.buildings.values()].filter((b) => b.type === 'camp');
-  assert.ok(camps.length >= 2);
-  for (const c of camps) for (const s of g.world.starts) assert.ok(dist(c.tile, s) >= 16);
-  run(g, 3000);
-  assert.ok([...g.units.values()].some((u) => u.owner === rebels.id), 'rebels field raiders');
+  assert.equal(g.rebelCiv(), null);
+  assert.ok(g.civs.every((c) => !c.isRebel));
+  assert.equal([...g.buildings.values()].filter((b) => b.type === 'camp').length, 0);
 });
 
 test('army groups: offensive preparation stages, then launches when ready', () => {

@@ -32,7 +32,9 @@ var composition: WorldCompositionSystem
 var director: CombatPresentationDirector
 var military: MilitaryRenderer
 var dust_clock := 0.0
+var smoke_field := SmokeField.new()
 const DIRECT_FIRE := ["cannon", "fortgun"]
+const ROCKETS := ["rockets", "missile", "warhead", "drone_strike", "aam"]
 var audio: AudioDirector
 
 
@@ -82,7 +84,7 @@ func _clear() -> void:
 	fw_version = -1
 	defense_version=-1; defense_signature=""; trench_geo_version=-1
 	trenches.mesh=null
-	field.mesh=null; smoke_list.clear(); smoke.multimesh.visible_instance_count=0
+	field.mesh=null; smoke_list.clear(); smoke_field.clear(); smoke.multimesh.visible_instance_count=0
 	if terrain: terrain.terrain_mat.set_shader_parameter("trench_active",0.0)
 	for e in fx:
 		(e.node as MeshInstance3D).transparency = 0.0
@@ -238,6 +240,10 @@ func _build_trenches() -> void:
 
 
 func _update_smoke() -> void:
+	# Close and operational views use the simulated smoke field; strategic views keep light puffs.
+	if cam.size < 40.0:
+		_update_smoke_field(); return
+	smoke_field.clear()
 	var mm := smoke.multimesh
 	var g := world.grid
 	var cx := cam.focus.x
@@ -263,23 +269,67 @@ func _update_smoke() -> void:
 	mm.visible_instance_count = n
 
 
+func _update_smoke_field() -> void:
+	var g := world.grid
+	var period := g.period if g.wrap else 0.0
+	smoke_field.recentre(Vector2(cam.focus.x, cam.focus.z), period)
+	var sources := []
+	for s in smoke_list: sources.append([float(s[0]), float(s[1]), float(s[2])])
+	var wind := composition.weather.wind_at_world(Vector2(cam.focus.x, cam.focus.z)) if composition else Vector2(.3, .1)
+	smoke_field.step(get_process_delta_time() if is_inside_tree() else 1.0 / 60.0, sources, wind, period)
+	var mm := smoke.multimesh
+	var cap := mini(mm.instance_count, composition.lod.budget("battle_puffs", cam.size) if composition else 400)
+	var n := 0
+	var now := Time.get_ticks_msec() / 1000.0
+	for p in smoke_field.puffs(cap):
+		var x := g.near_x(float(p[0]), cam.focus.x); var z := float(p[1]); var v := float(p[2])
+		var jitter := float(posmod(int(p[3]) * 7919, 100)) / 100.0
+		var y := maxf(world.ground_height(x, z), 0.0) + 0.12 + v * 0.35 + 0.04 * sin(now * 0.6 + jitter * 6.0)
+		var sc := 0.45 + minf(v, 1.0) * 0.9 + jitter * 0.2
+		mm.set_instance_transform(n, Transform3D(Basis(Vector3.UP, jitter * TAU).scaled(Vector3(sc * 1.3, sc * 0.8, sc * 1.3)), Vector3(x + (jitter - .5) * .1, y, z)))
+		mm.set_instance_color(n, Color(1, 1, 1, clampf(v, 0.15, 0.9)))
+		n += 1
+	mm.visible_instance_count = n
+
+
 # ------------------------------------------------------------------ transient effects
 func _on_events(ev: Array) -> void:
 	var g := world.grid
 	if director: ev=director.select(ev)
 	if audio: audio.present(ev)
+	var period := g.period if g.wrap else 0.0
 	for e in ev:
 		events_seen += 1
 		var k := str(e.get("k", ""))
 		var a := int(e.get("a", -1))
 		var b := int(e.get("b", -1))
+		# feed the smoke field from the same authorized, visible events
+		if cam.size < 40.0:
+			if k == "impact" and b >= 0:
+				var at := g.center(b); smoke_field.add(at, 0.9 if float(e.get("r", 0)) > 0.0 else 0.45, 2, period)
+			elif k in ["kill", "bkill"] and b >= 0:
+				smoke_field.add(g.center(b), 1.0, 2, period)
+			elif k in ["fire", "launch"] and a >= 0 and _weapon(e) in ["cannon", "fortgun", "howitzer", "mortar", "rockets"]:
+				smoke_field.add(g.center(a), 0.35, 1, period)
 		match k:
 			"fire":
+				var weapon := _weapon(e)
 				if a >= 0:
 					_spawn("flash", _source_point(e,0.12), Vector3.ZERO, 0.09, Color(1.0, 0.85, 0.45), 0.09)
 					if cam.size<35: _spawn("smoke",_source_point(e,.12),Vector3.ZERO,1.5,Color(.58,.57,.54),.12)
 				if a >= 0 and b >= 0 and g.dist(a, b) <= 3:
-					_spawn("tracer", _source_point(e,0.1), _tile_point(b, 0.06), 0.15, Color(1.0, 0.9, 0.6), 0.0)
+					# weapon-matched fire: single rifle tracers, machine-gun volleys, heavy cannon tracers
+					var rounds := 1
+					var tint := Color(1.0, 0.9, 0.6)
+					var spacing := 0.07
+					if weapon in ["mg", "mg_light"]: rounds = clampi(int(e.get("x", 4)), 3, 6)
+					elif weapon in ["autocannon", "flak", "airburst"]: rounds = 3; tint = Color(1.0, 0.65, 0.3); spacing = 0.13
+					for shot in rounds:
+						var aim := _tile_point(b, 0.06, shot * 13 + int(e.get("i", 0)) % 7)
+						_spawn("tracer", _source_point(e,0.1), aim, 0.15, tint, 0.0)
+						if shot > 0 and not fx.is_empty(): fx[fx.size() - 1].t = -spacing * shot
+					if weapon in ["flak", "airburst"]:
+						for burst in 3: _spawn("smoke", _tile_point(b, 1.1 + burst * .15, burst + 5), Vector3.ZERO, 1.6, Color(.16, .15, .15), .09)
 			"launch":
 				if a >= 0:
 					_spawn("flash", _source_point(e,0.15), Vector3.ZERO, 0.14, Color(1.0, 0.75, 0.35), 0.14)
@@ -297,6 +347,11 @@ func _on_events(ev: Array) -> void:
 						_spawn("tracer", muzzle, aim, 0.12, Color(1.0, 0.8, 0.45), 0.0)
 						if military and int(e.get("sb", 0)) == 0: military.recoil(int(e.get("s", -1)))
 						if cam.shake_enabled and muzzle.distance_to(cam.focus) < 10: cam.shake_time = maxf(cam.shake_time, .12)
+					elif weapon in ROCKETS:
+						# rockets and guided missiles fly a flatter, powered path and leave exhaust smoke
+						var src := _source_point(e,0.15) if a >= 0 else _tile_point(b, 4.0)
+						var flight := clampf(float(e.get("f", 1.0)), 0.3, 4.0)
+						_spawn("rocket", src, _tile_point(b, 0.05), flight, Color.WHITE, minf(1.0, 0.25 + float(g.dist(maxi(a, 0), b)) * 0.08))
 					else:
 						var src := _source_point(e,0.15) if a >= 0 else _tile_point(b, 4.0)
 						var flight := clampf(float(e.get("f", 1.0)), 0.3, 6.0)
@@ -405,9 +460,9 @@ func _spawn(kind: String, a: Vector3, b: Vector3, life: float, col: Color, size:
 	else:
 		node = fx_pool.pop_back()
 	match kind:
-		"shell":
+		"shell", "rocket":
 			node.mesh = shell_mesh
-			node.material_override = null
+			node.material_override = null if kind == "shell" else MaterialLibrary.glow(Color(1.0, 0.8, 0.5), 0.95)
 		"tracer":
 			var bm := BoxMesh.new()
 			bm.size = Vector3(1, 0.012, 0.012)
@@ -427,6 +482,7 @@ func _update_fx(dt: float) -> void:
 	var g := world.grid
 	var cx := cam.focus.x
 	var keep: Array = []
+	var trail: Array = []
 	for e in fx:
 		e.t += dt
 		var node: MeshInstance3D = e.node
@@ -440,6 +496,12 @@ func _update_fx(dt: float) -> void:
 				var p := Vector3(lerpf(a.x, bx, u), lerpf(a.y, b.y, u) + 4.0 * float(e.h) * u * (1.0 - u), lerpf(a.z, b.z, u))
 				node.position = p + Vector3(shift, 0, 0)
 				node.scale = Vector3.ONE
+			"rocket":
+				var bx := a.x + g.dx_wrap(a.x, b.x)
+				var p := Vector3(lerpf(a.x, bx, u), lerpf(a.y, b.y, u) + 4.0 * float(e.h) * u * (1.0 - u), lerpf(a.z, b.z, u))
+				node.position = p + Vector3(shift, 0, 0)
+				node.scale = Vector3.ONE * 0.8
+				if u < 1.0 and posmod(int(e.t * 60.0), 3) == 0: trail.append(p)
 			"tracer":
 				var bx := a.x + g.dx_wrap(a.x, b.x)
 				var d := Vector3(bx - a.x, b.y - a.y, b.z - a.z)
@@ -482,3 +544,4 @@ func _update_fx(dt: float) -> void:
 		else:
 			keep.append(e)
 	fx = keep
+	for point in trail: _spawn("smoke", point, Vector3.ZERO, 1.2, Color(.72, .71, .69), .05)

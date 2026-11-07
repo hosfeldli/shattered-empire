@@ -53,6 +53,8 @@ var commands:=CommandRegistry.new()
 var command_dock:NativeCommandDock
 var map_overlay:NativeMapOverlay
 var resource_strip:NativeResourceStrip
+var onboarding:NativeOnboarding
+var recipe_inspector:NativeRecipeInspector
 var world_labels:NativeWorldLabels
 var observer_bar:NativeObserverBar
 var production_feedback:NativeProductionFeedback
@@ -168,6 +170,9 @@ func _ready() -> void:
 	world_labels=NativeWorldLabels.new(); hud.root.add_child(world_labels); world_labels.setup(self)
 	input.labels=world_labels
 	resource_strip=NativeResourceStrip.new(); hud.root.add_child(resource_strip); resource_strip.setup(self)
+	terrain.territory.scheduler=composition.scheduler
+	onboarding=NativeOnboarding.new(); hud.root.add_child(onboarding); onboarding.setup(self)
+	recipe_inspector=NativeRecipeInspector.new(); hud.root.add_child(recipe_inspector); recipe_inspector.setup(self)
 	observer_bar=NativeObserverBar.new(); hud.root.add_child(observer_bar); observer_bar.setup(self)
 	production_feedback=NativeProductionFeedback.new(); hud.root.add_child(production_feedback); production_feedback.setup(self)
 	diag = Diagnostics.new()

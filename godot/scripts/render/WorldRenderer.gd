@@ -53,6 +53,9 @@ func setup(w: WorldState) -> void:
 	terrain_mat = ShaderMaterial.new()
 	terrain_mat.shader = _terrain_shader()
 	terrain_mat.set_shader_parameter("ground_detail",load("res://assets/materials/ground_natural_albedo.jpg"))
+	for layer in ["grass","soil","sand","rock","snow"]:
+		terrain_mat.set_shader_parameter("layer_"+layer,load("res://assets/materials/%s_albedo.jpg"%layer))
+	terrain_mat.set_shader_parameter("layers_ready",1.0)
 	water_mat = ShaderMaterial.new()
 	water_mat.shader = _water_shader()
 	world.welcomed.connect(_on_welcome)
@@ -466,6 +469,14 @@ uniform sampler2D vis_bits : filter_nearest;
 uniform float vis_on = 1.0;
 uniform sampler2D wet_tex : filter_linear, repeat_enable, hint_default_black;
 uniform sampler2D ground_detail : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+// Photographic CC0 ground layers (assets/materials/SOURCES.md), blended by biome palette, slope and
+// height; each is normalized by its own average so the art-directed biome colours keep the hue.
+uniform sampler2D layer_grass : source_color, filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
+uniform sampler2D layer_soil : source_color, filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
+uniform sampler2D layer_sand : source_color, filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
+uniform sampler2D layer_rock : source_color, filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
+uniform sampler2D layer_snow : source_color, filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
+uniform float layers_ready = 0.0;
 #include "res://shaders/weather_clouds.gdshaderinc"
 #include "res://shaders/visibility_fields.gdshaderinc"
 #include "res://shaders/territory_fields.gdshaderinc"
@@ -502,6 +513,17 @@ float seen(vec2 t) {
 	return float((b >> (q & 7)) & 1);
 }
 
+vec3 layer_detail(sampler2D layer, vec2 uv) {
+	vec3 t = texture(layer, uv).rgb;
+	vec3 average = max(textureLod(layer, vec2(.5), 12.0).rgb, vec3(.04));
+	float lum = dot(t, vec3(.299,.587,.114)) / max(dot(average, vec3(.299,.587,.114)), .04);
+	return mix(vec3(lum), t / average, .35);
+}
+// world-space UV that repeats a whole number of times around the wrapped world (no seam)
+vec2 wrapped_uv(vec3 p, float k) {
+	return vec2(p.x / weather_extent.x * max(1.0, round(weather_extent.x * k)), p.z * k);
+}
+
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	tile = UV2;
@@ -536,7 +558,22 @@ void fragment() {
 	vec2 ground_uv=vec2(wpos.x/weather_extent.x*max(1.0,round(weather_extent.x*.7)),wpos.z*.7);
 	vec3 surface=texture(ground_detail,ground_uv).rgb;
 	float micro=clamp(dot(surface,vec3(.299,.587,.114))*5.0,.6,1.35);
-	base*=mix(1.0,micro,.42*weights.y);
+	float far_fade = 1.0 - smoothstep(30.0, 110.0, fog_view_size);
+	base*=mix(1.0,micro,.42*weights.y*(1.0-layers_ready*far_fade));
+	if (layers_ready > .5) {
+		// biome weights from the sRGB vertex palette: green grass, warm sand, grey rock, soil otherwise
+		vec3 c = COLOR.rgb;
+		float w_grass = clamp((c.g - max(c.r, c.b)) * 8.0, 0.0, 1.0);
+		float w_sand = clamp(((c.r - c.b) - .18) * 6.0, 0.0, 1.0) * (1.0 - w_grass);
+		float w_rock = max(smoothstep(.22, .42, slope), (1.0 - w_grass) * (1.0 - w_sand) * clamp((.12 - (c.r - c.b)) * 6.0, 0.0, 1.0) * .6);
+		float w_snow = smoothstep(3.8, 4.5, wpos.y + n * .3) * (1.0 - smoothstep(.35, .6, slope));
+		float w_soil = max(0.0, 1.0 - w_grass - w_sand) * .8 + .05;
+		float total = w_grass + w_sand + w_rock + w_snow + w_soil;
+		vec3 rock_detail = layer_detail(layer_rock, wpos.zy * .9) * weights.x + layer_detail(layer_rock, wrapped_uv(wpos, .9)) * weights.y + layer_detail(layer_rock, wpos.xy * .9) * weights.z;
+		vec3 layered = (layer_detail(layer_grass, wrapped_uv(wpos, 1.6)) * w_grass + layer_detail(layer_sand, wrapped_uv(wpos, 1.2)) * w_sand
+			+ rock_detail * w_rock + layer_detail(layer_snow, wrapped_uv(wpos, 1.0)) * w_snow + layer_detail(layer_soil, wrapped_uv(wpos, 1.4)) * w_soil) / total;
+		base *= mix(vec3(1.0), layered, .8 * far_fade + .15);
+	}
 	float river_margin=0.0;
 	if (river_bank_active>.0) {
 		float period=weather_extent.x;
@@ -560,7 +597,10 @@ void fragment() {
 	vec2 battle_uv = vec2(wpos.x/1.7320508 - .5*mod(floor(wpos.z/1.5+.5),2.0), wpos.z/1.5);
 	// Warzone material field: scar colour follows the ground it damages (soil, rock/scree, sand,
 	// wetland mud, urban rubble); scorch blackens, tracks rut the soil, and rain pools in bowls.
-	vec4 field = texture(battle_scar,(battle_uv+vec2(.5))/battle_cells) * battle_active * step(.01,wpos.y);
+	// sample through a low-frequency warp so damage reads as one irregular region, not hex tiles
+	vec2 warp = vec2(noise(wpos.xz*.85)-.5, noise(wpos.zx*.85+vec2(7.3,2.1))-.5)*.7;
+	vec4 field = texture(battle_scar,(battle_uv+warp+vec2(.5))/battle_cells) * battle_active * step(.01,wpos.y);
+	field.r = smoothstep(.05,.75, field.r + (noise(wpos.xz*3.1)-.5)*.3*step(.02,field.r));
 	vec4 cls_texel = texelFetch(battle_scar, clamp(ivec2(battle_uv+vec2(.5)), ivec2(0), ivec2(battle_cells)-ivec2(1)), 0);
 	int ground_class = int(round(cls_texel.a*4.0));
 	vec3 scar_color = vec3(.24,.20,.15);

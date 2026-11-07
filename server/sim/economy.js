@@ -485,7 +485,7 @@ export function economyStep(g, dt) {
   }
 }
 
-// A city in prolonged unrest joins a more stable neighbour — or breaks away to the rebel Free Companies.
+// A city in prolonged unrest joins a more stable neighbour, or falls into riots.
 function defect(g, c) {
   const from = g.civs[c.owner];
   let best = null, bs = -1;

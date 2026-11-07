@@ -4,7 +4,7 @@ extends RefCounted
 const SHORTCUTS:={"build":KEY_B,"research":KEY_T,"hold":KEY_H,"withdraw":KEY_X,"attack_move":KEY_E,"select_combat":KEY_Q,"form_army":KEY_G,"road":KEY_R,"center":KEY_SPACE,"pause":KEY_P}
 const DEFAULTS:={"fullscreen":true,"resolution":"1600x900","quality":"medium","vsync":true,"fps":60,
 	"volume":70.0,"ambience_volume":80.0,"effects_volume":85.0,"mute":false,"ui_scale":1.0,"pan_speed":1.0,"zoom_speed":1.0,"invert_zoom":false,"edge_pan":false,
-	"weather_effects":true,"particle_density":1.0,"screen_shake":false,"reduced_motion":false,"high_contrast":false,"unit_labels":true,"resource_markers":true,"territory_borders":true,"wildlife":true,"bindings":{},
+	"weather_effects":true,"particle_density":1.0,"screen_shake":false,"reduced_motion":false,"high_contrast":false,"unit_labels":true,"resource_markers":true,"territory_borders":true,"wildlife":true,"onboarding_done":false,"bindings":{},
 	"server":"wss://game.liamhosfeld.com/ws","player":"Commander"}
 var values:=DEFAULTS.duplicate(true)
 var path:="user://settings.cfg"
@@ -20,7 +20,7 @@ func load_from(file:String) -> void:
 	values.volume=clampf(float(values.volume),0,100)
 	values.ambience_volume=clampf(float(values.ambience_volume),0,100)
 	values.effects_volume=clampf(float(values.effects_volume),0,100)
-	if not str(values.quality) in LODManager.PRESETS: values.quality="medium"
+	if not str(values.quality) in RecipeRegistry.world_value("lod","presets",LODManager.PRESETS): values.quality="medium"
 	if not str(values.resolution) in ["1280x720","1600x900","1920x1080","2560x1440"]: values.resolution="1600x900"
 	if not int(values.fps) in [0,30,60,120,144]: values.fps=60
 

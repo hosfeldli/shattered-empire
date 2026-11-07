@@ -35,6 +35,9 @@ func sync() -> void:
 	for record in world.bf.get("c",[]):
 		var f:Array=touch.call(int(record[0])); f[0]=maxf(float(f[0]),clampf(float(record[1])*.25,0,1))
 	for record in world.bf.get("sc",[]): touch.call(int(record[0]))[1]=clampf(float(record[1])/10.0,0,1)
+	# historical scars: the faint, long-lived trace of an old front (weaker than live damage)
+	for record in world.bf.get("hs",[]):
+		var f:Array=touch.call(int(record[0])); f[0]=maxf(float(f[0]),clampf(float(record[1])/10.0,0,1)*.35)
 	for record in world.bf.get("wr",[]):
 		var f:Array=touch.call(int(record[0])); f[2]=clampf(float(record[1])/10.0,0,1)*(1.0 if int(record[2])==2 else .7)
 	if fields.is_empty():

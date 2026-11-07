@@ -13,6 +13,9 @@ var pending := {}
 var full_rebuild := true
 var since := 0.0
 var strength := 1.0
+var scheduler: GenerationScheduler
+var building := false
+var revision := 0
 
 
 func setup(w: WorldState, terrain_material: ShaderMaterial) -> void:
@@ -25,6 +28,7 @@ func setup(w: WorldState, terrain_material: ShaderMaterial) -> void:
 
 func _reset() -> void:
 	image = null
+	building = false
 	full_rebuild = true
 	pending.clear()
 
@@ -51,16 +55,42 @@ func _process(dt: float) -> void:
 	since = 0.0
 	var g := world.grid
 	if full_rebuild or image == null or image.get_width() != g.w or image.get_height() != g.h:
-		image = Image.create(g.w, g.h, false, Image.FORMAT_RGBA8)
-		for i in g.n:
-			_paint(i)
-		texture = ImageTexture.create_from_image(image)
-		material.set_shader_parameter("territory_field", texture)
-		material.set_shader_parameter("territory_ready", 1.0)
-		material.set_shader_parameter("territory_strength", strength)
+		# The whole-map pass runs on a worker thread over copies; incremental edits stay local.
 		full_rebuild = false
 		pending.clear()
+		if building: return
+		building = true
+		var owners := world.tile_owner.duplicate(); var nb := g.nb.duplicate(); var w := g.w; var h := g.h; var n := g.n
+		var palette := {}
+		for owner in owners:
+			if owner >= 0 and not palette.has(owner): palette[owner] = world.civ_color(owner)
+		var result := {}
+		revision += 1
+		var job_revision := revision
+		var work := func():
+			var bytes := PackedByteArray(); bytes.resize(n * 4)
+			for i in n:
+				var o := owners[i]
+				if o < 0: continue
+				var bits := 64
+				for d in 6:
+					var other := nb[i * 6 + d]
+					if other < 0 or owners[other] != o: bits |= 1 << d
+				var c: Color = palette[o]
+				bytes[i * 4] = int(c.r * 255.0); bytes[i * 4 + 1] = int(c.g * 255.0); bytes[i * 4 + 2] = int(c.b * 255.0); bytes[i * 4 + 3] = bits
+			result.bytes = bytes
+		var commit := func():
+			building = false
+			if world.grid == null or world.grid.w != w or world.grid.h != h: return
+			image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, result.bytes)
+			texture = ImageTexture.create_from_image(image)
+			material.set_shader_parameter("territory_field", texture)
+			material.set_shader_parameter("territory_ready", 1.0)
+			material.set_shader_parameter("territory_strength", strength)
+		if scheduler: scheduler.enqueue_threaded("territory-field", job_revision, work, commit)
+		else: work.call(); commit.call()
 		return
+	if image == null: return
 	var touched := {}
 	for t in pending:
 		touched[t] = true

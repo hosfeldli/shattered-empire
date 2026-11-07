@@ -327,7 +327,7 @@ func _structure_signature(list: Array) -> String:
 	var parts := PackedStringArray()
 	for b in list:
 		# Damage stages alter the static tint, but progress, fire and activity never rebuild this mesh.
-		parts.append("%d:%s:%d:%d:%s:%d:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), (0 if int(b.get("hp",100))>=85 else 1 if int(b.get("hp",100))>=60 else 2 if int(b.get("hp",100))>=35 else 3), int(b.get("ti", 0)), int(b.get("a", 0)) if str(b.ty) == "oil_well" else 0])
+		parts.append("%d:%s:%d:%d:%s:%d:%d:%d:%d" % [int(b.id), b.ty, int(b.get("o", -1)), int(b.get("d", 0)), str(b.get("st", ""))=="ruined", int(b.get("lv", 1)), _damage_band(int(b.get("hp",100))), int(b.get("ti", 0)), int(b.get("a", 0)) if str(b.ty) == "oil_well" else 0])
 	return "|".join(parts)
 
 
@@ -337,6 +337,14 @@ func _progress_signature(list: Array) -> String:
 		var works:Array=b.get("wk",[])
 		parts.append("%d:%d:%d:%d:%s" % [int(b.id), int(b.get("p", 0)) / 10, int(b.get("f", 0)), int(b.get("a", 0)), ("%s%d" % [works[0], int(works[1]) / 10]) if works.size() >= 2 else ""])
 	return "|".join(parts)
+
+
+## condition recipe (world.json "condition"): health bands that select damage geometry
+var damage_bands:Array=RecipeRegistry.world_value("condition","damage_bands",[85,60,35])
+func _damage_band(hp:int) -> int:
+	for index in damage_bands.size():
+		if hp>=int(damage_bands[index]): return index
+	return damage_bands.size()
 
 
 func _queue_build(key: String, list: Array) -> void:
@@ -683,7 +691,7 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 			# yards (never through either building), beside a shared paved service yard.
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
 			var span := maxf(0.0, len - 0.7)
-			_ground_path(kit,a,b,.28,"paving",Color(.86,.85,.80))
+			_ground_path(kit,a,b,.28,"concrete",Color(.86,.85,.80))
 			if span > 0.1:
 				var rack := mid + across * 0.22
 				var ground := world.ground_height(rack.x, rack.z)
@@ -711,7 +719,7 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 				var p := mid + along * ((k - 0.5) * len * 0.22) + across * 0.2
 				var gy := world.ground_height(p.x, p.z)
 				var shade := _awning(rng)
-				kit.box("steel", Vector3(p.x, gy, p.z), Vector3(0.1, 0.065, 0.06), Color(.62,.6,.55).lerp(shade,.35), yaw)
+				kit.box("painted_metal", Vector3(p.x, gy, p.z), Vector3(0.1, 0.065, 0.06), Color(.62,.6,.55).lerp(shade,.35), yaw)
 				kit.box("canvas", Vector3(p.x, gy + 0.07, p.z) - across * 0.035, Vector3(0.11, 0.006, 0.04), shade, yaw)
 		"ext":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
@@ -907,7 +915,7 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 		"steel_mill", "refinery", "munitions_plant", "electronics_plant", "motor_works", "heavy_assembly", "robotics_complex", "drone_works", "salvage":
 			var w := 0.62 + (0.1 if ty in ["heavy_assembly", "steel_mill"] else 0.0)
 			kit.box("brick", Vector3(-0.05, 0.025, 0), Vector3(w, 0.2, 0.42), tint)
-			kit.sawtooth("steel", "glass", Vector3(-0.05, 0.225, 0), w, 0.42, 0.08, 4, tint, PI * 0.5)
+			kit.sawtooth("corrugated", "glass", Vector3(-0.05, 0.225, 0), w, 0.42, 0.08, 4, tint, PI * 0.5)
 			var chim := Vector3(0.36, 0.025, -0.22)
 			kit.cylinder("brick", chim, 0.05, 0.62, 8, tint, 0.04)
 			if ty == "refinery":
@@ -956,7 +964,7 @@ func _compose_building(kit:MeshKit,b:Dictionary,tint:Color) -> void:
 			kit.box("stone", Vector3(0, 0.02, 0), Vector3(0.3, 0.22, 0.3), tint)
 		"airfield":
 			kit.box("asphalt", Vector3(0, 0.02, 0), Vector3(1.5, 0.015, 0.2), tint)
-			kit.box("paving", Vector3(0, 0.03, 0), Vector3(1.4, 0.005, 0.015), Color(1.6, 1.6, 1.5))
+			kit.box("concrete", Vector3(0, 0.03, 0), Vector3(1.4, 0.005, 0.015), Color(1.6, 1.6, 1.5))
 			kit.box("steel", Vector3(0, 0.02, 0.4), Vector3(0.4, 0.16, 0.26), tint)
 			kit.gable("steel", Vector3(0, 0.18, 0.4), 0.26, 0.4, 0.08, tint, PI * 0.5)
 		"aa_battery":
@@ -1001,14 +1009,14 @@ func _market(kit:MeshKit,rng:RandomNumberGenerator,lv:int,tint:Color) -> void:
 	kit.box("concrete",Vector3(0,.02,-.13),Vector3(.50,hall_h,.22),tint)
 	kit.box("glass",Vector3(0,.05,-.019),Vector3(.44,.075,.005),tint)                        # shop windows
 	kit.box("glass",Vector3(0,hall_h-.035,-.019),Vector3(.46,.025,.005),tint)                # clerestory band
-	kit.sawtooth("steel","glass",Vector3(0,.02+hall_h,-.13),.50,.22,.05,4,tint,PI*.5)
+	kit.sawtooth("corrugated","glass",Vector3(0,.02+hall_h,-.13),.50,.22,.05,4,tint,PI*.5)
 	kit.box("canvas",Vector3(0,.115,.0),Vector3(.48,.008,.05),_awning(rng))                  # entrance canopy
 	var rows:Array=[.20] if lv<2 else [.20,.31]
 	for z in rows:
 		for k in 4:
 			var x:float=-.21+k*.14
 			var shade:=_awning(rng)
-			kit.box("steel",Vector3(x,.014,z),Vector3(.11,.07,.065),Color(.62,.6,.55).lerp(shade,.35))
+			kit.box("painted_metal",Vector3(x,.014,z),Vector3(.11,.07,.065),Color(.62,.6,.55).lerp(shade,.35))
 			kit.box("char",Vector3(x,.022,z-.033),Vector3(.085,.05,.003))                       # open shutter
 			var awning_z:float=z-.05
 			kit.quad("canvas",kit.xf(Vector3(x-.055,.082,z-.03)),kit.xf(Vector3(x+.055,.082,z-.03)),kit.xf(Vector3(x+.055,.064,awning_z-.02)),kit.xf(Vector3(x-.055,.064,awning_z-.02)),shade,kit.basis*Vector3.UP)
@@ -1048,7 +1056,7 @@ func _build_ruins() -> void:
 		for heap in 3:
 			var hp_ := Vector3(rng.randf_range(-0.28, 0.28), 0.0, rng.randf_range(-0.28, 0.28))
 			hp_.y = world.ground_height(lc.x + hp_.x, lc.z + hp_.z) - lc.y - 0.01
-			kit.cone("stone", hp_, rng.randf_range(0.12, 0.2), rng.randf_range(0.05, 0.1), 7, Color(0.66, 0.63, 0.58))
+			kit.cone("rubble", hp_, rng.randf_range(0.12, 0.2), rng.randf_range(0.05, 0.1), 7, Color(0.66, 0.63, 0.58))
 		for k in 7:
 			var p := Vector3(rng.randf_range(-0.4, 0.4), 0.01, rng.randf_range(-0.4, 0.4))
 			kit.box("stone" if k % 2 == 0 else "char", p, Vector3(0.1 + rng.randf() * 0.1, 0.04 + rng.randf() * 0.08, 0.08 + rng.randf() * 0.1), Color(0.7, 0.68, 0.64), rng.randf() * TAU)

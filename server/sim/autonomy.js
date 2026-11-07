@@ -97,6 +97,12 @@ function hunt(g, civ, u, claim, claimed) {
     if (d <= 8 && d < fd && !UNITS[e.type].civilian) { fd = d; foe = e; }
   }
   if (foe) {
+    // pinned infantry out of cover go to ground in the best cover close by, away from the fire
+    if (def.move === 'infantry' && (u.supp || 0) > 55 && cover(g, u.tile, civ) < 0.3) {
+      let best = -1, bc = cover(g, u.tile, civ) + 0.1;
+      for (const t of disk(u.tile, 1)) { if (t === u.tile || !ground(g, t) || claimed(civ, t) || dist(t, foe.tile) < fd) continue; const c = cover(g, t, civ); if (c > bc) { bc = c; best = t; } }
+      if (best >= 0) { claim(civ, best); g.orderMove(civ, [u.id], best, false, 'line', { auth: 'auto' }); return; }
+    }
     // artillery threatened at close quarters falls back two to three hexes, away from the threat,
     // to keep firing from behind the line; otherwise it moves only until the target is in range
     if (def.cat === 'artillery' && fd <= 2 && def.range > 2) {

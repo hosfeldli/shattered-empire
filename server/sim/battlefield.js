@@ -6,7 +6,7 @@ import { book } from './ledger.js';
 import { UNITS, T, isWater } from './constants.js';
 import { disk } from './hex.js';
 
-export function bfInit(g) { g.craters = new Map(); g.wrecks = new Map(); g.smoke = new Map(); g.intensity = new Map(); g.fieldPos = new Map(); g.impacts = new Map(); g.scorch = new Map(); g.wear = new Map(); g.bfVer = 0; }
+export function bfInit(g) { g.craters = new Map(); g.wrecks = new Map(); g.smoke = new Map(); g.intensity = new Map(); g.fieldPos = new Map(); g.impacts = new Map(); g.scorch = new Map(); g.wear = new Map(); g.scars = new Map(); g.bfVer = 0; }
 
 // ---------------------------------------------------------------- battlefield intensity
 // Every shell, wreck and death adds intensity to the ground around it. Sustained fighting turns
@@ -146,6 +146,9 @@ export function battlefieldStep(g, dt) {
     for (const [t, e] of g.intensity) {
       if (g.time - e.at < 60) continue;
       e.v -= step * (e.v > 40 ? 0.025 : 0.05) * (g.world.owner[t] >= 0 ? 1.3 : 1);
+      // historical scarring: the worst a hex has been is remembered long after it recovers
+      const peak = Math.max(g.scars.get(t)?.v || 0, e.v / 100);
+      if (peak >= 0.15) g.scars.set(t, { v: peak, at: g.time });
       if (e.v <= 0.5) { g.intensity.delete(t); if (e.st) { g.world.dirty.add(t); g.bfVer++; } continue; }
       const st = intensityStage(e.v); if (st !== e.st) { e.st = st; g.world.dirty.add(t); g.bfVer++; }
     }
@@ -160,6 +163,7 @@ export function battlefieldStep(g, dt) {
   for (const b of g.buildings.values()) if (b.fire > 0) addScorch(g, b.tile, 0.01 * dt);
   for (const [t, e] of g.scorch) if (g.time - e.at > 120) { e.v -= 0.0015 * dt; if (e.v <= 0.03) g.scorch.delete(t); }
   for (const [t, e] of g.wear) if (g.time - e.at > 60) { e.v -= 0.001 * dt; if (e.v <= 0.05) g.wear.delete(t); }
+  for (const [t, e] of g.scars) if (!g.intensity.has(t)) { e.v -= 0.00025 * dt; if (e.v <= 0.05) { g.scars.delete(t); g.bfVer++; } }
 }
 
 function fieldPositionsStep(g, dt) {
@@ -301,12 +305,14 @@ export function battlefieldSnapshot(g, vis, explored, memory = null, god = false
     for (const [t, e] of g.scorch) if (vis[t] && !memory.has(t)) sc.push([t, Math.round(e.v * 10)]);
     for (const [t, e] of g.wear) if (vis[t] && !memory.has(t)) wr.push([t, Math.round(e.v * 10), WK[e.k] ?? 0]);
   }
-  return { c, w, s, i, fp, m, sc, wr };
+  const hs = [];
+  for (const [t, e] of g.scars) if (!g.intensity.has(t) && (vis[t] || (explored[t] && (god || !memory || memory.has(t))))) hs.push([t, Math.round(e.v * 10)]);
+  return { c, w, s, i, fp, m, sc, wr, hs };
 }
 
 export function serializeBattlefield(g) {
   return { v: 2, craters: [...g.craters.entries()], wrecks: [...g.wrecks.entries()], smoke: [...g.smoke.entries()], intensity: [...g.intensity.entries()], fieldPos: [...g.fieldPos.entries()],
-    impacts: [...g.impacts.entries()], impactCount: g.impactCount || 0, scorch: [...g.scorch.entries()], wear: [...g.wear.entries()] };
+    impacts: [...g.impacts.entries()], impactCount: g.impactCount || 0, scorch: [...g.scorch.entries()], wear: [...g.wear.entries()], scars: [...g.scars.entries()] };
 }
 export function restoreBattlefield(g, d) {
   bfInit(g);
@@ -315,5 +321,5 @@ export function restoreBattlefield(g, d) {
   g.intensity = new Map(d.intensity || []); g.fieldPos = new Map(d.fieldPos || []);
   // warzone format v2: older saves have no impact records, scorch or wear; craters still show
   // through their aggregate depth and new impacts start recording from here on
-  g.impacts = new Map(d.impacts || []); g.impactCount = d.impactCount || 0; g.scorch = new Map(d.scorch || []); g.wear = new Map(d.wear || []);
+  g.impacts = new Map(d.impacts || []); g.impactCount = d.impactCount || 0; g.scorch = new Map(d.scorch || []); g.wear = new Map(d.wear || []); g.scars = new Map(d.scars || []);
 }

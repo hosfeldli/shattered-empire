@@ -59,7 +59,7 @@ func setup(w: WorldState, n: NetworkClient, m: MilitaryRenderer, s: SettlementRe
 	toast = _label(Vector2(0, 0), 15)
 	toast.custom_minimum_size = Vector2(600, 0)
 	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	toast.add_theme_stylebox_override("normal",NativeUI.style(Color(.08,.11,.13,.96),Color("596058"),10))
+	toast.add_theme_stylebox_override("normal",NativeUI.style(NativeUI.PANEL,NativeUI.LINE,10))
 	toast.visible=false
 	help = _label(Vector2(0, 0), 12)
 	help.custom_minimum_size = Vector2(460, 0)
@@ -137,12 +137,13 @@ func _layout() -> void:
 	var vp := root.get_viewport_rect().size
 	bar.position = Vector2.ZERO
 	bar.size = Vector2(vp.x, 44)
+	bar.visible = false   # the floating top bar replaces the old full-width strip
 	conn.custom_minimum_size.x=175; conn.size=Vector2(175,24)
 	conn.position = Vector2(vp.x - 187, 10)
 	notes.custom_minimum_size.x=300; notes.size=Vector2(300,0)
 	notes.position = Vector2(vp.x - 312, 120)
 	sel.position = Vector2(12, vp.y - 150)
-	toast.position = Vector2(vp.x * 0.5 - 300, 116)
+	toast.position = Vector2(vp.x * 0.5 - 300, 70)
 	help.position = Vector2(vp.x - 472, vp.y - 24)
 	lobby.position = (vp - lobby.size) * 0.5
 
@@ -150,7 +151,11 @@ func _layout() -> void:
 func show_toast(text: String, ok := true) -> void:
 	toast.text = text
 	toast.visible=true
-	toast.modulate = Color(0.85, 1, 0.85) if ok else Color(1, 0.75, 0.7)
+	toast.modulate = Color.WHITE
+	var pill:=NativeUI.style(NativeUI.PANEL,Color(NativeUI.GOOD if ok else NativeUI.BAD,.7),10,16,true)
+	pill.border_width_left=4
+	toast.add_theme_stylebox_override("normal",pill)
+	toast.add_theme_color_override("font_color",NativeUI.TEXT)
 	toast_until = Time.get_ticks_msec() / 1000.0 + 3.0
 
 

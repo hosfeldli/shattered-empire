@@ -7,6 +7,11 @@ uniform float base_roughness = .9;
 uniform float base_metallic = 0.0;
 uniform float normal_strength = 0.0;
 uniform float texture_mix = 1.0;
+// Photographic CC0 maps at a real-world scale per material; their average colour is factored out
+// so the art-directed palette and per-vertex tints stay in charge of hue (consistent, readable).
+uniform float texture_scale = 2.0;
+uniform float texture_normalize = 0.0;
+uniform float weathering = 0.0;
 uniform sampler2D albedo_map : source_color, filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
 uniform sampler2D normal_map : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D roughness_map : filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
@@ -35,7 +40,7 @@ void fragment() {
     vec3 wn = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
     vec3 weights = pow(abs(wn), vec3(4.0));
     weights /= max(dot(weights, vec3(1.0)), .00001);
-    vec3 p = world_position * 2.0;
+    vec3 p = world_position * texture_scale;
     vec3 detail = texture(albedo_map,p.zy).rgb * weights.x
                 + texture(albedo_map,p.xz).rgb * weights.y
                 + texture(albedo_map,p.xy).rgb * weights.z;
@@ -43,7 +48,22 @@ void fragment() {
                 + texture(roughness_map,p.xz).r * weights.y
                 + texture(roughness_map,p.xy).r * weights.z;
     float wet = texture(wet_map,world_position.xz/weather_extent).r * weather_ready;
-    ALBEDO = base_color.rgb * mix(vec3(1.0),detail,texture_mix) * pow(COLOR.rgb,vec3(2.2)) * (1.0-.24*wet) * cloud_shadow(world_position);
+    if (texture_normalize > .5) {
+        vec3 average = max(textureLod(albedo_map, vec2(.5), 12.0).rgb, vec3(.04));
+        float lum = dot(detail, vec3(.299,.587,.114)) / max(dot(average, vec3(.299,.587,.114)), .04);
+        detail = mix(vec3(lum), detail / average, .4);
+    }
+    vec3 surface = base_color.rgb * mix(vec3(1.0),detail,texture_mix) * pow(COLOR.rgb,vec3(2.2));
+    // weathering: grime streaks on walls, rust blooms on painted and bare metal (post-collapse wear)
+    if (weathering > .0) {
+        float grime = fog_noise(vec2(world_position.x*7.0+world_position.z*5.0, world_position.y*28.0), 4096.0);
+        surface *= 1.0 - weathering*.16*smoothstep(.45,.9,grime)*(1.0-abs(wn.y));
+        if (base_metallic > .1 || texture_normalize > 1.5) {
+            float rust = fog_noise(world_position.xz*9.0+world_position.yy*4.0, 4096.0);
+            surface = mix(surface, vec3(.30,.16,.09), weathering*.3*smoothstep(.62,.88,rust));
+        }
+    }
+    ALBEDO = surface * (1.0-.24*wet) * cloud_shadow(world_position);
     // settled snow on roofs and other upward faces while it snows here (camera-local weather)
     ALBEDO=mix(ALBEDO,vec3(.86,.88,.9),snow_cover*smoothstep(.55,.9,wn.y)*.85);
     vec2 knowledge=surface_visibility(world_position.xz);

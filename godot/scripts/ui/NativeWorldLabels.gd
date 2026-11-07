@@ -24,7 +24,7 @@ func setup(game:Node) -> void:
 	app=game; set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	font=load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf")
 	mouse_filter=Control.MOUSE_FILTER_IGNORE
-	banner_style=NativeUI.style(Color(.065,.1,.12,.94),Color("53636b"),2)
+	banner_style=NativeUI.style(NativeUI.PANEL,Color(1,1,1,.14),2)
 	for resource in range(1,DEPOSITS.size()): icons[resource]=load("res://assets/icons/resources/deposit-%d.svg"%resource)
 	for type in MilitaryModelLibrary.TYPES: unit_icons[type]=load("res://assets/icons/units/%s.svg"%type)
 

@@ -9,15 +9,18 @@ const PRESETS := {
 	"high": {"pedestrians": 140, "vehicles": 40, "puffs": 900, "battle_puffs": 600, "tree_size": 80.0, "shadow_size": 140.0},
 	"ultra": {"pedestrians": 200, "vehicles": 64, "puffs": 900, "battle_puffs": 600, "tree_size": 90.0, "shadow_size": 160.0}}
 var quality := "medium"
+var presets: Dictionary = RecipeRegistry.world_value("lod", "presets", PRESETS)
+var tactical_max := float(RecipeRegistry.world_value("lod", "tactical_max_size", 16.0))
+var operational_max := float(RecipeRegistry.world_value("lod", "operational_max_size", 72.0))
 var particle_scale:=1.0
 
 
 func set_quality(value: String) -> void:
-	quality = value if PRESETS.has(value) else "medium"
+	quality = value if presets.has(value) else "medium"
 
 
 func scale_for(camera_size: float) -> int:
-	return Scale.TACTICAL if camera_size <= 16.0 else Scale.OPERATIONAL if camera_size <= 72.0 else Scale.STRATEGIC
+	return Scale.TACTICAL if camera_size <= tactical_max else Scale.OPERATIONAL if camera_size <= operational_max else Scale.STRATEGIC
 
 
 func scale_name(camera_size: float) -> String:
@@ -25,11 +28,11 @@ func scale_name(camera_size: float) -> String:
 
 
 func budget(kind: String, camera_size: float) -> int:
-	var full := int(PRESETS[quality].get(kind, 0))
+	var full := int(presets.get(quality, PRESETS.medium).get(kind, 0))
 	if kind in ["puffs","battle_puffs"]: full=roundi(full*particle_scale)
 	match scale_for(camera_size):
 		Scale.STRATEGIC:
-			return 0 if kind in ["pedestrians","vehicles"] else int(full * 0.2)
+			return 0 if kind in ["pedestrians","vehicles"] else int(full * float(RecipeRegistry.world_value("lod", "strategic_share", 0.2)))
 		Scale.OPERATIONAL:
-			return int(full * 0.5)
+			return int(full * float(RecipeRegistry.world_value("lod", "operational_share", 0.5)))
 	return full

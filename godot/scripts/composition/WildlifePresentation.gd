@@ -5,10 +5,11 @@ extends Node3D
 ## paths or information. Animals only appear on farms the viewer can currently see; flocks only
 ## over known land, keep clear of storms and scatter away from recent fighting.
 
-const MAX_ANIMALS := 96
-const FLOCKS := 3
-const BIRDS_PER_FLOCK := 7
-const ZOOM_LIMIT := 26.0
+# ambient life recipe (world.json "activity"); fixed for the session once loaded
+var MAX_ANIMALS := int(RecipeRegistry.world_value("activity", "max_animals", 96))
+var FLOCKS := int(RecipeRegistry.world_value("activity", "flocks", 3))
+var BIRDS_PER_FLOCK := int(RecipeRegistry.world_value("activity", "birds_per_flock", 7))
+var ZOOM_LIMIT := float(RecipeRegistry.world_value("activity", "wildlife_zoom_limit", 26.0))
 
 var world: WorldState
 var cam: CameraController

@@ -5,6 +5,92 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## Architecture (A) and texture overhaul (F) (2026-11-07)
+
+**Architecture**
+- **Declarative world recipes** (`recipes/world.json`, schema 1): versioned sections with `hard`
+  constraints and `soft` tuning for LOD, vegetation, building condition, warzone, ambient activity
+  and environment. `RecipeRegistry.world_section/world_value` validate and serve them; LOD
+  presets and scale thresholds, tree densities/edge thinning/battle loss, damage bands, crater
+  shapes/rock depth/basin limit and wildlife caps are now read from the catalog.
+- **Semantic graph completed**: terrain regions and water bodies (forest, mountains, hills,
+  desert, wetland, tundra, sea, lake, river) as connected components; transport networks from
+  authoritative road/rail edges; environmental (weather) regions; bounded per-building history
+  (seen, completed, upgraded, damaged, repaired, changed hands); buildings link to their region
+  and serving network, units to their region; `explain_tile()` for any known hex. Geography and
+  transport rebuild as budgeted, cancellable low-priority jobs.
+- **Scheduler**: threaded jobs (`enqueue_threaded`) that compute on the WorkerThreadPool over
+  immutable copies and commit on the main thread only if still current; the territory field's
+  full rebuild now runs this way.
+- **F9 recipe inspector**: region, network, building recipe id/version/matched preconditions,
+  relationships, identity seeds, history, units, battle region, world-recipe versions and
+  scheduler/graph timings for the hovered hex.
+
+**Textures**
+- The ten 256-px generated placeholder sets were removed and replaced with ambientCG CC0 1K
+  photographic Color/NormalGL/Roughness sets; eight new materials were added (grass, sand,
+  rubble, gravel, snow, painted metal, corrugated steel, paving). Sources in
+  `assets/materials/SOURCES.md` (33 MB of JPEG).
+- Every material applies its maps at a per-material real-world scale, with the map's average
+  colour factored out so the palette and vertex tints control hue, plus procedural grime and
+  rust weathering.
+- Terrain blends grass/soil/sand/rock/snow layers by biome palette, slope and height, with
+  seam-free wrapped tiling and three-way projected rock on cliffs; detail fades at strategic zoom.
+- Containers use painted metal, industrial halls and hangars corrugated steel, ruins rubble,
+  markings and yards concrete. The observer bar got its own pill after the old full-width HUD
+  strip was hidden.
+
+Verification: server suite 165/165 (`ADMIT_OFF=1`; the rebel-camp test now asserts rebels are
+absent), all Godot headless suites pass, rendered UI validation passed, and player, observer
+and city close-up renders were reviewed for the new UI and textures. Not yet reviewed on screen:
+water ports, recorded-impact craters, typed wrecks, flat tank fire, smoke field and the
+synthesized audio by ear.
+
+## Rebels removed, section I completed, UI redesign pass (2026-11-07)
+
+Tested with the architecture and texture pass below. Old-save compatibility is no longer a goal
+(no active play).
+
+- **Rebels removed:** the rebel civilization is never created (`Game` ignores `rebels`; the worker
+  passes `false`; the lobby option is gone). Prolonged unrest ends in riots or defection to a
+  neighbouring empire; existing code already handled a missing rebel civ.
+- **Section I (battles and warzone):**
+  - Historical scarring channel (`g.scars`): the worst intensity a hex reached persists for about
+    an hour after recovery, sent as `bf.hs` and drawn as a faint long-lived trace.
+  - Continuous no man's land: the damage field is sampled through a low-frequency noise warp
+    with a noisy threshold, so fronts read as irregular regions rather than hex patches.
+  - Weapon-matched effects: machine-gun tracer volleys (staggered), heavier autocannon/flak
+    tracers with dark flak airbursts, and rockets/missiles flying a flatter powered path with an
+    exhaust smoke trail (`ROCKETS`, `rocket` effect kind).
+  - Bounded smoke simulation (`render/SmokeField.gd`): a 44×44 world-space density grid around
+    the camera, fed by server smoke records and visible combat events, advected by regional wind
+    with turbulence, diffused and decayed, drawn as soft puffs; strategic zoom keeps the old puffs.
+  - More intense battles from server behaviour: suppressed infantry out of cover move to better
+    cover nearby, away from the threat (`autonomy.js`).
+- **UI redesign (design system first):**
+  - `NativeUI`: new palette tokens (slate panels, amber accent, teal info, green/coral status),
+    translucent panels with soft shadows, ghost/primary button styles, styled popup menus,
+    tooltips, inputs, slim scrollbars; `primary()`, `icon_button()`, `icon_for()` helpers;
+    compact buttons build their own styles (previously copied Godot defaults) and get icons for
+    common actions (move, attack, defend, explore, upgrade, repair, train, rally, follow…).
+  - `NativeIcon`: ~30 vector icons on a 24-unit grid (build, army, research, overview, alerts,
+    settings, move, attack, defend, explore, upgrade, repair, train, rally, follow, close, check,
+    pause, play, city, industry, formation, info, time, weather, star).
+  - Top bar (`NativeResourceStrip`, rewritten): one floating translucent pill with faction stripe,
+    empire, era · clock · local weather; resource chips with icon, amount and coloured trend;
+    an all-resources button; current research name with a progress bar; icon buttons for
+    Overview (pages and map lenses), Alerts (count badge) and Settings. The old full-width bar is hidden.
+  - Left rail: icon-first Build / Army / Research tiles with captions, key hints (B, T) and an
+    active state while their drawer is open; positioned under the top bar.
+  - Selection card: faction stripe, semibold title, centre-camera and close icon buttons, slim
+    colour-coded health bar.
+  - Drawer: sits beside the rail, semibold heading, icon close, "More options…".
+  - Toasts: slim pills with a green or coral edge.
+  - Hard-coded colours replaced with design tokens across the dashboard, labels, overlay, nav.
+  - New-player checklist (`NativeOnboarding`): look around, open your city, place a building,
+    move a unit, choose research; ticks from real actions, dismissable, remembered
+    (`onboarding_done` preference), hidden in automated runs, keeps recent notes clear of it.
+
 ## Decisions, pace, direct fire, water ports and warzone pass (2026-11-07)
 
 - **Decisions:** ports on the ocean hex; minimap stays removed; 10 Hz simulation; the warzone

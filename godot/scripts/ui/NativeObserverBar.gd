@@ -27,10 +27,17 @@ func setup(game:Node) -> void:
 	NativeUI.menu(self,"Overview ▾",entries)
 	NativeUI.compact_button(self,"Menu",func():app.shell.show_view("pause"))
 
+## its own translucent pill, matching the player top bar (the old full-width strip is gone)
+func _draw() -> void:
+	draw_style_box(NativeUI.style(NativeUI.PANEL,NativeUI.LINE,0,10,true),Rect2(Vector2(-10,-5),size+Vector2(20,10)))
+
+func _notification(what:int) -> void:
+	if what==NOTIFICATION_RESIZED: queue_redraw()
+
 func _process(_dt:float) -> void:
 	visible=app.world.ready_ and app.world.spectator and not app.shell.world_hidden and not app.shell.is_blocking()
 	if not visible: return
-	position=Vector2(10,5)
+	position=Vector2(20,13)
 	size=Vector2.ZERO
 	var civs:Array=app.world.civ_by_id.values(); var next:=str(civs.map(func(civ):return [civ.id,civ.name]))
 	if next!=signature:

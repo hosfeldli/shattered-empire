@@ -42,7 +42,7 @@ func _draw() -> void:
 			if float(unit.get("hp",100))>=70 or not app.military.draw_positions.has(id): continue
 			var point:Vector2=app.cam.to_screen(app.military.draw_positions[id])+Vector2(-9,-12)
 			draw_rect(Rect2(point,Vector2(18,3)),Color(.08,.09,.1,.9))
-			draw_rect(Rect2(point,Vector2(18*clampf(float(unit.hp)/100.0,0,1),3)),Color("77e7ff") if high_contrast else Color("e5a176"))
+			draw_rect(Rect2(point,Vector2(18*clampf(float(unit.hp)/100.0,0,1),3)),Color("77e7ff") if high_contrast else NativeUI.BAD)
 			shown+=1
 			if shown>=128: break
 	var formations:={}

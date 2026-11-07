@@ -34,17 +34,25 @@ func setup(game:Node,settings:NativePreferences,is_automated:bool) -> void:
 	content=VBoxContainer.new(); content.size_flags_horizontal=Control.SIZE_EXPAND_FILL; scroll.add_child(content)
 	navigation=VBoxContainer.new(); root.add_child(navigation)
 	navigation.add_theme_constant_override("separation",5)
+	navigation.add_theme_constant_override("separation",6)
 	for title in ["Build","Army","Research"]:
 		var target:String={"Build":"Construction","Army":"Armies","Research":"Research"}[title]
-		var button:=NativeUI.compact_button(navigation,title,func():
+		var key:String={"Build":"B","Army":"","Research":"T"}[title]
+		var button:=Button.new(); button.custom_minimum_size=Vector2(62,58); button.focus_mode=Control.FOCUS_NONE
+		button.tooltip_text={"Build":"Build · place buildings, roads, bridges and trenches","Army":"Army · forces, armies and formations","Research":"Research · choose what your nation learns next"}[title]+(" ("+key+")" if not key.is_empty() else "")
+		button.pressed.connect(func():
 			app.command_panel.panel.hide()
 			if app.workspace.panel.visible and app.workspace.page==target: app.workspace.panel.hide()
-			else: app.workspace.open_page(target),"Open "+title.to_lower()+" controls")
-		button.custom_minimum_size=Vector2(98,40)
-		button.alignment=HORIZONTAL_ALIGNMENT_RIGHT
-		var glyph:=NativeRailIcon.new(); glyph.title="Military" if title=="Army" else title
-		glyph.position=Vector2(9,8); glyph.size=Vector2(24,24); glyph.mouse_filter=Control.MOUSE_FILTER_IGNORE; button.add_child(glyph)
-		if title!="Army": button.tooltip_text+=" · "+("B" if title=="Build" else "T")
+			else: app.workspace.open_page(target))
+		for state in ["normal","hover","pressed"]:
+			button.add_theme_stylebox_override(state,NativeUI.style(NativeUI.PANEL if state=="normal" else Color(.1,.13,.15,.95) if state=="hover" else Color(NativeUI.GOLD,.22),Color(1,1,1,.07) if state=="normal" else Color(NativeUI.GOLD,.6),4,9,state=="normal"))
+		navigation.add_child(button)
+		var glyph:=NativeIcon.new(); glyph.kind={"Build":"build","Army":"army","Research":"research"}[title]
+		glyph.position=Vector2(19,7); glyph.size=Vector2(24,24); glyph.mouse_filter=Control.MOUSE_FILTER_IGNORE; button.add_child(glyph)
+		var caption:=NativeUI.label(button,title,12,NativeUI.TEXT); caption.position=Vector2(0,34); caption.size=Vector2(62,16)
+		caption.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER; caption.mouse_filter=Control.MOUSE_FILTER_IGNORE
+		var hint:=NativeUI.label(button,key,9,NativeUI.MUTED); hint.position=Vector2(48,3); hint.mouse_filter=Control.MOUSE_FILTER_IGNORE
+		button.set_meta("page",target)
 		rail_buttons[title]=button
 	app.net.message.connect(_message)
 	if automated: show_view("")
@@ -130,10 +138,9 @@ func _new_game(mode:String) -> void:
 	var personality:=NativeUI.options(NativeUI.field(content,"AI personality"),[["mixed","Varied"],["warlord","Warlord"],["merchant","Merchant"],["builder","Builder"]])
 	var difficulty:=NativeUI.options(NativeUI.field(content,"Difficulty"),[["easy","Easy"],["normal","Normal"],["hard","Hard"],["brutal","Brutal"]]); difficulty.select(1)
 	var fair:=CheckButton.new(); fair.text="Fair-play AI"; fair.button_pressed=true; content.add_child(fair)
-	var rebels:=CheckButton.new(); rebels.text="Rebel free companies"; rebels.button_pressed=true; content.add_child(rebels)
 	NativeUI.button(content,"Begin campaign" if mode=="ai" else "Watch match",func():
 		prefs.values.player=player.text.strip_edges(); prefs.save()
-		var options:={"mode":mode,"name":prefs.values.player,"map":NativeUI.value(size_),"ais":int(count.value),"difficulty":NativeUI.value(difficulty),"aiPersonality":NativeUI.value(personality),"fairPlay":fair.button_pressed,"rebels":rebels.button_pressed,"style":NativeUI.value(style)}
+		var options:={"mode":mode,"name":prefs.values.player,"map":NativeUI.value(size_),"ais":int(count.value),"difficulty":NativeUI.value(difficulty),"aiPersonality":NativeUI.value(personality),"fairPlay":fair.button_pressed,"style":NativeUI.value(style)}
 		if seed.text.is_valid_int(): options.seed=seed.text
 		_connect(options))
 	NativeUI.button(content,"Back",func():show_view("main"))
@@ -293,7 +300,13 @@ func _input(event:InputEvent) -> void:
 func _process(_dt:float) -> void:
 	var bounds:=root.get_viewport_rect().size
 	navigation.visible=app.world.ready_ and not app.world.spectator and not is_blocking() and not world_hidden
-	navigation.position=Vector2(10,53)
+	navigation.position=Vector2(10,66)
+	# the open panel's tool stays lit so it is obvious what the drawer belongs to
+	for title in rail_buttons:
+		var button:Button=rail_buttons[title]
+		var open_:bool=app.workspace.panel.visible and app.workspace.page==str(button.get_meta("page",""))
+		button.modulate=Color(1,1,1) if open_ or not app.workspace.panel.visible else Color(1,1,1,.72)
+		button.add_theme_stylebox_override("normal",NativeUI.style(Color(NativeUI.GOLD,.2) if open_ else NativeUI.PANEL,Color(NativeUI.GOLD,.7) if open_ else Color(1,1,1,.07),4,9,true))
 	app.hud.root.visible=not world_hidden and app.world.ready_
 	app.strategic.selector.visible=false
 	app.strategic.selector.custom_minimum_size=Vector2(156,30)

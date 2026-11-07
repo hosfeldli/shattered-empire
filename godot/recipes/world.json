@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "notes": "Declarative presentation rules for the Living World Engine. Every section has an id and explicit version; 'hard' entries are validation constraints that outrank 'soft' tuning. Presentation only: none of these values changes gameplay, cover, paths or visibility.",
+  "sections": {
+    "lod": {
+      "id": "world.lod", "version": 1,
+      "hard": {"tactical_max_size": 16.0, "operational_max_size": 72.0},
+      "soft": {
+        "presets": {
+          "low": {"pedestrians": 24, "vehicles": 8, "puffs": 180, "battle_puffs": 120, "tree_size": 40.0, "shadow_size": 0.0},
+          "medium": {"pedestrians": 80, "vehicles": 24, "puffs": 600, "battle_puffs": 400, "tree_size": 60.0, "shadow_size": 120.0},
+          "high": {"pedestrians": 140, "vehicles": 40, "puffs": 900, "battle_puffs": 600, "tree_size": 80.0, "shadow_size": 140.0},
+          "ultra": {"pedestrians": 200, "vehicles": 64, "puffs": 900, "battle_puffs": 600, "tree_size": 90.0, "shadow_size": 160.0}
+        },
+        "operational_share": 0.5, "strategic_share": 0.2
+      }
+    },
+    "vegetation": {
+      "id": "world.vegetation", "version": 2,
+      "hard": {"clear_roads": true, "clear_trenches": true, "never_on_water": true},
+      "soft": {
+        "trees_per_hex": {"4": 11, "2": 2, "7": 3, "8": 3, "6": 1},
+        "chance_per_hex": {"2": 0.35, "8": 0.5, "6": 0.3},
+        "conifer_biomes": [4, 6], "river_cap": 4,
+        "edge_base_trees": 5, "edge_scale_min": 0.78,
+        "battle_loss_per_stage": 0.333, "battle_loss_max": 0.85
+      }
+    },
+    "condition": {
+      "id": "world.building_condition", "version": 1,
+      "hard": {"selectable_when_ruined": true},
+      "soft": {"damage_bands": [85, 60, 35], "smoulder_below": 35, "chimney_min_hp": 60}
+    },
+    "warzone": {
+      "id": "world.warzone", "version": 2,
+      "hard": {"rifles_never_crater": true, "airburst_never_crater": true, "no_deformation_under": ["buildings", "roads", "rivers", "water", "trenches"]},
+      "soft": {
+        "impact_shapes": {"mortar": [0.13, 0.045], "shell": [0.19, 0.075], "bomb": [0.27, 0.11], "missile": [0.22, 0.085], "strategic": [0.34, 0.14]},
+        "rock_depth_scale": 0.45, "basin_limit": 0.16,
+        "stage_names": ["", "Churned ground", "Contested ground · vehicles bog down", "No man's land · vehicles badly slowed"]
+      }
+    },
+    "activity": {
+      "id": "world.activity", "version": 1,
+      "hard": {"visible_sources_only": true},
+      "soft": {"max_animals": 96, "flocks": 3, "birds_per_flock": 7, "max_deer_herds": 6, "wildlife_zoom_limit": 26.0, "max_boats": 24, "max_pumpjacks": 32}
+    },
+    "environment": {
+      "id": "world.environment", "version": 1,
+      "hard": {"no_mandatory_night": true, "clouds_fade_close": true},
+      "soft": {"snow_settle_rate": 0.02, "snow_melt_rate": 0.01, "storm_lightning_threshold": 0.35, "lightning_interval": [4.0, 14.0]}
+    }
+  }
+}

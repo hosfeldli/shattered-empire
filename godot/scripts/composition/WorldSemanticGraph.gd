@@ -29,6 +29,18 @@ var _formation_keys := {}
 var _army_keys := {}
 var _battle_keys := {}
 var _bf_version := -1
+# geography, transport, environment and history layers (rebuilt as budgeted scheduler jobs)
+var scheduler: GenerationScheduler
+var region_of := PackedInt32Array()     # tile -> region index (-1 none)
+var regions: Array = []                 # index -> {key, kind, tiles, centre}
+var network_of := PackedInt32Array()    # tile -> transport network index (-1 none)
+var networks: Array = []
+var history := {}                       # building id -> [[time, event], ...] (bounded)
+var _geo_revision := 0
+var _road_revision := 0
+var _weather_keys := {}
+const HISTORY_LIMIT := 12
+const REGION_KINDS := {4: "Forest", 9: "Mountains", 10: "Mountains", 8: "Hills", 5: "Desert", 7: "Wetland", 6: "Tundra"}
 
 
 func setup(w: WorldState, a: WorldStateAdapter, r: RecipeRegistry, identity: VisualIdentityCache) -> void:
@@ -42,7 +54,9 @@ func clear() -> void:
 	nodes.clear(); edges.clear(); districts.clear(); district_of.clear(); at_tile.clear()
 	contexts.clear(); matches.clear(); _by_chunk.clear(); _references.clear()
 	_city_keys.clear(); _unit_keys.clear(); _formation_keys.clear(); _battle_keys.clear(); _bf_version = -1
-	_army_keys.clear()
+	_army_keys.clear(); _weather_keys.clear()
+	regions.clear(); networks.clear(); history.clear()
+	region_of = PackedInt32Array(); network_of = PackedInt32Array()
 	revision = 0
 	topology_revision = 0
 	last_districts_touched = 0
@@ -86,6 +100,16 @@ func apply_buildings(delta: Dictionary) -> void:
 	var changed := {}
 	for id in delta.added:
 		changed[id] = CHANGE.STRUCTURE | CHANGE.STATE | CHANGE.ACTIVITY | CHANGE.CONTEXT
+		_remember(id, "first seen" if adapter.buildings[id].complete else "construction seen")
+	for id in delta.removed: _remember(id, "gone from view or destroyed")
+	for id in delta.changed:
+		var before = delta.previous.get(id); var now = adapter.buildings.get(id)
+		if before == null or now == null: continue
+		if not before.complete and now.complete: _remember(id, "completed")
+		if now.level > before.level: _remember(id, "upgraded to level %d" % now.level)
+		if now.hp < before.hp - 15: _remember(id, "damaged to %d%%" % now.hp)
+		if now.hp >= 95 and before.hp < 80: _remember(id, "repaired")
+		if now.owner != before.owner: _remember(id, "changed hands")
 	for id in delta.changed:
 		changed[id] = int(delta.changed[id])
 	for id in changed:
@@ -164,6 +188,8 @@ func sync_actors() -> void:
 		var formation := "formation:%d" % int(unit.get("formation",0))
 		if formations.has(formation): _link(links,"part_of_formation",formation)
 		if army_of.has(int(id)): _link(links,"part_of_army",army_of[int(id)])
+		var at:=int(unit.tile)
+		if region_of.size()==world.grid.n and at>=0 and at<world.grid.n and region_of[at]>=0 and region_of[at]<regions.size(): _link(links,"in_region",str(regions[region_of[at]].key))
 		_replace_edges(key,links)
 	for key in _unit_keys:
 		if not units.has(key): _remove_node(key)
@@ -365,6 +391,12 @@ func _link_building(id: int) -> void:
 		var key := "resource:%d" % b.tile
 		_feature(key, "ResourceSite", {"tile": b.tile, "deposit": context.deposit})
 		_link(links, "supported_by", key)
+	if region_of.size() == world.grid.n and region_of[b.tile] >= 0 and region_of[b.tile] < regions.size():
+		_link(links, "within_region", str(regions[region_of[b.tile]].key))
+	if network_of.size() == world.grid.n:
+		for t in [b.tile] + Array(range(6)).map(func(d): return world.grid.nb[b.tile * 6 + d]):
+			if int(t) >= 0 and network_of[int(t)] >= 0 and network_of[int(t)] < networks.size():
+				_link(links, "served_by_network", str(networks[network_of[int(t)]].key)); break
 	for edge in context.get("roads", []):
 		var a := mini(b.tile, int(edge.to))
 		var z := maxi(b.tile, int(edge.to))
@@ -431,6 +463,133 @@ func explain_building(id: int) -> Dictionary:
 		"identity": identities.describe(_building_key(id), str(recipe.get("id", "fallback.structure")), int(recipe.get("version", 1)))}
 
 
+## ------------------------------------------------------------------ history
+func _remember(id: int, event: String) -> void:
+	var list: Array = history.get(id, [])
+	list.append([snappedf(world.server_time, 1.0), event])
+	while list.size() > HISTORY_LIMIT: list.pop_front()
+	history[id] = list
+	if history.size() > 6000:
+		for key in history.keys().slice(0, 500): history.erase(key)
+
+
+## ------------------------------------------------------------------ geography
+## Connected terrain regions over known hexes (forests, mountain massifs, deserts, wetlands, seas,
+## lakes, rivers). Rebuilt as a low-priority, budgeted job when known geography changes.
+func schedule_geography() -> void:
+	if scheduler == null or world.grid == null: return
+	_geo_revision += 1
+	var n := world.grid.n
+	var index := PackedInt32Array(); index.resize(n); index.fill(-1)
+	var found: Array = []
+	var state := {"next": 0}
+	scheduler.enqueue("graph:geography", _geo_revision, GenerationScheduler.Priority.LOW, func():
+		var end := mini(int(state.next) + 2048, n)
+		for t in range(int(state.next), end):
+			if index[t] >= 0 or not world.known[t]: continue
+			var kind := _region_kind(t)
+			if kind == "": continue
+			var queue := [t]; var head := 0; index[t] = found.size()
+			while head < queue.size():
+				var at := int(queue[head]); head += 1
+				for d in 6:
+					var nb := world.grid.nb[at * 6 + d]
+					if nb >= 0 and index[nb] < 0 and world.known[nb] and _region_kind(nb) == kind:
+						index[nb] = found.size(); queue.append(nb)
+			found.append({"key": "region:%s:%d" % [kind.to_lower(), t], "kind": kind, "tiles": queue.size(), "centre": int(queue[queue.size() / 2])})
+		state.next = end
+		return end >= n, func():
+			for old in regions: _remove_node(str(old.key))
+			regions = found; region_of = index
+			for record in regions:
+				_upsert_node(str(record.key), "TerrainRegion" if not record.kind in ["River", "Lake", "Sea"] else "WaterBody", "state_derived_visual",
+					{"kind": record.kind, "tiles": record.tiles, "centre": record.centre})
+			revision += 1)
+
+
+func _region_kind(t: int) -> String:
+	if world.is_river(t): return "River"
+	if world.is_lake(t): return "Lake"
+	if world.is_sea(t): return "Sea"
+	return str(REGION_KINDS.get(world.biome(t), ""))
+
+
+## ------------------------------------------------------------------ transport
+## Connected road/rail networks from authoritative road edges; buildings link to the network
+## that actually reaches them.
+func schedule_transport() -> void:
+	if scheduler == null or world.grid == null: return
+	_road_revision += 1
+	var n := world.grid.n
+	var index := PackedInt32Array(); index.resize(n); index.fill(-1)
+	var found: Array = []
+	var state := {"next": 0}
+	scheduler.enqueue("graph:transport", _road_revision, GenerationScheduler.Priority.LOW, func():
+		var end := mini(int(state.next) + 4096, n)
+		for t in range(int(state.next), end):
+			if index[t] >= 0 or world.road[t] == 0: continue
+			var queue := [t]; var head := 0; index[t] = found.size(); var rail := false
+			while head < queue.size():
+				var at := int(queue[head]); head += 1
+				for d in 6:
+					var kind := (int(world.road[at]) >> (d * 4)) & 7
+					if kind <= 0: continue
+					if kind == 4: rail = true
+					var nb := world.grid.nb[at * 6 + d]
+					if nb >= 0 and index[nb] < 0: index[nb] = found.size(); queue.append(nb)
+			found.append({"key": "network:%d" % t, "tiles": queue.size(), "rail": rail})
+		state.next = end
+		return end >= n, func():
+			for old in networks: _remove_node(str(old.key))
+			networks = found; network_of = index
+			for record in networks:
+				_upsert_node(str(record.key), "TransportNetwork", "gameplay_authoritative", {"tiles": record.tiles, "rail": record.rail})
+			for id in adapter.buildings: _link_building(id)
+			revision += 1)
+
+
+## ------------------------------------------------------------------ environment
+func sync_environment(weather: EnvironmentContext) -> void:
+	var keep := {}
+	if weather == null or weather.columns <= 0: return
+	for cell in weather.columns * weather.rows:
+		var tile := (cell / weather.columns) * weather.cell * world.grid.w + (cell % weather.columns) * weather.cell
+		if tile < 0 or tile >= world.grid.n: continue
+		var here: Dictionary = weather.at_tile(tile)
+		var kind := "Storm" if float(here.get("storm", 0)) > .35 else "Rain" if float(here.get("rain", 0)) > .3 else "Snow" if float(here.get("snow", 0)) > .3 else "Fog" if float(here.get("fog", 0)) > .5 else ""
+		if kind == "": continue
+		var key := "weather:%d" % cell
+		keep[key] = true
+		_upsert_node(key, "EnvironmentalRegion", "state_derived_visual", {"kind": kind, "tile": tile})
+	for key in _weather_keys:
+		if not keep.has(key): _remove_node(key)
+	_weather_keys = keep
+
+
+## ------------------------------------------------------------------ explanation
+## Everything the presentation knows about one hex and why: terrain region, transport network,
+## building recipe/identity/history, units and their memberships, battle and weather context.
+func explain_tile(tile: int) -> Dictionary:
+	if world.grid == null or tile < 0 or tile >= world.grid.n or not world.known[tile]:
+		return {"available": false, "reason": "Hex not known to this viewer"}
+	var out := {"available": true, "tile": tile, "known": true, "visible": world.is_visible(tile)}
+	if region_of.size() == world.grid.n and region_of[tile] >= 0 and region_of[tile] < regions.size(): out["region"] = regions[region_of[tile]]
+	if network_of.size() == world.grid.n and network_of[tile] >= 0 and network_of[tile] < networks.size(): out["network"] = networks[network_of[tile]]
+	if at_tile.has(tile):
+		var id := int(at_tile[tile])
+		out["building"] = explain_building(id)
+		out["history"] = history.get(id, [])
+	var units := []
+	for key in _unit_keys:
+		var node: Dictionary = nodes.get(key, {})
+		if int(node.get("data", {}).get("tile", -1)) == tile: units.append({"node": node.get("data", {}), "links": edges.get(key, {})})
+	out["units"] = units
+	for key in _battle_keys:
+		if tile in (nodes.get(key, {}).get("data", {}).get("tiles", []) as Array): out["battle"] = nodes[key].data; break
+	return out
+
+
 func stats() -> Dictionary:
 	return {"nodes": nodes.size(), "building_nodes": adapter.buildings.size(), "districts": districts.size(),
+		"regions": regions.size(), "networks": networks.size(), "weather_regions": _weather_keys.size(), "histories": history.size(),
 		"revision": revision, "topology_revision": topology_revision, "last_districts_touched": last_districts_touched}

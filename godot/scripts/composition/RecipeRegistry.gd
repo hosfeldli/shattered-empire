@@ -14,6 +14,50 @@ const GROUPS := {"house": "res", "farm": "farm", "market": "com", "port": "com",
 var recipes: Array = []
 var errors: Array[String] = []
 
+## World recipes (godot/recipes/world.json): versioned, declarative presentation rules read by
+## renderers and composers. Loaded once, validated; a missing or invalid section falls back to the
+## caller's default so a bad catalog can never break play. Hard constraints are reported, not tuned.
+const WORLD_FILE := "res://recipes/world.json"
+static var _world := {}
+static var world_errors: Array[String] = []
+
+
+static func world_section(name: String) -> Dictionary:
+	if _world.is_empty(): _load_world()
+	return _world.get(name, {})
+
+
+static func world_value(name: String, key: String, fallback: Variant) -> Variant:
+	var section := world_section(name)
+	var soft: Dictionary = section.get("soft", {})
+	if soft.has(key): return soft[key]
+	var hard: Dictionary = section.get("hard", {})
+	return hard.get(key, fallback)
+
+
+static func _load_world() -> void:
+	_world = {"_loaded": true}
+	var file := FileAccess.open(WORLD_FILE, FileAccess.READ)
+	if file == null: world_errors.append("Cannot open " + WORLD_FILE); return
+	var data = JSON.parse_string(file.get_as_text())
+	if not data is Dictionary or int(data.get("schema", 0)) != 1 or not data.get("sections") is Dictionary:
+		world_errors.append("Invalid world recipe catalog"); return
+	for name in data.sections:
+		var section: Dictionary = data.sections[name]
+		if str(section.get("id", "")) == "" or int(section.get("version", 0)) < 1:
+			world_errors.append("World recipe %s needs an id and explicit version" % name); continue
+		if not section.get("hard", {}) is Dictionary or not section.get("soft", {}) is Dictionary:
+			world_errors.append("World recipe %s needs hard and soft rule tables" % name); continue
+		_world[name] = section
+
+
+static func world_versions() -> Dictionary:
+	if _world.is_empty(): _load_world()
+	var out := {}
+	for name in _world:
+		if name != "_loaded": out[name] = "%s@%d" % [_world[name].id, int(_world[name].version)]
+	return out
+
 
 func load_defaults() -> void:
 	var file := FileAccess.open(FILE, FileAccess.READ)

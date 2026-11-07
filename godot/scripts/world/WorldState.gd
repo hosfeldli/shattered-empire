@@ -498,7 +498,10 @@ func ground_height(x: float, z: float) -> float:
 ## shared basin (summed, softly limited); rims only rise where no other bowl cuts them. The profile
 ## tapers to zero well inside the hex so neighbours and wrapped chunks still meet exactly.
 ## Presentation only: movement and cover remain the server's crater rules.
-const IMPACT_SHAPE := {"mortar":[.13,.045],"shell":[.19,.075],"bomb":[.27,.11],"missile":[.22,.085],"strategic":[.34,.14]}
+const IMPACT_SHAPE_DEFAULT := {"mortar":[.13,.045],"shell":[.19,.075],"bomb":[.27,.11],"missile":[.22,.085],"strategic":[.34,.14]}
+var IMPACT_SHAPE:Dictionary=RecipeRegistry.world_value("warzone","impact_shapes",IMPACT_SHAPE_DEFAULT)
+var ROCK_DEPTH:=float(RecipeRegistry.world_value("warzone","rock_depth_scale",.45))
+var BASIN_LIMIT:=float(RecipeRegistry.world_value("warzone","basin_limit",.16))
 func visual_crater_delta(tile:int,x:float,z:float) -> float:
 	if not visual_craters.has(tile): return 0.0
 	var center:=grid.center(tile)
@@ -515,7 +518,7 @@ func visual_crater_delta(tile:int,x:float,z:float) -> float:
 		var shape:Array=IMPACT_SHAPE.get(str(impact[0]),IMPACT_SHAPE.shell)
 		var severity:=clampf(float(impact[3]),.2,1.0)
 		var radius:=float(shape[0])*(.75+.35*severity)
-		var depth:=float(shape[1])*(.7+.5*severity)*(.45 if rock else 1.0)
+		var depth:=float(shape[1])*(.7+.5*severity)*(ROCK_DEPTH if rock else 1.0)
 		var p:=local-Vector2(float(impact[1]),float(impact[2]))
 		var s:=float(int(impact[4])%97)
 		var angle:=atan2(p.y,p.x)
@@ -525,7 +528,7 @@ func visual_crater_delta(tile:int,x:float,z:float) -> float:
 		bowl+=depth*(1.0-smoothstep(.1,.92,r))
 		rim=maxf(rim,depth*.22*smoothstep(.7,.95,r)*(1.0-smoothstep(1.0,1.3,r)))
 	# basins: deep overlaps saturate instead of punching through; rims are cut by neighbouring bowls
-	bowl=.16*(1.0-exp(-bowl/.16))
+	bowl=BASIN_LIMIT*(1.0-exp(-bowl/BASIN_LIMIT))
 	return (-bowl+rim*(1.0-smoothstep(.0,.04,bowl)*.8))*edge
 
 

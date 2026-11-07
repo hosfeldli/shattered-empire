@@ -123,5 +123,5 @@ static func development(k:MeshKit,b:Dictionary,definition:Dictionary,tint:Color)
 		k.cylinder("steel",Vector3(.30,.265,.26),.035,.05,8)
 
 static func _hall(k:MeshKit,position:Vector3,dimensions:Vector3,material:String,tint:Color) -> void:
-	k.box(material,position,dimensions,tint)
-	k.sawtooth("steel","glass",position+Vector3(0,dimensions.y,0),dimensions.x,dimensions.z,.065,3,tint,PI*.5)
+	k.box("corrugated" if material=="steel" else material,position,dimensions,tint)
+	k.sawtooth("corrugated","glass",position+Vector3(0,dimensions.y,0),dimensions.x,dimensions.z,.065,3,tint,PI*.5)

@@ -14,7 +14,7 @@ let game;
 if (workerData.restore) {
   game = restoreGame(JSON.parse(zlib.gunzipSync(Buffer.from(workerData.restore)).toString()));
 } else {
-  game = new Game({ id: workerData.id, seed: workerData.seed, slots: workerData.slots, rebels: workerData.rebels !== false, style: workerData.style, ruleset: workerData.ruleset });
+  game = new Game({ id: workerData.id, seed: workerData.seed, slots: workerData.slots, rebels: false, style: workerData.style, ruleset: workerData.ruleset });
   if (workerData.sandbox) { const { makeSandbox } = await import('./sim/sandbox.js'); makeSandbox(game); }
 }
 // live matches let AI planning slide a tick when a tick runs long (tests and replays stay strict)

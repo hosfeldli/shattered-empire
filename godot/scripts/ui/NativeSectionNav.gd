@@ -25,7 +25,7 @@ func select(index:int) -> void:
 	var aliases:={"Resources":"Economy","Logistics":"Economy","Buildings":"Construction","Production":"Cities","Armies":"Military","Formations":"Military","Air":"Military","Strategic":"Military","Battles":"Alerts","History":"Alerts"}
 	var current:String=aliases.get(items[index],items[index])
 	for target in buttons:
-		var style:=NativeUI.style(Color("314247") if target==current else Color(0,0,0,0),Color(0,0,0,0),5)
+		var style:=NativeUI.style(Color(NativeUI.GOLD,.16) if target==current else Color(0,0,0,0),Color(0,0,0,0),5)
 		style.content_margin_left=42
 		if target==current: style.border_color=NativeUI.GOLD; style.border_width_left=2
 		(buttons[target] as Button).add_theme_stylebox_override("normal",style)

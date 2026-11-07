@@ -90,9 +90,9 @@ static func _barracks(k: MeshKit, tint: Color, flag: String, lv: int) -> void:
 		k.box("concrete", Vector3(-.3, 0, z), Vector3(.18, .12 + (.07 if lv >= 2 else 0.0), .14), tint)
 		k.box("steel", Vector3(-.3, .12 + (.07 if lv >= 2 else 0.0), z), Vector3(.19, .012, .15), tint * .8)
 		for w in 3: k.box("glass", Vector3(-.36 + w * .06, .06, z + .071), Vector3(.03, .03, .004))
-	k.box("steel", Vector3(.3, 0, -.22), Vector3(.2, .11, .16), OLIVE)                                  # vehicle shed
+	k.box("corrugated", Vector3(.3, 0, -.22), Vector3(.2, .11, .16), OLIVE)                              # vehicle shed
 	k.box("char", Vector3(.3, .005, -.139), Vector3(.14, .08, .004))
-	for i in 3: k.box("steel", Vector3(.16 + i * .08, 0, .3), Vector3(.07, .05, .1), [OLIVE, Color(.5, .52, .46), OLIVE][i])   # containers
+	for i in 3: k.box("painted_metal", Vector3(.16 + i * .08, 0, .3), Vector3(.07, .05, .1), [OLIVE, Color(.5, .52, .46), OLIVE][i])   # containers
 	k.box("steel", Vector3(.05, 0, .05), Vector3(.008, .32, .008))
 	k.box(flag, Vector3(.077, .29, .05), Vector3(.05, .032, .004))
 	for i in 4: k.box("timber", Vector3(-.05 + i * .06, 0, -.05), Vector3(.012, .05, .05), Color(.62, .5, .36))   # training frames
@@ -103,8 +103,8 @@ static func _camp(k: MeshKit, tint: Color) -> void:
 	for i in 3:
 		var a := TAU * i / 3.0 + .4
 		k.gable("canvas", Vector3(cos(a) * .25, 0, sin(a) * .25), .14, .2, .1, Color(.6, .58, .46), -a)
-	k.box("steel", Vector3(.05, 0, -.05), Vector3(.18, .07, .08), Color(.55, .38, .3), .4)
-	k.box("steel", Vector3(-.1, 0, .12), Vector3(.12, .06, .07), Color(.36, .42, .38), -.3)
+	k.box("painted_metal", Vector3(.05, 0, -.05), Vector3(.18, .07, .08), Color(.55, .38, .3), .4)
+	k.box("painted_metal", Vector3(-.1, 0, .12), Vector3(.12, .06, .07), Color(.36, .42, .38), -.3)
 	for i in 6:
 		var a := TAU * i / 6.0
 		k.box("steel", Vector3(cos(a) * .45, 0, sin(a) * .42), Vector3(.12, .045, .03), Color(.45, .4, .35), -a + PI * .5 + (i % 2) * .4)
@@ -154,15 +154,15 @@ static func _pumpjack(k: MeshKit, tint: Color, lv: int, b_active := 0) -> void:
 ## Runway with markings, a parallel taxiway, arched hangars, apron and a control tower.
 static func _airfield(k: MeshKit, tint: Color, flag: String) -> void:
 	k.box("asphalt", Vector3(0, .002, -.08), Vector3(1.5, .012, .2), Color(.6, .6, .6))
-	for i in 9: k.box("paving", Vector3(-.6 + i * .15, .015, -.08), Vector3(.07, .002, .012), Color(1.6, 1.6, 1.5))
+	for i in 9: k.box("concrete", Vector3(-.6 + i * .15, .015, -.08), Vector3(.07, .002, .012), Color(1.6, 1.6, 1.5))
 	for x in [-.71, .71]:
-		for z in [-.14, -.02]: k.box("paving", Vector3(x, .015, z), Vector3(.04, .002, .025), Color(1.6, 1.6, 1.5))
+		for z in [-.14, -.02]: k.box("concrete", Vector3(x, .015, z), Vector3(.04, .002, .025), Color(1.6, 1.6, 1.5))
 	k.box("asphalt", Vector3(0, .002, .1), Vector3(1.2, .01, .06), Color(.55, .55, .55))
 	k.box("asphalt", Vector3(-.1, .002, .3), Vector3(.62, .01, .2), Color(.62, .62, .6))                # apron
 	for i in 2:
 		var p := Vector3(-.3 + i * .3, 0, .38)
-		k.cylinder("steel", p, .1, .16, 10, Color(.66, .68, .66), .1)
-		k.box("steel", p + Vector3(0, 0, -.001), Vector3(.2, .09, .19), Color(.62, .64, .62))
+		k.cylinder("corrugated", p, .1, .16, 10, Color(.66, .68, .66), .1)
+		k.box("corrugated", p + Vector3(0, 0, -.001), Vector3(.2, .09, .19), Color(.62, .64, .62))
 		k.box("char", p + Vector3(0, .0, -.096), Vector3(.14, .08, .004))
 	k.box("concrete", Vector3(.42, 0, .32), Vector3(.08, .26, .08), tint)
 	k.box("glass", Vector3(.42, .26, .32), Vector3(.12, .05, .12), Color(.5, .62, .7))
@@ -204,13 +204,13 @@ static func _port(k: MeshKit, tint: Color, lv: int) -> void:
 	k.box("concrete", Vector3(.12, -.01, 0), Vector3(.5, .03, .5), Color(.78, .77, .74))
 	k.box("concrete", Vector3(.55, -.02, -.05), Vector3(.5, .03, .14), Color(.76, .75, .72))          # pier
 	for i in 5: k.box("concrete", Vector3(.36 + i * .1, -.06, .02), Vector3(.025, .05, .025), Color(.6, .6, .58))
-	k.box("steel", Vector3(-.22, 0, -.12), Vector3(.26, .15, .22), tint * Color(.85, .87, .88))       # warehouse
-	k.gable("steel", Vector3(-.22, .15, -.12), .22, .26, .05, tint * .9, PI * .5)
+	k.box("corrugated", Vector3(-.22, 0, -.12), Vector3(.26, .15, .22), tint * Color(.85, .87, .88))       # warehouse
+	k.gable("corrugated", Vector3(-.22, .15, -.12), .22, .26, .05, tint * .9, PI * .5)
 	k.box("char", Vector3(-.22, .0, -.009), Vector3(.12, .09, .004))
 	var palette := [Color(.72, .32, .24), Color(.24, .42, .58), Color(.82, .62, .22), Color(.38, .5, .36)]
 	for i in 3 + lv * 2:
 		var col := i % 3; var row := i / 3
-		k.box("steel", Vector3(-.05 + col * .07, row * .035, .16), Vector3(.065, .033, .12), palette[i % 4])
+		k.box("painted_metal", Vector3(-.05 + col * .07, row * .035, .16), Vector3(.065, .033, .12), palette[i % 4])
 	for crane in mini(lv, 2):
 		var z := -.05 + crane * .16
 		for x in [.42, .56]:

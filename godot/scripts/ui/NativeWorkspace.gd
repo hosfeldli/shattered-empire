@@ -56,15 +56,16 @@ func setup(w:WorldState,n:NetworkClient,cam:CameraController,s:SettlementRendere
 	panel.mouse_force_pass_scroll_events=false
 	var outer:=VBoxContainer.new(); panel.add_child(outer)
 	var top:=HBoxContainer.new(); outer.add_child(top)
-	heading=NativeUI.label(top,"Empire",22,NativeUI.GOLD); heading.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	heading=NativeUI.label(top,"Empire",19,NativeUI.TEXT); heading.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	heading.add_theme_font_override("font",load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
 	expand_button=NativeUI.compact_button(top,"Expand",func():set_expanded(not expanded),"Enlarge this panel for planning; the map remains interactive")
-	NativeUI.compact_button(top,"Close",func():panel.hide(),"Return to the map · Escape / F2")
+	NativeUI.icon_button(top,"close","Close · Escape",func():panel.hide(),28)
 	var body:=VBoxContainer.new(); body.size_flags_vertical=Control.SIZE_EXPAND_FILL; outer.add_child(body)
 	sidebar=NativeSectionNav.new(); sidebar.setup(PAGES); body.add_child(sidebar); sidebar.hide()
 	sidebar.page_selected.connect(open_page)
 	var host:=VBoxContainer.new(); host.size_flags_horizontal=Control.SIZE_EXPAND_FILL; body.add_child(host)
 	host.size_flags_vertical=Control.SIZE_EXPAND_FILL
-	orders_toggle=NativeUI.compact_button(outer,"Detailed orders…",func():show_all_orders(not inspector_view.visible),"Additional commands and parameters for this workspace")
+	orders_toggle=NativeUI.compact_button(outer,"More options…",func():show_all_orders(not inspector_view.visible),"Every command and parameter for this panel")
 	var editor_scroll:=ScrollContainer.new(); editor_scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL; editor_scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; host.add_child(editor_scroll)
 	var main:=VBoxContainer.new(); main.size_flags_horizontal=Control.SIZE_EXPAND_FILL; editor_scroll.add_child(main); inspector_view=main
 	records_context=VBoxContainer.new(); main.add_child(records_context)
@@ -135,7 +136,7 @@ func show_all_orders(on:bool) -> void:
 	inspector_view.get_parent().visible=on
 	records_context.show()
 	if dashboard: dashboard.visible=not on
-	orders_toggle.text="Back to overview" if on else "Detailed orders…"
+	orders_toggle.text="Back" if on else "More options…"
 
 func focus_order(id:String) -> void:
 	show_all_orders(true)
@@ -482,10 +483,10 @@ func _unhandled_input(event:InputEvent) -> void:
 func _process(dt:float) -> void:
 	if not panel.visible: return
 	var bounds:=get_viewport().get_visible_rect().size
-	var width:=minf(1080,bounds.x-132) if expanded else 300.0 if page in ["Construction","Armies"] and not inspector_view.visible else clampf(bounds.x*.26,340,390)
+	var width:=minf(1080,bounds.x-96) if expanded else 300.0 if page in ["Construction","Armies"] and not inspector_view.visible else clampf(bounds.x*.26,340,390)
 	var content_height:=inspector_view.get_combined_minimum_size().y if inspector_view.visible else dashboard.body.get_combined_minimum_size().y
 	var height:=minf(760,bounds.y-111) if expanded else minf(content_height+120,minf(760,bounds.y-111))
-	panel.size=Vector2(width,maxf(220,height)); panel.position=Vector2(118,53)
+	panel.size=Vector2(width,maxf(220,height)); panel.position=Vector2(82,66)
 	expand_button.text="Compact" if expanded else "Expand"
 	timer+=dt
 	if timer>=1: timer=0; _refresh()

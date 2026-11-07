@@ -39,7 +39,7 @@ func sync() -> void:
 	_update_values()
 
 func _card(parent:Node,title:String) -> VBoxContainer:
-	var panel:=PanelContainer.new(); panel.add_theme_stylebox_override("panel",NativeUI.style(Color("1c292f"),Color("36464b"),9)); panel.size_flags_horizontal=Control.SIZE_EXPAND_FILL; parent.add_child(panel)
+	var panel:=PanelContainer.new(); panel.add_theme_stylebox_override("panel",NativeUI.style(NativeUI.PANEL_SOFT,NativeUI.LINE,10)); panel.size_flags_horizontal=Control.SIZE_EXPAND_FILL; parent.add_child(panel)
 	var column:=VBoxContainer.new(); panel.add_child(column)
 	if not title.is_empty(): NativeUI.label(column,title.to_upper(),13,NativeUI.GOLD)
 	return column
@@ -52,8 +52,7 @@ func _metric(parent:Node,title:String,getter:Callable) -> void:
 
 func _button(parent:Node,title:String,action:Callable,primary:=false) -> Button:
 	var button:=NativeUI.compact_button(parent,title,action)
-	if primary:
-		button.add_theme_stylebox_override("normal",NativeUI.style(Color("d0af6c"),Color("e5c687"),6)); button.add_theme_color_override("font_color",Color("142026")); button.add_theme_color_override("font_hover_color",Color("142026"))
+	if primary: NativeUI.primary(button)
 	return button
 
 func _data() -> Dictionary:
@@ -118,7 +117,7 @@ func show_response(reply:Dictionary) -> void:
 	if reply.get("error")==null and not reply.has("plan") and not reply.has("preview"): return
 	var card:=_card(body,"Latest result"); response_panel=card.get_parent()
 	if reply.get("error")!=null:
-		NativeUI.label(card,str(reply.error),18,Color("e6a08a")); return
+		NativeUI.label(card,str(reply.error),18,NativeUI.BAD); return
 	if reply.has("plan"):
 		var plan:Dictionary=reply.plan
 		for issue in plan.get("issues",[]): NativeUI.label(card,str(issue),17,NativeUI.GOLD)
@@ -369,7 +368,7 @@ func _build_catalog(catalog:VBoxContainer,query:String,category:String) -> void:
 		var heading:=_button(catalog,("▾ " if open else "▸ ")+group,func():build_group="" if build_group==section else section; _build_catalog(catalog,query,build_group),open)
 		heading.alignment=HORIZONTAL_ALIGNMENT_LEFT
 		if open:
-			heading.add_theme_stylebox_override("normal",NativeUI.style(Color("2b4052"),Color("53738d"),6))
+			heading.add_theme_stylebox_override("normal",NativeUI.style(Color(NativeUI.TEAL,.16),Color(NativeUI.TEAL,.4),6))
 			heading.add_theme_color_override("font_color",NativeUI.TEXT)
 		if not open: continue
 		if group=="Roads":
@@ -451,7 +450,7 @@ func _strategic() -> void:
 		_button(card,"Build missile",func():workspace._dispatch({"c":"missileBuild","silo":id}))
 	for launch in world.missiles.get("m",[]):
 		var data:Array=launch; var warning:=_card(body,"Missile in flight")
-		_bind(warning,func():return "%d seconds to impact"%maxi(0,ceili(float(data[4])-world.server_time)),24,Color("e6a08a"))
+		_bind(warning,func():return "%d seconds to impact"%maxi(0,ceili(float(data[4])-world.server_time)),24,NativeUI.BAD)
 		_button(warning,"Go to target",func():workspace.camera.focus_tile(int(data[2]),20); workspace.panel.hide())
 
 func _battles() -> void:

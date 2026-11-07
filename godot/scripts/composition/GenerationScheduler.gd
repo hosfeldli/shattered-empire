@@ -40,6 +40,29 @@ func enqueue(key: String, revision: int, priority: int, step: Callable, commit: 
 	_jobs[key] = job
 
 
+## Threaded preparation (A: "prepare geometry off-thread only where safe"): `work` runs on the
+## WorkerThreadPool and must only read the immutable copies it captured; `commit` runs later on the
+## main thread, and only if no newer revision of the same key was enqueued meanwhile.
+var _threaded := {}   # key -> {task, revision, commit}
+
+func enqueue_threaded(key: String, revision: int, work: Callable, commit: Callable) -> void:
+	if revision < int(_latest.get(key, -1)): superseded += 1; return
+	_latest[key] = revision
+	if _threaded.has(key): superseded += 1   # the older task still finishes; its commit is dropped
+	var task := WorkerThreadPool.add_task(work, false, "LWE " + key)
+	_threaded[key + "#" + str(revision)] = {"key": key, "task": task, "revision": revision, "commit": commit}
+
+
+func _collect_threaded() -> void:
+	for id in _threaded.keys():
+		var job: Dictionary = _threaded[id]
+		if not WorkerThreadPool.is_task_completed(int(job.task)): continue
+		WorkerThreadPool.wait_for_task_completion(int(job.task))
+		_threaded.erase(id)
+		if int(_latest.get(str(job.key), -1)) != int(job.revision): superseded += 1; continue
+		(job.commit as Callable).call(); completed += 1
+
+
 func cancel(key: String) -> void:
 	_deferred.erase(key)
 	if _jobs.has(key):
@@ -81,6 +104,7 @@ func _next_key() -> String:
 
 func tick(budget_us: int) -> void:
 	var started := Time.get_ticks_usec()
+	if not _threaded.is_empty(): _collect_threaded()
 	while not _jobs.is_empty() and Time.get_ticks_usec() - started < budget_us:
 		var key := _next_key()
 		var job: Dictionary = _jobs[key]
@@ -113,5 +137,5 @@ func tick(budget_us: int) -> void:
 
 
 func stats() -> Dictionary:
-	return {"pending": _jobs.size(), "deferred": _deferred.size(), "completed": completed, "superseded": superseded,
+	return {"pending": _jobs.size(), "deferred": _deferred.size(), "threaded": _threaded.size(), "completed": completed, "superseded": superseded,
 		"last_slice_ms": last_slice_us / 1000.0, "max_step_ms": max_step_us / 1000.0, "max_commit_ms": max_commit_us / 1000.0}

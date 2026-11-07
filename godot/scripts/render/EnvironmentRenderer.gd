@@ -48,6 +48,7 @@ var props_dirty := {}
 var built_tiles := {}
 var work_tiles:={}
 var tree_mesh: ArrayMesh
+var vegetation: Dictionary = RecipeRegistry.world_section("vegetation").get("soft", {})
 var broadleaf_mesh: ArrayMesh
 var tree_count := 0
 var shadows_allowed := true
@@ -171,7 +172,7 @@ func update(dt: float) -> void:
 	_lightning(dt)
 	_snow(dt)
 	# Sun shadows follow the visible footprint and disappear once they are sub-pixel at map zoom.
-	var shadow_size := float(LODManager.PRESETS[composition.lod.quality].shadow_size) if composition else SHADOW_MAX_SIZE
+	var shadow_size := float(composition.lod.presets.get(composition.lod.quality,{}).get("shadow_size",SHADOW_MAX_SIZE)) if composition else SHADOW_MAX_SIZE
 	sun.shadow_enabled = shadows_allowed and cam.size < shadow_size
 	sun.directional_shadow_max_distance = CameraController.DISTANCE + minf(cam.size * 0.75, 90.0)
 	# clouds drift with the wind between authoritative updates, then cross-fade to the new field
@@ -216,7 +217,7 @@ func update(dt: float) -> void:
 		var canopy := p.canopy as MeshInstance3D
 		trees.cast_shadow = tree_shadows
 		# Camera distance is fixed by the orthographic boom, so zoom LOD is keyed to camera size.
-		var tree_size := float(LODManager.PRESETS[composition.lod.quality].tree_size) if composition else TREE_LOD_SIZE
+		var tree_size := float(composition.lod.presets.get(composition.lod.quality,{}).get("tree_size",TREE_LOD_SIZE)) if composition else TREE_LOD_SIZE
 		trees.visible = not hide_trees and cam.size < tree_size
 		canopy.visible = not hide_trees and cam.size >= tree_size
 		var x0: float = float(p.x0)
@@ -473,14 +474,14 @@ func _build_props(cid: int) -> void:
 			rng.seed = i * 977 + 3
 			var c := g.center(i)
 			var n := 0
-			match b:
-				4: n = 11
-				2: n = 2 if rng.randf() < 0.35 else 0
-				7: n = 3
-				8: n = 3 if rng.randf() < 0.5 else 0
-				6: n = 1 if rng.randf() < 0.3 else 0
+			# vegetation recipe (world.json "vegetation"): trees per biome and the chance a hex has any
+			var per_hex: Dictionary = vegetation.get("trees_per_hex", {})
+			var chance: Dictionary = vegetation.get("chance_per_hex", {})
+			if per_hex.has(str(b)):
+				n = int(per_hex[str(b)])
+				if chance.has(str(b)) and rng.randf() >= float(chance[str(b)]): n = 0
 			if world.is_river(i):
-				n = mini(n, 4)
+				n = mini(n, int(vegetation.get("river_cap", 4)))
 			var woodland_neighbours := 6
 			if b == 4:
 				woodland_neighbours = 0
@@ -512,21 +513,22 @@ func _build_props(cid: int) -> void:
 				if y < 0.02:
 					continue
 				# forest edges thin out with younger trees; the interior stays dense and tall
-				if b == 4 and k >= 5 + woodland_neighbours: continue
-				var s := rng.randf_range(0.75, 1.35) * (0.8 if b == 7 else 1.0) * (0.78 + 0.22 * woodland_neighbours / 6.0 if b == 4 else 1.0)
+				if b == 4 and k >= int(vegetation.get("edge_base_trees", 5)) + woodland_neighbours: continue
+				var edge_min := float(vegetation.get("edge_scale_min", 0.78))
+				var s := rng.randf_range(0.75, 1.35) * (0.8 if b == 7 else 1.0) * (edge_min + (1.0 - edge_min) * woodland_neighbours / 6.0 if b == 4 else 1.0)
 				var transform:=Transform3D(Basis(Vector3.UP,rng.randf()*TAU).scaled(Vector3(s,s*rng.randf_range(.9,1.2),s)),Vector3(x,y-.01,z))
 				var tint:=Color(1,1,1).darkened(rng.randf()*.25).lerp(Color(.9,.95,.7),rng.randf()*.2)
 				if work_tiles.has(i) and TrenchPresentation.distance_to_route(work_tiles[i],g,Vector2(x,z))<.22: continue
 				if world.road[i]!=0 and _road_clearance(i,Vector2(x,z))<.09: continue
 				if scarred.has(i):
-					var keep := 1.0 - clampf(float(scarred[i]) / 3.0, 0.0, 0.85)
+					var keep := 1.0 - clampf(float(scarred[i]) * float(vegetation.get("battle_loss_per_stage", 0.333)), 0.0, float(vegetation.get("battle_loss_max", 0.85)))
 					if float(posmod(hash([i, k, "scar"]), 1000)) / 1000.0 > keep:
 						rocks.set_frame(Vector3.ZERO, 0.0)
 						rocks.cylinder("bark", Vector3(x, y - 0.01, z), 0.017, 0.03 + 0.03 * float(posmod(hash([i, k]), 3)), 5, Color(0.45, 0.38, 0.3), 0.012)
 						if posmod(hash([i, k, "log"]), 2) == 0:
 							rocks.box("bark", Vector3(x + 0.05, y - 0.005, z), Vector3(0.12, 0.018, 0.018), Color(0.4, 0.34, 0.28), float(posmod(hash([i, k, "yaw"]), 628)) / 100.0)
 						continue
-				if b == 4 or b == 6: xforms.append(transform); cols.append(tint)
+				if b in (vegetation.get("conifer_biomes", [4, 6]) as Array): xforms.append(transform); cols.append(tint)
 				else: broad_xforms.append(transform); broad_cols.append(tint)
 			_deposit(rocks, i, c, rng)
 			_derelict(rocks, i, c)

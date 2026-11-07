@@ -134,7 +134,9 @@ export class Game {
     this.over = false; this.winner = null; this.log = []; this.outbox = [];
     this.cityNameIdx = 0;
     this.civs = slots.map((s, i) => this.makeCiv(i, s));
-    if (rebels) { const r = this.makeCiv(this.civs.length, { human: false, name: REBEL.name }); r.isRebel = true; r.color = REBEL.color; r.personality = 'rebel'; this.civs.push(r); }
+    // Rebel factions have been removed from the game: unrest now ends in riots or defection to a
+    // neighbouring empire, never a separate rebel civilization.
+    void rebels;
     for (const civ of this.civs) { civ.ruleset = this.ruleset; if (nativeRules(this)) normalizeNativeCiv(civ); }
     this.diplomacy = new Diplomacy(this);
     this.geology = new Geology(this);

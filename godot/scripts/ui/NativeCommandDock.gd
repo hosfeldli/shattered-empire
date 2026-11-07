@@ -17,6 +17,8 @@ var queue_label:Label
 var selection_key:=""
 var deselect:Button
 var behavior_buttons:={}
+var health_bar:ProgressBar
+var stripe:ColorRect
 
 func setup(game:Node) -> void:
 	app=game; layer=18
@@ -24,9 +26,15 @@ func setup(game:Node) -> void:
 	panel.mouse_force_pass_scroll_events=false
 	var layout:=VBoxContainer.new(); layout.add_theme_constant_override("separation",6); panel.add_child(layout)
 	var header:=HBoxContainer.new(); layout.add_child(header)
-	title=NativeUI.label(header,"Selection",19,NativeUI.GOLD); title.size_flags_horizontal=Control.SIZE_EXPAND_FILL
-	deselect=NativeUI.compact_button(header,"Deselect",func():app.input.cancel(),"Clear selection · Escape. Space centers the selection.")
-	state=NativeUI.label(layout,"",14,NativeUI.MUTED)
+	stripe=ColorRect.new(); stripe.custom_minimum_size=Vector2(4,22); stripe.size_flags_vertical=Control.SIZE_SHRINK_CENTER; header.add_child(stripe)
+	title=NativeUI.label(header,"Selection",18,NativeUI.TEXT); title.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	title.add_theme_font_override("font",load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
+	NativeUI.icon_button(header,"follow","Centre the camera on the selection · Space",func():app.input.center_selection(),28)
+	deselect=NativeUI.icon_button(header,"close","Clear selection · Escape",func():app.input.cancel(),28)
+	health_bar=ProgressBar.new(); health_bar.show_percentage=false; health_bar.custom_minimum_size=Vector2(0,4); health_bar.max_value=100
+	health_bar.add_theme_stylebox_override("background",NativeUI.style(Color(1,1,1,.08),Color(0,0,0,0),0,2))
+	layout.add_child(health_bar)
+	state=NativeUI.label(layout,"",13,NativeUI.MUTED)
 	cards=HFlowContainer.new(); layout.add_child(cards); cards.hide()
 	orders=HFlowContainer.new(); orders.add_theme_constant_override("h_separation",5); orders.add_theme_constant_override("v_separation",5); layout.add_child(orders)
 	details=VBoxContainer.new(); layout.add_child(details)
@@ -132,10 +140,10 @@ func _rebuild() -> void:
 				_button("Repair damaged (%d)"%damaged.size(),func():
 					for target in damaged: app.commands.issue("repair",{"building":target}),"Start repairs on every damaged building in this city, as materials allow.")
 			if int(city.get("fs",0))>0:
-				NativeUI.label(details,"Food shortage · farms are not supplying enough food.",15,Color("e4ad88"))
+				NativeUI.label(details,"Food shortage · farms are not supplying enough food.",15,NativeUI.BAD)
 				NativeUI.compact_button(details,"Build Farm",func():app.command_tools.activate("build","farm"))
 			elif int(city.get("iso",0))>0:
-				NativeUI.label(details,"Supply connection lost · check roads and crossings.",15,Color("e4ad88"))
+				NativeUI.label(details,"Supply connection lost · check roads and crossings.",15,NativeUI.BAD)
 				NativeUI.compact_button(details,"Inspect supply connection",func():_workspace("Logistics"))
 		else:
 			if info.has("trains"):
@@ -155,7 +163,7 @@ func _rebuild() -> void:
 				var note:=" · paused" if paused_works else " · halted under fire" if works.size()>2 and int(works[2])==1 else ""
 				var eta:=int(works[3]) if works.size()>3 else -1
 				var remaining:=" · about %d:%02d left"%[eta/60,eta%60] if eta>=0 and note.is_empty() else ""
-				NativeUI.label(details,"%s · %d%%%s%s"%[doing,int(works[1]),remaining,note],15,Color("e4ad88") if not note.is_empty() else NativeUI.GOLD)
+				NativeUI.label(details,"%s · %d%%%s%s"%[doing,int(works[1]),remaining,note],15,NativeUI.BAD if not note.is_empty() else NativeUI.GOLD)
 				NativeUI.label(details,"Engineers within two hexes speed up the works.",13,NativeUI.MUTED)
 				if own: _button("Resume works" if paused_works else "Pause works",func():app.commands.issue("pause_works",{"building":id}),"Pausing keeps progress and frees crews and engineers for other sites.")
 				if own: _button("Cancel works",func():app.commands.issue("cancel_works",{"building":id}),"Stop the works. Half of the unspent cost is refunded.")
@@ -246,6 +254,26 @@ func _refresh() -> void:
 			var queue:Array=building.get("q",[]); queue_label.visible=not queue.is_empty()
 			queue_label.text="Training: "+" · ".join(queue.map(func(item):return str(world.defs.get("UNITS",{}).get(item[0],{}).get("name",item[0]))+" (~%s sec)"%str(item[1])))
 	hint.hide()
+	_health_and_owner(ids,building)
+
+
+func _health_and_owner(ids:Array,building:Dictionary) -> void:
+	var world:WorldState=app.world
+	var hp:=-1.0; var owner:=world.civ_id
+	if app.command_tools.mode=="select" and not ids.is_empty():
+		var total:=0.0; var count:=0
+		for id in ids:
+			var unit:Dictionary=world.units.get(id,{})
+			if not unit.is_empty(): total+=float(unit.hp); count+=1; owner=int(unit.owner)
+		if count>0: hp=total/count
+	elif app.command_tools.mode=="select" and not building.is_empty():
+		hp=float(building.get("hp",100)); owner=int(building.o)
+	health_bar.visible=hp>=0.0
+	stripe.color=world.civ_color(owner)
+	if hp>=0.0:
+		health_bar.value=hp
+		var color:=NativeUI.GOOD if hp>=70 else NativeUI.GOLD if hp>=35 else NativeUI.BAD
+		health_bar.add_theme_stylebox_override("fill",NativeUI.style(color,Color(0,0,0,0),0,2))
 
 func _process(dt:float) -> void:
 	panel.visible=app.world.ready_ and not app.shell.is_blocking() and not app.workspace.panel.visible and not app.shell.world_hidden and (not app.military.selected.is_empty() or app.settlements.selected_building>=0 or app.command_tools.mode!="select")
