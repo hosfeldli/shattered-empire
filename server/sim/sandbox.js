@@ -32,9 +32,9 @@ export function findArena(g, need = 7) {
 }
 
 // Place `n` units of a type in a compact block around a tile (up to 3 per hex).
-export function spawnGroup(g, civId, type, center, n) {
+export function spawnGroup(g, civId, type, center, n, radius = 4) {
   const civ = g.civs[civId], out = [];
-  const tiles = disk(center, 4).filter((t) => passable(g, t) || UNITS[type].air).sort((a, b) => dist(a, center) - dist(b, center) || a - b);
+  const tiles = disk(center, radius).filter((t) => passable(g, t) || UNITS[type].air).sort((a, b) => dist(a, center) - dist(b, center) || a - b);
   let i = 0;
   for (const t of tiles) {
     for (let k = 0; k < 3 && i < n; k++, i++) { const u = spawnUnit(g, civ, type, t); u.stance = 'aggressive'; out.push(u); }
@@ -91,6 +91,10 @@ export const SCENARIOS = {
     const aaSite = free(offset(a, 9)); const aa = aaSite === undefined ? null : g.placeBuilding(g.civs[1], 'aa_battery', aaSite, true); if (aa) aa.upgraded = true;
     for (const u of B) u.stance = 'hold';
     return [spawnGroup(g, 0, 'rifle_squad', offset(a, -6), 2), B];
+  } },
+  massive: { name: '500 vs 500 (performance)', run(g, a) {
+    const mk = (civ, side) => [...spawnGroup(g, civ, 'rifle_squad', offset(a, side * 9), 300, 11), ...spawnGroup(g, civ, 'tank', offset(a, side * 14), 120, 8), ...spawnGroup(g, civ, 'mortar_team', offset(a, side * 17), 50, 6), ...spawnGroup(g, civ, 'armored_car', offset(a, side * 12), 30, 5)];
+    return [mk(0, -1), mk(1, 1)];
   } },
   large: { name: '30 vs 30 combined arms', run(g, a) {
     const mk = (civ, side) => [...spawnGroup(g, civ, 'rifle_squad', offset(a, side * 4), 14), ...spawnGroup(g, civ, 'tank', offset(a, side * 6), 8), ...spawnGroup(g, civ, 'mortar_team', offset(a, side * 8), 5), ...spawnGroup(g, civ, 'armored_car', offset(a, side * 5), 3)];

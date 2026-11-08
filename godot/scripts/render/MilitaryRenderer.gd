@@ -24,6 +24,7 @@ var ring_batch: MultiMeshInstance3D
 var ground_cache := {}
 var recoils := {}        # unit id -> msec of its last direct-fire shot (recoil presentation)
 var dug_in: MultiMeshInstance3D   # sandbag crescents under fortified ground troops (cosmetic)
+var squads: SquadPresentation
 var stack_now := {}      # unit id -> current eased offset inside a shared hex (presentation)
 var stack_target := {}
 
@@ -148,16 +149,45 @@ func update(dt: float) -> void:
 ## Units sharing a hex (within the server's capacity) stand apart: each stationary ground unit
 ## takes a stable place around the hex centre by id; moving units travel the centre line. The
 ## offset eases, so arriving or leaving never jumps. Presentation only.
+var stack_clock := 0.0
+var cull_frame := 0
+
 func _stack_layout(dt: float) -> void:
+	stack_clock -= dt
+	if stack_clock <= 0.0:
+		stack_clock = 0.2
+		_stack_targets()
+	var ease := 1.0 - exp(-4.0 * dt)
+	for id in stack_now.keys():
+		if not world.units.has(id): stack_now.erase(id)
+	for id in stack_target:
+		var goal: Vector2 = stack_target[id]
+		stack_now[id] = (stack_now.get(id, Vector2.ZERO) as Vector2).lerp(goal, ease)
+	for id in stack_now.keys():
+		if not stack_target.has(id):
+			var now: Vector2 = (stack_now[id] as Vector2).lerp(Vector2.ZERO, ease)
+			if now.length() < .002: stack_now.erase(id)
+			else: stack_now[id] = now
+
+
+## Stationary ground units sharing a hex take stable places around it; units travelling the same
+## stretch (same hex and next hex) take parallel lanes, so vehicles never drive inside each other.
+func _stack_targets() -> void:
 	var by_tile := {}
+	var by_edge := {}
+	var g := world.grid
 	for id in world.units:
 		var u: Dictionary = world.units[id]
-		if int(u.get("next", -1)) >= 0: continue
-		var d := unit_def(str(u.type))
-		if bool(d.get("air", false)): continue
-		var tile := int(u.tile)
-		if not by_tile.has(tile): by_tile[tile] = []
-		(by_tile[tile] as Array).append(int(id))
+		if bool(unit_def(str(u.type)).get("air", false)): continue
+		var next := int(u.get("next", -1))
+		if next < 0:
+			var tile := int(u.tile)
+			if not by_tile.has(tile): by_tile[tile] = []
+			(by_tile[tile] as Array).append(int(id))
+		else:
+			var key := "%d>%d" % [int(u.tile), next]
+			if not by_edge.has(key): by_edge[key] = []
+			(by_edge[key] as Array).append(int(id))
 	stack_target.clear()
 	for tile in by_tile:
 		var ids: Array = by_tile[tile]
@@ -166,16 +196,17 @@ func _stack_layout(dt: float) -> void:
 		for k in ids.size():
 			var angle := TAU * k / ids.size() + .5
 			stack_target[ids[k]] = Vector2(cos(angle), sin(angle)) * (.22 if ids.size() <= 3 else .3)
-	var ease := 1.0 - exp(-4.0 * dt)
-	for id in stack_now.keys():
-		if not world.units.has(id): stack_now.erase(id)
-	for id in world.units:
-		var goal: Vector2 = stack_target.get(id, Vector2.ZERO)
-		var now: Vector2 = stack_now.get(id, Vector2.ZERO)
-		if now == goal and goal == Vector2.ZERO: continue
-		now = now.lerp(goal, ease)
-		if now.length() < .001 and goal == Vector2.ZERO: stack_now.erase(id)
-		else: stack_now[id] = now
+	for key in by_edge:
+		var ids: Array = by_edge[key]
+		if ids.size() < 2: continue
+		ids.sort()
+		var parts: PackedStringArray = str(key).split(">")
+		var a := g.center(int(parts[0])); var b := g.center(int(parts[1]))
+		var along := Vector2(g.dx_wrap(a.x, b.x), b.y - a.y).normalized()
+		var side := Vector2(-along.y, along.x)
+		for k in ids.size():
+			# lanes side by side, and a short stagger along the road so columns do not stack
+			stack_target[ids[k]] = side * (float(k) - (ids.size() - 1) * .5) * .11 - along * float(k % 2) * .06
 
 
 ## a slight suspension bob for moving ground vehicles
@@ -244,38 +275,66 @@ func _update_batched(dt: float) -> void:
 	var seen := {}
 	draw_positions.clear()
 	drawn = 0
+	cull_frame += 1
+	var view_half := cam.view_half_width()
 	for id in world.units.keys():
 		seen[id] = true
 		var u: Dictionary = world.units[id]
-		var p := world.unit_position(id) + (stack_now.get(id, Vector2.ZERO) as Vector2)
-		var d: Dictionary = unit_def(u.type)
-		var air: bool = bool(d.get("air", false)) or str(d.get("cat", "")) == "air"
+		# static per-unit facts are cached (type, owner, batch keys, movement class); motion lives here too
+		var info: Dictionary = motions.get(id, {})
+		if info.is_empty() or info.get("type") != u.type or int(info.get("owner", -9)) != int(u.owner):
+			info = _unit_info(u, info)
+			motions[id] = info
+		# off-screen units are refreshed only every tenth frame (they are not drawn meanwhile)
+		if info.has("pos") and (cull_frame + int(id)) % 10 != 0:
+			var last: Vector3 = info.pos
+			if absf(g.near_x(last.x, cx) - cx) > view_half + 2.0 or absf(last.z - cam.focus.z) > cam.size + 2.0:
+				draw_positions[id] = last
+				continue
+		var p: Vector2 = world.unit_position(id)
+		var offset: Variant = stack_now.get(id)
+		if offset != null: p += offset
 		var x := g.near_x(p.x, cx)
-		var y := _ground_for(id, p) + _bob(u, d)
-		var pose := MilitaryPresentationState.pose(u,int(u.next)>=0,d)
-		if air and not pose.grounded:
-			y += 1.4
+		var y := _ground_for(id, p)
+		var moving := int(u.next) >= 0
+		if moving and info.vehicle: y += sin(world.render_time * 13.0 + int(id)) * .0035
+		var height_scale := 1.0
+		if info.air:
+			var air_state: Array = u.get("air", [])
+			if air_state.is_empty() or not int(air_state[0]) in [0, 7, 8]: y += 1.4
 		elif (u.flags & 2) != 0:
 			y = maxf(y, 0.02)
-		var motion: Dictionary = motions.get(id, {"last": p, "yaw": 0.0})
-		var moved := Vector2(g.dx_wrap(motion.last.x, p.x), p.y - motion.last.y)
+		if info.infantry: height_scale = lerpf(1.0, .52, clampf(float(u.get("supp", 0)) / 100.0, 0.0, 1.0))
+		var moved := Vector2(g.dx_wrap(info.last.x, p.x), p.y - info.last.y)
 		if moved.length_squared() > 1e-6:
-			var want := atan2(-moved.y, moved.x)
-			motion.yaw = lerp_angle(float(motion.yaw), want, minf(1.0, dt * 8.0))
-		motion.last = p
-		motions[id] = motion
+			info.yaw = lerp_angle(float(info.yaw), atan2(-moved.y, moved.x), minf(1.0, dt * 8.0))
+		info.last = p
 		var pos := Vector3(x, y, p.y)
 		draw_positions[id] = pos
-		var key := "%s|%d" % [u.type, u.owner]
-		var animation:=_animation(u,d)
-		if animation!="idle": key+="|"+animation
-		if not groups.has(key):
-			groups[key] = {"unit": u, "xforms": [],"animation":animation}
-		(groups[key].xforms as Array).append(Transform3D(Basis(Vector3.UP, float(motion.yaw)).scaled(Vector3(1,1.0 if animation=="cover" else float(pose.height_scale),1)), pos))
-		if str(d.get("cat",""))=="tracked":
-			var turret_key:="turret|%s|%d"%[u.type,int(u.owner)]
-			if not groups.has(turret_key): groups[turret_key]={"unit":u,"xforms":[]}
-			(groups[turret_key].xforms as Array).append(Transform3D(Basis(Vector3.UP,_target_yaw(u,p,float(motion.yaw))),pos))
+		info.pos = pos
+		var animation := _animation(u, info.def)
+		var keys: Dictionary = info.keys
+		var key: String = keys.get(animation, "")
+		if key == "":
+			key = info.base if animation == "idle" else info.base + "|" + animation
+			keys[animation] = key
+		var group: Dictionary = groups.get(key, {})
+		if group.is_empty():
+			group = {"unit": u, "xforms": [], "animation": animation, "custom": [] if animation.begins_with("gpu") else null}
+			groups[key] = group
+		var flat := animation in ["cover", "gpu", "gpu_low"]
+		var basis := Basis(Vector3.UP, float(info.yaw))
+		if not flat and height_scale != 1.0: basis = basis.scaled(Vector3(1, height_scale, 1))
+		(group.xforms as Array).append(Transform3D(basis, pos))
+		if group.custom != null:
+			# per-instance soldier animation: seed, marching, gone to ground (suppressed) or kneeling (firing)
+			var down := 1.0 if int(u.get("supp", 0)) > 60 else .45 if (int(u.get("flags", 0)) & 1) != 0 and not moving else 0.0
+			(group.custom as Array).append(Color(info.seed, 1.0 if moving else 0.0, down, 0.0))
+		if info.tracked:
+			var turret_key: String = info.turret
+			var turrets: Dictionary = groups.get(turret_key, {})
+			if turrets.is_empty(): turrets = {"unit": u, "xforms": []}; groups[turret_key] = turrets
+			(turrets.xforms as Array).append(Transform3D(Basis(Vector3.UP, _target_yaw(u, p, float(info.yaw)) if int(u.get("target", 0)) != 0 else float(info.yaw)), pos))
 		drawn += 1
 	for id in motions.keys():
 		if not seen.has(id):
@@ -296,9 +355,11 @@ func _update_batched(dt: float) -> void:
 			add_child(batch)
 			batches[key] = batch
 		var mm := batch.multimesh
+		var custom:Variant=info.get("custom")
 		if mm == null:
 			mm = MultiMesh.new()
 			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.use_custom_data = custom != null
 		if not meshes.has(key):
 			var sample: Dictionary = info.unit
 			meshes[key] = _build_turret(world.civ_color(int(sample.owner)),str(sample.type)) if str(key).begins_with("turret|") else _build_model(sample.type, world.civ_color(int(sample.owner)),str(info.get("animation","idle")))
@@ -306,11 +367,42 @@ func _update_batched(dt: float) -> void:
 		var xforms: Array = info.xforms
 		if mm.instance_count < xforms.size():
 			mm.instance_count = maxi(xforms.size(), mm.instance_count * 2)
-		mm.visible_instance_count = xforms.size()
-		for k in xforms.size():
-			mm.set_instance_transform(k, xforms[k])
+		_upload(mm, xforms, custom)
 		batch.multimesh = mm
+		batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cam.size < 20.0 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_update_batched_rings()
+
+
+## One buffer upload per batch instead of one renderer call per instance (large armies).
+## Layout per instance: three transform rows, then custom data when enabled; the tail of the
+## buffer beyond the visible count is left as it was.
+static func _upload(mm: MultiMesh, xforms: Array, custom: Variant = null) -> void:
+	var stride := 16 if mm.use_custom_data else 12
+	# keep our own copy: reading MultiMesh.buffer copies the whole buffer back from the renderer
+	var buffer: PackedFloat32Array = mm.get_meta("upload", PackedFloat32Array())
+	if buffer.size() != mm.instance_count * stride: buffer.resize(mm.instance_count * stride)
+	var i := 0
+	for k in xforms.size():
+		var t: Transform3D = xforms[k]
+		buffer[i] = t.basis.x.x; buffer[i + 1] = t.basis.y.x; buffer[i + 2] = t.basis.z.x; buffer[i + 3] = t.origin.x
+		buffer[i + 4] = t.basis.x.y; buffer[i + 5] = t.basis.y.y; buffer[i + 6] = t.basis.z.y; buffer[i + 7] = t.origin.y
+		buffer[i + 8] = t.basis.x.z; buffer[i + 9] = t.basis.y.z; buffer[i + 10] = t.basis.z.z; buffer[i + 11] = t.origin.z
+		if stride == 16:
+			var c: Color = (custom as Array)[k]
+			buffer[i + 12] = c.r; buffer[i + 13] = c.g; buffer[i + 14] = c.b; buffer[i + 15] = c.a
+		i += stride
+	mm.buffer = buffer
+	mm.set_meta("upload", buffer)
+	mm.visible_instance_count = xforms.size()
+
+
+func _unit_info(u: Dictionary, previous: Dictionary) -> Dictionary:
+	var d := unit_def(str(u.type))
+	var cat := str(d.get("cat", ""))
+	return {"type": u.type, "owner": int(u.owner), "def": d, "air": bool(d.get("air", false)) or cat == "air",
+		"vehicle": str(d.get("move", "")) in ["wheeled", "tracked"] and not bool(d.get("air", false)), "infantry": cat == "infantry",
+		"tracked": cat == "tracked", "base": "%s|%d" % [u.type, int(u.owner)], "turret": "turret|%s|%d" % [u.type, int(u.owner)], "keys": {},
+		"seed": fposmod(float(u.id) * .618034, 1.0), "last": previous.get("last", world.unit_position(int(u.id))), "yaw": float(previous.get("yaw", 0.0))}
 
 
 func _update_batched_rings() -> void:
@@ -397,8 +489,12 @@ func _build_turret(color:Color,type:="tank") -> ArrayMesh:
 
 func _animation(unit:Dictionary,definition:Dictionary) -> String:
 	if unit.type=="helicopter" and not world.paused and cam.size<25: return "rotor_%d"%posmod(int(world.render_time*8),2)
-	# squads drawn as free-moving people (SquadPresentation): the unit model keeps only equipment
-	if SquadPresentation.active(str(unit.type),cam.size): return "kit"
+	# Squads near the camera are drawn as simulated people (SquadPresentation; the unit model keeps
+	# only equipment). In large battles the rest are one shader-animated instance per unit.
+	if SquadPresentation.FIGURES.has(str(unit.type)):
+		if squads and squads.near.has(int(unit.id)): return "kit"
+		if batched and cam.size<=60.0 and str(unit.type) in ["militia","rifle_squad","special_forces","exo_infantry"]: return "gpu" if cam.size<=24.0 else "gpu_low"
+		if not batched and squads==null and SquadPresentation.active(str(unit.type),cam.size): return "kit"
 	if str(definition.get("move","")) in ["wheeled","tracked"] and not bool(definition.get("air",false)) and cam.size<25.0 and int(unit.get("next",-1))>=0 and not world.paused:
 		return "roll_%d"%posmod(int(world.render_time*7)+int(unit.id),2)
 	if str(definition.get("cat",""))!="infantry" and unit.type!="engineer" or cam.size>25.0: return "idle"

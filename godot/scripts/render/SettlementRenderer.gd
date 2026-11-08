@@ -82,7 +82,28 @@ func setup(w: WorldState, c: CameraController, shared: WorldCompositionSystem = 
 	plumes.multimesh = mm
 	add_child(plumes)
 	world.reset.connect(_clear)
-	world.welcomed.connect(_clear)
+	world.welcomed.connect(_on_welcomed)
+
+
+var last_match := ""
+
+## A rejoin of the same match keeps every district on screen as "retiring" until its rebuilt
+## replacement is ready (the usual hand-off, bounded to 4 s), so buildings never vanish.
+func _on_welcomed() -> void:
+	if world.match_id != "" and world.match_id == last_match:
+		for key in districts:
+			composition.scheduler.cancel("district:" + str(key))
+			var old: Dictionary = districts[key]
+			if (old.node as MeshInstance3D).mesh != null:
+				old.retired_at = Time.get_ticks_msec(); retiring.append(old)
+			else:
+				(old.node as Node).queue_free(); (old.fx as Node).queue_free(); _free_copies(old)
+		districts.clear(); at_tile = {}; district_of = {}
+		refresh_queue.clear(); refresh_pending.clear(); home_sites.clear(); site_records.clear(); construction_templates.clear()
+		ruin_sig = ""; version = -1
+		return
+	last_match = world.match_id
+	_clear()
 
 
 func _clear() -> void:

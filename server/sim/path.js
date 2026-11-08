@@ -60,15 +60,34 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
   return c;
 }
 
+// Per-tick search budget shared by every unit (large battles: hundreds of units re-path at once).
+// Each search may expand at most what is left this tick (never fewer than a short local search),
+// and identical searches in the same tick share one result.
+export const PATH_BUDGET = 60000;
+const pathCache = new Map();
+let cacheTick = -1;
 export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avoid = null) {
   if (start === goal) return [];
+  const tick = game?.tickN ?? 0;
+  if (tick !== cacheTick) { cacheTick = tick; pathCache.clear(); if (game) game.pathBudget = PATH_BUDGET; }
+  const cls = (UNITS[unitType] || UNITS.militia).move;
+  // sharing results is only safe while the world cannot change between searches: the unit step
+  const key = avoid || !game?.pathCacheOn ? null : `${civ ? civ.id : -1}:${cls}:${start}:${goal}:${maxNodes}`;
+  if (key && pathCache.has(key)) { const hit = pathCache.get(key); return hit ? Object.assign(hit.slice(), { partial: hit.partial }) : null; }
+  if (game && game.pathBudget != null) maxNodes = Math.min(maxNodes, Math.max(600, game.pathBudget));
+  const result = search(game, civ, start, goal, unitType, maxNodes, avoid);
+  if (key) pathCache.set(key, result ? Object.assign(result.slice(), { partial: result.partial }) : null);
+  return result;
+}
+
+function search(game, civ, start, goal, unitType, maxNodes, avoid) {
   gen++;
   const heap = new MinHeap();
   stamp[start] = gen; gScore[start] = 0; came[start] = -1;
   heap.push(start, 0);
   let expanded = 0, best = start, bestH = dist(start, goal);
   const air = MOVE[(UNITS[unitType] || UNITS.militia).move].air;
-  const hw = air ? 1 : 0.5;            // a mild bias toward the goal keeps routes direct and searches short
+  const hw = air ? 1 : 0.8;            // a firm bias toward the goal keeps searches narrow (near-optimal routes)
   // what this empire can see of enemy lines: held hexes are closed (except an attack's goal),
   // controlled ground costs more, so routes go around a front instead of into it
   const known = air || !civ || !civ.visible ? null : knownSets(game, civ);
@@ -80,6 +99,7 @@ export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avo
     const h = dist(cur, goal);
     if (h < bestH) { bestH = h; best = cur; }
     if (++expanded > maxNodes) break;
+    if (game && game.pathBudget != null) game.pathBudget--;
     for (let d = 0; d < 6; d++) {
       const n = NB[cur * 6 + d]; if (n < 0 || closed[n] === gen) continue;
       let c = stepCost(game, civ, cur, n, unitType, avoid);

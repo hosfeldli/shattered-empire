@@ -31,6 +31,10 @@ var groups := {}             # unit id -> { anchor: Vector2 (base coords), figur
 var batches := {}            # mesh key -> MultiMeshInstance3D
 var clock := 0.0
 var drawn := 0
+var near := {}               # unit ids simulated here this frame (the renderer draws only their kit)
+var frame := 0
+const NEAR_CAP := 48         # in large battles only the squads nearest the camera are simulated
+const NEAR_ZOOM := 24.0
 
 
 func setup(w: WorldState, c: CameraController, m: MilitaryRenderer, s: SettlementRenderer = null) -> void:
@@ -52,18 +56,32 @@ func update(dt: float) -> void:
 	if not world.paused: clock += dt
 	var transforms := {}
 	drawn = 0
-	if cam.size > ZOOM:
+	frame += 1
+	near.clear()
+	# Small engagements simulate every visible squad up to operational zoom. Large battles (the
+	# renderer is batching) simulate only the nearest squads at close zoom; the rest are animated
+	# on the GPU by the renderer, so a thousand troops stay affordable.
+	var limit := ZOOM if not military.batched else NEAR_ZOOM
+	if cam.size > limit:
 		_flush(transforms); groups.clear(); return
-	var seen := {}
+	var cap := MAX_UNITS if not military.batched else NEAR_CAP
 	var half := cam.view_half_width() + 1.0
+	var candidates := []
 	for id in military.draw_positions:
 		var u: Dictionary = world.units.get(id, {})
 		if u.is_empty() or not FIGURES.has(str(u.type)): continue
 		var anchor3: Vector3 = military.draw_positions[id]
-		if absf(anchor3.x - cam.focus.x) > half or absf(anchor3.z - cam.focus.z) > cam.size + 1.0: continue
-		if seen.size() >= MAX_UNITS: break
-		seen[id] = true
-		_step_unit(int(id), u, anchor3, dt, transforms)
+		var dx := absf(anchor3.x - cam.focus.x); var dz := absf(anchor3.z - cam.focus.z)
+		if dx > half or dz > cam.size + 1.0: continue
+		candidates.append([dx * dx + dz * dz, id])
+	if candidates.size() > cap:
+		candidates.sort_custom(func(a, b): return a[0] < b[0])
+		candidates.resize(cap)
+	var seen := {}
+	for entry in candidates:
+		var id: int = entry[1]
+		seen[id] = true; near[id] = true
+		_step_unit(id, world.units[id], military.draw_positions[id], dt, transforms)
 	for id in groups.keys():
 		if not seen.has(id): groups.erase(id)
 	_flush(transforms)
@@ -110,6 +128,10 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 	var variant := str(spec[0])
 	var color := world.civ_color(int(u.owner))
 	var n := figures.size()
+	# ground under the group as a plane (three samples per squad instead of one per soldier)
+	var gx := g.near_x(anchor.x, cam.focus.x)
+	var h0 := world.ground_height(gx, anchor.y)
+	var slope := Vector2(world.ground_height(gx + .15, anchor.y) - h0, world.ground_height(gx, anchor.y + .15) - h0) / .15
 	for i in n:
 		var f: Dictionary = figures[i]
 		f.d -= shift
@@ -140,7 +162,8 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 		var next: Vector2 = f.d + f.v * dt
 		if next.length() > FOOTPRINT: next = next.normalized() * FOOTPRINT
 		var world_point := anchor + next
-		if _blocked(world_point, anchor): next = f.d                     # step around water and walls
+		# obstacle checks are staggered across frames (one figure in three each frame)
+		if (frame + i) % 3 == 0 and _blocked(world_point, anchor): next = f.d          # step around water and walls
 		f.d = next
 		var velocity: Vector2 = f.v + anchor_velocity
 		var speed := velocity.length()
@@ -156,7 +179,7 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 		elif suppressed and role != "escort": pose = "prone"
 		elif (firing and role != "escort") or (role == "crew" and deployed): pose = "kneel"
 		var x := g.near_x(world_point.x, cam.focus.x)
-		var y := world.ground_height(x, world_point.y)
+		var y := h0 + slope.dot(next)
 		if (flags & 2) != 0: y = maxf(y, 0.02)
 		var key := "%s|%s|%d" % [variant, pose, int(u.owner)]
 		if not transforms.has(key): transforms[key] = {"variant": variant, "pose": pose, "color": color, "list": []}
@@ -205,12 +228,24 @@ func _flush(transforms: Dictionary) -> void:
 			var mm := MultiMesh.new(); mm.transform_format = MultiMesh.TRANSFORM_3D; mm.use_colors = true
 			mm.mesh = FigureKit.mesh(str(info.variant), str(info.pose), info.color)
 			batch.multimesh = mm
+			batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 			add_child(batch); batches[key] = batch
 		var mm := batch.multimesh
 		var list: Array = info.list
 		if mm.instance_count < list.size():
 			mm.visible_instance_count = 0
 			mm.instance_count = maxi(list.size(), mm.instance_count * 2)
-		for k in list.size():
-			mm.set_instance_transform(k, list[k][0]); mm.set_instance_color(k, list[k][1])
+		# one buffer upload: transform rows then colour (16 floats per figure)
+		var buffer: PackedFloat32Array = mm.get_meta("upload", PackedFloat32Array())
+		if buffer.size() != mm.instance_count * 16: buffer.resize(mm.instance_count * 16)
+		var i := 0
+		for entry in list:
+			var t: Transform3D = entry[0]; var c: Color = entry[1]
+			buffer[i] = t.basis.x.x; buffer[i + 1] = t.basis.y.x; buffer[i + 2] = t.basis.z.x; buffer[i + 3] = t.origin.x
+			buffer[i + 4] = t.basis.x.y; buffer[i + 5] = t.basis.y.y; buffer[i + 6] = t.basis.z.y; buffer[i + 7] = t.origin.y
+			buffer[i + 8] = t.basis.x.z; buffer[i + 9] = t.basis.y.z; buffer[i + 10] = t.basis.z.z; buffer[i + 11] = t.origin.z
+			buffer[i + 12] = c.r; buffer[i + 13] = c.g; buffer[i + 14] = c.b; buffer[i + 15] = c.a
+			i += 16
+		mm.buffer = buffer
+		mm.set_meta("upload", buffer)
 		mm.visible_instance_count = list.size()

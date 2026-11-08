@@ -5,6 +5,38 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## P5 performance and stability (2026-11-07)
+
+Measured with `tools/battle-bench.mjs` (server) and `--battle=massive --perf=SECONDS` (client;
+500 vs 500 sandbox scenario).
+- **Server:** pathfinding was most of the tick cost in big battles: failed searches ran to 6,000–24,000
+  nodes, and hundreds of units repeated them every couple of seconds. Searches now share a per-tick
+  budget (60,000 expansions). Identical searches within the unit step share one result, and the
+  goal bias is firmer. Worst tick with about 1000 troops: 155 → 60 ms (budget 100 ms).
+- **Backpressure:** when a player's connection backs up (over 2 MB unsent), the match worker skips
+  building that player's snapshots until it drains, then sends a catch-up. Incremental tile updates
+  are held, not lost, and the heartbeat no longer queues behind megabytes, which previously led to
+  disconnects.
+- **Rejoins** to the same match keep the camera and keep buildings drawn until rebuilt (the
+  "everything vanished and the camera reset" report).
+- **Client, 1000 troops:**
+  - Squads outside the near view are a single shader-animated instance per unit: each soldier
+    wanders, lags behind when marching, swings legs and arms, and goes to ground. There is a
+    low-poly variant for wide views.
+  - Squads near the camera keep the full per-soldier simulation (48 nearest in large battles).
+  - Instance uploads use one buffer per batch; off-screen units refresh every tenth frame; unit
+    interpolation endpoints are cached per snapshot pair.
+  - Trees switch to low-detail models beyond close zoom.
+  - Units cast shadows only up close.
+  - The 3D scene renders to a pixel budget per quality preset with FSR upscaling on high-density
+    displays.
+  - Frame time with 1000 troops in battle: 39–53 ms → 22–25 ms (1600×900 window). Script time
+    11 ms.
+- **Vehicles sharing a hex:** stationary units take stable places around the hex; units travelling
+  the same stretch take parallel lanes, so vehicles no longer overlap.
+- **Tests:** server path budget and backpressure (`test/native-performance.test.js`); Godot squad
+  animation tagging, low-detail mesh and buffer layout.
+
 ## AI and pacing (J), interface (K) and leftovers (2026-11-07)
 
 **J. AI and pacing**

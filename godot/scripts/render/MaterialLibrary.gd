@@ -121,6 +121,18 @@ static func sway_foliage() -> Material:
 
 
 ## a civilization's colour, for flags, bands and markings (restrained: slightly desaturated)
+## The animated-squad variant of a material ("steel", "team:3a7bd5", …): same look, with the
+## per-soldier vertex animation switched on. Shares later weather/visibility bindings.
+static func squad(key: String) -> Material:
+	var cache_key := "squad:" + key
+	if _cache.has(cache_key): return _cache[cache_key]
+	var base: ShaderMaterial = (team(Color.html(key.substr(5))) if key.begins_with("team:") else get_mat(key)) as ShaderMaterial
+	var m := base.duplicate() as ShaderMaterial
+	m.set_shader_parameter("squad_anim", 1.0); m.resource_name = cache_key
+	_cache[cache_key] = m
+	return m
+
+
 static func team(color: Color) -> Material:
 	if _surface_shader==null: _surface_shader=load("res://shaders/world_surface.gdshader")
 	var key := color.to_html(false)

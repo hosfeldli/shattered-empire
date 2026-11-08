@@ -672,7 +672,42 @@ func prepare_unit_frame() -> void:
 	_interp_f = clampf((render_time - float(_interp_s0.t)) / span, 0.0, 1.0) if span > 1e-4 else 1.0
 
 
+var _bracket_cache := {}       # unit id -> [p0, p1] for the current snapshot pair
+var _bracket_key: Array = []
+
 func unit_position(id: int) -> Vector2:
+	prepare_unit_frame()
+	if _interp_s1.is_empty():
+		return Vector2.ZERO
+	# The two endpoints only change when the snapshot pair changes; each frame just blends them.
+	if _bracket_key.size() != 2 or not is_same(_bracket_key[0], _interp_s0) or not is_same(_bracket_key[1], _interp_s1):
+		_bracket_key = [_interp_s0, _interp_s1]; _bracket_cache.clear()
+	var ends: Variant = _bracket_cache.get(id)
+	if ends == null:
+		ends = _bracket_ends(id)
+		_bracket_cache[id] = ends
+	if ends[2]: return ends[1]
+	return Vector2(ends[0].x + grid.dx_wrap(ends[0].x, ends[1].x) * _interp_f, lerpf(ends[0].y, ends[1].y, _interp_f))
+
+
+## [p0, p1, fixed]: fixed = no blending needed (single snapshot, unchanged, or missing in one)
+func _bracket_ends(id: int) -> Array:
+	var p1 := _pos_in(_interp_s1, id)
+	if _interp_single:
+		var p := p1 if p1.x > -1e8 else _latest_pos(id)
+		return [p, p, true]
+	if _interp_s0.pos.has(id) and _interp_s1.pos.has(id) and _interp_s0.pos[id] == _interp_s1.pos[id]:
+		return [p1, p1, true]
+	var p0 := _pos_in(_interp_s0, id)
+	if p1.x < -1e8:
+		var p := p0 if p0.x > -1e8 else _latest_pos(id)
+		return [p, p, true]
+	if p0.x < -1e8:
+		return [p1, p1, true]
+	return [p0, p1, false]
+
+
+func _unit_position_uncached(id: int) -> Vector2:
 	prepare_unit_frame()
 	if _interp_s1.is_empty():
 		return Vector2.ZERO

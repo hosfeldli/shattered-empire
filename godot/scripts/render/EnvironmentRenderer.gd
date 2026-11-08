@@ -50,6 +50,9 @@ var work_tiles:={}
 var tree_mesh: ArrayMesh
 var vegetation: Dictionary = RecipeRegistry.world_section("vegetation").get("soft", {})
 var broadleaf_mesh: ArrayMesh
+var tree_far: ArrayMesh          # low-detail tree models beyond close zoom (same silhouettes)
+var broadleaf_far: ArrayMesh
+var trees_detailed := true
 var tree_count := 0
 var shadows_allowed := true
 var hide_trees := false
@@ -90,6 +93,8 @@ func setup(w: WorldState, c: CameraController, t: WorldRenderer) -> void:
 	_make_rain()
 	tree_mesh = _tree_model()
 	broadleaf_mesh = _broadleaf_model()
+	tree_far = _tree_far()
+	broadleaf_far = _broadleaf_far()
 	world.weather_changed.connect(_on_weather)
 	world.geo_changed.connect(_on_geo)
 	world.battlefield_terrain_changed.connect(_on_battlefield_terrain)
@@ -212,7 +217,15 @@ func update(dt: float) -> void:
 			break
 	# tree shadows only where they read (close up); far out they cost much and show little
 	var tree_shadows := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cam.size < 18.0 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# detailed crowns up close, low-poly crowns beyond (with hysteresis so it never flickers)
+	var detailed := cam.size < (24.0 if trees_detailed else 20.0)
+	var lod_changed := detailed != trees_detailed
+	trees_detailed = detailed
 	for p in props.values():
+		if lod_changed:
+			var conifers: MultiMesh = (p.trees as MultiMeshInstance3D).multimesh
+			if conifers: conifers.mesh = tree_mesh if detailed else tree_far
+			if p.has("broad") and (p.broad as MultiMeshInstance3D).multimesh: (p.broad as MultiMeshInstance3D).multimesh.mesh = broadleaf_mesh if detailed else broadleaf_far
 		var trees := p.trees as MultiMeshInstance3D
 		var canopy := p.canopy as MeshInstance3D
 		trees.cast_shadow = tree_shadows
@@ -440,6 +453,23 @@ func _broadleaf_model() -> ArrayMesh:
 	return _sway(k.commit())
 
 
+## low-detail versions for operational zoom: same height, crown shape and colours, few faces
+func _tree_far() -> ArrayMesh:
+	var k := MeshKit.new()
+	k.cylinder("bark", Vector3.ZERO, 0.016, 0.07, 4, Color.WHITE, 0.01)
+	k.cone("foliage", Vector3(0, 0.035, 0), 0.105, 0.14, 6, Color(.7, .8, .66))
+	k.cone("foliage", Vector3(0, 0.13, 0), 0.07, 0.15, 6, Color(.9, .98, .86))
+	return _sway(k.commit())
+
+
+func _broadleaf_far() -> ArrayMesh:
+	var k := MeshKit.new()
+	k.cylinder("bark", Vector3.ZERO, 0.015, 0.075, 4, Color.WHITE, 0.01)
+	k.cylinder("foliage", Vector3(0, 0.06, 0), 0.06, 0.05, 7, Color(.72, .84, .64), 0.085)
+	k.cylinder("foliage", Vector3(0, 0.11, 0), 0.085, 0.05, 7, Color(.88, .98, .76), 0.03)
+	return _sway(k.commit())
+
+
 func _sway(mesh: ArrayMesh) -> ArrayMesh:
 	# crowns sway in the wind; the trunk keeps the shared static surface material
 	for surface in mesh.get_surface_count():
@@ -572,7 +602,7 @@ func _build_props(cid: int) -> void:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
-	mm.mesh = tree_mesh
+	mm.mesh = tree_mesh if trees_detailed else tree_far
 	mm.instance_count = xforms.size()
 	for k in xforms.size():
 		mm.set_instance_transform(k, xforms[k])
@@ -583,7 +613,7 @@ func _build_props(cid: int) -> void:
 	var bm := MultiMesh.new()
 	bm.transform_format = MultiMesh.TRANSFORM_3D
 	bm.use_colors = true
-	bm.mesh = broadleaf_mesh
+	bm.mesh = broadleaf_mesh if trees_detailed else broadleaf_far
 	bm.instance_count = broad_xforms.size()
 	for k in broad_xforms.size():
 		bm.set_instance_transform(k, broad_xforms[k]); bm.set_instance_color(k, broad_cols[k])

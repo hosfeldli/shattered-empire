@@ -102,6 +102,8 @@ be done. The likely causes are first assessments from the code, not yet verified
   lines for their deployed fronts.
 
 ### P5. Performance and stability (high priority; affects every match)
+
+> **Implemented 2026-11-07:** path budget and shared searches, snapshot backpressure, rejoin keeps the view, GPU-animated squads, buffered uploads, culling, tree/unit LOD and shadows, render scaling, vehicle lanes. About 1000 troops: server worst tick 60 ms, client 22–25 ms per frame. Remaining: troop badges at scale (P7), placement under load (P7).
 - [ ] **Frame drops when moving many troops.** Profile the client: squad figures, path drawing,
   stack layout, formation overlays and unit labels are recomputed each frame for every unit.
   Budget and batch them.
@@ -117,9 +119,45 @@ be done. The likely causes are first assessments from the code, not yet verified
   timeout and rebuilding everything. Fix the timeout, and make a reconnect to the same match keep
   presentation (as terrain now does) instead of clearing buildings and the camera.
 
+### P7. Further playtest reports (2026-11-07)
+- [ ] **Map lenses do nothing.** Selecting a lens (Overview → lens, or L) has no visible effect.
+  Trace `StrategicPresentation.mode` through to the terrain overlay and labels, and verify each
+  lens renders.
+- [ ] **Troop icons at scale.** Troop badges render incorrectly at some zoom levels and disappear
+  with large numbers of troops (likely the bounded badge budget in `NativeWorldLabels`).
+  Badges should aggregate per hex or army instead of vanishing, and stay crisp at every scale.
+- [ ] **Building placement fails under load.** During heavy fighting the legal-site and per-site
+  `placement` requests time out or arrive too late, so nothing can be placed. Fixes: serve
+  placement queries from a cheap cached legality map; give them priority over snapshots; make the
+  client tolerate late replies (place on click and let the server validate).
+- [ ] **Nuclear missiles and the missile silo.** Confirm the silo builds, stores and launches
+  strategic missiles end to end. The AI should use them in battles (massed armies, fortified
+  fronts, airfields), but target player cities only on Brutal difficulty.
+- [ ] **Research stalled at railroads, then resumed.** Investigate: likely a goods requirement
+  (`researchWait`: steel or ore for Railways) or a queue/selection gap. Research should never
+  silently stall; show the reason (missing goods) in the top bar and research panel, and let
+  automation switch to an available technology.
+- [ ] **No traffic across hostile borders.** Road traffic (trucks, cars, trains) must not drive
+  from friendly into enemy territory. Limit traffic to edges where both ends are owned by the
+  same empire or are friendly.
+- [ ] **Balance pass.** Review every unit and building against the slower native-v4 pace: costs,
+  build and training times, upkeep, health, damage and range, speed, production and jobs. Use
+  simulated matches and the pacing and battle benchmarks (`tools/pace-report.mjs`,
+  `tools/battle-bench.mjs`) as evidence.
+
 ### P6. Visuals
 - [ ] **A calmer ground texture.** The terrain detail is too noisy. Reduce high-frequency noise and
   the detail-layer contrast, use larger-scale variation, and blend the biome layers more softly.
+- [ ] **Remove hex-wide ground wear; better craters (requested 2026-11-07).** Wear tinting
+  (`g.wear` / `bf.wr`) recolours whole hexes, and lighter hexes read as a rendering fault; real
+  vehicle tracks are not a hex colour change. Remove the wear tint from the terrain shader and
+  inspector. Keep only the no man's land simulation, and improve how it looks: darker, damp,
+  scorched crater bowls with crisp rims, ejecta and debris, and a continuous churned field
+  between craters rather than flat colour changes.
+- [ ] **Remove the diagonal ground lines (correction, 2026-11-07).** In heavily travelled and
+  fought-over areas the terrain shows diagonal stripes, most likely the rut and track pattern
+  driven by the wear and scar channels in the terrain shader. They read as artefacts; remove them
+  together with the hex wear tint, leaving only the no man's land field and the crater work above.
 - [ ] **Battle-damaged land (clarification needed).** "The battle trees look great but once a city
   or ground becomes no man's land…" The request was cut off. Confirm what should happen, for
   example felled forests not regrowing, ruined cities, or how no man's land should look over time.

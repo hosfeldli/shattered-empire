@@ -24,6 +24,17 @@ static func mesh(variant: String, pose: String, team: Color) -> ArrayMesh:
 	return _cache[key]
 
 
+## A low-poly figure for wide views: legs, body with kit colour, head and helmet (5 boxes).
+static func build_low(k: MeshKit, variant: String, team: Color) -> void:
+	var cloth: Color = {"rifle": Color(.62, .66, .5), "militia": Color(.58, .5, .4), "special": Color(.32, .35, .33), "exo": Color(.5, .54, .52)}.get(variant, Color(.62, .66, .5))
+	var bulk := 1.25 if variant == "exo" else 1.0
+	for side in [-1.0, 1.0]: k.box("olive", Vector3(0, 0, side * .008 * bulk), Vector3(.011 * bulk, .038, .01 * bulk), cloth * .85)
+	k.box("olive", Vector3(0, .038, 0), Vector3(.018 * bulk, .03, .03 * bulk), cloth)
+	k.box("skin", Vector3(.001, .071, 0), Vector3(.012, .012, .011), SKIN)
+	k.box("olive", Vector3(0, .081, 0), Vector3(.016, .006, .015), cloth * .85)
+	k.box("team:" + team.to_html(false), Vector3(0, .06, .0125 * bulk), Vector3(.006, .006, .002))
+
+
 static func build(k: MeshKit, full_variant: String, pose: String, team: Color) -> void:
 	# civilian sub-variants share the civilian body and add their own clothing and carried items
 	var variant := "civilian" if full_variant.begins_with("civilian") else full_variant

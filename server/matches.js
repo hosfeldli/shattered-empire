@@ -1,4 +1,6 @@
 import { validateRuleset, LEGACY_RULESET } from './sim/rulesets.js';
+
+const CONGESTED_BYTES = 2 * 1024 * 1024;
 // Lobby, matchmaking and match lifecycle. Each running match lives in its own worker thread;
 // this process only routes messages between WebSocket clients and match workers, and persists
 // match snapshots so games survive deploys, restarts and worker crashes.
@@ -137,6 +139,25 @@ export class MatchManager {
     if (this.store) try { await this.store.save(m.id, packed); m.savedAt = Date.now(); } catch (e) { this.log.warn?.(`snapshot ${m.id} failed: ${e.message}`); }
   }
 
+  // Backpressure: a connection whose send buffer is backing up (a slow client or network in a big
+  // battle) gets no new snapshots until it drains. The worker skips building them, so incremental
+  // tile updates are not lost, and the heartbeat ping is not stuck behind megabytes of state.
+  backpressure(m) {
+    const busy = (ws) => !!ws && ws.readyState === 1 && ws.bufferedAmount > CONGESTED_BYTES;
+    const now = new Set();
+    m.slots.forEach((s, civId) => { if (busy(s.ws)) now.add(civId); });
+    if ((m.watchers || []).some((w) => busy(w.ws))) now.add(-2);
+    const before = m.congested || new Set();
+    const changed = now.size !== before.size || [...now].some((id) => !before.has(id));
+    if (!changed) { if (now.size) { clearTimeout(m.congestionTimer); m.congestionTimer = setTimeout(() => this.backpressure(m), 250); } return; }
+    m.congested = now;
+    m.worker?.postMessage({ t: 'congestion', civs: [...now] });
+    // while held, nothing new is sent to that connection, so re-check until it drains
+    clearTimeout(m.congestionTimer);
+    if (now.size) m.congestionTimer = setTimeout(() => this.backpressure(m), 250);
+    if (now.size) this.log.warn?.(`match ${m.id}: holding snapshots for congested connections ${[...now].join(', ')}`);
+  }
+
   onWorker(m, msg) {
     switch (msg.t) {
       case 'ready':
@@ -153,6 +174,7 @@ export class MatchManager {
           if (civId < 0) { for (const s of [...m.slots, ...(m.watchers || [])]) if (ok(s.ws)) s.ws.send(str); }
           else { const s = m.slots[civId]; if (s && ok(s.ws)) s.ws.send(str); }
         }
+        this.backpressure(m);
         break;
       case 'stats': m.stats = msg; if (msg.avg > 50) this.log.warn?.(`match ${m.id} avg tick ${msg.avg}ms (max ${msg.max}ms); slowest: ${slowest(msg.systems).map((x) => `${x.system} p95 ${x.p95}ms`).join(', ')}`); break;
       case 'autosave': this.persist(m, msg.buf); break;

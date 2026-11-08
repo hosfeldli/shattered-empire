@@ -36,6 +36,7 @@ func run() -> void:
 		check(mesh!=null and mesh.get_surface_count()>0,"missing role-specific unit model: "+type)
 	_assets_and_lifecycle()
 	_units_and_squads()
+	_large_battle_rendering()
 	print("DEVELOPMENT_TESTS ",JSON.stringify({"checks":checks,"failures":failures}))
 	quit(0 if failures.is_empty() else 1)
 
@@ -167,3 +168,23 @@ func _differs(a:ArrayMesh,b:ArrayMesh) -> bool:
 	for surface in mini(a.get_surface_count(),b.get_surface_count()):
 		if a.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]!=b.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]: return true
 	return false
+
+
+## Backlog P5: one shader-animated instance per squad, buffered instance uploads, vehicle lanes.
+func _large_battle_rendering() -> void:
+	var squad:=MilitaryModelLibrary.build("rifle_squad",Color.RED,"gpu")
+	var codes:={}; var figures:={}
+	for surface in squad.get_surface_count():
+		check(str(squad.surface_get_material(surface).resource_name).begins_with("squad:"),"animated squad surface uses a static material")
+		for uv:Vector2 in squad.surface_get_arrays(surface)[Mesh.ARRAY_TEX_UV]:
+			figures[int(floor(uv.x))]=true; codes[roundi(fposmod(uv.x,1.0)*10.0)]=true
+	check(figures.size()==6,"the animated rifle squad does not hold six soldiers")
+	check(codes.has(3) and codes.has(5) and codes.has(7) and codes.has(9),"legs and arms are not tagged for animation: %s"%str(codes.keys()))
+	var low:=MilitaryModelLibrary.build("rifle_squad",Color.RED,"gpu_low")
+	check(_vertex_count(low)*5<_vertex_count(squad)*2,"the wide-view squad is not much lighter: %d vs %d"%[_vertex_count(low),_vertex_count(squad)])
+	var mm:=MultiMesh.new(); mm.transform_format=MultiMesh.TRANSFORM_3D; mm.use_custom_data=true; mm.instance_count=2
+	var t:=Transform3D(Basis(Vector3(1,2,3),Vector3(4,5,6),Vector3(7,8,9)),Vector3(10,11,12))
+	MilitaryRenderer._upload(mm,[t,t],[Color(.1,.2,.3,.4),Color(.5,.6,.7,.8)])
+	var buffer:PackedFloat32Array=mm.get_meta("upload")
+	check(buffer.size()==32 and buffer[0]==1.0 and buffer[1]==4.0 and buffer[3]==10.0 and buffer[11]==12.0 and is_equal_approx(buffer[28],.5),"instance buffer layout is wrong")
+	check(mm.visible_instance_count==2,"uploaded instances are not visible")

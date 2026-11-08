@@ -20,8 +20,30 @@ uniform sampler2D wet_map : filter_linear, repeat_enable, hint_default_black;
 uniform float weather_ready = 0.0;
 global uniform float snow_cover;
 varying vec3 world_position;
+// Squads drawn as one instance per unit (large battles): each soldier in the mesh is animated
+// here. UV.x = figure index + part code (.3/.5 left/right leg, .7/.9 left/right arm), UV.y = height
+// above the figure's feet. INSTANCE_CUSTOM: r unit seed, g moving, b down (prone/kneel), a unused.
+uniform float squad_anim = 0.0;
 
 void vertex() {
+    if (squad_anim > .5) {
+        float fig = floor(UV.x); float part = fract(UV.x); float h = UV.y;
+        vec4 c = INSTANCE_CUSTOM;
+        float seed = c.r * 97.0 + fig * 13.17;
+        float moving = c.g;
+        float t = TIME;
+        vec2 wander = vec2(sin(t * .37 + seed), cos(t * .29 + seed * 1.7)) * mix(.014, .006, moving);
+        float lag = moving * (.02 + fract(seed * .37) * .06);
+        VERTEX.x += wander.x - lag;
+        VERTEX.z += wander.y + moving * sin(t * .8 + seed) * .006;
+        float stride = sin(t * (8.0 + fract(seed * 1.3) * 2.0) + seed);
+        if (moving > .5) {
+            if (part > .2 && part < .6) VERTEX.x += stride * (part < .4 ? 1.0 : -1.0) * .014 * clamp(1.0 - h / .038, 0.0, 1.0);
+            if (part > .6) VERTEX.x -= stride * (part < .8 ? 1.0 : -1.0) * .01 * clamp((h - .038) / .03, 0.0, 1.0);
+            VERTEX.y += abs(stride) * .0015;
+        }
+        VERTEX.y *= mix(1.0, .45, c.b);
+    }
     world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 

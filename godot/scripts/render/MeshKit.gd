@@ -270,6 +270,8 @@ func commit_surface(mesh: ArrayMesh, mat: String) -> void:
 
 
 static func _material_for(key: String) -> Material:
+	if key.begins_with("squad:"):
+		return MaterialLibrary.squad(key.substr(6))
 	if key.begins_with("team:"):
 		return MaterialLibrary.team(Color.html(key.substr(5)))
 	if key.begins_with("glow:"):

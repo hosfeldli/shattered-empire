@@ -19,6 +19,8 @@ static func build(type:String,color:Color,animation:="idle") -> ArrayMesh:
 	match type:
 		"militia","rifle_squad","special_forces","exo_infantry":
 			if kit: k.box(team,Vector3(-.02,.002,0),Vector3(.02,.002,.02))     # people come from SquadPresentation
+			elif animation=="gpu": _gpu_squad(k,type,color)
+			elif animation=="gpu_low": _gpu_squad(k,type,color,true)
 			else: _baked_squad(k,type,color)
 		"engineer":
 			# a utility handcart of tools and timber, with the crew drawn separately when close
@@ -159,6 +161,28 @@ static func _baked_squad(k:MeshKit,type:String,color:Color,count:=-1) -> void:
 		var part:=MeshKit.new()
 		FigureKit.build(part,variant,"stand",color)
 		k.component(_surfaces(part),Transform3D(Basis(),positions[index]))
+
+
+## One mesh holding the whole squad for large battles: every soldier's vertices carry its figure
+## index and body part in UV so the surface shader animates each soldier on its own (wander, lag
+## behind when marching, leg and arm swing, going to ground). One instance per unit.
+static func _gpu_squad(k:MeshKit,type:String,color:Color,low:=false) -> void:
+	var variant:String={"militia":"militia","rifle_squad":"rifle","special_forces":"special","exo_infantry":"exo"}.get(type,"rifle")
+	var positions:=[Vector3(.1,0,0),Vector3(0,0,-.1),Vector3(0,0,.1),Vector3(-.11,0,-.16),Vector3(-.11,0,.16),Vector3(-.15,0,0)]
+	var n:=3 if variant=="exo" else 4 if variant in ["militia","special"] else 6
+	for index in n:
+		var part:=MeshKit.new()
+		if low: FigureKit.build_low(part,variant,color)
+		else: FigureKit.build(part,variant,"stand",color)
+		var offset:Vector3=positions[index]
+		for material in part.parts:
+			var source:Array=part.parts[material]; var out:=k._part("squad:"+str(material))
+			for v in (source[0] as Array).size():
+				var p:Vector3=source[0][v]
+				var code:=0.0
+				if p.y<.038 and absf(p.z)<=.016: code=.3 if p.z<0 else .5
+				elif p.y>=.038 and p.y<.07 and absf(p.z)>.014: code=.7 if p.z<0 else .9
+				out[0].append(p+offset); out[1].append(source[1][v]); out[2].append(source[2][v]); out[3].append(Vector2(index+code,p.y))
 
 
 static func _surfaces(part:MeshKit) -> Array:

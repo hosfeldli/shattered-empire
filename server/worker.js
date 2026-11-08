@@ -43,6 +43,8 @@ function flush() {
 }
 
 let tickMs = 0, maxMs = 0, ticks = 0, overSent = false, frames = 0;
+let congested = new Set();     // civ ids (-2: observers) whose connection is backed up
+
 const AUTOSAVE_S = +(process.env.AUTOSAVE_SECONDS || 60);
 let nextSave = game.time + AUTOSAVE_S;
 // Spectated AI-only matches can run faster than real time (or pause) for testing.
@@ -61,12 +63,12 @@ const timer = setInterval(() => {
     if (!game.speed) {
       // paused: keep the view alive (orders given now show up and run when play resumes)
       frames++;
-      if (frames % 5 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg); geoStep(); }   // includes the spectator
+      if (frames % 5 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) send(civId, msg); geoStep(); }   // includes the spectator
       flush(); return;
     }
     frames++;
     // 5 Hz snapshots, economy every second, regardless of how many ticks ran
-    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0)) send(civId, msg); geoStep(); }
+    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) send(civId, msg); geoStep(); }
     flush();
     const dt = (performance.now() - t0) / n;
     tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks += n;
@@ -94,6 +96,12 @@ function saveAsync(done) {
 
 parentPort.on('message', (m) => {
   try {
+    if (m.t === 'congestion') {
+      const next = new Set(m.civs || []);
+      // a connection that drained gets a full catch-up on the next snapshot round
+      for (const id of congested) if (!next.has(id) && id >= 0 && game.civs[id]) game.civs[id].catchUp = true;
+      congested = next; return;
+    }
     if (m.t === 'cmd' && m.cmd && m.cmd.c === 'speed') {
       const eligible = game.civs.filter((c) => c.human).length === 1 || !!game.sandbox;
       const requested = Number(m.cmd.speed);

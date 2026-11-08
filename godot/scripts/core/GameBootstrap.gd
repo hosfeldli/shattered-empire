@@ -57,6 +57,7 @@ var resource_strip:NativeResourceStrip
 var onboarding:NativeOnboarding
 var recipe_inspector:NativeRecipeInspector
 var follow_pill:NativeFollowPill
+var perf_samples = null   # --perf: [frame ms, military, squads, combat, civilians+input, settlements, terrain, environment, total] (us)
 var alert_feed:NativeAlertFeed
 var world_labels:NativeWorldLabels
 var observer_bar:NativeObserverBar
@@ -65,7 +66,8 @@ var production_feedback:NativeProductionFeedback
 
 func _ready() -> void:
 	args = _parse_args(OS.get_cmdline_user_args())
-	automated=args.has("bench") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test") or args.has("surface-test")
+	get_viewport().size_changed.connect(_apply_render_scale)
+	automated=args.has("bench") or args.has("perf") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test") or args.has("surface-test")
 	if not automated: preferences.load_from(str(args.get("settings-file","user://settings.cfg")))
 	else: preferences.path=str(args.get("settings-file","user://test-settings.cfg"))
 	if args.has("server"): preferences.values.server=str(args.server)
@@ -122,6 +124,7 @@ func _ready() -> void:
 	squads = SquadPresentation.new()
 	add_child(squads)
 	squads.setup(world, cam, military, settlements)
+	military.squads = squads
 	wildlife = WildlifePresentation.new(); add_child(wildlife); wildlife.setup(world, cam, composition)
 	combat.composition = composition
 	combat.director = CombatPresentationDirector.new()
@@ -212,6 +215,8 @@ func _ready() -> void:
 		order_test_at = float(args["order-test"])
 	if args.has("tour"):
 		_tour(str(args.tour))
+	if args.has("perf"):
+		_perf(float(args.perf), str(args.get("perf-out", "")))
 	if args.has("validate-lwe"):
 		live_validation = LiveValidation.new()
 		live_validation.run(self,str(args["validate-lwe"]))
@@ -286,6 +291,39 @@ func _stage_battle(key: String) -> void:
 		net.cmd({"c": "move", "units": mine.slice(mine.size() / 3), "tile": int(battle.arena), "attackMove": true}, func(m): battle["advance"] = m))
 
 
+## --perf=SECONDS (with --battle): once the battle is staged and running, record frame time and
+## per-subsystem cost at a close and an operational zoom; print and optionally save the summary.
+func _perf(seconds: float, out: String) -> void:
+	while not (world.ready_ and world.snapshot_count > 8 and battle.has("arena")):
+		await get_tree().process_frame
+	await get_tree().create_timer(10.0).timeout
+	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
+	var report := {"units": world.units.size(), "render_scale": get_viewport().scaling_3d_scale}
+	var zooms := []
+	for z in str(args.get("perf-zooms", "14,40")).split(","): zooms.append(float(z))
+	for zoom in zooms:
+		cam.focus_tile(int(battle.arena), zoom)
+		await get_tree().create_timer(1.0).timeout
+		perf_samples = []
+		await get_tree().create_timer(seconds).timeout
+		var columns := ["frame_ms", "military_us", "squads_us", "combat_us", "civilians_us", "settlements_us", "terrain_us", "environment_us", "total_us", "gpu_ms", "render_cpu_ms"]
+		var summary := {}
+		for c in columns.size():
+			var values: Array = perf_samples.map(func(row): return float(row[c]))
+			values.sort()
+			summary[columns[c]] = {"p50": snappedf(values[values.size() / 2], .1), "p95": snappedf(values[int(values.size() * .95)], .1)}
+		summary["frames"] = perf_samples.size(); summary["units_visible"] = world.units.size(); summary["figures"] = squads.drawn
+		report["zoom_%d" % int(zoom)] = summary
+		perf_samples = null
+		if args.has("perf-shots"):
+			DirAccess.make_dir_recursive_absolute(str(args["perf-shots"]))
+			get_viewport().get_texture().get_image().save_png("%s/perf-%d.png" % [str(args["perf-shots"]), int(zoom)])
+	print("PERF ", JSON.stringify(report))
+	if not out.is_empty():
+		var f := FileAccess.open(out, FileAccess.WRITE); f.store_string(JSON.stringify(report, "  ")); f.close()
+	get_tree().quit()
+
+
 ## the biggest city (spectators), the battle arena, or the start, for screenshots
 func _tour_target() -> int:
 	if battle.has("arena"):
@@ -357,6 +395,23 @@ func _apply_quality(q: String) -> void:
 			e.ssao_enabled = false
 			vp.msaa_3d = Viewport.MSAA_2X
 	quality = q
+	_apply_render_scale()
+
+
+## High-density displays: the 3D world renders at a pixel budget per quality preset and is
+## upscaled (AMD FSR), while the interface stays at native resolution. A Retina window otherwise
+## shades four times the pixels of an ordinary one.
+const RENDER_PIXELS := {"low": 1300000.0, "medium": 2100000.0, "high": 3700000.0, "ultra": 1e12}
+func _apply_render_scale() -> void:
+	var vp := get_viewport()
+	var size := Vector2(vp.get_visible_rect().size) * float(DisplayServer.screen_get_scale())
+	var window := DisplayServer.window_get_size()
+	if window.x > 0: size = Vector2(window)
+	var budget: float = RENDER_PIXELS.get(quality, RENDER_PIXELS.medium)
+	var scale := clampf(sqrt(budget / maxf(size.x * size.y, 1.0)), 0.5, 1.0)
+	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR if scale < 0.99 else Viewport.SCALING_3D_MODE_BILINEAR
+	vp.scaling_3d_scale = scale
+	vp.fsr_sharpness = 0.3
 
 
 ## --hide=trees,clouds,water,smoke,shadows,buildings: switch layers off to find what the GPU pays for
@@ -373,6 +428,7 @@ func _debug_hide(what: PackedStringArray) -> void:
 		(d.node as Node3D).visible = not what.has("buildings")
 		(d.fx as Node3D).visible = not what.has("buildings")
 	settlements.plumes.visible = not what.has("smoke")
+	military.visible = not what.has("units"); squads.visible = not what.has("units")
 
 
 func _parse_args(list: PackedStringArray) -> Dictionary:
@@ -434,9 +490,15 @@ func _on_message(m: Dictionary) -> void:
 				net.close(); shell.show_view("main")
 				NativeUI.label(shell.content,"This server needs the native ruleset update. Choose an updated server in Settings to start a new campaign.",16,NativeUI.GOLD)
 				return
+			# Rejoining the same match (a dropped connection) keeps the player's view where it was.
+			var same_match:=world.match_id!="" and str(m.get("match",""))==world.match_id and world.grid!=null
+			var view:=Vector3(cam.focus.x,cam.size,cam.focus.z)
 			world.apply_welcome(m)
 			cam.on_world()
-			cam.focus_tile(world.start_tile, 26.0)
+			if same_match:
+				cam.focus=Vector3(view.x,cam.focus.y,view.z); cam.size=view.y; cam.goal_size=view.y
+			else:
+				cam.focus_tile(world.start_tile, 26.0)
 			hud.show_lobby(false)
 			if args.has("battle") and world.sandbox:
 				_stage_battle(str(args.battle))
@@ -485,12 +547,17 @@ func _process(dt: float) -> void:
 	settlements.update(dt, net.frame_work_us < 500)
 	var t5 := Time.get_ticks_usec()
 	military.update(dt)
+	var t5b := Time.get_ticks_usec()
 	squads.update(dt)
 	var t6 := Time.get_ticks_usec()
 	combat.update(dt)
+	var t6b := Time.get_ticks_usec()
 	civilians.update(dt)
 	input.update(dt)
 	var t7 := Time.get_ticks_usec()
+	if perf_samples != null:
+		var rid := get_viewport().get_viewport_rid()
+		perf_samples.append([dt * 1000.0, t5b - t5, t6 - t5b, t6b - t6, t7 - t6b, t5 - t4, t2 - t1, t3 - t2, Time.get_ticks_usec() - t0, RenderingServer.viewport_get_measured_render_time_gpu(rid), RenderingServer.viewport_get_measured_render_time_cpu(rid) + RenderingServer.get_frame_setup_time_cpu()])
 	diag.record_subsystems({"state": t1 - t0, "terrain": t2 - t1, "environment": t3 - t2, "infrastructure": t4 - t3, "settlements": t5 - t4, "military": t6 - t5, "combat+input": t7 - t6, "total": t7 - t0})
 
 

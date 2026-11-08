@@ -53,7 +53,7 @@ const ESSENTIAL = new Set(['farm', 'house', 'port']);
 function makeScheduler(g) {
   const T = [
     { name: 'tileUnits', fn: () => g.rebuildTileUnits(), budget: 3 },
-    { name: 'units', fn: () => { unitsStep(g, DT); resolveDeadlocks(g); }, budget: 15 },
+    { name: 'units', fn: () => { g.pathCacheOn = true; try { unitsStep(g, DT); } finally { g.pathCacheOn = false; } resolveDeadlocks(g); }, budget: 15 },
     { name: 'projectiles', fn: () => projectilesStep(g), budget: 3 },
     { name: 'air', every: 2, fn: () => airStep(g, DT * 2), budget: 3 },
     { name: 'missiles', fn: () => missilesStep(g, DT), budget: 1 },
@@ -813,16 +813,18 @@ export class Game {
   // ----------------------------------------------------------------- snapshots
   // Per-viewer snapshots. A viewer is a civ (fog-filtered) or the spectator (whole map, or a
   // followed civ's fog). Each viewer keeps its own "already sent" tile versions.
-  snapshots(onlyCiv = null, econFlag = undefined) {
+  snapshots(onlyCiv = null, econFlag = undefined, skip = null) {
     const out = [];
     const full = onlyCiv !== null;
     const econ = econFlag ?? (this.tickN % 10 === 0 || full);
     for (const civ of this.civs) {
       if (civ.isRebel) continue;
       if (full ? civ.id !== onlyCiv : !civ.connected) continue;
-      out.push([civ.id, this.viewerSnapshot(civ, { civ, vis: civ.visible, explored: civ.explored, god: false }, full, econ)]);
+      if (!full && skip && skip.has(civ.id)) continue;            // backed-up connection: hold, keep deltas
+      const catchUp = !full && civ.catchUp; if (catchUp) civ.catchUp = false;
+      out.push([civ.id, this.viewerSnapshot(civ, { civ, vis: civ.visible, explored: civ.explored, god: false }, full, econ || catchUp)]);
     }
-    if (!full && this.observer && this.observer.connected) out.push([-2, this.observerSnapshot(false, econ)]);
+    if (!full && this.observer && this.observer.connected && !(skip && skip.has(-2))) out.push([-2, this.observerSnapshot(false, econ)]);
     return out;
   }
 
