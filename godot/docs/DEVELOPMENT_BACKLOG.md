@@ -12,6 +12,254 @@ The complete 21-section persistent-warzone design is recorded separately in
 [PERSISTENT_WARZONE_BRIEF.md](PERSISTENT_WARZONE_BRIEF.md). It includes the continuation supplied
 after the earlier truncated message and should be read together with the tasks in section I.
 
+## Q. Development direction review (2026-11-07) — guiding priorities
+
+An external review of the project after the B–H, J/K and P5 passes. It **reframes priorities**:
+the next milestone is making the game enjoyable to play, not adding more simulation systems.
+Keep Godot and the current architecture; improve coherence between existing systems. This
+section takes precedence when choosing what to work on next.
+
+### Q0. Assessment
+- **Engine and architecture: keep.** The native client, world composition and test coverage
+  justify improving, not migrating.
+- **Gameplay: needs a design pass.** Slower progression, automated city management and complex
+  simulation must produce visible consequences and meaningful decisions, not more waiting.
+- **Cities and vehicles: highest visual priority.** Streets, districts and traffic are not yet
+  connected enough, which affects how real the whole world feels.
+- **Performance and reliability: release blocker.** Delays around 50+ troops and world resets
+  around 200 troops are more serious than FPS drops. Commands and world state must stay responsive
+  in battles.
+- Asset coverage (34 buildings, 23 units) is no longer the main problem; quality and coherence are.
+- **Recorded performance checkpoints:**
+  - 128×128 map with about 100 units: around 60 fps.
+  - 256×256 map with about 110 units: around 60 fps (both 1080p, Medium, M3).
+  - Late-scene frame-time p99: 22–30 ms.
+  - Static memory: about 303 MB.
+
+  These do not reproduce the 200-troop collapse.
+
+### Q1. Code findings (confirmed observations, not proof of every symptom)
+- [x] City streets were generated locally (`SettlementRenderer._town_streets`). Replaced by one
+  street network along block edges per settlement (`CityStreets`, P1, in progress).
+- [ ] AI and governor placement is mostly proximity-based (`governor.pickTile`). Add district,
+  frontage and connectivity scoring (see Q3.B).
+- [ ] Native governors have `roads: false`. Add deliberate, infrastructure-aware road planning.
+- [ ] Traffic does not follow rendered road curves (`InfrastructureRenderer._update_traffic`
+  interpolates between hex centres). Share exact road and bridge splines with traffic (Q4.C).
+- [ ] Vehicles are procedural primitives (`MilitaryModelLibrary`). Upgrade the important
+  archetypes to authored modular models (Q4.A).
+- [~] Military instance transforms are rebuilt every frame (`MilitaryRenderer._update_batched`).
+  Partly addressed in P5 (culling, cached info and interpolation, buffered uploads). Still to do:
+  update only when data or interpolation requires it.
+- [ ] Client networking processes packets in arrival order with a 6 s command timeout. Measure
+  and protect command-response latency under large snapshots (Q5.B).
+
+### Q2. Gameplay rhythm (design pass)
+Loop: **Discover** (find opportunity) → **Develop** (transform a region) → **Defend or expand**
+(create conflict) → **Adapt** (respond and recover). The player should always have a useful
+strategic decision available, even while armies and buildings take time.
+- [ ] **A. An engaging first 10 minutes.** Meaningful choices almost at once: where to grow the
+  first city, which deposit to exploit, which route to build, whether to train an early defence.
+  Playtest targets (not fixed timings): an understandable decision within the first minute,
+  noticeable city transformation within a few minutes, and an emerging regional opportunity or
+  threat early in the match.
+- [ ] **B. Visible regional objectives**, emerging from geography, economy and rivals; not quests,
+  scripted chores or a new screen. Examples: industry near a deposit, connect a second
+  settlement, secure a river crossing, prepare a defensive position, capture a valuable enemy
+  facility, restore a damaged corridor. Each needs an obvious benefit and a visible consequence in
+  the world.
+- [ ] **C. Guide Growth.** Keep automatic mayors, but a selected city offers "Guide Growth": click
+  an area or road corridor and choose Housing, Industry or Farming. The mayor builds there.
+  Agency without workforce micromanagement.
+- [ ] **D. Rivals with recognisable plans** shown through real construction, troop deployment and
+  the simple Rivals view. For example: one expands toward minerals, one fortifies a river, one
+  invests in industry, a recovering rival reinforces its border instead of attacking repeatedly.
+  The AI should create interesting situations, not just maximise production.
+- [ ] **E. Decisive combat payoff.** A won battle yields a strategic result: a crossing, a secured
+  supply route, a captured city, an exposed industrial area, an opening to advance. Distinguish
+  defeating an army from achieving the objective; avoid repetitive sieges and long clean-up.
+- [ ] **Pacing: temporarily freeze global slowdowns.** Measured era arrivals (16–31 min to 65–104
+  min) show a substantial progression system but not engagement. Test engagement, construction
+  payoff and decision frequency before slowing the simulation further.
+
+### Q3. City development: a persistent City Plan (next major visual overhaul)
+One stable procedural plan per city derives from the hub and tier, real roads and connections,
+rivers, mountains and elevation, the urban footprint, buildings and district types, and
+construction, damage and history. The plan drives both appearance and automatic placement
+preferences. Growth model: city hub + geography + connected roads → residential (connected
+blocks), industrial (shared compounds), agricultural (continuous fields) → stable streets,
+incremental growth, activity and reconstruction.
+- [~] **A. Complete streets.**
+  1. Start at the hub.
+  2. Identify roads entering and leaving the city.
+  3. Establish continuous local routes between developed areas.
+  4. Connect blocks to them.
+  5. Preserve the plan as the city expands.
+  6. Upgrade the visual class with development.
+
+  Streets are decorative unless built as real roads and never imply an unauthorised crossing.
+  (Block-edge network in progress; still to do: route continuity from the hub to entering roads.)
+- [ ] **B. Authoritative district-aware placement** in `governor.pickTile`:
+
+  | Factor | Housing | Industry | Farms |
+  | --- | --- | --- | --- |
+  | Existing compatible district | strong | strong | strong |
+  | Street access | strong | strong | moderate |
+  | Real freight-road access | moderate | very strong | moderate |
+  | Distance from the centre | near to moderate | moderate to outer | outer edge |
+  | Terrain fit | buildable | flat, accessible | fertile |
+  | Water or resources | contextual | industry-dependent | fertility |
+
+  This is part of server scoring, not cosmetic, so the generator is not forced to make scattered
+  buildings look connected.
+- [~] **C. Recognisable compounds.** Each underlying building keeps its own ID, condition,
+  production and selection:
+  - Residential blocks: shared roofs, courtyards, sidewalks, small parking areas.
+  - Industrial works: shared yards, service roads, pipes, loading bays, fences.
+  - Military base: barracks merge with a shared motor pool.
+  - Agricultural estate: connected fields and tracks, no repeated barns.
+
+  (Military base, industrial fences and farm estates done; still to do: shared roofs and
+  courtyards for blocks.)
+- [ ] **D. Visible growth.** Empty land becomes a prepared lot, then foundations and
+  construction appear, streets extend, a building joins its neighbourhood, activity grows,
+  density rises with upgrades, and old and new buildings coexist. Five minutes of watching should
+  show meaningful physical change.
+- [ ] **E. Remove remaining visual faults first.** Sidewalk clipping, terrain noise and isolated
+  connections, before adding more street furniture. Keep the rule against plates, raised
+  platforms and floating foundations.
+- [ ] **City acceptance test:** one hub, a mayor develops for 30 simulated minutes. Result: a
+  believable connected city without manual correction.
+
+### Q4. Vehicles: models and motion together
+- [ ] **A. Rebuild the most visible archetypes** as authored modular glTF bodies with procedural
+  materials, faction markings and stable variation:
+  - Scout buggy: tyres, suspension, frame, seat, equipment.
+  - Armoured car: recognisable 8-wheel hull.
+  - Supply truck: cab, cargo bed, suspension, loading.
+  - Main battle tank: tracked hull, road wheels, independent turret, suspension, recoil.
+  - Self-propelled artillery: long barrel, setup and recoil.
+  - Attack helicopter: fuselage, rotor, banking, approach.
+  - Fighter and bomber: wing proportions, take-off and landing, flight motion.
+  - Autonomous tank.
+
+  Targeted, not all 23 at once.
+- [ ] **B. Physical movement** (presentation only): moving tracks, a hull following the slope,
+  independent turret aim, wheeled vehicles that steer and turn instead of snapping, trucks that
+  visibly carry and load cargo, aircraft that take off, bank and land.
+- [ ] **C. One shared transport geometry service** (point and tangent sampler) used by road and
+  rail rendering, traffic, bridge deck and approach heights, roadside orientation and previews.
+  Vehicles sample the deck and embankment profile, follow multiple connected edges toward
+  plausible destinations, and never shuttle back and forth on one segment.
+- [ ] **D. One world.** Civilian and military vehicles share scale, material quality and terrain
+  behaviour. Civilians keep colour variety; military vehicles keep faction markings.
+- [ ] **Vehicle acceptance test:** follow a supply truck from a factory along a curved road,
+  across a bridge, to another facility. It stays on the roadway, climbs the bridge, faces the
+  right way and never intersects the ground.
+
+### Q5. Performance and reliability (release-critical)
+- [~] **A. Client frame drops** (partly done in P5). Still to do:
+  - Update transforms only when data or interpolation changes.
+  - Cull before expensive per-unit work.
+  - Army and hex aggregation for badges at strategic zoom.
+  - Cache formation geometry until membership, orientation or order changes.
+  - Hard budgets for figures, particles and labels.
+  - Profile GDScript allocations and dictionary churn.
+- [ ] **B. Command latency in battles.** Instrument click → sent → received → validated and
+  acknowledged → displayed. Prioritise command validation and acknowledgements over AI planning
+  and cosmetic snapshot work. Investigate smaller packets, lower frequency for unchanged data and
+  safe snapshot coalescing that preserves delta dependencies. Orders must work even if visual
+  detail degrades.
+- [~] **C. Buildings vanish and the camera resets.** Server: no missed heartbeats or worker failure
+  under sustained load (P5: path budget, backpressure). Client: keep the last valid world and
+  camera during a same-match reconnect, then reconcile atomically (P5: done for the camera and
+  buildings). Still to do: reproduce and verify at 200 and 500 units.
+- [ ] **Validation matrix:**
+  - 100 units: smooth.
+  - 250 units: reliable orders, placement and coherent presentation.
+  - 500 units: stress test with adaptive visual detail.
+  - Large industrial city: no frequent generation stalls.
+  - Active battle plus construction: building placement remains usable.
+  - Reconnect during battle: camera and world stable.
+  - Long AI-only match: no progressive memory or processing degradation.
+- [ ] **Target:** local command acknowledgement p95 below 250 ms, then refine for real networks.
+  This is separate from the 100 ms simulation tick; 10 ms server updates per unit are not
+  required for smooth interpolation.
+
+### Q6. Other significant issues (should not displace Q2–Q5)
+
+| Priority | Issue | Action |
+| --- | --- | --- |
+| High | Placement fails in large battles (P7) | Cheap cached legality; prioritise placement commands |
+| High | Road drawing changes the intended route (P2) | Keep the player's stroke; repair only local gaps |
+| High | Research silently stalls (P7) | Show the exact missing requirement; allow an eligible alternative |
+| High | Troop icons vanish at scale (P7) | Cluster by army or occupied area |
+| High | Road projects fail silently (P2) | Highlight the blocked section; offer replan or retry |
+| High | AI lacks coherent defensive preparation (P4) | Plan defences around known threats, crossings and cities |
+| Medium | Map lenses appear ineffective (P7) | Verify each lens |
+| Medium | Curved troop deployment (P3) | Keep the drawn line |
+| Medium | Segmented trench joins (P3) | Better junctions; keep ordered excavation |
+| Medium | Noisy or striped terrain (P6) | Remove the wear tint and diagonal artefacts. Restrained: no man's land as large continuous scarred regions, irregular craters and terrain-specific damage, not more colour noise |
+| Medium | Nuclear missile flow (P7) | Verify launch and interception end to end before AI tuning |
+| Medium | Build/train menus and tool persistence (P3) | Scrolling, zoom ownership, repeat placement |
+
+### Q7. Recommended sequence (milestones)
+1. **Reliable under load.** Reproduce 50-, 200- and 500-unit scenarios; fix delayed commands,
+   server stalls, client batching and reconnect resets. *Exit: large battles never prevent
+   building, selecting, ordering or viewing the world.*
+2. **City growth as a connected system.** Persistent City Plan, street continuity,
+   district-aware placement, compounds. *Exit: a mayor develops a coherent city without
+   scattered buildings or streets.*
+3. **Player engagement.** Visual rewards for development, regional objectives, rival pressure,
+   decisive military outcomes. *Exit: playtesters understand their opportunities and find
+   enjoyable decisions throughout a match.*
+4. **Vehicle experience.** The eight most visible archetypes; traffic on the real road, bridge
+   and terrain geometry. *Exit: vehicles are recognisable, move naturally and belong to the
+   world.*
+5. **Battlefield and presentation polish.** Damage, construction, soldier animation, sound,
+   lenses, icons and remaining art. *Exit: the world communicates the mechanics without
+   obscuring control or hurting performance.*
+
+### Q8. Deliberately not adding
+New resource types, government mechanics, trading, treaties, rebels, a minimap, workforce
+micromanagement or a fully simulated civilian population. No server rewrite, engine change or new
+general procedural framework. No roster expansion until the existing 23 units and active buildings
+are distinctive and create interesting choices. Make the current content better, not the game
+larger.
+
+### Q9. One integrated release test (real server)
+1. A river-valley settlement starts with a hub, a small residential area, agriculture and nearby
+   mineral deposits.
+2. The mayor develops it while the player builds a road to a mine.
+3. A steel mill and related industry develop into a connected compound.
+4. Civilian vehicles use proper streets and roads, cross a reinforced bridge and enter the
+   industrial district.
+5. A rival approaches the crossing. The player deploys an army, builds a continuous defensive
+   line and fights a sustained engagement.
+6. The battle damages buildings, infrastructure, vegetation and terrain.
+7. The city repairs and resumes development.
+
+Military load increases progressively throughout to test responsiveness and stability. The
+scenario must show city growth, economy, traffic, combat, destruction, automation, controls and
+performance working together.
+
+### Q10. Measuring fun (playtests)
+- **First 15 minutes:** can a new player learn building and military controls, see the city
+  develop and make meaningful decisions without asking what to do?
+- **Midgame (30–60 min):** do roads, cities, resources, armies and rivals create interesting
+  choices?
+- **Large late-game war:** can the player command an army, understand the battle and reach a
+  clear strategic outcome without fighting the interface?
+
+Track waiting time, failed commands, repeated corrective clicks, periods without decisions, and
+whether players voluntarily start another match. Unit tests establish correctness, not fun.
+
+**Final recommendation — four outcomes for the next cycle:**
+1. A large battle never makes the game unusable.
+2. Cities grow into recognisable connected settlements.
+3. Vehicles look and move like physical objects on the real transport network.
+4. Players regularly face meaningful, understandable strategic choices with visible rewards.
+
 ## P. Playtest feedback (2026-11-07) — to be prioritised
 
 Reported after playing the published preview (`4a40245` client, `b9ef675` server). The main goal
