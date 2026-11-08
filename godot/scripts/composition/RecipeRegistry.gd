@@ -9,7 +9,8 @@ const GROUPS := {"house": "res", "farm": "farm", "market": "com", "port": "com",
 	"steel_mill": "ind", "munitions_plant": "ind", "motor_works": "ind", "heavy_assembly": "ind",
 	"electronics_plant": "ind", "refinery": "ind", "power_plant": "ind", "fusion_plant": "ind",
 	"robotics_complex": "ind", "drone_works": "ind", "salvage": "ind",
-	"mine": "ext", "quarry": "ext", "lumber": "ext", "oil_well": "ext"}
+	"mine": "ext", "quarry": "ext", "lumber": "ext", "oil_well": "ext",
+	"barracks": "mil"}
 
 var recipes: Array = []
 var errors: Array[String] = []

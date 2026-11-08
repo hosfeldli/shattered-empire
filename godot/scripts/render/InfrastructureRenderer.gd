@@ -26,6 +26,10 @@ var trucks: MultiMeshInstance3D
 var wagons: MultiMeshInstance3D
 var works: MeshInstance3D
 var works_version := -1
+## Drawn road centre-lines per hex, for traffic: tile -> {direction: PackedVector3Array from the hex
+## centre to that edge's midpoint}, with the exact heights of curves, embankments and bridge decks.
+var lanes := {}
+var lanes_version := 0
 
 
 func setup(w: WorldState, c: CameraController) -> void:
@@ -154,6 +158,7 @@ func _build(cid: int) -> void:
 	var cy := cid / world.chunks_w
 	var kit := MeshKit.new()
 	var nb_bridges := 0
+	recording = true
 	for lr in cs:
 		var r := cy * cs + lr
 		if r >= g.h:
@@ -163,6 +168,7 @@ func _build(cid: int) -> void:
 			if q >= g.w:
 				break
 			var i := r * g.w + q
+			lanes.erase(i)
 			if world.road[i] == 0 or not world.known[i]:
 				continue
 			var c2 := g.center(i)
@@ -185,6 +191,8 @@ func _build(cid: int) -> void:
 		rec = {"inst": mi, "x0": (cx + 0.5) * cs * SQRT3}
 		chunks[cid] = rec
 	rec.bridges = nb_bridges
+	recording = false
+	lanes_version += 1
 	(rec.inst as MeshInstance3D).mesh = kit.commit() if not kit.is_empty() else null
 
 
@@ -200,7 +208,11 @@ func _land_roads(kit: MeshKit, i: int, c2: Vector2, edges: Array) -> void:
 		for k in 11:
 			var t := k / 10.0
 			pts.append(a.lerp(c2, t).lerp(c2.lerp(b, t), t))   # quadratic curve through the centre's pull
-		_path(kit, pts, int(edges[0][1]), [_approach(i, int(edges[0][0])), _approach(i, int(edges[1][0]))])
+		var curve := _path(kit, pts, int(edges[0][1]), [_approach(i, int(edges[0][0])), _approach(i, int(edges[1][0]))])
+		var first := PackedVector3Array(); var second := PackedVector3Array()
+		for k in range(5, -1, -1): first.append(curve[k])
+		for k in range(5, 11): second.append(curve[k])
+		_lane(i, int(edges[0][0]), first); _lane(i, int(edges[1][0]), second)
 		return
 	var widest := 0
 	for edge in edges:
@@ -210,7 +222,8 @@ func _land_roads(kit: MeshKit, i: int, c2: Vector2, edges: Array) -> void:
 		var pts: Array[Vector2] = []
 		var reach := 0.5 if bool(edge[2]) else 1.0      # a destroyed segment stops short in debris
 		for k in 7: pts.append(c2.lerp(end, reach * k / 6.0))
-		_path(kit, pts, ty, [NAN, NAN if bool(edge[2]) else _approach(i, int(edge[0]))])
+		var spoke := _path(kit, pts, ty, [NAN, NAN if bool(edge[2]) else _approach(i, int(edge[0]))])
+		if not bool(edge[2]): _lane(i, int(edge[0]), PackedVector3Array(spoke))
 		if bool(edge[2]): _debris(kit, pts[-1], end, ty)
 	# junction pad (or a turning area at a dead end) so segments meet cleanly
 	var y := world.ground_height(c2.x, c2.y) + LIFT - 0.004
@@ -258,7 +271,15 @@ func _tone(ty: int) -> Color:
 
 ## Draw one road polyline (2D points) of class ty following the terrain. `ends` may give a fixed
 ## height for the first/last point (bridge approaches): the road grades up on an earth embankment.
-func _path(kit: MeshKit, pts: Array[Vector2], ty: int, ends: Array = [NAN, NAN]) -> void:
+var recording := false
+
+func _lane(tile: int, d: int, line: PackedVector3Array) -> void:
+	if not recording: return       # previews never become traffic lanes
+	if not lanes.has(tile): lanes[tile] = {}
+	lanes[tile][d] = line
+
+
+func _path(kit: MeshKit, pts: Array[Vector2], ty: int, ends: Array = [NAN, NAN]) -> Array[Vector3]:
 	var w: float = WIDTH[ty]
 	var p3: Array[Vector3] = []
 	for k in pts.size():
@@ -293,6 +314,7 @@ func _path(kit: MeshKit, pts: Array[Vector2], ty: int, ends: Array = [NAN, NAN])
 			_ribbon(kit, p3, w, 0.0, "ballast", Color(0.86, 0.84, 0.8))
 			_sleepers(kit, p3)
 			for s in [-0.03, 0.03]: _ribbon(kit, p3, 0.008, s, "steel", Color(1.1, 1.08, 1.05), 0.014)
+	return p3
 
 
 ## a strip along a 3D polyline with mitred sides, offset sideways by `offset`
@@ -374,6 +396,7 @@ func _bridge(kit: MeshKit, i: int, a: Vector2, b: Vector2, ty: int, broken: bool
 	var pa := Vector3(a.x, deck, a.y)
 	var pb := Vector3(b.x, end, b.y)
 	if broken: pb = pa.lerp(pb, 0.45)
+	else: _lane(i, d, PackedVector3Array([pa + Vector3(0, .006, 0), pa.lerp(pb, .5) + Vector3(0, .006, 0), pb + Vector3(0, .006, 0)]))
 	var dir := Vector3(pb.x - pa.x, 0, pb.z - pa.z).normalized()
 	var side := dir.cross(Vector3.UP)
 	var yaw := atan2(-dir.z, dir.x)
@@ -465,6 +488,18 @@ func _build_works() -> void:
 		pa.x = anchor + g.dx_wrap(anchor, pa.x); pb.x = pa.x + g.dx_wrap(pa.x, pb.x)
 		var bridge := bool(record[3]) or _wet(a) or _wet(b)
 		var dir := (pb - pa).normalized(); var side := Vector2(-dir.y, dir.x)
+		if progress < 0.0:
+			# a blocked stretch: red-and-white barriers across it so the failure is found on the map
+			var mid := pa.lerp(pb, .5)
+			kit.set_frame(Vector3.ZERO, 0.0)
+			for s_ in [-1.0, 1.0]:
+				var post: Vector2 = mid + side * .07 * s_
+				kit.box("steel", Vector3(post.x, world.ground_height(post.x, post.y), post.y), Vector3(.008, .05, .008), Color(.6, .6, .6))
+			var bar_y := world.ground_height(mid.x, mid.y) + .04
+			for k in 4:
+				var p0 := mid + side * (-.07 + k * .035)
+				kit.box("painted_metal", Vector3(p0.x, bar_y, p0.y), Vector3(.035, .012, .01), Color(1.4, .3, .25) if k % 2 == 0 else Color(1.5, 1.5, 1.5), atan2(-side.y, side.x))
+			continue
 		kit.set_frame(Vector3.ZERO, 0.0)
 		for k in 5:   # survey stakes with flagging on both sides of the corridor
 			for s in [-1.0, 1.0]:
@@ -525,53 +560,106 @@ func _edge_broken(a: int, b: int) -> bool:
 	return true
 
 
+var routes := {}          # "a>b" -> {version, points: PackedVector3Array, length: float}
+
+## The drawn path from hex a's centre to hex b's centre: a's lane out to the shared edge, then b's
+## lane in, with real curve, embankment and bridge-deck heights. Falls back to a straight line
+## over the ground while a chunk has not been drawn yet.
+func _route(a: int, b: int) -> Dictionary:
+	var key := "%d>%d" % [a, b]
+	var cached: Dictionary = routes.get(key, {})
+	if not cached.is_empty() and int(cached.version) == lanes_version: return cached
+	var g := world.grid
+	var da := -1; var db := -1
+	for d in 6:
+		if g.nb[a * 6 + d] == b: da = d
+		if g.nb[b * 6 + d] == a: db = d
+	var points := PackedVector3Array()
+	var out: PackedVector3Array = lanes.get(a, {}).get(da, PackedVector3Array())
+	var into: PackedVector3Array = lanes.get(b, {}).get(db, PackedVector3Array())
+	if out.size() >= 2 and into.size() >= 2:
+		points.append_array(out)
+		var shift := g.dx_wrap(out[out.size() - 1].x, into[into.size() - 1].x)
+		var anchor := out[out.size() - 1].x + shift - into[into.size() - 1].x
+		for k in range(into.size() - 2, -1, -1): points.append(into[k] + Vector3(anchor, 0, 0))
+	else:
+		var ca := g.center(a); var cb := g.center(b); cb.x = ca.x + g.dx_wrap(ca.x, cb.x)
+		for k in 9:
+			var p := ca.lerp(cb, k / 8.0)
+			points.append(Vector3(p.x, world.ground_height(p.x, p.y) + LIFT, p.y))
+	var length := 0.0
+	for k in points.size() - 1: length += points[k].distance_to(points[k + 1])
+	cached = {"version": lanes_version, "points": points, "length": maxf(length, .001)}
+	if routes.size() > 4096: routes.clear()
+	routes[key] = cached
+	return cached
+
+
+## position and heading at fraction u along a route
+static func _sample(route: Dictionary, u: float) -> Array:
+	var points: PackedVector3Array = route.points
+	var target := clampf(u, 0.0, 1.0) * float(route.length)
+	for k in points.size() - 1:
+		var seg := points[k].distance_to(points[k + 1])
+		if target <= seg or k == points.size() - 2:
+			var p := points[k].lerp(points[k + 1], clampf(target / maxf(seg, 1e-5), 0.0, 1.0))
+			return [p, (points[k + 1] - points[k]).normalized()]
+		target -= seg
+	return [points[0], Vector3.RIGHT]
+
+
+## Traffic never crosses from one empire's territory into another's.
+func _border_crossing(a: int, b: int) -> bool:
+	var oa := int(world.tile_owner[a]) if a < world.tile_owner.size() else -1
+	var ob := int(world.tile_owner[b]) if b < world.tile_owner.size() else -1
+	return oa >= 0 and ob >= 0 and oa != ob
+
+
 func _update_traffic() -> void:
 	var mm := trucks.multimesh
 	var wm := wagons.multimesh
 	var g := world.grid
 	var now := Time.get_ticks_msec() / 1000.0
 	var cx := cam.focus.x
-	var n := 0
-	var w := 0
+	var truck_xf: Array = []; var wagon_xf: Array = []
 	for e in world.traffic:
 		var a := int(e[0])
 		var b := int(e[1])
-		if a < 0 or b < 0 or a >= g.n or b >= g.n or _edge_broken(a, b): continue   # never across a destroyed span
+		if a < 0 or b < 0 or a >= g.n or b >= g.n or _edge_broken(a, b) or _border_crossing(a, b): continue
 		var lvl := mini(int(e[2]), 3)
 		var rail := false
 		for d in 6:
 			if g.nb[a * 6 + d] == b: rail = (_edge(a, d) & 7) == 4
-		var ca := g.center(a)
-		var cb := g.center(b)
-		var dx := g.dx_wrap(ca.x, cb.x)
-		var dz := cb.y - ca.y
+		var route := _route(a, b)
+		var first: Vector3 = (route.points as PackedVector3Array)[0]
+		var shift: float = g.near_x(first.x, cx) - first.x
 		if rail:
-			# one freight train of a few wagons per busy rail edge, shuttling along it
+			# one freight train per busy rail edge: the wagons follow each other along the track
 			var f := fposmod(now * 0.12 + float(a % 89) * 0.07, 2.0)
-			var u0 := 2.0 - f if f > 1.0 else f
+			var forward := f <= 1.0
+			var u0 := f if forward else 2.0 - f
 			for k in mini(3 + lvl, 6):
-				if w >= MAX_WAGONS: break
-				var u := clampf(u0 - k * 0.07 * (1.0 if f <= 1.0 else -1.0), 0.0, 1.0)
-				var x := g.near_x(ca.x + dx * u, cx); var z := ca.y + dz * u
-				var y := world.ground_height(x, z) + LIFT + 0.016
-				wm.set_instance_transform(w, Transform3D(Basis(Vector3.UP, atan2(-dz, dx)), Vector3(x, y, z)))
-				wm.set_instance_color(w, Color(1, 1, 1).darkened(float(posmod(a * 7 + k, 4)) * 0.08))
-				w += 1
+				if wagon_xf.size() >= MAX_WAGONS: break
+				var u := u0 - k * .07 * (1.0 if forward else -1.0)
+				if u < 0.0 or u > 1.0: continue
+				var at: Array = _sample(route, u)
+				var p: Vector3 = at[0]; var t: Vector3 = at[1]
+				wagon_xf.append(Transform3D(Basis(Vector3.UP, atan2(-t.z, t.x)), p + Vector3(shift, .016, 0)))
 			continue
 		for k in lvl:
-			if n >= MAX_TRUCKS:
-				break
-			var f := fposmod(now * 0.35 + k / float(lvl) + float(a % 97) * 0.13, 2.0)
+			if truck_xf.size() >= MAX_TRUCKS: break
+			var f := fposmod(now * 0.35 / maxf(float(route.length) / 1.7, .5) + k / float(lvl) + float(a % 97) * 0.13, 2.0)
 			var back := f > 1.0
 			var u := 2.0 - f if back else f
-			var x := ca.x + dx * u
-			var z := ca.y + dz * u
-			var xx := g.near_x(x, cx)
-			var side := Vector2(-dz, dx).normalized() * (0.035 if back else -0.035)
-			var y := world.ground_height(xx, z) + LIFT + 0.008
-			var yaw := atan2(dz, -dx) if back else atan2(-dz, dx)
-			mm.set_instance_transform(n, Transform3D(Basis(Vector3.UP, yaw), Vector3(xx + side.x, y, z + side.y)))
-			mm.set_instance_color(n, Color(1, 1, 1))
-			n += 1
-	mm.visible_instance_count = n
-	wm.visible_instance_count = w
+			var at: Array = _sample(route, u)
+			var p: Vector3 = at[0]; var t: Vector3 = at[1]
+			if back: t = -t
+			var side := Vector3(-t.z, 0, t.x).normalized() * -0.035      # keep to the right-hand lane
+			truck_xf.append(Transform3D(Basis(Vector3.UP, atan2(-t.z, t.x)), p + side + Vector3(shift, .008, 0)))
+	_fill(mm, truck_xf); _fill(wm, wagon_xf)
+
+
+func _fill(mm: MultiMesh, list: Array) -> void:
+	for k in list.size():
+		mm.set_instance_transform(k, list[k]); mm.set_instance_color(k, Color(1, 1, 1))
+	mm.visible_instance_count = list.size()

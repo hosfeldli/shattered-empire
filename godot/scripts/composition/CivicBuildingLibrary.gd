@@ -30,29 +30,40 @@ static func compose(k: MeshKit, b: Dictionary, type: String, tint: Color, ctx: D
 ## on a civic forecourt. City tiers add a plaza and apartments (City), mid-rise offices and
 ## streetlights (Metropolis) and a cluster of towers (Megacity). Each tier only adds.
 static func _hub(k: MeshKit, tier: int, tint: Color, flag: String, rng: RandomNumberGenerator) -> void:
-	k.box("paving", Vector3(0, .002, .2), Vector3(.5, .008, .2), Color(.9, .88, .84))
-	k.part("office_low", Vector3(-.04, .01, -.08), 0.0, 1.35, tint)
-	k.box("concrete", Vector3(.16, .01, -.08), Vector3(.1, .12, .17), tint * Color(.95, .95, .92))
-	k.box("glass", Vector3(.16, .04, .006), Vector3(.08, .07, .003))
-	k.part("solar_array", Vector3(-.04, .255, -.08), 0.0, .9)
-	k.box("steel", Vector3(.2, .012, .17), Vector3(.006, .26, .006))
-	k.box(flag, Vector3(.226, .23, .17), Vector3(.05, .032, .003))
-	for i in 3: k.part("parked_car", Vector3(-.2 + i * .07, .01, .3), PI * .5, 1.0, [Color(.75, .3, .25), Color(.8, .8, .78), Color(.3, .4, .55)][i])
-	k.part("bus_shelter", Vector3(.05, .01, .32), 0.0, 1.0)
+	# The civic heart is the city's landmark: a broad civic hall on a stepped forecourt, a slim
+	# civic tower with glazed bands, beacon and the empire's flag, and a colonnade on the plaza.
+	k.box("paving", Vector3(0, .002, .2), Vector3(1.0, .01, .4), Color(.92, .9, .86))
+	for step_ in 2: k.box("stone", Vector3(-.06, .006 + step_ * .008, .02), Vector3(.62 - step_ * .04, .008, .1), Color(.88, .86, .82))
+	k.part("office_low", Vector3(-.08, .02, -.18), 0.0, 1.75, tint)
+	k.part("solar_array", Vector3(-.08, .02 + .18 * 1.75, -.18), 0.0, 1.2)
+	var tower := Vector3(.3, .02, -.2)
+	k.box("concrete", tower, Vector3(.12, .62, .12), tint * Color(.96, .96, .94))
+	for band in 6:
+		k.box("glass", tower + Vector3(0, .08 + band * .09, .061), Vector3(.1, .04, .003))
+		k.box("glass", tower + Vector3(.061, .08 + band * .09, 0), Vector3(.003, .04, .1))
+	k.box("concrete", tower + Vector3(0, .62, 0), Vector3(.14, .03, .14), tint * .92)
+	k.box("steel", tower + Vector3(0, .65, 0), Vector3(.006, .16, .006), Color(.8, .8, .78))
+	k.box("glow:ff6a4a", tower + Vector3(0, .81, 0), Vector3(.012, .012, .012))
+	k.box(flag, tower + Vector3(.035, .5, .061), Vector3(.05, .07, .003))
+	for i in 6: k.cylinder("concrete", Vector3(-.36 + i * .1, .02, .08), .014, .12, 8, tint)
+	k.box("concrete", Vector3(-.11, .14, .08), Vector3(.56, .015, .06), tint)
+	k.box("stone", Vector3(.0, .01, .28), Vector3(.06, .07, .06), Color(.82, .8, .76))
+	k.box("steel", Vector3(.0, .08, .28), Vector3(.012, .1, .012), Color(.6, .55, .4))
+	for i in 3: k.part("parked_car", Vector3(-.36 + i * .08, .01, .38), PI * .5, 1.0, [Color(.75, .3, .25), Color(.8, .8, .78), Color(.3, .4, .55)][i])
+	k.part("bus_shelter", Vector3(.2, .01, .38), 0.0, 1.0)
 	if tier >= 1:
-		k.part("apartment_block", Vector3(-.32, .01, -.05), PI * .5, 1.0, tint)
-		k.box("stone", Vector3(.0, .01, .18), Vector3(.05, .05, .05), Color(.82, .8, .76))      # memorial
-		for x in [-.12, .12]:
-			k.cylinder("bark", Vector3(x, .01, .2), .006, .04, 5)
-			k.cone("foliage", Vector3(x, .04, .2), .03, .07, 7, Color(.8, .95, .75))
+		k.part("apartment_block", Vector3(-.42, .01, -.08), PI * .5, 1.0, tint)
+		for x in [-.2, .2]:
+			k.cylinder("bark", Vector3(x, .01, .25), .006, .04, 5)
+			k.cone("foliage", Vector3(x, .04, .25), .035, .08, 7, Color(.8, .95, .75))
 	if tier >= 2:
-		k.part("office_tall", Vector3(.33, .01, -.18), 0.0, 1.0, tint)
-		k.part("apartment_tall", Vector3(-.34, .01, .22), 0.0, .85, tint)
-		for x in [-.22, .0, .22]: k.part("streetlight", Vector3(x, .01, .38), 0.0, 1.0)
+		k.part("office_tall", Vector3(.12, .01, -.38), 0.0, 1.0, tint)
+		k.part("apartment_tall", Vector3(-.42, .01, .28), 0.0, .85, tint)
+		for x in [-.3, .0, .3]: k.part("streetlight", Vector3(x, .01, .44), 0.0, 1.0)
 	if tier >= 3:
-		k.part("office_tall", Vector3(.3, .01, .2), PI * .5, 1.35, tint * Color(.92, .95, 1.0))
-		k.part("office_tall", Vector3(-.14, .01, -.32), 0.0, 1.6, tint * Color(.95, .97, 1.0))
-		k.part("satellite_dish", Vector3(-.14, .01 + .42 * 1.6, -.32), rng.randf() * TAU, 1.0)
+		k.part("office_tall", Vector3(.42, .01, .2), PI * .5, 1.35, tint * Color(.92, .95, 1.0))
+		k.part("office_tall", Vector3(-.2, .01, -.42), 0.0, 1.6, tint * Color(.95, .97, 1.0))
+		k.part("satellite_dish", Vector3(-.2, .01 + .42 * 1.6, -.42), rng.randf() * TAU, 1.0)
 
 
 ## A farm: the estate seat carries the farmstead (corrugated barn, silos, machine shed, tractor,

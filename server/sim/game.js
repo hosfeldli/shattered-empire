@@ -9,7 +9,7 @@ import { World } from './world.js';
 import { mulberry32 } from './rng.js';
 import { Geology, describeTile } from './geology.js';
 import { tileRecord } from './render.js';
-import { findPath, findRoadRoute, flowField, formationSlots, pathFail, PATH_FAIL, PATH_FAIL_CODES } from './path.js';
+import { findPath, findRoadRoute, followStroke, flowField, formationSlots, pathFail, PATH_FAIL, PATH_FAIL_CODES } from './path.js';
 import { RoadNet } from './roads.js';
 import { economyStep, recomputeTerritory, recomputeTradeNetwork, migrationStep, allocationFor } from './economy.js';
 import { MODES, PRIORITY, CATEGORIES, defaultWorkforce } from './workforce.js';
@@ -1225,7 +1225,9 @@ export class Game {
         case 'roadPlan': {
           const type = Math.max(1, Math.min(4, cmd.type | 0));
           let tiles = (cmd.tiles || []).slice(0, 400);
-          if (cmd.auto && tiles.length >= 2) tiles = findRoadRoute(this, civ, tiles[0], tiles[tiles.length - 1], type) || tiles;
+          // two clicks: route between them; a drawn stroke: follow it, repairing blocked steps locally
+          if (cmd.auto && tiles.length === 2) tiles = findRoadRoute(this, civ, tiles[0], tiles[1], type) || tiles;
+          else if (cmd.auto && tiles.length > 2) tiles = followStroke(this, civ, tiles, type);
           const plan = this.roads.plan(this, civ, tiles, type);
           if (cmd.commit) { const r = this.roads.startProject(this, civ, plan); if (r.error) return { error: r.error }; return { reply: { t: 'roadPlan', plan, started: r.project } }; }
           return { reply: { t: 'roadPlan', plan } };

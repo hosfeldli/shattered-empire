@@ -295,6 +295,7 @@ func _apply_econ(m: Dictionary) -> void:
 	var works := []
 	for project in (econ.get("roads", []) if econ is Dictionary else []):
 		if project.has("seg"): works.append([int(project.seg[0]), int(project.seg[1]), int(project.get("prog", 0)), bool(project.get("bridge", false))])
+		for blocked in project.get("blocked", []): works.append([int(blocked[0]), int(blocked[1]), -1, false, str(blocked[2])])
 	if conditions != bridge_condition or works != road_works:
 		bridge_condition = conditions; road_works = works; bridges_version += 1
 	if m.has("bf"):

@@ -3,7 +3,7 @@ import { nativeRules, timedWorks } from './rulesets.js';
 // every city. Governors obey the same placement checks, costs and research as manual orders,
 // respect a resource reserve and explicit permissions, and log why they did everything.
 import { T, TERRAIN, BUILDINGS, UNITS, RES, ROAD_TYPES, GOVERNOR_SPECS } from './constants.js';
-import { disk, dist } from './hex.js';
+import { disk, dist, NB } from './hex.js';
 import { findRoadRoute } from './path.js';
 import { assess, candidates, isRoutine } from './planner.js';
 import { allocationFor } from './economy.js';
@@ -64,14 +64,48 @@ const NATIVE_AUTOMATIC_BUILDINGS = new Set(['farm', 'house', 'lumber', 'quarry',
 const NATIVE_AUTOMATIC_UPGRADES = new Set(['house', 'farm', 'lumber', 'quarry', 'mine', 'market', 'salvage', 'power_plant']);
 
 // Ranked wish-list for a city: [type, reason]. Specialization reorders and adds priorities.
+// District planning (City Plan): every building type belongs to a district; placement prefers
+// growing an existing compatible district with street and freight access, at the ring of the city
+// that suits it (homes and commerce near the centre, industry toward the edge on good roads,
+// farms on the outer fertile ring). Authoritative scoring, so cities grow as connected wholes.
+const DISTRICT = { house: 'res', market: 'com', academy: 'civ', university: 'civ', town: 'civ', comms_tower: 'civ',
+  farm: 'farm', lumber: 'ext', quarry: 'ext', mine: 'ext', oil_well: 'ext', salvage: 'ind', steel_mill: 'ind', munitions_plant: 'ind',
+  motor_works: 'ind', heavy_assembly: 'ind', electronics_plant: 'ind', refinery: 'ind', power_plant: 'ind', fusion_plant: 'ind',
+  robotics_complex: 'ind', drone_works: 'ind', barracks: 'mil', depot: 'ind', port: 'com' };
+// [ideal distance from the hub, weight of compatible neighbours, weight of street access, weight of freight road access]
+const ZONING = { res: [1.5, 2.5, 1.5, 0.3], com: [1.2, 2.0, 1.5, 0.6], civ: [1.0, 1.5, 1.0, 0.3], ind: [2.8, 2.5, 0.5, 2.0], farm: [3.2, 2.0, 0.2, 0.5], ext: [3.0, 0.5, 0, 1.0], mil: [2.5, 2.5, 0.3, 1.0] };
+const CLASH = { res: ['ind', 'ext'], com: ['ext'], civ: ['ind', 'ext'], ind: ['res', 'civ'], farm: [], ext: [], mil: ['res'] };
+export function districtScore(g, civ, c, type, t) {
+  const kind = DISTRICT[type]; if (!kind) return 0;
+  const [ideal, like, street, freight] = ZONING[kind];
+  const w = g.world;
+  let s = -Math.abs(dist(c.tile, t) - ideal) * 1.2;
+  let same = 0, clash = 0, urban = 0;
+  for (let d = 0; d < 6; d++) {
+    const n = NB[t * 6 + d]; if (n < 0) continue;
+    if (g.urban?.[n]) urban++;
+    const b = g.tileB[n] >= 0 ? g.buildings.get(g.tileB[n]) : null;
+    if (!b || b.owner !== civ.id) continue;
+    if (DISTRICT[b.type] === kind) same++;
+    else if (CLASH[kind].includes(DISTRICT[b.type])) clash++;
+  }
+  s += Math.min(3, same) * like - clash * 1.5;
+  // street frontage: next to the built-up area (the city's street network) or on a real road
+  if (urban || w.road[t]) s += street;
+  if (w.road[t]) s += freight * (w.road[t] >= 2 ? 1.3 : 1);
+  return s;
+}
+
 export function pickTile(g, civ, c, type, gv) {
   const w = g.world;
   let best = -1, bs = -Infinity;
   for (const t of disk(c.tile, c.radius || 3)) {
     if (w.owner[t] !== civ.id || (gv && gv.blocked.includes(t)) || !g.canPlace(civ, type, t, true)) continue;
-    let s = -dist(c.tile, t);
-    if (type === 'farm') { s = TERRAIN[w.terr[t]].fert * 4 + (w.river[t] ? 1 : 0) - dist(c.tile, t) * 0.3; if (w.res[t]) s -= 3; }
-    else if (type === 'mine') s = (w.res[t] === RES.IRON ? 3 : w.res[t] === RES.COAL ? 2 : -1) - dist(c.tile, t) * 0.2;
+    if (g.fieldworks?.has(t)) continue;               // automation never builds over trench lines
+    // native rulesets plan districts (City Plan); older rulesets keep plain proximity
+    let s = nativeRules(g) ? -dist(c.tile, t) * 0.3 + districtScore(g, civ, c, type, t) : -dist(c.tile, t);
+    if (type === 'farm') { s = (nativeRules(g) ? s + dist(c.tile, t) * 0.3 : 0) + TERRAIN[w.terr[t]].fert * 4 + (w.river[t] ? 1 : 0) - dist(c.tile, t) * 0.3; if (w.res[t]) s -= 3; }
+    else if (type === 'mine') s = (nativeRules(g) ? s + dist(c.tile, t) * 0.2 : 0) + (w.res[t] === RES.IRON ? 3 : w.res[t] === RES.COAL ? 2 : -1) * (nativeRules(g) ? 2 : 1) - dist(c.tile, t) * 0.2;
     else if (BUILDINGS[type].place === 'flat' && (w.res[t] || w.terr[t] === T.FOREST || TERRAIN[w.terr[t]].fert > 0.8)) s -= 2;
     // defenses face the threat: toward the nearest known hostile city or army, never behind the town
     if (BUILDINGS[type].attack) { const th = threatTile(g, civ, c.tile); if (th >= 0) s = -dist(t, th) * 1.5 - Math.abs(dist(c.tile, t) - (type === 'aa_battery' ? 1 : 2)) * 2; if (w.terr[t] === T.HILLS) s += 1; }
@@ -97,7 +131,7 @@ export function governorStep(g, dt) {
     migrateGovernor(gv);
     if (nativeRules(g)) {
       gv.level = gv.enabled ? 'autonomous' : 'off'; gv.reserve = .35; gv.budget = .2; gv.emergency = true;
-      gv.perms = { build: true, repair: true, roads: false, recruit: false, settle: false };
+      gv.perms = { build: true, repair: true, roads: true, recruit: false, settle: false };
       gv.proposals = [];
     }
     if (gv.level === 'off') continue;
@@ -111,8 +145,14 @@ export function governorStep(g, dt) {
     gv.turn = ((gv.turn || 0) + 1) % 4;
     const repairOk = gv.perms.repair && (level !== 'advisor' || gv.emergency);
     const did = (repairOk && repair(g, civ, c, gv, level)) || false;
-    if (!did && gv.perms.build && (gv.turn !== 1 || !gv.perms.roads)) develop(g, civ, c, gv, level);
-    if (gv.perms.roads && gv.turn === 1) roads(g, civ, c, gv, level);
+    if (nativeRules(g)) {
+      // the road turn builds instead when there is no road work to start
+      const roaded = !did && gv.perms.roads && gv.turn === 1 && roads(g, civ, c, gv, level);
+      if (!did && !roaded && gv.perms.build) develop(g, civ, c, gv, level);
+    } else {
+      if (!did && gv.perms.build && (gv.turn !== 1 || !gv.perms.roads)) develop(g, civ, c, gv, level);
+      if (gv.perms.roads && gv.turn === 1) roads(g, civ, c, gv, level);
+    }
     if (gv.perms.recruit && gv.turn === 2 && (level === 'autonomous')) recruit(g, civ, c, gv);
     if (gv.perms.settle && gv.turn === 3) settle(g, civ, c, gv, level);
     if (level !== 'advisor' && gv.turn === 0) laborPriorities(g, civ, c, gv);
@@ -253,7 +293,7 @@ function roads(g, civ, c, gv, level = 'autonomous') {
     plan.segments.forEach((s) => { if (s.reason === 'already built') { s.ok = true; s.skip = false; } });
     if (governorCanSpend(civ, gv, plan.cost) && !g.roads.startProject(g, civ, plan).error) { log(g, c, 'Repairing a damaged road segment.'); return true; }
   }
-  if (!c.isolated) return false;
+  if (!c.isolated) return linkRoads(g, civ, c, gv, level);
   // connect to whichever already-connected city is closest, not necessarily the capital
   const hubs = g.cityOf(civ).filter((o) => o !== c && !o.isolated).sort((a, b) => dist(a.tile, c.tile) - dist(b.tile, c.tile)).slice(0, 3);
   if (!hubs.length) return false;
@@ -275,6 +315,26 @@ function roads(g, civ, c, gv, level = 'autonomous') {
   if (g.roads.startProject(g, civ, plan).error) return false;
   gv.noRouteNoted = false;
   log(g, c, `Building ${ROAD_TYPES[type].name.toLowerCase()} to ${hub.name} (${plan.length} hexes, ${plan.bridges} bridges) to rejoin the supply network.`);
+  return true;
+}
+
+// A connected city still keeps a proper road to its nearest sister city, and upgrades it (with its
+// bridges, whose class follows the road type) as research unlocks better roads: dirt → paved →
+// highway. Rate-limited; within the city's development budget; existing roads are reused.
+function linkRoads(g, civ, c, gv, level) {
+  if (!nativeRules(g) || level !== 'autonomous' || g.time < (gv.roadLinkAt || 0)) return false;
+  gv.roadLinkAt = g.time + 120 + (c.id % 5) * 9;
+  const sister = g.cityOf(civ).filter((o) => o !== c).sort((a, b) => dist(a.tile, c.tile) - dist(b.tile, c.tile))[0];
+  if (!sister || dist(sister.tile, c.tile) > 18) return false;
+  const best = bestRoadType(civ);
+  const route = findRoadRoute(g, civ, c.tile, sister.tile, best, 6000);
+  if (!route) return false;
+  const plan = g.roads.plan(g, civ, route, best); plan.by = 'governor:' + c.id;
+  if (!plan.buildable) return false;                 // already linked at the best class
+  if (!governorCanSpend(civ, gv, plan.cost)) return false;
+  if (g.roads.startProject(g, civ, plan).error) return false;
+  const upgrading = route.some((t, i) => i && g.roads.usable(route[i - 1], t));
+  log(g, c, `${upgrading ? 'Upgrading the road' : 'Building a road'} to ${sister.name} (${ROAD_TYPES[best].name.toLowerCase()}, ${plan.length} hexes${plan.bridges ? `, ${plan.bridges} bridge${plan.bridges > 1 ? 's' : ''}` : ''}).`);
   return true;
 }
 

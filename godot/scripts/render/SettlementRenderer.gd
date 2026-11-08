@@ -477,41 +477,10 @@ func _append_building(b: Dictionary, job: Dictionary, skip_model := false) -> vo
 				var lc2 := Vector3(lc.x + g.dx_wrap(c2.x, c3.x), world.tile_height(nb), c3.y)
 				kit.set_frame(Vector3.ZERO, 0.0)
 				_connect(kit, group, lc, lc2, b, by_tile[nb])
-	if group == "ind" and int(b.get("d", 0)) == 1:
+	if group in ["ind", "mil"] and int(b.get("d", 0)) == 1:
 		_compound_fence(kit, b, lc, by_tile)
-	if int(b.get("d", 0)) == 1 and str(b.ty) in URBAN:
-		_town_streets(kit, b, lc, by_tile)
 
 
-const URBAN := ["house", "market", "academy", "university", "town"]
-
-## The settlement's local street plan between urban hexes of different kinds (homes to the market,
-## the campus, the civic hub): each side draws the half street to the shared edge, with sidewalks
-## and a streetlight. Real roads are drawn by the infrastructure layer and take precedence; these
-## decorative streets never grant a route or a crossing and stop at water.
-func _town_streets(kit: MeshKit, b: Dictionary, lc: Vector3, by_tile: Dictionary) -> void:
-	var g := world.grid
-	var t := int(b.t)
-	for d in 6:
-		var nb := g.nb[t * 6 + d]
-		if nb < 0 or by_tile.has(nb) or ((world.road[t] >> (d * 4)) & 7) != 0: continue
-		var other: Dictionary = world.buildings.get(at_tile.get(nb, -1), {})
-		if other.is_empty() or not str(other.ty) in URBAN or int(other.get("o", -2)) != int(b.get("o", -1)) or int(other.get("d", 0)) != 1: continue
-		var c := Vector2(lc.x, lc.z)
-		var edge := c + g.dir_vec[d] * (HexGrid.SQRT3 * .5)
-		var start := c + g.dir_vec[d] * .42
-		if composition.sites.crosses_water(t, start, edge, .1): continue
-		kit.set_frame(Vector3.ZERO, 0.0)
-		var a3 := Vector3(start.x, 0, start.y); var b3 := Vector3(edge.x, 0, edge.y)
-		_ground_path(kit, a3, b3, .08, "asphalt", Color(.92, .92, .92))
-		var side := Vector3(-g.dir_vec[d].y, 0, g.dir_vec[d].x)
-		for s in [-1.0, 1.0]: _ground_path(kit, a3 + side * .055 * s, b3 + side * .055 * s, .022, "paving", Color(1.05, 1.03, 1.0))
-		var lamp: Vector3 = a3.lerp(b3, .5) + side * .07
-		kit.part("streetlight", Vector3(lamp.x, world.ground_height(lamp.x, lamp.z) + .012, lamp.z), atan2(-g.dir_vec[d].y, g.dir_vec[d].x) + PI * .5, 1.0)
-
-
-## An industrial compound is fenced on its outer boundary only (shared yards stay open), with a
-## gate gap wherever a real road leaves the compound. Cosmetic; no collision or route.
 func _compound_fence(kit: MeshKit, b: Dictionary, lc: Vector3, by_tile: Dictionary) -> void:
 	var g := world.grid
 	var t := int(b.t)
@@ -699,7 +668,7 @@ func _parcel_frame(kit:MeshKit,b:Dictionary) -> bool:
 	var variation:=parcel_transform(b)
 	if str(b.ty)!="house":
 		var half:=Vector2(.54,.44)
-		if str(b.ty)=="town": half=Vector2(.48,.4)
+		if str(b.ty)=="town": half=Vector2(.58,.5)
 		elif str(b.ty)=="farm": half=Vector2(.25,.26)
 		elif str(b.ty)=="airfield": half=Vector2(.79,.54)
 		elif str(b.ty)=="fort": half=Vector2(.86,.86)
@@ -756,33 +725,12 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 	var rng := composition.identities.rng_for(edge, "connection." + group, 1, "layout")
 	match group:
 		"res":
-			# A local residential street along the shared parcel edge (decorative paving, never a
-			# route), sidewalks and streetlights, with a terrace of attached homes under one shared
-			# roofline facing it and cars parked at the kerb. Both buildings keep their own IDs.
-			var walls := _wall_mat(rng)
-			var level := int(mini(int(ba.get("lv", 1)), int(bb.get("lv", 1))))
-			var s0 := mid - across * .42; var s1 := mid + across * .42
-			_ground_path(kit, s0, s1, .1, "asphalt", Color(.9, .9, .9))
-			for side in [-1.0, 1.0]:
-				_ground_path(kit, s0 + along * .065 * side, s1 + along * .065 * side, .025, "paving", Color(1.05, 1.03, 1.0))
-			var row := mid - along * .15
-			var ground := minf(world.ground_height(row.x - across.x * .25, row.z - across.z * .25), world.ground_height(row.x + across.x * .25, row.z + across.z * .25)) + .012
-			var height := .14 + .05 * level
-			var tone := Color(1, 1, 1).darkened(rng.randf() * .1)
-			kit.box(walls, Vector3(row.x, ground, row.z), Vector3(.13, height, .5), tone, yaw)
-			kit.gable(_roof_mat(rng), Vector3(row.x, ground + height, row.z), .13, .5, .06, Color.WHITE, yaw, .02)
-			var face := row + along * .066
+			# Streets between homes are the city street network (CityStreets) along the block
+			# edges; neighbouring homes add only shared back gardens with a low dividing hedge.
+			var hedge_a := mid - across * .3; var hedge_b := mid + across * .3
 			for k in 4:
-				var p := face + across * ((k - 1.5) * .12)
-				kit.box("timber", Vector3(p.x, ground, p.z), Vector3(.003, .06, .03), Color(.6, .45, .35), yaw)
-				for floor_ in level:
-					kit.box("glass", Vector3(p.x, ground + .085 + floor_ * .05, p.z) + across * .03, Vector3(.003, .03, .03), Color.WHITE, yaw)
-			for k in 2:
-				var car := mid + along * .035 + across * (-.2 + k * .38)
-				kit.part("parked_car", Vector3(car.x, world.ground_height(car.x, car.z) + .016, car.z), yaw + PI * .5, 1.0, Color(.55, .6, .7).darkened(rng.randf() * .45).lerp(Color(.7, .3, .25), float(k) * rng.randf() * .6))
-			for side in [-1.0, 1.0]:
-				var lamp: Vector3 = mid + along * .09 + across * .3 * side
-				kit.part("streetlight", Vector3(lamp.x, world.ground_height(lamp.x, lamp.z) + .016, lamp.z), yaw + PI * .5, 1.0)
+				var p := hedge_a.lerp(hedge_b, (k + .5) / 4.0) - along * .12
+				kit.box("foliage", Vector3(p.x, world.ground_height(p.x, p.z), p.z), Vector3(.12, .025, .02), Color(.75, .88, .65), yaw + PI * .5)
 		"ind":
 			# a pipe run on trestles and a rail spur between the plants
 			# A low, slim, galvanised utility pipe rack running only between the two plants'
@@ -828,6 +776,20 @@ func _connect(kit: MeshKit, group: String, a: Vector3, b: Vector3, ba: Dictionar
 		"ext":
 			var len := Vector2(b.x - a.x, b.z - a.z).length()
 			_ground_path(kit,a,b,.16,"soil",Color(.9,.85,.78))
+		"mil":
+			# Neighbouring barracks form one army base: a shared parade ground with a flag, a motor
+			# pool of parked trucks and an obstacle course. Each barracks keeps its own ID.
+			_ground_path(kit, a, b, .36, "concrete", Color(.9, .9, .88))
+			var square := mid - across * .02
+			var sy := world.ground_height(square.x, square.z) + .014
+			kit.box("steel", Vector3(square.x, sy, square.z), Vector3(.006, .2, .006), Color(.75, .75, .72))
+			kit.box("team:" + world.civ_color(int(ba.get("o", -1))).to_html(false), Vector3(square.x, sy + .17, square.z) + along * .025, Vector3(.045, .03, .003), Color.WHITE, yaw)
+			for k in 3:
+				var truck := mid + across * (.2 + k * .07) + along * .05
+				kit.part("cargo_truck", Vector3(truck.x, world.ground_height(truck.x, truck.z) + .012, truck.z), yaw + PI * .5, 1.0, Color(.55, .6, .45))
+			for k in 3:
+				var bar := mid - across * (.22 + k * .05)
+				kit.box("timber", Vector3(bar.x, world.ground_height(bar.x, bar.z), bar.z), Vector3(.06, .025 + k * .01, .008), Color(.7, .6, .45), yaw)
 		"farm":
 			# a farm track joining the estate's fields; no hedge between them (one estate)
 			_ground_path(kit, a, b, .05, "soil", Color(.95, .86, .72))

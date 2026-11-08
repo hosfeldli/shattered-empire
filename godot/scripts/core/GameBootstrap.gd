@@ -32,6 +32,8 @@ var command_tools: NativeCommandTools
 var command_panel: NativeCommandPanel
 var civilians: CivilianActivitySystem
 var squads: SquadPresentation
+var streets: CityStreets
+var crops: CropFields
 var strategic: StrategicPresentation
 var workspace: NativeWorkspace
 var live_validation: LiveValidation
@@ -121,6 +123,8 @@ func _ready() -> void:
 	civilians = CivilianActivitySystem.new()
 	add_child(civilians)
 	civilians.setup(composition, cam)
+	streets = CityStreets.new(); add_child(streets); streets.setup(world, cam, composition, settlements)
+	crops = CropFields.new(); add_child(crops); crops.setup(world, cam, settlements)
 	squads = SquadPresentation.new()
 	add_child(squads)
 	squads.setup(world, cam, military, settlements)
@@ -545,6 +549,8 @@ func _process(dt: float) -> void:
 	infra.update(dt)
 	var t4 := Time.get_ticks_usec()
 	settlements.update(dt, net.frame_work_us < 500)
+	streets.update(dt)
+	crops.update(dt)
 	var t5 := Time.get_ticks_usec()
 	military.update(dt)
 	var t5b := Time.get_ticks_usec()

@@ -2,7 +2,7 @@
 // large groups, and road routing. Clients never path-find.
 import { knownSets } from './tacticalOccupancy.js';
 import { N, W, H, T, MOVE, UNITS, TERRAIN, isWater } from './constants.js';
-import { NB, dist, dqWrap, inBounds, idx } from './hex.js';
+import { NB, dist, dqWrap, inBounds, idx, hexLine } from './hex.js';
 import { MinHeap } from './world.js';
 import { riverSize } from './roads.js';
 import { scarCost } from './battlefield.js';
@@ -212,7 +212,45 @@ export function formationSlots(game, civ, units, goal, shape = 'line', line = nu
 }
 
 // Auto road routing for a road class: prefers existing roads, gentle terrain, avoids rivers unless bridgeable.
-export function findRoadRoute(game, civ, a, b, type = 1) {
+// A drawn road follows the player's stroke: the hexes drawn (gaps filled, jitter loops removed);
+// only a blocked step (water, peaks, foreign land) is replaced by a short local detour that
+// rejoins the stroke a few hexes later. Steps that cannot be repaired stay in the plan, so the
+// preview shows exactly where and why.
+export function followStroke(game, civ, points, type = 1) {
+  const raw = [];
+  for (const t of points) {
+    if (!(t >= 0 && t < game.world.terr.length)) continue;
+    if (raw.length && raw[raw.length - 1] === t) continue;
+    if (raw.length) {
+      const line = hexLine(raw[raw.length - 1], t);
+      for (let i = 1; i < line.length; i++) raw.push(line[i]);
+    } else raw.push(t);
+  }
+  // remove loops: a hex visited twice cuts the wiggle between the two visits
+  const path = [];
+  const at = new Map();
+  for (const t of raw) {
+    if (at.has(t)) { const i = at.get(t); for (const x of path.splice(i + 1)) at.delete(x); continue; }
+    at.set(t, path.length); path.push(t);
+  }
+  if (path.length < 2) return path;
+  const out = [path[0]];
+  let i = 0;
+  while (i < path.length - 1) {
+    const a = out[out.length - 1], b = path[i + 1];
+    const why = game.roads.validateSegment(game, civ, a, b, type);
+    if (!why || why === 'already built') { out.push(b); i++; continue; }
+    let repaired = false;
+    for (let j = i + 2; j < Math.min(path.length, i + 7) && !repaired; j++) {
+      const detour = findRoadRoute(game, civ, a, path[j], type, 500);
+      if (detour && detour.length <= (j - i) * 2 + 3) { out.push(...detour.slice(1)); i = j; repaired = true; }
+    }
+    if (!repaired) { out.push(b); i++; }
+  }
+  return out;
+}
+
+export function findRoadRoute(game, civ, a, b, type = 1, maxNodes = 20000) {
   gen++;
   const w = game.world, roads = game.roads;
   const heap = new MinHeap();
@@ -223,7 +261,7 @@ export function findRoadRoute(game, civ, a, b, type = 1) {
     if (closed[cur] === gen) continue;
     closed[cur] = gen;
     if (cur === b) { found = true; break; }
-    if (++expanded > 20000) break;
+    if (++expanded > maxNodes) break;
     for (let d = 0; d < 6; d++) {
       const n = NB[cur * 6 + d]; if (n < 0 || closed[n] === gen) continue;
       const why = roads.validateSegment(game, civ, cur, n, type);

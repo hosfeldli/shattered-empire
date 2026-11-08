@@ -5,6 +5,42 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## P1 city growth and P2 roads/traffic (2026-11-07)
+
+**P1. Cities**
+- **City street network (`CityStreets`):** every urban hex (server urban footprint plus homes,
+  markets, campuses and the hub) is a block. Streets run along block edges and meet at the
+  corners as one continuous network that grows with the city. Stable corner offsets and gentle
+  bends keep it from looking like a rigid hex grid. Lanes in towns, kerbed streets with raised
+  sidewalks in cities (sampled densely, never sunk into the ground), and avenues with a planted
+  median around the centre of larger cities. Outer access lanes appear only where a building lies
+  beyond. Replaces the old per-pair street stubs.
+- **Open blocks** are hex-fitted pocket parks (winding paths, trees, benches), rare plazas
+  beside the centre, or small parking courts.
+- **District-aware placement (server, native rulesets):** `governor.pickTile` scores district
+  fit (compatible neighbours, clashing uses), street frontage, freight-road access and each
+  district's ring around the centre (homes and commerce near it, industry toward the edge on good
+  roads, farms on the outer fertile ring). Shared by player mayors and AI. Automation never builds
+  over trench lines.
+- **Compounds:** neighbouring barracks form an army base (parade ground and flag, motor pool,
+  obstacle course, perimeter fence with gates at real roads).
+- **City centre:** a larger parcel; a broad civic hall on a stepped forecourt, a landmark civic
+  tower with glazed bands, beacon and flag, and a colonnade.
+- **Farms:** rows of standing grain swaying in the wind (`CropFields`) along the estate's field
+  direction, clear of the farmstead and the central track; gold when working, green when new or
+  idle, sparse when damaged; near the camera only.
+
+**P2. Roads, bridges and traffic**
+- Traffic follows the drawn road centre-lines: curves, graded approaches and bridge decks (no
+  more driving through decks or cutting corners). It keeps to its lane, faces along the road and
+  never crosses into another empire's territory. Freight trains follow the track the same way.
+- Drawn roads follow the player's stroke (gaps filled, jitter loops removed). Only blocked steps
+  get a short local detour that rejoins the stroke; a two-click road still auto-routes.
+- Blocked road works raise an alert with the reason and location, and red-and-white barriers mark
+  the blocked stretch; works waiting for materials send a minor notice.
+- Native governors build and upgrade a road to their nearest sister city (with its bridges) as
+  better road classes are researched. On the road turn they build when there is no road work.
+
 ## P5 performance and stability (2026-11-07)
 
 Measured with `tools/battle-bench.mjs` (server) and `--battle=massive --perf=SECONDS` (client;

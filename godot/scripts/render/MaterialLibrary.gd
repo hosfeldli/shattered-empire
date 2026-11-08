@@ -108,15 +108,21 @@ static func bind_visibility(parameters:Dictionary) -> void:
 
 ## the foliage surface with wind sway (trees); shares every parameter and later binding
 static func sway_foliage() -> Material:
-	if _cache.has("foliage_sway"): return _cache["foliage_sway"]
-	var base:ShaderMaterial=get_mat("foliage")
-	var m:=ShaderMaterial.new(); m.shader=load("res://shaders/foliage_sway.gdshader"); m.resource_name="foliage_sway"
+	return sway("foliage")
+
+
+## a wind-swayed variant of any surface (tree crowns, standing grain)
+static func sway(key: String) -> Material:
+	var cache_key := key + "_sway"
+	if _cache.has(cache_key): return _cache[cache_key]
+	var base:ShaderMaterial=get_mat(key)
+	var m:=ShaderMaterial.new(); m.shader=load("res://shaders/foliage_sway.gdshader"); m.resource_name=cache_key
 	for uniform in base.shader.get_shader_uniform_list():
 		var value:Variant=base.get_shader_parameter(uniform.name)
 		if value!=null: m.set_shader_parameter(uniform.name,value)
 	for parameter in _cloud_state: m.set_shader_parameter(parameter,_cloud_state[parameter])
 	for parameter in _visibility_state: m.set_shader_parameter(parameter,_visibility_state[parameter])
-	_cache["foliage_sway"]=m
+	_cache[cache_key]=m
 	return m
 
 
