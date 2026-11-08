@@ -31,6 +31,8 @@ namespace SE.Runtime.Military
         public readonly HashSet<int> Selected = new HashSet<int>();
         public int Drawn { get; private set; }
         public int Instances { get; private set; }
+        /// <summary>Last frame's cost by phase (diagnostics and stall attribution).</summary>
+        public double PositionsMs, BuildMs, UploadMs;
         public float OperationalDistance = 26f, StrategicDistance = 75f;
         static readonly Vector3 Up = Vector3.up;
 
@@ -46,6 +48,7 @@ namespace SE.Runtime.Military
                 batches[i] = new InstanceBatch(meshes[i], i == (int)Model.Fighter || i == (int)Model.Bomber ? RenderResources.InstancedGloss : RenderResources.Instanced, 512)
                 {
                     Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f),
+                    Buffering = 3,   // rewritten every frame
                 };
             }
             batches[(int)Model.Ring].Shadows = ShadowCastingMode.Off;
@@ -105,6 +108,7 @@ namespace SE.Runtime.Military
 
         public unsafe void Update(UnitStore store, WorldModel world, Func<int, float4> civColor, float camX, float camDist, float time, float dt)
         {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (var b in batches) b.Clear();
             if (!world.Ready) return;
             var grid = world.Grid;
@@ -128,6 +132,7 @@ namespace SE.Runtime.Military
                 }
                 store.Position(s, out px[s], out pz[s]);
             }
+            long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
             for (int s = 0; s < store.SlotCount; s++)
             {
                 ref var u = ref store.Records[s];
@@ -220,7 +225,11 @@ namespace SE.Runtime.Military
                         break;
                 }
             }
+            long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (var b in batches) b.Upload();
+            long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            double f = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            PositionsMs = (t1 - t0) * f; BuildMs = (t2 - t1) * f; UploadMs = (t3 - t2) * f;
             Drawn = drawn;
             int inst = 0;
             foreach (var b in batches) inst += b.Count;

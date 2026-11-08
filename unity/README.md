@@ -72,6 +72,11 @@ Preferences → Licenses. CI uses the `UNITY_LICENSE`/`UNITY_SERIAL`, `UNITY_EMA
 
 ## Status
 
-M1 (foundation) and the M2 stress scene are implemented. Before going further, the M2 gate has to
-be measured on the reference PC against the Godot client: compare `-mode stress` and the live
-`-battle massive` run with `npm run bench:godot`.
+M1 (foundation) and the M2 stress scene are implemented. The project compiles, the EditMode tests
+pass and the Windows player builds. The Unity side of M2 is measured and meets the targets (see
+docs/UNITY_MIGRATION.md). The M2 decision still needs the matching Godot run on the same PC.
+
+Builds default to Mono. Pass `-il2cpp` to the build to use IL2CPP, which requires the Visual
+Studio C++ build tools. Use `-shots DIR` with `-mode stress` to capture one screenshot per tour
+segment, for visual checks only: capture causes long frames. Every frame over 50 ms is logged as a
+`STALL` line with a per-phase breakdown.

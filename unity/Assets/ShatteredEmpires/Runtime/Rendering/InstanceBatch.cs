@@ -61,6 +61,14 @@ namespace SE.Runtime.Rendering
         public Bounds Bounds;
         public ShadowCastingMode Shadows = ShadowCastingMode.On;
         public bool ReceiveShadows = true;
+        /// <summary>
+        /// GPU buffers rotated per upload. Batches rewritten every frame (units, markers) use 3, so a
+        /// frame never writes a buffer the GPU may still be reading (which would stall the CPU until the
+        /// GPU caught up); batches that change rarely (cities, trees) use 1.
+        /// </summary>
+        public int Buffering = 1;
+        GraphicsBuffer[] buffers;
+        int currentBuffer;
         GraphicsBuffer buffer;
         readonly MaterialPropertyBlock[] blocks = { new MaterialPropertyBlock(), new MaterialPropertyBlock(), new MaterialPropertyBlock() };
         bool dirty;
@@ -97,13 +105,21 @@ namespace SE.Runtime.Rendering
             if (!dirty) return;
             dirty = false;
             if (Count == 0) return;
-            if (buffer == null || buffer.count < Count)
+            if (buffers == null || buffers.Length != Math.Max(1, Buffering))
             {
-                buffer?.Release();
-                buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Math.Max(Count, Data.Length), InstanceData.Stride);
-                foreach (var b in blocks) b.SetBuffer(InstancesId, buffer);
+                if (buffers != null) foreach (var old in buffers) old?.Release();
+                buffers = new GraphicsBuffer[Math.Max(1, Buffering)];
             }
-            buffer.SetData(Data, 0, 0, Count);
+            currentBuffer = (currentBuffer + 1) % buffers.Length;
+            ref var target = ref buffers[currentBuffer];
+            if (target == null || target.count < Count)
+            {
+                target?.Release();
+                target = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Math.Max(Count, Data.Length), InstanceData.Stride);
+            }
+            target.SetData(Data, 0, 0, Count);
+            buffer = target;
+            foreach (var b in blocks) b.SetBuffer(InstancesId, buffer);
         }
 
         /// <summary>Draw once at the given wrap-image offset (instances already in the right image).</summary>
@@ -139,7 +155,8 @@ namespace SE.Runtime.Rendering
 
         public void Dispose()
         {
-            buffer?.Release();
+            if (buffers != null) foreach (var b in buffers) b?.Release();
+            buffers = null;
             buffer = null;
             if (Data.IsCreated) Data.Dispose();
         }

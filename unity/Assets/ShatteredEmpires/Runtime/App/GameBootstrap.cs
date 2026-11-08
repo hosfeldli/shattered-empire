@@ -69,6 +69,12 @@ namespace SE.Runtime.App
         float perfSeconds;
         bool perfRunning;
         float probeAt;
+        string shotSegment = "";
+        float shotAt;
+        // stall attribution (see Update)
+        double stallNet, stallPresent, stallTerrain, stallCity, stallUnits;
+        int stallMsgs, gcLast, gc1Last;
+        static double Ms(long since) => (Stopwatch.GetTimestamp() - since) * 1000.0 / Stopwatch.Frequency;
 
         // ------------------------------------------------------------------ start-up
         void Awake()
@@ -109,7 +115,7 @@ namespace SE.Runtime.App
             rts = new RtsCamera(cam);
             rts.Bind(session.World);
             commander = new Commander(session, rts, units);
-            marks = new InstanceBatch(MeshKit.Ring, RenderResources.Instanced, 64) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off };
+            marks = new InstanceBatch(MeshKit.Ring, RenderResources.Instanced, 64) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, Buffering = 3 };
             session.BeforeGeometryChange = terrain.CompleteAll;
             session.Welcomed += OnWelcomed;
             session.Other += OnOther;
@@ -297,6 +303,19 @@ namespace SE.Runtime.App
             tour.Update(dt, rts, out string segment);
             // the first seconds build every chunk; measure the steady state, as a player would see it
             if (time > 4f) perf.Begin(segment);
+            // -shots DIR: one screenshot in the middle of each tour segment (visual check of the scene)
+            if (opts.Has("shots") && segment != shotSegment && time > 4f)
+            {
+                shotSegment = segment;
+                shotAt = time + 1.5f;
+            }
+            if (shotAt > 0 && time >= shotAt)
+            {
+                shotAt = 0;
+                var dir = opts.Get("shots");
+                System.IO.Directory.CreateDirectory(dir);
+                ScreenCapture.CaptureScreenshot(System.IO.Path.Combine(dir, shotSegment + ".png"));
+            }
             if (time >= stressSeconds + 4f)
             {
                 PerfRecorder.Save(perfOut, perf.Report(j =>
@@ -317,13 +336,24 @@ namespace SE.Runtime.App
             long t0 = Stopwatch.GetTimestamp();
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.25f);
             time += dt;
+            // a long previous frame is logged with where its time went, so stalls name their cause
+            double lastFrameMs = Time.unscaledDeltaTime * 1000.0;
+            int gcNow = System.GC.CollectionCount(0);
+            if (lastFrameMs > 50 && time > 2f)
+                Debug.Log($"STALL {lastFrameMs:F0} ms: net {stallNet:F1} present {stallPresent:F1} (terrain {stallTerrain:F1} city {stallCity:F1} units {stallUnits:F1} = pos {units.PositionsMs:F1} build {units.BuildMs:F1} upload {units.UploadMs:F1}) gc0 +{gcNow - gcLast} gc1 +{System.GC.CollectionCount(1) - gc1Last} msgs {stallMsgs}");
+            gcLast = gcNow; gc1Last = System.GC.CollectionCount(1);
+            long tn = Stopwatch.GetTimestamp();
+            int before = session.Snapshots + session.GeoMessages;
             net?.Update(4.0);
+            stallNet = Ms(tn); stallMsgs = session.Snapshots + session.GeoMessages - before;
             if (phase == Phase.Connecting && net != null && net.State == GameConnection.Status.Retrying) menuStatus = "Cannot reach " + serverUrl + "; retrying…";
             if (phase != Phase.Stress && phase != Phase.Menu) SocialPlatform.Current.Tick();
             if (stress != null) StepStress(dt);
             if (InputFacade.Pressed(KeyCode.F3)) showDiag = !showDiag;
             if (InputFacade.Pressed(KeyCode.F10)) hideUi = !hideUi;
+            long tp = Stopwatch.GetTimestamp();
             if (session.Ready) Present(dt);
+            stallPresent = Ms(tp);
             // live probe for command acknowledgment latency during benchmarks (a no-op order)
             if (perfRunning && net != null && net.State == GameConnection.Status.Ready && time > probeAt)
             {
@@ -346,12 +376,16 @@ namespace SE.Runtime.App
             PresentEvents();
             fog.Update(world);
             var camMap = rts.MapPosition;
+            long ts = Stopwatch.GetTimestamp();
             terrain.Update(camMap);
+            stallTerrain = Ms(ts); ts = Stopwatch.GetTimestamp();
             city.Age = session.Age;
             city.Update(camMap, terrain);
+            stallCity = Ms(ts); ts = Stopwatch.GetTimestamp();
             var cam = rts.Cam;
             float camX = cam.transform.position.x;
             units.Update(session.Units, world, session.CivColor, camX, rts.Distance, time, dt);
+            stallUnits = Ms(ts);
             fx.Update(dt, camX, world.Grid.Period, world.Grid.Wrap);
             RenderSettings.fogStartDistance = rts.Distance * 2.5f;
             RenderSettings.fogEndDistance = rts.Distance * 6f + 250f;

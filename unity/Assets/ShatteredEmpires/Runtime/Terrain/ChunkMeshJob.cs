@@ -270,7 +270,7 @@ namespace SE.Runtime.Landscape
                         var col = Pack(new float3(1, 1, 1), depth);
                         wv[vw++] = new TerrainVertex { Position = new float3(cx - OriginX, level, -cz), Normal = new float3(0, 1, 0), Color = col };
                         for (int k = 0; k < 6; k++)
-                            wv[vw++] = new TerrainVertex { Position = new float3(cx + HexMath.CornerX[k] * 1.02f - OriginX, level, -(cz + HexMath.CornerZ[k] * 1.02f)), Normal = new float3(0, 1, 0), Color = col };
+                            wv[vw++] = new TerrainVertex { Position = new float3(cx + HexMath.CornerX[k] - OriginX, level, -(cz + HexMath.CornerZ[k])), Normal = new float3(0, 1, 0), Color = col };
                         for (int k = 0; k < 6; k++)
                         {
                             wix[iw++] = (uint)baseW;
@@ -290,7 +290,7 @@ namespace SE.Runtime.Landscape
                         float2 dir = math.normalizesafe(new float2(tx - cx, tz - cz));
                         float2 side = new float2(-dir.y, dir.x) * half;
                         int baseR = vw;
-                        var rc = Pack(new float3(0.9f, 0.95f, 1f), 0.3f);
+                        var rc = Pack(new float3(0.85f, 0.95f, 1f), 0.45f);
                         for (int s = 0; s < 5; s++)
                         {
                             float t = s / 4f;

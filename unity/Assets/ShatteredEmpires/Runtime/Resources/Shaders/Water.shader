@@ -5,7 +5,7 @@ Shader "SE/Water"
     Properties
     {
         _DeepColor ("Deep", Color) = (0.04, 0.16, 0.24, 1)
-        _ShallowColor ("Shallow", Color) = (0.16, 0.38, 0.42, 1)
+        _ShallowColor ("Shallow", Color) = (0.22, 0.45, 0.5, 1)
     }
     SubShader
     {
@@ -69,7 +69,7 @@ Shader "SE/Water"
                 Light sun = GetMainLight(TransformWorldToShadowCoord(i.positionWS));
                 half fresnel = pow(1.0h - saturate(dot(n, viewDir)), 4.0h);
                 half3 sky = SampleSH(half3(0, 1, 0)) * 1.1h;
-                half spec = pow(saturate(dot(n, normalize(sun.direction + viewDir))), 180.0h) * 3.0h * sun.shadowAttenuation;
+                half spec = min(pow(saturate(dot(n, normalize(sun.direction + viewDir))), 180.0h) * 1.2h, 0.6h) * sun.shadowAttenuation;
                 half3 color = albedo * (sun.color * saturate(sun.direction.y) * 0.6h + SampleSH(n)) + sky * fresnel * 0.5h + sun.color * spec;
                 color *= 1.0h - _SE_Wetness * 0.15h;
                 half alpha = lerp(0.55h, 0.92h, depth) + fresnel * 0.08h;

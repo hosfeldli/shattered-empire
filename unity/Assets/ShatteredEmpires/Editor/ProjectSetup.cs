@@ -94,9 +94,10 @@ namespace SE.EditorTools
             PlayerSettings.defaultScreenHeight = 1080;
             PlayerSettings.gcIncremental = true;
             PlayerSettings.SetApiCompatibilityLevel(NamedBuildTarget.Standalone, ApiCompatibilityLevel.NET_Standard);
-            // IL2CPP when its build module is installed; Mono otherwise (Burst does the heavy lifting either way)
-            string il2cpp = Path.Combine(EditorApplication.applicationContentsPath, "PlaybackEngines/windowsstandalonesupport/Variations/win64_player_nondevelopment_il2cpp");
-            PlayerSettings.SetScriptingBackend(NamedBuildTarget.Standalone, Directory.Exists(il2cpp) ? ScriptingImplementation.IL2CPP : ScriptingImplementation.Mono2x);
+            // Mono by default (Burst compiles the heavy jobs natively either way). IL2CPP needs a C++
+            // toolchain (Visual Studio C++ build tools on Windows), so it is opt-in: -il2cpp.
+            bool il2cpp = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-il2cpp") >= 0;
+            PlayerSettings.SetScriptingBackend(NamedBuildTarget.Standalone, il2cpp ? ScriptingImplementation.IL2CPP : ScriptingImplementation.Mono2x);
         }
 
         static void Scene()

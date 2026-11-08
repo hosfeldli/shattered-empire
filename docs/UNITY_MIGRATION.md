@@ -101,6 +101,31 @@ pacing *and* interaction reliability, stop before M3 and re-examine the shared w
 Reference PC (the development machine where the problems were reported): Intel Core i5-8600K
 (6 cores), AMD Radeon RX 7600 XT, 32 GB RAM, Windows 11.
 
+### Unity results on the reference PC (2026-11-08)
+
+Standalone Windows player, Mono with Burst, Direct3D 12, 1920×1080, high preset, vsync off. Reports are in
+[docs/benchmarks](benchmarks/).
+
+| Scenario | Avg FPS | p50 | p95 | p99 | Worst | > 100 ms | Command ack p95 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Offline stress: 256×256, ~480 buildings, 1,000 units, scripted camera tour | 252 | 3.8 ms | 6.9 ms | 10.9 ms | 28 ms | 0 | — |
+| Live sandbox `massive` (1,000 units), local server, zooms 14 and 40, run A | 152 | 5.8 ms | 12.3 ms | 16.8 ms | 43 ms | 0 | 70 ms |
+| Same, run B | 144 | 6.2 ms | 12.7 ms | 19.1 ms | 74 ms | 0 | 29 ms |
+
+All M2 frame-pacing targets are met in these runs. Measurement notes:
+
+- Earlier live runs, before per-frame GPU buffers were triple-buffered, showed 1–5 frames over
+  100 ms.
+- Direct3D 11 was clearly worse than Direct3D 12 (p99 19–23 ms, more hitches), so Direct3D 12
+  stays the default.
+- Screenshot capture (`-shots`) causes its own 100–200 ms frames. Never benchmark with it on.
+- Remaining 50–85 ms live hitches do not involve garbage collection. They are logged as `STALL`
+  lines with a per-phase breakdown.
+
+**Gate status:** the Unity half is measured. The matching Godot run on the same PC
+(`npm run bench:godot` and the Godot `--battle=massive --perf` run) has not been recorded yet, so
+the M2 decision is still open.
+
 ## Feature parity
 
 Parity means working game actions, not buttons. The parity matrix is

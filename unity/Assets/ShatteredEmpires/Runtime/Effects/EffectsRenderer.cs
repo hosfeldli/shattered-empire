@@ -44,7 +44,9 @@ namespace SE.Runtime.Effects
         int count;
         public int Budget = 12000;
         NativeArray<ParticleGpu> addData, alphaData;
-        GraphicsBuffer addBuffer, alphaBuffer;
+        // three of each, rotated per frame, so a frame never overwrites a buffer the GPU is still reading
+        readonly GraphicsBuffer[] addBuffers = new GraphicsBuffer[3], alphaBuffers = new GraphicsBuffer[3];
+        int frameSlot;
         readonly MaterialPropertyBlock addBlock = new MaterialPropertyBlock(), alphaBlock = new MaterialPropertyBlock();
         int addCount, alphaCount;
         readonly InstanceBatch craters, wrecks;
@@ -166,15 +168,13 @@ namespace SE.Runtime.Effects
             }
         }
 
-        void Upload(ref GraphicsBuffer buffer, NativeArray<ParticleGpu> data, int n, MaterialPropertyBlock block)
+        void Upload(GraphicsBuffer[] ring, NativeArray<ParticleGpu> data, int n, MaterialPropertyBlock block)
         {
-            if (buffer == null)
-            {
-                buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Budget, Marshal.SizeOf<ParticleGpu>());
-                block.SetBuffer(ParticlesId, buffer);
-                block.SetVector(ImageOffsetId, Vector4.zero);
-            }
+            ref var buffer = ref ring[frameSlot];
+            if (buffer == null) buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Budget, Marshal.SizeOf<ParticleGpu>());
             if (n > 0) buffer.SetData(data, 0, 0, n);
+            block.SetBuffer(ParticlesId, buffer);
+            block.SetVector(ImageOffsetId, Vector4.zero);
         }
 
         public void Draw(WrapImages images)
@@ -182,21 +182,23 @@ namespace SE.Runtime.Effects
             craters.DrawImages(images);
             wrecks.DrawImages(images);
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
+            frameSlot = (frameSlot + 1) % 3;
             if (alphaCount > 0)
             {
-                Upload(ref alphaBuffer, alphaData, alphaCount, alphaBlock);
+                Upload(alphaBuffers, alphaData, alphaCount, alphaBlock);
                 Graphics.RenderMeshPrimitives(new RenderParams(RenderResources.AlphaBlend) { worldBounds = bounds, matProps = alphaBlock, shadowCastingMode = ShadowCastingMode.Off, receiveShadows = false }, MeshKit.Quad, 0, alphaCount);
             }
             if (addCount > 0)
             {
-                Upload(ref addBuffer, addData, addCount, addBlock);
+                Upload(addBuffers, addData, addCount, addBlock);
                 Graphics.RenderMeshPrimitives(new RenderParams(RenderResources.Additive) { worldBounds = bounds, matProps = addBlock, shadowCastingMode = ShadowCastingMode.Off, receiveShadows = false }, MeshKit.Quad, 0, addCount);
             }
         }
 
         public void Dispose()
         {
-            addBuffer?.Release(); alphaBuffer?.Release();
+            foreach (var b in addBuffers) b?.Release();
+            foreach (var b in alphaBuffers) b?.Release();
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
             craters.Dispose(); wrecks.Dispose();
