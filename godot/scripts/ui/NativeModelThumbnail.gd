@@ -1,6 +1,11 @@
 class_name NativeModelThumbnail
 extends SubViewportContainer
 ## A cached single-frame view of the same mesh used by the world, not a symbolic tile icon.
+## It never takes the mouse (from creation, not only after its deferred setup), so wheel
+## scrolling in build and training lists reaches the list.
+func _init() -> void:
+	mouse_filter=Control.MOUSE_FILTER_IGNORE
+
 func setup(model:Mesh) -> void:
 	custom_minimum_size=Vector2(72,52); stretch=true; mouse_filter=Control.MOUSE_FILTER_IGNORE
 	var view:=SubViewport.new(); view.size=Vector2i(144,104); view.transparent_bg=true; view.own_world_3d=true

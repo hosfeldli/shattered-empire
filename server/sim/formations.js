@@ -94,7 +94,11 @@ export function deployOrder(g, civ, cmd, auth = '') {
     const slots = shiftFormation(e, cur, fromLine, line);
     const perHex = new Map(); for (const t of slots.values()) perHex.set(t, (perHex.get(t) || 0) + 1);
     plan = { slots, perHex, overflow: units.filter((u) => !slots.has(u.id)).map((u) => u.id), invalid: [], label: Math.max(0, ...perHex.values()) >= 4 ? 'dense' : Math.max(0, ...perHex.values()) >= 2 ? 'concentrated' : 'dispersed', ranks: 0, line };
-  } else plan = planDeployment(e, units.map(plannable), line, { mode, density, depth, reverse: !!cmd.reverse, away });
+  } else {
+    // a drawn curve: up to 24 valid hexes in drawing order
+    const path = Array.isArray(cmd.path) ? cmd.path.filter((t) => Number.isInteger(t) && t >= 0 && t < N).slice(0, 24) : null;
+    plan = planDeployment(e, units.map(plannable), line, { mode, density, depth, reverse: !!cmd.reverse, away, path: path && path.length > 2 ? path : null });
+  }
   release(g, units.map((u) => u.id));
   const id = g.nextFormationId = (g.nextFormationId || 0) + 1;
   const f = { id, owner: civ.id, units: [], mode, density, depth, behavior, line: plan.line?.length ? [plan.line[0], plan.line[plan.line.length - 1]] : line, reverse: !!cmd.reverse, away,

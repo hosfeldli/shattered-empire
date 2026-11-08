@@ -132,6 +132,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ENTER:
 		commit()
 		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and not event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
+		return     # the wheel and middle button stay with the camera: zoom and pan while placing
 	elif event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 			if mode=="road" and not points.is_empty(): points.pop_back(); preview.clear(); request_preview()
@@ -184,7 +186,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif mode == "build" and tile != last_hover:
 			last_hover = tile
 			_preview_build(tile)
-		get_viewport().set_input_as_handled()
 
 
 func _add_point(tile: int) -> void:
@@ -204,6 +205,13 @@ func _command(commit_: bool) -> Dictionary:
 		"trench": return {"c": "trenchPlan", "points": points.duplicate(), "type": value, "commit": commit_}
 		"deploy":
 			var command:={"c":"deploy","units":military.selected.keys(),"line":[points[0],points[-1]],"mode":formation}
+			# a curved stroke deploys along the curve (thinned to at most 24 points)
+			if points.size()>2:
+				var path:=[]; var stride:=maxi(1,ceili(points.size()/24.0))
+				for k in range(0,points.size(),stride): path.append(points[k])
+				if path[-1]!=points[-1]: path.append(points[-1])
+				if path.size()>24: path=path.slice(0,23)+[points[-1]]
+				command.path=path
 			command.merge(deployment,true); return command
 	return {}
 
@@ -275,7 +283,14 @@ func commit() -> void:
 		var ok: bool = reply.get("error") == null
 		if revision != token + 1: return
 		if ok:
-			feedback.emit("Order confirmed",true); cancel()
+			# drawing tools stay open for the next road, bridge or trench (Esc or right-click closes)
+			if mode in ["road","bridge","trench"]:
+				feedback.emit("Order confirmed · draw the next one or press Esc",true)
+				points.clear(); preview.clear(); blocked_tiles.clear(); blocked_edges.clear()
+				if mesh: mesh.mesh=null
+				status="Order confirmed · draw the next one, Esc to finish"; changed.emit()
+			else:
+				feedback.emit("Order confirmed",true); cancel()
 		else:
 			preview=previous_preview
 			status="Order rejected: "+str(reply.error)+" · Adjust the route and retry"

@@ -70,6 +70,8 @@ func _draw() -> void:
 			line.call([[6, 6], [18, 18]]); line.call([[18, 6], [6, 18]])
 		"check":
 			line.call([[5, 13], [10, 18], [19, 7]])
+		"up":         # chevron up
+			line.call([[6, 15], [12, 8], [18, 15]])
 		"pause":
 			fill.call([[6, 5], [10, 5], [10, 19], [6, 19]], .9); fill.call([[14, 5], [18, 5], [18, 19], [14, 19]], .9)
 		"play":

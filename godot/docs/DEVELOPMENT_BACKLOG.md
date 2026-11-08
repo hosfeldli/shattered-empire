@@ -316,25 +316,27 @@ be done. The likely causes are first assessments from the code, not yet verified
   bridges) once research allows.
 
 ### P3. Construction tools and UI
-- [ ] **Keep the tool open after confirming** roads, bridges and trenches, so the next one can be
+
+> **Implemented 2026-11-07:** all eight items below (see CURRENT_WORK). Reordering is "train next"; wall blending at trench junctions is still basic.
+- [x] **Keep the tool open after confirming** roads, bridges and trenches, so the next one can be
   drawn straight away (Esc closes it).
-- [ ] **Zoom while placing.** The mouse wheel is consumed by the placement tool or drawer while a
+- [x] **Zoom while placing.** The mouse wheel is consumed by the placement tool or drawer while a
   building tool is active. Let the wheel reach the camera.
-- [ ] **Copy a building.** A "Copy / build more" action on a selected building opens placement for
+- [x] **Copy a building.** A "Copy / build more" action on a selected building opens placement for
   that type.
-- [ ] **Scrolling in the build and train menus.** The panels need a scroll container that accepts
+- [x] **Scrolling in the build and train menus.** The panels need a scroll container that accepts
   the wheel, so the map doesn't swallow it.
-- [ ] **A better training queue.** Unit icons, a clear current item with progress and ETA,
+- [x] **A better training queue.** Unit icons, a clear current item with progress and ETA,
   per-item cancel, reordering, a repeat toggle, and a total for the queue.
-- [ ] **All resources at a glance.** Munitions, power, fuel, electronics and other resources not
+- [x] **All resources at a glance.** Munitions, power, fuel, electronics and other resources not
   on the top bar should be reachable in one click: an expandable resource strip with rates and
   shortages, plus warnings when one runs low.
-- [ ] **Defences don't block trench lines.** A guard post, bunker or fort on the drawn line
+- [x] **Defences don't block trench lines.** A guard post, bunker or fort on the drawn line
   should be built around: the route skips the building's hex and joins its sides (server
   `siteProblem` currently refuses the building hex).
-- [ ] **Curved battle lines.** A right-drag deployment should follow the drawn curve instead of a
+- [x] **Curved battle lines.** A right-drag deployment should follow the drawn curve instead of a
   straight segment, on both client and server deploy line.
-- [ ] **Smoother trench turns.** Corners are made of too many visible segments. Smooth the
+- [x] **Smoother trench turns.** Corners are made of too many visible segments. Smooth the
   centreline, increase subdivisions on bends, and blend the walls at junctions.
 
 ### P4. Troops and combat

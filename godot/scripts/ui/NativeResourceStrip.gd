@@ -19,6 +19,8 @@ var alert_records:Array=[]
 var alert_menu:PopupMenu
 var alert_signature:=""
 var overview_menu:PopupMenu
+var all_panel:PopupPanel
+var all_grid:GridContainer
 
 
 func _open_resource(key:String) -> void:
@@ -53,8 +55,12 @@ func setup(game:Node) -> void:
 		amount.add_theme_font_override("font",load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
 		var rate:=NativeUI.label(chip,"",10,NativeUI.MUTED); rate.position=Vector2(31,18); rate.autowrap_mode=TextServer.AUTOWRAP_OFF
 		rate.mouse_filter=Control.MOUSE_FILTER_IGNORE; rates[key]=rate; values[key]=chip; chip.set_meta("amount",amount)
-	var more:=NativeUI.icon_button(row,"industry","All stockpiles, production and shortages",func():app.workspace.open_page("Resources"),30)
-	more.tooltip_text="All resources · production, consumption and shortages"
+	# every stockpile at a glance: a small panel under the strip (click a row for its detail page)
+	all_panel=PopupPanel.new(); all_panel.add_theme_stylebox_override("panel",NativeUI.style(NativeUI.PANEL,NativeUI.LINE,6,10,true)); add_child(all_panel)
+	all_grid=GridContainer.new(); all_grid.columns=3; all_grid.add_theme_constant_override("h_separation",14); all_panel.add_child(all_grid)
+	var more:=NativeUI.icon_button(row,"industry","All stockpiles, production and shortages",func():
+		_fill_all(); all_panel.popup(Rect2i(Vector2i(get_global_rect().position+Vector2(0,size.y+4)),Vector2i(0,0))),30)
+	more.tooltip_text="All resources · stockpiles and trends (click a row for production and shortages)"
 	_divider(row)
 	# current research: name and a thin progress bar; click opens Research
 	var research:=Button.new(); research.flat=true; research.focus_mode=Control.FOCUS_NONE; research.custom_minimum_size=Vector2(170,34)
@@ -93,6 +99,21 @@ func setup(game:Node) -> void:
 	alert_badge.custom_minimum_size=Vector2(15,14); alert_badge.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER; alert_badge.mouse_filter=Control.MOUSE_FILTER_IGNORE
 	alerts.add_child(alert_badge)
 	NativeUI.icon_button(row,"settings","Settings",func():app.shell.previous="pause"; app.shell.show_view("settings"))
+
+
+func _fill_all() -> void:
+	NativeUI.clear(all_grid)
+	var world:WorldState=app.world
+	var stock:Dictionary=world.econ.get("res",{}); var trend:Dictionary=world.econ.get("rates",{})
+	var keys:=stock.keys(); keys.sort()
+	for good in keys:
+		var key:=str(good)
+		var amount:=float(stock[good]); var rate:=float(trend.get(good,0))
+		var problem:bool=world.econ.get("resources",{}).get(key,{}).get("status","") in ["empty","deficit"]
+		var name_:=NativeUI.compact_button(all_grid,key.capitalize(),func():all_panel.hide(); _open_resource(key))
+		name_.custom_minimum_size.x=120
+		NativeUI.label(all_grid,("%.1fk"%(amount/1000.0) if amount>=10000 else str(roundi(amount))),14,NativeUI.BAD if problem else NativeUI.TEXT)
+		NativeUI.label(all_grid,("%+.1f/s"%rate) if absf(rate)>=.05 else "steady",12,NativeUI.GOOD if rate>=.05 else NativeUI.BAD if rate<=-.05 else NativeUI.MUTED)
 
 
 func _divider(row:HBoxContainer) -> void:

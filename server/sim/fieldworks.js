@@ -101,6 +101,10 @@ export function planTrench(g, civ, points, opts = {}) {
   const segments = [];
   const cost = {}; let work = 0;
   for (const t of tiles) {
+    // an own defence on the line (guard post, bunker, fort, AA) is part of it: the trench joins it
+    // on both sides instead of refusing the hex
+    const b = g.tileB[t] >= 0 ? g.buildings.get(g.tileB[t]) : null;
+    if (b && b.owner === civ.id && BUILDINGS[b.type]?.defense && !g.urban[t]) { segments.push({ t, ok: true, skip: true, joins: b.type, reason: `joins the ${BUILDINGS[b.type].name.toLowerCase()}` }); continue; }
     const why = siteProblem(g, civ, t);
     if (why) { segments.push({ t, ok: false, reason: why }); continue; }
     const f = g.fieldworks.get(t);
@@ -331,10 +335,13 @@ function updateTrenchRoutes(g) {
     const path = pr.path || pr.tiles;
     for (let i = 1; i < path.length; i++) {
       const a = path[i - 1], b = path[i];
-      if (!g.fieldworks.has(a) || !g.fieldworks.has(b)) continue;
+      // a defence the line passes through counts as part of it: the channel runs up to it
+      const joins = (t) => { const bd = g.tileB[t] >= 0 ? g.buildings.get(g.tileB[t]) : null; return !!(bd && bd.owner === pr.owner && BUILDINGS[bd.type]?.defense); };
+      const fa = g.fieldworks.has(a), fb = g.fieldworks.has(b);
+      if (!(fa && fb) && !(fa && joins(b)) && !(fb && joins(a))) continue;
       for (let d = 0; d < 6; d++) {
-        if (NB[a * 6 + d] === b) routes.set(a, (routes.get(a) || 0) | (1 << d));
-        if (NB[b * 6 + d] === a) routes.set(b, (routes.get(b) || 0) | (1 << d));
+        if (fa && NB[a * 6 + d] === b) routes.set(a, (routes.get(a) || 0) | (1 << d));
+        if (fb && NB[b * 6 + d] === a) routes.set(b, (routes.get(b) || 0) | (1 << d));
       }
     }
   }

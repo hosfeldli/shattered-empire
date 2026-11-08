@@ -84,7 +84,7 @@ static func primary(item:Button) -> Button:
 ## An icon-only round control with a tooltip, for the top bar and cards.
 static func icon_button(parent:Node,kind:String,explanation:String,action:Callable,diameter:=34) -> Button:
 	var item:=Button.new(); item.custom_minimum_size=Vector2(diameter,diameter); item.tooltip_text=explanation
-	item.focus_mode=Control.FOCUS_NONE; item.mouse_force_pass_scroll_events=false
+	item.focus_mode=Control.FOCUS_NONE; item.mouse_force_pass_scroll_events=true
 	for state in ["normal","hover","pressed"]:
 		item.add_theme_stylebox_override(state,style(Color(1,1,1,.0 if state=="normal" else .08 if state=="hover" else .14),Color(GOLD,0.0 if state=="normal" else .5),0,int(diameter/2)))
 	var glyph:=NativeIcon.new(); glyph.kind=kind; glyph.mouse_filter=Control.MOUSE_FILTER_IGNORE
@@ -100,7 +100,7 @@ static func label(parent:Node,message:String,size_:=16,color:=TEXT) -> Label:
 
 static func button(parent:Node,message:String,action:Callable) -> Button:
 	var item:=Button.new(); item.text=message; item.custom_minimum_size.y=36
-	item.mouse_force_pass_scroll_events=false
+	item.mouse_force_pass_scroll_events=true    # the wheel scrolls the list under the button
 	item.pressed.connect(action); parent.add_child(item); return item
 
 static func compact_button(parent:Node,message:String,action:Callable,explanation:="") -> Button:

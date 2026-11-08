@@ -148,6 +148,11 @@ func _rebuild() -> void:
 				NativeUI.label(details,"Supply connection lost · check roads and crossings.",15,NativeUI.BAD)
 				NativeUI.compact_button(details,"Inspect supply connection",func():_workspace("Logistics"))
 		else:
+			# copy this building: open placement for another of the same type (when it can be built)
+			var tech:=str(info.get("tech",""))
+			if own and not info.get("obsolete",false) and int(info.get("age",0))<=int(world.econ.get("age",0)) and (tech.is_empty() or tech in world.econ.get("techs",[])):
+				var kind:=str(building.ty)
+				_button("Build more",func():app.command_tools.activate("build",kind),"Place another %s (Shift keeps placing)"%str(info.get("name",kind)))
 			if info.has("trains"):
 				_button("Train troops",func():recruit_open=not recruit_open; signature="")
 				_button("Rally point",func():app.command_tools.target_command({"c":"rally","building":id,"tile":"@map"},"Set rally point","point",false,false))
@@ -231,16 +236,37 @@ func _render_queue(building:Dictionary) -> void:
 	queue_signature=sig
 	NativeUI.clear(queue_box)
 	var world:WorldState=app.world; var id:=int(building.id)
+	# header: how long the whole queue takes, and the repeat toggle for the unit in front
+	var total:=0
+	for item in queue: total+=int(item[1])
+	var head:=HBoxContainer.new(); head.add_theme_constant_override("separation",6); queue_box.add_child(head)
+	NativeUI.label(head,"Queue · %d unit%s · %s total"%[queue.size(),"" if queue.size()==1 else "s",_eta(total)] if not queue.is_empty() else "Queue empty",12,NativeUI.MUTED).size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	var repeat_unit:=str(building.get("rp",""))
+	var front_unit:=str(queue[0][0]) if not queue.is_empty() else repeat_unit
+	if not front_unit.is_empty():
+		var repeat:=CheckButton.new(); repeat.text="Repeat"; repeat.focus_mode=Control.FOCUS_NONE; repeat.button_pressed=not repeat_unit.is_empty()
+		repeat.tooltip_text="Keep training %s whenever the queue empties (only when affordable twice over)"%str(world.defs.get("UNITS",{}).get(front_unit,{}).get("name",front_unit))
+		repeat.toggled.connect(func(on):app.commands.issue("repeat",{"buildings":[id],"unit":front_unit if on else null}))
+		head.add_child(repeat)
 	for index in queue.size():
 		var item:Array=queue[index]; var slot:=index
 		var row:=HBoxContainer.new(); row.add_theme_constant_override("separation",6); queue_box.add_child(row)
+		var icon:=TextureRect.new(); icon.custom_minimum_size=Vector2(22,22); icon.expand_mode=TextureRect.EXPAND_IGNORE_SIZE; icon.stretch_mode=TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		if ResourceLoader.exists("res://assets/icons/units/%s.svg"%item[0]): icon.texture=load("res://assets/icons/units/%s.svg"%item[0])
+		row.add_child(icon)
 		var name_:=str(world.defs.get("UNITS",{}).get(item[0],{}).get("name",item[0]))
-		var label:=NativeUI.label(row,name_+(" · training" if index==0 else " · waiting"),13,NativeUI.TEXT if index==0 else NativeUI.MUTED)
+		var label:=NativeUI.label(row,name_+(" · training" if index==0 else ""),13 if index==0 else 12,NativeUI.TEXT if index==0 else NativeUI.MUTED)
 		label.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 		if index==0:
 			var bar:=ProgressBar.new(); bar.custom_minimum_size=Vector2(70,8); bar.show_percentage=false; bar.value=float(building.get("tr",0)); bar.size_flags_vertical=Control.SIZE_SHRINK_CENTER; row.add_child(bar)
-		NativeUI.label(row,"~%ss"%str(item[1]),12,NativeUI.MUTED)
+		NativeUI.label(row,_eta(int(item[1])),12,NativeUI.MUTED)
+		if index>=2:
+			NativeUI.icon_button(row,"up","Train next (after the current unit)",func():app.commands.submit({"c":"trainNext","building":id,"index":slot},func(reply):if reply.get("error")!=null: app.hud.show_toast(str(reply.error),false)),20)
 		NativeUI.icon_button(row,"close","Cancel (full refund while waiting, half once training)",func():app.commands.submit({"c":"cancelTrain","building":id,"index":slot},func(reply):app.hud.show_toast("Training cancelled" if reply.get("error")==null else str(reply.error),reply.get("error")==null)),20)
+
+
+func _eta(seconds:int) -> String:
+	return "%dm %02ds"%[seconds/60,seconds%60] if seconds>=60 else "%ds"%seconds
 
 
 func _refresh() -> void:

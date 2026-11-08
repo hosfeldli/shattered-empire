@@ -96,7 +96,7 @@ func _assets_and_lifecycle() -> void:
 	var grid:=HexGrid.new(8,8,true)
 	var bits:=(1<<0)|(1<<2)
 	var lines:=TrenchPresentation.centrelines(bits,grid)
-	check(lines.size()==1 and (lines[0] as Array).size()==11,"a through trench is not one continuous curve")
+	check(lines.size()==1 and (lines[0] as Array).size()==TrenchPresentation.CURVE_SAMPLES,"a through trench is not one continuous curve")
 	check((lines[0][0] as Vector2).distance_to(grid.dir_vec[0]*HexGrid.SQRT3*.5)<.001,"trench curve does not meet its edge")
 	check(is_equal_approx(TrenchPresentation.bay(0,grid,.5,1.0,true),1.6) and is_equal_approx(TrenchPresentation.bay(0,grid,.5,.5,true),1.0),"fire bays are not limited to finished through trenches")
 

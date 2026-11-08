@@ -6,7 +6,7 @@ import { Game } from '../server/sim/game.js';
 import { makeSandbox, findArena, spawnGroup } from '../server/sim/sandbox.js';
 import { serializeGame, restoreGame } from '../server/sim/persist.js';
 import { coverAt } from '../server/sim/combat.js';
-import { urbanStep, districtRadius, trenchCrews, FIELDWORKS } from '../server/sim/fieldworks.js';
+import { urbanStep, districtRadius, trenchCrews, FIELDWORKS, traceLine } from '../server/sim/fieldworks.js';
 import { activityOf } from '../server/sim/logistics.js';
 import { isWater, TERRAIN, H } from '../server/sim/constants.js';
 import { idx, qOf, rOf, disk, dist } from '../server/sim/hex.js';
@@ -139,4 +139,20 @@ test('legacy fortify uses the same planner; deploying troops never creates const
   const r = g.command(0, { c: 'fortify', units: [], tiles: [s, along(s, 1)] });
   assert.equal(r.reply.fortify.placed, 2, 'the alias plans through the trench planner');
   assert.ok(FIELDWORKS.basic.time <= 12 && FIELDWORKS.reinforced.time <= 20);
+});
+
+test('a trench line drawn through an own defence joins it instead of failing', () => {
+  const g = new Game({ id: 'u' + Math.random(), seed: 7, slots: [{ human: true }, { personality: 'builder' }], rebels: false });
+  const civ = g.civs[0], cap = g.capital(civ);
+  for (const k of Object.keys(civ.res)) civ.res[k] = 2000;
+  const line = disk(cap.tile, 3).filter((t) => dist(t, cap.tile) === 3 && open(g, t) && g.world.owner[t] === 0);
+  const a = line[0], b = line.find((t) => dist(t, a) === 2);
+  assert.ok(Number.isInteger(b));
+  const mid = traceLine([a, b])[1];
+  assert.ok(open(g, mid));
+  assert.ok(!g.command(0, { c: 'build', type: 'guard_post', tile: mid })?.error);
+  const plan = g.command(0, { c: 'trenchPlan', points: [a, b] }).reply.trench;
+  const seg = plan.segments.find((s) => s.t === mid);
+  assert.ok(seg.ok && seg.skip && /guard post/.test(seg.reason), JSON.stringify(seg));
+  assert.equal(plan.invalid, 0);
 });

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { Game } from '../server/sim/game.js';
 import { WORKS_RULESET } from '../server/sim/rulesets.js';
 import { districtScore } from '../server/sim/governor.js';
-import { disk, dist } from '../server/sim/hex.js';
+import { disk, dist, hexLine } from '../server/sim/hex.js';
 
 const setup = () => {
   const g = new Game({ id: 'plan' + Math.random(), seed: 7, slots: [{ human: true }, { human: true }], rebels: false, ruleset: WORKS_RULESET });
@@ -36,7 +36,6 @@ test('districts settle at their ring: homes near the centre, farms on the outer 
 
 test('a drawn road keeps the drawn stroke instead of an optimal shortcut', async () => {
   const { followStroke } = await import('../server/sim/path.js');
-  const { hexLine } = await import('../server/sim/hex.js');
   const { g, civ, city } = setup();
   civ.techs.add('civil_engineering');
   const ring = disk(city.tile, 3).filter((t) => dist(t, city.tile) === 3 && g.world.owner[t] === 0);
@@ -52,5 +51,18 @@ test('a drawn road keeps the drawn stroke instead of an optimal shortcut', async
   // jitter: drawing back over a hex removes the loop instead of keeping a dead end
   const jitter = followStroke(g, civ, [city.tile, via[0], city.tile, via[0], ring[0]], 1);
   assert.equal(new Set(jitter).size, jitter.length, 'no hex is visited twice');
-  void hexLine;
+});
+
+test('a curved right-drag deploys along the drawn curve, not its chord', async () => {
+  const { planDeployment } = await import('../server/sim/deploy.js');
+  const Wd = 40, Hd = 30;
+  const env = { W: Wd, H: Hd, wrap: false, passable: () => true, capacity: () => 4 };
+  const at = (q, r) => r * Wd + q;
+  const path = [at(5, 10), at(10, 5), at(15, 10)];         // an arc bowing north
+  const units = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, tile: at(10, 20), role: 'line' }));
+  const curved = planDeployment(env, units, [path[0], path[2]], { mode: 'line', path });
+  const straight = planDeployment(env, units, [path[0], path[2]], { mode: 'line' });
+  const rows = (plan) => [...plan.slots.values()].map((t) => Math.floor(t / Wd));
+  assert.ok(Math.min(...rows(curved)) < 9, 'some slots lie up the arc');
+  assert.ok(rows(straight).every((r) => r === 10), 'a straight line stays on its row');
 });

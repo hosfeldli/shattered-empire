@@ -11,6 +11,8 @@ extends RefCounted
 ## cover, progress and traversability; mud and puddles come from the shared wet-weather surface.
 
 const MAX_CREWS := 24
+## samples along a through curve: dense enough that tight turns read as one smooth bend
+const CURVE_SAMPLES := 21
 
 
 static func routes(record:Array,grid:HexGrid) -> int:
@@ -29,8 +31,8 @@ static func centrelines(bits:int,grid:HexGrid) -> Array:
 	var result:=[]
 	if ends.size()==2:
 		var line:Array[Vector2]=[]
-		for k in 11:
-			var t:=k/10.0
+		for k in CURVE_SAMPLES:
+			var t:=k/float(CURVE_SAMPLES-1)
 			line.append(ends[0]*(1.0-t)*(1.0-t)+ends[1]*t*t)
 		result.append(line)
 		return result
@@ -77,7 +79,7 @@ static func build(world:WorldState,anchor:Vector2) -> Dictionary:
 		var facing:=Vector2(cos(float(record[3])*PI/3),sin(float(record[3])*PI/3))
 		var waiting:bool=record.size()>6 and int(record[6])==1
 		var lines:=centrelines(bits,world.grid)
-		var through:=lines.size()==1 and (lines[0] as Array).size()==11
+		var through:=lines.size()==1 and (lines[0] as Array).size()==CURVE_SAMPLES
 		if progress<=.01:
 			_survey(kit,world,center,lines,waiting)
 			continue

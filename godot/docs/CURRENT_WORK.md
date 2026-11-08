@@ -5,6 +5,25 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## P3 construction tools and UI (2026-11-07)
+
+- Road, bridge and trench tools stay open after a confirmed order; Esc or right-click closes them.
+- The wheel and middle button reach the camera while a placement or drawing tool is active.
+- **Scrolling fix:** buttons used to stop wheel events, so build and train lists only scrolled
+  in the gaps. Buttons now pass the wheel to their list; panels still keep it from the map.
+  Model thumbnails ignore the mouse from creation.
+- **Build more** on an own building's card opens placement for the same type.
+- **Training queue:** unit icons, the current unit with progress, remaining time per item, the
+  queue total, a repeat toggle and "train next" (new server command `trainNext`; it never
+  interrupts the unit in training). Cancel works as before.
+- **All resources:** the strip's resources button opens a panel listing every stockpile with its
+  trend, with shortages in red; click a row for its detail page.
+- **Trenches and defences:** a line drawn through an own guard post, bunker, fort or AA battery
+  joins it (the segment reads "joins the …"); the channel on each side runs up to the defence.
+- **Curved battle lines:** a right-drag sends its stroke (up to 24 points). The server places the
+  front along the curve in drawing order, and rear ranks follow each section's local normal.
+- Trench curves are sampled twice as densely (`TrenchPresentation.CURVE_SAMPLES`).
+
 ## P1 city growth and P2 roads/traffic (2026-11-07)
 
 **P1. Cities**

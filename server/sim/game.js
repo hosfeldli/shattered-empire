@@ -1552,6 +1552,15 @@ export class Game {
           for (const id of cmd.buildings || []) { const b = this.buildings.get(id); if (b && b.owner === civ.id && BUILDINGS[b.type].trains) b.repeat = cmd.unit && BUILDINGS[b.type].trains.includes(cmd.unit) ? cmd.unit : null; }
           return null;
         }
+        case 'trainNext': {
+          // move a waiting item up to train straight after the current one (never interrupts it)
+          const b = this.buildings.get(cmd.building);
+          if (!b || b.owner !== civ.id) return { error: 'no building' };
+          const i = cmd.index | 0;
+          if (i < 2 || i >= b.queue.length) return { error: 'already next' };
+          const [q] = b.queue.splice(i, 1); b.queue.splice(1, 0, q);
+          return null;
+        }
         case 'cancelTrain': {
           const b = this.buildings.get(cmd.building);
           if (!b || b.owner !== civ.id) return { error: 'no building' };

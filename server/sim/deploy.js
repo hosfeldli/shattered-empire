@@ -20,15 +20,20 @@ const ROLE_RANK = { front: 0, support: 1, artillery: 2, logistics: 2 };
 export function hexXY(t, W) { const r = (t / W) | 0, q = t % W; return [SQ3 * (q + 0.5 * (r & 1)), 1.5 * r]; }
 
 // tiles on the straight line a -> b (unwrapped around a when the world wraps)
-function lineTiles(env, a, b) {
+// the hexes along a drawn line: a straight segment, or (with a path of three or more points) the
+// player's curve, segment by segment, in drawing order
+function lineTiles(env, a, b, path = null) {
   const { W } = env;
-  const [ax, ay] = hexXY(a, W); let [bx, by] = hexXY(b, W);
-  if (env.wrap) { const P = SQ3 * W; bx += Math.round((ax - bx) / P) * P; }
-  const len = Math.hypot(bx - ax, by - ay);
-  const n = Math.max(1, Math.ceil(len / (SQ3 * 0.5)));
+  const pts = (path && path.length > 2 ? path : [a, b]).map((t) => hexXY(t, W));
+  if (env.wrap) { const P = SQ3 * W; for (let i = 1; i < pts.length; i++) pts[i][0] += Math.round((pts[i - 1][0] - pts[i][0]) / P) * P; }
   const out = [];
-  for (let i = 0; i <= n; i++) { const t = snap(env, ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n); if (t >= 0 && out[out.length - 1] !== t && !out.includes(t)) out.push(t); }
-  return { tiles: out, ax, ay, bx, by, len };
+  for (let s = 1; s < pts.length; s++) {
+    const [x0, y0] = pts[s - 1], [x1, y1] = pts[s];
+    const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (SQ3 * 0.5)));
+    for (let i = s === 1 ? 0 : 1; i <= n; i++) { const t = snap(env, x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n); if (t >= 0 && out[out.length - 1] !== t && !out.includes(t)) out.push(t); }
+  }
+  const [ax, ay] = pts[0], [bx, by] = pts[pts.length - 1];
+  return { tiles: out, ax, ay, bx, by, len: Math.hypot(bx - ax, by - ay) };
 }
 
 // nearest hex to a world point
@@ -86,7 +91,7 @@ export function planDeployment(env, units, line, opts = {}) {
   const mode = opts.mode || 'line';
   const density = mode === 'compact' ? 'tight' : opts.density || 'auto';
   const ground = units.filter((u) => !u.air), air = units.filter((u) => u.air);
-  const L = lineTiles(env, line[0], line[1]);
+  const L = lineTiles(env, line[0], line[1], opts.path);
   const dirx = L.len > 0.01 ? (L.bx - L.ax) / L.len : 1, diry = L.len > 0.01 ? (L.by - L.ay) / L.len : 0;
   const mx = (L.ax + L.bx) / 2, my = (L.ay + L.by) / 2;
   const unwrap = (t) => { const [x, y] = hexXY(t, W); if (!env.wrap) return [x, y]; const P = SQ3 * W; return [x + Math.round((mx - x) / P) * P, y]; };
@@ -115,11 +120,20 @@ export function planDeployment(env, units, line, opts = {}) {
   for (const [, t] of keep) used.set(t, (used.get(t) || 0) + 1);
   const rankTiles = [front];
   const taken = new Set(front);
+  // the rear direction at each front hex: the curve's local normal on the facing side
+  const normalAt = (i) => {
+    if (front.length < 3) return [fx, fy];
+    const [x0, y0] = unwrap(front[Math.max(0, i - 1)]), [x1, y1] = unwrap(front[Math.min(front.length - 1, i + 1)]);
+    const l = Math.hypot(x1 - x0, y1 - y0); if (l < 0.01) return [fx, fy];
+    let nx = (y1 - y0) / l, ny = -(x1 - x0) / l;
+    if (nx * fx + ny * fy < 0) { nx = -nx; ny = -ny; }
+    return [nx, ny];
+  };
   const buildRank = (k) => {
     const out = [];
-    for (const t of front) {
-      const [x, y] = unwrap(t);
-      const s = nearestFree(env, x - fx * 1.6 * k, y - fy * 1.6 * k, (c) => !taken.has(c) && ground.some((u) => env.passable(c, u)));
+    for (let i = 0; i < front.length; i++) {
+      const [x, y] = unwrap(front[i]); const [nx, ny] = normalAt(i);
+      const s = nearestFree(env, x - nx * 1.6 * k, y - ny * 1.6 * k, (c) => !taken.has(c) && ground.some((u) => env.passable(c, u)));
       if (s >= 0) { taken.add(s); out.push(s); }
     }
     return out;
@@ -159,7 +173,8 @@ export function planDeployment(env, units, line, opts = {}) {
         }
       }
       // tiles in line order, units in line order: monotone matching
-      const order = tiles.map((t, i) => ({ t, i, p: along(...unwrap(t)) })).sort((a, b) => a.p - b.p);
+      // ranks are built in drawing order, so the index follows a curve where a projection would not
+      const order = opts.path?.length > 2 ? tiles.map((t, i) => ({ t, i, p: i })) : tiles.map((t, i) => ({ t, i, p: along(...unwrap(t)) })).sort((a, b) => a.p - b.p);
       const place = pending.slice(0, n); pending = pending.slice(n);
       let k = 0;
       for (const o of order) for (let s = 0; s < share[o.i]; s++) { const it = place[k++]; slots.set(it.u.id, o.t); used.set(o.t, (used.get(o.t) || 0) + 1); }
