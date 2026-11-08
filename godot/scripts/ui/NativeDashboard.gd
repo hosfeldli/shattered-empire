@@ -257,6 +257,14 @@ func _research() -> void:
 	var progress:=_card(body,"Current research")
 	_bind(progress,func():return workspace._name("TECHS",world.econ.get("research","Choose a technology")),21)
 	_bind(progress,func():return model.estimate(str(world.econ.get("research","")))+" · %.2f points / sec"%float(world.econ.get("researchRate",0)),15,NativeUI.MUTED)
+	# a technology waiting for its goods says exactly what is missing and what supplies it
+	_bind(progress,func():
+		var wait:Variant=world.econ.get("researchWait")
+		if not (wait is Dictionary) or (wait as Dictionary).is_empty(): return ""
+		var stock:Dictionary=world.econ.get("res",{}); var short:=[]
+		for good in wait:
+			if float(stock.get(good,0))<float(wait[good]): short.append("%d more %s (%+.1f/s)"%[ceili(float(wait[good])-float(stock.get(good,0))),good,float(world.econ.get("rates",{}).get(good,0))])
+		return "Waiting for goods to begin: "+", ".join(short)+". Research resumes on its own once they are stocked." if not short.is_empty() else "",15,NativeUI.GOLD)
 	if not world.econ.get("queue",[]).is_empty():
 		var queue:=_card(body,"Research queue")
 		var queue_scroll:=ScrollContainer.new(); queue_scroll.custom_minimum_size.y=mini(world.econ.queue.size()*36,100); queue_scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED; queue.add_child(queue_scroll)

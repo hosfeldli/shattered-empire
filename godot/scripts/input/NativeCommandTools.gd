@@ -29,6 +29,10 @@ var revision := 0
 var mesh: MeshInstance3D
 var legal_mesh: MeshInstance3D
 var legal_view:=Vector3.INF
+var hover_inflight:=false
+var hover_queued:=-1
+var hover_sent:=0
+var legal_ready:=true      # false while the legal-site list for the active building is in flight
 var blocked_tiles:={}
 var blocked_edges:={}
 var last_hover := -1
@@ -88,8 +92,10 @@ func activate(kind: String, option: Variant = "") -> void:
 	status = "Click to place" if kind == "build" else "Draw a line, then press Enter to confirm"
 	if mode == "build":
 		var token := revision
+		legal_ready=false
 		_submit({"c": "placement", "type": value}, func(reply: Dictionary):
 			if revision != token: return
+			legal_ready=true
 			valid_tiles.clear()
 			for tile in reply.get("tiles", []): valid_tiles[int(tile)] = true
 			_refresh_legal_sites()
@@ -104,7 +110,7 @@ func activate(kind: String, option: Variant = "") -> void:
 
 func cancel() -> void:
 	right_dragging=false
-	revision += 1; hover_serial+=1; site_details.clear(); blocked_tiles.clear(); blocked_edges.clear()
+	revision += 1; hover_serial+=1; site_details.clear(); blocked_tiles.clear(); blocked_edges.clear(); hover_inflight=false; hover_queued=-1
 	if terrain: terrain.terrain_mat.set_shader_parameter("farm_preview_active",0.0)
 	if placement: placement.mesh=null; placement.tile=-1
 	mode = "select"; points.clear(); preview.clear(); valid_tiles.clear(); drawing = false
@@ -155,7 +161,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif drawing:
 				_add_point(tile); drawing = false
 				if mode=="build":
-					var sites:=points.filter(func(t):return valid_tiles.has(t))
+					var sites:=points.filter(func(t):return valid_tiles.has(t) or not legal_ready)
 					if sites.size()>1:
 						var repeat_:bool=event.shift_pressed
 						for site in sites: pending_sites[int(site)]=[str(value),Time.get_ticks_msec()]
@@ -299,7 +305,9 @@ func commit() -> void:
 
 func _place(tile: int,repeat_:=false) -> void:
 	if pending_sites.has(tile): return     # already submitted; never send a duplicate order
-	if not valid_tiles.has(tile):
+	# under heavy load the legal-site list can arrive late: until it does, a click places at once
+	# and the server validates the site (its refusal is shown like any other)
+	if not valid_tiles.has(tile) and legal_ready:
 		feedback.emit(str(site_details.get("reason","Choose a valid building site")) if int(site_details.get("tile",-1))==tile else "Choose a valid building site", false); return
 	var building_type := str(value)
 	valid_tiles.erase(tile)
@@ -337,7 +345,14 @@ func _preview_build(tile:int) -> void:
 	placement.show_building(type,tile)
 	_draw([tile],valid_tiles.has(tile))
 	status="Checking site…"
+	# one site query in flight at a time; the latest hovered hex is checked when it returns
+	if hover_inflight and Time.get_ticks_msec()-hover_sent<1500: hover_queued=tile; return
+	hover_inflight=true; hover_queued=-1; hover_sent=Time.get_ticks_msec()
 	_submit({"c":"placement","type":type,"tile":tile},func(reply):
+		hover_inflight=false
+		if hover_queued>=0 and mode=="build":
+			var next:=hover_queued; hover_queued=-1
+			if next!=tile: _preview_build(next); return
 		if mode!="build" or token!=hover_serial or type!=value: return
 		site_details=reply.get("site",{})
 		if site_details.is_empty(): status="This server needs the placement preview update"; changed.emit(); return

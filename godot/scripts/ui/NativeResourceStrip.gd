@@ -151,6 +151,15 @@ func _process(dt:float) -> void:
 	else:
 		var info:Dictionary=world.defs.get("TECHS",{}).get(tech,{})
 		research_label.text=str(info.get("name",tech))
+		# waiting on goods: say which, in the bar itself (never a silent stall)
+		var wait:Variant=world.econ.get("researchWait")
+		if wait is Dictionary and not (wait as Dictionary).is_empty():
+			var stock:Dictionary=world.econ.get("res",{}); var short:=[]
+			for good in wait:
+				if float(stock.get(good,0))<float(wait[good]): short.append("%d %s"%[ceili(float(wait[good])-float(stock.get(good,0))),good])
+			research_label.text="Waiting · needs "+", ".join(short) if not short.is_empty() else research_label.text
+			research_label.add_theme_color_override("font_color",NativeUI.GOLD)
+		else: research_label.add_theme_color_override("font_color",NativeUI.TEXT)
 		research_bar.max_value=maxf(1.0,float(info.get("cost",1))); research_bar.value=float(world.econ.get("progress",0))
 	alert_records=world.notifications.filter(func(note):return note.get("level","") in ["critical","actionable","major","minor"] and not note.get("quiet",false)).slice(0,6)
 	alert_badge.visible=not alert_records.is_empty(); alert_badge.text=str(alert_records.size())

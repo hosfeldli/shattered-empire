@@ -110,3 +110,27 @@ test('the AI only fires when the expected damage is worth it', () => {
   assert.equal(g.missiles.length, 1, 'a massed army in the open is a target');
   assert.ok(dist(g.missiles[0].to, spot) <= 1);
 });
+
+test('the AI strikes battlefields, but a human player\'s cities only on Brutal', () => {
+  const { g } = setup(6);
+  const ai = g.civs[1], human = g.civs[0], hcap = g.capital(human), acap = g.capital(ai);
+  ai.techs.add('strategic_missiles'); ai.age = 4;
+  const st = disk(acap.tile, 3).find((x) => dist(x, acap.tile) >= 2 && land(g, x) && g.world.owner[x] === 1 && g.canPlace(ai, 'missile_silo', x, true));
+  const silo = g.placeBuilding(ai, 'missile_silo', st, true); silo.missiles = 1;
+  ai.knownCities = new Map([[hcap.id, { owner: 0, tile: hcap.tile }]]);
+  const brain = { g, civ: ai, missileAt: 0, cmd: (c) => g.command(1, c) };
+  ai.difficulty = 'hard'; aiMissiles(brain);
+  assert.equal(g.missiles.length, 0, 'below Brutal a human city is never a target');
+  ai.difficulty = 'brutal'; brain.missileAt = 0; aiMissiles(brain);
+  assert.equal(g.missiles.length, 1, 'on Brutal it is');
+  assert.ok(dist(g.missiles[0].to, hcap.tile) <= 1);
+});
+
+test('an AI at war builds a missile silo once it has the technology and the means', () => {
+  const { g } = setup(6);
+  const ai = g.civs[1];
+  ai.techs.add('strategic_missiles'); ai.age = 4;
+  const brain = { g, civ: ai, missileAt: 0, cmd: (c) => g.command(1, c) };
+  aiMissiles(brain);
+  assert.ok([...g.buildings.values()].some((b) => b.owner === 1 && b.type === 'missile_silo'), 'a silo is placed');
+});

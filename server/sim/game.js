@@ -625,6 +625,12 @@ export class Game {
         if (this.canAfford(civ, tech.goods)) { this.pay(civ, tech.goods, undefined, 'research'); paid[k] = 1; }
         else {
           civ.researchWait = k; civ.waitT = (civ.waitT || 0) + dt; civ.progress = tp[k] || 0;
+          // never stall silently: say once per technology what is missing
+          if (civ.human && civ.waitNoted !== k) {
+            civ.waitNoted = k;
+            const missing = Object.entries(tech.goods).filter(([g2, v]) => (civ.res[g2] || 0) < v).map(([g2, v]) => `${Math.ceil(v - (civ.res[g2] || 0))} more ${g2}`).join(' and ');
+            this.notify(civ.id, `Research of ${tech.name} is waiting for goods: ${missing}. Build or staff production for them; research resumes on its own.`, { kind: 'tech', level: 'major' });
+          }
           if (civ.waitT > 20) {
             const alt = Object.keys(TECHS).find((x) => x !== k && researchReady(civ, x) && (!TECHS[x].goods || paid[x] || this.canAfford(civ, TECHS[x].goods)));
             if (alt) { civ.queue = [k, ...civ.queue.filter((x) => x !== k && x !== alt)]; civ.researching = alt; civ.waitT = 0; civ.researchWait = null; }
@@ -632,7 +638,7 @@ export class Game {
           continue;
         }
       }
-      civ.researchWait = null; civ.waitT = 0;
+      civ.researchWait = null; civ.waitT = 0; civ.waitNoted = null;
       // progress belongs to the technology: switching away and back loses nothing
       tp[k] = (tp[k] || 0) + civ.researchRate * dt;
       civ.progress = tp[k];
@@ -1218,8 +1224,18 @@ export class Game {
             const missing = Object.fromEntries(Object.entries(cost).map(([key, amount]) => [key, Math.max(0, amount - ((local && key !== 'credits' ? local[key] : civ.res[key]) || 0))]).filter(([, amount]) => amount > 0));
             return { reply: { t: 'placement', site: { tile, valid, reason, cost, missing, queued: valid && !this.canAfford(civ, cost, tile), seconds: Math.ceil(def.time / (tempo(this, 'construction') * (1 + (techFx(civ).build || 0)))) } } };
           }
-          const tiles = [];
-          for (let i = 0; i < N; i++) if (civ.explored[i] && this.canPlace(civ, cmd.type, i, true)) tiles.push(i);
+          // legal sites, cached briefly per empire and type so the query stays cheap in heavy fighting
+          // (rebuilt when buildings change or after two seconds)
+          const cache = this.placementCache || (this.placementCache = new Map());
+          const ck = civ.id + ':' + cmd.type, hit = cache.get(ck);
+          let tiles;
+          // a hit is re-checked site by site (few tiles), so a change since the scan never offers a bad site
+          if (hit && hit.blds === this.buildings.size && this.time - hit.at < 2) tiles = hit.tiles.filter((i) => this.canPlace(civ, cmd.type, i, true));
+          else {
+            tiles = [];
+            for (let i = 0; i < N; i++) if (civ.explored[i] && this.canPlace(civ, cmd.type, i, true)) tiles.push(i);
+            cache.set(ck, { tiles, at: this.time, blds: this.buildings.size });
+          }
           return { reply: { t: 'placement', type: cmd.type, tiles, afford: this.canAfford(civ, this.buildingCost(civ, cmd.type)) } };
         }
         case 'roadPlan': {

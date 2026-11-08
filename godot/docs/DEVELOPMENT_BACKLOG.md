@@ -372,27 +372,29 @@ be done. The likely causes are first assessments from the code, not yet verified
   presentation (as terrain now does) instead of clearing buildings and the camera.
 
 ### P7. Further playtest reports (2026-11-07)
-- [ ] **Map lenses do nothing.** Selecting a lens (Overview → lens, or L) has no visible effect.
+
+> **Implemented 2026-11-08:** all seven items (see CURRENT_WORK). Balance evidence: `tools/balance-report.mjs` and `tools/pace-report.mjs`.
+- [x] **Map lenses do nothing.** Selecting a lens (Overview → lens, or L) has no visible effect.
   Trace `StrategicPresentation.mode` through to the terrain overlay and labels, and verify each
   lens renders.
-- [ ] **Troop icons at scale.** Troop badges render incorrectly at some zoom levels and disappear
+- [x] **Troop icons at scale.** Troop badges render incorrectly at some zoom levels and disappear
   with large numbers of troops (likely the bounded badge budget in `NativeWorldLabels`).
   Badges should aggregate per hex or army instead of vanishing, and stay crisp at every scale.
-- [ ] **Building placement fails under load.** During heavy fighting the legal-site and per-site
+- [x] **Building placement fails under load.** During heavy fighting the legal-site and per-site
   `placement` requests time out or arrive too late, so nothing can be placed. Fixes: serve
   placement queries from a cheap cached legality map; give them priority over snapshots; make the
   client tolerate late replies (place on click and let the server validate).
-- [ ] **Nuclear missiles and the missile silo.** Confirm the silo builds, stores and launches
+- [x] **Nuclear missiles and the missile silo.** Confirm the silo builds, stores and launches
   strategic missiles end to end. The AI should use them in battles (massed armies, fortified
   fronts, airfields), but target player cities only on Brutal difficulty.
-- [ ] **Research stalled at railroads, then resumed.** Investigate: likely a goods requirement
+- [x] **Research stalled at railroads, then resumed.** Investigate: likely a goods requirement
   (`researchWait`: steel or ore for Railways) or a queue/selection gap. Research should never
   silently stall; show the reason (missing goods) in the top bar and research panel, and let
   automation switch to an available technology.
-- [ ] **No traffic across hostile borders.** Road traffic (trucks, cars, trains) must not drive
+- [x] **No traffic across hostile borders.** Road traffic (trucks, cars, trains) must not drive
   from friendly into enemy territory. Limit traffic to edges where both ends are owned by the
   same empire or are friendly.
-- [ ] **Balance pass.** Review every unit and building against the slower native-v4 pace: costs,
+- [x] **Balance pass.** Review every unit and building against the slower native-v4 pace: costs,
   build and training times, upkeep, health, damage and range, speed, production and jobs. Use
   simulated matches and the pacing and battle benchmarks (`tools/pace-report.mjs`,
   `tools/battle-bench.mjs`) as evidence.

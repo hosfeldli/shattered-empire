@@ -5,6 +5,47 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## P7 playtest fixes and balance (2026-11-08)
+
+- **Map lenses:** every economy snapshot used to reset the lens and restart its image job (one
+  row per step), so a lens never finished drawing. Now a lens change applies at once; data
+  refreshes at most once a second in 16-row steps and keep the previous image on screen. L shows
+  the lens name. `--lens=N` starts with a lens (visual checks). Verified on screen (Territory).
+- **Troop badges at scale:** with more than 36 groups on screen, badges aggregate per owner and
+  screen cell (the most common unit's icon and the total count). The cell grows until at most
+  120 clusters remain, and a cluster is never dropped. Verified at 1000 troops.
+- **Placement under load:** the legal-site list is cached per empire and type (two seconds or
+  until buildings change; hits are re-checked site by site). The client places on click while
+  the list is in flight and lets the server validate. Hover site checks keep one request in
+  flight, then check the latest hex.
+- **Missiles:** an AI at war builds a silo near its capital once it has the technology and the
+  goods. It strikes massed armies, dug-in fronts (trenches plus defences) and airfields. A human
+  player's cities, and anything within two hexes of one, are targets only on Brutal.
+- **Research stall at Railways:** a mid-industrial technology needs 140 steel and 60 fuel to
+  begin, and every alternative in that era needs the same goods, so automation had nothing to
+  switch to and research waited silently. Now the player gets one notice listing the missing
+  goods; the top bar shows "Waiting · needs …" and the research panel shows the missing amounts
+  with current rates. Era 2 goods are eased to 120 steel and 40 fuel; steel mills make 0.65 steel
+  per second (0.55 before) and synthetic refineries 0.6 fuel per second (0.42 before).
+- **Hostile borders:** client traffic never runs on an edge between two empires (from P2).
+- **Balance pass** (`tools/balance-report.mjs`: equal-value duels over three maps; aircraft
+  excluded because they cannot rearm away from an airfield):
+  - Special Forces cost 170 value (was 125): they beat mechanised and exo infantry at half the
+    cost.
+  - Exo infantry cost 325 (was 265) and gain +25% against infantry.
+  - Autonomous tanks cost 520 (was 620) and gain the main tank's anti-infantry edge (+5%).
+  - The main battle tank gains +20% against tracked vehicles (cost 320, was 340).
+  - Mechanised infantry cost 220 (was 190).
+  - Armored cars cost 130 (was 120), and their bonus against infantry drops to +15% (was +30%).
+  - Result: mech against tank is about even, and armour edges out same-era infantry at scale.
+    The "prepared defences blunt tanks" scenario still holds.
+  - Era pacing is unchanged within noise: era 2 at 24–45 minutes, era 4 at 65–107.
+
+**Checks (2026-11-08):** server 184/184, load 1/1. Godot: render 66, composition 34, LWE 67,
+development 303, surface 27, water 24, battle 11, warzone 14, all passing. Browser e2e 11/13: the
+two failures (multi-building Alt-drag, line deployment) fail identically on the commit before P1
+(`6fe3491`), so they are local and environmental, not regressions.
+
 ## P6 visuals (2026-11-07)
 
 - **Wear and stripes removed:** the hex-wide track-wear tint (`bf.wr`) is no longer drawn or

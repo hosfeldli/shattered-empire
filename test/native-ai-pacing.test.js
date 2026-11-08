@@ -52,3 +52,18 @@ test('at war the AI digs a defensive network at once: trench lines and strongpoi
   ai.ai.mil.network(human, best, 3, { W, H, wrap: WRAP });
   assert.equal([...g.fieldworks.values()].filter((f) => f.owner === 1).length, works);
 });
+
+test('research waiting for goods says what is missing instead of stalling silently', async () => {
+  const { TECHS } = await import('../server/sim/constants.js');
+  const g = new Game({ id: 'wait' + Math.random(), seed: 7, slots: [{ human: true }, { human: true }], rebels: false, ruleset: WORKS_RULESET });
+  const civ = g.civs[0];
+  const k = Object.keys(TECHS).find((x) => TECHS[x].goods && TECHS[x].goods.steel);
+  civ.researching = k; civ.res.steel = 0; civ.res.fuel = 0;
+  g.researchStep(1);
+  assert.equal(civ.researchWait, k);
+  const notes = JSON.stringify(g.outbox) + JSON.stringify(g.notifications || []) + JSON.stringify(civ.notes || []);
+  assert.match(notes, /waiting for goods/i, 'the player is told what is missing');
+  g.researchStep(1);
+  const count = (JSON.stringify(g.outbox).match(/waiting for goods/g) || []).length;
+  assert.ok(count <= 1, 'told once, not every tick');
+});

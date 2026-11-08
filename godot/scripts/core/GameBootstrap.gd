@@ -542,6 +542,9 @@ func _process(dt: float) -> void:
 		_run_order_test()
 	if args.has("hide"):
 		_debug_hide(str(args.hide).split(","))
+	# --lens=N: show a map lens from the start (visual checks of the lens pipeline)
+	if args.has("lens") and world.ready_ and strategic.mode != int(args.lens) and not bool(get_meta("lens_set", false)):
+		set_meta("lens_set", true); strategic.mode = int(args.lens); strategic.selector.select(strategic.mode)
 	var t1 := Time.get_ticks_usec()
 	terrain.update_view(cam.focus.x, cam.view_half_width())
 	var t2 := Time.get_ticks_usec()

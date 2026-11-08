@@ -13,6 +13,8 @@ var selector: OptionButton
 var font: Font
 var _revision := 0
 var _dirty := true
+var _shown_mode := 0
+var _refresh_clock := 0.0
 var deposits := {}
 
 
@@ -45,21 +47,26 @@ func _geo(chunks: PackedInt32Array) -> void:
 	_dirty = true
 
 
-func _process(_dt: float) -> void:
-	selector.visible = world.ready_
+func _process(dt: float) -> void:
+	selector.visible = world.ready_ and false     # lenses are chosen from Overview or with L
 	if not world.ready_: return
-	if _dirty:
-		_dirty = false
+	_refresh_clock -= dt
+	# a lens change applies at once; data refreshes (every snapshot) at most once a second, so the
+	# image always finishes building instead of restarting on each snapshot (the old lens bug)
+	if mode != _shown_mode or (_dirty and _refresh_clock <= 0.0):
+		_dirty = false; _refresh_clock = 1.0
 		_overlay()
 	queue_redraw()
 
 
 func _overlay() -> void:
-	# Keep the landscape visible while a lens image is being prepared. A missing/default texture
-	# must never replace the ground, and cancelling a lens must cancel its queued upload too.
-	terrain.terrain_mat.set_shader_parameter("overlay_strength",0.0)
+	# A missing/default texture must never replace the ground; switching lenses or back to the
+	# landscape cancels the queued upload. A refresh of the same lens keeps the old image shown.
+	if mode != _shown_mode: terrain.terrain_mat.set_shader_parameter("overlay_strength",0.0)
+	_shown_mode = mode
 	if mode == 0:
 		composition.scheduler.cancel("strategic-overlay")
+		terrain.terrain_mat.set_shader_parameter("overlay_strength",0.0)
 		return
 	_revision += 1
 	var image := Image.create(world.grid.w,world.grid.h,false,Image.FORMAT_RGBA8)
@@ -70,33 +77,38 @@ func _overlay() -> void:
 	for record in world.fw: defenses[int(record[0])]=true
 	var job := {"row":0,"mode":mode}
 	composition.scheduler.enqueue("strategic-overlay",_revision,GenerationScheduler.Priority.MEDIUM,func():
-		var y := int(job.row)
-		for x in world.grid.w:
-			var tile := y*world.grid.w+x
-			var color := Color.TRANSPARENT
-			if world.known[tile]:
-				match int(job.mode):
-					1:
-						if world.tile_owner[tile]>=0: color = world.civ_color(world.tile_owner[tile])
-					2:
-						if world.tile_owner[tile] == world.civ_id:
-							color = Color(.2,.7,.35) if (world.supply_bits[tile>>3] & (1<<(tile&7))) else Color(.8,.25,.15)
-					3:
-						if world.tile_stability[tile]>=0: color = Color(.8,.25,.15).lerp(Color(.2,.7,.4),clampf(world.tile_stability[tile]/100.0,0,1))
-					4:
-						if density.has(tile): color=Color(.95,.35,.08,clampf(float(density[tile]),.1,1))
-					5:
-						if fighting.has(tile): color=Color(.9,.2,.1,clampf(float(fighting[tile]),0,1))
-					6:
-						if defenses.has(tile): color=Color(.25,.7,.85,.9)
-						elif fighting.has(tile): color=Color(.9,.45,.15,clampf(float(fighting[tile]),0,1))
-			image.set_pixel(x,y,color)
-		job.row += 1
-		return int(job.row) == world.grid.h,
+		for _row in 16:
+			if int(job.row) >= world.grid.h: break
+			_row_pixels(image, int(job.row), int(job.mode), density, fighting, defenses)
+			job.row += 1
+		return int(job.row) >= world.grid.h,
 		func():
 			if mode==int(job.mode):
 				terrain.terrain_mat.set_shader_parameter("strategic_overlay",ImageTexture.create_from_image(image))
 				terrain.terrain_mat.set_shader_parameter("overlay_strength",.55))
+
+
+func _row_pixels(image: Image, y: int, lens: int, density: Dictionary, fighting: Dictionary, defenses: Dictionary) -> void:
+	for x in world.grid.w:
+		var tile := y*world.grid.w+x
+		var color := Color.TRANSPARENT
+		if world.known[tile]:
+			match lens:
+				1:
+					if world.tile_owner[tile]>=0: color = world.civ_color(world.tile_owner[tile])
+				2:
+					if world.tile_owner[tile] == world.civ_id:
+						color = Color(.2,.7,.35) if (world.supply_bits[tile>>3] & (1<<(tile&7))) else Color(.8,.25,.15)
+				3:
+					if world.tile_stability[tile]>=0: color = Color(.8,.25,.15).lerp(Color(.2,.7,.4),clampf(world.tile_stability[tile]/100.0,0,1))
+				4:
+					if density.has(tile): color=Color(.95,.35,.08,clampf(float(density[tile]),.1,1))
+				5:
+					if fighting.has(tile): color=Color(.9,.2,.1,clampf(float(fighting[tile]),0,1))
+				6:
+					if defenses.has(tile): color=Color(.25,.7,.85,.9)
+					elif fighting.has(tile): color=Color(.9,.45,.15,clampf(float(fighting[tile]),0,1))
+		image.set_pixel(x,y,color)
 
 
 func _point(tile: int) -> Vector2:

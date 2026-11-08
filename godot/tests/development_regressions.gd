@@ -37,6 +37,7 @@ func run() -> void:
 	_assets_and_lifecycle()
 	_units_and_squads()
 	_large_battle_rendering()
+	_badges_at_scale()
 	print("DEVELOPMENT_TESTS ",JSON.stringify({"checks":checks,"failures":failures}))
 	quit(0 if failures.is_empty() else 1)
 
@@ -171,6 +172,21 @@ func _differs(a:ArrayMesh,b:ArrayMesh) -> bool:
 
 
 ## Backlog P5: one shader-animated instance per squad, buffered instance uploads, vehicle lanes.
+func _badges_at_scale() -> void:
+	# hundreds of troop groups aggregate per owner and screen cell instead of vanishing
+	var labels:=NativeWorldLabels.new()
+	var groups:=[]
+	for i in 400:
+		groups.append({"key":str(i),"ids":[i],"owner":i%2,"type":"rifle_squad" if i%3 else "tank","anchor":Vector2(20+(i%40)*30,100+(i/40)*30),"hp":100.0,"selected":false,"priority":0.0})
+	var clusters:Array=labels._aggregate(groups)
+	var total:=0
+	for c:Dictionary in clusters: total+=(c.ids as Array).size()
+	check(total==400,"aggregation keeps every troop counted")
+	check(clusters.size()<200,"aggregation reduces the badge count (%d)"%clusters.size())
+	check(clusters.all(func(c):return str(c.type)!="" and bool(c.cluster)),"each cluster has a dominant unit type")
+	labels.free()
+
+
 func _large_battle_rendering() -> void:
 	var squad:=MilitaryModelLibrary.build("rifle_squad",Color.RED,"gpu")
 	var codes:={}; var figures:={}

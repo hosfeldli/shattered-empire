@@ -156,6 +156,14 @@ export function aiMissiles(ai) {
   const g = ai.g, civ = ai.civ;
   if (!civ.techs.has('strategic_missiles')) return;
   const silos = silosOf(g, civ.id);
+  // an empire at war (or facing rivals) builds one silo near its capital once it can afford it
+  const atWar = g.civs.some((o) => o && o.id !== civ.id && o.alive && g.hostile(civ.id, o.id));
+  if (!silos.length && atWar && (ai.siloAt || 0) <= g.time && Object.entries(BUILDINGS.missile_silo.cost).every(([k, v]) => (civ.res[k] || 0) > v * 1.3)) {
+    ai.siloAt = g.time + 180;
+    const home = g.capital(civ);
+    const site = home && disk(home.tile, 4).filter((t) => g.canPlace(civ, 'missile_silo', t, true)).sort((a, b) => dist(b, home.tile) - dist(a, home.tile))[0];
+    if (site != null) ai.cmd({ c: 'build', type: 'missile_silo', tile: site });
+  }
   // keep one project going while there is room and money to spare
   for (const b of silos) if (!b.project && (b.missiles || 0) < MISSILE.store && Object.entries(MISSILE.cost).every(([k, v]) => (civ.res[k] || 0) > v * 2.5)) { startMissile(g, civ, b.id); break; }
   if (!inventory(g, civ.id) || g.missiles.some((m) => m.owner === civ.id)) return;
@@ -168,11 +176,21 @@ export function aiMissiles(ai) {
     const ev = value * (1 - p);
     if (!best || ev > best.ev) best = { tile, ev, value, p };
   };
-  // massed enemy forces and enemy cities that are known
+  // Battlefield targets: massed armies, fortified fronts and airfields. A human player's cities
+  // (and anything close enough to one for the blast to reach it) are targets only on Brutal.
+  const brutal = civ.difficulty === 'brutal';
+  const humanCities = g.cities ? [...g.cities.values()].filter((c) => g.civs[c.owner]?.human).map((c) => c.tile) : [];
+  const spares = (t) => !brutal && humanCities.some((c) => dist(c, t) <= 2);
   const stacks = new Map();
   for (const u of g.units.values()) if (g.hostile(civ.id, u.owner) && civ.visible[u.tile] && !UNITS[u.type].civilian) for (const x of disk(u.tile, 1)) stacks.set(x, (stacks.get(x) || 0) + 1 + UNITS[u.type].age * 0.4);
-  for (const [t, v] of stacks) if (v >= 10) consider(t, v * 3);
-  for (const [, k] of civ.knownCities || []) if (g.hostile(civ.id, k.owner)) consider(k.tile, 40);
+  for (const [t, v] of stacks) if (v >= 10 && !spares(t)) consider(t, v * 3);
+  // a dug-in front: enemy trench segments and defences clustered together
+  const works = new Map();
+  for (const f of g.fieldworks.values()) if (g.hostile(civ.id, f.owner) && civ.explored[f.tile] && f.progress >= 1) for (const x of disk(f.tile, 1)) works.set(x, (works.get(x) || 0) + 1);
+  for (const b of g.buildings.values()) if (g.hostile(civ.id, b.owner) && civ.explored[b.tile] && BUILDINGS[b.type]?.defense) for (const x of disk(b.tile, 1)) works.set(x, (works.get(x) || 0) + 2);
+  for (const [t, v] of works) if (v >= 6 && !spares(t)) consider(t, v * 4);
+  for (const b of g.buildings.values()) if (b.type === 'airfield' && b.done && g.hostile(civ.id, b.owner) && civ.explored[b.tile] && !spares(b.tile)) consider(b.tile, 35);
+  for (const [, k] of civ.knownCities || []) if (g.hostile(civ.id, k.owner) && (brutal || !g.civs[k.owner]?.human)) consider(k.tile, 40);
   if (!best) return;
   // desperation lowers the bar: a nation losing its cities uses what it has
   const losing = g.cityOf(civ).length <= 2;

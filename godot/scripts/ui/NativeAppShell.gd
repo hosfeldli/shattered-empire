@@ -309,6 +309,7 @@ func _input(event:InputEvent) -> void:
 	elif code==KEY_L:
 		app.strategic.mode=(app.strategic.mode+1)%app.strategic.selector.item_count
 		app.strategic.selector.select(app.strategic.mode); app.strategic._dirty=true; app.get_viewport().set_input_as_handled()
+		app.hud.show_toast("Map lens · "+app.strategic.selector.get_item_text(app.strategic.mode)+(" (L for next)" if app.strategic.mode>0 else ""),true)
 
 func _process(_dt:float) -> void:
 	var bounds:=root.get_viewport_rect().size

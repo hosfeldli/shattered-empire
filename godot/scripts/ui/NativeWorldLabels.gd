@@ -83,6 +83,35 @@ func _members() -> void:
 		if not groups.has(key): slots.erase(key)
 
 
+## one badge per owner per screen cell; the cell grows when even that would crowd the screen
+func _aggregate(candidates:Array) -> Array:
+	var cell:=40.0
+	var out:=_cluster(candidates,cell)
+	while out.size()>120 and cell<400.0:
+		cell*=1.4; out=_cluster(candidates,cell)
+	return out
+
+
+func _cluster(candidates:Array,cell:float) -> Array:
+	var cells:={}
+	for group:Dictionary in candidates:
+		var key:="c|%d|%d|%d"%[int(group.owner),floori(group.anchor.x/cell),floori(group.anchor.y/cell)]
+		if not cells.has(key): cells[key]={"key":key,"ids":[],"owner":group.owner,"types":{},"anchor":Vector2.ZERO,"hp":0.0,"n":0,"selected":false,"veteran":0,"offset":Vector2.ZERO,"cluster":true,"priority":-INF}
+		var c:Dictionary=cells[key]
+		c.ids.append_array(group.ids); c.anchor+=group.anchor*group.ids.size(); c.hp+=float(group.hp)*group.ids.size(); c.n+=group.ids.size()
+		c.types[group.type]=int(c.types.get(group.type,0))+group.ids.size()
+		c.selected=c.selected or group.selected; c.veteran=maxi(int(c.veteran),int(group.get("veteran",0))); c.priority=maxf(float(c.priority),float(group.priority))
+	var out:=[]
+	for c:Dictionary in cells.values():
+		c.anchor/=maxi(1,int(c.n)); c.hp/=maxi(1,int(c.n))
+		var best:=""; var most:=-1
+		for type in c.types:
+			if int(c.types[type])>most: most=int(c.types[type]); best=str(type)
+		c.type=best
+		out.append(c)
+	return out
+
+
 func _show_deposits() -> bool:
 	if app.command_tools.mode=="build": return true
 	for id in app.military.selected:
@@ -112,13 +141,18 @@ func refresh() -> void:
 			group.anchor=anchor; group.hp=hp/count; group.selected=selected
 			group.priority=(10000 if selected else 0)+(2000 if group.owner!=world.civ_id else 0)-anchor.distance_to(size*.5)
 			candidates.append(group)
+	# Many groups on screen (big armies, zoomed out): aggregate per owner and screen cell into one
+	# badge with the most common unit's icon and the total count, so troops never vanish.
+	if candidates.size()>36: candidates=_aggregate(candidates)
 	candidates.sort_custom(func(a,b):return a.priority>b.priority)
 	var occupied:=[]
 	for group:Dictionary in candidates:
-		if banners.size()>=48: break
+		if banners.size()>=160: break
 		var name_:String=str(SHORT.get(group.type,world.defs.get("UNITS",{}).get(group.type,{}).get("name",group.type)))
 		var text:=name_+(" ×%d"%group.ids.size() if group.ids.size()>1 else "")
 		var rect:=_badge(group.key,group.anchor,group.offset,occupied)
+		if rect.size==Vector2.ZERO and group.get("cluster",false):
+			rect=Rect2(group.anchor+Vector2(-13,-32),Vector2(26,26)); occupied.append(rect)      # a cluster is never dropped
 		if rect.size==Vector2.ZERO: continue
 		group.rect=rect; group.text=text; banners.append(group)
 	if app.strategic.resource_markers and app.cam.size<52 and _show_deposits():
