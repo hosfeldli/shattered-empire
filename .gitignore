@@ -12,3 +12,4 @@ desktop/dist/
 desktop/node_modules/
 desktop/build/steam_appid.txt
 dist/native/
+dist/native-publish/
