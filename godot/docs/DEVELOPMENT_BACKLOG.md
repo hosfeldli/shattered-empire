@@ -12,6 +12,118 @@ The complete 21-section persistent-warzone design is recorded separately in
 [PERSISTENT_WARZONE_BRIEF.md](PERSISTENT_WARZONE_BRIEF.md). It includes the continuation supplied
 after the earlier truncated message and should be read together with the tasks in section I.
 
+## P. Playtest feedback (2026-11-07) — to be prioritised
+
+Reported after playing the published preview (`4a40245` client, `b9ef675` server). The main goal
+of the next pass is **city generation and how buildings connect**. Each item says what needs to
+be done. The likely causes are first assessments from the code, not yet verified.
+
+### P1. City growth, districts and streets (main goal)
+- [ ] **Streets that connect and grow with the city.** House streets are drawn per shared edge
+  between two buildings (`SettlementRenderer._connect` "res", `_town_streets`), so they appear as
+  isolated stubs. Needed: one settlement street network per city, derived from the hub, real roads
+  and the urban footprint (`urban_bits`). Arterials from the hub to every edge where a real road
+  leaves, then local streets that branch to each urban hex. Streets should be continuous across
+  hexes, rebuild incrementally as the city grows, and be stable (no reshuffling). Street classes:
+  lanes → paved streets → avenues by city tier.
+- [ ] **Natural growth and districts.** Cities should grow outward along streets, in recognisable
+  districts: residential, commercial core, civic/campus, industrial edge, farmland ring. Make
+  `urbanStep` and district grouping drive presentation, and show growth stages: lots, then
+  frames, then buildings.
+- [ ] **Governor and AI build in districts.** `governor.pickTile` should score tiles by district
+  fit: housing next to housing and the street network, industry together on the edge near roads,
+  rail and resources, farms on the outer ring, civic near the hub. Never scatter randomly.
+- [ ] **Combined compounds.** Adjacent same-type buildings should merge into one larger
+  composition while each keeps its own ID, selection and damage. For example, several barracks
+  become an army base with a shared parade ground, motor pool, fence and gate; several factories a
+  works complex; several houses a block. Extend the district grouping with per-type compound
+  recipes.
+- [ ] **A larger, more distinctive city centre.** The hub should be the landmark: a bigger civic
+  complex that grows by tier, with a plaza, tower, transit and monuments, readable at every zoom.
+- [ ] **Farms that read as farms.** Visible crop rows and wheat fields (standing grain that sways
+  and changes with season or growth), fences or hedges at the estate boundary, tracks, and harvest
+  activity when active.
+- [ ] **Sidewalks clip through the ground.** Sidewalk and street strips use `_ground_path` with
+  only 6 samples and a small lift. Sample more densely, follow the subdivided terrain exactly, add
+  a kerb with thickness, and lift above the road surface.
+- [ ] **Further district design.** Shared courtyards, parking, parks, plazas, transitions between
+  district types, and street furniture by tier.
+
+### P2. Roads, bridges and traffic
+- [ ] **Vehicles must climb onto bridges.** Traffic samples `ground_height` along a straight
+  centre-to-centre line (`InfrastructureRenderer._update_traffic`), so trucks drive through decks
+  and under approaches. Vehicles need to follow the drawn road polyline, including bridge decks
+  and embankment heights.
+- [ ] **Vehicles follow curves.** Use the same curve and spoke geometry as the drawn roads (and
+  rail), oriented along the tangent, with lane offsets.
+- [ ] **Roads follow the drawn path.** `roadPlan` with `auto` replaces the stroke with an optimal
+  route (`findRoadRoute`). Needed: snap to the hexes the player drew, only fill gaps and step
+  around blocked hexes locally, and be forgiving: tolerate jitter, merge near-duplicate points,
+  and offer to bridge rivers.
+- [ ] **Roads fail without explanation.** A road project can block or pause on the server
+  (`seg.blocked`, `status: 'blocked'/'paused'`) with no client feedback. Needed: show the failure
+  and its reason on the map and in an alert, with retry or replan.
+- [ ] **Governors connect cities.** Governors and AI build roads between their own cities and
+  neighbouring ones, then upgrade roads and bridges (paved, highway, rail; reinforced and rail
+  bridges) once research allows.
+
+### P3. Construction tools and UI
+- [ ] **Keep the tool open after confirming** roads, bridges and trenches, so the next one can be
+  drawn straight away (Esc closes it).
+- [ ] **Zoom while placing.** The mouse wheel is consumed by the placement tool or drawer while a
+  building tool is active. Let the wheel reach the camera.
+- [ ] **Copy a building.** A "Copy / build more" action on a selected building opens placement for
+  that type.
+- [ ] **Scrolling in the build and train menus.** The panels need a scroll container that accepts
+  the wheel, so the map doesn't swallow it.
+- [ ] **A better training queue.** Unit icons, a clear current item with progress and ETA,
+  per-item cancel, reordering, a repeat toggle, and a total for the queue.
+- [ ] **All resources at a glance.** Munitions, power, fuel, electronics and other resources not
+  on the top bar should be reachable in one click: an expandable resource strip with rates and
+  shortages, plus warnings when one runs low.
+- [ ] **Defences don't block trench lines.** A guard post, bunker or fort on the drawn line
+  should be built around: the route skips the building's hex and joins its sides (server
+  `siteProblem` currently refuses the building hex).
+- [ ] **Curved battle lines.** A right-drag deployment should follow the drawn curve instead of a
+  straight segment, on both client and server deploy line.
+- [ ] **Smoother trench turns.** Corners are made of too many visible segments. Smooth the
+  centreline, increase subdivisions on bends, and blend the walls at junctions.
+
+### P4. Troops and combat
+- [ ] **March in formation, fight dynamically.** Squads and armies move in an ordered formation
+  (column on roads, line otherwise) and break into free-moving individual figures once in combat;
+  they re-form when the fighting stops.
+- [ ] **More fluid human animation.** Add more walk frames or skeletal-style limb interpolation,
+  arm swing, turning and a kneel/prone transition, for both troops and civilians.
+- [ ] **Accurate tracers with spread.** Tracers should leave from the actual shooter figures and
+  head toward the target figures, with weapon-appropriate spread, bursts and ricochets.
+- [ ] **AI digs in when war begins.** On a declaration of war, AI empires immediately plan full
+  trench lines and defensive networks (bunkers, guard posts and AA along the front), not just
+  lines for their deployed fronts.
+
+### P5. Performance and stability (high priority; affects every match)
+- [ ] **Frame drops when moving many troops.** Profile the client: squad figures, path drawing,
+  stack layout, formation overlays and unit labels are recomputed each frame for every unit.
+  Budget and batch them.
+- [ ] **50+ troops in battle: buildings stop updating and orders confirm slowly.** Likely causes:
+  the server tick overrunning (combat, pathfinding), the snapshot size and network frame cost, or
+  the client's building updates starving under combat effects. Measure server tick time and
+  snapshot size during large battles, then budget them.
+- [ ] **Server times out with many troops.** Profile pathfinding, combat targeting and
+  per-civilisation snapshot building. Add per-tick budgets and spread work across ticks; check
+  worker heartbeats.
+- [ ] **~200 troops: all buildings vanished and the camera reset.** A reset camera with cleared
+  buildings matches a world reset or re-welcome, likely the client reconnecting after a server
+  timeout and rebuilding everything. Fix the timeout, and make a reconnect to the same match keep
+  presentation (as terrain now does) instead of clearing buildings and the camera.
+
+### P6. Visuals
+- [ ] **A calmer ground texture.** The terrain detail is too noisy. Reduce high-frequency noise and
+  the detail-layer contrast, use larger-scale variation, and blend the biome layers more softly.
+- [ ] **Battle-damaged land (clarification needed).** "The battle trees look great but once a city
+  or ground becomes no man's land…" The request was cut off. Confirm what should happen, for
+  example felled forests not regrowing, ruined cities, or how no man's land should look over time.
+
 ## Status, evidence and decision rules
 
 - `[ ]` means the requested outcome still needs implementation, integration, quality review,
