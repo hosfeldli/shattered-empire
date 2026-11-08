@@ -25,7 +25,7 @@ func sync() -> void:
 	var world:=composition.world
 	if version==world.bf_version: return
 	version=world.bf_version; revision+=1
-	# Warzone material field (brief §4): R intensity, G scorch, B track wear (+ heavy-track flag),
+	# Warzone material field (brief §4): R intensity, G scorch, B unused,
 	# A ground class for terrain-specific scars (0 soil, 1 rock, 2 sand, 3 wetland, 4 urban).
 	var fields:={}
 	var touch:=func(tile:int) -> Array:
@@ -38,8 +38,7 @@ func sync() -> void:
 	# historical scars: the faint, long-lived trace of an old front (weaker than live damage)
 	for record in world.bf.get("hs",[]):
 		var f:Array=touch.call(int(record[0])); f[0]=maxf(float(f[0]),clampf(float(record[1])/10.0,0,1)*.35)
-	for record in world.bf.get("wr",[]):
-		var f:Array=touch.call(int(record[0])); f[2]=clampf(float(record[1])/10.0,0,1)*(1.0 if int(record[2])==2 else .7)
+	# hex-wide track wear is not drawn: it read as pale hexes and diagonal stripes, not tracks
 	if fields.is_empty():
 		composition.scheduler.cancel("battlefield-scar")
 		terrain.terrain_mat.set_shader_parameter("battle_active",0.0); return

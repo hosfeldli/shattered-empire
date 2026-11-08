@@ -106,8 +106,6 @@ func _describe(tile:int,detailed:=false) -> String:
 	for record in world.bf.get("w",[]):
 		if int(record[0])==tile:
 			lines.append("%s wreck%s · obstacle and cover · engineers can clear it"%[str(world.defs.get("UNITS",{}).get(str(record[1]),{}).get("name","Vehicle"))," (burning)" if int(record[2])==1 else ""]); break
-	for record in world.bf.get("wr",[]):
-		if int(record[0])==tile and int(record[1])>=4: lines.append("Worn tracks · heavy vehicle traffic" if int(record[2])==2 else "Worn ground · regular traffic"); break
 	if world.deposit(tile)>0:
 		var resources:Variant=world.defs.get("RESOURCE",[])
 		if resources is Array and world.deposit(tile)<resources.size(): lines.append(str(resources[world.deposit(tile)].get("name","Resource deposit")))

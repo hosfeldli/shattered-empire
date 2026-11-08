@@ -398,15 +398,17 @@ be done. The likely causes are first assessments from the code, not yet verified
   `tools/battle-bench.mjs`) as evidence.
 
 ### P6. Visuals
-- [ ] **A calmer ground texture.** The terrain detail is too noisy. Reduce high-frequency noise and
+
+> **Implemented 2026-11-07:** calmer ground, wear tint and rut stripes removed, darker churned no man's land and crater bowls. The battle-damaged land item still needs the user's clarification.
+- [x] **A calmer ground texture.** The terrain detail is too noisy. Reduce high-frequency noise and
   the detail-layer contrast, use larger-scale variation, and blend the biome layers more softly.
-- [ ] **Remove hex-wide ground wear; better craters (requested 2026-11-07).** Wear tinting
+- [x] **Remove hex-wide ground wear; better craters (requested 2026-11-07).** Wear tinting
   (`g.wear` / `bf.wr`) recolours whole hexes, and lighter hexes read as a rendering fault; real
   vehicle tracks are not a hex colour change. Remove the wear tint from the terrain shader and
   inspector. Keep only the no man's land simulation, and improve how it looks: darker, damp,
   scorched crater bowls with crisp rims, ejecta and debris, and a continuous churned field
   between craters rather than flat colour changes.
-- [ ] **Remove the diagonal ground lines (correction, 2026-11-07).** In heavily travelled and
+- [x] **Remove the diagonal ground lines (correction, 2026-11-07).** In heavily travelled and
   fought-over areas the terrain shows diagonal stripes, most likely the rut and track pattern
   driven by the wear and scar channels in the terrain shader. They read as artefacts; remove them
   together with the hex wear tint, leaving only the no man's land field and the crater work above.

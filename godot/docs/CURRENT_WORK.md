@@ -5,6 +5,19 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## P6 visuals (2026-11-07)
+
+- **Wear and stripes removed:** the hex-wide track-wear tint (`bf.wr`) is no longer drawn or
+  listed in the inspector. The diagonal lines in busy areas were its rut pattern (a sine across
+  the whole hex) and are gone with it. The server still records wear; nothing renders it.
+- **No man's land** is always darker than the ground it replaces (never a pale hex), damp, and
+  churned into clods at two scales.
+- **Craters** are dark, damp, scorched bowls with a lighter ring of thrown earth at the lip; rain
+  pools in the deepest part. This shading runs only on damaged ground. Frame time at 1000 troops
+  matches the previous shader within run-to-run noise.
+- **Calmer ground:** less fine speckle and detail-texture contrast, with a broader low-frequency
+  variation layer.
+
 ## P4 troops and combat (2026-11-07)
 
 - **March, then fight:** near the camera a squad marches as a tight two-file column whose files

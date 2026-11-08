@@ -599,14 +599,15 @@ void fragment() {
 	vec3 wn = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	float slope = 1.0 - wn.y;
 	vec3 weights = pow(abs(wn), vec3(4.0)); weights /= max(dot(weights, vec3(1.0)), 0.0001);
-	float n = (noise(wpos.zy * 5.0)*weights.x + noise(wpos.xz * 5.0)*weights.y + noise(wpos.xy * 5.0)*weights.z)*0.45 + noise(wpos.xz * 1.3)*0.55;
-	base *= 0.9 + 0.2 * n;
+	// calm ground: mostly broad variation, little fine speckle
+	float n = (noise(wpos.zy * 5.0)*weights.x + noise(wpos.xz * 5.0)*weights.y + noise(wpos.xy * 5.0)*weights.z)*0.25 + noise(wpos.xz * 1.3)*0.45 + noise(wpos.xz * .35)*0.3;
+	base *= 0.93 + 0.14 * n;
 	// Wrapped world-space sampling avoids a discontinuity at the horizontal map seam.
 	vec2 ground_uv=vec2(wpos.x/weather_extent.x*max(1.0,round(weather_extent.x*.7)),wpos.z*.7);
 	vec3 surface=texture(ground_detail,ground_uv).rgb;
-	float micro=clamp(dot(surface,vec3(.299,.587,.114))*5.0,.6,1.35);
+	float micro=clamp(dot(surface,vec3(.299,.587,.114))*5.0,.78,1.2);
 	float far_fade = 1.0 - smoothstep(30.0, 110.0, fog_view_size);
-	base*=mix(1.0,micro,.42*weights.y*(1.0-layers_ready*far_fade));
+	base*=mix(1.0,micro,.28*weights.y*(1.0-layers_ready*far_fade));
 	if (layers_ready > .5) {
 		// biome weights from the sRGB vertex palette: green grass, warm sand, grey rock, soil otherwise
 		vec3 c = COLOR.rgb;
@@ -619,7 +620,7 @@ void fragment() {
 		vec3 rock_detail = layer_detail(layer_rock, wpos.zy * .9) * weights.x + layer_detail(layer_rock, wrapped_uv(wpos, .9)) * weights.y + layer_detail(layer_rock, wpos.xy * .9) * weights.z;
 		vec3 layered = (layer_detail(layer_grass, wrapped_uv(wpos, 1.6)) * w_grass + layer_detail(layer_sand, wrapped_uv(wpos, 1.2)) * w_sand
 			+ rock_detail * w_rock + layer_detail(layer_snow, wrapped_uv(wpos, 1.0)) * w_snow + layer_detail(layer_soil, wrapped_uv(wpos, 1.4)) * w_soil) / total;
-		base *= mix(vec3(1.0), layered, .8 * far_fade + .15);
+		base *= mix(vec3(1.0), layered, .55 * far_fade + .12);
 	}
 	float river_margin=0.0;
 	if (river_bank_active>.0) {
@@ -656,13 +657,23 @@ void fragment() {
 	else if (ground_class==3) scar_color = vec3(.15,.14,.11);
 	else if (ground_class==4) scar_color = vec3(.42,.41,.39);
 	float scar = field.r;
-	base = mix(base,scar_color*(0.8+0.3*n),scar*.8);
-	base = mix(base,vec3(.06,.055,.05)*(0.85+0.3*n),smoothstep(.05,.9,field.g)*.75);
-	float ruts = smoothstep(.55,.95,abs(sin(dot(wpos.xz,vec2(.83,.56))*38.0+noise(wpos.xz*2.0)*3.0)));
-	base = mix(base,scar_color*1.1,field.b*(.35+.45*ruts)*(ground_class==4?0.0:1.0));
-	wet = max(wet,scar*wet);
-	float pooled = smoothstep(.25,.75,1.0-COLOR.a) * smoothstep(.2,.6,wet) * battle_active;
-	base = mix(base,vec3(.10,.12,.12),pooled*.85);
+	float bowl = (1.0-COLOR.a) * battle_active;
+	if (scar > .002 || bowl > .002 || field.g > .002) {
+		// no man's land: always darker than the ground it replaces (never a pale hex), damp and
+		// churned into clods and puddled hollows rather than a flat colour change
+		scar_color = min(scar_color*.62, base*.55);
+		float clods = noise(wpos.xz*9.0)*.6 + noise(wpos.xz*23.0)*.4;
+		vec3 churned = mix(scar_color*.7, scar_color*1.15, smoothstep(.35,.75,clods));
+		base = mix(base, churned*(0.85+0.25*n), scar*.85);
+		base = mix(base,vec3(.06,.055,.05)*(0.85+0.3*n),smoothstep(.05,.9,field.g)*.75);
+		wet = max(wet, scar*max(wet, .25));
+		// craters: dark, damp, scorched bowls with a lighter ring of thrown earth at the lip
+		float lip = smoothstep(.0,.12,bowl) * (1.0-smoothstep(.12,.35,bowl));
+		base = mix(base, vec3(.07,.06,.05)*(.8+.4*clods), smoothstep(.2,.85,bowl)*.85);
+		base = mix(base, scar_color*1.45*(.85+.3*clods), lip*.55);
+		float pooled = smoothstep(.45,.85,bowl) * smoothstep(.2,.6,wet);
+		base = mix(base,vec3(.08,.09,.09),pooled*.85);
+	}
 	base *= 1.0 - 0.3 * wet;
 	base = mix(base, vec3(.80,.82,.85)*(.92+.1*n), snow_cover*(1.0-smoothstep(.15,.4,slope))*step(.01,wpos.y)*.8);
 	base = territory_tint(base, wpos.xz);
