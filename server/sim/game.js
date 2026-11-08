@@ -45,7 +45,9 @@ const LEVEL_OF = { tech: 'info', build: 'info', unit: 'info', history: 'info', r
   quake: 'major', eruption: 'major', rift: 'minor', uplift: 'minor', drought: 'major', river: 'minor', warning: 'major', rebel: 'major', loss: 'major', isolated: 'major', blocked: 'major', proposal: 'major', war: 'major', error: 'minor',
   famine: 'critical', fall: 'critical', wonder: 'critical' };
 
-const CITY_NAMES = ['Aldmoor', 'Brightwater', 'Cindervale', 'Dunhollow', 'Emberfell', 'Frosthaven', 'Greywatch', 'Highcrag', 'Ironford', 'Juniper', 'Kingsreach', 'Lowmarsh', 'Mistport', 'Northgate', 'Oakheart', 'Pinecrest', 'Quarrytown', 'Redcliff', 'Stonebridge', 'Thornfield', 'Umberdale', 'Valewind', 'Westmarch', 'Yarrow', 'Zephyr Rock', 'Ashmere', 'Blackreed', 'Coldspring', 'Deepwell', 'Eastbrook', 'Foundry Hill', 'Gantry', 'Harrowgate', 'Isolde', 'Jetty'];
+// Settlements of a world rebuilding among the ruins of the old one: named for what survivors found
+// there (salvage, a standing structure, a landmark of the collapse), not fantasy-medieval places.
+const CITY_NAMES = ['Ironford', 'Rustwater', 'Cinderhold', 'Saltreach', 'Gantry', 'Lastlight', 'Breakwater', 'Pylon Ridge', 'New Haven', 'Scrapton', 'Ashby Crossing', 'Fallow Yard', 'Overpass', 'Turbine Hill', 'Drydock', 'Signal Point', 'Ember Station', 'Quarry Nine', 'Concrete Bay', 'Relay', 'Hollowgate', 'Silo Plains', 'Mender\'s Rest', 'Vault Seven', 'Copperline', 'Dam Town', 'Sunken Market', 'Terminal', 'Greenhouse', 'Kiln', 'Last Bridge', 'Waystation', 'Haven Deep', 'Northlight', 'Reclaim'];
 
 const ESSENTIAL = new Set(['farm', 'house', 'port']);
 
@@ -216,7 +218,8 @@ export class Game {
   canHitUnit(u, e) { return canHit(UNITS[u.type], e); }
   onBaseLost(b) { onBuildingLost(this, b); }
   damageBuilding(b, amount, attacker, cause) { damageBuilding(this, b, amount, attacker, cause); }
-  maxHouses(civ) { return 3 + 2 * Math.min(3, civ.age); }
+  // homes per city: enough from the start for a real housing district (2026-11-08: was 3 early on)
+  maxHouses(civ) { return 6 + 3 * Math.min(3, civ.age); }
 
   // Alerts carry a level so players can tell routine news from emergencies.
   notify(civId, text, extra = {}) {
@@ -296,7 +299,7 @@ export class Game {
     if (waterPort) { if (!this.waterPortSite(civ, t)) return false; }
     else if (w.river[t] || isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return false;
     if (def.anywhere) { if (w.owner[t] !== civ.id && !civ.supply[t]) return false; if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return false; }
-    else if (w.owner[t] !== civ.id) return false;
+    else if (w.owner[t] !== civ.id && !(waterPort && w.owner[t] < 0)) return false;   // a quay may reach unclaimed sea
     if (def.wonder && [...this.buildings.values()].some((b) => b.type === 'wonder' && b.owner === civ.id)) return false;
     if (type === 'house') {
       const cid = this.nearestCityId(civ.id, t);
@@ -310,7 +313,7 @@ export class Game {
   // an ocean (not lake or river) hex in our waters with a dry shore hex of ours beside it
   waterPortSite(civ, t) {
     const w = this.world;
-    if (!isWater(w.terr[t]) || w.lake[t] || w.river[t] || w.owner[t] !== civ.id) return false;
+    if (!isWater(w.terr[t]) || w.lake[t] || w.river[t] || (w.owner[t] !== civ.id && w.owner[t] >= 0)) return false;
     for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && !isWater(w.terr[n]) && !w.river[n] && w.owner[n] === civ.id && Number.isFinite(TERRAIN[w.terr[n]].move)) return true; }
     return false;
   }
@@ -628,31 +631,15 @@ export class Game {
       if (civ.human) this.autoTech(civ);
       if (!civ.researching) { civ.progress = 0; continue; }
       const k = civ.researching, tech = TECHS[k];
-      const paid = civ.techPaid || (civ.techPaid = {});
-      if (tech.goods && !paid[k]) {
-        if (this.canAfford(civ, tech.goods)) { this.pay(civ, tech.goods, undefined, 'research'); paid[k] = 1; }
-        else {
-          civ.researchWait = k; civ.waitT = (civ.waitT || 0) + dt; civ.progress = tp[k] || 0;
-          // never stall silently: say once per technology what is missing
-          if (civ.human && civ.waitNoted !== k) {
-            civ.waitNoted = k;
-            const missing = Object.entries(tech.goods).filter(([g2, v]) => (civ.res[g2] || 0) < v).map(([g2, v]) => `${Math.ceil(v - (civ.res[g2] || 0))} more ${g2}`).join(' and ');
-            this.notify(civ.id, `Research of ${tech.name} is waiting for goods: ${missing}. Build or staff production for them; research resumes on its own.`, { kind: 'tech', level: 'major' });
-          }
-          if (civ.waitT > 20) {
-            const alt = Object.keys(TECHS).find((x) => x !== k && researchReady(civ, x) && (!TECHS[x].goods || paid[x] || this.canAfford(civ, TECHS[x].goods)));
-            if (alt) { civ.queue = [k, ...civ.queue.filter((x) => x !== k && x !== alt)]; civ.researching = alt; civ.waitT = 0; civ.researchWait = null; }
-          }
-          continue;
-        }
-      }
+      // Research never waits for goods (2026-11-08): it advances on research output alone, so the
+      // tree is never blocked by a shortage elsewhere in the economy.
       civ.researchWait = null; civ.waitT = 0; civ.waitNoted = null;
       // progress belongs to the technology: switching away and back loses nothing
       tp[k] = (tp[k] || 0) + civ.researchRate * dt;
       civ.progress = tp[k];
       if (tp[k] >= tech.cost) {
         civ.techs.add(k);
-        delete tp[k]; delete paid[k];
+        delete tp[k]; if (civ.techPaid) delete civ.techPaid[k];
         this.notify(civ.id, `Research complete: ${tech.name}.`, { kind: 'tech', sound: 'research' });
         civ.researching = null; civ.progress = 0;
         civ.queue = civ.queue.filter((x) => !civ.techs.has(x));

@@ -78,7 +78,11 @@ test('indirect-fire artillery must halt and set up before it can fire (native-v4
   const { spawnUnit } = await import('../server/sim/military.js');
   const { artilleryReady, ARTILLERY_SETUP } = await import('../server/sim/combat.js');
   const { g, civ, cap } = setup();
-  const gun = spawnUnit(g, civ, 'field_gun', cap.tile);
+  // field guns are direct-fire weapons now; self-propelled howitzers are the indirect-fire case
+  const fieldGun = spawnUnit(g, civ, 'field_gun', cap.tile);
+  fieldGun.next = cap.tile;
+  assert.equal(artilleryReady(g, fieldGun), true, 'a direct-fire field gun needs no setup');
+  const gun = spawnUnit(g, civ, 'sp_artillery', cap.tile);
   gun.movedAt = g.time; gun.next = -1;
   assert.equal(artilleryReady(g, gun), false, 'a gun that has just stopped is not yet laid');
   gun.movedAt = g.time - ARTILLERY_SETUP - 0.1;

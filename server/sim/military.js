@@ -14,6 +14,7 @@ import { siegeDamage } from './cities.js';
 import { fireUnit, fireBuilding, chooseTarget, firingPosition, coverPosition, emit, onUnitLost, CS, lineOfFire } from './combat.js';
 import { UNIT_WEAPON, WEAPONS, BUILDING_WEAPON, weaponVs } from './weapons.js';
 import { addWreck, engineerClear, scarCost, addWear } from './battlefield.js';
+import { meltdown } from './missiles.js';
 
 export function spawnUnit(g, civ, type, tile) {
   const def = UNITS[type];
@@ -363,6 +364,8 @@ export function damageBuilding(g, b, amount, attackerCivId, cause) {
   b.hp -= amount; b.lastHit = g.time;
   if (b.hp > 0) { if (cause === 'combat' || cause === 'quake' || cause === 'lava') g.ignite(b, cause === 'lava' ? 1 : 0.15); g.refreshState(b); return; }
   const owner = g.civs[b.owner];
+  // a destroyed reactor explodes (once)
+  if (BUILDINGS[b.type].meltdown && !b.melted) { b.melted = true; meltdown(g, b, attackerCivId); if (!g.buildings.has(b.id)) return; }
   if (b.type === 'town') {
     const city = [...g.cities.values()].find((c) => c.buildingId === b.id);
     if (attackerCivId != null && city) {

@@ -47,11 +47,9 @@ export function siteProblem(g, civ, t) {
   if (isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return 'water or impassable ground';
   if (g.urban[t]) return 'developed city district';
   if (g.tileB[t] >= 0) return 'a building stands there';
-  const o = g.world.owner[t];
-  if (!g.sandbox) {                       // the developer combat sandbox treats the whole arena as supplied
-    if (o >= 0 && o !== civ.id) return 'foreign territory';
-    if (o !== civ.id && !civ.supply[t]) return 'outside your territory and supply network';
-  }
+  if (g.world.road[t]) return 'a road runs there';
+  // Trenches may be dug anywhere troops can reach: outside your cities and borders, and in enemy
+  // territory too (2026-11-08). Crews still walk there from your supply network.
   for (const id of g.tileUnits.get(t) || []) { const u = g.units.get(id); if (u && !UNITS[u.type].air && g.hostile(civ.id, u.owner)) return 'enemy troops hold it'; }
   const f = g.fieldworks.get(t);
   if (f && f.owner !== civ.id && f.progress > 0) return 'another empire\'s works';
@@ -135,11 +133,13 @@ function queuedWork(g, civ) {
 // Commit a plan exactly as previewed. Returns { project, placed, skipped, cost, seconds }.
 export function commitTrench(g, civ, plan, by = 'player') {
   if (!plan.build) return { error: plan.invalid ? `no valid segments: ${plan.segments.find((s) => !s.ok)?.reason}` : 'nothing new to build on that line' };
-  if (nativeRules(g) && plan.invalid) return { error: 'A continuous trench needs a valid route. Adjust the line around blocked ground.' };
+  // A line crossing a road, a river or a building still builds: only the blocked segments are left
+  // out (and reported), the rest of the line is dug (2026-11-08).
   const id = (g.trenchSeq = (g.trenchSeq || 0) + 1);
   const pr = { id, owner: civ.id, type: plan.type, tiles: [], facing: plan.facing, created: g.time, by, status: 'queued' };
   if (nativeRules(g)) {
-    pr.path = [...plan.tiles];
+    const blocked = new Set(plan.segments.filter((s) => !s.ok).map((s) => s.t));
+    pr.path = plan.tiles.filter((t) => !blocked.has(t));
     const access = (tile) => (g.sandbox || civ.supply[tile] ? 2 : 0) + (g.world.road[tile] ? 4 : 0);
     if (access(pr.path.at(-1)) > access(pr.path[0])) pr.path.reverse();
     pr.twoFronts = pr.path.length >= 8 && access(pr.path[0]) > 0 && access(pr.path.at(-1)) > 0;

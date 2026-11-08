@@ -136,6 +136,35 @@ export function detonateMissile(g, m) {
   g.stats.detonations = (g.stats.detonations || 0) + 1;
 }
 
+// A destroyed nuclear power plant: an explosion half the size of a strategic warhead (half the
+// blast, one ring instead of two) with local fallout. The plant itself is already being destroyed
+// by whatever hit it, so the blast spares that one building.
+export function meltdown(g, plant, by = null) {
+  const t = plant.tile;
+  emit(g, { k: 'mimpact', b: t, o: plant.owner, h: 1 });
+  for (let r = 0; r <= 1; r++) for (const x of disk(t, r)) {
+    if (dist(x, t) !== r) continue;
+    for (const id of [...(g.tileUnits.get(x) || [])]) { const u = g.units.get(id); if (u) g.damageUnit(u, MISSILE.blast[r] * 0.5 * (UNITS[u.type].air && !u.grounded ? 0.5 : 1), by, 'combat'); }
+    const b = g.buildingAtTile(x);
+    if (b && b.id !== plant.id) {
+      if (b.type === 'town') {
+        const c = g.cities.get(b.cityId) || [...g.cities.values()].find((cc) => cc.buildingId === b.id);
+        if (c) { c.pop *= r === 0 ? 0.75 : 0.9; c.stability = Math.max(0, c.stability - (r === 0 ? 20 : 8)); c.disaster = (c.disaster || 0) + 15; }
+      }
+      g.damageBuilding(b, MISSILE.bBlast[r] * 0.5, by, 'combat');
+    }
+    addIntensity(g, x, r === 0 ? 80 : 50);
+    if (!isWater(g.world.terr[x])) {
+      if (r === 0) addCrater(g, x, 2, 'strategic');
+      addSmoke(g, x, 1, 45 - r * 15);
+      g.fallout.set(x, g.time + MISSILE.fallout * (r === 0 ? 0.6 : 0.4)); g.world.dirty.add(x);
+    }
+  }
+  const owner = g.civs[plant.owner];
+  if (owner) g.notify(owner.id, 'Our nuclear power plant has been destroyed: the reactor exploded.', { kind: 'loss', tile: t, level: 'critical' });
+  g.stats.meltdowns = (g.stats.meltdowns || 0) + 1;
+}
+
 // fallout: no farming, and troops standing in it suffer
 export const falloutAt = (g, t) => (g.fallout?.get(t) || 0) > g.time;
 
