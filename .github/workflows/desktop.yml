@@ -1,15 +1,9 @@
-name: Desktop builds
+name: Desktop builds (retired Electron edition)
 
-# Builds the Electron desktop edition for macOS, Windows and Linux and publishes the installers to
-# game.liamhosfeld.com/download (Cloud Storage downloads/ in the game's bucket, served by the game
-# server through the same load balancer -> Cloud Run path). Runs for version tags or on demand.
+# The Electron edition is retired: the download page now offers the native client (native.yml) and
+# this workflow no longer runs automatically. It remains available on demand to rebuild the legacy
+# installers for reference; their earlier files stay in storage and are no longer listed.
 on:
-  push:
-    tags: ['v*', 'desktop-v*']
-    # every change to the game client or the app rebuilds the installers, so the download page
-    # always offers a build that matches the deployed server
-    branches: [main]
-    paths: ['client/**', 'desktop/**', 'server/sim/deploy.js', 'package.json', '.github/workflows/desktop.yml']
   workflow_dispatch:
 
 concurrency:

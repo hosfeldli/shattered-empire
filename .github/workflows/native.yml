@@ -1,0 +1,81 @@
+name: Native builds
+
+# Builds the Godot native client for Windows and macOS on every change to main and publishes it to
+# game.liamhosfeld.com/download as the official build (kind 'native'). This replaces the Electron
+# installers on the download page. The Unity client publishes separately as an opt-in preview
+# (unity.yml) until it passes its release gates (docs/UNITY_MIGRATION.md, M8).
+on:
+  push:
+    branches: [main]
+    paths: ['godot/**', 'server/**', 'tools/build-native.mjs', 'tools/publish-downloads.mjs', '.github/workflows/native.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: native-builds
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: '4.7.2'
+  BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Install the pinned engine and export templates
+        run: |
+          base="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable"
+          curl --fail --location --retry 3 -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d /tmp/godot-bin
+          sudo install /tmp/godot-bin/Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+          curl --fail --location --retry 3 -o /tmp/templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          unzip -q /tmp/templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+      - name: Build Windows and macOS
+        run: GODOT_PATH=godot node tools/build-native.mjs --platform=all --out=dist/native
+      - name: Name the artifacts by source revision
+        run: |
+          HASH="${GITHUB_SHA::12}"
+          mkdir -p dist/publish
+          mv "dist/native/Shattered Empires Native.exe" "dist/publish/ShatteredEmpires-${HASH}-Windows-x64.exe"
+          mv "dist/native/Shattered Empires Native.zip" "dist/publish/ShatteredEmpires-${HASH}-macOS-universal.zip"
+          echo "BUILD=$HASH" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ env.BUILD }}
+          path: dist/publish/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/publish
+          merge-multiple: true
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Publish the official native build
+        run: |
+          node tools/publish-downloads.mjs --dir=dist/publish --kind=native --build="${GITHUB_SHA::12}" --bucket="$BUCKET"
+          echo "### Native build ${GITHUB_SHA::12} published: https://game.liamhosfeld.com/download" >> "$GITHUB_STEP_SUMMARY"

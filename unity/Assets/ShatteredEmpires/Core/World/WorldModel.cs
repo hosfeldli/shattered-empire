@@ -1,0 +1,273 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using SE.Core.Protocol;
+
+namespace SE.Core.World
+{
+    /// <summary>
+    /// The client's mirror of the terrain and tile state the server has told this viewer. Nothing here
+    /// is simulated. Arrays are allocated once per world and pinned, so Burst jobs can read them
+    /// through a <see cref="TerrainView"/> without copying.
+    /// </summary>
+    public sealed unsafe class WorldModel : IDisposable
+    {
+        public const int GeoStride = 6;
+        public const float LandScale = 3.2f;
+        public const float SeaScale = 1.4f;
+        public const float LakeDepth = 0.14f;
+        public const float RiverDepth = 0.07f;
+        public const int ChunkSize = 16;
+
+        public HexGrid Grid { get; private set; }
+        public int ChunksW { get; private set; }
+        public int ChunksH { get; private set; }
+
+        // terrain geometry ('geo' capability)
+        public byte[] Geo = Array.Empty<byte>();
+        public byte[] Known = Array.Empty<byte>();
+        public byte[] Biome = Array.Empty<byte>();
+        public byte[] GeoFlags = Array.Empty<byte>();
+        public float[] Height = Array.Empty<float>();
+        public float[] Water = Array.Empty<float>();
+
+        // tile records (protocol 1)
+        public byte[] Terrain = Array.Empty<byte>();
+        public int[] Owner = Array.Empty<int>();
+        public int[] Road = Array.Empty<int>();
+        public int[] TileFlags = Array.Empty<int>();
+        public byte[] Resource = Array.Empty<byte>();
+        public uint[] ServerColor = Array.Empty<uint>();
+        public byte[] Visible = Array.Empty<byte>();   // packed bits, as sent
+        public byte[] Urban = Array.Empty<byte>();     // packed bits, as sent
+
+        /// <summary>Increments whenever heights change (anything sampling the ground re-samples).</summary>
+        public int GeometryRevision { get; private set; }
+        public int VisibilityRevision { get; private set; }
+        public int RoadRevision { get; private set; }
+        /// <summary>Increments on a welcome or reset, even when the same match is rejoined.</summary>
+        public int Epoch { get; private set; }
+
+        readonly List<GCHandle> pins = new List<GCHandle>();
+        TerrainView view;
+
+        public TerrainView View => view;
+        public bool Ready => Grid != null;
+
+        public void Reset(int width, int height, bool wraps)
+        {
+            if (Grid == null || Grid.W != width || Grid.H != height || Grid.Wrap != wraps)
+            {
+                Unpin();
+                Grid = new HexGrid(width, height, wraps);
+                int n = Grid.N;
+                Geo = new byte[n * GeoStride];
+                Known = new byte[n];
+                Biome = new byte[n];
+                GeoFlags = new byte[n];
+                Height = new float[n];
+                Water = new float[n];
+                Terrain = new byte[n];
+                Owner = new int[n];
+                Road = new int[n];
+                TileFlags = new int[n];
+                Resource = new byte[n];
+                ServerColor = new uint[n];
+                Visible = new byte[(n + 7) / 8];
+                Urban = new byte[(n + 7) / 8];
+                Pin();
+            }
+            else
+            {
+                Array.Clear(Geo, 0, Geo.Length); Array.Clear(Known, 0, Known.Length);
+                Array.Clear(Biome, 0, Biome.Length); Array.Clear(GeoFlags, 0, GeoFlags.Length);
+                Array.Clear(Height, 0, Height.Length); Array.Clear(Terrain, 0, Terrain.Length);
+                Array.Clear(Road, 0, Road.Length); Array.Clear(TileFlags, 0, TileFlags.Length);
+                Array.Clear(Resource, 0, Resource.Length); Array.Clear(ServerColor, 0, ServerColor.Length);
+                Array.Clear(Visible, 0, Visible.Length); Array.Clear(Urban, 0, Urban.Length);
+            }
+            for (int i = 0; i < Owner.Length; i++) Owner[i] = -1;
+            for (int i = 0; i < Water.Length; i++) Water[i] = TerrainView.NoWater;
+            ChunksW = (Grid.W + ChunkSize - 1) / ChunkSize;
+            ChunksH = (Grid.H + ChunkSize - 1) / ChunkSize;
+            Epoch++; GeometryRevision++; VisibilityRevision++; RoadRevision++;
+        }
+
+        void Pin()
+        {
+            view = new TerrainView
+            {
+                W = Grid.W, H = Grid.H, Wrap = Grid.Wrap ? 1 : 0, Period = Grid.Period,
+                Height = (float*)PinArray(Height), Water = (float*)PinArray(Water),
+                Known = (byte*)PinArray(Known), GeoFlags = (byte*)PinArray(GeoFlags),
+                Biome = (byte*)PinArray(Biome), Nb = (int*)PinArray(Grid.Nb),
+            };
+            GeoPtr = (byte*)PinArray(Geo);
+        }
+
+        /// <summary>The pinned raw geo bytes (6 per hex), for jobs that need flow and deposit data.</summary>
+        public byte* GeoPtr { get; private set; }
+
+        IntPtr PinArray(Array a)
+        {
+            var h = GCHandle.Alloc(a, GCHandleType.Pinned);
+            pins.Add(h);
+            return h.AddrOfPinnedObject();
+        }
+
+        void Unpin()
+        {
+            foreach (var h in pins) if (h.IsAllocated) h.Free();
+            pins.Clear();
+            view = default;
+        }
+
+        public void Dispose() => Unpin();
+
+        public int ChunkOf(int i)
+        {
+            int q = i % Grid.W, r = i / Grid.W;
+            return (r / ChunkSize) * ChunksW + q / ChunkSize;
+        }
+
+        public float Elevation(int i) => Geo[i * GeoStride] / 127.5f - 1f;
+        public int Deposit(int i) => Geo[i * GeoStride + 4] & 15;
+        public int FlowBucket(int i) => Geo[i * GeoStride + 4] >> 4;
+        public int FlowDir(int i) => Geo[i * GeoStride + 5] - 1;
+        public bool IsLake(int i) => (GeoFlags[i] & 2) != 0;
+        public bool IsRiver(int i) => (GeoFlags[i] & 1) != 0;
+        public bool IsSea(int i) => Biome[i] <= 1 && (GeoFlags[i] & 2) == 0;
+        public bool IsVisible(int i) => (Visible[i >> 3] & (1 << (i & 7))) != 0;
+        public bool IsUrban(int i) => (Urban[i >> 3] & (1 << (i & 7))) != 0;
+
+        /// <summary>World height of hex i from its quantized elevation (WorldState.gd _tile_height).</summary>
+        public static float TileHeightFromGeo(byte elevByte, byte biome, byte flags)
+        {
+            float e = elevByte / 127.5f - 1f;
+            bool lake = (flags & 2) != 0, river = (flags & 1) != 0;
+            bool sea = biome <= 1 && !lake;
+            if (sea) return Math.Min(e, -0.03f) * SeaScale;
+            float relief = Math.Max(e - 0.32f, 0f);
+            float y = Math.Max(e, 0f) * LandScale + relief * relief * 6f + 0.05f;
+            if (lake) y -= LakeDepth;
+            else if (river) y -= RiverDepth;
+            return y;
+        }
+
+        /// <summary>
+        /// Apply terrain geometry. Returns the chunks whose meshes must be rebuilt: a hex's shape changes
+        /// its neighbours' corners, so neighbouring chunks are included.
+        /// </summary>
+        public HashSet<int> ApplyGeo(GeoMessage m)
+        {
+            var touched = new HashSet<int>();
+            if (!Ready) return touched;
+            int cs = m.ChunkSize > 0 ? m.ChunkSize : ChunkSize;
+            int stride = m.Stride > 0 ? m.Stride : GeoStride;
+            if (m.Full)
+            {
+                Array.Clear(Known, 0, Known.Length);
+                Array.Clear(Height, 0, Height.Length);
+                for (int c = 0; c < ChunksW * ChunksH; c++) touched.Add(c);
+            }
+            int w = Grid.W;
+            bool heightChanged = m.Full;
+            foreach (var chunk in m.Chunks)
+            {
+                int k = 0;
+                for (int cell = 0; cell < cs * cs; cell++)
+                {
+                    if ((chunk.Mask[cell >> 3] & (1 << (cell & 7))) == 0) continue;
+                    int q = chunk.Cx * cs + cell % cs;
+                    int r = chunk.Cy * cs + cell / cs;
+                    int i = r * w + q;
+                    if (q >= w || r >= Grid.H || k * stride + GeoStride > chunk.Data.Length) { k++; continue; }
+                    for (int b = 0; b < GeoStride; b++) Geo[i * GeoStride + b] = chunk.Data[k * stride + b];
+                    Biome[i] = Geo[i * GeoStride + 1];
+                    GeoFlags[i] = Geo[i * GeoStride + 3];
+                    float y = TileHeightFromGeo(Geo[i * GeoStride], Biome[i], GeoFlags[i]);
+                    if (Known[i] == 0 || Height[i] != y) heightChanged = true;
+                    Height[i] = y;
+                    Known[i] = 1;
+                    k++;
+                    touched.Add(ChunkOf(i));
+                    for (int d = 0; d < 6; d++)
+                    {
+                        int nb = Grid.Nb[i * 6 + d];
+                        if (nb >= 0) touched.Add(ChunkOf(nb));
+                    }
+                }
+            }
+            RecomputeWater();
+            if (heightChanged) GeometryRevision++;
+            return touched;
+        }
+
+        /// <summary>Standing water: sea level 0; a lake's surface is shared by its connected hexes.</summary>
+        public void RecomputeWater()
+        {
+            int n = Grid.N;
+            for (int i = 0; i < n; i++) Water[i] = Known[i] != 0 && IsSea(i) ? 0f : TerrainView.NoWater;
+            var queue = new List<int>();
+            var visited = new bool[n];
+            for (int i = 0; i < n; i++)
+            {
+                if (visited[i] || Known[i] == 0 || !IsLake(i)) continue;
+                queue.Clear(); queue.Add(i); visited[i] = true;
+                float level = float.NegativeInfinity;
+                for (int cursor = 0; cursor < queue.Count; cursor++)
+                {
+                    int t = queue[cursor];
+                    level = Math.Max(level, Height[t] + LakeDepth * 0.8f);
+                    for (int d = 0; d < 6; d++)
+                    {
+                        int nb = Grid.Nb[t * 6 + d];
+                        if (nb >= 0 && !visited[nb] && Known[nb] != 0 && IsLake(nb)) { visited[nb] = true; queue.Add(nb); }
+                    }
+                }
+                foreach (int t in queue) Water[t] = level;
+            }
+        }
+
+        /// <summary>Apply tile records. Fills the changed tile list and returns whether any road changed.</summary>
+        public bool ApplyTiles(TileRecord[] tiles, List<int> changed)
+        {
+            bool roads = false;
+            foreach (var t in tiles)
+            {
+                int i = t.Index;
+                if (i < 0 || i >= Grid.N) continue;
+                Terrain[i] = (byte)t.Terrain;
+                Resource[i] = (byte)t.Resource;
+                if (Road[i] != t.Roads) roads = true;
+                Road[i] = t.Roads;
+                TileFlags[i] = t.Flags;
+                Owner[i] = t.Owner;
+                ServerColor[i] = (uint)t.Color;
+                changed?.Add(i);
+            }
+            if (roads) RoadRevision++;
+            return roads;
+        }
+
+        public void ApplyVisibility(byte[] bits)
+        {
+            if (bits == null || bits.Length != Visible.Length) return;
+            Buffer.BlockCopy(bits, 0, Visible, 0, bits.Length);
+            VisibilityRevision++;
+        }
+
+        public void ApplyUrban(byte[] bits)
+        {
+            if (bits == null || bits.Length != Urban.Length) return;
+            Buffer.BlockCopy(bits, 0, Urban, 0, bits.Length);
+        }
+
+        /// <summary>Road type on edge d of hex i (0 none; server roads.js edge.type), packed 4 bits per edge.</summary>
+        public int RoadClass(int i, int d) => (Road[i] >> (d * 4)) & 7;
+        /// <summary>Whether the road on edge d of hex i is destroyed (condition 0).</summary>
+        public bool RoadBroken(int i, int d) => ((Road[i] >> (d * 4)) & 8) != 0;
+
+        public float GroundHeight(float x, float z) => view.GroundHeight(x, z);
+    }
+}

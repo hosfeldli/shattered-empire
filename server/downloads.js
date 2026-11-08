@@ -52,22 +52,38 @@ export function makeDownloads(log) {
     body.pipe(res);
   }
 
+  // Which builds the page offers. The official build is the newest native client ('native', published
+  // automatically from main; older 'native-preview' uploads count until one exists). Unity client
+  // previews ('unity-preview') are listed separately as opt-in. The retired Electron installers
+  // ('install' / 'update' / unlabelled) are no longer offered, though their files stay in storage and
+  // their links keep working.
+  function offered(m) {
+    const official = m.files.filter((f) => f.kind === 'native');
+    return {
+      official: official.length ? official : m.files.filter((f) => f.kind === 'native-preview'),
+      unity: m.files.filter((f) => f.kind === 'unity-preview'),
+    };
+  }
+
   async function page(res, ua = '') {
     const m = await manifest();
     const guess = /Mac OS X|Macintosh/.test(ua) ? 'mac' : /Windows/.test(ua) ? 'win' : /Linux/.test(ua) ? 'linux' : '';
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const size = (b) => (b > 1e6 ? (b / 1e6).toFixed(0) + ' MB' : b ? Math.round(b / 1e3) + ' kB' : '');
+    const link = (f) => `<a class="btn" href="/download/file/${encodeURIComponent(f.name)}">${esc(f.label || f.name)}</a> <span class="muted">${size(f.size)}${f.sha256 ? ` · sha256 ${esc(f.sha256.slice(0, 12))}…` : ''}</span>`;
+    const { official, unity } = offered(m);
     const rows = Object.entries(PLATFORMS).map(([k, label]) => {
-      // Native macOS previews are distributed as app ZIPs, unlike Electron's update ZIPs.
-      const fs2 = m.files.filter((f) => f.platform === k && f.kind !== 'update' && (!/\.zip$/i.test(f.name) || f.kind === 'native-preview'));
-      return `<section class="${k === guess ? 'you' : ''}"><h2>${label}${k === guess ? ' <small>(your system)</small>' : ''}</h2>${fs2.length ? fs2.map((f) => `<a class="btn" href="/download/file/${encodeURIComponent(f.name)}">${esc(f.label || f.name)}</a> <span class="muted">${size(f.size)}${f.sha256 ? ` · sha256 ${esc(f.sha256.slice(0, 12))}…` : ''}</span>`).join('<br>') : '<p class="muted">No build yet.</p>'}</section>`;
+      const fs2 = official.filter((f) => f.platform === k);
+      const us = unity.filter((f) => f.platform === k);
+      return `<section class="${k === guess ? 'you' : ''}"><h2>${label}${k === guess ? ' <small>(your system)</small>' : ''}</h2>${fs2.length ? fs2.map(link).join('<br>') : '<p class="muted">No build yet.</p>'}${us.length ? `<p class="muted" style="margin:10px 0 2px">New engine preview (opt-in):</p>${us.map(link).join('<br>')}` : ''}</section>`;
     }).join('');
+    const build = official.find((f) => f.build)?.build || m.native?.build || null;
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
     res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shattered Empires — Desktop</title>
 <style>body{margin:0;background:#122025;color:#e9e4d6;font:16px/1.5 'Barlow Semi Condensed',system-ui,sans-serif}main{max-width:720px;margin:0 auto;padding:40px 16px}h1{font-family:'IM Fell English SC',Georgia,serif;font-weight:400;font-size:40px;margin:0 0 8px}h2{font-size:20px;margin:0 0 8px}section{background:#1a2c32;border:1px solid #2c3d40;border-radius:6px;padding:14px 16px;margin:12px 0}section.you{border-color:#d9a43a}img.map{width:100%;max-height:240px;object-fit:cover;border-radius:6px;margin:8px 0 12px;image-rendering:pixelated}.btn{display:inline-block;background:#d9a43a;color:#13201f;font-weight:700;padding:8px 14px;border-radius:4px;text-decoration:none;margin:4px 8px 4px 0}.muted{color:#9fb0ab;font-size:14px}a{color:#d9a43a}small{font-weight:400;color:#9fb0ab}</style></head>
-<body><main><h1>Shattered Empires</h1><img class="map" src="/api/preview?seed=${Date.now() % 100000}" alt="A generated continent"><p>A grand-scale strategy game on a continent that is still tearing itself apart. Download the game for Windows or macOS; every match is played on the game servers here, against the AI or with friends.${m.version ? ` Original desktop version <b>${esc(m.version)}</b>${m.date ? ` (${esc(m.date.slice(0, 10))})` : ''}.` : ''}</p>${rows}
-<p class="muted">Original desktop installers: open the macOS .dmg and drag the app to Applications, or run the Windows setup .exe. These installed versions update themselves.</p>
-${m.files.some((f) => f.kind === 'native-preview') ? '<p class="muted">Native preview: Windows is a portable .exe. On macOS, unzip the download and move the app to Applications. The previews are unsigned or ad-hoc signed and the Mac app is not notarized, so system security may require an explicit first-launch override. Native previews do not auto-update and are still under development.</p>' : ''}
+<body><main><h1>Shattered Empires</h1><img class="map" src="/api/preview?seed=${Date.now() % 100000}" alt="A generated continent"><p>A grand-scale strategy game on a continent that is still tearing itself apart. Download the game for Windows or macOS; every match is played on the game servers here, against the AI or with friends.${build ? ` Build <b>${esc(build)}</b>.` : ''}</p>${rows}
+${official.length ? '<p class="muted">Windows is a portable .exe. On macOS, unzip the download and move the app to Applications. Builds are unsigned or ad-hoc signed and the Mac app is not notarized, so system security may require an explicit first-launch override. Native builds do not auto-update: download the newest one here.</p>' : ''}
+${unity.length ? '<p class="muted">The new-engine preview is the Unity client in development: same servers, same matches, still missing parts of the interface.</p>' : ''}
 <p class="muted">An internet connection is required to play.</p></main></body></html>`);
   }
   return { manifest, file, page };
