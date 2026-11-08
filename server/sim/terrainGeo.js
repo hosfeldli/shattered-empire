@@ -11,6 +11,7 @@
 // re-sent only while the viewer can see it, so land that changes out of sight keeps its last-known
 // shape until it is seen again (the same rule as the tile records). The client keeps no rules.
 import { N, W, H, T } from './constants.js';
+import { RIVER_FLOW } from './world.js';
 
 export const GEO_VERSION = 1;
 export const GEO_CHUNK = 16;
@@ -27,7 +28,10 @@ export function geoBytes(game, i, out, o) {
   out[o] = clampByte((e + 1) * 127.5);
   out[o + 1] = t;
   out[o + 2] = t === T.DEEP || t === T.SHALLOW ? (w.lake[i] ? 24 : Math.max(1, clampByte(-e * 400))) : w.lake[i] ? 24 : fb * 8;
-  out[o + 3] = w.river[i] | (w.lake[i] << 1) | (w.soil[i] << 2) | (game.ruins.has(i) ? 8 : 0) | (w.drought[i] > 0 ? 16 : 0) | (w.ash[i] > 0 ? 32 : 0) | (w.lava[i] > 0 || t === T.LAVA ? 64 : 0);
+  // bit 7: a headwater stream (flow too small for a river, draining into one) so clients can draw
+  // rivers tapering into the hills instead of starting abruptly; presentation only
+  const stream = !w.river[i] && !w.lake[i] && t !== T.DEEP && t !== T.SHALLOW && w.flow[i] > RIVER_FLOW * 0.3 && w.flowDir[i] >= 0 ? 128 : 0;
+  out[o + 3] = w.river[i] | (w.lake[i] << 1) | (w.soil[i] << 2) | (game.ruins.has(i) ? 8 : 0) | (w.drought[i] > 0 ? 16 : 0) | (w.ash[i] > 0 ? 32 : 0) | (w.lava[i] > 0 || t === T.LAVA ? 64 : 0) | stream;
   out[o + 4] = (w.res[i] & 15) | (fb << 4);
   out[o + 5] = w.flowDir[i] + 1;
 }
