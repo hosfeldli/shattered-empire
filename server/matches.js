@@ -10,6 +10,7 @@ import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
 
+const PARKED_TTL_MS = +(process.env.PARKED_TTL_HOURS || 168) * 3600 * 1000;
 const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 4));
 const MAX_CIVS = 12;
 const IDLE_MS = 10 * 60 * 1000;
@@ -42,7 +43,8 @@ export class MatchManager {
   }
 
   create(opts) {
-    if (this.matches.size >= MAX_MATCHES) throw new Error('Server is full, try again shortly');
+    // only running matches use a worker thread; parked ones are a saved file and never block a new match
+    if ([...this.matches.values()].filter((x) => x.status !== 'parked').length >= MAX_MATCHES) throw new Error('Server is full, try again shortly');
     const ruleset = validateRuleset(opts.ruleset || LEGACY_RULESET);
     const why = this.admit(SIZES[opts.mapSize] || 192);
     if (why) throw new Error(why);
@@ -89,7 +91,7 @@ export class MatchManager {
     return slot;
   }
 
-  meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
+  meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
@@ -280,6 +282,12 @@ export class MatchManager {
       const anyone = m.slots.some((s) => s.ws) || (m.watchers || []).some((w) => w.ws);
       const idle = !anyone && now - m.lastActive > IDLE_MS;
       const done = m.status === 'over' && now - (m.overAt || now) > 10 * 60 * 1000;
+      // a match nobody has come back to for a week is retired (memory and saved file)
+      if (m.status === 'parked' && !anyone && now - m.lastActive > PARKED_TTL_MS) {
+        this.matches.delete(m.id); if (this.store) this.store.remove(m.id).catch(() => {});
+        this.log.info?.(`match ${m.id} removed (parked for a week)`);
+        continue;
+      }
       if (idle && m.status === 'running') {
         // park idle matches: save and stop the worker; a player rejoining resumes them
         this.requestSave(m).then(() => { this.stopWorker(m); m.status = 'parked'; this.log.info?.(`match ${m.id} parked`); });
@@ -311,7 +319,7 @@ export class MatchManager {
         const buf = await this.store.load(id);
         const { meta, game } = JSON.parse(zlib.gunzipSync(buf).toString());
         if (game.over) continue;
-        const m = { ...meta, wrap: meta.wrap === true, status: 'parked', lastActive: Date.now(), worker: null, stats: null, lastSnapshot: buf, slots: meta.slots.map((s) => ({ ...s, ws: null })), watchers: (meta.watchers || []).map((w) => ({ ...w, ws: null, spectator: true })) };
+        const m = { ...meta, wrap: meta.wrap === true, status: 'parked', lastActive: meta.lastActive || Date.now(), worker: null, stats: null, lastSnapshot: buf, slots: meta.slots.map((s) => ({ ...s, ws: null })), watchers: (meta.watchers || []).map((w) => ({ ...w, ws: null, spectator: true })) };
         this.matches.set(id, m); n++;
       } catch (e) { this.log.warn?.(`could not restore ${id}: ${e.message}`); }
     }
