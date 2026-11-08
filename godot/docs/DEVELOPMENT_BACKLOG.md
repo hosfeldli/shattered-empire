@@ -340,14 +340,16 @@ be done. The likely causes are first assessments from the code, not yet verified
   centreline, increase subdivisions on bends, and blend the walls at junctions.
 
 ### P4. Troops and combat
-- [ ] **March in formation, fight dynamically.** Squads and armies move in an ordered formation
+
+> **Implemented 2026-11-07:** formation march and combat break-up, five-step gait, figure-accurate tracers with spread and overshoots, AI war works. Still open: a smooth kneel/prone transition.
+- [x] **March in formation, fight dynamically.** Squads and armies move in an ordered formation
   (column on roads, line otherwise) and break into free-moving individual figures once in combat;
   they re-form when the fighting stops.
-- [ ] **More fluid human animation.** Add more walk frames or skeletal-style limb interpolation,
+- [x] **More fluid human animation.** Add more walk frames or skeletal-style limb interpolation,
   arm swing, turning and a kneel/prone transition, for both troops and civilians.
-- [ ] **Accurate tracers with spread.** Tracers should leave from the actual shooter figures and
+- [x] **Accurate tracers with spread.** Tracers should leave from the actual shooter figures and
   head toward the target figures, with weapon-appropriate spread, bursts and ricochets.
-- [ ] **AI digs in when war begins.** On a declaration of war, AI empires immediately plan full
+- [x] **AI digs in when war begins.** On a declaration of war, AI empires immediately plan full
   trench lines and defensive networks (bunkers, guard posts and AA along the front), not just
   lines for their deployed fronts.
 

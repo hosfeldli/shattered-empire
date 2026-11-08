@@ -31,6 +31,7 @@ var shell_mesh: SphereMesh
 var composition: WorldCompositionSystem
 var director: CombatPresentationDirector
 var military: MilitaryRenderer
+var squads: SquadPresentation
 var dust_clock := 0.0
 var smoke_field := SmokeField.new()
 const DIRECT_FIRE := ["cannon", "fortgun"]
@@ -324,9 +325,14 @@ func _on_events(ev: Array) -> void:
 					var spacing := 0.07
 					if weapon in ["mg", "mg_light"]: rounds = clampi(int(e.get("x", 4)), 3, 6)
 					elif weapon in ["autocannon", "flak", "airburst"]: rounds = 3; tint = Color(1.0, 0.65, 0.3); spacing = 0.13
+					# aim at the target's actual soldiers (or vehicle) with weapon spread; some rounds miss long
+					var spread := .02 if weapon == "rifle" else .05 if weapon in ["mg", "mg_light"] else .03
+					var source := _source_point(e,0.1)
 					for shot in rounds:
-						var aim := _tile_point(b, 0.06, shot * 13 + int(e.get("i", 0)) % 7)
-						_spawn("tracer", _source_point(e,0.1), aim, 0.15, tint, 0.0)
+						var aim := _aim_point(e, b, shot)
+						aim += Vector3(randf_range(-spread, spread), randf_range(-spread * .4, spread * .6), randf_range(-spread, spread))
+						if randf() < .25: aim = source.lerp(aim, 1.35)        # an overshoot ricochets past
+						_spawn("tracer", source, aim, 0.15, tint, 0.0)
 						if shot > 0 and not fx.is_empty(): fx[fx.size() - 1].t = -spacing * shot
 					if weapon in ["flak", "airburst"]:
 						for burst in 3: _spawn("smoke", _tile_point(b, 1.1 + burst * .15, burst + 5), Vector3.ZERO, 1.6, Color(.16, .15, .15), .09)
@@ -393,6 +399,10 @@ func _weapon(event: Dictionary) -> String:
 func _source_point(event:Dictionary,lift:float) -> Vector3:
 	var tile:=int(event.get("a",-1))
 	var id:=int(event.get("s",-1))
+	# a squad near the camera: the shot leaves one of its actual soldiers
+	if int(event.get("sb",0))==0 and squads and id>=0:
+		var figure=squads.figure_point(id,int(event.get("i",0))+events_seen,lift*.3)
+		if figure!=null: return figure
 	if tile>=0 and int(event.get("sb",0))==0 and military and military.draw_positions.has(id) and world.units.has(id):
 		var unit:Dictionary=world.units[id]
 		if world.grid.dist(int(unit.get("tile",-1)),tile)<=1:
@@ -404,6 +414,18 @@ func _source_point(event:Dictionary,lift:float) -> Vector3:
 				pos.x+=heading.x*.08; pos.z+=heading.y*.08
 			return pos+Vector3.UP*lift
 	return _tile_point(tile,lift)
+
+
+## where a round is aimed: a figure of the target squad when simulated, the target unit's drawn
+## position otherwise, or a spot on the hex
+func _aim_point(e: Dictionary, tile: int, shot: int) -> Vector3:
+	var target := int(e.get("t", -1))
+	if target >= 0 and int(e.get("tb", 0)) == 0:
+		if squads:
+			var figure = squads.figure_point(target, shot * 7 + events_seen, .03)
+			if figure != null: return figure
+		if military and military.draw_positions.has(target): return (military.draw_positions[target] as Vector3) + Vector3.UP * .05
+	return _tile_point(tile, 0.06, shot * 13 + int(e.get("i", 0)) % 7)
 
 
 ## a point on hex t (base image), jittered per salt so salvos spread

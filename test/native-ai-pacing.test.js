@@ -32,3 +32,23 @@ test('captured cities count half toward the AI settlement target', async () => {
   const src = (await import('node:fs')).readFileSync(new URL('../server/sim/ai.js', import.meta.url), 'utf8');
   assert.match(src, /capturedAt != null \? 0\.5 : 1/);
 });
+
+test('at war the AI digs a defensive network at once: trench lines and strongpoints on the front', async () => {
+  const { WORKS_RULESET } = await import('../server/sim/rulesets.js');
+  const g = new Game({ id: 'war-works' + Math.random(), seed: 7, slots: [{ human: true }, { personality: 'builder', difficulty: 'hard' }], rebels: false, ruleset: WORKS_RULESET });
+  const ai = g.civs[1], human = g.civs[0];
+  for (const k of Object.keys(ai.res)) ai.res[k] = 3000;
+  const best = { ours: g.capital(ai), theirs: g.capital(human), d: 0 };
+  best.d = (await import('../server/sim/hex.js')).dist(best.ours.tile, best.theirs.tile);
+  const before = [...g.buildings.values()].filter((b) => b.owner === 1 && ['guard_post', 'bunker'].includes(b.type)).length;
+  const { W, H } = await import('../server/sim/constants.js');
+  const { WRAP } = await import('../server/sim/hex.js');
+  ai.ai.mil.network(human, best, Math.max(2, Math.min(Math.floor(best.d * 0.35), 7)), { W, H, wrap: WRAP });
+  const posts = [...g.buildings.values()].filter((b) => b.owner === 1 && ['guard_post', 'bunker'].includes(b.type)).length;
+  const works = [...g.fieldworks.values()].filter((f) => f.owner === 1).length;
+  assert.ok(posts > before, 'strongpoints are placed on the line');
+  assert.ok(works >= 4, `a trench line across our ground is planned (${works})`);
+  // rate-limited: a second call straight away adds nothing
+  ai.ai.mil.network(human, best, 3, { W, H, wrap: WRAP });
+  assert.equal([...g.fieldworks.values()].filter((f) => f.owner === 1).length, works);
+});

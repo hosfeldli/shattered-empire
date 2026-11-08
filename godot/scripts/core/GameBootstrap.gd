@@ -129,6 +129,7 @@ func _ready() -> void:
 	add_child(squads)
 	squads.setup(world, cam, military, settlements)
 	military.squads = squads
+	combat.squads = squads
 	wildlife = WildlifePresentation.new(); add_child(wildlife); wildlife.setup(world, cam, composition)
 	combat.composition = composition
 	combat.director = CombatPresentationDirector.new()

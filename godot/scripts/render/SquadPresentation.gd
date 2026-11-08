@@ -87,6 +87,19 @@ func update(dt: float) -> void:
 	_flush(transforms)
 
 
+## The world position (near the camera) of one of a unit's simulated figures, picked by salt, at
+## chest height; null when the unit is not simulated as figures this frame.
+func figure_point(id: int, salt: int, lift := .03) -> Variant:
+	var group: Dictionary = groups.get(id, {})
+	if group.is_empty() or not near.has(id): return null
+	var figures: Array = group.figures
+	if figures.is_empty(): return null
+	var f: Dictionary = figures[posmod(salt, figures.size())]
+	var p: Vector2 = group.anchor + (f.d as Vector2)
+	var x := world.grid.near_x(p.x, cam.focus.x)
+	return Vector3(x, world.ground_height(x, p.y) + lift, p.y)
+
+
 func _unit_yaw(id: int) -> float:
 	var record: Dictionary = military.nodes.get(id, military.motions.get(id, {}))
 	return float(record.get("yaw", 0.0))
@@ -123,6 +136,10 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 	var deployed := (flags & 64) != 0
 	var suppressed := int(u.get("supp", 0)) > 60
 	var role := str(spec[2])
+	# engaged: under fire or firing, and for a few seconds after; the squad breaks into individual
+	# soldiers seeking their own spots, and re-forms (column on the march, line at rest) once calm
+	if firing or suppressed: group.engaged_until = clock + 8.0
+	var engaged: bool = clock < float(group.get("engaged_until", -1.0))
 	var face := yaw
 	if firing: face = military._target_yaw(u, Vector2(anchor3.x, anchor3.z), yaw)
 	var variant := str(spec[0])
@@ -137,15 +154,23 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 		f.d -= shift
 		var seed := int(f.seed)
 		# this figure's place in the group, in the unit frame (+X forward)
-		var slot := _slot(role, i, n, moving, suppressed or firing)
-		if not moving:
+		var slot := _slot(role, i, n, moving, suppressed or firing, engaged)
+		if engaged and role == "rifle":
+			# each soldier picks a spot of his own in a wider spread and rushes between them
+			f.next_shift = float(f.next_shift) - dt
+			if float(f.next_shift) <= 0.0:
+				var rng := RandomNumberGenerator.new(); rng.seed = seed + int(clock * 5.0)
+				f.shift = Vector2(rng.randf_range(-.07, .06), rng.randf_range(-.06, .06))
+				f.next_shift = rng.randf_range(2.5, 6.0)
+			slot += f.shift
+		elif not moving:
 			f.next_shift = float(f.next_shift) - dt
 			if float(f.next_shift) <= 0.0:
 				var rng := RandomNumberGenerator.new(); rng.seed = seed + int(clock * 3.0)
 				f.shift = Vector2(rng.randf_range(-.03, .03), rng.randf_range(-.03, .03))
 				f.next_shift = rng.randf_range(6.0, 15.0)
 			slot += f.shift
-		var wander_amp := .006 if moving else .012
+		var wander_amp := (.002 if moving else .012) if not engaged else .016
 		slot += Vector2(sin(clock * .37 + seed), cos(clock * .29 + seed * 1.7)) * wander_amp
 		var local3 := basis * Vector3(slot.x, 0, slot.y)
 		var target := Vector2(local3.x, local3.z)
@@ -174,8 +199,11 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 		# pose
 		var pose := "stand"
 		if speed > .03:
-			f.phase = float(f.phase) + speed * dt * 70.0 * float(f.cadence)
-			pose = "walk_a" if sin(float(f.phase)) > 0.0 else "walk_b"
+			# in column the files keep step; skirmishers each run at their own pace
+			var cadence := float(f.cadence) if engaged or role != "rifle" else 1.0
+			if not engaged and moving and role == "rifle": f.phase = lerpf(float(f.phase), float(group.get("step", 0.0)) + float(i % 2) * PI, 1.0 - exp(-2.0 * dt))
+			f.phase = float(f.phase) + speed * dt * 70.0 * cadence
+			pose = FigureKit.walk_pose(float(f.phase))
 		elif suppressed and role != "escort": pose = "prone"
 		elif (firing and role != "escort") or (role == "crew" and deployed): pose = "kneel"
 		var x := g.near_x(world_point.x, cam.focus.x)
@@ -186,10 +214,11 @@ func _step_unit(id: int, u: Dictionary, anchor3: Vector3, dt: float, transforms:
 		var scale := 1.0 + float(posmod(seed, 5)) * .025
 		(transforms[key].list as Array).append([Transform3D(Basis(Vector3.UP, float(f.yaw)).scaled(Vector3.ONE * scale), Vector3(x, y, world_point.y)), Color(1, 1, 1).darkened(float(posmod(seed / 7, 4)) * .04)])
 		drawn += 1
+	group.step = float(group.get("step", 0.0)) + anchor_velocity.length() * dt * 70.0
 
 
 ## Place of figure i of n in the unit frame (+X forward, +Z right).
-static func _slot(role: String, i: int, n: int, moving: bool, down: bool) -> Vector2:
+static func _slot(role: String, i: int, n: int, moving: bool, down: bool, engaged := false) -> Vector2:
 	match role:
 		"crew":
 			var around := [Vector2(-.1, -.07), Vector2(-.1, .07), Vector2(-.15, 0), Vector2(-.04, .11)]
@@ -197,9 +226,12 @@ static func _slot(role: String, i: int, n: int, moving: bool, down: bool) -> Vec
 		"escort":
 			var beside := [Vector2(.02, .12), Vector2(.02, -.12), Vector2(-.2, .03)]
 			return beside[i % beside.size()]
+	if moving and engaged:
+		# advancing under fire: a staggered skirmish line, wide and uneven
+		return Vector2(-float(i % 3) * .05, (float(i) - (n - 1) * .5) * .085)
 	if moving:
-		# loose pairs strung out behind the leader
-		return Vector2(.07 - float(i / 2) * .07, (-.035 if i % 2 == 0 else .035) + (.012 if (i / 2) % 2 == 1 else 0.0))
+		# on the march: an ordered column of two files at even spacing
+		return Vector2(.08 - float(i / 2) * .055, -.028 if i % 2 == 0 else .028)
 	# halted: a loose line abreast; under fire or engaging, spread wider and slightly staggered
 	var spacing := .075 if down else .055
 	return Vector2(-.02 - float(i % 2) * (.05 if down else .03), (float(i) - (n - 1) * .5) * spacing)

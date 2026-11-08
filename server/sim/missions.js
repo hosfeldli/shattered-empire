@@ -2,7 +2,8 @@
 // zone, an offensive, its scouting run) or to the reserve. A mission keeps its purpose until it
 // completes, fails or is invalidated; a commitment period and hysteresis stop armies reversing on
 // every planning tick; local threats change targeting inside a zone, not strategic destinations.
-import { UNITS, TERRAIN, isWater, N, W, H, aiProfile } from './constants.js';
+import { UNITS, BUILDINGS, TERRAIN, isWater, N, W, H, aiProfile } from './constants.js';
+import { traceLine } from './fieldworks.js';
 import { dist, disk, hexLine, WRAP } from './hex.js';
 import { lineAcross } from './deploy.js';
 
@@ -274,6 +275,7 @@ export class MilitaryPlanner {
       if (!best) { if (m) release(m); continue; }
       // the line stands a third of the way out from our city (never beyond our side of the middle)
       const ahead = Math.max(2, Math.min(Math.floor(best.d * 0.35), 7));
+      this.network(e, best, ahead, W2);
       const want = Math.max(3, Math.min(10, Math.round(reserve().length * (0.35 + 0.1 * T.level))));
       if (!m) {
         const free = reserve().filter((u) => UNITS[u.type].cat !== 'artillery').slice(0, want);
@@ -301,6 +303,55 @@ export class MilitaryPlanner {
       if (ids.length < want) { const more = reserve().slice(0, want - ids.length); if (more.length) { take(m, more); m.deployedAt = -999; } }
     }
     for (const m of [...this.missions.values()]) if (m.kind === 'front' && !enemies.some((e) => e.id === m.enemy)) release(m);
+  }
+
+  // At war the AI digs in at once, without waiting for troops: a full-width trench line across
+  // the approach (a reserve line behind it on harder settings) anchored by bunkers or guard posts
+  // at its ends and centre, and AA behind the line when the enemy flies. Paid like a player's
+  // works; renewed every few minutes while the war lasts.
+  network(e, best, ahead, W2) {
+    const g = this.g, civ = this.civ, T = this.tune;
+    const at = (this.networkAt || (this.networkAt = {}));
+    if ((at[e.id] || 0) > g.time || civ.res.materials < 160) return;
+    at[e.id] = g.time + 300;
+    // the furthest line (up to `ahead`) whose hexes are mostly our own ground
+    // (as wide as our land allows there, at least five hexes)
+    const inside = (want, from) => {
+      for (let a = from; a >= 1; a--) for (let n = want; n >= 5; n -= 2) {
+        const line = lineAcross(W2, best.ours.tile, best.theirs.tile, n, a); if (!line) continue;
+        const tiles = traceLine(line);
+        if (tiles.every((t) => g.world.owner[t] === civ.id)) return { line, a };
+      }
+      return null;
+    };
+    const first = inside(9 + 2 * Math.min(T.level, 2), ahead);
+    if (!first) return;
+    const lines = [first.line];
+    if (T.level >= 1 && first.a > 2) lines.push(inside(7, first.a - 2)?.line);
+    ahead = first.a;
+    const strong = civ.techs.has('fortification') ? 'bunker' : 'guard_post';
+    const near = (t, type) => { if (g.canPlace(civ, type, t, true)) return t; for (const n of disk(t, 1)) if (g.canPlace(civ, type, n, true)) return n; return -1; };
+    let built = 0;
+    for (const [k, line] of lines.entries()) {
+      if (!line) continue;
+      const tiles = traceLine(line);
+      // strongpoints first, so a trench crossing one joins it instead of refusing the hex
+      // strongpoints stand just behind the line (the home side), covering its ends and centre
+      if (k === 0) for (const t of [tiles[0], tiles[Math.floor(tiles.length / 2)], tiles[tiles.length - 1]]) {
+        const cost = BUILDINGS[strong].cost;
+        if (built >= 3 || !g.canAfford(civ, cost)) break;
+        const behind = disk(t, 1).filter((n) => !tiles.includes(n) && dist(n, best.ours.tile) < dist(t, best.ours.tile) && g.canPlace(civ, strong, n, true));
+        const site = behind.length ? behind[0] : near(t, strong);
+        if (site >= 0 && !(this.ai.cmd({ c: 'build', type: strong, tile: site })?.error)) built++;
+      }
+      this.ai.cmd({ c: 'trenchPlan', points: line, type: civ.techs.has('fortification') && T.level >= 1 ? 'reinforced' : 'basic', commit: true, by: 'mission' });
+    }
+    const flies = [...g.units.values()].some((u) => u.owner === e.id && UNITS[u.type].air);
+    if (flies && civ.techs.has(BUILDINGS.aa_battery.tech) && lines[0] && g.canAfford(civ, BUILDINGS.aa_battery.cost)) {
+      const behind = lineAcross(W2, best.ours.tile, best.theirs.tile, 2, Math.max(1, ahead - 1));
+      const site = behind ? near(behind[0], 'aa_battery') : -1;
+      if (site >= 0) this.ai.cmd({ c: 'build', type: 'aa_battery', tile: site });
+    }
   }
 
   // Secondary missions, by skill: regroup the battered, fortify held defensive lines, spread out

@@ -9,7 +9,15 @@ extends RefCounted
 ## everyday clothes. Forward is +X. Team colour appears only as a shoulder patch.
 
 const VARIANTS := ["rifle", "militia", "special", "exo", "engineer", "crew", "civilian", "civilian_bag", "civilian_coat", "civilian_pack"]
-const POSES := ["stand", "walk_a", "walk_b", "kneel", "prone"]
+const POSES := ["stand", "walk_a", "walk_a2", "walk_p", "walk_b2", "walk_b", "kneel", "prone"]
+## the walk cycle as five stride poses (full forward, half, passing, half back, full back)
+const STRIDE := {"walk_a": .016, "walk_a2": .009, "walk_p": 0.0, "walk_b2": -.009, "walk_b": -.016}
+
+
+## The walk pose for a continuous step phase (a smooth gait instead of two alternating frames).
+static func walk_pose(phase: float) -> String:
+	var s := sin(phase)
+	return "walk_a" if s > .75 else "walk_a2" if s > .28 else "walk_p" if s > -.28 else "walk_b2" if s > -.75 else "walk_b"
 const SKIN := Color(1.0, .97, .95)
 
 static var _cache := {}
@@ -47,7 +55,7 @@ static func build(k: MeshKit, full_variant: String, pose: String, team: Color) -
 		_prone(k, variant, mat, cloth, trousers, team)
 		return
 	var kneel := pose == "kneel"
-	var stride := .016 if pose == "walk_a" else -.016 if pose == "walk_b" else 0.0
+	var stride: float = STRIDE.get(pose, 0.0)
 	var hip := .038 if not kneel else .022
 	# legs: thigh and shin per side; kneeling puts one knee down and the other foot forward
 	for side in [-1.0, 1.0]:

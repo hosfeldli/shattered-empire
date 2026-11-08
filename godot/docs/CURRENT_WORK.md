@@ -5,6 +5,22 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## P4 troops and combat (2026-11-07)
+
+- **March, then fight:** near the camera a squad marches as a tight two-file column whose files
+  keep step. Once it fires or is suppressed, it breaks up for eight seconds after the last shot:
+  each rifleman picks his own spot in a wider spread and rushes between spots, and an advance
+  under fire becomes a staggered skirmish line. It re-forms when calm. Unit formations stay
+  player-drawn.
+- **Gait:** five stride poses (full, half, passing, half back, full back) chosen from the
+  continuous step phase replace the two alternating frames, for soldiers and civilians.
+- **Tracers** leave one of the shooter's actual soldiers and fly at one of the target's soldiers
+  (or its drawn vehicle), with spread by weapon. About a quarter overshoot past the target.
+- **AI war works:** at war, each AI front gets a defensive network straight away, without waiting
+  for troops: the widest trench line that fits on its own ground toward the enemy, a reserve line
+  on harder settings, guard posts or bunkers just behind its ends and centre, and AA behind the
+  line when the enemy has aircraft. Paid like player works and renewed every five minutes.
+
 ## P3 construction tools and UI (2026-11-07)
 
 - Road, bridge and trench tools stay open after a confirmed order; Esc or right-click closes them.

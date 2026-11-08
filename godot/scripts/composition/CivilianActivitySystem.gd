@@ -197,7 +197,7 @@ func _walker(route:Dictionary) -> Array:
 	var pose:="stand"; var lift:=0.0
 	if moving and u>.02 and u<.98:
 		var stride:=clock*7.5*float(route.gait)*(.6+.8*sin(eased*PI))
-		pose="walk_a" if sin(stride)>0.0 else "walk_b"
+		pose=FigureKit.walk_pose(stride)
 		lift=absf(sin(stride))*.0018
 	return [at,facing,pose,lift]
 
