@@ -311,7 +311,7 @@ func _perf(seconds: float, out: String) -> void:
 		await get_tree().create_timer(1.0).timeout
 		perf_samples = []
 		await get_tree().create_timer(seconds).timeout
-		var columns := ["frame_ms", "military_us", "squads_us", "combat_us", "civilians_us", "settlements_us", "terrain_us", "environment_us", "total_us", "gpu_ms", "render_cpu_ms"]
+		var columns := ["frame_ms", "military_us", "squads_us", "combat_us", "civilians_us", "settlements_us", "terrain_us", "environment_us", "total_us", "gpu_ms", "render_cpu_ms", "process_ms", "labels_us", "objects_drawn", "draw_calls"]
 		var summary := {}
 		for c in columns.size():
 			var values: Array = perf_samples.map(func(row): return float(row[c]))
@@ -434,6 +434,7 @@ func _debug_hide(what: PackedStringArray) -> void:
 		(d.fx as Node3D).visible = not what.has("buildings")
 	settlements.plumes.visible = not what.has("smoke")
 	military.visible = not what.has("units"); squads.visible = not what.has("units")
+	if what.has("ui"): hud.root.visible = false
 
 
 func _parse_args(list: PackedStringArray) -> Dictionary:
@@ -567,7 +568,9 @@ func _process(dt: float) -> void:
 	var t7 := Time.get_ticks_usec()
 	if perf_samples != null:
 		var rid := get_viewport().get_viewport_rid()
-		perf_samples.append([dt * 1000.0, t5b - t5, t6 - t5b, t6b - t6, t7 - t6b, t5 - t4, t2 - t1, t3 - t2, Time.get_ticks_usec() - t0, RenderingServer.viewport_get_measured_render_time_gpu(rid), RenderingServer.viewport_get_measured_render_time_cpu(rid) + RenderingServer.get_frame_setup_time_cpu()])
+		perf_samples.append([dt * 1000.0, t5b - t5, t6 - t5b, t6b - t6, t7 - t6b, t5 - t4, t2 - t1, t3 - t2, Time.get_ticks_usec() - t0, RenderingServer.viewport_get_measured_render_time_gpu(rid), RenderingServer.viewport_get_measured_render_time_cpu(rid) + RenderingServer.get_frame_setup_time_cpu(),
+			Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, NativeWorldLabels.last_us,
+			Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)])
 	diag.record_subsystems({"state": t1 - t0, "terrain": t2 - t1, "environment": t3 - t2, "infrastructure": t4 - t3, "settlements": t5 - t4, "military": t6 - t5, "combat+input": t7 - t6, "total": t7 - t0})
 
 

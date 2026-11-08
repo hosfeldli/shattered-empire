@@ -10,7 +10,7 @@
 //                     construction sites; they stay put if the player has just sent them somewhere.
 // Units in a deployed formation keep their places; a player's direct order always wins (the
 // automation only picks up units that have been idle for a few seconds).
-import { UNITS, TERRAIN, BUILDINGS, isWater } from './constants.js';
+import { UNITS, TERRAIN, BUILDINGS, isWater, W, H } from './constants.js';
 import { disk, dist } from './hex.js';
 import { findPath } from './path.js';
 import { GARRISON } from './combat.js';
@@ -36,12 +36,40 @@ function cover(g, t, civ = null) {
   return c;
 }
 
-export function autonomyStep(g) {
+// Ground units bucketed in coarse cells once per pass, so "who is near me" looks at a few cells
+// instead of every unit in the game (large battles: thousands of troops).
+const CELL = 8;
+function unitGrid(g) {
+  const cw = Math.ceil(W / CELL), cells = new Map();
+  for (const e of g.units.values()) {
+    if (UNITS[e.type].air) continue;
+    const c = ((((e.tile / W) | 0) / CELL) | 0) * cw + (((e.tile % W) / CELL) | 0);
+    const list = cells.get(c); if (list) list.push(e); else cells.set(c, [e]);
+  }
+  return { cw, ch: Math.ceil(H / CELL), cells };
+}
+function* unitsNear(grid, t, radius) {
+  const span = Math.ceil(radius / CELL) + 1, cq = ((t % W) / CELL) | 0, cr = (((t / W) | 0) / CELL) | 0;
+  const seen = new Set();
+  for (let r = cr - span; r <= cr + span; r++) {
+    if (r < 0 || r >= grid.ch) continue;
+    for (let q = cq - span; q <= cq + span; q++) {
+      const qq = ((q % grid.cw) + grid.cw) % grid.cw, c = r * grid.cw + qq;
+      if (seen.has(c)) continue; seen.add(c);
+      const list = grid.cells.get(c); if (list) yield* list;
+    }
+  }
+}
+
+export function autonomyStep(g, slice = 0, slices = 1) {
   if (g.autonomyOff) return;                                  // tests of the bare rules
   const claims = new Map();                                   // civ -> tiles already chosen this pass
   const claim = (civ, t) => { const s = claims.get(civ.id) || claims.set(civ.id, new Set()).get(civ.id); s.add(t); };
   const claimed = (civ, t) => claims.get(civ.id)?.has(t);
+  let grid = null;
+  const near = () => grid || (grid = unitGrid(g));
   for (const u of g.units.values()) {
+    if (slices > 1 && u.id % slices !== slice) continue;        // a share of the units each pass
     const def = UNITS[u.type], civ = g.civs[u.owner];
     if (!civ || !civ.human || def.air) continue;
     if (!idle(u)) { u.idleSince = null; continue; }
@@ -50,7 +78,7 @@ export function autonomyStep(g) {
     if (def.engineer) { if (waited >= IDLE_BEFORE.engineer) engineer(g, civ, u, claim, claimed); continue; }
     if (def.civilian) continue;
     if (u.stance === 'explore' && waited >= IDLE_BEFORE.explore) explore(g, civ, u, claim, claimed);
-    else if (u.stance === 'aggressive' && waited >= IDLE_BEFORE.aggressive) hunt(g, civ, u, claim, claimed);
+    else if (u.stance === 'aggressive' && waited >= IDLE_BEFORE.aggressive) hunt(g, civ, u, claim, claimed, near());
     else if (u.stance === 'defensive' && waited >= IDLE_BEFORE.defensive) settle(g, civ, u, claim, claimed);
   }
 }
@@ -88,10 +116,10 @@ function explore(g, civ, u, claim, claimed) {
   u.idleSince = g.time + 4;
 }
 
-function hunt(g, civ, u, claim, claimed) {
+function hunt(g, civ, u, claim, claimed, grid) {
   const def = UNITS[u.type];
   let foe = null, fd = Infinity, near = Infinity;
-  for (const e of g.units.values()) {
+  for (const e of unitsNear(grid, u.tile, 15)) {
     if (!g.hostile(civ.id, e.owner) || !civ.visible[e.tile] || UNITS[e.type].air) continue;
     const d = dist(u.tile, e.tile); if (d < near) near = d;
     if (d <= 8 && d < fd && !UNITS[e.type].civilian) { fd = d; foe = e; }

@@ -371,6 +371,7 @@ export function chooseTarget(g, u, radius, policy) {
   const myShot = def.atk * 1.6;
   for (const t of disk(u.tile, radius)) {
     const ids = g.tileUnits.get(t);
+    if (!ids && g.tileB[t] < 0) continue;               // nothing here (most hexes)
     const d = dist(u.tile, t);
     if (ids) for (const id of ids) {
       const e = g.units.get(id);
@@ -391,7 +392,8 @@ export function chooseTarget(g, u, radius, policy) {
       s += 2 * (1 - e.hp / e.maxHp);
       const incoming = (g.pending.get(id) || 0) + (g.assigned.get(id) || 0);
       if (incoming >= e.hp * 1.1) s -= 9;
-      if (d <= def.range && !wpn.arc && !lineOfFire(g, u.tile, t, false, !!def.air || !!ed.air).ok) s -= 6;
+      // line of fire only matters for a candidate that could still win (the check only lowers it)
+      if (s > bs && d <= def.range && !wpn.arc && !lineOfFire(g, u.tile, t, false, !!def.air || !!ed.air).ok) s -= 6;
       if (s > bs) { bs = s; best = { kind: 'unit', id }; bt = t; }
     }
     const b = g.buildingAtTile(t);

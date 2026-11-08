@@ -185,7 +185,7 @@ func _stack_targets() -> void:
 			if not by_tile.has(tile): by_tile[tile] = []
 			(by_tile[tile] as Array).append(int(id))
 		else:
-			var key := "%d>%d" % [int(u.tile), next]
+			var key := int(u.tile) * 1048576 + next          # integer key (no string per unit)
 			if not by_edge.has(key): by_edge[key] = []
 			(by_edge[key] as Array).append(int(id))
 	stack_target.clear()
@@ -200,8 +200,7 @@ func _stack_targets() -> void:
 		var ids: Array = by_edge[key]
 		if ids.size() < 2: continue
 		ids.sort()
-		var parts: PackedStringArray = str(key).split(">")
-		var a := g.center(int(parts[0])); var b := g.center(int(parts[1]))
+		var a := g.center(int(key) / 1048576); var b := g.center(int(key) % 1048576)
 		var along := Vector2(g.dx_wrap(a.x, b.x), b.y - a.y).normalized()
 		var side := Vector2(-along.y, along.x)
 		for k in ids.size():
@@ -291,8 +290,42 @@ func _update_batched(dt: float) -> void:
 			if absf(g.near_x(last.x, cx) - cx) > view_half + 2.0 or absf(last.z - cam.focus.z) > cam.size + 2.0:
 				draw_positions[id] = last
 				continue
-		var p: Vector2 = world.unit_position(id)
 		var offset: Variant = stack_now.get(id)
+		# a unit standing still whose record, hex offset, ground and view bucket are unchanged reuses
+		# last frame's transform and batch (most of a large battle stands and fights)
+		var still_sig := -1
+		if int(u.next) < 0 and not info.air and (not info.tracked or int(u.get("target", 0)) == 0):
+			var bucket := 0 if cam.size <= 24.0 else 1 if cam.size <= 25.0 else 2 if cam.size <= 60.0 else 3
+			still_sig = ((((int(u.tile) * 4 + bucket) * 2 + (1 if squads and squads.near.has(int(id)) else 0)) * 128 + (int(u.flags) & 127)) * 2 + (1 if int(u.get("supp", 0)) > 60 else 0)) * 2 + (1 if world.paused else 0)
+			var off_now: Vector2 = offset if offset != null else Vector2.ZERO
+			if info.has("still") and int(info.still) == still_sig and int(info.ground_rev) == world.geo_version + world.battlefield_terrain_version * 65536 \
+					and (info.off as Vector2).distance_squared_to(off_now) < 1e-8 and absf(g.near_x((info.pos as Vector3).x, cx) - (info.pos as Vector3).x) < .001:
+				draw_positions[id] = info.pos
+				var cached: Dictionary = groups.get(info.still_key, {})
+				if cached.is_empty():
+					cached = {"unit": u, "xforms": [], "animation": info.still_anim, "custom": [] if str(info.still_anim).begins_with("gpu") else null}
+					groups[info.still_key] = cached
+				(cached.xforms as Array).append(info.xf)
+				if cached.custom != null: (cached.custom as Array).append(info.cust)
+				drawn += 1
+				continue
+		# zoomed out, marching units update on alternate frames (sub-pixel lag at that scale)
+		var stride := 3 if cam.size > 40.0 else 2
+		if still_sig < 0 and cam.size > 24.0 and info.has("mv_xf") and (cull_frame + int(id)) % stride != 0 and not info.air:
+			draw_positions[id] = info.pos
+			var mv_group: Dictionary = groups.get(info.mv_key, {})
+			if mv_group.is_empty():
+				mv_group = {"unit": u, "xforms": [], "animation": info.mv_anim, "custom": [] if str(info.mv_anim).begins_with("gpu") else null}
+				groups[info.mv_key] = mv_group
+			(mv_group.xforms as Array).append(info.mv_xf)
+			if mv_group.custom != null: (mv_group.custom as Array).append(info.mv_cust)
+			if info.tracked and info.has("mv_turret"):
+				var tg: Dictionary = groups.get(info.turret, {})
+				if tg.is_empty(): tg = {"unit": u, "xforms": []}; groups[info.turret] = tg
+				(tg.xforms as Array).append(info.mv_turret)
+			drawn += 1
+			continue
+		var p: Vector2 = world.unit_position(id)
 		if offset != null: p += offset
 		var x := g.near_x(p.x, cx)
 		var y := _ground_for(id, p)
@@ -325,16 +358,26 @@ func _update_batched(dt: float) -> void:
 		var flat := animation in ["cover", "gpu", "gpu_low"]
 		var basis := Basis(Vector3.UP, float(info.yaw))
 		if not flat and height_scale != 1.0: basis = basis.scaled(Vector3(1, height_scale, 1))
-		(group.xforms as Array).append(Transform3D(basis, pos))
+		var xf := Transform3D(basis, pos)
+		(group.xforms as Array).append(xf)
+		var cust := Color()
 		if group.custom != null:
 			# per-instance soldier animation: seed, marching, gone to ground (suppressed) or kneeling (firing)
 			var down := 1.0 if int(u.get("supp", 0)) > 60 else .45 if (int(u.get("flags", 0)) & 1) != 0 and not moving else 0.0
-			(group.custom as Array).append(Color(info.seed, 1.0 if moving else 0.0, down, 0.0))
+			cust = Color(info.seed, 1.0 if moving else 0.0, down, 0.0)
+			(group.custom as Array).append(cust)
+		# remember for the still fast path (not for animated vehicles or turreted units)
+		if still_sig >= 0 and not info.tracked and not animation.begins_with("roll") and not animation.begins_with("rotor") and not animation.begins_with("walk"):
+			info.still = still_sig; info.ground_rev = world.geo_version + world.battlefield_terrain_version * 65536
+			info.off = offset if offset != null else Vector2.ZERO; info.xf = xf; info.cust = cust; info.still_key = key; info.still_anim = animation
+		else: info.erase("still")
+		info.mv_xf = xf; info.mv_cust = cust; info.mv_key = key; info.mv_anim = animation
 		if info.tracked:
 			var turret_key: String = info.turret
 			var turrets: Dictionary = groups.get(turret_key, {})
 			if turrets.is_empty(): turrets = {"unit": u, "xforms": []}; groups[turret_key] = turrets
-			(turrets.xforms as Array).append(Transform3D(Basis(Vector3.UP, _target_yaw(u, p, float(info.yaw)) if int(u.get("target", 0)) != 0 else float(info.yaw)), pos))
+			var turret_xf := Transform3D(Basis(Vector3.UP, _target_yaw(u, p, float(info.yaw)) if int(u.get("target", 0)) != 0 else float(info.yaw)), pos)
+			(turrets.xforms as Array).append(turret_xf); info.mv_turret = turret_xf
 		drawn += 1
 	for id in motions.keys():
 		if not seen.has(id):

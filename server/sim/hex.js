@@ -39,8 +39,11 @@ export function toCube(i) {
   return [x, r, -x - r];
 }
 
+// allocation-free (the hottest function in pathfinding, targeting and AI)
 export function dist(a, b) {
-  const [ax, ay, az] = toCube(a), [bx, by, bz] = toCube(b);
+  const ar = (a / W) | 0, br = (b / W) | 0;
+  const ax = a - ar * W - ((ar - (ar & 1)) >> 1), bx = b - br * W - ((br - (br & 1)) >> 1);
+  const ay = ar, by = br, az = -ax - ar, bz = -bx - br;
   const d0 = Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz));
   if (!WRAP) return d0;
   // shortest of the equivalent images east and west (x shifts by W, z by -W)

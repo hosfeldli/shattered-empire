@@ -19,6 +19,12 @@ var last_zoom:=0.0
 var zoom_settled:=0.0
 var lock_layout:=false
 var banner_style:StyleBoxFlat
+static var last_us:=0     # --perf: time of the last refresh
+var layout_frame:=0
+var layout_phase:=0
+var pending:Array=[]
+var layout_snapshot:=-1
+var layout_zoom:=0.0
 
 func setup(game:Node) -> void:
 	app=game; set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -55,7 +61,12 @@ func _badge(key:String,anchor:Vector2,tile_offset:Vector2,occupied:Array) -> Rec
 	for index:int in choices:
 		var rect:=Rect2(anchor+tile_offset+offsets[index]-Vector2(width*.5,0),Vector2(width,width))
 		if not Rect2(Vector2(8,94),size-Vector2(16,106)).encloses(rect): continue
-		if not (lock_layout and slots.has(key)) and occupied.any(func(other):return (other as Rect2).grow(3).intersects(rect)): continue
+		if not (lock_layout and slots.has(key)):
+			var hit:=false
+			var probe:=rect.grow(3)
+			for other:Rect2 in occupied:
+				if other.intersects(probe): hit=true; break
+			if hit: continue
 		occupied.append(rect); slots[key]=index; return rect
 	return Rect2()
 
@@ -88,22 +99,23 @@ func _aggregate(candidates:Array) -> Array:
 	var cell:=40.0
 	var out:=_cluster(candidates,cell)
 	while out.size()>120 and cell<400.0:
-		cell*=1.4; out=_cluster(candidates,cell)
+		cell*=1.6; out=_cluster(candidates,cell)
 	return out
 
 
 func _cluster(candidates:Array,cell:float) -> Array:
 	var cells:={}
 	for group:Dictionary in candidates:
-		var key:="c|%d|%d|%d"%[int(group.owner),floori(group.anchor.x/cell),floori(group.anchor.y/cell)]
-		if not cells.has(key): cells[key]={"key":key,"ids":[],"owner":group.owner,"types":{},"anchor":Vector2.ZERO,"hp":0.0,"n":0,"selected":false,"veteran":0,"offset":Vector2.ZERO,"cluster":true,"priority":-INF}
+		var key:=(int(group.owner)+1)*1000000+(floori(group.anchor.x/cell)+500)*1000+floori(group.anchor.y/cell)+500   # integer key
+		if not cells.has(key): cells[key]={"key":"c|%d"%key,"ids":[],"owner":group.owner,"types":{},"anchor":Vector2.ZERO,"hp":0.0,"n":0,"selected":false,"veteran":0,"offset":Vector2.ZERO,"cluster":true,"priority":-INF}
 		var c:Dictionary=cells[key]
+		c.world=(c.get("world",Vector3.ZERO) as Vector3)+(group.get("world",Vector3.ZERO) as Vector3)*group.ids.size()
 		c.ids.append_array(group.ids); c.anchor+=group.anchor*group.ids.size(); c.hp+=float(group.hp)*group.ids.size(); c.n+=group.ids.size()
 		c.types[group.type]=int(c.types.get(group.type,0))+group.ids.size()
 		c.selected=c.selected or group.selected; c.veteran=maxi(int(c.veteran),int(group.get("veteran",0))); c.priority=maxf(float(c.priority),float(group.priority))
 	var out:=[]
 	for c:Dictionary in cells.values():
-		c.anchor/=maxi(1,int(c.n)); c.hp/=maxi(1,int(c.n))
+		c.anchor/=maxi(1,int(c.n)); c.hp/=maxi(1,int(c.n)); c.world=(c.world as Vector3)/maxi(1,int(c.n))
 		var best:=""; var most:=-1
 		for type in c.types:
 			if int(c.types[type])>most: most=int(c.types[type]); best=str(type)
@@ -119,28 +131,56 @@ func _show_deposits() -> bool:
 	return false
 
 
+## Full layout at once (selection changes, tests). The per-frame path below spreads the same work
+## over three frames: grouping, candidates, then clustering and placement.
 func refresh() -> void:
-	banners.clear(); markers.clear()
-	active=app.world.ready_ and not app.shell.is_blocking() and not app.shell.world_hidden
-	if not active: queue_redraw(); return
+	if not _active(): return
 	_members()
+	_place(_candidates())
+
+
+func _active() -> bool:
+	active=app.world.ready_ and not app.shell.is_blocking() and not app.shell.world_hidden
+	if not active: banners.clear(); markers.clear(); queue_redraw()
+	return active
+
+
+func _candidates() -> Array:
 	var world:WorldState=app.world; var viewport:=Rect2(Vector2.ZERO,size).grow(30); var candidates:=[]
 	if app.strategic.unit_labels:
+		# cheap rejection first (the group's hex against the view), then one projection per group
+		var focus:Vector3=app.cam.focus; var half_w:float=app.cam.view_half_width()+2.0; var half_h:float=app.cam.size+2.0
 		for source:Dictionary in groups.values():
-			var group:=source.duplicate(); var anchor:=Vector2.ZERO; var hp:=0.0; var count:=0; var selected:=false
+			var first:Dictionary=world.units.get(source.ids[0],{})
+			if first.is_empty(): continue
+			var c:Vector2=world.grid.center(int(first.tile))
+			if absf(world.grid.dx_wrap(focus.x,c.x))>half_w or absf(c.y-focus.z)>half_h: continue
+			var group:=source.duplicate(); var world_sum:=Vector3.ZERO; var hp:=0.0; var count:=0; var selected:=false
 			for id in source.ids:
 				var unit:Dictionary=world.units.get(id,{})
 				if unit.is_empty() or not app.military.draw_positions.has(id): continue
 				if int(unit.owner)!=world.civ_id and not world.is_visible(int(unit.tile)): continue
-				var point:Vector3=app.military.draw_positions[id]
-				anchor+=app.cam.to_screen(point+Vector3(0,.22,0)); hp+=float(unit.hp); count+=1; selected=selected or app.military.selected.has(id)
+				world_sum+=app.military.draw_positions[id]; hp+=float(unit.hp); count+=1; selected=selected or app.military.selected.has(id)
 				group.veteran=maxi(int(group.get("veteran",0)),int(unit.get("veteran",0)))
 			if count==0: continue
-			anchor/=count
+			group.world=world_sum/count
+			var anchor:Vector2=app.cam.to_screen(world_sum/count+Vector3(0,.22,0))
 			if not viewport.has_point(anchor): continue
 			group.anchor=anchor; group.hp=hp/count; group.selected=selected
 			group.priority=(10000 if selected else 0)+(2000 if group.owner!=world.civ_id else 0)-anchor.distance_to(size*.5)
 			candidates.append(group)
+	return candidates
+
+
+func _place(candidates:Array) -> void:
+	banners.clear(); markers.clear()
+	if not active: queue_redraw(); return
+	var world:WorldState=app.world; var viewport:=Rect2(Vector2.ZERO,size).grow(30)
+	# candidates were projected a frame or two ago: bring them up to the current camera
+	for group:Dictionary in candidates:
+		if group.has("world"):
+			var now:Vector2=app.cam.to_screen((group.world as Vector3)+Vector3(0,.22,0))
+			group.anchor=now
 	# Many groups on screen (big armies, zoomed out): aggregate per owner and screen cell into one
 	# badge with the most common unit's icon and the total count, so troops never vanish.
 	if candidates.size()>36: candidates=_aggregate(candidates)
@@ -150,9 +190,8 @@ func refresh() -> void:
 		if banners.size()>=160: break
 		var name_:String=str(SHORT.get(group.type,world.defs.get("UNITS",{}).get(group.type,{}).get("name",group.type)))
 		var text:=name_+(" ×%d"%group.ids.size() if group.ids.size()>1 else "")
-		var rect:=_badge(group.key,group.anchor,group.offset,occupied)
-		if rect.size==Vector2.ZERO and group.get("cluster",false):
-			rect=Rect2(group.anchor+Vector2(-13,-32),Vector2(26,26)); occupied.append(rect)      # a cluster is never dropped
+		# clusters are a cell apart already (wider than a badge): placed directly, no overlap search
+		var rect:=Rect2(group.anchor+Vector2(-13,-32),Vector2(26,26)) if group.get("cluster",false) else _badge(group.key,group.anchor,group.offset,occupied)
 		if rect.size==Vector2.ZERO: continue
 		group.rect=rect; group.text=text; banners.append(group)
 	if app.strategic.resource_markers and app.cam.size<52 and _show_deposits():
@@ -202,6 +241,15 @@ func _draw() -> void:
 			draw_rect(Rect2(rect.position+Vector2(5,rect.size.y-3),Vector2(rect.size.x-6,2)),Color("273338"))
 			draw_rect(Rect2(rect.position+Vector2(5,rect.size.y-3),Vector2((rect.size.x-6)*clampf(record.hp/100.0,0,1),2)),Color("deac82") if record.hp<50 else edge)
 
+func _follow_camera() -> void:
+	for record:Dictionary in banners:
+		if not record.has("world"): continue
+		var anchor:Vector2=app.cam.to_screen((record.world as Vector3)+Vector3(0,.22,0))
+		var shift:Vector2=anchor-(record.anchor as Vector2)
+		record.anchor=anchor; record.rect=Rect2((record.rect as Rect2).position+shift,(record.rect as Rect2).size)
+	queue_redraw()
+
+
 func select_banner(record:Dictionary,add:=false) -> void:
 	if not add: app.military.selected.clear(); app.input.selected_buildings.clear(); app.settlements.selected_building=-1
 	app.input.selected_army=-1
@@ -213,4 +261,20 @@ func _process(dt:float) -> void:
 	if absf(app.cam.size-last_zoom)>.002: zoom_settled=0.0
 	else: zoom_settled+=dt
 	last_zoom=app.cam.size; lock_layout=zoom_settled<.18
-	refresh()
+	var t0:=Time.get_ticks_usec()
+	# full layout every third frame (and at once on zoom or new data); in between the placed badges
+	# only follow the camera, so a large army costs a fraction of a frame
+	layout_frame+=1
+	if not _active(): last_us=Time.get_ticks_usec()-t0; return
+	match layout_phase:
+		2:
+			_place(pending); pending=[]; layout_phase=0
+		1:
+			pending=_candidates(); layout_phase=2; _follow_camera()
+		_:
+			var changed:bool=app.world.snapshot_count!=layout_snapshot or absf(app.cam.size-layout_zoom)>.002
+			if changed or layout_frame%3==0 or banners.is_empty():
+				layout_snapshot=app.world.snapshot_count; layout_zoom=app.cam.size
+				_members(); layout_phase=1
+			_follow_camera()
+	last_us=Time.get_ticks_usec()-t0

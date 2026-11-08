@@ -5,6 +5,73 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## Performance pass: large online battles (2026-11-08)
+
+Goal: large battles with several online players, constant orders and building placement must
+never show the engine's limits.
+
+**New benchmarks**
+- `tools/load-bench.mjs`: four players at war, 1600 troops, each player re-ordering troop groups
+  and placing buildings every two seconds on its own beat.
+- `tools/sandbox-bench.mjs`: the client's 500 vs 500 staging, run headless.
+- `tools/live-bench.mjs`: a WebSocket client that drives a running server and measures command
+  round trips and snapshot pacing.
+- `--perf` also reports script process time, badge time, objects and draw calls.
+
+**Server**
+- **Move orders are instant:** large groups follow the shared flow field without settling it
+  inside the command (0.18 ms per order, was 4.7 ms; worst 3.8 ms, was 40 ms).
+- **Incremental flow fields:**
+  - Built outward from the goal only as far as the units that need them, and resumed later.
+  - A unit the field cannot reach within a bound set by its distance routes itself, instead of
+    flooding the map.
+  - Settled values and settle order are history-independent, so restored games stay
+    bit-identical.
+- **Deferred path searches:** a search over the tick's budget (now 15,000 expansions) waits one
+  tick, and deferred units retry first on the next tick. No more 600-node floor per search,
+  which let hundreds of searches overshoot the budget.
+- **Faster searches:**
+  - The heap moves a hole instead of swapping pairs, and `dist` allocates nothing.
+  - Enemy-held and controlled hexes are a byte mask.
+  - Off-road cost (terrain, weather and scars) is memoised per tick and movement class.
+  - Road lookups only happen where both hexes have a road.
+- **Autonomy (player troops' self-direction):**
+  - Enemy lookups use a per-pass spatial grid, not a scan of every unit.
+  - A quarter of the units are handled every half second, so each still checks every two
+    seconds, without spikes.
+- **Targeting:** empty hexes are skipped, and line of fire is checked only for a candidate that
+  could still win (same choice).
+- **Snapshot deltas (`udelta` capability, native client):**
+  - Only changed unit records and paths, plus the ids that left view.
+  - A full refresh every 10 seconds and on join.
+  - About 60 KB down to 12 KB per snapshot per player.
+  - The browser keeps full snapshots.
+- **Results:**
+  - Large battle (1000 troops): tick p95 10.8 ms (was 22.8), worst 26.5 ms (was 42–54).
+  - Four-player load: tick p95 16 ms, worst 25 ms, all within the 100 ms tick.
+  - Live: command round trip p50 2 ms, p95 11 ms; snapshots every 204 ms (p95 214).
+
+**Client**
+- **Troop badges:**
+  - Full layout split over three frames (grouping, candidates, clustering and placement).
+  - Badges follow the camera every frame from stored world positions.
+  - One projection per group; clusters placed directly; integer cluster keys.
+  - p95 spikes down from 12–14 ms to 2–6 ms; median under 0.1 ms.
+- **Units:**
+  - A unit standing still with an unchanged record, offset and ground reuses its transform and
+    batch.
+  - When zoomed out, marching units refresh every second frame (every third above zoom 40).
+  - Stack lanes use integer keys.
+- **Squad figures:** squads standing still simulate on alternate frames with a double step;
+  marching squads update every frame.
+- **Measured back to back on this laptop (battery):** frame time at 1000 troops 16.7 / 22.9 /
+  25.0 ms at zoom 8 / 16 / 40, against 20.0 / 28.8 / 29.2 ms before. Script time is now about
+  8–11 ms; most of the rest is GPU (vegetation is the largest share). Battery and thermal
+  throttling move absolute numbers by up to 2–3x.
+
+**Checks:** server 185/185, load 1/1, browser e2e 13/13. Godot: render 66, composition 34, LWE
+67, development 303, surface 27, water 24, battle 11, warzone 14, all passing.
+
 ## P7 playtest fixes and balance (2026-11-08)
 
 - **Map lenses:** every economy snapshot used to reset the lens and restart its image job (one

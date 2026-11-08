@@ -227,7 +227,9 @@ func apply_snapshot(m: Dictionary) -> void:
 		if b.size() == vis_bits.size():
 			vis_bits = b
 			vis_changed.emit(vis_bits)
-	# units: the full visible set every snapshot
+	# units: the full visible set, or (capability 'udelta', d=1) only the records that changed plus
+	# the ids that left view; unchanged units keep their last record
+	var delta := int(m.get("d", 0)) == 1
 	var pos := {}
 	var seen := {}
 	for a in m.get("units", []):
@@ -253,10 +255,20 @@ func apply_snapshot(m: Dictionary) -> void:
 		u.formation = int(a[16]) if a.size() > 16 and a[16] != null else 0
 		units[id] = u
 		pos[id] = Vector3(u.tile, u.next, u.prog)
-	for id in units.keys():
-		if not seen.has(id):
-			units.erase(id)
-	paths = m.get("paths", {})
+	if delta:
+		for id in m.get("ug", []): units.erase(int(id))
+		for id in units:
+			if not pos.has(id):
+				var u: Dictionary = units[id]
+				pos[id] = Vector3(u.tile, u.next, u.prog)
+		var changed_paths: Dictionary = m.get("paths", {})
+		for key in changed_paths: paths[key] = changed_paths[key]
+		for id in m.get("pg", []): paths.erase(str(int(id)))
+	else:
+		for id in units.keys():
+			if not seen.has(id):
+				units.erase(id)
+		paths = m.get("paths", {})
 	snaps.append({"t": server_time, "pos": pos})
 	while snaps.size() > BUFFER:
 		snaps.pop_front()

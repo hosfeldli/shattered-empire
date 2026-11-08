@@ -399,25 +399,32 @@ export class World {
   }
 }
 
+// Binary min-heap of (key, priority). Sift moves a hole instead of swapping pairs (hot path of
+// every path search and flow field).
 class MinHeap {
   constructor() { this.k = []; this.v = []; }
   get size() { return this.k.length; }
   push(key, val) {
     const k = this.k, v = this.v; let i = k.length; k.push(key); v.push(val);
-    while (i > 0) { const p = (i - 1) >> 1; if (v[p] <= v[i]) break; [k[p], k[i]] = [k[i], k[p]]; [v[p], v[i]] = [v[i], v[p]]; i = p; }
+    while (i > 0) {
+      const p = (i - 1) >> 1; const pv = v[p];
+      if (pv <= val) break;
+      k[i] = k[p]; v[i] = pv; i = p;
+    }
+    k[i] = key; v[i] = val;
   }
   pop() {
     const k = this.k, v = this.v, top = k[0];
-    const lk = k.pop(), lv = v.pop();
-    if (k.length) {
-      k[0] = lk; v[0] = lv; let i = 0;
+    const lk = k.pop(), lv = v.pop(), n = k.length;
+    if (n) {
+      let i = 0;
       for (;;) {
-        const l = 2 * i + 1, r = l + 1; let m = i;
-        if (l < k.length && v[l] < v[m]) m = l;
-        if (r < k.length && v[r] < v[m]) m = r;
-        if (m === i) break;
-        [k[m], k[i]] = [k[i], k[m]]; [v[m], v[i]] = [v[i], v[m]]; i = m;
+        const l = 2 * i + 1; if (l >= n) break;
+        const r = l + 1; const m = r < n && v[r] < v[l] ? r : l;
+        if (v[m] >= lv) break;
+        k[i] = k[m]; v[i] = v[m]; i = m;
       }
+      k[i] = lk; v[i] = lv;
     }
     return top;
   }

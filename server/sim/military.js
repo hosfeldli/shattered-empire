@@ -68,6 +68,13 @@ export function tileCapacity(g, t) {
 
 export function unitsStep(g, dt) {
   const w = g.world;
+  // searches deferred last tick (budget spent) go first, so no unit waits more than a tick or two
+  for (const u of g.units.values()) {
+    if (!u.path.deferred) continue;
+    const civ = g.civs[u.owner], p = u.path;
+    u.path = findPath(g, civ, u.tile, p.goal, u.type, p.max) || [];
+    if (u.path.partial && !u.path.deferred) { u.slot = u.path[u.path.length - 1]; }
+  }
   for (const u of [...g.units.values()]) {
     if (!g.units.has(u.id)) continue;
     const def = UNITS[u.type];
@@ -153,7 +160,15 @@ export function unitsStep(g, dt) {
         u.field = false;
         if (u.tile !== u.slot) u.path = findPath(g, civ, u.tile, u.slot, u.type, 3000) || [];
       } else {
-        const field = flowField(g, civ, u.goal, u.type);
+        const field = flowField(g, civ, u.goal, u.type, u.tile);
+        if (!field.reach(u.tile)) {
+          // the shared field has not reached this unit (unreachable from the goal): own route
+          u.field = false;
+          const path = findPath(g, civ, u.tile, u.slot, u.type);
+          u.path = path || [];
+          if (path && path.partial) { u.slot = path[path.length - 1]; pathFail(g, u, 'partial'); }
+          else if (!path) { pathFail(g, u, 'no_route'); u.status = 'blocked'; }
+        } else {
         let best = -1, bv = field[u.tile];
         for (let d = 0; d < 6; d++) {
           const n = NB[u.tile * 6 + d]; if (n < 0 || !Number.isFinite(field[n])) continue;
@@ -163,7 +178,16 @@ export function unitsStep(g, dt) {
           if (v < bv) { bv = v; best = n; }
         }
         if (best >= 0) u.path = [best];
-        else { u.field = false; u.path = findPath(g, civ, u.tile, u.slot, u.type) || []; }
+        else {
+          // every way forward is blocked for now (usually enemy-held ground): a bounded local
+          // detour; the field is picked up again on the next order or step
+          u.field = false;
+          const path = findPath(g, civ, u.tile, u.slot, u.type, 3000);
+          u.path = path || [];
+          if (path && path.partial) { u.slot = path[path.length - 1]; pathFail(g, u, 'partial'); }
+          else if (!path) { pathFail(g, u, 'no_route'); u.status = 'blocked'; }
+        }
+        }
       }
     }
     // ------------------------------------------------ movement with capacity queues
@@ -177,7 +201,7 @@ export function unitsStep(g, dt) {
         u.field = false;
         u.path = findPath(g, civ, u.tile, goal, u.type) || [];
         u.next = -1; u.prog = 0;
-        if (!u.path.length) { u.status = 'blocked'; pathFail(g, u, goal >= 0 && !g.canEnter(u.owner, w.owner[goal] >= 0 ? w.owner[goal] : u.owner) ? 'border' : 'terrain'); if (civ.human && (g.tickN + u.id) % 30 === 0) g.notify(civ.id, `${def.name} is blocked: the route is no longer passable.`, { kind: 'error', tile: u.tile, quiet: true }); }
+        if (!u.path.length && !u.path.deferred) { u.status = 'blocked'; pathFail(g, u, goal >= 0 && !g.canEnter(u.owner, w.owner[goal] >= 0 ? w.owner[goal] : u.owner) ? 'border' : 'terrain'); if (civ.human && (g.tickN + u.id) % 30 === 0) g.notify(civ.id, `${def.name} is blocked: the route is no longer passable.`, { kind: 'error', tile: u.tile, quiet: true }); }
         continue;
       }
       // occupancy and zones of control: never into an enemy-held hex, never sliding along a line
@@ -190,10 +214,10 @@ export function unitsStep(g, dt) {
             u.blockTries = (u.blockTries || 0) + 1;
             const goal = u.slot >= 0 ? u.slot : u.goal;
             const alt = goal >= 0 ? findPath(g, civ, u.tile, goal, u.type, 6000, new Set([nxt])) : null;
-            u.path = alt && alt[0] !== nxt ? alt : [];
+            u.path = alt && (alt.deferred || alt[0] !== nxt) ? alt : [];
           } else u.path = [];
-          if (!u.path.length) pathFail(g, u, 'contact');
-          if (!u.path.length && u.order.kind === 'move' && !u.order.withdraw) { u.order = { kind: 'idle' }; u.groupSpeed = 0; }
+          if (!u.path.length && !u.path.deferred) pathFail(g, u, 'contact');
+          if (!u.path.length && !u.path.deferred && u.order.kind === 'move' && !u.order.withdraw) { u.order = { kind: 'idle' }; u.groupSpeed = 0; }
           continue;
         }
         reserve(g, u, nxt);
@@ -225,6 +249,8 @@ export function unitsStep(g, dt) {
         if (!def.air) addWear(g, nxt, def.move);
 
       }
+    } else if (!u.field && u.path.deferred) {
+      u.next = -1; u.prog = 0;                       // route pending (search deferred): stand ready
     } else if (!u.field) {
       u.next = -1; u.prog = 0;
       if (u.order.kind === 'move' || u.order.kind === 'attackMove') {
@@ -234,7 +260,7 @@ export function unitsStep(g, dt) {
         // shift-queued waypoints: carry on with the next leg
         if (u.queue && u.queue.length && u.queue[0].deploy) { const nx = u.queue.shift(); g.runQueuedDeploy(u, nx.deploy); }
         else if (u.queue && u.queue.length) { const nx = u.queue.shift(); u.order = { kind: nx.attackMove ? 'attackMove' : 'move' }; u.goal = nx.tile; u.slot = nx.tile; u.path = findPath(g, civ, u.tile, nx.tile, u.type) || []; }
-        if (!u.path.length && u.order.kind !== 'idle') u.order = { kind: 'idle' };
+        if (!u.path.length && !u.path.deferred && u.order.kind !== 'idle') u.order = { kind: 'idle' };
         if (u.auth === 'player' && u.order.kind === 'idle') u.auth = '';
       }
     }

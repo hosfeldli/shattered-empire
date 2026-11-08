@@ -69,7 +69,8 @@ function makeScheduler(g) {
     { name: 'governors', every: 10, phase: 2, fn: () => governorStep(g, 1), budget: 10 },
     { name: 'victory', every: 10, fn: () => g.checkVictory(), budget: 2 },
     { name: 'formations', every: 10, phase: 3, fn: () => formationsStep(g), budget: 4 },
-    { name: 'autonomy', every: 20, phase: 11, fn: () => autonomyStep(g), budget: 4 },
+    // a quarter of the units every half second: each still checks every two seconds, without spikes
+    { name: 'autonomy', every: 5, phase: 1, fn: () => autonomyStep(g, ((g.tickN / 5) | 0) % 4, 4), budget: 4 },
     { name: 'fieldworks', every: 10, phase: 7, fn: () => fieldworksStep(g, 1), budget: 4 },
     { name: 'logistics', every: 10, phase: 9, fn: () => { logisticsStep(g, 1); if ((g.policyT = (g.policyT || 0) + 1) % 5 === 0) policyStep(g); }, budget: 5 },
     { name: 'shortages', every: 50, phase: 31, fn: () => { for (const civ of g.civs) if (civ.human && civ.alive) shortageAlerts(g, civ); }, budget: 4 },
@@ -1821,8 +1822,9 @@ export class Game {
       u.groupSpeed = UNITS[u.type].air ? 0 : groupSpeed;
       const far = dist(u.tile, slot) > 6;
       if (free.length >= 4 && far) {
-        const field = flowField(this, civ, tile, u.type);
-        if (Number.isFinite(field[u.tile])) { u.field = true; u.path = []; results.reached++; continue; }
+        // a large group follows the shared field toward the goal; it is built on the units' own
+        // steps (within the search budget), not inside the order, so orders stay instant
+        u.field = true; u.path = []; results.reached++; continue;
       }
       u.field = false;
       const path = u.tile === slot ? [] : findPath(this, civ, u.tile, slot, u.type);

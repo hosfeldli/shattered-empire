@@ -8,7 +8,7 @@
 //   geo: terrain geometry in 'geo' messages (server/sim/terrainGeo.js), fog-filtered like tile records
 export const PROTOCOL_VERSION = 2;
 export const PROTOCOL_MIN = 1;
-export const CAPABILITIES = ['geo'];
+export const CAPABILITIES = ['geo', 'udelta'];
 
 export function negotiate(msg) {
   const proto = Number.isInteger(msg.proto) ? msg.proto : 1;

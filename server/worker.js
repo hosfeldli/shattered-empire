@@ -1,5 +1,6 @@
 // One match = one worker thread. The simulation, fog-of-war filtering and JSON encoding all run
 // here, so a heavy battle in one match cannot stall the event loop of another.
+import { deltaEncoder } from './delta.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import zlib from 'node:zlib';
 
@@ -22,6 +23,8 @@ game.adaptive = process.env.SE_ADAPTIVE !== '0';
 if (workerData.sandbox) { game.sandbox = true; game.sandboxReveal = true; for (const c of game.civs) if (!c.human) c.ai = null; }
 const post = (m) => parentPort.postMessage(m);
 const out = [];
+const deltas = new Map();               // civId -> snapshot delta encoder (capability 'udelta')
+const sendSnap = (civId, msg) => { const enc = deltas.get(civId); send(civId, enc ? enc(msg) : msg); };
 const send = (civId, msg, cap) => out.push(cap ? [civId, JSON.stringify(msg), cap] : [civId, JSON.stringify(msg)]);
 // viewers whose connection negotiated terrain geometry (civ id, or -2 for spectators): what they were sent
 const geoViewers = new Map();
@@ -63,12 +66,12 @@ const timer = setInterval(() => {
     if (!game.speed) {
       // paused: keep the view alive (orders given now show up and run when play resumes)
       frames++;
-      if (frames % 5 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) send(civId, msg); geoStep(); }   // includes the spectator
+      if (frames % 5 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) sendSnap(civId, msg); geoStep(); }   // includes the spectator
       flush(); return;
     }
     frames++;
     // 5 Hz snapshots, economy every second, regardless of how many ticks ran
-    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) send(civId, msg); geoStep(); }
+    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) sendSnap(civId, msg); geoStep(); }
     flush();
     const dt = (performance.now() - t0) / n;
     tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks += n;
@@ -128,13 +131,14 @@ parentPort.on('message', (m) => {
       flush();
     } else if (m.t === 'connect') {
       const c = game.civs[m.civId]; if (c) c.connected = !!m.on;
-      if (!m.on) geoViewers.delete(m.civId);
+      if (!m.on) { geoViewers.delete(m.civId); deltas.delete(m.civId); }
     } else if (m.t === 'welcome') {
       const civ = game.civs[m.civId];
       civ.connected = true;
       send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
         civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
-      for (const [, msg] of game.snapshots(m.civId)) send(m.civId, msg);
+      if (m.caps?.includes('udelta')) deltas.set(m.civId, deltaEncoder()); else deltas.delete(m.civId);
+      for (const [, msg] of game.snapshots(m.civId)) sendSnap(m.civId, msg);
       if (m.caps?.includes('geo')) { geoViewers.set(m.civId, geoViewer()); sendGeo(m.civId, true); } else geoViewers.delete(m.civId);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });
       flush();

@@ -81,10 +81,30 @@ func update(dt: float) -> void:
 	for entry in candidates:
 		var id: int = entry[1]
 		seen[id] = true; near[id] = true
-		_step_unit(id, world.units[id], military.draw_positions[id], dt, transforms)
+		var u: Dictionary = world.units[id]
+		var group: Dictionary = groups.get(id, {})
+		# a squad standing still is simulated every other frame (with twice the step) and shows its
+		# last pose in between; marching squads update every frame so they never lag their unit
+		if int(u.get("next", -1)) < 0 and group.has("last") and (id + frame) % 2 == 1:
+			for item in group.last: _emit(transforms, item); drawn += 1
+			continue
+		var mine := {}
+		_step_unit(id, u, military.draw_positions[id], dt * (2.0 if int(u.get("next", -1)) < 0 and group.has("last") else 1.0), mine)
+		var last := []
+		for key in mine:
+			for entry_ in (mine[key].list as Array):
+				var item := [key, mine[key].variant, mine[key].pose, mine[key].color, entry_]
+				last.append(item); _emit(transforms, item)
+		if groups.has(id): groups[id].last = last
 	for id in groups.keys():
 		if not seen.has(id): groups.erase(id)
 	_flush(transforms)
+
+
+func _emit(transforms: Dictionary, item: Array) -> void:
+	var key: String = item[0]
+	if not transforms.has(key): transforms[key] = {"variant": item[1], "pose": item[2], "color": item[3], "list": []}
+	(transforms[key].list as Array).append(item[4])
 
 
 ## The world position (near the camera) of one of a unit's simulated figures, picked by salt, at

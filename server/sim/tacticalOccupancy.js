@@ -71,11 +71,13 @@ export function knownSets(g, civ) {
   const c = g.knownCache || (g.knownCache = new Map());
   let k = c.get(civ.id);
   if (k && k.tick === g.tickN) return k;
-  k = { tick: g.tickN, occ: new Set(), zoc: new Set() };
+  // the same in a byte mask (1 held, 2 controlled) for the path search's inner loop
+  k = { tick: g.tickN, occ: new Set(), zoc: new Set(), mask: k?.mask || new Uint8Array(NB.length / 6) };
+  k.mask.fill(0);
   for (const o of g.units.values()) {
     if (!ground(o) || !g.hostile(civ.id, o.owner) || !civ.visible[o.tile] || !g.detects(civ.id, o)) continue;
-    k.occ.add(o.tile);
-    if (exertsZoc(o)) { k.zoc.add(o.tile); for (let d = 0; d < 6; d++) { const n = NB[o.tile * 6 + d]; if (n >= 0) k.zoc.add(n); } }
+    k.occ.add(o.tile); k.mask[o.tile] |= 1;
+    if (exertsZoc(o)) { k.zoc.add(o.tile); k.mask[o.tile] |= 2; for (let d = 0; d < 6; d++) { const n = NB[o.tile * 6 + d]; if (n >= 0) { k.zoc.add(n); k.mask[n] |= 2; } } }
   }
   c.set(civ.id, k);
   return k;

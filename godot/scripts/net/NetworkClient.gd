@@ -12,7 +12,7 @@ signal handshake_done(info: Dictionary)
 signal command_result(command: Dictionary, reply: Dictionary)
 
 const PROTOCOL := 2
-const WANT_CAPS := ["geo"]
+const WANT_CAPS := ["geo", "udelta"]
 const CLIENT_NAME := "godot-native/0.1"
 
 var url := "ws://127.0.0.1:8137/ws"

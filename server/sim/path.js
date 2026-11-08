@@ -42,12 +42,14 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
   const base = mc.terrain[tb];
   if (!Number.isFinite(base)) return Infinity;
   let c;
-  const edge = game.roads.usable(a, b);
+  // a road edge needs a road on both hexes (w.road is the best road class at each hex)
+  const edge = w.road[a] && w.road[b] ? game.roads.usable(a, b) : null;
   const riverHere = w.river[b] || (w.river[a] && !isWater(ta));
   if (edge && !(mc.heavy && riverHere && edge.type < 2)) {
     c = mc.road[edge.type] * (edge.cond < 50 ? 1.6 : 1);
+    if (game.craters && (game.craters.size || game.wrecks.size)) c += scarCost(game, b, def.move);
   } else {
-    c = base * (game.weather ? game.weather.moveMul(b) : 1);     // heavy rain and snow: off-road ground is slower (capped)
+    c = offRoad(game, b, def.move, base);
     if (w.river[b]) {
       const major = riverSize(w, b) >= 2;
       const f = w.river[a] ? (major ? mc.majorFord : mc.ford) * 0.4 : (major ? mc.majorFord : mc.ford);
@@ -55,15 +57,31 @@ export function stepCost(game, civ, a, b, unitType, avoid) {
       c += f;
     }
   }
-  if (game.craters && (game.craters.size || game.wrecks.size)) c += scarCost(game, b, def.move);
   if (avoid && avoid.has(b)) c += 6;
+  return c;
+}
+
+// Off-road cost of entering a hex (terrain x weather + battlefield scars), memoised per movement
+// class for the current tick (and weather/navigation state). It derives only from the game's
+// state and the order of work within the tick, which a restored game repeats exactly.
+const MOVE_CLASSES = Object.keys(MOVE);
+const offMemo = MOVE_CLASSES.map(() => ({ val: new Float32Array(N), stamp: new Int32Array(N) }));
+let memoGame = null, memoKey = '', memoEpoch = 1;
+function offRoad(game, b, moveClass, base) {
+  const key = `${game.tickN}:${game.weather ? game.weather.ver : 0}:${game.navVersion}`;
+  if (memoGame !== game || memoKey !== key) { memoGame = game; memoKey = key; memoEpoch++; }
+  const m = offMemo[MOVE_CLASSES.indexOf(moveClass)];
+  if (m.stamp[b] === memoEpoch) return m.val[b];
+  let c = base * (game.weather ? game.weather.moveMul(b) : 1);   // rain and snow slow off-road ground (capped)
+  if (game.craters && (game.craters.size || game.wrecks.size)) c += scarCost(game, b, moveClass);
+  m.stamp[b] = memoEpoch; m.val[b] = c;
   return c;
 }
 
 // Per-tick search budget shared by every unit (large battles: hundreds of units re-path at once).
 // Each search may expand at most what is left this tick (never fewer than a short local search),
 // and identical searches in the same tick share one result.
-export const PATH_BUDGET = 60000;
+export const PATH_BUDGET = 15000;
 const pathCache = new Map();
 let cacheTick = -1;
 export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avoid = null) {
@@ -74,7 +92,10 @@ export function findPath(game, civ, start, goal, unitType, maxNodes = 24000, avo
   // sharing results is only safe while the world cannot change between searches: the unit step
   const key = avoid || !game?.pathCacheOn ? null : `${civ ? civ.id : -1}:${cls}:${start}:${goal}:${maxNodes}`;
   if (key && pathCache.has(key)) { const hit = pathCache.get(key); return hit ? Object.assign(hit.slice(), { partial: hit.partial }) : null; }
-  if (game && game.pathBudget != null) maxNodes = Math.min(maxNodes, Math.max(600, game.pathBudget));
+  // inside the unit step, a search over this tick's budget is deferred: the unit stands this tick
+  // and retries first thing next tick (never a truncated route that would stop it short)
+  if (game?.pathCacheOn && game.pathBudget <= 0) return Object.assign([], { deferred: true, goal, max: maxNodes });
+  if (game && game.pathBudget != null) maxNodes = Math.min(maxNodes, Math.max(200, game.pathBudget));
   const result = search(game, civ, start, goal, unitType, maxNodes, avoid);
   if (key) pathCache.set(key, result ? Object.assign(result.slice(), { partial: result.partial }) : null);
   return result;
@@ -87,10 +108,11 @@ function search(game, civ, start, goal, unitType, maxNodes, avoid) {
   heap.push(start, 0);
   let expanded = 0, best = start, bestH = dist(start, goal);
   const air = MOVE[(UNITS[unitType] || UNITS.militia).move].air;
-  const hw = air ? 1 : 0.8;            // a firm bias toward the goal keeps searches narrow (near-optimal routes)
+  const hw = air ? 1 : 0.9;            // a firm bias toward the goal keeps searches narrow (near-optimal routes)
   // what this empire can see of enemy lines: held hexes are closed (except an attack's goal),
   // controlled ground costs more, so routes go around a front instead of into it
   const known = air || !civ || !civ.visible ? null : knownSets(game, civ);
+  const mask = known && known.occ.size ? known.mask : null;
   while (heap.size) {
     const cur = heap.pop();
     if (closed[cur] === gen) continue;
@@ -104,9 +126,12 @@ function search(game, civ, start, goal, unitType, maxNodes, avoid) {
       const n = NB[cur * 6 + d]; if (n < 0 || closed[n] === gen) continue;
       let c = stepCost(game, civ, cur, n, unitType, avoid);
       if (!Number.isFinite(c)) continue;
-      if (known && known.occ.size) {
-        if (known.occ.has(n) && n !== goal) continue;
-        if (known.zoc.has(n)) c += known.zoc.has(cur) ? 6 : 1.5;
+      if (mask) {
+        const m = mask[n];
+        if (m) {
+          if ((m & 1) && n !== goal) continue;
+          if (m & 2) c += (mask[cur] & 2) ? 6 : 1.5;
+        }
       }
       const ng = gScore[cur] + c;
       if (stamp[n] !== gen || ng < gScore[n]) {
@@ -126,20 +151,35 @@ function search(game, civ, start, goal, unitType, maxNodes, avoid) {
 }
 
 // ---------------------------------------------------------------- flow fields
-// One Dijkstra from the goal serves every unit of the same movement class heading there.
+// One Dijkstra from the goal serves every unit of the same movement class heading there. It is
+// incremental: it settles hexes outward from the goal only until the hex asked about is settled,
+// and resumes from there when a farther unit asks, so a field costs what the group needs rather
+// than the whole map (and a navigation change rebuilds only that much).
 const fieldCache = new Map();
-export function flowField(game, civ, goal, unitType) {
+export function flowField(game, civ, goal, unitType, need = -1) {
   const cls = (UNITS[unitType] || UNITS.militia).move;
   const k = `${game.id}:${civ.id}:${cls}:${goal}:${game.navVersion}`;
-  const hit = fieldCache.get(k);
-  if (hit) { hit.used = game.time; return hit.field; }
-  const field = new Float32Array(N).fill(Infinity);
-  const heap = new MinHeap();
-  field[goal] = 0; heap.push(goal, 0);
-  const done = new Uint8Array(N);
-  while (heap.size) {
+  let e = fieldCache.get(k);
+  if (!e) {
+    e = { field: new Float32Array(N).fill(Infinity), done: new Uint8Array(N), order: new Int32Array(N), count: 0, heap: new MinHeap(), used: game.time };
+    e.field[goal] = 0; e.heap.push(goal, 0); e.field.done = e.done;
+    fieldCache.set(k, e);
+    if (fieldCache.size > 48) {
+      const old = [...fieldCache.entries()].sort((a, b) => a[1].used - b[1].used).slice(0, 16);
+      for (const [kk] of old) fieldCache.delete(kk);
+    }
+  }
+  e.used = game.time;
+  const { field, done, heap } = e;
+  // Settle until `need` (and its neighbours closer to the goal) are final; -1 settles everything.
+  // Hexes always settle in the same order however the work is split, so values and the settle
+  // index are exact whatever was settled before (a restored game behaves identically). A hex
+  // that does not settle within a bound set by its distance from the goal is treated as not
+  // reachable through the field (the unit routes itself): an unreachable unit never floods the map.
+  const limit = need < 0 ? Infinity : Math.min(N, Math.max(2500, 10 * dist(goal, need) ** 2));
+  while (heap.size && (need < 0 || !done[need]) && e.count < limit) {
     const cur = heap.pop();
-    if (done[cur]) continue; done[cur] = 1;
+    if (done[cur]) continue; done[cur] = 1; e.order[cur] = ++e.count;
     for (let d = 0; d < 6; d++) {
       const n = NB[cur * 6 + d]; if (n < 0 || done[n]) continue;
       const c = stepCost(game, civ, n, cur, unitType);    // reversed: cost to move n -> cur
@@ -148,11 +188,7 @@ export function flowField(game, civ, goal, unitType) {
       if (nv < field[n]) { field[n] = nv; heap.push(n, nv); }
     }
   }
-  fieldCache.set(k, { field, used: game.time });
-  if (fieldCache.size > 48) {
-    const old = [...fieldCache.entries()].sort((a, b) => a[1].used - b[1].used).slice(0, 16);
-    for (const [kk] of old) fieldCache.delete(kk);
-  }
+  field.reach = (t) => done[t] === 1 && e.order[t] <= Math.min(N, Math.max(2500, 10 * dist(goal, t) ** 2));
   return field;
 }
 
