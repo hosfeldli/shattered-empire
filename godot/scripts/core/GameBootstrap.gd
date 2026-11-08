@@ -34,6 +34,7 @@ var civilians: CivilianActivitySystem
 var squads: SquadPresentation
 var streets: CityStreets
 var crops: CropFields
+var growth_zones: GrowthZoneOverlay
 var strategic: StrategicPresentation
 var workspace: NativeWorkspace
 var live_validation: LiveValidation
@@ -61,6 +62,7 @@ var recipe_inspector:NativeRecipeInspector
 var follow_pill:NativeFollowPill
 var perf_samples = null   # --perf: [frame ms, military, squads, combat, civilians+input, settlements, terrain, environment, total] (us)
 var alert_feed:NativeAlertFeed
+var opportunities:NativeOpportunities
 var world_labels:NativeWorldLabels
 var observer_bar:NativeObserverBar
 var production_feedback:NativeProductionFeedback
@@ -69,7 +71,7 @@ var production_feedback:NativeProductionFeedback
 func _ready() -> void:
 	args = _parse_args(OS.get_cmdline_user_args())
 	get_viewport().size_changed.connect(_apply_render_scale)
-	automated=args.has("bench") or args.has("perf") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test") or args.has("surface-test")
+	automated=args.has("bench") or args.has("intro-shots") or args.has("city-shot") or args.has("perf") or args.has("probe") or args.has("validate-lwe") or args.has("tour") or args.has("ui-test") or args.has("water-test") or args.has("surface-test")
 	if not automated: preferences.load_from(str(args.get("settings-file","user://settings.cfg")))
 	else: preferences.path=str(args.get("settings-file","user://test-settings.cfg"))
 	if args.has("server"): preferences.values.server=str(args.server)
@@ -125,6 +127,7 @@ func _ready() -> void:
 	civilians.setup(composition, cam)
 	streets = CityStreets.new(); add_child(streets); streets.setup(world, cam, composition, settlements)
 	crops = CropFields.new(); add_child(crops); crops.setup(world, cam, settlements)
+	growth_zones = GrowthZoneOverlay.new(); add_child(growth_zones); growth_zones.setup(world, cam, settlements)
 	squads = SquadPresentation.new()
 	add_child(squads)
 	squads.setup(world, cam, military, settlements)
@@ -189,6 +192,7 @@ func _ready() -> void:
 	recipe_inspector=NativeRecipeInspector.new(); hud.root.add_child(recipe_inspector); recipe_inspector.setup(self)
 	follow_pill=NativeFollowPill.new(); hud.root.add_child(follow_pill); follow_pill.setup(self)
 	alert_feed=NativeAlertFeed.new(); hud.root.add_child(alert_feed); alert_feed.setup(self)
+	opportunities=NativeOpportunities.new(); hud.root.add_child(opportunities); opportunities.setup(self)
 	observer_bar=NativeObserverBar.new(); hud.root.add_child(observer_bar); observer_bar.setup(self)
 	production_feedback=NativeProductionFeedback.new(); hud.root.add_child(production_feedback); production_feedback.setup(self)
 	diag = Diagnostics.new()
@@ -220,6 +224,10 @@ func _ready() -> void:
 		order_test_at = float(args["order-test"])
 	if args.has("tour"):
 		_tour(str(args.tour))
+	if args.has("intro-shots"):
+		_intro_shots(str(args["intro-shots"]))
+	if args.has("city-shot"):
+		_city_shot(str(args["city-shot"]))
 	if args.has("perf"):
 		_perf(float(args.perf), str(args.get("perf-out", "")))
 	if args.has("validate-lwe"):
@@ -326,6 +334,40 @@ func _perf(seconds: float, out: String) -> void:
 	print("PERF ", JSON.stringify(report))
 	if not out.is_empty():
 		var f := FileAccess.open(out, FileAccess.WRITE); f.store_string(JSON.stringify(report, "  ")); f.close()
+	get_tree().quit()
+
+
+## --city-shot=DIR (with --mode=ai): select your town after a minute and save the city card and top bar
+func _city_shot(dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dir)
+	while not (world.ready_ and world.snapshot_count > 8): await get_tree().process_frame
+	await get_tree().create_timer(60.0).timeout
+	for b in world.buildings.values():
+		if str(b.ty) == "town" and int(b.o) == world.civ_id:
+			settlements.selected_building = int(b.id); input.selection_changed.emit(); cam.focus_tile(int(b.t), 14.0); break
+	await get_tree().create_timer(2.0).timeout
+	get_viewport().get_texture().get_image().save_png("%s/city.png" % dir)
+	command_dock.guide_open = true; command_dock.signature = ""
+	await get_tree().create_timer(1.0).timeout
+	get_viewport().get_texture().get_image().save_png("%s/guide.png" % dir)
+	get_tree().quit()
+
+
+## --intro-shots=DIR: play the intro, save one frame per story beat and the main menu, then quit
+func _intro_shots(dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dir)
+	await get_tree().process_frame
+	shell.automated = false; shell.show_view("intro")
+	for beat in NativeIntroCinematic.LINES.size():
+		await get_tree().create_timer(NativeIntroCinematic.BEAT * (0.55 if beat == 0 else 1.0)).timeout
+		get_viewport().get_texture().get_image().save_png("%s/intro-%d.png" % [dir, beat])
+	var key := InputEventKey.new(); key.keycode = KEY_SPACE; key.pressed = true
+	Input.parse_input_event(key)
+	await get_tree().create_timer(1.0).timeout
+	get_viewport().get_texture().get_image().save_png("%s/menu.png" % dir)
+	shell.show_view("tutorial")
+	await get_tree().create_timer(.5).timeout
+	get_viewport().get_texture().get_image().save_png("%s/tutorial.png" % dir)
 	get_tree().quit()
 
 
@@ -556,6 +598,7 @@ func _process(dt: float) -> void:
 	settlements.update(dt, net.frame_work_us < 500)
 	streets.update(dt)
 	crops.update(dt)
+	growth_zones.update(dt)
 	var t5 := Time.get_ticks_usec()
 	military.update(dt)
 	var t5b := Time.get_ticks_usec()

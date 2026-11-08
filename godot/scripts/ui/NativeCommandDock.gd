@@ -12,6 +12,7 @@ var signature:=""
 var timer:=0.0
 var confirm_button:Button
 var details:VBoxContainer
+var guide_open:=false
 var recruit_open:=false
 var queue_label:Label
 var queue_box:VBoxContainer
@@ -129,6 +130,39 @@ func _rebuild() -> void:
 		if int(building.get("mem",0))==1:
 			var ago:=maxi(0,int(world.server_time)-int(building.get("ls",0)))
 			NativeUI.label(details,"Out of sight · as last seen %d:%02d ago. It may have been damaged, upgraded or destroyed since."%[ago/60,ago%60],14,NativeUI.MUTED)
+		if building.ty=="town" and own:
+			# Guide Growth: the player decides where the city grows and as what; the mayor builds it
+			var city_id:=int(building.get("c",-1))
+			var plan:Array=city.get("gz",[])
+			if not plan.is_empty():
+				var zone_tile:=int(plan[1]); var centre:=world.grid.center(int(city.t)); var at:=world.grid.center(zone_tile)
+				var dir:=Vector2(world.grid.dx_wrap(centre.x,at.x),at.y-centre.y)
+				var compass:String=["east","south-east","south","south-west","west","north-west","north","north-east"][posmod(roundi(dir.angle()/(PI/4.0)),8)] if dir.length()>.5 else "around the centre"
+				NativeUI.label(details,"Current plan: expand %s %s (%d of %d built)"%[str(DecisionHelpers.GROWTH_KINDS.get(str(plan[0]),["growth"])[0]).to_lower(),compass,int(plan[2]),int(plan[3])],14,NativeUI.GOLD)
+				NativeUI.compact_button(details,"Cancel plan",func():app.commands.submit({"c":"cityGrowth","city":city_id,"clear":true},func(_r):signature=""))
+			# the mayor: on/off and one clear priority, with what it means and what it is doing now
+			var dev:Dictionary=city.get("development",{})
+			var on:bool=bool(dev.get("on",true)); var current:=str(dev.get("priority","balanced"))
+			NativeUI.label(details,"Mayor · "+("building for you" if on else "off: you place every building"),14,NativeUI.GOLD if on else NativeUI.MUTED)
+			var toggle:=NativeUI.compact_button(details,"Turn the mayor off" if on else "Turn the mayor on",func():app.commands.submit({"c":"cityDevelopment","city":city_id,"on":not on},func(_r):signature=""))
+			toggle.tooltip_text="When on, the mayor builds and upgrades homes and routine production within the city's budget, following its priority and your growth plan"
+			if on:
+				NativeUI.label(details,"What should the mayor favour?",12,NativeUI.TEXT)
+				var choices:=HFlowContainer.new(); choices.add_theme_constant_override("h_separation",4); details.add_child(choices)
+				var meaning:={"balanced":"Balanced · homes, food and production as needed","industry":"Industry · workshops, mines and mills first","agriculture":"Agriculture · farms and food security first","military":"Military · defences and the army's needs first"}
+				for key in ["balanced","industry","agriculture","military"]:
+					var k:String=key
+					var b:=NativeUI.compact_button(choices,("● " if k==current else "")+k.capitalize(),func():app.commands.submit({"c":"cityDevelopment","city":city_id,"priority":k},func(_r):signature=""))
+					b.tooltip_text=str(meaning[k])
+					if k==current: b.add_theme_color_override("font_color",NativeUI.GOLD)
+				NativeUI.label(details,"Priority: "+str(meaning.get(current,current)),12,NativeUI.MUTED)
+				var doing:=str(dev.get("activity",""))
+				if not doing.is_empty() and doing!="<null>": NativeUI.label(details,"Now: "+doing,12,NativeUI.MUTED).autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
+			_button("Guide growth",func():guide_open=not guide_open; signature="","Choose where %s grows and as what; the mayor builds it"%str(city.get("n","the city")))
+			if guide_open:
+				for kind in ["housing","industry","farming"]:
+					var spec:Array=DecisionHelpers.GROWTH_KINDS[kind]; var k:String=kind
+					NativeUI.compact_button(details,str(spec[0])+" · "+str(spec[1]),func():guide_open=false; DecisionHelpers.start_guide_growth(app,city_id,k))
 		if building.ty=="town":
 			_button("Build · B",func():_workspace("Construction"))
 			_button("Manage",func():_workspace("Cities"); app.workspace.dashboard.city_tab="Development"; app.workspace.dashboard.signature=""; app.workspace.dashboard.sync())
@@ -275,7 +309,7 @@ func _refresh() -> void:
 	var ids:Array=app.military.selected.keys(); var building:Dictionary=world.buildings.get(app.settlements.selected_building,{})
 	var key:=str([ids,app.settlements.selected_building,app.input.selected_buildings.keys()])
 	if key!=selection_key: selection_key=key; recruit_open=false
-	var next:=str([world.econ.get("techs",[]) if recruit_open else [],app.input.selected_army,recruit_open,ids,ids.map(func(id):return world.units.get(id,{}).get("type","")),app.input.selected_buildings.keys(),app.settlements.selected_building,building.get("ty",""),int(building.get("d",0)),float(building.get("hp",100))<100,world.spectator,app.command_tools.mode])
+	var next:=str([world.econ.get("techs",[]) if recruit_open else [],app.input.selected_army,recruit_open,ids,ids.map(func(id):return world.units.get(id,{}).get("type","")),app.input.selected_buildings.keys(),app.settlements.selected_building,building.get("ty",""),int(building.get("d",0)),float(building.get("hp",100))<100,world.spectator,app.command_tools.mode,world.cities.get(int(building.get("c",-1)),{}).get("gz",[]),world.cities.get(int(building.get("c",-1)),{}).get("development",{})])
 	if next!=signature: signature=next; _rebuild()
 	if app.command_tools.mode!="select":
 		var mode:String=app.command_tools.mode

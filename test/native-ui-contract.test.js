@@ -19,7 +19,7 @@ test('every retained native gameplay command has a native UI or map interaction'
   const commandBody=server.slice(server.indexOf('\n  commandInner(civ, cmd)'));
   assert.ok(commandBody.length>1000,'server command dispatcher must be found');
   const commands=new Set([...commandBody.matchAll(/case '([A-Za-z]+)':/g)].map(m=>m[1]));
-  const native=[file('input/NativeCommandTools.gd'),file('input/InputController.gd'),file('ui/NativeAppShell.gd'),file('ui/NativeCommandPanel.gd'),file('ui/NativeCommandDock.gd')].join('\n');
+  const native=[file('input/NativeCommandTools.gd'),file('input/InputController.gd'),file('ui/NativeAppShell.gd'),file('ui/NativeCommandPanel.gd'),file('ui/NativeCommandDock.gd'),file('ui/NativeOpportunities.gd'),file('ui/DecisionHelpers.gd')].join('\n');
   const covered=new Set(actions.map(a=>a.command.c).filter(Boolean));
   for(const a of actions)if(a.preview_command)covered.add(a.preview_command);
   for(const match of native.matchAll(/"c"\s*:\s*"([A-Za-z]+)"/g))covered.add(match[1]);

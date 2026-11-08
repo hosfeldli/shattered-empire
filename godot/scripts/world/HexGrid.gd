@@ -123,6 +123,19 @@ func dx_wrap(a: float, b: float) -> float:
 
 
 ## hex distance (cube metric, shortest image)
+## every hex within `radius` steps of `center` (center first)
+func disk(center: int, radius: int) -> Array:
+	var out := [center]; var seen := {center: true}; var frontier := [center]
+	for _r in radius:
+		var next := []
+		for t in frontier:
+			for d in 6:
+				var n: int = nb[int(t) * 6 + d]
+				if n >= 0 and not seen.has(n): seen[n] = true; out.append(n); next.append(n)
+		frontier = next
+	return out
+
+
 func dist(a: int, b: int) -> int:
 	var ar := a / w
 	var br := b / w

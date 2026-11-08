@@ -32,6 +32,7 @@ var legal_view:=Vector3.INF
 var hover_inflight:=false
 var hover_queued:=-1
 var hover_sent:=0
+var growth_city:=-1
 var legal_ready:=true      # false while the legal-site list for the active building is in flight
 var blocked_tiles:={}
 var blocked_edges:={}
@@ -192,6 +193,24 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif mode == "build" and tile != last_hover:
 			last_hover = tile
 			_preview_build(tile)
+		elif mode == "target" and tile != last_hover and not drawing:
+			last_hover = tile
+			_target_hover(tile)
+
+
+## Before the click: what the order would cover and what is known there (growth area, objective).
+func _target_hover(tile: int) -> void:
+	if tile < 0: return
+	var c := str(target_payload.get("c", ""))
+	if c == "cityGrowth":
+		var info: Array = DecisionHelpers.growth_preview(world, int(target_payload.city), tile, str(target_payload.kind))
+		_draw(world.grid.disk(tile, DecisionHelpers.GROWTH_RADIUS), bool(info[1]))
+		status = target_title + " · " + str(info[0]) + (" · click to set the plan" if bool(info[1]) else "")
+		changed.emit()
+	elif c == "army":
+		_draw([tile], true)
+		status = target_title + " · " + DecisionHelpers.assess_objective(world, tile, str(target_payload.get("kind", "")))
+		changed.emit()
 
 
 func _add_point(tile: int) -> void:

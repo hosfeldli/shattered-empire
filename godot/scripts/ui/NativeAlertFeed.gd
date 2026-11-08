@@ -32,6 +32,8 @@ static func level_of(note: Dictionary) -> String:
 
 func _on_note(note: Dictionary) -> void:
 	if note.get("quiet", false) or app.world.spectator: return
+	if str(note.get("kind", "")) == "result":
+		_result(note); return
 	var level := level_of(note)
 	if not LIFETIME.has(level): return
 	var critical := level == "critical"
@@ -53,6 +55,31 @@ func _on_note(note: Dictionary) -> void:
 	if critical: move_child(pill, 0)
 	items.append({"node": pill, "until": Time.get_ticks_msec() / 1000.0 + float(LIFETIME[level]), "critical": critical})
 	# keep the stack short: the oldest non-critical pills give way first
+	var pills := items.filter(func(item): return not item.critical)
+	while pills.size() > MAX_PILLS:
+		_dismiss(pills.pop_front().node)
+
+
+## A result card: a short, proud summary of something the player's decision achieved (a planned
+## district, a battle won, a first steel mill), with one way to go and see it. Never a modal.
+func _result(note: Dictionary) -> void:
+	var card := PanelContainer.new()
+	var style := NativeUI.style(Color(NativeUI.PANEL, .96), Color(NativeUI.GOLD, .7), 10, 12, true)
+	style.border_width_top = 3
+	card.add_theme_stylebox_override("panel", style)
+	var body := VBoxContainer.new(); body.add_theme_constant_override("separation", 3); card.add_child(body)
+	var head := HBoxContainer.new(); head.add_theme_constant_override("separation", 8); body.add_child(head)
+	var icon := NativeIcon.new(); icon.kind = "check"; icon.color = NativeUI.GOLD; icon.custom_minimum_size = Vector2(20, 20); head.add_child(icon)
+	var title := NativeUI.label(head, str(note.get("title", "Result")), 17, NativeUI.GOLD); title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.add_theme_font_override("font", load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
+	NativeUI.icon_button(head, "close", "Dismiss", func(): _dismiss(card), 20)
+	var text := NativeUI.label(body, str(note.get("text", "")), 13, NativeUI.TEXT)
+	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; text.custom_minimum_size.x = 320
+	var tile := int(note.get("tile", -1))
+	if tile >= 0: NativeUI.compact_button(body, "View", func(): app.cam.focus_tile(tile, 16.0))
+	add_child(card)
+	items.append({"node": card, "until": Time.get_ticks_msec() / 1000.0 + 9.0, "critical": false})
+	if app.audio and app.audio.has_method("ui"): app.audio.ui("result")
 	var pills := items.filter(func(item): return not item.critical)
 	while pills.size() > MAX_PILLS:
 		_dismiss(pills.pop_front().node)

@@ -56,7 +56,11 @@ func setup(game:Node,settings:NativePreferences,is_automated:bool) -> void:
 		rail_buttons[title]=button
 	app.net.message.connect(_message)
 	if automated: show_view("")
+	elif not bool(prefs.values.get("intro_seen",false)): show_view("intro")
 	else: show_view("main")
+	# a brand-new match opens with the descent onto the capital
+	app.world.welcomed.connect(func():
+		if app.world.server_time<15.0: opening_shot.call_deferred())
 
 func is_blocking() -> bool: return not view.is_empty()
 
@@ -74,17 +78,9 @@ func show_view(kind:String) -> void:
 	app.input.box_active=false; app.input.press_pos=Vector2(-1,-1)
 	app.input.input_enabled=false; app.cam.input_enabled=false; app.command_tools.input_enabled=false
 	match kind:
-		"main":
-			_base("Shattered Empires","A civilization to rebuild. A war to survive.")
-			NativeUI.button(content,"New campaign",func():show_view("new"))
-			NativeUI.button(content,"Rejoin last match",func():_connect({"mode":"rejoin"}))
-			NativeUI.button(content,"Multiplayer",func():show_view("multiplayer"))
-			NativeUI.button(content,"Watch an AI match",func():_new_game("observe"))
-			NativeUI.button(content,"Combat sandbox",func():_connect({"mode":"sandbox"}))
-			NativeUI.button(content,"Settings",func():previous="main";show_view("settings"))
-			NativeUI.button(content,"Controls & field guide",func():previous="main";show_view("help"))
-			NativeUI.button(content,"Quit",func():app.get_tree().quit())
-			NativeUI.label(content,"NATIVE EDITION     •     ONLINE CAMPAIGNS",13,NativeUI.MUTED)
+		"main": _main_menu()
+		"tutorial": _tutorial()
+		"intro": play_intro()
 		"new": _new_game("ai")
 		"multiplayer": _multiplayer()
 		"pause":
@@ -127,6 +123,73 @@ func return_to_menu() -> void:
 	if app.world.grid!=null: app.world._clear_map(); app.world.reset.emit()
 	app.command_tools.cancel(); app.workspace.panel.hide(); app.command_panel.panel.hide()
 	show_view("main")
+
+## The main menu, organised around what the game is about: build a civilization, command its
+## forces, reshape the world. The primary choices come first; every option says what it does.
+func _main_menu() -> void:
+	NativeUI.clear(content)
+	var title:=NativeUI.label(content,"SHATTERED EMPIRES",40,NativeUI.GOLD)
+	title.add_theme_font_override("font",load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
+	NativeUI.label(content,"Generations after the fallout, the ruins are yours to reclaim.",16,NativeUI.MUTED)
+	var pillars:=HBoxContainer.new(); pillars.add_theme_constant_override("separation",14); content.add_child(pillars)
+	for pillar in [["build","Build","Shape cities you care about"],["army","Command","Win with position, timing and supply"],["research","Reshape","Leave the world changed by your decisions"]]:
+		var column:=VBoxContainer.new(); column.size_flags_horizontal=Control.SIZE_EXPAND_FILL; column.add_theme_constant_override("separation",2); pillars.add_child(column)
+		var icon:=NativeIcon.new(); icon.kind=str(pillar[0]); icon.color=NativeUI.GOLD; icon.custom_minimum_size=Vector2(22,22); column.add_child(icon)
+		NativeUI.label(column,str(pillar[1]),15,NativeUI.TEXT)
+		NativeUI.label(column,str(pillar[2]),12,NativeUI.MUTED).autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(HSeparator.new())
+	var tip:=func(button:Button,text:String) -> Button: button.tooltip_text=text; return button
+	tip.call(NativeUI.button(content,"Continue",func():_connect({"mode":"rejoin"})),"Return to your most recent match where you left it")
+	tip.call(NativeUI.button(content,"New campaign",func():show_view("new")),"Start a new match against AI empires on a world of your choosing")
+	tip.call(NativeUI.button(content,"Tutorial · learn by playing",func():show_view("tutorial")),"A guided first match on a small, quiet map: grow a city, scout, act on an opportunity, research")
+	var row:=HFlowContainer.new(); row.add_theme_constant_override("h_separation",8); content.add_child(row)
+	tip.call(NativeUI.compact_button(row,"Multiplayer",func():show_view("multiplayer")),"Host an online match, join with a code, or spectate")
+	tip.call(NativeUI.compact_button(row,"Watch an AI match",func():_new_game("observe")),"Observe AI empires play each other with the whole map revealed")
+	tip.call(NativeUI.compact_button(row,"Combat sandbox",func():_connect({"mode":"sandbox"})),"Stage battles and try units, terrain and fortifications")
+	var footer:=HFlowContainer.new(); footer.add_theme_constant_override("h_separation",8); content.add_child(footer)
+	tip.call(NativeUI.compact_button(footer,"Settings",func():previous="main";show_view("settings")),"Graphics, interface, audio and controls")
+	tip.call(NativeUI.compact_button(footer,"Field guide",func():previous="main";show_view("help")),"Every control and how the main tools work")
+	tip.call(NativeUI.compact_button(footer,"Watch the intro",func():show_view("intro")),"The history of the world: the fallout, the long winter and the Reclamation")
+	tip.call(NativeUI.compact_button(footer,"Quit",func():app.get_tree().quit()),"Close the game")
+	NativeUI.label(content,"NATIVE EDITION     •     ONLINE CAMPAIGNS",12,NativeUI.MUTED)
+
+
+## The intro cinematic over everything; the main menu returns when it ends or is skipped.
+func play_intro() -> void:
+	veil.visible=true; card.visible=false
+	var intro:=NativeIntroCinematic.new(); root.add_child(intro)
+	intro.finished.connect(func():
+		prefs.values.intro_seen=true; prefs.save()
+		show_view("main"))
+
+
+## Tutorial: a quiet, small match (one easy builder rival) with the guided first-match coach on.
+func _tutorial() -> void:
+	_base("Tutorial","A guided first match: one quiet rival, a small world, and a coach that teaches decisions by doing them.")
+	for line in ["Guide your city's growth: choose where it expands and as what.","Scout nearby ground and discover what it offers.","Act on an opportunity: work a deposit, answer a threat, fix a shortage.","Train and move your forces; choose a research goal."]:
+		NativeUI.label(content,"•  "+line,15,NativeUI.TEXT).autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
+	NativeUI.button(content,"Start the tutorial",func():
+		prefs.values.onboarding_done=false; prefs.values.tutorial=true; prefs.save()
+		_connect({"mode":"ai","name":str(prefs.values.player),"map":"small","ais":1,"difficulty":"easy","aiPersonality":"builder","fairPlay":true,"style":""}))
+	NativeUI.button(content,"Back",func():show_view("main"))
+
+
+## A new match opens with a short descent from the sky onto the capital, with the empire's name.
+func opening_shot() -> void:
+	if automated or app.world.spectator or app.world.start_tile<0: return
+	var tile:int=app.world.start_tile
+	var caption:=Label.new(); caption.text=str(app.world.civ_by_id.get(app.world.civ_id,{}).get("name","Your people"))+"\nThe Reclamation · Year one"
+	caption.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER; caption.add_theme_font_size_override("font_size",30)
+	caption.add_theme_font_override("font",load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
+	caption.add_theme_color_override("font_color",Color(.95,.85,.6)); caption.add_theme_color_override("font_outline_color",Color(0,0,0,.8)); caption.add_theme_constant_override("outline_size",6)
+	caption.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP); caption.position.y=150; caption.mouse_filter=Control.MOUSE_FILTER_IGNORE
+	root.add_child(caption)
+	var tween:=root.create_tween()
+	tween.tween_method(func(t:float):app.cam.focus_tile(tile,lerpf(64.0,16.0,t*t*(3.0-2.0*t))),0.0,1.0,4.5)
+	tween.parallel().tween_property(caption,"modulate:a",1.0,1.0).from(0.0)
+	tween.tween_property(caption,"modulate:a",0.0,1.2).set_delay(1.0)
+	tween.tween_callback(caption.queue_free)
+
 
 func _new_game(mode:String) -> void:
 	_base("New campaign" if mode=="ai" else "AI exhibition","Choose the world and opponents. Progress is saved automatically.")
@@ -325,7 +388,9 @@ func _process(_dt:float) -> void:
 	app.strategic.selector.visible=false
 	app.strategic.selector.custom_minimum_size=Vector2(156,30)
 	card.size=Vector2(minf(650,bounds.x-32),minf(850,bounds.y-48)); card.position=(bounds-card.size)*.5
-	if view=="main": card.size.y=minf(690,bounds.y-48); card.position=Vector2(maxf(24,bounds.x*.09),(bounds.y-card.size.y)*.5)
+	if view=="main":
+		# the card hugs its content (no empty half-card), left of centre over the living map
+		card.size.y=minf(content.get_combined_minimum_size().y+40.0,bounds.y-48); card.position=Vector2(maxf(24,bounds.x*.09),(bounds.y-card.size.y)*.5)
 	app.hud.lobby.visible=false
 	app.hud.root.visible=app.world.ready_ and not world_hidden
 	if connection_pending and app.world.ready_: connection_pending=false; show_view("")

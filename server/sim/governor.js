@@ -58,6 +58,14 @@ function civCount(g, civ, type) { let n = 0; for (const b of g.buildings.values(
 const unlocked = (civ, type) => { const d = BUILDINGS[type]; return d && d.age <= civ.age && (!d.tech || civ.techs.has(d.tech)); };
 // Routine development can address production and research bottlenecks, but major military and
 // advanced industrial projects remain player decisions. Existing scoring and budgets still apply.
+// Guide Growth: what each player-chosen growth kind means in buildings
+export const GROWTH_KINDS = {
+  housing: new Set(['house', 'market', 'academy']),
+  industry: new Set(['lumber', 'quarry', 'mine', 'salvage', 'power_plant', 'oil_well', 'steel_mill', 'refinery', 'munitions_plant', 'electronics_plant', 'motor_works', 'heavy_assembly']),
+  farming: new Set(['farm']),
+};
+export const GROWTH_RADIUS = 2, GROWTH_TARGET = 4;
+const inZone = (g, c, t) => c.plan && dist(c.plan.tile, t) <= GROWTH_RADIUS;
 const NATIVE_AUTOMATIC_BUILDINGS = new Set(['farm', 'house', 'lumber', 'quarry', 'mine', 'market', 'academy', 'salvage', 'power_plant', 'oil_well']);
 // Upgrades a player's city development may undertake by itself (timed works, within its budget):
 // housing density when crowded and the productive buildings above. Never military or national projects.
@@ -112,6 +120,8 @@ export function pickTile(g, civ, c, type, gv) {
     if (w.stab[t] < 0.3) s -= 3;
     if (w.ash[t] > 0 || w.lava[t] > 0) s -= 5;
     if (g.ruins.has(t) && g.ruins.get(t).type === type) s += 4;      // rebuilding a ruin is cheaper
+    // the player's growth plan: its kind gathers in the marked area, other uses keep out of it
+    if (c.plan) { const match = GROWTH_KINDS[c.plan.kind]?.has(type); if (inZone(g, c, t)) s += match ? 8 - dist(c.plan.tile, t) : -4; }
     if (s > bs) { bs = s; best = t; }
   }
   return best;
@@ -218,6 +228,15 @@ function develop(g, civ, c, gv, level) {
     if (res && res.error) continue;
     const b = g.buildingAtTile(t);
     if (b) { gv.queue.push(b.id); if (civ.claims && BUILDINGS[cand.type] && NATIONAL_CLAIM.has(cand.type)) civ.claims[cand.type] = c.id; if (civ.natReserve?.type === cand.type) civ.natReserve = null; }
+    // progress on the player's growth plan; a completed plan is reported as a result
+    if (b && c.plan && inZone(g, c, t) && GROWTH_KINDS[c.plan.kind]?.has(cand.type)) {
+      c.plan.built = (c.plan.built || 0) + 1;
+      if (c.plan.built >= GROWTH_TARGET) {
+        const words = { housing: 'a new residential district', industry: 'a new industrial district', farming: 'new farmland' }[c.plan.kind];
+        if (civ.human) g.notify(civ.id, `${c.name} expanded: ${words} is under construction where you planned it.`, { kind: 'result', tile: c.plan.tile, level: 'major', title: `${c.name} expanded` });
+        c.plan = null;
+      }
+    }
     gv.cooldown = g.time + (civ.isAI ? 8 : 20);
     log(g, c, `Building ${BUILDINGS[cand.type].name}: ${cand.reason}.`);
     return true;

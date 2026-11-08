@@ -22,8 +22,9 @@ import { unitsStep, buildingCombatStep, recomputeSupply, supplyStep, spawnUnit, 
 import { Diplomacy } from './diplomacy.js';
 import { AI, TECH_PREF, resolvePersonality } from './ai.js';
 import { autonomyStep } from './autonomy.js';
+import { opportunityStep, quietOpportunity } from './opportunities.js';
 import { RebelAI } from './rebels.js';
-import { defaultGovernor, governorStep, autoColonists, migrateGovernor, answerProposal, LEVELS } from './governor.js';
+import { defaultGovernor, governorStep, autoColonists, migrateGovernor, answerProposal, LEVELS, GROWTH_KINDS, GROWTH_TARGET } from './governor.js';
 import { GOALS, readiness, candidates } from './planner.js';
 import { armyCommand, armiesStep, armySummary } from './armies.js';
 import { recoveryStep } from './recovery.js';
@@ -70,6 +71,7 @@ function makeScheduler(g) {
     { name: 'victory', every: 10, fn: () => g.checkVictory(), budget: 2 },
     { name: 'formations', every: 10, phase: 3, fn: () => formationsStep(g), budget: 4 },
     // a quarter of the units every half second: each still checks every two seconds, without spikes
+    { name: 'opportunities', every: 50, phase: 7, fn: () => opportunityStep(g), budget: 3 },
     { name: 'autonomy', every: 5, phase: 1, fn: () => autonomyStep(g, ((g.tickN / 5) | 0) % 4, 4), budget: 4 },
     { name: 'fieldworks', every: 10, phase: 7, fn: () => fieldworksStep(g, 1), budget: 4 },
     { name: 'logistics', every: 10, phase: 9, fn: () => { logisticsStep(g, 1); if ((g.policyT = (g.policyT || 0) + 1) % 5 === 0) policyStep(g); }, budget: 5 },
@@ -528,7 +530,12 @@ export class Game {
       b.hp = Math.min(b.maxHp, b.hp + (b.maxHp * 0.9 * dt * rate) / def.time);
       if (b.progress >= 1) {
         b.done = true; b.progress = 1; this.refreshState(b);
-        this.notify(civ.id, `${def.name} completed.`, { kind: 'build', tile: b.tile, quiet: true, level: 'info' });
+        // the first of a kind of industry, a defence or a landmark is a result worth a card; the rest stays quiet
+        const firsts = civ.firstBuilt || (civ.firstBuilt = {});
+        const notable = !firsts[b.type] && (def.produce || def.trains || def.defense || def.silo) && !['farm', 'house', 'lumber', 'quarry'].includes(b.type);
+        firsts[b.type] = 1;
+        if (notable && civ.human) this.notify(civ.id, `${def.name} operating: ${def.produce ? `now producing ${Object.keys(def.produce).join(' and ')}` : def.trains ? 'it can train new units' : def.defense ? 'the position is now defended' : 'a new capability for the nation'}.`, { kind: 'result', tile: b.tile, level: 'minor', title: `First ${def.name} complete` });
+        else this.notify(civ.id, `${def.name} completed.`, { kind: 'build', tile: b.tile, quiet: true, level: 'info' });
         if (b.type === 'wonder') { civ.wonder = { since: this.time, id: b.id }; this.notify(-1, `${civ.name} has completed the Continental Arcology! They win if it stands for 5 minutes.`, { kind: 'wonder', tile: b.tile, level: 'critical' }); }
       }
       this.refreshState(b);
@@ -928,6 +935,7 @@ export class Game {
       if (c.owner !== civ.id && !vis[c.tile]) continue;
       const own = c.owner === civ.id || god;
       cities.push({ id: c.id, o: c.owner, n: c.name, t: c.tile, pop: +c.pop.toFixed(1), cap: c.capital ? 1 : 0, r: c.radius,
+        ...(own && c.plan ? { gz: [c.plan.kind, c.plan.tile, c.plan.built || 0, GROWTH_TARGET] } : {}),
         dmg: this.cityDamage(c), ...this.cityStateWire(c, own), ti: c.tier || 0,
         ...(own ? { h: c.housing, st: Math.round(c.stability), jobs: c.jobs, un: Math.round(c.unemployed), fs: c.foodShort ? 1 : 0, dis: Math.round(c.disaster), occ: Math.round(c.occupied), unrest: c.stability < 20 ? 1 : 0, trade: c.tradeConnected ? 1 : 0,
           mil: Math.round(c.mil || 0), rsv: c.reserved || 0, lab: labor(c), rec: recruitable(civ.id === c.owner ? civ : this.civs[c.owner], c), gr: +((c.growth || 0) * 60).toFixed(1), recov: c.recovering ? 1 : 0, ua: c.unassigned || 0, mig: +(c.inMig || 0).toFixed(1), fw: c.foodWorkers || 0, wf: c.wf || null, back: c.returning ? 1 : 0,
@@ -947,7 +955,7 @@ export class Game {
     for (const [k, v] of this.roads.traffic) { const a = Math.floor(k / N), b = k % N; if (v > 0.5 && (vis[a] || vis[b])) traffic.push([a, b, Math.min(9, Math.round(v))]); }
     const soldiers = [...this.units.values()].filter((u) => u.owner === civ.id).reduce((s, u) => s + UNITS[u.type].pop, 0);
     const me = {
-      res: roundObj(civ.res), rates: roundObj(civ.rates, 2), research: civ.researching, autoTech: true, researchWait: civ.researchWait ? TECHS[civ.researchWait]?.goods : undefined, progress: Math.round(civ.progress), researchRate: +civ.researchRate.toFixed(2), queue: civ.queue, techProgress: Object.fromEntries(Object.entries(civ.techProgress || {}).map(([k, v]) => [k, Math.round(v)])), researchGoal: civ.researchGoal, gross: roundObj(civ.gross || {}, 2), saving: civ.saving || null,
+      res: roundObj(civ.res), rates: roundObj(civ.rates, 2), research: civ.researching, autoTech: true, researchWait: civ.researchWait ? TECHS[civ.researchWait]?.goods : undefined, opp: civ.opps && civ.opps.length ? civ.opps.map((o) => { const { p, ...rest } = o; void p; return rest; }) : undefined, progress: Math.round(civ.progress), researchRate: +civ.researchRate.toFixed(2), queue: civ.queue, techProgress: Object.fromEntries(Object.entries(civ.techProgress || {}).map(([k, v]) => [k, Math.round(v)])), researchGoal: civ.researchGoal, gross: roundObj(civ.gross || {}, 2), saving: civ.saving || null,
       techs: [...civ.techs], age: civ.age, advancing: Math.round(civ.advancing), gov: civ.gov, govCooldown: Math.round(civ.govCooldown), policies: [...civ.policies],
       tax: civ.tax, focus: civ.focus, weariness: Math.round(civ.weariness), soldiers, wonder: civ.wonder ? Math.round(300 - (this.time - civ.wonder.since)) : null,
       power: { gen: Math.round(civ.powerGen), use: Math.round(civ.powerUse) }, storage: civ.storage || 0,
@@ -1387,6 +1395,23 @@ export class Game {
         }
         case 'tax': civ.tax = Math.max(0, Math.min(3, cmd.level | 0)); return null;
         case 'focus': if (FOCI[cmd.id]) civ.focus = cmd.id; return null;
+        case 'oppQuiet': return quietOpportunity(this, civ, cmd.key);
+        case 'cityGrowth': {
+          // Guide Growth: the player marks where a city should grow and as what; the mayor builds it
+          const city = this.cities.get(cmd.city);
+          if (!city || city.owner !== civ.id) return { error: 'not your city' };
+          if (cmd.clear) { city.plan = null; return { reply: { t: 'ack', growth: null } }; }
+          if (!GROWTH_KINDS[cmd.kind]) return { error: 'choose housing, industry or farming' };
+          const tile = cmd.tile | 0;
+          if (tile < 0 || tile >= N || !civ.explored[tile]) return { error: 'choose a place you have explored' };
+          if (dist(tile, city.tile) > (city.radius || 3)) return { error: `choose a place within ${city.name}'s reach (${city.radius || 3} hexes of the centre)` };
+          if (this.world.owner[tile] !== civ.id) return { error: 'choose ground inside your borders' };
+          city.plan = { kind: cmd.kind, tile, at: this.time, built: 0 };
+          const gv = city.governor || (city.governor = defaultGovernor(true));
+          if (!gv.enabled) { gv.enabled = true; gv.level = 'managed'; }
+          gv.cooldown = 0;
+          return { reply: { t: 'ack', growth: city.plan } };
+        }
         case 'cityDevelopment': {
           if (!nativeRules(this)) return { error: 'Requires native ruleset' };
           const city = this.cities.get(cmd.city);

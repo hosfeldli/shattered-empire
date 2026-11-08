@@ -132,12 +132,17 @@ export function reportBattle(g, b) {
   for (const c of g.cities.values()) { const d = dist(c.tile, b.tile); if (d < best && d <= 8) { best = d; place = c.name; } }
   const name = place ? `Battle of ${place}` : 'Field battle';
   const minutes = Math.max(1, Math.round((b.last - b.since) / 60));
+  // who holds the field afterwards decides the outcome: a battle should change the map
+  const held = {};
+  for (const u of g.units.values()) if (!UNITS[u.type].air && !UNITS[u.type].civilian && dist(u.tile, b.tile) <= 3) held[u.owner] = (held[u.owner] || 0) + 1;
   for (const id of b.parties || []) {
     const civ = g.civs[id]; if (!civ || !civ.human) continue;
     const lost = b.losses[id] || 0, inflicted = total - lost;
-    const verdict = inflicted > lost * 1.5 ? 'a hard-won success' : lost > inflicted * 1.5 ? 'a costly setback' : 'inconclusive';
+    const ours = held[id] || 0, theirs = (b.parties || []).filter((o) => o !== id && g.hostile(id, o)).reduce((s2, o) => s2 + (held[o] || 0), 0);
+    const outcome = ours > 0 && theirs === 0 ? 'won' : theirs > 0 && ours === 0 ? 'lost' : null;
+    const verdict = outcome === 'won' ? 'the enemy withdrew; we hold the field' : outcome === 'lost' ? 'our forces were driven from the field' : inflicted > lost * 1.5 ? 'a hard-won success' : lost > inflicted * 1.5 ? 'a costly setback' : 'inconclusive';
     const text = `${name} has ended (${minutes} min, ${verdict}): ${lost} of our units lost, ${inflicted} enemy losses.`;
-    g.notify(id, text, { kind: 'battle', tile: b.tile, level: 'info' });
+    g.notify(id, text, outcome ? { kind: 'result', tile: b.tile, level: 'major', title: outcome === 'won' ? `${name}: victory` : `${name}: defeat` } : { kind: 'battle', tile: b.tile, level: 'info' });
     g.history?.(civ, 'world', text);
   }
 }

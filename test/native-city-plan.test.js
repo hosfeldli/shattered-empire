@@ -66,3 +66,43 @@ test('a curved right-drag deploys along the drawn curve, not its chord', async (
   assert.ok(Math.min(...rows(curved)) < 9, 'some slots lie up the arc');
   assert.ok(rows(straight).every((r) => r === 10), 'a straight line stays on its row');
 });
+
+test('Guide Growth: a player plan steers the mayor to build its kind in the marked area, then reports', async () => {
+  const { governorStep, GROWTH_RADIUS } = await import('../server/sim/governor.js');
+  const { g, civ, city } = setup();
+  civ.res.materials = 5000; civ.res.food = 5000; civ.res.credits = 5000;
+  city.pop = 120; city.housing = 60;
+  const site = disk(city.tile, 2).find((t) => dist(t, city.tile) === 2 && g.world.owner[t] === 0 && g.canPlace(civ, 'house', t, true));
+  assert.equal(g.command(0, { c: 'cityGrowth', city: city.id, kind: 'housing', tile: site })?.error, undefined);
+  assert.equal(g.command(0, { c: 'cityGrowth', city: city.id, kind: 'castles', tile: site }).error, 'choose housing, industry or farming');
+  assert.match(g.command(0, { c: 'cityGrowth', city: city.id, kind: 'housing', tile: city.tile + 40 * 128 }).error || '', /reach|explored|borders/);
+  for (let i = 0; i < 40; i++) { city.governor.cooldown = 0; city.governor.queue = []; governorStep(g, 1); }
+  const homes = [...g.buildings.values()].filter((b) => b.owner === 0 && b.type === 'house' && dist(b.tile, site) <= GROWTH_RADIUS);
+  assert.ok(homes.length >= 1, 'homes go up in the planned area');
+  const [[, snap]] = g.snapshots(0, true);
+  const mine = snap.cities.find((c) => c.id === city.id);
+  assert.ok(!city.plan || (mine.gz && mine.gz[0] === 'housing'), 'the plan is visible to its owner');
+  assert.equal(g.command(0, { c: 'cityGrowth', city: city.id, clear: true })?.error, undefined);
+});
+
+test('Opportunity Director: visible, actionable, at most two, and quiet once dismissed', async () => {
+  const { opportunityStep } = await import('../server/sim/opportunities.js');
+  const { g, civ, city } = setup();
+  civ.researching = null;
+  city.pop = 100; city.housing = 100;
+  opportunityStep(g);
+  assert.ok(civ.opps.length >= 1 && civ.opps.length <= 2);
+  assert.ok(civ.opps.every((o) => o.actions.length >= 1 && o.title));
+  const key = civ.opps[0].key;
+  g.command(0, { c: 'oppQuiet', key });
+  opportunityStep(g);
+  assert.ok(!civ.opps.some((o) => o.key === key), 'a dismissed suggestion stays quiet');
+  // enemy troops it cannot see never produce a threat suggestion
+  const { spawnGroup } = await import('../server/sim/sandbox.js');
+  g.diplomacy.rel(0, 1).state = 'war';
+  const near = disk(city.tile, 6).find((t) => dist(t, city.tile) === 6 && g.world.owner[t] !== 0);
+  spawnGroup(g, 1, 'rifle_squad', near, 8); g.rebuildTileUnits();
+  civ.visible.fill(0);
+  opportunityStep(g);
+  assert.ok(!civ.opps.some((o) => o.k === 'threat'), 'fog of war is respected');
+});

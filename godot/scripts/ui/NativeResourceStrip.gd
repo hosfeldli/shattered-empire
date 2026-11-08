@@ -3,7 +3,9 @@ extends PanelContainer
 ## The compact top bar: who and when you are, the essential stockpiles with their trend, current
 ## research and three quiet icon controls (Overview, Alerts, Settings). One translucent strip that
 ## leaves the world in view; every chip opens the detail behind it.
-const ESSENTIAL:=["food","materials","steel","credits"]
+## every stockpile the economy uses, always visible (no hidden resources behind a menu)
+const ESSENTIAL:=["food","materials","ore","steel","fuel","electronics","munitions","credits"]
+const LABELS:={"food":"Food","materials":"Materials","ore":"Ore","steel":"Steel","fuel":"Fuel","electronics":"Electronics","munitions":"Munitions","credits":"Credits"}
 var app:Node
 var empire:Label
 var age:Label
@@ -19,8 +21,7 @@ var alert_records:Array=[]
 var alert_menu:PopupMenu
 var alert_signature:=""
 var overview_menu:PopupMenu
-var all_panel:PopupPanel
-var all_grid:GridContainer
+var problem_panel:PopupPanel
 
 
 func _open_resource(key:String) -> void:
@@ -45,22 +46,16 @@ func setup(game:Node) -> void:
 	# essential stockpiles: icon, amount and a coloured trend; click for the full explanation
 	for good in ESSENTIAL:
 		var key:String=good
-		var chip:=Button.new(); chip.flat=true; chip.focus_mode=Control.FOCUS_NONE; chip.custom_minimum_size=Vector2(92,36)
+		var chip:=Button.new(); chip.flat=true; chip.focus_mode=Control.FOCUS_NONE; chip.custom_minimum_size=Vector2(76,36)
 		NativeUI._compact_styles(chip)
 		chip.add_theme_stylebox_override("normal",NativeUI.style(Color(0,0,0,0),Color(0,0,0,0),8,6))
-		chip.pressed.connect(func():_open_resource(key)); row.add_child(chip)
+		chip.pressed.connect(func():_problem_card(key,chip)); row.add_child(chip)
 		var icon:=TextureRect.new(); icon.texture=load("res://assets/icons/resources/%s.svg"%key); icon.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode=TextureRect.STRETCH_KEEP_ASPECT_CENTERED; icon.position=Vector2(7,9); icon.size=Vector2(18,18); icon.mouse_filter=Control.MOUSE_FILTER_IGNORE; chip.add_child(icon)
-		var amount:=NativeUI.label(chip,"0",15,NativeUI.TEXT); amount.position=Vector2(31,0); amount.autowrap_mode=TextServer.AUTOWRAP_OFF; amount.mouse_filter=Control.MOUSE_FILTER_IGNORE
+		var amount:=NativeUI.label(chip,"0",15,NativeUI.TEXT); amount.position=Vector2(29,0); amount.autowrap_mode=TextServer.AUTOWRAP_OFF; amount.mouse_filter=Control.MOUSE_FILTER_IGNORE
 		amount.add_theme_font_override("font",load("res://assets/fonts/BarlowSemiCondensed-SemiBold.ttf"))
-		var rate:=NativeUI.label(chip,"",10,NativeUI.MUTED); rate.position=Vector2(31,18); rate.autowrap_mode=TextServer.AUTOWRAP_OFF
+		var rate:=NativeUI.label(chip,"",10,NativeUI.MUTED); rate.position=Vector2(29,18); rate.autowrap_mode=TextServer.AUTOWRAP_OFF
 		rate.mouse_filter=Control.MOUSE_FILTER_IGNORE; rates[key]=rate; values[key]=chip; chip.set_meta("amount",amount)
-	# every stockpile at a glance: a small panel under the strip (click a row for its detail page)
-	all_panel=PopupPanel.new(); all_panel.add_theme_stylebox_override("panel",NativeUI.style(NativeUI.PANEL,NativeUI.LINE,6,10,true)); add_child(all_panel)
-	all_grid=GridContainer.new(); all_grid.columns=3; all_grid.add_theme_constant_override("h_separation",14); all_panel.add_child(all_grid)
-	var more:=NativeUI.icon_button(row,"industry","All stockpiles, production and shortages",func():
-		_fill_all(); all_panel.popup(Rect2i(Vector2i(get_global_rect().position+Vector2(0,size.y+4)),Vector2i(0,0))),30)
-	more.tooltip_text="All resources · stockpiles and trends (click a row for production and shortages)"
 	_divider(row)
 	# current research: name and a thin progress bar; click opens Research
 	var research:=Button.new(); research.flat=true; research.focus_mode=Control.FOCUS_NONE; research.custom_minimum_size=Vector2(170,34)
@@ -101,19 +96,30 @@ func setup(game:Node) -> void:
 	NativeUI.icon_button(row,"settings","Settings",func():app.shell.previous="pause"; app.shell.show_view("settings"))
 
 
-func _fill_all() -> void:
-	NativeUI.clear(all_grid)
+## A resource click: what is happening and the direct fixes (find a deposit, build the producer),
+## with the full analysis one click further. Numbers stay optional.
+func _problem_card(key:String,chip:Control) -> void:
 	var world:WorldState=app.world
-	var stock:Dictionary=world.econ.get("res",{}); var trend:Dictionary=world.econ.get("rates",{})
-	var keys:=stock.keys(); keys.sort()
-	for good in keys:
-		var key:=str(good)
-		var amount:=float(stock[good]); var rate:=float(trend.get(good,0))
-		var problem:bool=world.econ.get("resources",{}).get(key,{}).get("status","") in ["empty","deficit"]
-		var name_:=NativeUI.compact_button(all_grid,key.capitalize(),func():all_panel.hide(); _open_resource(key))
-		name_.custom_minimum_size.x=120
-		NativeUI.label(all_grid,("%.1fk"%(amount/1000.0) if amount>=10000 else str(roundi(amount))),14,NativeUI.BAD if problem else NativeUI.TEXT)
-		NativeUI.label(all_grid,("%+.1f/s"%rate) if absf(rate)>=.05 else "steady",12,NativeUI.GOOD if rate>=.05 else NativeUI.BAD if rate<=-.05 else NativeUI.MUTED)
+	if problem_panel==null:
+		problem_panel=PopupPanel.new(); problem_panel.add_theme_stylebox_override("panel",NativeUI.style(NativeUI.PANEL,NativeUI.LINE,8,12,true)); add_child(problem_panel)
+	for child in problem_panel.get_children(): child.queue_free()
+	var body:=VBoxContainer.new(); body.add_theme_constant_override("separation",6); body.custom_minimum_size.x=300; problem_panel.add_child(body)
+	var amount:=float(world.econ.get("res",{}).get(key,0)); var rate:=float(world.econ.get("rates",{}).get(key,0))
+	var status:=str(world.econ.get("resources",{}).get(key,{}).get("status",""))
+	var low:=status in ["empty","deficit"] or rate<-.05
+	NativeUI.label(body,("%s is running low"%key.capitalize()) if low else ("%s · %d (%+.1f/s)"%[key.capitalize(),roundi(amount),rate]),17,NativeUI.BAD if low else NativeUI.TEXT)
+	var fix:Dictionary=DecisionHelpers.resource_fix(world,key)
+	NativeUI.label(body,str(fix.cause),13,NativeUI.MUTED).autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
+	if not str(fix.locked).is_empty(): NativeUI.label(body,str(fix.locked),12,NativeUI.GOLD)
+	var actions:=HFlowContainer.new(); body.add_child(actions)
+	if int(fix.deposit)>=0:
+		var tile:=int(fix.deposit)
+		NativeUI.compact_button(actions,"Find deposit",func():problem_panel.hide(); app.cam.focus_tile(tile,14.0))
+	if not str(fix.producer).is_empty():
+		var kind:=str(fix.producer)
+		NativeUI.compact_button(actions,"Build "+str(fix.producer_name),func():problem_panel.hide(); app.command_tools.activate("build",kind))
+	NativeUI.compact_button(actions,"Details",func():problem_panel.hide(); _open_resource(key))
+	problem_panel.popup(Rect2i(Vector2i(chip.get_global_rect().position+Vector2(0,chip.size.y+6)),Vector2i(0,0)))
 
 
 func _divider(row:HBoxContainer) -> void:
@@ -124,8 +130,9 @@ func _process(dt:float) -> void:
 	visible=app.world.ready_ and not app.world.spectator and not app.shell.world_hidden
 	if not visible: return
 	var width:=get_viewport_rect().size.x
-	position=Vector2(10,8); size=Vector2(minf(width-20,1080),0)
-	(values.steel as Button).visible=width>=1180
+	position=Vector2(10,8); size=Vector2(minf(width-20,1420),0)
+	# narrow windows drop the trend line rather than any resource
+	for key in rates: (rates[key] as Label).visible=width>=1300
 	elapsed+=dt
 	if elapsed<.2: return
 	elapsed=0

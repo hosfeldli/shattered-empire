@@ -5,6 +5,64 @@ The consolidated outstanding requirements, including the latest visual and warzo
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance
 contract remains in [LWE_REQUIREMENTS.md](LWE_REQUIREMENTS.md).
 
+## Fun-first decisions, UI, menu, tutorial and intro (2026-11-08)
+
+- **Guide Growth:**
+  - `cityGrowth {city, kind, tile}` stores a server plan (`city.plan`; `city.growth` remains the
+    growth rate) within the city's reach and borders.
+  - The mayor favours that kind of building (planner fit) and places it in the marked area
+    (radius 2), keeping other uses out.
+  - After four buildings it reports "X expanded" as a result card.
+  - City card: Guide growth, then Housing, Industry or Farming, then a map click with a hover
+    preview (open hexes, existing buildings, road access).
+  - The current plan, with direction and progress, can be cancelled. The area is outlined in the
+    world while the city is selected (`GrowthZoneOverlay`).
+- **Mayor controls on the city card:** state and one on/off button, then "What should the mayor
+  favour?" with the four priorities (current one marked, each with its meaning), and what the mayor
+  is doing now.
+- **Opportunity Director** (`server/sim/opportunities.js`, every 5 s, human players):
+  - Situations: rival forces massing near a city (visible troops only), a damaged building, a
+    city at 85% of its housing with no plan, a workable explored deposit (higher when short of
+    its good), idle research.
+  - At most two, each with direct actions (go to, select nearby troops, repair, guide growth,
+    build, research).
+  - `oppQuiet` silences a suggestion for four minutes.
+  - Client: `NativeOpportunities` on the left, hidden while a tool or panel is open.
+- **Every resource in the top bar:** food, materials, ore, steel, fuel, electronics, munitions and
+  credits as compact chips with trends and tooltips. The small "all resources" popup is gone.
+  - A click opens a cause-and-fix card: the cause, Find deposit (camera to the nearest known
+    one), Build the producer (or which technology it needs), Details.
+- **Objective assessment:** hovering an army objective shows what is known there (fortifications,
+  enemy troops seen or "not in sight", cover or exposed approach, supply).
+- **Battles end decisively:** the side holding the field (within 3 hexes) wins: "the enemy
+  withdrew; we hold the field" or "driven from the field", shown as a result card.
+- **Result cards** (`kind: result` notes) for completed growth plans, battle victories and defeats,
+  and the first of each kind of industry, defence or silo.
+- **Main menu:** title and premise, the three pillars, then Continue, New campaign, Tutorial;
+  Multiplayer, AI match, Sandbox; Settings, Field guide, Watch the intro, Quit. Every option has a
+  tooltip. The card fits its content; the backdrop has drifting ash and pulsing settlement lights.
+- **Intro cinematic in the engine** (`NativeIntroCinematic`): a 3D scene in its own world, built
+  from the game's own building, housing and vehicle models, in eight beats of about six seconds:
+  1. the old world's city at dusk with lit windows;
+  2. three warheads arcing in, flashes, fireballs and smoke columns;
+  3. the city replaced by ruins under falling ash, grey fog and a desaturated grade;
+  4. the land greening as trees grow back;
+  5. your settlement ("Your people");
+  6. the rival's fort, barracks and armour rolling toward the border;
+  7. the silo still standing, its warning light pulsing;
+  8. the title at dawn.
+
+  Captions tell the history (the missiles, the fallout, the long winter, the Reclamation). Space,
+  Enter or Esc skips, with the hint on screen. It plays on first launch and from the menu;
+  `--intro-shots=DIR` captures each beat.
+- **Opening descent:** a new match opens with the camera descending onto the capital, captioned
+  with the empire's name and "The Reclamation · Year one".
+- **Tutorial:** a small, quiet match (one easy builder rival) with the coach on. Steps: look around,
+  choose how your city grows, scout, act on an opportunity, choose research. Only the current
+  step's hint is shown, highlighted, in tutorial mode.
+- **Checks:** server 187/187 (new tests for Guide Growth and opportunities, including fog of war),
+  all Godot suites passing.
+
 ## Performance pass: large online battles (2026-11-08)
 
 Goal: large battles with several online players, constant orders and building placement must

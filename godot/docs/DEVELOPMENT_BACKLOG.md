@@ -371,6 +371,40 @@ be done. The likely causes are first assessments from the code, not yet verified
   timeout and rebuilding everything. Fix the timeout, and make a reconnect to the same match keep
   presentation (as terrain now does) instead of clearing buildings and the camera.
 
+## R. Fun-first redesign and decision UI (direction, 2026-11-08)
+
+Stop adding systems for now; make the existing ones produce meaningful decisions, satisfying
+consequences and interesting conflict. Three pillars: build a civilization you care about,
+command forces with meaningful decisions, see your actions permanently change the world.
+
+- [x] **Guide Growth** (server-authoritative plan; Housing, Industry or Farming in an area the
+  player marks). The mayor builds it there and reports when the district is done.
+- [x] **Opportunity Director**: at most two visible, fog-respecting suggestions, each with a
+  direct action; never a task list.
+- [x] **Resource problems**: a resource click gives the cause and direct fixes (find a deposit,
+  build the producer, details).
+- [x] **Objective assessment** for army Move, Defend and Attack and for growth areas, while
+  hovering.
+- [x] **Decisive battles**: the side holding the field wins, reported as a result card.
+- [x] **Result cards** for planned districts, battle outcomes and first-of-a-kind industry.
+- [x] **Tutorial** focused on decisions; **main menu** redesigned around the pillars;
+  **intro cinematic** in the engine with the world's history; **opening descent** onto the
+  capital.
+- [x] **Every resource in the top bar**; **clear mayor controls** (on/off, priority with its
+  meaning, current activity).
+- [ ] **First 20 minutes**: tune the opening (discovery by minute 3–8, a meaningful commitment by
+  8–15, a rival pressure point by 15–20) from playtests. The situations must emerge from the
+  world, not be scripted.
+- [ ] **AI with believable weaknesses**: overextension, slow reaction to flanks, exposed routes.
+- [ ] **Era identity**: each era should change strategy, not just unlock dearer units.
+- [ ] **Construction payoff**: troops leaving barracks for the rally point; visible industry
+  activity; recovery after war.
+- [ ] **Capture versus destroy**: capturing a city intact should feel different from wrecking it.
+- [ ] **Playtest protocol**: a repeatable 30-minute scenario with outside players. Metrics: first
+  meaningful choice under 60 s, visible progress within 3 min, no gaps over 2 min, zero unexplained
+  failures, wants another match.
+- Not in this phase: new resources, buildings, unit types, diplomacy or economic systems.
+
 ### P7. Further playtest reports (2026-11-07)
 
 > **Implemented 2026-11-08:** all seven items (see CURRENT_WORK). Balance evidence: `tools/balance-report.mjs` and `tools/pace-report.mjs`.

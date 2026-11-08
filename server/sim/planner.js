@@ -9,6 +9,7 @@ import { hostilesNear } from './ai2/Perception.js';
 import { BUILDINGS, AGES, RES, TECHS, UNITS, isWater , TECH_GOODS } from './constants.js';
 import { disk, dist } from './hex.js';
 import { rareAccess } from './economy.js';
+import { GROWTH_KINDS } from './governor.js';
 import { upgradable, upgradeCost as levelCost, upgradeProblem, jobSlots, LEVEL_OUT, LEVEL_JOBS } from './levels.js';
 
 const VALUE = { food: 1, materials: 1.2, ore: 1.6, steel: 3, fuel: 2.6, electronics: 6, munitions: 2.6, credits: 0.7, research: 2.5 };
@@ -113,6 +114,8 @@ export function candidates(g, civ, c, gv, a = assess(g, civ, c)) {
   const deferred = [], starved = new Set();
   const fit = { ...(SPEC_FIT[gv.spec] || {}) };
   for (const [k, v] of Object.entries(GOALS[gv.goal || 'none']?.fit || {})) fit[k] = (fit[k] || 0) + v;
+  // a player's Guide Growth plan favours its kind of building in this city
+  if (c.plan) for (const k of GROWTH_KINDS[c.plan.kind] || []) fit[k] = (fit[k] || 0) + 14;
   const pool = (k) => (c.isolated && k !== 'credits' ? c.stock?.[k] || 0 : civ.res[k] || 0);
   const has = (type) => a.blds.filter((b) => b.type === type).length;
   const nationHas = (type) => { let n = 0; for (const b of g.buildings.values()) if (b.owner === civ.id && b.type === type) n++; return n; };
