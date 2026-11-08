@@ -73,8 +73,9 @@ Preferences → Licenses. CI uses the `UNITY_LICENSE`/`UNITY_SERIAL`, `UNITY_EMA
 ## Status
 
 M1 (foundation) and the M2 stress scene are implemented. The project compiles, the EditMode tests
-pass and the Windows player builds. The Unity side of M2 is measured and meets the targets (see
-docs/UNITY_MIGRATION.md). The M2 decision still needs the matching Godot run on the same PC.
+pass and the Windows player builds. M2 is measured and meets the targets (see
+docs/UNITY_MIGRATION.md). On 2026-11-08 the project committed to Unity, and M3 (live multiplayer)
+is next.
 
 Builds default to Mono. Pass `-il2cpp` to the build to use IL2CPP, which requires the Visual
 Studio C++ build tools. Use `-shots DIR` with `-mode stress` to capture one screenshot per tour

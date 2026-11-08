@@ -3,7 +3,8 @@
 A grand-scale RTS where you rebuild a civilization on a shattered world that wraps around east to west. Armies hold real ground behind supplied, entrenched lines; cities grow from a real population ledger, workers are allocated to the jobs that matter, governors and rival empires plan with the same tools you do, and armies are drawn from your people.
 
 **Client migration (2026-11-08):** the client is moving from Godot to **Unity 6.3 LTS** for
-performance. The Node.js server stays authoritative and unchanged. See the
+performance. The Unity performance gate passed and the project has committed to Unity. New Godot
+client development is frozen. The Node.js server stays authoritative and unchanged. See the
 [migration plan](docs/UNITY_MIGRATION.md), the [Unity client](unity/README.md) and the
 [development queue](docs/DEVELOPMENT_QUEUE.md). The [Godot 4.7.2 client](godot/README.md) is
 preserved as the behavioural reference (tag `godot-reference-2026-11-08`). It remains the official

@@ -122,9 +122,17 @@ All M2 frame-pacing targets are met in these runs. Measurement notes:
 - Remaining 50–85 ms live hitches do not involve garbage collection. They are logged as `STALL`
   lines with a per-phase breakdown.
 
-**Gate status:** the Unity half is measured. The matching Godot run on the same PC
-(`npm run bench:godot` and the Godot `--battle=massive --perf` run) has not been recorded yet, so
-the M2 decision is still open.
+**Gate decision (2026-11-08): proceed with Unity.** After seeing the Unity results, the project
+owner committed fully to Unity and chose not to run the matched Godot benchmark. The decision rests
+on the Unity measurements above and the Godot problems already experienced in play (frame drops
+when panning, construction lag, long-game slowdown, city rendering resets). No side-by-side Godot
+numbers from this PC were recorded.
+
+Consequences, per this plan:
+
+- New Godot client development is frozen. `godot/` stays as the behavioural reference and remains
+  the official download until the Unity client passes M8.
+- Work continues with M3 (live multiplayer in Unity).
 
 ## Feature parity
 
