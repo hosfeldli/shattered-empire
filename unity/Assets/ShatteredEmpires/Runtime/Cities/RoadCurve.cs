@@ -34,11 +34,44 @@ namespace SE.Runtime.Cities
         /// <summary>Where the street on edge d of hex t crosses the edge (in t's coordinates).</summary>
         public static float2 Mid(WorldModel w, int t, int d) => Centre(w, t) + new float2(HexMath.DirX[d], HexMath.DirZ[d]) * Inradius;
 
-        /// <summary>The junction of an open hex: off-centre by a stable amount, so streets meander.</summary>
+        /// <summary>
+        /// Where a hex's streets meet. In an open hex: off-centre by a stable amount, so streets meander.
+        /// In a hex with a building: pushed to the street side, so the streets pass along one side and
+        /// the building keeps a whole parcel (no street ever runs through or round a block).
+        /// </summary>
         public static float2 Node(WorldModel w, int t)
         {
             float a = H(t, 501) * 6.2832f, r = 0.08f + H(t, 502) * 0.2f;
-            return Centre(w, t) + new float2(Mathf.Cos(a), Mathf.Sin(a)) * r;
+            var jitter = new float2(Mathf.Cos(a), Mathf.Sin(a));
+            if (!Built(t)) return Centre(w, t) + jitter * r;
+            // how far depends on how much room the parcel needs: a hex boxed in by streets keeps its
+            // junction near the centre (gentle curves), one with a free side gives the building that side
+            Parcel(w, t, out var d2, out float room2);
+            return Centre(w, t) - d2 * Mathf.Lerp(0.12f, 0.26f, room2) + jitter * 0.05f;
+        }
+
+        /// <summary>
+        /// The parcel of a built hex: the direction of the widest side free of streets (unit vector, map
+        /// x/z) and how wide that free side is (0–1, 1 = no streets at all). The building is composed
+        /// there, facing the streets.
+        /// </summary>
+        public static void Parcel(WorldModel w, int t, out float2 dir, out float room)
+        {
+            int* e = stackalloc int[6];
+            int n = Edges(w, t, e);
+            if (n == 0) { float a = H(t, 503) * 6.2832f; dir = new float2(Mathf.Cos(a), Mathf.Sin(a)); room = 1f; return; }
+            // the widest angular gap between consecutive road edges
+            int bestGap = -1, from = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int gap = n == 1 ? 6 : ((e[(i + 1) % n] - e[i]) + 6) % 6;
+                if (gap == 0) gap = 6;
+                if (gap > bestGap) { bestGap = gap; from = e[i]; }
+            }
+            // its bisector (edge directions are d·60°, measured as (cos, −sin))
+            float mid = (from + bestGap * 0.5f) * 60f * Mathf.Deg2Rad;
+            dir = new float2(Mathf.Cos(mid), -Mathf.Sin(mid));
+            room = Mathf.Clamp01((bestGap - 1) / 5f);
         }
 
         /// <summary>
@@ -102,37 +135,13 @@ namespace SE.Runtime.Cities
         /// </summary>
         public static int Pieces(WorldModel w, int t, int a, int b, float2* p0, float2* p1, float2* p2)
         {
+            // two half-streets meeting at the junction, each leaving its edge square-on; in a built hex the
+            // junction sits on the street side, clear of the building's parcel (b == a: in and back out)
             float2 ma = Mid(w, t, a), mb = Mid(w, t, b);
-            if (!Built(t))
-            {
-                // two half-streets meeting at the junction, each leaving its edge square-on
-                float2 node = Node(w, t);
-                p0[0] = ma; p1[0] = HalfControl(w, t, a, node); p2[0] = node;
-                p0[1] = node; p1[1] = HalfControl(w, t, b, node); p2[1] = mb;
-                return 2;
-            }
-            int* chain = stackalloc int[6];
-            int n = Chain(w, t, chain);
-            int ia = -1, ib = -1;
-            for (int i = 0; i < n; i++) { if (chain[i] == a) ia = i; if (chain[i] == b) ib = i; }
-            if (ia < 0 || ib < 0 || ia == ib)
-            {
-                // a dead end at the kerb: a short loop just inside the hex
-                float2 c = Centre(w, t);
-                float2 inward = math.normalizesafe(c - ma) * 0.16f;
-                p0[0] = ma; p1[0] = ma + inward + new float2(-inward.y, inward.x) * 0.6f; p2[0] = mb;
-                return 1;
-            }
-            int step = ib > ia ? 1 : -1, k = 0;
-            for (int i = ia; i != ib && k < 6; i += step, k++)
-            {
-                int e = chain[i], f = chain[i + step];
-                p0[k] = Mid(w, t, e);
-                // the control point is the same whichever way round it is driven
-                p1[k] = step > 0 ? AroundControl(w, t, e, f) : AroundControl(w, t, f, e);
-                p2[k] = Mid(w, t, f);
-            }
-            return k;
+            float2 node = Node(w, t);
+            p0[0] = ma; p1[0] = HalfControl(w, t, a, node); p2[0] = node;
+            p0[1] = node; p1[1] = HalfControl(w, t, b, node); p2[1] = mb;
+            return 2;
         }
 
         public static float2 Bezier(float2 a, float2 c, float2 b, float s, out float2 tangent)

@@ -16,9 +16,9 @@ namespace SE.Runtime.Cities
     /// Architecture follows the owner's era: timber and brick early, concrete blocks in the middle eras,
     /// glass towers late. Buildings orient to the street they front.
     /// </summary>
-    public sealed unsafe class CityRenderer : IDisposable
+    public sealed unsafe partial class CityRenderer : IDisposable
     {
-        enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Count }
+        enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Car, Truck, Count }
 
         sealed class Cell
         {
@@ -44,10 +44,15 @@ namespace SE.Runtime.Cities
         public int Recomposed { get; private set; }
         public int CellCount => cells.Count;
         public int MaxCellsPerFrame = 6;
+        /// <summary>How long city composition may take per frame (ms) before the rest waits for the next frame.</summary>
+        public double ComposeBudgetMs = 5.0;
         int epoch = -1, roadRevision = -1, age = -1;
         bool[] hasBuilding = new bool[0];
 
-        public CityRenderer(WorldModel w, StructureStore s) { world = w; structures = s; }
+        /// <summary>The district layer: which buildings form one neighbourhood, compound, estate or campus.</summary>
+        public readonly DistrictPlanner Districts;
+
+        public CityRenderer(WorldModel w, StructureStore s) { world = w; structures = s; Districts = new DistrictPlanner(w, s); }
 
         public void MarkDirty(IEnumerable<int> cellIds) { foreach (var c in cellIds) dirty.Add(c); }
 
@@ -74,9 +79,13 @@ namespace SE.Runtime.Cities
             }
             if (age != Age)
             {
-                age = Age;   // a new era: every building takes on the new architecture
+                age = Age;   // a new era: new infill and buildings without a recorded era follow it
                 foreach (var c in cells.Keys) dirty.Add(c);
             }
+            // the district layer: when buildings or roads change, only hexes whose district relationships
+            // changed are recomposed (a new house extends its neighbourhood, it does not re-roll it)
+            Districts.WorldSeed = Seed;
+            Districts.Update(dirty);
             if (dirty.Count == 0) return;
             // nearest cells first, a bounded number per frame
             scratch.Clear();
@@ -86,11 +95,16 @@ namespace SE.Runtime.Cities
             int n = Math.Min(MaxCellsPerFrame, scratch.Count);
             Array.Clear(hasBuilding, 0, hasBuilding.Length);
             foreach (var b in structures.Buildings.Values) if (b.Tile >= 0 && b.Tile < hasBuilding.Length) hasBuilding[b.Tile] = true;
+            // a time budget, not a fixed count: district composition varies a lot per cell, and a burst of
+            // heavy cells must not stall a frame (at least one cell always progresses)
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            double budget = ComposeBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0;
             for (int k = 0; k < n; k++)
             {
                 int c = scratch[k];
                 dirty.Remove(c);
                 Compose(c, terrain);
+                if (System.Diagnostics.Stopwatch.GetTimestamp() - start > budget) break;
             }
         }
 
@@ -107,7 +121,7 @@ namespace SE.Runtime.Cities
             if (!cells.TryGetValue(id, out var cell))
             {
                 cell = new Cell();
-                Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo, MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome };
+                Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo, MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MeshKit.Truck };
                 for (int i = 0; i < cell.Batches.Length; i++)
                     cell.Batches[i] = new InstanceBatch(meshes[i], i == (int)Part.Skyscraper ? RenderResources.InstancedGloss : RenderResources.Instanced, 64);
                 cells[id] = cell;
@@ -163,6 +177,7 @@ namespace SE.Runtime.Cities
             {
                 if (b.Tile < 0 || b.Tile >= g.N || world.ChunkOf(b.Tile) != cellId || world.Known[b.Tile] == 0) continue;
                 ComposeBuilding(b);
+                if (b.Done) DistrictLinks(b.Tile);
             }
             cell.Any = false;
             foreach (var batch in cell.Batches) if (batch.Count > 0) cell.Any = true;
@@ -309,8 +324,9 @@ namespace SE.Runtime.Cities
         }
 
         /// <summary>
-        /// The streets of one hex (see <see cref="RoadCurve"/>): half-streets to an off-centre junction in
-        /// an open hex, streets wrapping round the block where a building stands.
+        /// The streets of one hex (see <see cref="RoadCurve"/>): half-streets from each road edge to the
+        /// hex's junction. In a built hex the junction sits on the street side, so streets pass the
+        /// building's parcel instead of crossing it.
         /// </summary>
         void ComposeStreets(int t)
         {
@@ -318,67 +334,104 @@ namespace SE.Runtime.Cities
             int n = RoadCurve.Edges(world, t, e);
             if (n == 0) return;
             var g = world.Grid;
-            if (!RoadCurve.Built(t))
+            float2 node = RoadCurve.Node(world, t);
+            int best = 0;
+            for (int i = 0; i < n; i++)
             {
-                float2 node = RoadCurve.Node(world, t);
-                int best = 0;
-                for (int i = 0; i < n; i++)
-                {
-                    int d = e[i], cls = world.RoadClass(t, d);
-                    best = Math.Max(best, cls);
-                    float2 m = RoadCurve.Mid(world, t, d);
-                    StreetPiece(t, m, RoadCurve.HalfControl(world, t, d, node), node, cls, world.RoadBroken(t, d), g.Nb[t * 6 + d], -1, 4);
-                }
-                // a rounded junction (or turning circle) where the streets meet, never a square plaza
-                if (n >= 3 || n == 1)
-                {
-                    float w = RoadCurve.Width(best) * (n == 1 ? 1.3f : 1.05f);
-                    float y = RoadCurve.Height(world, RoadCurve.Deck(world, t, -1, -1), node.x, node.y) - 0.012f;
-                    Put(Part.Cylinder, new float3(node.x, y, node.y), 0, new float3(w, 0.012f, w), StreetColor(t, -1, best, false));
-                }
-                return;
+                int d = e[i], cls = world.RoadClass(t, d);
+                best = Math.Max(best, cls);
+                float2 m = RoadCurve.Mid(world, t, d);
+                StreetPiece(t, m, RoadCurve.HalfControl(world, t, d, node), node, cls, world.RoadBroken(t, d), g.Nb[t * 6 + d], -1, 4);
             }
-            int* chain = stackalloc int[6];
-            int c = RoadCurve.Chain(world, t, chain);
-            if (c == 1)
+            // a junction (or turning circle) where streets meet: rounded, never a square plaza; railways
+            // don't get one
+            if ((n >= 3 || n == 1) && best != 4)
             {
-                // the block fronts this street: it ends at the kerb, no private driveway
-                int d = chain[0];
-                float2 m = RoadCurve.Mid(world, t, d), inward = -new float2(HexMath.DirX[d], HexMath.DirZ[d]) * 0.12f;
-                StreetPiece(t, m, m + inward * 0.5f, m + inward, world.RoadClass(t, d), world.RoadBroken(t, d), g.Nb[t * 6 + d], -1, 1);
-                return;
+                float w = RoadCurve.Width(best) * (n == 1 ? 1.3f : 1.05f) * StreetWidthScale(t);
+                float y = RoadCurve.Height(world, RoadCurve.Deck(world, t, -1, -1), node.x, node.y) - 0.012f;
+                Put(Part.Cylinder, new float3(node.x, y, node.y), 0, new float3(w, 0.012f, w), StreetColor(t, -1, best, false));
+                // pedestrian crossings on the busier town junctions
+                if (n >= 3 && best >= 2 && Sidewalked(t) && Hash(t, 91) < 0.6f)
+                    for (int i = 0; i < Math.Min(2, n); i++)
+                    {
+                        int d = e[i];
+                        float2 m = math.lerp(node, RoadCurve.Mid(world, t, d), 0.28f);
+                        float yaw = Mathf.Atan2(HexMath.DirX[d], HexMath.DirZ[d]);
+                        for (int s = -2; s <= 2; s++)
+                        {
+                            math.sincos(yaw, out float sn, out float cs);
+                            float ox = cs * s * 0.018f, oz = -sn * s * 0.018f;
+                            Put(Part.Box, new float3(m.x + ox, y + 0.013f, m.y + oz), yaw, new float3(0.008f, 0.002f, 0.05f), new float3(0.82f, 0.8f, 0.74f));
+                        }
+                    }
             }
-            for (int i = 0; i + 1 < c; i++)
-            {
-                int a = chain[i], b = chain[i + 1];
-                int cls = Math.Max(world.RoadClass(t, a), world.RoadClass(t, b));
-                StreetPiece(t, RoadCurve.Mid(world, t, a), RoadCurve.AroundControl(world, t, a, b), RoadCurve.Mid(world, t, b), cls,
-                    world.RoadBroken(t, a) && world.RoadBroken(t, b), g.Nb[t * 6 + a], g.Nb[t * 6 + b], 6);
-            }
+        }
+
+        /// <summary>The street hierarchy (organic city design §4.1) as the district sees it.</summary>
+        enum StreetStyle { Rural, Local, Commercial, Service, Primary, Rail }
+
+        StreetStyle StyleOf(int t, int cls)
+        {
+            if (cls == 4) return StreetStyle.Rail;
+            if (cls == 3) return StreetStyle.Primary;
+            var k = Districts.At(t)?.Kind ?? DistrictKind.None;
+            if (k == DistrictKind.Industrial || k == DistrictKind.Energy || k == DistrictKind.Extraction || k == DistrictKind.Port || k == DistrictKind.Air) return StreetStyle.Service;
+            if (cls == 1 && !world.IsUrban(t)) return StreetStyle.Rural;
+            if (k == DistrictKind.Commercial || k == DistrictKind.Civic) return StreetStyle.Commercial;
+            return StreetStyle.Local;
+        }
+
+        /// <summary>Whether this hex's streets carry sidewalks: homes, shops and institutions, not industry or country lanes.</summary>
+        bool Sidewalked(int t)
+        {
+            var k = Districts.At(t)?.Kind ?? DistrictKind.None;
+            return world.IsUrban(t) && (k == DistrictKind.None || k == DistrictKind.Residential || k == DistrictKind.Commercial || k == DistrictKind.Civic);
+        }
+
+        float StreetWidthScale(int t)
+        {
+            var k = Districts.At(t)?.Kind ?? DistrictKind.None;
+            return k == DistrictKind.Industrial || k == DistrictKind.Energy ? 1.15f : k == DistrictKind.Residential ? 0.92f : 1f;
         }
 
         float3 StreetColor(int t, int salt, int cls, bool broken)
         {
-            float3 color = cls == 1 ? new float3(0.42f, 0.36f, 0.27f) : cls == 4 ? new float3(0.3f, 0.26f, 0.22f) : new float3(0.24f, 0.24f, 0.25f);
+            var style = StyleOf(t, cls);
+            float3 color = style == StreetStyle.Rural ? new float3(0.42f, 0.36f, 0.27f)
+                : style == StreetStyle.Rail ? new float3(0.36f, 0.33f, 0.3f)
+                : style == StreetStyle.Service ? new float3(0.4f, 0.39f, 0.37f)   // pale concrete service roads
+                : new float3(0.24f, 0.24f, 0.25f);
             // streets weather differently: patched asphalt, sun-bleached concrete, darker fresh tarmac
             color *= 0.86f + 0.26f * Hash(t * 3 + 1, salt * 5 + 2);
-            if (cls >= 2 && Hash(salt + 40, t + 9) < 0.25f) color = math.lerp(color, new float3(0.38f, 0.37f, 0.35f), 0.5f);
+            if (cls >= 2 && style != StreetStyle.Service && Hash(salt + 40, t + 9) < 0.25f) color = math.lerp(color, new float3(0.38f, 0.37f, 0.35f), 0.5f);
             // country lanes vary between dry dust, gravel and damp earth
-            if (cls == 1) color = math.lerp(color, Hash(t, salt + 3) < 0.5f ? new float3(0.5f, 0.46f, 0.38f) : new float3(0.34f, 0.3f, 0.24f), 0.4f);
+            if (style == StreetStyle.Rural) color = math.lerp(color, Hash(t, salt + 3) < 0.5f ? new float3(0.5f, 0.46f, 0.38f) : new float3(0.34f, 0.3f, 0.24f), 0.4f);
             if (broken) color *= 0.55f;
             return color;
         }
 
-        /// <summary>One curved street piece (quadratic Bézier p0 → c → p2), with kerbs, markings and bridge piers.</summary>
+        /// <summary>
+        /// One curved street piece (quadratic Bézier p0 → c → p2) in its street style: kerbs and
+        /// continuous sidewalks in town (patchy in old neighbourhoods), soft shoulders on country lanes,
+        /// pale concrete for industrial service roads, ballast, sleepers and rails for railways, and on
+        /// bridges a deck with railings, piers and abutments.
+        /// </summary>
         void StreetPiece(int t, float2 p0, float2 c, float2 p2, int cls, bool broken, int na, int nb, int pieces)
         {
             float deck = RoadCurve.Deck(world, t, na, nb);
             bool bridge = deck > float.NegativeInfinity;
+            var style = StyleOf(t, cls);
             // street widths vary a little from hex to hex
-            float width = RoadCurve.Width(cls) * (0.9f + 0.2f * Hash(t, 77));
+            float width = RoadCurve.Width(cls) * (0.9f + 0.2f * Hash(t, 77)) * StreetWidthScale(t);
             float3 color = StreetColor(t, na, cls, broken);
-            bool town = world.IsUrban(t) || (na >= 0 && world.IsUrban(na));
+            bool walks = Sidewalked(t) && cls >= 2 && style != StreetStyle.Rail;
+            // older neighbourhoods have gaps in their pavements
+            var district = Districts.At(t);
+            int built = district != null && Districts.BuildingAt(district.Anchor) is BuildingRecord ab && ab.Era >= 0 ? ab.Era : Math.Max(0, Age);
+            float pavementGaps = built == 0 ? 0.45f : built == 1 ? 0.15f : 0f;
             float chord = math.distance(p0, p2) + math.distance(p0, c) * 0.3f;
+            var kerb = new float3(0.52f, 0.5f, 0.47f);
+            var pavement = math.lerp(new float3(0.6f, 0.58f, 0.54f), new float3(0.66f, 0.63f, 0.58f), Hash(district?.Seed ?? t, 5));
             for (int k = 0; k < pieces; k++)
             {
                 if (broken && k % 2 == 1) continue;
@@ -390,21 +443,67 @@ namespace SE.Runtime.Cities
                 float y = RoadCurve.Height(world, deck, x, z) - 0.016f;
                 float segLen = math.length(tan) / pieces * 1.12f + 0.01f;
                 if (segLen < 0.02f) segLen = chord / pieces * 1.12f;
-                Put(Part.Box, new float3(x, y + 0.004f, z), pieceYaw, new float3(width, 0.012f, segLen), color);
-                if (cls == 3 && !bridge && k % 2 == 0)
-                    Put(Part.Box, new float3(x, y + 0.0105f, z), pieceYaw, new float3(0.006f, 0.002f, segLen * 0.45f), new float3(0.78f, 0.74f, 0.55f));
-                if ((cls == 2 || cls == 3) && town)
+                math.sincos(pieceYaw, out float sn, out float csn);
+                if (style == StreetStyle.Rail)
                 {
-                    // kerbs on paved roads (lifted with the road, so they never clip in and out)
-                    float side = width * 0.55f;
-                    math.sincos(pieceYaw, out float sn, out float csn);
-                    Put(Part.Box, new float3(x + csn * side, y + 0.006f, z - sn * side), pieceYaw, new float3(0.018f, 0.014f, segLen), new float3(0.52f, 0.5f, 0.47f));
-                    Put(Part.Box, new float3(x - csn * side, y + 0.006f, z + sn * side), pieceYaw, new float3(0.018f, 0.014f, segLen), new float3(0.52f, 0.5f, 0.47f));
+                    // ballast bed, sleepers across it, two rails along it
+                    Put(Part.Box, new float3(x, y + 0.002f, z), pieceYaw, new float3(width * 1.25f, 0.014f, segLen), new float3(0.44f, 0.41f, 0.37f));
+                    for (int s = 0; s < 4; s++)
+                    {
+                        float along = (s - 1.5f) / 4f * segLen;
+                        Put(Part.Box, new float3(x + sn * along, y + 0.01f, z + csn * along), pieceYaw, new float3(width * 0.95f, 0.006f, 0.012f), new float3(0.3f, 0.24f, 0.18f));
+                    }
+                    for (int r = -1; r <= 1; r += 2)
+                        Put(Part.Box, new float3(x + csn * r * width * 0.22f, y + 0.015f, z - sn * r * width * 0.22f), pieceYaw, new float3(0.006f, 0.006f, segLen), new float3(0.38f, 0.36f, 0.35f));
                 }
-                if (bridge && k % 2 == 0)
+                else
                 {
-                    float floor = Mathf.Min(Ground(x, z), y) - 0.2f;
-                    Put(Part.Box, new float3(x, floor, z), pieceYaw, new float3(width * 0.4f, y - floor, 0.03f), new float3(0.4f, 0.38f, 0.36f));
+                    Put(Part.Box, new float3(x, y + 0.004f, z), pieceYaw, new float3(width, 0.012f, segLen), color);
+                    if (style == StreetStyle.Primary && !bridge && k % 2 == 0)
+                        Put(Part.Box, new float3(x, y + 0.0105f, z), pieceYaw, new float3(0.006f, 0.002f, segLen * 0.45f), new float3(0.78f, 0.74f, 0.55f));
+                    if (style == StreetStyle.Service && k % 3 == 0)
+                        for (int r = -1; r <= 1; r += 2)   // painted edge lines on service roads
+                            Put(Part.Box, new float3(x + csn * r * width * 0.42f, y + 0.0105f, z - sn * r * width * 0.42f), pieceYaw, new float3(0.005f, 0.002f, segLen), new float3(0.78f, 0.66f, 0.2f));
+                    if (style == StreetStyle.Rural && !bridge)
+                        for (int r = -1; r <= 1; r += 2)   // worn shoulders
+                            Put(Part.Box, new float3(x + csn * r * width * 0.62f, y + 0.001f, z - sn * r * width * 0.62f), pieceYaw, new float3(width * 0.28f, 0.006f, segLen), color * 0.85f + new float3(0.03f, 0.04f, 0.01f));
+                    if (walks)
+                    {
+                        // kerbs, then a continuous pavement behind them (lifted with the road, never clipping)
+                        float side = width * 0.55f;
+                        for (int r = -1; r <= 1; r += 2)
+                        {
+                            Put(Part.Box, new float3(x + csn * r * side, y + 0.006f, z - sn * r * side), pieceYaw, new float3(0.014f, 0.014f, segLen), kerb);
+                            if (!bridge && Hash(t * 7 + k, r + 50) >= pavementGaps)
+                            {
+                                float pw = style == StreetStyle.Commercial ? 0.05f : 0.035f;
+                                float off = side + 0.007f + pw * 0.5f;
+                                Put(Part.Box, new float3(x + csn * r * off, y + 0.007f, z - sn * r * off), pieceYaw, new float3(pw, 0.012f, segLen), pavement * (0.95f + 0.1f * Hash(t, k + r)));
+                            }
+                        }
+                    }
+                }
+                if (bridge)
+                {
+                    // railings along the deck, piers below it
+                    for (int r = -1; r <= 1; r += 2)
+                        Put(Part.Box, new float3(x + csn * r * width * 0.62f, y + 0.012f, z - sn * r * width * 0.62f), pieceYaw, new float3(0.008f, 0.025f, segLen), new float3(0.45f, 0.44f, 0.42f));
+                    if (k % 2 == 0)
+                    {
+                        float floor = Mathf.Min(Ground(x, z), y) - 0.2f;
+                        Put(Part.Box, new float3(x, floor, z), pieceYaw, new float3(width * 0.4f, y - floor, 0.03f), new float3(0.4f, 0.38f, 0.36f));
+                    }
+                }
+            }
+            if (bridge)
+            {
+                // abutments where the deck meets dry land
+                foreach (var end in new[] { p0, p2 })
+                {
+                    float gy = Ground(end.x, end.y);
+                    if (world.View.Water[world.Grid.TileAt(end.x, end.y) is int te && te >= 0 ? te : t] > gy) continue;
+                    float dy = RoadCurve.Height(world, deck, end.x, end.y) - gy;
+                    if (dy > 0.03f) Put(Part.Box, new float3(end.x, gy - 0.02f, end.y), Mathf.Atan2(c.x - end.x, c.y - end.y), new float3(width * 1.3f, dy + 0.02f, 0.06f), new float3(0.48f, 0.46f, 0.42f));
                 }
             }
         }
@@ -413,13 +512,24 @@ namespace SE.Runtime.Cities
         {
             var g = world.Grid;
             float cx = g.CenterX(b.Tile), cz = g.CenterZ(b.Tile);
-            int seed = b.Id * 7919 + b.Tile;
-            // face the street: align to the first road edge of this hex, otherwise a stable random angle
-            float yaw = Hash(seed, 3) * 6.283f;
-            for (int d = 0; d < 6; d++) if (world.RoadClass(b.Tile, d) != 0) { yaw = Mathf.Atan2(HexMath.DirX[d], HexMath.DirZ[d]) + Mathf.PI * 0.5f * Mathf.Round(Hash(seed, 4)); break; }
-            // no two blocks sit exactly alike: a small offset and turn, so the hex grid doesn't show through
-            yaw += (Hash(seed, 5) - 0.5f) * 0.22f;
-            cx += (Hash(seed, 6) - 0.5f) * 0.1f; cz += (Hash(seed, 7) - 0.5f) * 0.1f;
+            int seed = DistrictPlanner.StableHash(Seed, b.Id, b.Tile);
+            // the parcel: the widest side of the hex free of streets. The building sits there, scaled to the
+            // room it has, fronting the streets that pass along the other side (organic city design §6.1–6.2)
+            float yaw;
+            if (world.Road[b.Tile] != 0)
+            {
+                RoadCurve.Parcel(world, b.Tile, out var pdir, out float room);
+                parcelScale = Mathf.Lerp(0.68f, 1f, room);
+                float offset = Mathf.Lerp(0.2f, 0.06f, room);
+                cx += pdir.x * offset; cz += pdir.y * offset;
+                yaw = Mathf.Atan2(-pdir.x, -pdir.y);
+            }
+            else { parcelScale = 1f; yaw = Hash(seed, 3) * 6.283f; }
+            // no two parcels sit exactly alike: a small offset and turn, so the hex grid doesn't show through
+            yaw += (Hash(seed, 5) - 0.5f) * 0.18f;
+            cx += (Hash(seed, 6) - 0.5f) * 0.06f; cz += (Hash(seed, 7) - 0.5f) * 0.06f;
+            var district = Districts.At(b.Tile);
+            styleSeed = district?.Seed ?? seed;
             float4 civ = CivColor(b.Owner);
             // damage darkens by band, not by every point of health
             int band = StructureStore.DamageBand(b.Hp);
@@ -434,7 +544,12 @@ namespace SE.Runtime.Cities
                 ComposeSite(b, cx, cz, yaw, seed);
                 return;
             }
-            var ctx = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = tint, Civ = civ.xyz, Era = era, Level = Math.Max(1, b.Level), Tier = b.Tier };
+            var ctx = new Ctx
+            {
+                X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = tint, Civ = civ.xyz, Era = era, Level = Math.Max(1, b.Level), Tier = b.Tier,
+                Scale = parcelScale, Style = district?.Seed ?? seed, Kind = district?.Kind ?? DistrictPlanner.KindOf(b.Type),
+                Anchor = district == null || district.Anchor == b.Tile, DistrictSize = district?.Size ?? 1,
+            };
             Stacks.Remove(b.Id);
             composing = b.Id;
             switch (b.Type)
@@ -442,21 +557,38 @@ namespace SE.Runtime.Cities
                 case "house": House(ctx); break;
                 case "town": Centre(ctx); break;
                 case "farm": Farm(ctx); break;
-                case "barracks": case "fort": case "camp": Base(ctx, b.Type == "fort"); break;
+                case "barracks": case "camp": Base(ctx, false); break;
+                case "fort": Fortress(ctx); break;
+                case "steel_mill": SteelMill(ctx); break;
+                case "refinery": Refinery(ctx); break;
+                case "munitions_plant": Munitions(ctx); break;
+                case "motor_works": MotorWorks(ctx); break;
+                case "heavy_assembly": HeavyAssembly(ctx); break;
+                case "electronics_plant": Electronics(ctx); break;
+                case "drone_works": DroneWorks(ctx); break;
+                case "robotics_complex": Robotics(ctx); break;
+                case "mine": if (ctx.Era == 0) Extraction(ctx, b.Type); else Mine(ctx); break;
+                case "quarry": Quarry(ctx); break;
+                case "salvage": Salvage(ctx); break;
+                case "lumber": TimberMill(ctx); break;
+                case "oil_well": PumpJack(ctx); break;
+                case "shield_generator": ShieldGenerator(ctx); break;
+                case "missile_silo": MissileSilo(ctx); break;
                 case "academy": case "university": Campus(ctx, b.Type == "university"); break;
                 case "power_plant": Power(ctx, false); break;
                 case "fusion_plant": Power(ctx, true); break;
                 case "nuclear_plant": Nuclear(ctx); break;
                 case "airfield": Airfield(ctx); break;
                 case "port": Port(ctx); break;
-                case "comms_tower": Mast(ctx); break;
-                case "guard_post": case "bunker": case "aa_battery": case "missile_silo": case "shield_generator": Defence(ctx, b.Type); break;
+                case "comms_tower": LatticeMast(ctx); break;
+                case "guard_post": case "bunker": case "aa_battery": Defence(ctx, b.Type); break;
                 case "market": case "depot": Warehouses(ctx, b.Type == "market"); break;
-                case "mine": case "quarry": case "lumber": case "salvage": case "oil_well": Extraction(ctx, b.Type); break;
+
                 case "wonder": Wonder(ctx); break;
                 default: Industry(ctx); break;
             }
             if (ctx.Level >= 2 && b.Type != "house" && b.Type != "town" && b.Type != "wonder") UpgradeExtras(ctx, b.Type);
+            ParcelExtras(ctx, b.Type);
             DamageOverlay(b, cx, cz, yaw, seed);
         }
 
@@ -465,11 +597,26 @@ namespace SE.Runtime.Cities
             public float X, Z, Yaw;
             public int Seed, Era, Level, Tier;
             public float3 Tint, Civ;
+            /// <summary>Parcel scale (0 means 1): footprints shrink to fit the room the streets leave.</summary>
+            public float Scale;
+            /// <summary>The district's style seed (a shared vocabulary of materials and roofs) and its kind.</summary>
+            public int Style;
+            public DistrictKind Kind;
+            /// <summary>The district's oldest building (the farmstead, the compound's headquarters…).</summary>
+            public bool Anchor;
+            public int DistrictSize;
         }
+
+        static float S(in Ctx c) => c.Scale > 0 ? c.Scale : 1f;
+
+        /// <summary>The parcel scale of the building being composed (sites and damage use it too).</summary>
+        float parcelScale = 1f;
 
         // place a module at local (lx, lz) of the hex in the building's frame, on the ground (sunk a little)
         void Module(in Ctx c, Part part, float lx, float lz, float3 size, float3 color, float yawOffset = 0, float lift = 0, float emission = 0)
         {
+            float k = S(c), kh = 0.65f + 0.35f * k;
+            lx *= k; lz *= k; size = new float3(size.x * k, size.y * kh, size.z * k); lift *= kh;
             math.sincos(c.Yaw, out float sn, out float cs);
             float x = c.X + lx * cs + lz * sn, z = c.Z - lx * sn + lz * cs;
             float y = Mathf.Min(Ground(x, z), Mathf.Min(Ground(x + size.x * 0.4f, z), Ground(x, z + size.z * 0.4f))) - 0.02f;
@@ -480,6 +627,7 @@ namespace SE.Runtime.Cities
         void Stack(in Ctx c, float lx, float lz, float h, bool steam, float size)
         {
             if (composing < 0) return;
+            float k = S(c); lx *= k; lz *= k; h *= 0.65f + 0.35f * k;
             math.sincos(c.Yaw, out float sn, out float cs);
             float x = c.X + lx * cs + lz * sn, z = c.Z - lx * sn + lz * cs;
             if (!Stacks.TryGetValue(composing, out var list)) Stacks[composing] = list = new List<SmokeStack>(2);
@@ -489,6 +637,8 @@ namespace SE.Runtime.Cities
         /// <summary>A module with pitch and roll as well as heading (hoop greenhouses, turbine blades).</summary>
         void ModuleRot(in Ctx c, Part part, float lx, float lz, float3 size, float3 color, float pitch, float roll, float yawOffset = 0, float lift = 0)
         {
+            float k = S(c), kh = 0.65f + 0.35f * k;
+            lx *= k; lz *= k; size *= k; lift *= kh;
             math.sincos(c.Yaw, out float sn, out float cs);
             float x = c.X + lx * cs + lz * sn, z = c.Z - lx * sn + lz * cs;
             PutRot(part, new float3(x, Ground(x, z) - 0.02f + lift, z), quaternion.EulerZXY(pitch, MapSpace.Yaw(c.Yaw + yawOffset), roll), size, color * c.Tint);
@@ -518,7 +668,17 @@ namespace SE.Runtime.Cities
         static readonly float3 Olive = new float3(0.36f, 0.39f, 0.26f);        // the military
         static readonly float3 Hazard = new float3(0.86f, 0.66f, 0.12f);       // power and heavy plant
         static float3 Rust(int seed) => math.lerp(new float3(0.46f, 0.3f, 0.21f), new float3(0.55f, 0.4f, 0.28f), Hash(seed, 35));   // industry
-        static float3 Stucco(int seed) => math.lerp(new float3(0.82f, 0.74f, 0.6f), new float3(0.88f, 0.8f, 0.68f), Hash(seed, 36));   // homes
+        // District vocabulary (organic city design §6.3): each district has a base material and roof family;
+        // a building varies within it (60% district, 40% parcel), so a neighbourhood reads as one place
+        // without its houses being copies.
+        int styleSeed;
+        float Vary(int seed, int salt) => math.lerp(Hash(styleSeed, salt), Hash(seed, salt), 0.4f);
+        float3 Stucco(int seed)
+        {
+            float family = Hash(styleSeed, 46);
+            float3 a = family < 0.4f ? new float3(0.84f, 0.76f, 0.62f) : family < 0.7f ? new float3(0.78f, 0.78f, 0.74f) : new float3(0.82f, 0.7f, 0.58f);
+            return math.lerp(a, a * new float3(1.06f, 1.04f, 1.02f), Vary(seed, 36));
+        }
 
         /// <summary>A curved roof (hangar, warehouse): a cylinder on its side, its axis along the building, half above the walls.</summary>
         void BarrelRoof(in Ctx c, float lx, float lz, float length, float depth, float wallHeight, float3 color)
@@ -565,11 +725,17 @@ namespace SE.Runtime.Cities
                 ModuleRot(c, Part.Box, lx, lz, new float3(0.012f, h * 0.42f, 0.004f), new float3(0.9f, 0.9f, 0.88f), 0, phase + k * 2.0944f, 0.6f, h + 0.015f);
         }
 
-        static float3 Brick(int seed) => math.lerp(new float3(0.55f, 0.36f, 0.28f), new float3(0.68f, 0.56f, 0.44f), Hash(seed, 9));
+        float3 Brick(int seed) => math.lerp(new float3(0.55f, 0.36f, 0.28f), new float3(0.68f, 0.56f, 0.44f), Vary(seed, 9));
         static float3 Concrete(int seed) => math.lerp(new float3(0.58f, 0.57f, 0.55f), new float3(0.72f, 0.7f, 0.66f), Hash(seed, 10));
         static float3 RoofTone(int seed) => math.lerp(new float3(0.36f, 0.2f, 0.16f), new float3(0.3f, 0.32f, 0.34f), Hash(seed, 11));
 
-        static float3 HomeRoof(int seed) => math.lerp(Terracotta, new float3(0.5f, 0.24f, 0.18f), Hash(seed, 37));
+        float3 HomeRoof(int seed)
+        {
+            // roof families: terracotta, slate, weathered brown, by district
+            float family = Hash(styleSeed, 41);
+            float3 a = family < 0.5f ? Terracotta : family < 0.8f ? new float3(0.31f, 0.32f, 0.35f) : new float3(0.42f, 0.31f, 0.24f);
+            return math.lerp(a, a * 0.82f, Vary(seed, 37));
+        }
 
         void House(in Ctx c)
         {
@@ -730,15 +896,26 @@ namespace SE.Runtime.Cities
                 WindTurbine(c, 0.5f, -0.1f, 0.32f, c.Seed);
                 return;
             }
-            // strip fields with varied crops, a barn and a silo; no flat grass pads
-            for (int k = 0; k < 4; k++)
+            // an estate (organic city design §12): strip fields whose rows all run the estate's way, and
+            // one farmstead (barn, farmhouse, silos) for the whole estate, at its oldest farm
+            bool estate = c.Kind == DistrictKind.Agricultural && c.DistrictSize > 1;
+            float rowYaw = estate ? Hash(c.Style, 7) * 3.1416f - c.Yaw : 0f;
+            bool stead = !estate || c.Anchor;
+            int strips = stead ? 4 : 5;
+            for (int k = 0; k < strips; k++)
             {
                 float3 crop = math.lerp(new float3(0.48f, 0.5f, 0.24f), new float3(0.66f, 0.56f, 0.28f), Hash(c.Seed, k));
-                Module(c, Part.Box, -0.15f, -0.5f + k * 0.28f, new float3(1.15f, 0.025f, 0.24f), crop);
+                float along = -0.55f + k * (stead ? 0.28f : 0.27f);
+                math.sincos(rowYaw, out float rs, out float rc);
+                Module(c, Part.Box, stead ? -0.15f * rc + along * rs : along * rs, stead ? -0.15f * -rs + along * rc : along * rc, new float3(stead ? 1.15f : 1.3f, 0.025f, 0.24f), crop, rowYaw);
             }
+            if (!stead) return;
             Module(c, Part.Box, 0.55f, 0.15f, new float3(0.24f, 0.16f, 0.32f), new float3(0.5f, 0.24f, 0.18f));
             Module(c, Part.Roof, 0.55f, 0.15f, new float3(0.26f, 0.1f, 0.34f), new float3(0.3f, 0.3f, 0.32f), 0, 0.16f);
             Module(c, Part.Silo, 0.62f, -0.2f, new float3(0.12f, 0.3f, 0.12f), new float3(0.7f, 0.7f, 0.68f));
+            if (c.Level >= 2) Module(c, Part.Silo, 0.75f, -0.05f, new float3(0.1f, 0.26f, 0.1f), new float3(0.66f, 0.66f, 0.64f));
+            Module(c, Part.Box, 0.35f, 0.5f, new float3(0.14f, 0.1f, 0.12f), Stucco(c.Seed));   // the farmhouse
+            Module(c, Part.Roof, 0.35f, 0.5f, new float3(0.15f, 0.06f, 0.13f), HomeRoof(c.Seed), 0, 0.1f);
         }
 
         void Base(in Ctx c, bool fort)
@@ -765,14 +942,19 @@ namespace SE.Runtime.Cities
             // a military compound: perimeter wall with towers, barrack halls in rows, a vehicle park
             float r = fort ? 0.8f : 0.7f, wall = fort ? 0.12f : 0.07f;
             var wc = fort ? new float3(0.5f, 0.49f, 0.46f) : new float3(0.45f, 0.43f, 0.36f);
-            Module(c, Part.Box, 0, -r, new float3(2 * r, wall, 0.04f), wc);
-            Module(c, Part.Box, 0, r, new float3(2 * r, wall, 0.04f), wc);
-            Module(c, Part.Box, -r, 0, new float3(0.04f, wall, 2 * r), wc);
-            Module(c, Part.Box, r, 0, new float3(0.04f, wall, 2 * r), wc);
-            for (int k = 0; k < 4; k++)
+            // a lone base walls itself in; in a compound the district draws one perimeter for all of it
+            bool compound = c.Kind == DistrictKind.Military && c.DistrictSize > 1;
+            if (!compound || fort)
             {
-                float sx = k % 2 == 0 ? -r : r, sz = k < 2 ? -r : r;
-                Module(c, Part.Box, sx, sz, new float3(0.1f, wall + 0.14f, 0.1f), wc * 0.9f);
+                Module(c, Part.Box, 0, -r, new float3(2 * r, wall, 0.04f), wc);
+                Module(c, Part.Box, 0, r, new float3(2 * r, wall, 0.04f), wc);
+                Module(c, Part.Box, -r, 0, new float3(0.04f, wall, 2 * r), wc);
+                Module(c, Part.Box, r, 0, new float3(0.04f, wall, 2 * r), wc);
+                for (int k = 0; k < 4; k++)
+                {
+                    float sx = k % 2 == 0 ? -r : r, sz = k < 2 ? -r : r;
+                    Module(c, Part.Box, sx, sz, new float3(0.1f, wall + 0.14f, 0.1f), wc * 0.9f);
+                }
             }
             Module(c, Part.Box, 0.25f, 0, new float3(0.62f, 0.012f, 0.9f), new float3(0.46f, 0.44f, 0.4f));   // parade ground
             for (int k = 0; k < 3; k++)
@@ -904,6 +1086,216 @@ namespace SE.Runtime.Cities
             Module(c, Part.Box, 0, 0.62f, new float3(1.3f, 0.06f, 0.03f), new float3(0.62f, 0.62f, 0.6f));   // security fence
         }
 
+        // ------------------------------------------------------------------ parcels, parking and shared district spaces
+
+        /// <summary>
+        /// A parked vehicle at a stable spot (organic city design §7.3): restrained colours, cars or small
+        /// trucks; military districts park olive trucks. Spots stay the same across reloads.
+        /// </summary>
+        void Parked(in Ctx c, float lx, float lz, float face, int seed, bool truck)
+        {
+            float3 col;
+            if (c.Kind == DistrictKind.Military) col = Olive * (0.9f + 0.15f * Hash(seed, 1));
+            else
+            {
+                float h = Hash(seed, 2);
+                col = h < 0.25f ? new float3(0.62f, 0.62f, 0.6f) : h < 0.45f ? new float3(0.18f, 0.19f, 0.21f) : h < 0.6f ? new float3(0.78f, 0.77f, 0.73f)
+                    : h < 0.72f ? new float3(0.45f, 0.14f, 0.12f) : h < 0.84f ? new float3(0.18f, 0.26f, 0.38f) : h < 0.94f ? new float3(0.34f, 0.37f, 0.31f) : new float3(0.74f, 0.6f, 0.22f);
+            }
+            float k = S(c);
+            math.sincos(c.Yaw, out float sn, out float cs);
+            float x = c.X + lx * k * cs + lz * k * sn, z = c.Z - lx * k * sn + lz * k * cs;
+            Put(truck ? Part.Truck : Part.Car, new float3(x, Ground(x, z), z), c.Yaw + face, new float3(truck ? 0.05f : 0.042f), col * c.Tint);
+        }
+
+        /// <summary>
+        /// What a parcel needs around its building, by district (§6.4, §7.1): driveways and a car or two at
+        /// homes (not every house has one), a compact rear lot and curbside cars at shops, employee parking
+        /// kept apart from the truck yard at industry, a motor pool at military sites, visitor spaces at
+        /// institutions. Lot sizes and occupancy vary per parcel; nothing is a repeated prefab.
+        /// </summary>
+        void ParcelExtras(in Ctx c, string type)
+        {
+            int seed = c.Seed;
+            var asphalt = new float3(0.3f, 0.3f, 0.31f);
+            switch (c.Kind)
+            {
+                case DistrictKind.Residential:
+                    if (c.Era == 0) { if (Hash(seed, 400) < 0.35f) Parked(c, 0.45f, 0.55f, 0.3f, seed + 1, true); return; }
+                    if (c.Level >= 3)
+                    {
+                        // apartments share a lot at the back
+                        Module(c, Part.Box, 0f, -0.66f, new float3(0.5f, 0.008f, 0.16f), asphalt);
+                        int spaces = 3 + (int)(Hash(seed, 401) * 4);
+                        for (int s = 0; s < spaces; s++) if (Hash(seed, 410 + s) < 0.7f) Parked(c, -0.2f + s * 0.07f, -0.66f, 0f, seed + s, false);
+                        return;
+                    }
+                    if (Hash(seed, 402) < 0.6f)
+                    {
+                        // a short driveway to the street, sometimes with a car on it
+                        float side = Hash(seed, 403) < 0.5f ? -0.36f : 0.36f;
+                        Module(c, Part.Box, side, 0.6f, new float3(0.06f, 0.008f, 0.2f), new float3(0.46f, 0.45f, 0.42f));
+                        if (Hash(seed, 404) < 0.65f) Parked(c, side, 0.58f, 0f, seed + 3, Hash(seed, 405) < 0.15f);
+                    }
+                    return;
+                case DistrictKind.Commercial:
+                    if (c.Era == 0) return;
+                    Module(c, Part.Box, -0.1f, -0.62f, new float3(0.42f, 0.008f, 0.16f), asphalt);
+                    for (int s = 0; s < 5; s++) if (Hash(seed, 420 + s) < 0.6f) Parked(c, -0.26f + s * 0.08f, -0.62f, 0f, seed + 20 + s, s == 4);
+                    for (int s = 0; s < 2; s++) if (Hash(seed, 430 + s) < 0.7f) Parked(c, -0.3f + s * 0.5f, 0.72f, 1.57f, seed + 30 + s, false);   // curbside
+                    return;
+                case DistrictKind.Industrial:
+                case DistrictKind.Energy:
+                    // employees park by the gate; trucks and containers use the yard behind, apart from them
+                    Module(c, Part.Box, -0.55f, 0.5f, new float3(0.26f, 0.008f, 0.2f), asphalt);
+                    for (int s = 0; s < 4; s++) if (Hash(seed, 440 + s) < 0.65f) Parked(c, -0.62f + (s % 2) * 0.1f, 0.44f + (s / 2) * 0.1f, 1.57f, seed + 40 + s, false);
+                    Module(c, Part.Box, 0.55f, -0.55f, new float3(0.3f, 0.008f, 0.26f), new float3(0.42f, 0.41f, 0.39f));
+                    for (int s = 0; s < 3; s++) if (Hash(seed, 450 + s) < 0.6f) Parked(c, 0.48f + s * 0.07f, -0.55f, 0f, seed + 50 + s, true);
+                    if (Hash(seed, 455) < 0.6f) Module(c, Part.Box, 0.62f, -0.42f, new float3(0.12f, 0.05f, 0.05f), Container(seed + 5));
+                    return;
+                case DistrictKind.Military:
+                    if (type != "barracks" && type != "fort" && type != "camp") return;
+                    // the motor pool: vehicles in an ordered row
+                    for (int s = 0; s < 4; s++) if (Hash(seed, 460 + s) < 0.8f) Parked(c, 0.15f + s * 0.09f, 0.62f, 0f, seed + 60 + s, true);
+                    return;
+                case DistrictKind.Civic:
+                    if (type == "academy" || type == "university")
+                    {
+                        Module(c, Part.Box, 0.55f, 0.6f, new float3(0.2f, 0.008f, 0.12f), asphalt);
+                        for (int s = 0; s < 3; s++) if (Hash(seed, 470 + s) < 0.55f) Parked(c, 0.48f + s * 0.07f, 0.6f, 0f, seed + 70 + s, false);
+                    }
+                    return;
+            }
+        }
+
+        /// <summary>
+        /// Where a building's parcel lies (centre, heading, scale): the same rule <see cref="ComposeBuilding"/>
+        /// uses, so shared spaces between buildings join their real parcels.
+        /// </summary>
+        bool ParcelOf(int tile, out float2 centre, out float yaw, out float scale)
+        {
+            centre = default; yaw = 0; scale = 1;
+            if (!(Districts.BuildingAt(tile) is BuildingRecord b)) return false;
+            var g = world.Grid;
+            float cx = g.CenterX(tile), cz = g.CenterZ(tile);
+            int seed = DistrictPlanner.StableHash(Seed, b.Id, b.Tile);
+            if (world.Road[tile] != 0)
+            {
+                RoadCurve.Parcel(world, tile, out var pdir, out float room);
+                scale = Mathf.Lerp(0.68f, 1f, room);
+                float offset = Mathf.Lerp(0.2f, 0.06f, room);
+                cx += pdir.x * offset; cz += pdir.y * offset;
+                yaw = Mathf.Atan2(-pdir.x, -pdir.y);
+            }
+            else yaw = Hash(seed, 3) * 6.283f;
+            yaw += (Hash(seed, 5) - 0.5f) * 0.18f;
+            cx += (Hash(seed, 6) - 0.5f) * 0.06f; cz += (Hash(seed, 7) - 0.5f) * 0.06f;
+            centre = new float2(cx, cz);
+            return true;
+        }
+
+        /// <summary>
+        /// The spaces a district shares (organic city design §5.3, §10–12): drawn once per pair of
+        /// neighbouring members (by the lower hex), so three factories get one yard, not three.
+        /// Industry and energy: a paved service yard and a pipe rack between plants, and one perimeter
+        /// fence round the whole works with gates where streets enter. Military: one compound wall,
+        /// a shared parade ground and the motor pool between barracks. Farms: fields continue across
+        /// the estate, rows all one way, joined by a farm track. Campus: paths and lawns. Commerce: a
+        /// pedestrian lane with benches. Homes: a shared footpath and a few trees.
+        /// </summary>
+        void DistrictLinks(int t)
+        {
+            var dist = Districts.At(t);
+            if (dist == null || dist.Size < 2 || !ParcelOf(t, out var a, out _, out _)) return;
+            var g = world.Grid;
+            float cx = g.CenterX(t);
+            for (int d = 0; d < 6; d++)
+            {
+                int n = g.Nb[t * 6 + d];
+                if (n < 0 || !Districts.Same(t, n)) continue;
+                if (n < t || !ParcelOf(n, out var b, out _, out _)) continue;
+                b.x = a.x + g.DxWrap(a.x, b.x);
+                float2 from = math.lerp(a, b, 0.28f), to = math.lerp(a, b, 0.72f), mid = (from + to) * 0.5f;
+                float len = math.distance(from, to);
+                float yaw = Mathf.Atan2(to.x - from.x, to.y - from.y);
+                float y = Mathf.Max(Ground(mid.x, mid.y), Mathf.Max(Ground(from.x, from.y), Ground(to.x, to.y)));
+                int seed = DistrictPlanner.StableHash(dist.Seed, Math.Min(t, n), Math.Max(t, n));
+                math.sincos(yaw, out float sn, out float cs);
+                switch (dist.Kind)
+                {
+                    case DistrictKind.Industrial:
+                    case DistrictKind.Energy:
+                    case DistrictKind.Extraction:
+                        Put(Part.Box, new float3(mid.x, y - 0.01f, mid.y), yaw, new float3(0.34f, 0.016f, len + 0.2f), new float3(0.43f, 0.42f, 0.4f));
+                        // a pipe rack on short supports beside the yard
+                        float off = 0.13f * (Hash(seed, 1) < 0.5f ? 1 : -1);
+                        Put(Part.Box, new float3(mid.x + cs * off, y + 0.08f, mid.y - sn * off), yaw, new float3(0.025f, 0.025f, len + 0.25f), new float3(0.55f, 0.5f, 0.42f));
+                        for (int s = 0; s < 3; s++)
+                        {
+                            float along = (s - 1) * len * 0.4f;
+                            Put(Part.Box, new float3(mid.x + cs * off + sn * along, y, mid.y - sn * off + cs * along), yaw, new float3(0.012f, 0.08f, 0.012f), new float3(0.4f, 0.4f, 0.4f));
+                        }
+                        if (Hash(seed, 2) < 0.5f) Put(Part.Box, new float3(mid.x - cs * off, y, mid.y + sn * off), yaw + 0.1f, new float3(0.11f, 0.05f, 0.05f), Container(seed));
+                        break;
+                    case DistrictKind.Military:
+                        Put(Part.Box, new float3(mid.x, y - 0.01f, mid.y), yaw, new float3(0.32f, 0.014f, len + 0.15f), new float3(0.48f, 0.46f, 0.41f));   // parade ground
+                        if (Hash(seed, 3) < 0.7f)
+                            for (int s = 0; s < 3; s++) { float along = (s - 1) * 0.09f; var pc = new float2(mid.x + cs * 0.1f + sn * along, mid.y - sn * 0.1f + cs * along); Put(Part.Truck, new float3(pc.x, Ground(pc.x, pc.y), pc.y), yaw + 1.57f, new float3(0.05f), Olive); }
+                        break;
+                    case DistrictKind.Agricultural:
+                    {
+                        // fields carry on across the estate, every row in the estate's direction
+                        float rows = Hash(dist.Seed, 7) * 3.1416f;
+                        for (int s = 0; s < 3; s++)
+                        {
+                            float3 crop = math.lerp(new float3(0.46f, 0.5f, 0.24f), new float3(0.64f, 0.56f, 0.28f), Hash(seed, 10 + s));
+                            var p = math.lerp(from, to, (s + 0.5f) / 3f) + new float2(cs, -sn) * ((Hash(seed, 20 + s) - 0.5f) * 0.2f);
+                            Put(Part.Box, new float3(p.x, Ground(p.x, p.y) - 0.01f, p.y), rows, new float3(0.34f, 0.022f, 0.12f), crop);
+                        }
+                        Put(Part.Box, new float3(mid.x, y - 0.012f, mid.y), yaw, new float3(0.035f, 0.01f, len + 0.3f), new float3(0.5f, 0.43f, 0.32f));   // farm track
+                        break;
+                    }
+                    case DistrictKind.Civic:
+                        Put(Part.Box, new float3(mid.x, y - 0.012f, mid.y), yaw, new float3(0.28f, 0.01f, len + 0.2f), new float3(0.34f, 0.47f, 0.27f));   // lawn
+                        Put(Part.Box, new float3(mid.x, y - 0.006f, mid.y), yaw, new float3(0.04f, 0.01f, len + 0.25f), new float3(0.62f, 0.6f, 0.55f));    // path
+                        for (int s = 0; s < 2; s++) { float side = s == 0 ? 0.1f : -0.1f; Put(Part.Cone, new float3(mid.x + cs * side, y, mid.y - sn * side), yaw, new float3(0.1f, 0.13f, 0.1f), new float3(0.24f, 0.38f, 0.18f)); }
+                        break;
+                    case DistrictKind.Commercial:
+                        Put(Part.Box, new float3(mid.x, y - 0.008f, mid.y), yaw, new float3(0.16f, 0.012f, len + 0.2f), new float3(0.6f, 0.57f, 0.52f));   // pedestrian lane
+                        if (Hash(seed, 4) < 0.6f) Put(Part.Box, new float3(mid.x + cs * 0.06f, y + 0.01f, mid.y - sn * 0.06f), yaw, new float3(0.012f, 0.012f, 0.05f), new float3(0.4f, 0.32f, 0.24f));   // a bench
+                        break;
+                    case DistrictKind.Residential:
+                        Put(Part.Box, new float3(mid.x, y - 0.008f, mid.y), yaw, new float3(0.035f, 0.01f, len + 0.15f), new float3(0.58f, 0.56f, 0.52f));   // footpath
+                        if (Hash(seed, 5) < 0.55f)
+                        {
+                            // street trees come in small groups, with gaps
+                            int trees = 1 + (int)(Hash(seed, 6) * 3);
+                            for (int s = 0; s < trees; s++) { float along = (s - (trees - 1) * 0.5f) * 0.09f, side = 0.06f; var pc = new float2(mid.x + cs * side + sn * along, mid.y - sn * side + cs * along); float hh = 0.08f + Hash(seed, 30 + s) * 0.04f; Put(Part.Cone, new float3(pc.x, Ground(pc.x, pc.y) + hh * 0.4f, pc.y), s, new float3(hh * 1.3f, hh * 1.5f, hh * 1.3f), math.lerp(new float3(0.22f, 0.36f, 0.17f), new float3(0.32f, 0.44f, 0.2f), Hash(seed, 40 + s))); }
+                        }
+                        break;
+                }
+            }
+            // one perimeter round the works or the compound, with gates where streets come in
+            if (dist.Kind == DistrictKind.Industrial || dist.Kind == DistrictKind.Energy || dist.Kind == DistrictKind.Military)
+            {
+                float cz = g.CenterZ(t);
+                bool early = Districts.BuildingAt(dist.Anchor) is BuildingRecord ab && ab.Era == 0;
+                float3 fenceCol = dist.Kind == DistrictKind.Military ? (early ? new float3(0.62f, 0.55f, 0.4f) : new float3(0.5f, 0.49f, 0.46f)) : new float3(0.55f, 0.56f, 0.56f);
+                float fenceH = dist.Kind == DistrictKind.Military ? 0.06f : 0.04f;
+                for (int d = 0; d < 6; d++)
+                {
+                    int n = g.Nb[t * 6 + d];
+                    if (n >= 0 && Districts.Same(t, n)) continue;
+                    if (world.RoadClass(t, d) != 0) continue;   // a gate
+                    int k = HexMath.PosMod(1 - d, 6), k2 = (k + 1) % 6;
+                    float ax = cx + HexMath.CornerX[k] * 0.9f, az = cz + HexMath.CornerZ[k] * 0.9f;
+                    float bx = cx + HexMath.CornerX[k2] * 0.9f, bz = cz + HexMath.CornerZ[k2] * 0.9f;
+                    float mx = (ax + bx) * 0.5f, mz = (az + bz) * 0.5f;
+                    Put(Part.Box, new float3(mx, Ground(mx, mz) - 0.005f, mz), Mathf.Atan2(bx - ax, bz - az), new float3(0.012f, fenceH, Mathf.Sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az))), fenceCol);
+                }
+            }
+        }
+
         // ------------------------------------------------------------------ developed blocks
         // A district hex the server has developed but holds no building of its own: buildings fill the
         // wedges between its streets, facing them, with heights from the era and how central the block
@@ -920,12 +1312,23 @@ namespace SE.Runtime.Cities
                 if (n >= 0 && (world.IsUrban(n) || hasBuildingAt(n))) urbanNb++;
                 if (world.RoadClass(t, d) != 0) roads++;
             }
-            int era = Math.Max(0, Math.Min(4, Age));
+            // the district this block belongs to sets its vocabulary and age: most infill keeps the
+            // district's own era, some is newer (historical layers, organic city design §6.5, §14)
+            var district = Districts.At(t);
+            styleSeed = district?.Seed ?? seed;
+            int anchorEra = district != null && Districts.BuildingAt(district.Anchor) is BuildingRecord ab && ab.Era >= 0 ? ab.Era : Age;
+            int era = Math.Max(0, Math.Min(4, Hash(seed, 2) < 0.6f ? anchorEra : Age));
             float centrality = urbanNb / 6f;
             float roll = Hash(seed, 1);
-            var c = new Ctx { X = cx, Z = cz, Yaw = 0, Seed = seed, Tint = new float3(1), Civ = CivColor(world.Owner[t]).xyz, Era = era, Level = 1 };
-            if (roll < 0.1f && urbanNb >= 3) { Park(c); return; }
-            if (roll < 0.15f && urbanNb >= 5 && era >= 1) { Plaza(c); return; }
+            var kind = district?.Kind ?? DistrictKind.Residential;
+            var c = new Ctx { X = cx, Z = cz, Yaw = 0, Seed = seed, Tint = new float3(1), Civ = CivColor(world.Owner[t]).xyz, Era = era, Level = 1, Style = styleSeed, Kind = kind };
+            // green space where it makes sense (§8.1): a leftover interior block, a spot beside a civic
+            // building, or (rarely) anywhere in a dense neighbourhood; a young settlement has none formal
+            bool nearCivic = false;
+            for (int d = 0; d < 6 && !nearCivic; d++) { int n = g.Nb[t * 6 + d]; nearCivic = n >= 0 && Districts.BuildingAt(n) is BuildingRecord nb && DistrictPlanner.KindOf(nb.Type) == DistrictKind.Civic; }
+            float parkChance = 0.03f + (roads == 0 ? 0.22f : 0f) + (urbanNb >= 5 ? 0.04f : 0f);
+            if (era >= 1 && nearCivic && roll < 0.3f && kind != DistrictKind.Industrial) { Plaza(c); return; }
+            if (era >= 1 && roll < parkChance && kind != DistrictKind.Industrial && kind != DistrictKind.Energy) { Park(c); return; }
             // where this hex's streets run (they meet off-centre), so blocks keep clear of them
             int streetPts = 0;
             float2* pts = stackalloc float2[30];
@@ -975,6 +1378,26 @@ namespace SE.Runtime.Cities
         void Block(in Ctx c, float lx, float lz, float face, float centrality, bool streetSide, int seed)
         {
             float h01 = Hash(seed, 2);
+            if (c.Kind == DistrictKind.Industrial || c.Kind == DistrictKind.Energy || c.Kind == DistrictKind.Extraction)
+            {
+                // light industry infill: workshops with yards, stacked materials, a parked truck
+                float w = 0.22f + h01 * 0.08f, h = 0.12f + Hash(seed, 3) * 0.08f;
+                Module(c, Part.Box, lx, lz, new float3(w, h, w * 0.7f), c.Era == 0 ? Sheet(seed) : Rust(seed), face);
+                Module(c, Part.Roof, lx, lz, new float3(w * 1.02f, 0.05f, w * 0.72f), new float3(0.3f, 0.31f, 0.33f), face, h);
+                if (Hash(seed, 4) < 0.5f) Module(c, Part.Box, lx * 1.15f, lz * 1.15f, new float3(0.08f, 0.05f, 0.06f), Container(seed), face + 0.4f);
+                if (Hash(seed, 5) < 0.4f) Parked(c, lx * 0.7f, lz * 0.7f, face + 1.57f, seed, true);
+                return;
+            }
+            if (c.Kind == DistrictKind.Commercial && c.Era >= 1)
+            {
+                // shopfronts on the street: ground-floor awning and sign, a flat or two above
+                float w = 0.22f + h01 * 0.05f, h = 0.16f + centrality * 0.18f + Hash(seed, 3) * 0.08f + (c.Era >= 3 ? 0.2f : 0f);
+                Module(c, Part.Box, lx, lz, new float3(w, h, w * 0.7f), Stucco(seed), face);
+                var awning = Hash(seed, 6) < 0.33f ? new float3(0.74f, 0.26f, 0.2f) : Hash(seed, 6) < 0.66f ? new float3(0.22f, 0.48f, 0.6f) : new float3(0.82f, 0.64f, 0.22f);
+                Module(c, Part.Box, lx, lz, new float3(w * 1.06f, 0.012f, w * 0.82f), awning, face, 0.07f);
+                if (streetSide) Module(c, Part.Box, lx, lz, new float3(w * 0.6f, 0.03f, w * 0.72f), awning * 1.2f, face, 0.1f, 0.4f);
+                return;
+            }
             switch (c.Era)
             {
                 case 0:
@@ -1165,7 +1588,7 @@ namespace SE.Runtime.Cities
         void ComposeSite(in BuildingRecord b, float cx, float cz, float yaw, int seed)
         {
             int era = b.Era >= 0 ? Math.Min(4, b.Era) : Math.Max(0, Math.Min(4, Age));
-            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = CivColor(b.Owner).xyz, Era = era, Level = 1 };
+            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = CivColor(b.Owner).xyz, Era = era, Level = 1, Scale = parcelScale };
             float prog = Mathf.Clamp01(b.Progress / 100f);
             int stage = Mathf.Min(4, (int)(prog * 5f));
             string st = b.State ?? "";
@@ -1266,7 +1689,7 @@ namespace SE.Runtime.Cities
         {
             int band = StructureStore.DamageBand(b.Hp);
             if (band == 0 || !b.Done) return;
-            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = new float3(0.5f), Era = 1, Level = 1 };
+            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = new float3(0.5f), Era = 1, Level = 1, Scale = parcelScale };
             var soot = new float3(0.12f, 0.11f, 0.1f);
             var rubble = new float3(0.46f, 0.43f, 0.39f);
             int scorch = band * 2;
@@ -1294,6 +1717,7 @@ namespace SE.Runtime.Cities
                 if (!cell.Any) continue;
                 foreach (var b in cell.Batches) b.DrawImages(images);
             }
+            DrawGhost(images);
         }
 
         void DisposeCell(Cell c) { foreach (var b in c.Batches) b?.Dispose(); }

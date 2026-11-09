@@ -19,7 +19,7 @@ namespace SE.Runtime.Military
     /// </summary>
     public sealed class UnitRenderer : IDisposable
     {
-        enum Model { Soldier, Hull, Turret, Apc, Truck, Car, Buggy, Gun, Launcher, Exo, Fighter, Bomber, Heli, Rotor, Drone, Marker, Ring, AutoHull, AutoTurret, Count }
+        enum Model { Soldier, Hull, Turret, Apc, Truck, Car, Buggy, Gun, Launcher, Exo, Fighter, Bomber, Heli, Rotor, Drone, Marker, Ring, AutoHull, AutoTurret, Plate, Disc, Count }
 
         enum Kind { Infantry, Exo, Tank, AutoTank, Apc, ArmoredCar, Buggy, Truck, FieldGun, SpGun, Launcher, AirDefense, Heli, Fighter, Bomber, Drone, Swarm, Mortar }
 
@@ -37,6 +37,12 @@ namespace SE.Runtime.Military
         /// <summary>High-contrast markers (accessibility): stronger ownership rings and fully saturated strategic markers.</summary>
         public bool HighContrast;
         public int Drawn { get; private set; }
+
+        /// <summary>A strategic badge: where it is (map), how many units it stands for, their role and owner.</summary>
+        public struct Badge { public float3 MapPos; public int Count, Category, Owner; }
+        /// <summary>This frame's strategic badges (empty at closer zoom), for the count labels.</summary>
+        public readonly List<Badge> Badges = new List<Badge>();
+        readonly Dictionary<long, int> badgeIndex = new Dictionary<long, int>();
         public int Instances { get; private set; }
         /// <summary>Last frame's cost by phase (diagnostics and stall attribution).</summary>
         public double PositionsMs, BuildMs, UploadMs;
@@ -48,7 +54,7 @@ namespace SE.Runtime.Military
             Mesh[] meshes =
             {
                 MeshKit.Soldier, MeshKit.TankHull, MeshKit.TankTurret, MeshKit.Apc, MeshKit.Truck, MeshKit.Car, MeshKit.Buggy, MeshKit.Gun,
-                MeshKit.Rocket, MeshKit.Mech, MeshKit.Fighter, MeshKit.Bomber, MeshKit.HeliBody, MeshKit.Rotor, MeshKit.Drone, MeshKit.Marker, MeshKit.Ring, MeshKit.AutoTankHull, MeshKit.AutoTankTurret,
+                MeshKit.Rocket, MeshKit.Mech, MeshKit.Fighter, MeshKit.Bomber, MeshKit.HeliBody, MeshKit.Rotor, MeshKit.Drone, MeshKit.Marker, MeshKit.Ring, MeshKit.AutoTankHull, MeshKit.AutoTankTurret, MeshKit.Box, MeshKit.Disc,
             };
             for (int i = 0; i < batches.Length; i++)
             {
@@ -60,6 +66,8 @@ namespace SE.Runtime.Military
             }
             batches[(int)Model.Ring].Shadows = ShadowCastingMode.Off;
             batches[(int)Model.Marker].Shadows = ShadowCastingMode.Off;
+            batches[(int)Model.Plate].Shadows = ShadowCastingMode.Off;
+            batches[(int)Model.Disc].Shadows = ShadowCastingMode.Off;
         }
 
         static Kind Classify(string type)
@@ -141,6 +149,7 @@ namespace SE.Runtime.Military
         {
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (var b in batches) b.Clear();
+            Badges.Clear(); badgeIndex.Clear();
             if (!world.Ready) return;
             var grid = world.Grid;
             var view = world.View;
@@ -211,10 +220,35 @@ namespace SE.Runtime.Military
                         HighContrast ? new float4(math.saturate(team.xyz * 1.6f), 0.9f) : new float4(team.xyz, 0.22f)));
                 if (level == 0)
                 {
-                    // strategic: one readable marker per unit, air units above the ground
-                    float alt = IsAir(kind) ? 1.2f : 0.05f;
-                    var mc = HighContrast ? new float4(math.saturate(team.xyz * 1.6f), 0.8f) : new float4(team.xyz, IsAir(kind) ? 0.35f : 0.15f);
-                    batches[(int)Model.Marker].Add(T(p + new float3(0, alt, 0), yaw[s], new float3(markerScale, markerScale * (kind == Kind.Infantry ? 0.6f : 1f), markerScale), mc));
+                    // strategic (bible §29): one badge per type of unit on a hex, shaped by role (circle:
+                    // infantry, rectangle: vehicles, diamond: aircraft) with a dark rim so shape, not
+                    // colour alone, tells them apart; units of one kind sharing a hex merge into one
+                    // badge whose count the interface prints beside it
+                    int cat = IsAir(kind) ? 2 : kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo ? 0 : 1;
+                    long key = ((long)u.Owner << 40) | ((long)Math.Max(0, tile) << 2) | (uint)cat;
+                    if (badgeIndex.TryGetValue(key, out int bi)) { var bd = Badges[bi]; bd.Count++; Badges[bi] = bd; continue; }
+                    float alt = cat == 2 ? 1.2f : 0.05f;
+                    var mc = HighContrast ? new float4(math.saturate(team.xyz * 1.6f), 0.8f) : new float4(team.xyz, cat == 2 ? 0.35f : 0.2f);
+                    var rim = new float4(team.xyz * 0.25f, 0f);
+                    float m = markerScale;
+                    var bp = p + new float3(0, alt, 0);
+                    switch (cat)
+                    {
+                        case 0:
+                            batches[(int)Model.Disc].Add(T(bp, 0, new float3(m * 1.5f, 1f, m * 1.5f), rim));
+                            batches[(int)Model.Disc].Add(T(bp + new float3(0, 0.01f, 0), 0, new float3(m * 1.2f, 1f, m * 1.2f), mc));
+                            break;
+                        case 1:
+                            batches[(int)Model.Plate].Add(T(bp, 0, new float3(m * 1.7f, m * 0.08f, m * 1.15f), rim));
+                            batches[(int)Model.Plate].Add(T(bp + new float3(0, m * 0.04f, 0), 0, new float3(m * 1.45f, m * 0.08f, m * 0.92f), mc));
+                            break;
+                        default:
+                            batches[(int)Model.Plate].Add(T(bp, 0.785f, new float3(m * 1.3f, m * 0.08f, m * 1.3f), rim));
+                            batches[(int)Model.Plate].Add(T(bp + new float3(0, m * 0.04f, 0), 0.785f, new float3(m * 1.05f, m * 0.08f, m * 1.05f), mc));
+                            break;
+                    }
+                    badgeIndex[key] = Badges.Count;
+                    Badges.Add(new Badge { MapPos = bp, Count = 1, Category = cat, Owner = u.Owner });
                     continue;
                 }
                 float sc = vehicleScale;

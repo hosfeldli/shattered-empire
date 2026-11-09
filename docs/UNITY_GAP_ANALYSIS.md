@@ -165,3 +165,27 @@ damage bands, alerts, search, settings and observer controls) is built and teste
 5. **More Map Lenses:** resources, supply and threat. A workforce and staffing panel.
 6. **Separate benchmark scenes** (city, megacity, 100/500/1,000/2,000 battles, seam crossing,
    save/rejoin, two-hour session) before promoting Unity from "preview".
+## Organic city generation and the visual design bible (received 2026-11-09)
+
+Two further owner documents refine Part II (cities) and every visual area. Status after the 2026-11-09 round (detail in [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 9):
+
+| Requirement | Status |
+| --- | --- |
+| Hierarchical generation: city → district → street → parcel → building → details; persistent seeds | Done (local): district planner, stable hashes, parcel placement |
+| District formation by affinity (function, connection, proximity, history, barriers) | Done (local) |
+| Street hierarchy (primary, secondary, local, service), continuous sidewalks, crossings | Done (local) |
+| Shared district spaces (industrial yards and fences, compounds, estates, campuses, commercial lanes) | Done (local) |
+| Parking by district, stable parked cars, driveways not on every house | Done (local) |
+| Pocket parks from leftover parcels, plazas beside civic buildings, none in young settlements | Done (local) |
+| Historical layers in infill; stable growth (no re-rolls) | Done (local) |
+| Repetition control | Partial: district vocabulary with parcel variance; no explicit similarity penalty yet |
+| Hex skeleton invisible at the street level | Partial: much reduced; visible in fully road-covered districts |
+| Eight-beat intro cinematic with the bible's captions | Done (local) |
+| Main menu, New Campaign, Multiplayer page, Field Guide, loading stages, opening descent | Done (local) |
+| Speed strip, pause menu, Esc order | Done (local) |
+| Placement ghost and cursor card | Done (local) |
+| Strategic badges by role shape with counts; battle-line amber and facing | Done (local) |
+| City card summary | Done (local) |
+| Distinct models for all 32 active buildings | Done (local) for all types that shared a fallback; quality is procedural, not final art |
+| Vegetation and crop sway, irregular craters, forest damage, recovery | Missing |
+| Missile launch workflow, multiplayer lobby screen, construction crews, rigged infantry | Missing |

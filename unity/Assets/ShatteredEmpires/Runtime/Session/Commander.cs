@@ -40,6 +40,8 @@ namespace SE.Runtime.Session
         public bool FeedbackGood;
         public float FeedbackUntil;
         public event Action SelectionChanged;
+        /// <summary>The frame on which the commander used Escape (so the interface doesn't act on it too).</summary>
+        public int EscapeFrame = -1;
 
         // placement state
         readonly HashSet<int> legal = new HashSet<int>();
@@ -94,7 +96,7 @@ namespace SE.Runtime.Session
             else if (mode == Mode.Place) legalReady = false;
         }
 
-        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); }
+        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; }
 
         public bool Dragging(out Rect rect)
         {
@@ -146,8 +148,8 @@ namespace SE.Runtime.Session
             if (!session.Ready) return;
             var mouse = InputFacade.MousePosition;
             hoverTile = pointerOverUi ? -1 : TileUnderCursor();
-            if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
-            if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { Cancel(); return; }
+            if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { EscapeFrame = Time.frameCount; rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
+            if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { EscapeFrame = Time.frameCount; Cancel(); return; }
             switch (Current)
             {
                 case Mode.Select: SelectMode(time, mouse, pointerOverUi); break;
@@ -355,8 +357,25 @@ namespace SE.Runtime.Session
         }
 
         // ------------------------------------------------------------------ building placement
+        /// <summary>The site under the cursor while placing, whether it is legal, and the server's site report (cost, time, reason).</summary>
+        public int PlacementTile => Current == Mode.Place ? hoverTile : -1;
+        public bool PlacementLegal => !legalReady || legal.Contains(hoverTile);
+        public JObject PlacementSite;
+        int siteTile = -1;
+        float siteAt;
+
         void PlaceMode(float time, bool overUi)
         {
+            // ask the server about the site under the cursor (throttled): cost, build time, or why not
+            if (!overUi && hoverTile >= 0 && hoverTile != siteTile && time > siteAt && session.Net != null)
+            {
+                siteTile = hoverTile; siteAt = time + 0.2f;
+                int asked = hoverTile; string type = Option;
+                session.Net.Command(new JObject { ["c"] = "placement", ["type"] = type, ["tile"] = asked }, r =>
+                {
+                    if (asked == siteTile && Current == Mode.Place && Option == type) PlacementSite = r.Raw?["site"] as JObject;
+                });
+            }
             if (overUi) return;
             if (InputFacade.RightDown) { Cancel(); return; }
             if (InputFacade.LeftDown) { path.Clear(); dragging = true; }
@@ -567,10 +586,32 @@ namespace SE.Runtime.Session
                 {
                     var perTile = new Dictionary<int, int>();
                     foreach (JArray s in slots) { int t = (int)s[1]; perTile[t] = perTile.TryGetValue(t, out int n) ? n + 1 : 1; }
+                    // green: a good position; amber: crowded (three or more on one hex, vulnerable to shelling)
                     foreach (var kv in perTile)
                     {
-                        Disc(kv.Key, new float4(0.35f, 0.9f, 0.5f, 0.35f + 0.1f * Mathf.Min(4, kv.Value)));
-                        for (int k = 0; k < Mathf.Min(4, kv.Value); k++) Ring(kv.Key, new float4(0.6f, 1f, 0.7f, 0.8f), 0.35f + k * 0.18f);
+                        bool crowded = kv.Value >= 3;
+                        var fill = crowded ? new float4(0.95f, 0.72f, 0.25f, 0.5f) : new float4(0.35f, 0.9f, 0.5f, 0.35f + 0.1f * Mathf.Min(4, kv.Value));
+                        var ring = crowded ? new float4(1f, 0.8f, 0.35f, 0.85f) : new float4(0.6f, 1f, 0.7f, 0.8f);
+                        Disc(kv.Key, fill);
+                        for (int k = 0; k < Mathf.Min(4, kv.Value); k++) Ring(kv.Key, ring, 0.35f + k * 0.18f);
+                    }
+                    // facing: small markers ahead of the line on the side it will face
+                    if (linePath.Count >= 2)
+                    {
+                        var g2 = session.World.Grid;
+                        int a = linePath[0], b = linePath[linePath.Count - 1];
+                        float dx = g2.DxWrap(g2.CenterX(a), g2.CenterX(b)), dz = g2.CenterZ(b) - g2.CenterZ(a);
+                        float len = Mathf.Max(0.01f, Mathf.Sqrt(dx * dx + dz * dz));
+                        // the server's own facing (map x/z; already turned away from home and flipped if
+                        // asked); before it answers, its default: the drag direction turned left
+                        float fx = dz / len, fz = -dx / len;
+                        if (lineReverse) { fx = -fx; fz = -fz; }
+                        if (linePreview?["facing"] is JArray fa && fa.Count == 2) { fx = (float)fa[0]; fz = (float)fa[1]; float fl = Mathf.Max(0.01f, Mathf.Sqrt(fx * fx + fz * fz)); fx /= fl; fz /= fl; }
+                        foreach (var kv in perTile)
+                        {
+                            float x = g2.CenterX(kv.Key) + fx * 0.7f, z = g2.CenterZ(kv.Key) + fz * 0.7f;
+                            rings.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + 0.03f, z)), 0, new float3(0.18f), new float4(1f, 1f, 0.9f, 0.9f)));
+                        }
                     }
                 }
                 if (linePreview?["invalid"] is JArray bad) foreach (var t in bad) Disc((int)t, new float4(0.95f, 0.3f, 0.25f, 0.55f));

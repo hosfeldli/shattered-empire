@@ -180,11 +180,16 @@
 .highlight { position: absolute; border-width: 3px; border-color: rgb(244, 196, 90); border-radius: 6px; }
 
 /* menu */
-.menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: center; justify-content: center; background-color: rgba(4, 7, 8, 0.35); }
-.menu-box { width: 470px; padding: 26px 28px; }
+/* the title upper left over the living world (bible §6) */
+.menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: flex-start; justify-content: flex-start; padding: 6% 0 0 5%; background-color: rgba(4, 7, 8, 0.12); }
+.menu-box { width: 440px; padding: 24px 26px; }
 .menu-title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 60px; color: rgb(244, 232, 202); -unity-text-align: middle-center; margin-bottom: 2px; letter-spacing: 6px; }
 .menu-sub { -unity-text-align: middle-center; color: rgb(188, 174, 138); margin-bottom: 20px; font-size: 15px; letter-spacing: 1px; }
-.menu .btn { height: 40px; font-size: 16px; margin: 3px 0; }
+.menu .btn { height: 36px; font-size: 15px; margin: 2px 0; }
+.btn.menu-item { -unity-text-align: middle-left; padding-left: 14px; letter-spacing: 1.2px; transition-duration: 0.15s; }
+.btn.menu-item:hover { padding-left: 20px; border-left-width: 3px; border-left-color: rgb(236, 196, 110); }
+.menu-help { margin-top: 10px; min-height: 36px; font-size: 13px; color: rgb(200, 188, 156); white-space: normal; }
+.menu-version { position: absolute; left: 16px; bottom: 12px; font-size: 11px; color: rgba(220, 214, 196, 0.55); }
 .field { background-color: rgba(0, 0, 0, 0.4); border-color: rgba(255, 255, 255, 0.1); border-width: 1px; border-radius: 4px; color: rgb(234, 226, 206); margin: 2px 0; }
 
 /* cinematic */
@@ -192,3 +197,38 @@
 .caption { position: absolute; left: 12%; right: 12%; bottom: 17%; -unity-text-align: middle-center; -unity-font: resource("Fonts/CormorantGaramond"); font-size: 34px; color: rgb(240, 232, 214); white-space: normal; }
 .skip { position: absolute; right: 22px; bottom: 14px; font-size: 13px; color: rgb(170, 170, 160); }
 .fade { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background-color: rgb(0, 0, 0); }
+
+/* loading: real stages over the world (bible §8) */
+.loading { position: absolute; left: 50%; bottom: 14%; width: 420px; translate: -50% 0; padding: 16px 20px; }
+.loading-title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 26px; letter-spacing: 4px; color: rgb(242, 230, 198); margin-bottom: 8px; -unity-text-align: middle-center; }
+.loading-step { font-size: 13px; color: rgba(200, 200, 190, 0.45); padding: 2px 0; }
+.loading-step.done { color: rgb(142, 212, 132); }
+.loading-step.current { color: rgb(242, 222, 170); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+.loading-bar { height: 3px; margin-top: 10px; background-color: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.loading-bar-run { width: 30%; height: 100%; background-color: rgb(214, 170, 82); }
+
+/* the opening descent's title card (bible §9) */
+.title-card { position: absolute; left: 0; right: 0; top: 30%; align-items: center; }
+.title-card-main { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 40px; letter-spacing: 3px; color: rgb(244, 234, 210); }
+.title-card-sub { font-size: 16px; letter-spacing: 2px; color: rgb(214, 200, 164); margin-top: 4px; }
+
+/* game speed and the pause menu (bible §26, §33) */
+.speed-strip { position: absolute; right: 12px; top: 52px; flex-direction: row; padding: 3px; transition-property: opacity; transition-duration: 0.6s; }
+.speed-strip .btn { min-width: 36px; height: 28px; padding: 0 8px; }
+.topbar, .rail { transition-property: opacity; transition-duration: 0.6s; }
+.pause-menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: center; justify-content: center; background-color: rgba(4, 7, 8, 0.45); }
+.pause-menu .menu-box { width: 340px; }
+
+/* placement card beside the cursor (bible §28) */
+.place-card { position: absolute; width: 260px; padding: 8px 10px; }
+
+/* strategic badge counts (bible §29) */
+.badge-count {
+    position: absolute; font-size: 12px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: rgb(246, 240, 224);
+    background-color: rgba(10, 15, 17, 0.75); border-radius: 7px; padding: 0 5px; min-width: 14px; -unity-text-align: middle-center;
+}
+
+/* city card summary (bible §31) */
+.city-facts { flex-direction: row; flex-wrap: wrap; margin: 6px 0; }
+.city-fact { width: 25%; padding-right: 8px; }
+.fact-value { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; }

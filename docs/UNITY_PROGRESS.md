@@ -314,3 +314,114 @@ Stress benchmark ([report](benchmarks/unity-stress-2026-11-08-spec-batch.json)):
 
 - Live play with a person: battle-line feel, rebinding and the observe tab against a real server.
 - Server deployment of the preview and era changes. The live server is still `6ecd9d3`, so a client built from this batch would get no line preview from the live server, and no building eras until it is redeployed.
+
+## 9. Organic cities and the visual design bible (2026-11-09, built and verified locally, not deployed)
+
+Built against two further owner documents: *Organic City & District Generation* and the *Complete Visual Design Bible*.
+
+### City composition engine
+
+- **District planner** (`Cities/DistrictPlanner.cs`): neighbouring buildings join districts by the document's affinity score, A = wF·F + wR·R + wN·N + wH·H − wB·B:
+  - F: function compatibility.
+  - R: a street connecting them.
+  - N: proximity.
+  - H: shared era.
+  - B: a river or water between them with no crossing.
+  - Each district is named after its oldest building, with a stable hash seed, so adding a house extends a neighbourhood instead of re-rolling it.
+  - Developed hexes without a building join the district most of their neighbours belong to.
+  - Only hexes whose district relationships changed are recomposed.
+- **Parcels and streets:**
+  - A built hex's building sits on the widest street-free side, scaled to the room it has and facing the streets.
+  - The hex's junction moves to the street side, so streets pass the building instead of crossing or ringing it.
+  - Traffic follows the same geometry.
+- **Street hierarchy:**
+  - Primary streets: wide, with centre lines.
+  - Industrial service roads: pale concrete with yellow edge lines, no sidewalks.
+  - Residential and commercial streets: kerbs and continuous sidewalks, patchy in older neighbourhoods.
+  - Country lanes: gravel with shoulders.
+  - Pedestrian crossings at busy town junctions.
+- **Railways and bridges:** railways get ballast, sleepers and rails; bridges get railings and abutments.
+- **District vocabulary:** each district has a wall-material and roof family (terracotta, slate or weathered brown, and so on); buildings vary within it (60% district, 40% parcel).
+- **Shared district spaces,** drawn once per pair of neighbours:
+  - Industry and energy: paved service yards, pipe racks, container stacks, and one perimeter fence round the works with gates where streets enter.
+  - Military: one compound wall, a shared parade ground and the motor pool. Barracks in a compound drop their own walls.
+  - Farms: estates whose fields all run one way, joined by farm tracks, with one farmstead at the oldest farm.
+  - Campus: lawns and paths.
+  - Commerce: pedestrian lanes with benches.
+  - Homes: footpaths and small groups of street trees.
+- **Parking by district,** with stable spots and occupancy:
+  - Homes: driveways, often with a car (not every house has one). Apartments: a shared rear lot.
+  - Shops: a compact rear lot and curbside cars.
+  - Industry: employee parking kept apart from the truck yard.
+  - Military: motor pools. Institutions: visitor spaces.
+- **Infill:**
+  - It follows the district: commercial districts get shopfronts with awnings and signs; industrial districts get workshops and yards.
+  - Historical layers: most infill keeps the district's era, some is newer.
+  - Parks appear where the document says (leftover interior blocks; plazas beside civic buildings), rarely otherwise, and never in a young settlement.
+- **Building catalogue:** distinct models replace the shared fallbacks:
+  - Steel mill: furnace hall and glow, blast furnace, stacks, ore yard.
+  - Refinery: distillation columns, tank farm, flare.
+  - Munitions plant: halls separated by blast berms, an earth-covered magazine.
+  - Motor works: roller doors, dispatch yard.
+  - Heavy assembly: high hall, gantry crane.
+  - Electronics plant: clean walls, glazing, rooftop air handling, solar.
+  - Drone works: twin hangars, launch pads, radar.
+  - Robotics complex: skylit hall, robot arms.
+  - Mine: headframe and winding wheel.
+  - Quarry: terraced benches, crusher.
+  - Salvage yard: wreck stacks, crane, fence.
+  - Timber mill: saw shed, log decks.
+  - Oil well: pumpjack.
+  - Shield generator: emitter, four pylons, operating ring.
+  - Communications tower: lattice mast with beacon.
+  - Missile silo: armoured doors, warning light, perimeter.
+  - Fortress: stepped command block, casemates, berms.
+- **Placement ghost:** the building being placed is drawn at the cursor from the same recipe and parcel it will have, tinted green or red. A card beside the cursor shows cost, build time and the server's refusal reason.
+- **Composition budget:** city composition is limited to 5 ms per frame (it was six cells per frame).
+
+### Presentation
+
+- **Intro:** rewritten to the bible's eight beats with its captions:
+  - Shots 1–4 are one city: alive at dusk; three trails, blasts and a shock; ruined under ash; overgrown as the light returns.
+  - Then the valley settlement, the rival's tank column, the silent silo with its beacon, and the dawn title.
+  - Space, Enter or Esc skips.
+- **Main menu:**
+  - Title upper left over the living world, the bible's ten items, a one-line explanation on hover.
+  - Continue shows the saved match; version and build in the corner.
+- **New Campaign:** world type (four styles), map size, rivals (1–5), difficulty (Relaxed–Brutal, with descriptions), nation name and seed. All are real server options.
+- **Multiplayer page:** host, join, spectate, server choice.
+- **Field Guide:** searchable, in the menu and in the game.
+- **Loading:** real stages (connecting, generating, synchronising, building the landscape, entering), with no invented percentages.
+- **Opening descent:** from 230 units down to the capital, waiting honestly for the landscape to finish building. A title card shows the era and "Year One" over the nation's name, then the interface fades in. Any key or click skips.
+- **In-game controls:**
+  - Speed strip: pause, 1×, 2×, 4× (spectators: 0–8×).
+  - Pause menu: Resume, Save, Settings, Controls, Return to menu, Quit.
+  - Esc closes the innermost thing first.
+- **Strategic badges:** shaped by role (circle infantry, rectangle vehicles, diamond aircraft) with a dark rim, so shape as well as colour carries the information. Units of one type on a hex merge into one badge with a count label.
+- **Battle-line preview:**
+  - Crowded hexes show amber.
+  - Facing markers use the server's own facing vector.
+- **City card summary:** tier and condition, population, housing used, development focus, mayor, the current plan with a progress bar, and the limiting factor in plain words.
+
+### Verification
+
+- **Unity:** clean compile; EditMode tests 6/6.
+- **Server:** 195/197; the two failures are the pre-existing macOS-only tests.
+- **Stress benchmark** ([report](benchmarks/unity-stress-2026-11-09-city-design.json)): 168–254 fps, p99 ≤ 12.1 ms, no frames over 50 ms (worst 29 ms).
+
+**Not run: the standalone .NET checks.** Windows Application Control blocked the newly compiled check program on this PC, and I did not change that security policy. The core library they cover did not change in this round.
+
+### Known issues
+
+- **Street skeleton:** in the stress world every hex edge carries a road, so the street network still shows its hexagonal skeleton (much less than the earlier rings or bubbles). Real cities have far fewer roads. Check it in a played city.
+- **Not exercised in play:**
+  - the intro, the menu pages, the campaign start and descent, the pause menu;
+  - the placement ghost and its card;
+  - badges in a live match.
+- **Still open from the bible:**
+  - tree and crop sway;
+  - irregular crater meshes and forest damage;
+  - a missile launch and targeting workflow;
+  - the multiplayer lobby screen;
+  - work crews on construction sites;
+  - rigged infantry animation.

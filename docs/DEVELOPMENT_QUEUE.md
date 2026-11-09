@@ -164,3 +164,18 @@ it, built and tested locally, not yet deployed (see [UNITY_PROGRESS.md](UNITY_PR
 | [~] | Historical continuity: buildings keep the era they were built in | server + unity | M4 |
 | [~] | Five-stage construction, damage bands, upgrade-level extensions for every building kind | unity | M4 |
 | [~] | Alerts by severity with Go buttons, battle result cards, research and build search, accessibility settings, observer controls | unity | M6 |
+
+## 13. Organic cities and the visual design bible (2026-11-09)
+
+Built and tested locally, not deployed (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 9).
+
+| | Item | Where | Milestone |
+| --- | --- | --- | --- |
+| [~] | District planner: affinity-based districts, stable seeds, parcels, local recomposition | unity | M4 |
+| [~] | Street hierarchy, sidewalks, crossings, railways, bridge railings and abutments | unity | M4 |
+| [~] | Shared district spaces, parking by district, estates, compounds, campuses, pocket parks | unity | M4 |
+| [~] | Distinct models for every building type that shared a generic look | unity | M4 |
+| [~] | Eight-beat intro, main menu, New Campaign, Field Guide, loading stages, opening descent | unity | M6–M7 |
+| [~] | Speed strip, pause menu, placement ghost, strategic badges, city card summary | unity | M5–M6 |
+| [ ] | Vegetation and crop sway, irregular craters, forest damage and recovery | unity | M7 |
+| [ ] | Missile launch and targeting workflow, multiplayer lobby screen, construction crews | unity | M6–M7 |

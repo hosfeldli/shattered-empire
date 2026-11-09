@@ -264,7 +264,8 @@ namespace SE.Runtime.App
             phase = Phase.Connecting;
             fog.Enabled = true;
             rts.PitchOverride = -1f;
-            hud?.ShowMenu(true, "Connecting to " + serverUrl + "…");
+            hud?.ShowMenu(false, null);
+            hud?.ShowLoading(0);
             battleKey = opts.Get("battle", mode == "sandbox" ? "massive" : "");
             perfZooms = opts.Floats("perf-zooms", 14f, 40f);
             perfSeconds = opts.Float("perf", 0);
@@ -283,6 +284,15 @@ namespace SE.Runtime.App
                 var msg = new JObject { ["t"] = "create", ["mode"] = mode, ["name"] = playerName, ["ruleset"] = "native-v4", ["ais"] = mode == "observe" ? 3 : 1 };
                 if (opts.Has("seed")) msg["seed"] = opts.Int("seed", 0);
                 if (opts.Has("map")) msg["mapSize"] = opts.Get("map");
+                // the New Campaign screen's choices (server options: style, mapSize, ais, difficulty, seed)
+                if (pendingCampaign != null && mode == "ai")
+                {
+                    var c = pendingCampaign;
+                    msg["style"] = c.Style; msg["mapSize"] = c.MapSize; msg["ais"] = c.Rivals; msg["difficulty"] = c.Difficulty;
+                    if (int.TryParse(c.Seed, out int s)) msg["seed"] = s;
+                    msg["title"] = c.Tutorial ? "Tutorial" : $"{playerName} · {c.Style}";
+                }
+                pendingCampaign = null;
                 if (opts.Has("perf") || opts.Has("bench"))
                     msg["rivals"] = new JArray(new JObject { ["personality"] = "warlord" }, new JObject { ["personality"] = "merchant" }, new JObject { ["personality"] = "builder" });
                 net.Send(msg);
@@ -305,9 +315,12 @@ namespace SE.Runtime.App
             units.Selected.Clear();
             commander.Cancel();
             if (phase != Phase.Playing) return;
-            rts.UserControl = true;
             hud?.ShowMenu(false, null);
-            hud?.ShowGame(true);
+            // a new match opens with the descent onto the capital (visual design bible §9); a sandbox,
+            // a benchmark or a spectator starts straight away
+            bool descend = pendingMode != "rejoin-same" && session.Welcome.Start >= 0 && !session.Welcome.Sandbox && !session.Spectator && !perfRunning && !opts.Has("perf");
+            if (descend) BeginDescent();
+            else { rts.UserControl = true; hud?.ShowGame(true); hud?.ShowLoading(-1); }
             if (net != null)
             {
                 PlayerPrefs.SetString("se.match", net.SessionMatch ?? "");
@@ -315,9 +328,79 @@ namespace SE.Runtime.App
                 PlayerPrefs.Save();
             }
             // a rejoin of the same match keeps the camera where it was; a new match starts at home
-            if (session.Welcome.Start >= 0 && pendingMode != "rejoin-same") rts.FocusTile(session.Welcome.Start, 30f);
+            if (session.Welcome.Start >= 0 && pendingMode != "rejoin-same" && !descend) rts.FocusTile(session.Welcome.Start, 30f);
             pendingMode = "rejoin-same";
             if (!string.IsNullOrEmpty(battleKey) && session.Welcome.Sandbox && arena < 0) StageBattle();
+        }
+
+        // ------------------------------------------------------------------ campaign start, loading and the descent
+        CampaignOptions pendingCampaign;
+
+        public void StartCampaign(CampaignOptions options)
+        {
+            pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty, Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial };
+            StartMatch("ai", "");
+        }
+
+        /// <summary>
+        /// Loading stages, reported honestly (bible §8): each lights when that work has really happened,
+        /// never a fabricated percentage.
+        /// </summary>
+        int LoadingStage()
+        {
+            if (net == null || net.State != GameConnection.Status.Ready) return 0;          // connecting
+            if (!session.Ready || session.Welcome == null) return 1;                          // the server generates the world
+            if (session.GeoMessages == 0 || session.Snapshots < 2) return 2;                  // synchronising terrain and state
+            if (terrain.DirtyCount > 0) return 3;                                             // building the landscape
+            return 4;                                                                         // entering the match
+        }
+
+        float descentT = -1f;
+        Vector3 descentTarget;
+
+        void BeginDescent()
+        {
+            int start = session.Welcome.Start;
+            var g = session.World.Grid;
+            descentTarget = new Vector3(g.CenterX(start), 0, g.CenterZ(start));
+            rts.UserControl = false;
+            rts.Focus = descentTarget + new Vector3(0, 0, 6f);
+            rts.Distance = rts.TargetDistance = 230f;
+            rts.Apply();
+            descentT = 0f;
+            hud?.ShowGame(false);
+            string eraName = ProtocolDecoder.Str((session.Defs?["AGES"] as JArray)?[0]?["name"], "The Reclamation");
+            string nation = "";
+            foreach (var c in session.Welcome.Civs) if (c.Id == session.CivId) nation = c.Name;
+            hud?.ShowTitleCard($"{eraName} · Year One", nation);
+        }
+
+        /// <summary>
+        /// The opening descent: the continent from high above, a smooth fall toward the capital while the
+        /// landscape builds, the camera settling at the gameplay angle, then the interface enters.
+        /// It waits (honestly) while the terrain is still being built, and any key or click ends it.
+        /// </summary>
+        void StepDescent(float dt)
+        {
+            if (descentT < 0) return;
+            bool ready = LoadingStage() >= 4;
+            hud?.ShowLoading(ready ? -1 : LoadingStage());
+            if (ready) descentT += dt;
+            float u = Mathf.Clamp01(descentT / 6.5f), e = Mathf.SmoothStep(0, 1, u);
+            rts.Focus = Vector3.Lerp(descentTarget + new Vector3(0, 0, 6f), descentTarget, e);
+            rts.Distance = rts.TargetDistance = Mathf.Lerp(230f, 30f, e * e * (3f - 2f * e));
+            rts.Yaw = Mathf.Lerp(-12f, 0f, e);
+            rts.Apply();
+            hud?.TitleCardOpacity(Mathf.Clamp01(u * 4f) * Mathf.Clamp01((1f - u) * 3f));
+            bool skip = ready && descentT > 0.3f && (InputFacade.LeftDown || InputFacade.Pressed(KeyCode.Escape) || InputFacade.Pressed(KeyCode.Space));
+            if (u >= 1f || skip)
+            {
+                descentT = -1f;
+                rts.Focus = descentTarget; rts.Distance = rts.TargetDistance = 30f; rts.Yaw = 0f; rts.Apply();
+                rts.UserControl = true;
+                hud?.TitleCardOpacity(0f);
+                hud?.ShowGame(true);
+            }
         }
 
         void OnOther(ServerMessage m)
@@ -451,6 +534,8 @@ namespace SE.Runtime.App
             net?.Update(4.0);
             stallNet = Ms(tn); stallMsgs = session.Snapshots + session.GeoMessages - before;
             if (phase == Phase.Connecting && net != null && net.State == GameConnection.Status.Retrying) hud?.ShowMenu(true, "Cannot reach " + serverUrl + "; retrying…");
+            else if (phase == Phase.Connecting && !(hud?.MenuVisible ?? true)) hud?.ShowLoading(LoadingStage());
+            StepDescent(dt);
             if (phase == Phase.Playing) SocialPlatform.Current.Tick();
             if (stress != null) StepStress(dt);
             intro?.Update(dt);
@@ -507,6 +592,9 @@ namespace SE.Runtime.App
             Mark(2, ref tq);
             city.Age = session.Age;
             city.Update(camMap, terrain);
+            // the building being placed, drawn where it would stand (green: allowed, red: not)
+            if (phase == Phase.Playing && commander.PlacementTile >= 0) city.SetGhost(commander.Option, commander.PlacementTile, session.CivId, commander.PlacementLegal && (commander.PlacementSite == null || ProtocolDecoder.Bool(commander.PlacementSite["valid"], true)));
+            else city.ClearGhost();
             Mark(3, ref tq);
             warzone.Update(session.Trenches, session.TrenchRevision, session.Battlefield, session.BattlefieldRevision, DefenceSignature(), ground.IsWasteland);
             Mark(4, ref tq);
@@ -517,6 +605,7 @@ namespace SE.Runtime.App
             var cam = rts.Cam;
             float camX = cam.transform.position.x;
             units.Update(session.Units, world, session.CivColor, camX, rts.Distance, time, dt);
+            hud?.BadgeCounts(units.Badges, p => rts.ToScreen(new Vector3(p.x, p.y, p.z)));
             stallUnits = Ms(ts);
             Mark(6, ref tq);
             atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);

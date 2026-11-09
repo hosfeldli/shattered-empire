@@ -10,6 +10,14 @@ using UnityEngine.UIElements;
 namespace SE.Runtime.UI
 {
     /// <summary>What the interface asks the game to do (implemented by the bootstrap).</summary>
+    /// <summary>What the New Campaign screen chose (server match options: world style, size, rivals, difficulty, seed).</summary>
+    public sealed class CampaignOptions
+    {
+        public string Style = "continents", MapSize = "medium", Difficulty = "normal", Seed = "";
+        public int Rivals = 2;
+        public bool Tutorial;
+    }
+
     public interface IGameActions
     {
         void StartMatch(string mode, string match);
@@ -19,6 +27,7 @@ namespace SE.Runtime.UI
         void FocusTile(int tile, float distance);
         void ApplyQuality(string preset);
         void ApplyUiScale(float scale);
+        void StartCampaign(CampaignOptions options);
         void InviteFriends();
         bool CanInvite { get; }
         string Server { get; set; }
@@ -208,6 +217,15 @@ namespace SE.Runtime.UI
         {
             var d = on ? DisplayStyle.Flex : DisplayStyle.None;
             topbar.style.display = d; rail.style.display = d; feed.style.display = d;
+            EnsureSpeedStrip(); speedStrip.style.display = d;
+            if (!on) { pauseMenu?.RemoveFromHierarchy(); pauseMenu = null; }
+            if (on)
+                foreach (var el in new[] { topbar, rail, speedStrip })
+                {
+                    // the interface enters gradually instead of snapping over the world
+                    el.style.opacity = 0;
+                    var e2 = el; e2.schedule.Execute(() => e2.style.opacity = 1).StartingIn(60);
+                }
             Map.style.display = on && MinimapLens ? DisplayStyle.Flex : DisplayStyle.None;
             if (!on) { panel.style.display = DisplayStyle.None; card.style.display = DisplayStyle.None; coach.style.display = DisplayStyle.None; }
             else if (PlayerPrefs.GetInt("se.tutorial.done", 0) == 0 && !session.Spectator) { tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }
@@ -217,35 +235,384 @@ namespace SE.Runtime.UI
         TextField serverField, nameField, codeField;
         Label menuStatus;
 
+        /// <summary>
+        /// The main menu (visual design bible §6): the title upper left over the living world, a compact
+        /// translucent list beneath it, a one-line explanation for the item under the mouse, version and
+        /// build information in the corner. New Campaign, Multiplayer and the Field Guide open their own
+        /// pages in the same panel; the world stays visible behind everything.
+        /// </summary>
         void BuildMenu()
         {
-            var box = El("menu-box glass", menu);
-            L("SHATTERED EMPIRES", "menu-title", box);
-            L("Rebuild a civilization on a shattered world", "menu-sub", box);
-            B("Campaign against the AI", () => game.StartMatch("ai", ""), box, null, "primary");
-            B("Watch AI empires", () => game.StartMatch("observe", ""), box);
-            B("Return to my last match", () => game.StartMatch("rejoin", ""), box);
-            B("Combat sandbox (1,000 units)", () => game.StartMatch("sandbox", ""), box);
-            var join = El("row", box);
+            menuBox = El("menu-box glass", menu);
+            var foot = L($"Version {Application.version} · Unity {Application.unityVersion} · Windows / macOS", "menu-version", menu);
+            foot.pickingMode = PickingMode.Ignore;
+            MenuPage("main");
+        }
+
+        VisualElement menuBox;
+        Label menuHelp;
+        string menuPage = "main";
+
+        static readonly (string id, string label, string help)[] MenuItems =
+        {
+            ("continue", "Continue", "Return to your last match where you left it."),
+            ("campaign", "New Campaign", "Generate a new world and build a nation against AI rivals."),
+            ("tutorial", "Tutorial", "A quiet small match with one forgiving rival, guided step by step."),
+            ("multiplayer", "Multiplayer", "Host a match for friends or join one with its code."),
+            ("observe", "Watch AI Match", "Watch AI nations develop and fight; follow any of them."),
+            ("sandbox", "Combat Sandbox", "Stage a large battle at once and try tactics."),
+            ("guide", "Field Guide", "How the game works: concepts, controls, units and buildings."),
+            ("settings", "Settings", "Graphics, sound, accessibility and controls."),
+            ("intro", "Watch Intro", "The story of the world before, and after."),
+            ("quit", "Quit", "Close the game."),
+        };
+
+        void MenuPage(string page)
+        {
+            menuPage = page;
+            menuBox.Clear();
+            var title = L("SHATTERED EMPIRES", "menu-title", menuBox);
+            title.style.unityTextAlign = TextAnchor.MiddleLeft;
+            var sub = L("Rebuild civilization. Command its future.", "menu-sub", menuBox);
+            sub.style.unityTextAlign = TextAnchor.MiddleLeft;
+            switch (page)
+            {
+                case "campaign": CampaignPage(); break;
+                case "multiplayer": MultiplayerPage(); break;
+                case "guide": GuidePage(menuBox, true); break;
+                case "settings": var holder = El(null, menuBox); var keep = panel; panel = holder; SettingsPanel(); panel = keep; B("Back", () => MenuPage("main"), menuBox); break;
+                default: MainPage(); break;
+            }
+            menuStatus = L(menuStatus?.text ?? "", "muted small", menuBox); menuStatus.style.whiteSpace = WhiteSpace.Normal;
+        }
+
+        void MainPage()
+        {
+            string match = PlayerPrefs.GetString("se.match", "");
+            foreach (var (id, label, help) in MenuItems)
+            {
+                string action = id;
+                string text = label;
+                bool enabled = true;
+                if (id == "continue")
+                {
+                    enabled = match != "";
+                    text = enabled ? $"Continue · match {match}" : "Continue";
+                }
+                var b = B(text, () => MenuAction(action), menuBox, null, id == "campaign" || (id == "continue" && enabled) ? "primary menu-item" : "menu-item");
+                b.SetEnabled(enabled);
+                string why = id == "continue" && !enabled ? "No saved match yet: start a New Campaign." : help;
+                b.RegisterCallback<PointerEnterEvent>(e => { if (menuHelp != null) menuHelp.text = why; });
+            }
+            menuHelp = L("Rebuild a civilization on a shattered world.", "menu-help", menuBox);
+        }
+
+        void MenuAction(string id)
+        {
+            switch (id)
+            {
+                case "continue": game.StartMatch("rejoin", ""); break;
+                case "campaign": MenuPage("campaign"); break;
+                case "tutorial":
+                    PlayerPrefs.SetInt("se.tutorial.done", 0);
+                    game.StartCampaign(new CampaignOptions { MapSize = "small", Rivals = 1, Difficulty = "easy", Tutorial = true });
+                    break;
+                case "multiplayer": MenuPage("multiplayer"); break;
+                case "observe": game.StartMatch("observe", ""); break;
+                case "sandbox": game.StartMatch("sandbox", ""); break;
+                case "guide": MenuPage("guide"); break;
+                case "settings": MenuPage("settings"); break;
+                case "intro": game.PlayIntro(); break;
+                case "quit": game.Quit(); break;
+            }
+        }
+
+        // ------------------------------------------------------------------ new campaign (bible §7)
+        readonly CampaignOptions campaign = new CampaignOptions();
+
+        void CampaignPage()
+        {
+            L("New Campaign", "heading", menuBox);
+            // world type: the four established generators
+            L("World", "muted small", menuBox);
+            var types = El("row wrap", menuBox);
+            foreach (var (id, label) in new[] { ("continents", "Continents"), ("pangaea", "Pangaea"), ("archipelago", "Archipelago"), ("inlandSea", "Inland Sea") })
+            {
+                string v = id;
+                B(label, () => { campaign.Style = v; MenuPage("campaign"); }, types).EnableInClassList("selected", campaign.Style == id);
+            }
+            L("Map size", "muted small", menuBox);
+            var sizes = El("row", menuBox);
+            foreach (var (id, label) in new[] { ("small", "Small · 128²"), ("medium", "Medium · 192²"), ("large", "Large · 256²") })
+            {
+                string v = id;
+                B(label, () => { campaign.MapSize = v; MenuPage("campaign"); }, sizes).EnableInClassList("selected", campaign.MapSize == id);
+            }
+            L("Rival nations", "muted small", menuBox);
+            var rivals = El("row", menuBox);
+            for (int n = 1; n <= 5; n++) { int v = n; B(n.ToString(), () => { campaign.Rivals = v; MenuPage("campaign"); }, rivals).EnableInClassList("selected", campaign.Rivals == n); }
+            L("Difficulty", "muted small", menuBox);
+            var diffs = El("row wrap", menuBox);
+            foreach (var (id, label, help) in new[] { ("easy", "Relaxed", "Forgiving reactions, simpler strategy."), ("normal", "Standard", "Coherent economic and military play."), ("hard", "Hard", "Better preparation and counter-composition."),
+                                                      ("expert", "Expert", "Stronger planning, reconnaissance, combined arms."), ("brutal", "Brutal", "Highly optimised strategy (fair rules unless you allow bonuses).") })
+            {
+                string v = id, h = help;
+                var b = B(label, () => { campaign.Difficulty = v; MenuPage("campaign"); }, diffs);
+                b.EnableInClassList("selected", campaign.Difficulty == id);
+                b.tooltip = h;
+            }
+            L(DifficultyHelp(campaign.Difficulty), "muted small", menuBox);
+            L("Nation", "muted small", menuBox);
+            var nation = new TextField { value = game.PlayerName }; nation.AddToClassList("field"); menuBox.Add(nation);
+            nation.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
+            L("Seed (blank for a new world each time)", "muted small", menuBox);
+            var seedRow = El("row", menuBox);
+            var seed = new TextField { value = campaign.Seed }; seed.AddToClassList("field"); seed.AddToClassList("grow"); seedRow.Add(seed);
+            seed.RegisterValueChangedCallback(e => campaign.Seed = e.newValue);
+            B("New seed", () => { campaign.Seed = UnityEngine.Random.Range(1, 999999).ToString(); MenuPage("campaign"); }, seedRow);
+            var go = El("row", menuBox);
+            B("Back", () => MenuPage("main"), go);
+            var start = B("Begin", () => game.StartCampaign(campaign), go, null, "primary grow");
+        }
+
+        static string DifficultyHelp(string d) => d switch
+        {
+            "easy" => "Relaxed: forgiving reactions and simpler strategy.",
+            "hard" => "Hard: better preparation, defence and counter-composition.",
+            "expert" => "Expert: stronger planning, reconnaissance and combined arms.",
+            "brutal" => "Brutal: highly optimised strategy; any numerical bonuses are disclosed.",
+            _ => "Standard: coherent economic and military play.",
+        };
+
+        // ------------------------------------------------------------------ multiplayer
+        void MultiplayerPage()
+        {
+            L("Multiplayer", "heading", menuBox);
+            L("Your name", "muted small", menuBox);
+            nameField = new TextField { value = game.PlayerName }; nameField.AddToClassList("field"); menuBox.Add(nameField);
+            nameField.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
+            B("Host a match for friends", () => game.StartMatch("pvp", ""), menuBox, null, "primary");
+            L("Join with a match code", "muted small", menuBox);
+            var join = El("row", menuBox);
             codeField = new TextField { value = "" }; codeField.AddToClassList("field"); codeField.AddToClassList("grow"); join.Add(codeField);
-            B("Join match code", () => game.StartMatch("join", codeField.value.Trim().ToLowerInvariant()), join);
-            B("Play the intro", () => game.PlayIntro(), box);
-            B("Performance stress scene", () => game.StartStress(), box);
-            L("Server", "muted", box);
-            var srv = El("row", box);
+            B("Join", () => game.StartMatch("join", codeField.value.Trim().ToLowerInvariant()), join);
+            B("Spectate with a code", () => game.StartMatch("spectate", codeField.value.Trim().ToLowerInvariant()), menuBox);
+            L("Server", "muted small", menuBox);
+            var srv = El("row", menuBox);
             serverField = new TextField { value = game.Server }; serverField.AddToClassList("field"); serverField.AddToClassList("grow"); srv.Add(serverField);
             serverField.RegisterValueChangedCallback(e => game.Server = e.newValue);
             B("Public", () => { serverField.value = App.LaunchOptions.PublicServer; }, srv);
             B("Local", () => { serverField.value = App.LaunchOptions.LocalServer; }, srv);
-            L("Name", "muted", box);
-            nameField = new TextField { value = game.PlayerName }; nameField.AddToClassList("field"); box.Add(nameField);
-            nameField.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
-            B("Quit", () => game.Quit(), box);
-            menuStatus = L("", "muted", box); menuStatus.style.whiteSpace = WhiteSpace.Normal;
+            var row = El("row", menuBox);
+            B("Back", () => MenuPage("main"), row);
+            B("Performance stress scene", () => game.StartStress(), row);
+        }
+
+        // ------------------------------------------------------------------ field guide (bible §33)
+        static readonly (string topic, string text)[] Guide =
+        {
+            ("Camera", "W A S D or the arrow keys pan (Shift is faster); the mouse wheel zooms toward the cursor; middle-drag drags the map; Q and E turn. Double-click open ground to centre there; Backspace returns to the previous view; Space jumps to the latest alert."),
+            ("Selecting", "Click a unit, or drag a box. Shift adds to the selection; double-click selects every unit of that type on screen. Ctrl+1–9 stores a group, 1–9 recalls it, and pressing it twice brings the camera there."),
+            ("Orders", "Right-click moves. T then a click attack-moves. H holds, X withdraws. F follows the selection with the camera."),
+            ("Battle lines", "Right-drag across the map to draw a line: you see where every unit will stand before you let go. F flips the facing, Alt makes it an advancing line, Shift queues it after current orders, Esc cancels."),
+            ("Building", "Open Build (B), pick a building and click a highlighted site; drag to place several. Roads, bridges and trenches are drawn as routes. Sites wait for materials if you can't afford them yet."),
+            ("Cities and mayors", "Select a town to see its people, homes and jobs. Guide Growth tells the mayor what to build next and where; the mayor never spends what you reserved for your own projects."),
+            ("Resources", "Hover any resource at the top to see what produces it, what uses it, and what to do when it runs short. Power, people and the next era are always in view."),
+            ("Research", "Open Research (R). Click an available technology to start it, Shift+click to queue it with everything it needs. Search finds technologies by what they unlock; hover one to see where it leads."),
+            ("Eras", "Five eras: Reclamation, Industrial Recovery, Mechanization, Networked Warfare and Advanced Systems. Buildings keep the style of the era they were built in; upgrading brings them up to date."),
+            ("Units", "Infantry (militia, rifle squads, engineers, mortars, special forces, exo infantry), vehicles (scout buggies, armoured cars, tanks, autonomous tanks, field guns, self-propelled artillery, air defence, missile batteries) and aircraft (fighters, bombers, helicopters, drones, strike swarms)."),
+            ("Battlefields", "Fighting leaves its mark: craters, mud, wrecks and ruins stay. Trenches dug into the ground protect infantry; they join the bunkers and forts beside them."),
+            ("Alerts", "Critical alerts interrupt with a banner; important ones appear as small notices with a Go button; everything else is written in the Chronicle (Overview). Concluded battles get a result card."),
+            ("Settings", "Interface scale, reduced motion, screen shake, weather intensity, high-contrast markers, camera speed and every shortcut can be changed in Settings."),
+        };
+
+        void GuidePage(VisualElement into, bool inMenu)
+        {
+            L("Field Guide", "heading", into);
+            var search = new TextField(); search.AddToClassList("field"); search.AddToClassList("search");
+            search.textEdition.placeholder = "Search the guide…";
+            into.Add(search);
+            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 420; into.Add(scroll);
+            var entries = new List<(VisualElement el, string text)>();
+            foreach (var (topic, text) in Guide)
+            {
+                var item = El("list-item", scroll);
+                L(topic, "heading", item);
+                L(text, "small", item).style.whiteSpace = WhiteSpace.Normal;
+                entries.Add((item, (topic + " " + text).ToLowerInvariant()));
+            }
+            search.RegisterValueChangedCallback(e =>
+            {
+                string q = (e.newValue ?? "").Trim().ToLowerInvariant();
+                foreach (var (el, text) in entries) el.style.display = q.Length == 0 || text.Contains(q) ? DisplayStyle.Flex : DisplayStyle.None;
+            });
+            if (inMenu) B("Back", () => MenuPage("main"), into);
+        }
+
+        // ------------------------------------------------------------------ strategic badge counts (bible §29)
+        readonly List<Label> badgeLabels = new List<Label>();
+        VisualElement badgeLayer;
+
+        /// <summary>Counts beside the strategic badges that stand for several units; pooled, never more than 160.</summary>
+        public void BadgeCounts(IList<Military.UnitRenderer.Badge> badges, Func<Unity.Mathematics.float3, Vector3> toScreen)
+        {
+            if (badgeLayer == null) { badgeLayer = El("se-root", root); badgeLayer.pickingMode = PickingMode.Ignore; badgeLayer.SendToBack(); }
+            int used = 0;
+            if (!MenuVisible && root.panel != null)
+                foreach (var b in badges)
+                {
+                    if (b.Count < 2 || used >= 160) continue;
+                    var s = toScreen(b.MapPos);
+                    if (s.z <= 0 || s.x < 0 || s.y < 0 || s.x > Screen.width || s.y > Screen.height) continue;
+                    if (used >= badgeLabels.Count) { var nl = L("", "badge-count", badgeLayer); nl.pickingMode = PickingMode.Ignore; badgeLabels.Add(nl); }
+                    var l = badgeLabels[used++];
+                    var p = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(s.x, Screen.height - s.y));
+                    l.text = b.Count.ToString();
+                    l.style.left = p.x + 8; l.style.top = p.y - 18;
+                    l.style.display = DisplayStyle.Flex;
+                }
+            for (int i = used; i < badgeLabels.Count; i++) badgeLabels[i].style.display = DisplayStyle.None;
+        }
+
+        // ------------------------------------------------------------------ placement card (bible §28)
+        VisualElement placeCard;
+        Label placeName, placeCost, placeWhy;
+        int placeFor = -2;
+
+        /// <summary>A small card beside the cursor while placing: the building, its cost and build time, or why the site is refused.</summary>
+        void PlacementCard()
+        {
+            int tile = commander.PlacementTile;
+            if (tile < 0) { if (placeCard != null) placeCard.style.display = DisplayStyle.None; placeFor = -2; return; }
+            if (placeCard == null)
+            {
+                placeCard = El("place-card glass", root); placeCard.pickingMode = PickingMode.Ignore;
+                placeName = L("", "heading", placeCard); placeCost = L("", "small", placeCard); placeWhy = L("", "small", placeCard);
+                placeWhy.style.whiteSpace = WhiteSpace.Normal;
+            }
+            var site = commander.PlacementSite;
+            int key = tile * 7 + (site == null ? 0 : site.GetHashCode() & 0xffff);
+            if (key != placeFor)
+            {
+                placeFor = key;
+                var def = Defs?["BUILDINGS"]?[commander.Option];
+                placeName.text = NameOf("BUILDINGS", commander.Option);
+                var cost = site?["cost"] ?? def?["cost"];
+                int seconds = ProtocolDecoder.Int(site?["seconds"], ProtocolDecoder.Int(def?["time"]));
+                placeCost.text = CostText(cost) + (seconds > 0 ? $" · {seconds}s" : "");
+                bool valid = commander.PlacementLegal && (site == null || ProtocolDecoder.Bool(site["valid"], true));
+                string reason = ProtocolDecoder.Str(site?["reason"]);
+                bool queued = ProtocolDecoder.Bool(site?["queued"]);
+                placeWhy.text = !valid ? (reason ?? "Not a legal site for this building") : queued ? "Not enough now: the site will wait for materials" : "Click to place · drag for several · Shift keeps placing";
+                placeWhy.EnableInClassList("bad", !valid); placeWhy.EnableInClassList("warn", valid && queued); placeWhy.EnableInClassList("good", valid && !queued);
+            }
+            placeCard.style.display = DisplayStyle.Flex;
+            var mouse = Input.InputFacade.MousePosition;
+            var p = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(mouse.x, Screen.height - mouse.y));
+            // offset so the card never covers the site itself
+            placeCard.style.left = Mathf.Min(p.x + 28, root.layout.width - 280); placeCard.style.top = p.y + 24;
+        }
+
+        // ------------------------------------------------------------------ speed strip and pause menu (bible §26, §33)
+        VisualElement speedStrip, pauseMenu;
+        readonly List<Button> speedButtons = new List<Button>();
+
+        void EnsureSpeedStrip()
+        {
+            if (speedStrip != null) return;
+            speedStrip = El("speed-strip glass", root);
+            foreach (var s in new[] { 0, 1, 2, 4 })
+            {
+                int sp = s;
+                var b = B(s == 0 ? "❚❚" : s + "×", () => SetSpeed(sp), speedStrip);
+                b.tooltip = s == 0 ? "Pause (" + Input.InputFacade.KeyFor("pause") + ")" : $"Play at {s}× speed";
+                speedButtons.Add(b);
+            }
+            B("☰", () => TogglePauseMenu(), speedStrip).tooltip = "Menu (Esc)";
+        }
+
+        void SetSpeed(int s)
+        {
+            if (session.Spectator) { session.Net?.ObserverCommand(new JObject { ["c"] = "speed", ["speed"] = s }); return; }
+            if (s == 0) Cmd(new JObject { ["c"] = "pause", ["on"] = true }, "Paused");
+            else
+            {
+                if (session.Paused) Cmd(new JObject { ["c"] = "pause", ["on"] = false }, "Resumed");
+                Cmd(new JObject { ["c"] = "speed", ["speed"] = s }, $"Speed {s}×");
+            }
+        }
+
+        void UpdateSpeedStrip()
+        {
+            if (speedStrip == null) return;
+            int[] values = { 0, 1, 2, 4 };
+            for (int i = 0; i < speedButtons.Count; i++)
+                speedButtons[i].EnableInClassList("selected", values[i] == 0 ? session.Paused : !session.Paused && Mathf.Approximately(session.PlayRate, values[i]));
+        }
+
+        /// <summary>The pause menu: Resume, Save, Settings, Controls, Return to the main menu, Quit.</summary>
+        void TogglePauseMenu()
+        {
+            if (pauseMenu != null) { pauseMenu.RemoveFromHierarchy(); pauseMenu = null; return; }
+            pauseMenu = El("pause-menu", root);
+            var box = El("menu-box glass", pauseMenu);
+            L("Paused", "title", box);
+            B("Resume", () => TogglePauseMenu(), box, null, "primary menu-item");
+            B("Save", () => commander.Say("Your match is saved on the server continuously; Continue returns to it.", true, Time.unscaledTime), box, null, "menu-item");
+            B("Settings", () => { TogglePauseMenu(); openPanel = "settings"; Refresh(true); }, box, null, "menu-item");
+            B("Controls and field guide", () => { TogglePauseMenu(); openPanel = "guide"; Refresh(true); }, box, null, "menu-item");
+            B("Return to main menu", () => { TogglePauseMenu(); game.StartMatch("", ""); }, box, null, "menu-item");
+            B("Quit", () => game.Quit(), box, null, "menu-item");
+        }
+
+        // ------------------------------------------------------------------ loading and the title card
+        VisualElement loading, titleCard;
+        Label titleMain, titleSub;
+        readonly List<Label> loadingSteps = new List<Label>();
+        static readonly string[] LoadingStages = { "Connecting to the server", "Generating the world", "Synchronising the world", "Building the landscape", "Entering the match" };
+
+        /// <summary>The loading screen: a quiet strip of real stages over the world (stage −1 hides it).</summary>
+        public void ShowLoading(int stage)
+        {
+            if (loading == null)
+            {
+                loading = El("loading glass", root);
+                L("SHATTERED EMPIRES", "loading-title", loading);
+                foreach (var s in LoadingStages) loadingSteps.Add(L(s, "loading-step", loading));
+                var bar = El("loading-bar", loading); El("loading-bar-run", bar);
+            }
+            loading.style.display = stage < 0 ? DisplayStyle.None : DisplayStyle.Flex;
+            for (int i = 0; i < loadingSteps.Count; i++)
+            {
+                loadingSteps[i].EnableInClassList("done", i < stage);
+                loadingSteps[i].EnableInClassList("current", i == stage);
+            }
+        }
+
+        /// <summary>The restrained title card of the opening descent: the era and the year, the nation beneath.</summary>
+        public void ShowTitleCard(string main, string sub)
+        {
+            if (titleCard == null)
+            {
+                titleCard = El("title-card", root); titleCard.pickingMode = PickingMode.Ignore;
+                titleMain = L("", "title-card-main", titleCard);
+                titleSub = L("", "title-card-sub", titleCard);
+            }
+            titleMain.text = main; titleSub.text = sub;
+            titleCard.style.display = DisplayStyle.Flex;
+            titleCard.style.opacity = 0;
+        }
+
+        public void TitleCardOpacity(float a)
+        {
+            if (titleCard == null) return;
+            titleCard.style.opacity = a;
+            titleCard.style.display = a <= 0.001f ? DisplayStyle.None : DisplayStyle.Flex;
         }
 
         public void ShowMenu(bool on, string status = "")
         {
+            if (on) ShowLoading(-1);
             menu.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
             if (status != null) menuStatus.text = status;
             if (on) ShowGame(false);
@@ -254,6 +621,7 @@ namespace SE.Runtime.UI
         // ------------------------------------------------------------------ per frame
         public void Update(float time)
         {
+            if (rebinding != null && MenuVisible) { RebindStep(); return; }
             if (MenuVisible || !session.Ready) return;
             // mode hint and command feedback
             string modeHint = commander.ModeHint();
@@ -263,10 +631,20 @@ namespace SE.Runtime.UI
             hintText.style.color = feedback ? (commander.FeedbackGood ? new Color(0.65f, 0.9f, 0.6f) : new Color(1f, 0.55f, 0.45f)) : new Color(0.9f, 0.88f, 0.8f);
             if (time > bannerUntil) banner.style.display = DisplayStyle.None;
             if (Map.resolvedStyle.display != DisplayStyle.None) Map.Tick(time);
+            PlacementCard();
             // no game keys while a text field (search, chat, settings) has focus
             Input.InputFacade.Typing = root.panel?.focusController?.focusedElement is TextField;
             if (rebinding != null) { RebindStep(); return; }   // the next key belongs to the shortcut being set
-            if (openPanel != "" && Input.InputFacade.Pressed(KeyCode.Escape)) { openPanel = ""; Refresh(true); }
+            // Escape closes the innermost thing: a tool or line (the commander takes those), then the pause
+            // menu, then an open panel; with nothing open it brings up the pause menu
+            if (Input.InputFacade.Pressed(KeyCode.Escape) && commander.EscapeFrame != Time.frameCount)
+            {
+                if (pauseMenu != null) TogglePauseMenu();
+                else if (openPanel != "") { openPanel = ""; Refresh(true); }
+                else TogglePauseMenu();
+            }
+            if (Input.InputFacade.Action("pause")) SetSpeed(session.Paused ? Mathf.Max(1, Mathf.RoundToInt(session.PlayRate)) : 0);
+            UpdateSpeedStrip();
             Shortcuts();
             TileReadout();
             Tutorial(time);
@@ -717,20 +1095,44 @@ namespace SE.Runtime.UI
             live.Clear();
             var head = El("row", card);
             head.Add(new IconElement("city"));
-            L(city.Name, "title grow", head);
-            L($"{Mathf.RoundToInt(city.Pop)} people" + (city.GrowthRate != 0 ? $" · {city.GrowthRate:+0.#;-0.#}/min" : ""), "muted", head);
-            if (city.Owner != session.CivId) return;
-            L($"{city.Housing} homes · {city.Jobs} jobs · {city.Unemployed} idle" + (city.Stability >= 0 ? $" · stability {city.Stability}" : ""), "muted", card);
+            var names = El(null, head); names.style.flexGrow = 1;
+            L(city.Name, "title", names);
+            string tier = city.Tier >= 3 ? "Megacity" : city.Tier == 2 ? "Metropolis" : city.Tier == 1 ? "Town" : "Settlement";
+            string condition = city.Stability < 0 ? "" : city.Stability >= 60 ? " · Stable" : city.Stability >= 35 ? " · Uneasy" : " · Unrest";
+            L(tier + condition + (city.Capital ? " · Capital" : ""), "muted", names);
+            if (city.Owner != session.CivId) { L($"{Mathf.RoundToInt(city.Pop)} people", "muted", head); return; }
+            // the summary first (bible §31): population, housing used, development and the mayor
+            var facts = El("city-facts", card);
+            void Fact(string label, string value, string cls = "")
+            {
+                var f = El("city-fact", facts);
+                L(label, "muted small", f);
+                L(value, "fact-value " + cls, f);
+            }
+            int pop = Mathf.RoundToInt(city.Pop);
+            Fact("Population", $"{pop:N0}" + (city.GrowthRate != 0 ? $"  {city.GrowthRate:+0.#;-0.#}/min" : ""));
+            int used = city.Housing > 0 ? Mathf.RoundToInt(100f * pop / city.Housing) : 0;
+            Fact("Housing", city.Housing > 0 ? $"{Mathf.Min(used, 999)}% used" : "—", used >= 95 ? "bad" : used >= 80 ? "warn" : "");
+            Fact("Development", string.IsNullOrEmpty(city.Priority) ? "Balanced" : char.ToUpper(city.Priority[0]) + city.Priority.Substring(1));
+            Fact("Mayor", city.MayorOn ? "Enabled" : "Off");
+            if (city.GrowthKind != null)
+            {
+                L($"Current plan: expand {city.GrowthKind}", "small", card);
+                var bar = El("progress", card); var fill = El("progress-fill", bar);
+                fill.style.width = new Length(city.GrowthTarget > 0 ? Mathf.Clamp01((float)city.GrowthBuilt / city.GrowthTarget) * 100f : 0f, LengthUnit.Percent);
+                L($"{city.GrowthBuilt} / {city.GrowthTarget} buildings", "muted small", card);
+            }
+            // the limiting factor in plain words, with the action that addresses it
+            if (used >= 95) L("Growth has stopped: every home is full. Guide Growth → Housing, or upgrade homes.", "warn small", card).style.whiteSpace = WhiteSpace.Normal;
+            else if (city.Unemployed > 0 && city.Jobs < pop) L($"{city.Unemployed} people have no work: build workplaces (Guide Growth → Industry).", "warn small", card).style.whiteSpace = WhiteSpace.Normal;
+            L($"{city.Housing} homes · {city.Jobs} jobs · {city.Unemployed} idle" + (city.Stability >= 0 ? $" · stability {city.Stability}" : ""), "muted small", card);
             var g = El("row wrap", card);
             L("Guide Growth:", "small", g);
             B("Housing", () => commander.Begin(Commander.Mode.Growth, "housing"), g, "house").name = "growth-housing";
             B("Industry", () => commander.Begin(Commander.Mode.Growth, "industry"), g, "industry");
             B("Farming", () => commander.Begin(Commander.Mode.Growth, "farming"), g, "farm");
             if (city.GrowthKind != null)
-            {
-                L($"Growing {city.GrowthKind}: {city.GrowthBuilt} of {city.GrowthTarget} built", "good small", card);
                 B("Cancel plan", () => Cmd(new JObject { ["c"] = "cityGrowth", ["city"] = city.Id, ["clear"] = true }, "Plan cancelled"), card);
-            }
             var mayor = El("row wrap", card);
             L(city.MayorOn ? "Mayor builds for you" : "Mayor off: you place every building", "small grow", mayor);
             B(city.MayorOn ? "Turn mayor off" : "Turn mayor on", () => Cmd(new JObject { ["c"] = "cityDevelopment", ["city"] = city.Id, ["on"] = !city.MayorOn }, "Mayor updated"), mayor);
@@ -773,6 +1175,7 @@ namespace SE.Runtime.UI
                 case "research": ResearchPanel(); break;
                 case "overview": OverviewPanel(); break;
                 case "settings": SettingsPanel(); break;
+                case "guide": GuidePage(panel, false); break;
             }
         }
 
@@ -1216,7 +1619,7 @@ namespace SE.Runtime.UI
             L("Settings", "title", panel);
             L("Graphics", "heading", panel);
             var q = El("row wrap", panel);
-            foreach (var p in new[] { "low", "medium", "high", "ultra" }) { string pp = p; B(char.ToUpper(p[0]) + p.Substring(1), () => { game.ApplyQuality(pp); PlayerPrefs.SetString("se.quality", pp); panelSignature = ""; Refresh(true); }, q).EnableInClassList("selected", PlayerPrefs.GetString("se.quality", "high") == p); }
+            foreach (var p in new[] { "low", "medium", "high", "ultra" }) { string pp = p; B(char.ToUpper(p[0]) + p.Substring(1), () => { game.ApplyQuality(pp); PlayerPrefs.SetString("se.quality", pp); RefreshSettings(); }, q).EnableInClassList("selected", PlayerPrefs.GetString("se.quality", "high") == p); }
             L("Sound", "heading", panel);
             var a = game.Audio;
             if (a != null)
@@ -1243,11 +1646,11 @@ namespace SE.Runtime.UI
                 var row = El("row", scroll);
                 L(act.Label, "grow small", row);
                 string id = act.Id;
-                var key = B(rebinding == id ? "press a key…" : Input.InputFacade.KeyFor(id).ToString(), () => { rebinding = id; panelSignature = ""; Refresh(true); }, row);
+                var key = B(rebinding == id ? "press a key…" : Input.InputFacade.KeyFor(id).ToString(), () => { rebinding = id; RefreshSettings(); }, row);
                 key.style.minWidth = 110;
                 key.EnableInClassList("selected", rebinding == id);
             }
-            B("Restore default keys", () => { Input.InputFacade.ResetBindings(); panelSignature = ""; Refresh(true); }, scroll);
+            B("Restore default keys", () => { Input.InputFacade.ResetBindings(); RefreshSettings(); }, scroll);
             L("Interface", "heading section", scroll);
             var r = El("row wrap", scroll);
             B("Restart the tutorial", () => { PlayerPrefs.SetInt("se.tutorial.done", 0); tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }, r);
@@ -1257,6 +1660,13 @@ namespace SE.Runtime.UI
 
         string rebinding;
 
+        /// <summary>Redraw the settings wherever they are open (the in-game panel or the menu page).</summary>
+        void RefreshSettings()
+        {
+            if (MenuVisible) MenuPage(menuPage);
+            else { panelSignature = ""; Refresh(true); }
+        }
+
         /// <summary>While a shortcut is being rebound, the next key press becomes its key.</summary>
         void RebindStep()
         {
@@ -1264,7 +1674,7 @@ namespace SE.Runtime.UI
             var k = Input.InputFacade.AnyKeyPressed();
             if (k == KeyCode.None) return;
             if (k != KeyCode.Escape) Input.InputFacade.Rebind(rebinding, k);
-            rebinding = null; panelSignature = ""; Refresh(true);
+            rebinding = null; RefreshSettings();
         }
 
         void Setting(VisualElement parent, string label, float value, float min, float max, Action<float> set)
