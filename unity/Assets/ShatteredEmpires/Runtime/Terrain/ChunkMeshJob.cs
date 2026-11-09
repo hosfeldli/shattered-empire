@@ -130,9 +130,37 @@ namespace SE.Runtime.Landscape
             return Pack(c, seaFloor ? 0f : 1f);
         }
 
+        /// <summary>
+        /// The water surface over hex i: its own sea or lake level, or (a shore hex) the highest level of a
+        /// neighbouring sea or lake. Water drawn over the shore is hidden wherever the ground rises above
+        /// it, so the coastline is the true intersection of terrain and water, not a hex outline.
+        /// </summary>
+        float WaterLevelFor(int i)
+        {
+            if (Water[i] > TerrainView.NoWater * 0.5f) return Water[i];
+            float best = TerrainView.NoWater;
+            for (int d = 0; d < 6; d++)
+            {
+                int n = Nb[i * 6 + d];
+                if (n >= 0 && Known[n] != 0 && Water[n] > best) best = Water[n];
+            }
+            return best;
+        }
+
+        void WaterVertex(ref NativeArray<TerrainVertex> wv, ref int vw, in TerrainView v, float level, float x, float z)
+        {
+            float depth = level - v.GroundHeight(x, z);
+            wv[vw++] = new TerrainVertex { Position = new float3(x - OriginX, level, -z), Normal = new float3(0, 1, 0), Color = Pack(new float3(0, 1, 1), depth / 0.9f) };
+        }
+
+        /// <summary>A river, or a headwater stream (geo flag bit 7), with a downstream direction.</summary>
+        bool IsChannel(int i) => (GeoFlags[i] & (1 | 128)) != 0 && Geo[i * 6 + 5] > 0 && (GeoFlags[i] & 2) == 0;
+
         public void Execute()
         {
             var v = View;
+            v.RidgeCache = null;   // the ridge cache belongs to the main thread; jobs compute the noise directly
+            v.RidgeFilled = null;
             int n0 = Cy * Cs, q0 = Cx * Cs;
             int hexes = 0, water = 0, rivers = 0;
             for (int lr = 0; lr < Cs; lr++)
@@ -143,8 +171,8 @@ namespace SE.Runtime.Landscape
                     int i = r * W + q;
                     if (Known[i] == 0) continue;
                     hexes++;
-                    if (Water[i] > TerrainView.NoWater * 0.5f) water++;
-                    if ((GeoFlags[i] & 1) != 0 && Geo[i * 6 + 5] > 0 && (GeoFlags[i] & 2) == 0) rivers++;
+                    if (WaterLevelFor(i) > TerrainView.NoWater * 0.5f) water++;
+                    if (IsChannel(i)) rivers++;
                 }
             float3 bmin = new float3(1e9f), bmax = new float3(-1e9f);
 
@@ -249,8 +277,8 @@ namespace SE.Runtime.Landscape
 
             // ---------------- water: flat hexes at the water level, river ribbons along the flow
             var wm = Meshes[2];
-            wm.SetVertexBufferParams(water * 7 + rivers * 10, Layout);
-            wm.SetIndexBufferParams(water * 18 + rivers * 24, IndexFormat.UInt32);
+            wm.SetVertexBufferParams(water * 36 + rivers * 15, Layout);
+            wm.SetIndexBufferParams(water * 72 + rivers * 48, IndexFormat.UInt32);
             var wv = wm.GetVertexData<TerrainVertex>();
             var wix = wm.GetIndexData<uint>();
             int vw = 0, iw = 0;
@@ -262,50 +290,70 @@ namespace SE.Runtime.Landscape
                     int i = r * W + q;
                     if (Known[i] == 0) continue;
                     float cx = HexMath.CenterX(i, W), cz = HexMath.CenterZ(i, W);
-                    float level = Water[i];
+                    float level = WaterLevelFor(i);
                     if (level > TerrainView.NoWater * 0.5f)
                     {
-                        float depth = v.IsLake(i) ? 0.55f : math.saturate((level - Height[i]) / 1.0f + 0.25f);
-                        int baseW = vw;
-                        var col = Pack(new float3(1, 1, 1), depth);
-                        wv[vw++] = new TerrainVertex { Position = new float3(cx - OriginX, level, -cz), Normal = new float3(0, 1, 0), Color = col };
-                        for (int k = 0; k < 6; k++)
-                            wv[vw++] = new TerrainVertex { Position = new float3(cx + HexMath.CornerX[k] - OriginX, level, -(cz + HexMath.CornerZ[k])), Normal = new float3(0, 1, 0), Color = col };
+                        // vertex colour alpha = water depth there (0 at the shoreline, 1 deep): the shader
+                        // turns it into colour, transparency and shore foam
+                        // each sector is split in four, so the depth (and with it the transparent
+                        // waterline) is sampled finely enough to follow the real shore, not the hex
+                        // (colour r = 0 marks standing water; rivers carry r = 1)
                         for (int k = 0; k < 6; k++)
                         {
-                            wix[iw++] = (uint)baseW;
-                            wix[iw++] = (uint)(baseW + 1 + k);
-                            wix[iw++] = (uint)(baseW + 1 + (k + 1) % 6);
+                            int k2 = (k + 1) % 6;
+                            float ax = cx + HexMath.CornerX[k], az = cz + HexMath.CornerZ[k];
+                            float bx = cx + HexMath.CornerX[k2], bz = cz + HexMath.CornerZ[k2];
+                            int baseW = vw;
+                            WaterVertex(ref wv, ref vw, v, level, cx, cz);                                   // 0 centre
+                            WaterVertex(ref wv, ref vw, v, level, ax, az);                                   // 1 corner a
+                            WaterVertex(ref wv, ref vw, v, level, bx, bz);                                   // 2 corner b
+                            WaterVertex(ref wv, ref vw, v, level, (ax + bx) * 0.5f, (az + bz) * 0.5f);       // 3 edge middle
+                            WaterVertex(ref wv, ref vw, v, level, (cx + ax) * 0.5f, (cz + az) * 0.5f);       // 4 centre–a
+                            WaterVertex(ref wv, ref vw, v, level, (cx + bx) * 0.5f, (cz + bz) * 0.5f);       // 5 centre–b
+                            uint b0 = (uint)baseW;
+                            wix[iw++] = b0; wix[iw++] = b0 + 4; wix[iw++] = b0 + 5;
+                            wix[iw++] = b0 + 4; wix[iw++] = b0 + 1; wix[iw++] = b0 + 3;
+                            wix[iw++] = b0 + 5; wix[iw++] = b0 + 3; wix[iw++] = b0 + 2;
+                            wix[iw++] = b0 + 4; wix[iw++] = b0 + 3; wix[iw++] = b0 + 5;
                         }
                         bmin.y = math.min(bmin.y, level); bmax.y = math.max(bmax.y, level);
                     }
-                    if ((GeoFlags[i] & 1) != 0 && Geo[i * 6 + 5] > 0 && (GeoFlags[i] & 2) == 0)
+                    if (IsChannel(i))
                     {
                         int d = Geo[i * 6 + 5] - 1;
                         int nb = Nb[i * 6 + d];
                         float tx = cx + HexMath.DirX[d] * HexMath.Sqrt3, tz = cz + HexMath.DirZ[d] * HexMath.Sqrt3;
                         if (nb >= 0 && Known[nb] != 0) { tx = cx + HexMath.DxWrap(cx, HexMath.CenterX(nb, W), Period, WrapFlag != 0); tz = HexMath.CenterZ(nb, W); }
                         int bucket = Geo[i * 6 + 4] >> 4;
-                        float half = 0.06f + bucket * 0.035f;
+                        bool stream = (GeoFlags[i] & 1) == 0;
+                        // rivers widen downstream; headwater streams are thin threads up into the hills
+                        float half = stream ? 0.022f : 0.06f + bucket * 0.035f;
                         float2 dir = math.normalizesafe(new float2(tx - cx, tz - cz));
                         float2 side = new float2(-dir.y, dir.x) * half;
                         int baseR = vw;
-                        var rc = Pack(new float3(0.85f, 0.95f, 1f), 0.45f);
+                        // a channel: banks at the shoreline (depth 0, so they fade into the ground) and
+                        // a deeper middle; r = 1 marks running water (silty colour, little foam)
+                        var bank = Pack(new float3(1, 1, 1), 0.02f);
+                        var mid = Pack(new float3(1, 1, 1), stream ? 0.18f : 0.42f);
                         for (int s = 0; s < 5; s++)
                         {
                             float t = s / 4f;
                             // meander a little so channels are not ruler-straight
                             float wob = math.sin(t * 3.14159f) * (Hash(i, Seed + 13) - 0.5f) * 0.35f;
                             float px = math.lerp(cx, tx, t) + side.x / half * wob, pz = math.lerp(cz, tz, t) + side.y / half * wob;
-                            float y = math.max(v.GroundHeight(px, pz), v.GroundHeight(px + side.x, pz + side.y)) + 0.02f;
-                            wv[vw++] = new TerrainVertex { Position = new float3(px - side.x - OriginX, y, -(pz - side.y)), Normal = new float3(0, 1, 0), Color = rc };
-                            wv[vw++] = new TerrainVertex { Position = new float3(px + side.x - OriginX, y, -(pz + side.y)), Normal = new float3(0, 1, 0), Color = rc };
+                            float y = math.max(v.GroundHeight(px, pz), math.max(v.GroundHeight(px + side.x, pz + side.y), v.GroundHeight(px - side.x, pz - side.y))) + 0.02f;
+                            wv[vw++] = new TerrainVertex { Position = new float3(px - side.x - OriginX, y, -(pz - side.y)), Normal = new float3(0, 1, 0), Color = bank };
+                            wv[vw++] = new TerrainVertex { Position = new float3(px - OriginX, y, -pz), Normal = new float3(0, 1, 0), Color = mid };
+                            wv[vw++] = new TerrainVertex { Position = new float3(px + side.x - OriginX, y, -(pz + side.y)), Normal = new float3(0, 1, 0), Color = bank };
                         }
                         for (int s = 0; s < 4; s++)
                         {
-                            uint a = (uint)(baseR + s * 2);
-                            wix[iw++] = a; wix[iw++] = a + 2; wix[iw++] = a + 1;
-                            wix[iw++] = a + 1; wix[iw++] = a + 2; wix[iw++] = a + 3;
+                            for (int c = 0; c < 2; c++)
+                            {
+                                uint a = (uint)(baseR + s * 3 + c), b = a + 1, a2 = a + 3, b2 = a + 4;
+                                wix[iw++] = a; wix[iw++] = a2; wix[iw++] = b;
+                                wix[iw++] = b; wix[iw++] = a2; wix[iw++] = b2;
+                            }
                         }
                     }
                 }

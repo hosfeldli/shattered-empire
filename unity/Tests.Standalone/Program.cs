@@ -157,7 +157,8 @@ static class Program
         {
             if (world.Known[i] == 0) continue;
             float cx = g.CenterX(i), cz = g.CenterZ(i);
-            Check(Math.Abs(v.GroundHeight(cx, cz) - world.Height[i]) < 1e-4, $"{label}: centre height of {i}");
+            float expectCentre = world.Height[i] + v.Relief(i) * (v.Ridge(HexMath.FPosMod(cx, g.Period), cz) - 0.25f);
+            Check(Math.Abs(v.GroundHeight(cx, cz) - expectCentre) < 1e-3, $"{label}: centre height of {i}");
             for (int k = 0; k < 6; k++)
             {
                 // a point on the edge between corners k and k+1, approached from this hex and from beyond

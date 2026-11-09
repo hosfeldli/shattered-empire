@@ -100,8 +100,37 @@ export function districtScore(g, civ, c, type, t) {
   s += Math.min(3, same) * like - clash * 1.5;
   // street frontage: next to the built-up area (the city's street network) or on a real road
   if (urban || w.road[t]) s += street;
-  if (w.road[t]) s += freight * (w.road[t] >= 2 ? 1.3 : 1);
+  // road-aware: frontage on a street that actually connects back to the city counts for more than
+  // a stray track, and a hex one step from the network is still serviceable
+  const reach = roadReach(g, c);
+  let connected = reach.has(t) ? 1 : 0;
+  if (!connected) for (let d = 0; d < 6 && !connected; d++) { const n = NB[t * 6 + d]; if (n >= 0 && reach.has(n)) connected = 0.5; }
+  s += street * connected * 0.8;
+  if (w.road[t]) s += freight * (w.road[t] >= 2 ? 1.3 : 1) * (reach.has(t) ? 1 : 0.5);
   return s;
+}
+
+// The hexes a city's streets reach from its centre (usable road edges, up to 8 steps), cached briefly.
+export function roadReach(g, c) {
+  const at = c._reachAt ?? -Infinity;
+  if (c._reach && g.time - at < 20) return c._reach;
+  const seen = new Set([c.tile]);
+  if (g.roads) {
+    let frontier = [c.tile];
+    for (let depth = 0; depth < 8 && frontier.length; depth++) {
+      const next = [];
+      for (const t of frontier)
+        for (let d = 0; d < 6; d++) {
+          const n = NB[t * 6 + d];
+          if (n < 0 || seen.has(n) || !g.roads.usable(t, n)) continue;
+          seen.add(n); next.push(n);
+        }
+      frontier = next;
+    }
+  }
+  Object.defineProperty(c, '_reach', { value: seen, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(c, '_reachAt', { value: g.time, writable: true, configurable: true, enumerable: false });
+  return seen;
 }
 
 export function pickTile(g, civ, c, type, gv) {

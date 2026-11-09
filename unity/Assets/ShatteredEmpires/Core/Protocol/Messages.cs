@@ -48,6 +48,14 @@ namespace SE.Core.Protocol
         public bool Done, Fire, Memory, Active;
         /// <summary>Training queue length and progress of the head item (own buildings).</summary>
         public int QueueLength, TrainProgress;
+        /// <summary>Own buildings: the training queue (unit types and seconds left), repeat production.</summary>
+        public string[] Queue;
+        public string Repeat;
+        /// <summary>Own buildings: staffing, why output is limited, upgrade and repair costs, works in progress.</summary>
+        public int Staffed, WorksPct;
+        public string Why, WorksKind;
+        public Newtonsoft.Json.Linq.JObject UpgradeCost;
+        public int RepairCost;
     }
 
     public struct CityRecord
@@ -56,6 +64,11 @@ namespace SE.Core.Protocol
         public float Pop;
         public string Name;
         public bool Capital;
+        /// <summary>Own cities: Guide Growth plan (kind, tile, built, target) and the mayor.</summary>
+        public string GrowthKind, Priority, Activity;
+        public int GrowthTile, GrowthBuilt, GrowthTarget, Housing, Jobs, Unemployed, Stability;
+        public bool MayorOn;
+        public float GrowthRate;
     }
 
     /// <summary>A combat event (server combat.js emit): fire, launch, hit, bhit, impact, supp, kill.</summary>
@@ -65,6 +78,8 @@ namespace SE.Core.Protocol
         public int Seq, From, To, Shooter, Target, Weapon, Damage, Owner;
         public float Flight, Radius;
         public bool Airburst;
+        /// <summary>A half-strength strategic blast (a destroyed reactor).</summary>
+        public bool Half;
     }
 
     public sealed class SnapshotMessage
@@ -90,6 +105,11 @@ namespace SE.Core.Protocol
         public JToken Fieldworks;
         public JObject Battlefield;
         public JObject Observer;
+        // typed presentation records (decoded off the main thread)
+        public TrenchRecord[] Trenches;
+        public RuinRecord[] Ruins;
+        public BattlefieldState BattlefieldState;
+        public WeatherState WeatherState;
     }
 
     public sealed class GeoChunk

@@ -84,8 +84,8 @@ namespace SE.Core.World
             return x + (c - x) * 0.68f;
         }
 
-        /// <summary>The seven sector heights in SECTOR_UV order, written to out7.</summary>
-        public void SectorHeights(int i, int k, float* out7)
+        /// <summary>The seven base sector heights in SECTOR_UV order, written to out7 (no relief detail).</summary>
+        public void BaseSectorHeights(int i, int k, float* out7)
         {
             float c = Height[i];
             float a = CornerHeight(i, k);
@@ -93,6 +93,122 @@ namespace SE.Core.World
             float m = EdgeHeight(i, k);
             out7[0] = c; out7[1] = a; out7[2] = b; out7[3] = m;
             out7[4] = Inner(i, c, a); out7[5] = Inner(i, c, b); out7[6] = Inner(i, c, m);
+        }
+
+        // ------------------------------------------------------------------ mountain relief
+        // Presentation-only relief on hills and mountains: ridged noise (crests, gullies, spurs) so
+        // ranges read as real landforms instead of smooth cones. It is part of the one height function:
+        // the mesh, GroundHeight and everything placed on the ground use the same vertex heights, and
+        // its amplitude is blended between hexes exactly like the heights, so seams stay closed.
+
+        /// <summary>Relief amplitude of hex i (0 for water and lowland).</summary>
+        public float Relief(int i)
+        {
+            if (Known[i] == 0 || IsSea(i) || IsLake(i) || IsRiver(i)) return 0f;
+            switch (Biome[i])
+            {
+                case 10: return 0.75f;   // peaks
+                case 9: return 0.48f;    // mountains
+                case 8: return 0.14f;    // hills
+                default: return 0f;
+            }
+        }
+
+        float CornerRelief(int i, int k)
+        {
+            float s = Relief(i); int c = 1;
+            for (int j = 0; j < 2; j++)
+            {
+                int nb = Nb[i * 6 + HexMath.CornerDirs[k * 2 + j]];
+                if (nb >= 0 && Known[nb] != 0) { s += Relief(nb); c++; }
+            }
+            return s / c;
+        }
+
+        float EdgeRelief(int i, int k)
+        {
+            int nb = Nb[i * 6 + HexMath.PosMod(1 - k, 6)];
+            if (nb < 0 || Known[nb] == 0) return Relief(i);
+            return (Relief(i) + Relief(nb)) * 0.5f;
+        }
+
+        static float Hash(int x, int y)
+        {
+            uint h = (uint)(x * 374761393 + y * 668265263);
+            h = (h ^ (h >> 13)) * 1274126177u;
+            h ^= h >> 16;
+            return (h & 0xffffff) / 16777216f;
+        }
+
+        /// <summary>Value noise on a lattice periodic in x (so it wraps with the world).</summary>
+        static float PeriodicNoise(float x, float z, int periodCells)
+        {
+            int x0 = (int)Math.Floor(x), z0 = (int)Math.Floor(z);
+            float fx = x - x0, fz = z - z0;
+            fx = fx * fx * (3f - 2f * fx); fz = fz * fz * (3f - 2f * fz);
+            int xa = HexMath.PosMod(x0, periodCells), xb = HexMath.PosMod(x0 + 1, periodCells);
+            float a = Hash(xa, z0), b = Hash(xb, z0), c = Hash(xa, z0 + 1), d = Hash(xb, z0 + 1);
+            return a + (b - a) * fx + (c - a) * fz + (a - b - c + d) * fx * fz;
+        }
+
+        /// <summary>Ridged multi-octave noise in [0, 1], periodic with the world in x.</summary>
+        public float Ridge(float x, float z)
+        {
+            float sum = 0f, amp = 0.55f, weight = 1f;
+            int cells = Math.Max(4, (int)Math.Round(Period * 0.9f));
+            float scale = cells / Period;
+            for (int o = 0; o < 3; o++)
+            {
+                float n = PeriodicNoise(x * scale, z * scale, cells);
+                float r = 1f - Math.Abs(2f * n - 1f);
+                r *= r * weight;
+                weight = Math.Min(1f, r * 1.8f);
+                sum += r * amp;
+                amp *= 0.5f; scale *= 2f; cells *= 2;
+            }
+            return sum;
+        }
+
+        /// <summary>
+        /// Optional cache of the ridge noise at every sector vertex (42 per hex: 6 sectors × 7), filled on
+        /// first use by main-thread callers. The noise depends only on position, so it never goes stale
+        /// within a world. Jobs pass useCache false and compute it directly (Burst is fast enough).
+        /// </summary>
+        public float* RidgeCache;
+        public byte* RidgeFilled;
+
+        float RidgeAt(int i, int k, int p)
+        {
+            float cx = HexMath.CenterX(i, W), cz = HexMath.CenterZ(i, W);
+            int k2 = (k + 1) % 6;
+            float u = SectorU[p], v = SectorV[p];
+            // world position of the vertex, in the base image (noise is periodic, so images agree)
+            float x = HexMath.FPosMod(cx + u * HexMath.CornerX[k] + v * HexMath.CornerX[k2], Period);
+            float z = cz + u * HexMath.CornerZ[k] + v * HexMath.CornerZ[k2];
+            return Ridge(x, z);
+        }
+
+        /// <summary>The seven sector vertex heights including relief, in SECTOR_UV order.</summary>
+        public void SectorHeights(int i, int k, float* out7, bool useCache = false)
+        {
+            BaseSectorHeights(i, k, out7);
+            float rc = Relief(i), ra = CornerRelief(i, k), rb = CornerRelief(i, (k + 1) % 6);
+            if (rc <= 0f && ra <= 0f && rb <= 0f) return;
+            float rm = EdgeRelief(i, k);
+            bool cached = useCache && RidgeCache != null;
+            if (cached && RidgeFilled[i] == 0)
+            {
+                for (int kk = 0; kk < 6; kk++) for (int pp = 0; pp < 7; pp++) RidgeCache[(i * 6 + kk) * 7 + pp] = RidgeAt(i, kk, pp);
+                RidgeFilled[i] = 1;
+            }
+            for (int p = 0; p < 7; p++)
+            {
+                // relief at this point, blended like the heights (centre, corner means, edge means)
+                float r = p == 0 ? rc : p == 1 ? ra : p == 2 ? rb : p == 3 ? rm : p == 4 ? (rc + ra) * 0.5f : p == 5 ? (rc + rb) * 0.5f : (rc + rm) * 0.5f;
+                if (r <= 0f) continue;
+                float ridge = cached ? RidgeCache[(i * 6 + k) * 7 + p] : RidgeAt(i, k, p);
+                out7[p] += r * (ridge - 0.25f);
+            }
         }
 
         /// <summary>Interpolated height inside sector k at (u, v), given that sector's heights.</summary>
@@ -136,7 +252,7 @@ namespace SE.Core.World
             float dz = z - HexMath.CenterZ(t, W);
             LocateSector(dx, dz, out int k, out float u, out float v);
             float* h7 = stackalloc float[7];
-            SectorHeights(t, k, h7);
+            SectorHeights(t, k, h7, true);
             return SectorPoint(h7, u, v);
         }
 

@@ -41,6 +41,15 @@ namespace SE.Runtime.Session
         public event Action Welcomed;
         public event Action<ServerMessage> Other;
 
+        // presentation records with revisions (renderers rebuild only when these change)
+        public TrenchRecord[] Trenches = System.Array.Empty<TrenchRecord>();
+        public RuinRecord[] Ruins = System.Array.Empty<RuinRecord>();
+        public BattlefieldState Battlefield = new BattlefieldState();
+        public WeatherState Weather;
+        public int TrenchRevision, RuinRevision, BattlefieldRevision, WeatherRevision;
+        /// <summary>Server definitions from the welcome (BUILDINGS, UNITS, TECHS, AGES ...).</summary>
+        public JObject Defs => Welcome?.Defs;
+
         public readonly HashSet<int> DirtyChunks = new HashSet<int>();
         public readonly HashSet<int> DirtyCells = new HashSet<int>();
         public readonly List<CombatEvent> Events = new List<CombatEvent>();
@@ -92,8 +101,34 @@ namespace SE.Runtime.Session
             ApplyMs = sw.Elapsed.TotalMilliseconds;
         }
 
+        bool RuinsChanged(RuinRecord[] next)
+        {
+            for (int i = 0; i < next.Length; i++) if (next[i].Tile != Ruins[i].Tile || next[i].Flags != Ruins[i].Flags) return true;
+            return false;
+        }
+
+        /// <summary>True when the last welcome re-entered the same match (a reconnect): nothing was cleared.</summary>
+        public bool Rejoined { get; private set; }
+        bool softGeo;
+
         public void ApplyWelcome(WelcomeMessage w)
         {
+            // a reconnect to the same match keeps the world, units and buildings on screen; the server's
+            // full re-send then only redraws what actually changed while we were away
+            bool same = Welcome != null && World.Ready && w.Match == Welcome.Match && w.CivId == Welcome.CivId && World.Grid.W == w.W && World.Grid.H == w.H
+                && World.Grid.Wrap == w.Wrap && !string.IsNullOrEmpty(w.Match) && w.Match != "menu" && w.Match != "stress" && w.Match != "intro";
+            Rejoined = same;
+            if (same)
+            {
+                Welcome = w;
+                PlayRate = w.Speed; Paused = w.Paused;
+                softGeo = true;
+                Welcomed?.Invoke();
+                return;
+            }
+            softGeo = false;
+            Trenches =System.Array.Empty<TrenchRecord>(); Ruins = System.Array.Empty<RuinRecord>(); Battlefield = new BattlefieldState(); Weather = null;
+            TrenchRevision++; RuinRevision++; BattlefieldRevision++; WeatherRevision++;
             BeforeGeometryChange?.Invoke();
             Welcome = w;
             CivId = w.CivId;
@@ -117,7 +152,9 @@ namespace SE.Runtime.Session
         {
             BeforeGeometryChange?.Invoke();
             GeoMessages++;
-            foreach (int c in World.ApplyGeo(g)) { DirtyChunks.Add(c); DirtyCells.Add(c); }
+            bool keep = softGeo && g.Full;
+            if (g.Full) softGeo = false;
+            foreach (int c in World.ApplyGeo(g, keep)) { DirtyChunks.Add(c); DirtyCells.Add(c); }
         }
 
         public void ApplySnapshot(SnapshotMessage s)
@@ -136,13 +173,17 @@ namespace SE.Runtime.Session
                 CivId = ProtocolDecoder.Int(s.Observer["follow"], CivId);
                 PlayRate = ProtocolDecoder.Float(s.Observer["speed"], PlayRate);
             }
-            if (s.Tiles != null) World.ApplyTiles(s.Tiles, null);
+            if (s.Tiles != null) World.ApplyTiles(s.Tiles, null, DirtyCells);
             if (s.Visibility != null) World.ApplyVisibility(s.Visibility);
-            if (s.Urban != null) World.ApplyUrban(s.Urban);
+            if (s.Urban != null) World.ApplyUrban(s.Urban, DirtyCells);
             Units.Apply(s);
             if (s.Events != null) Events.AddRange(s.Events);
+            if (s.WeatherState != null) { Weather = s.WeatherState; WeatherRevision++; }
             if (s.HasEcon)
             {
+                if (s.Trenches != null) { Trenches = s.Trenches; TrenchRevision++; }
+                if (s.Ruins != null && (s.Ruins.Length != Ruins.Length || RuinsChanged(s.Ruins))) { Ruins = s.Ruins; RuinRevision++; }
+                if (s.BattlefieldState != null) { Battlefield = s.BattlefieldState; BattlefieldRevision++; }
                 Econ = s.Econ;
                 if (Econ != null) Age = ProtocolDecoder.Int(Econ["age"], Age);
                 if (s.Buildings != null) Structures.ApplyBuildings(s.Buildings, World, DirtyCells);

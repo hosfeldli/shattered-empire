@@ -149,6 +149,7 @@ namespace SE.Runtime.Rendering
         public static Mesh Deciduous, Conifer, Shrub;
         public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
         public static Mesh Tower, Skyscraper, Silo, Chimney, Crane, Wreck;
+        public static Mesh ShipHull, Coil, Sandbags, Stump, Rotor4, AutoTankHull, AutoTankTurret, Dome, BrokenTower;
 
         public static void Build()
         {
@@ -304,6 +305,68 @@ namespace SE.Runtime.Rendering
                 .Box(new Vector3(0, 0, 0), new Vector3(0.6f, 0.16f, 0.9f), new Color(0.2f, 0.18f, 0.16f))
                 .Box(new Vector3(0.05f, 0.16f, -0.1f), new Vector3(0.36f, 0.1f, 0.4f), new Color(0.15f, 0.13f, 0.12f))
                 .Build("wreck");
+
+            // a cargo ship hull (length 1 along z, bow at +z): rusted hull, deck, bridge at the stern
+            var rust = new Color(0.42f, 0.24f, 0.17f);
+            ShipHull = new MeshBuilder()
+                .Wedge(new Vector3(0, 0, 0), new Vector3(0.16f, 0.12f, 1f), 0.12f, rust)
+                .Box(new Vector3(0, 0.12f, -0.02f), new Vector3(0.15f, 0.01f, 0.86f), new Color(0.35f, 0.33f, 0.3f))
+                .Box(new Vector3(0, 0.13f, -0.4f), new Vector3(0.13f, 0.12f, 0.12f), new Color(0.82f, 0.8f, 0.75f))
+                .Box(new Vector3(0, 0.25f, -0.42f), new Vector3(0.03f, 0.06f, 0.03f), new Color(0.3f, 0.3f, 0.3f))
+                .Build("ship_hull");
+            // barbed wire: a loose coil (helix) of thin wire along x
+            var coil = new MeshBuilder();
+            for (int k = 0; k < 36; k++)
+            {
+                float a0 = k * 0.6f, a1 = (k + 1) * 0.6f;
+                var p0 = new Vector3(-0.5f + k / 36f, 0.5f + Mathf.Sin(a0) * 0.5f, Mathf.Cos(a0) * 0.5f);
+                var p1 = new Vector3(-0.5f + (k + 1) / 36f, 0.5f + Mathf.Sin(a1) * 0.5f, Mathf.Cos(a1) * 0.5f);
+                var mid = (p0 + p1) * 0.5f; var d = p1 - p0;
+                coil.Box(mid - new Vector3(0, 0.02f, 0), new Vector3(Mathf.Abs(d.x) + 0.02f, Mathf.Abs(d.y) + 0.04f, Mathf.Abs(d.z) + 0.02f), new Color(0.3f, 0.28f, 0.26f));
+            }
+            Coil = coil.Build("wire_coil");
+            Sandbags = new MeshBuilder()
+                .Box(new Vector3(0, 0, 0), new Vector3(1f, 0.5f, 1f), new Color(0.72f, 0.66f, 0.5f))
+                .Box(new Vector3(0, 0.5f, 0), new Vector3(0.94f, 0.5f, 0.9f), new Color(0.66f, 0.6f, 0.46f))
+                .Build("sandbags");
+            Stump = new MeshBuilder()
+                .Cylinder(Vector3.zero, 0.5f, 0.35f, 1f, 6, new Color(0.3f, 0.25f, 0.2f))
+                .Cylinder(new Vector3(0.1f, 1f, 0), 0.2f, 0f, 0.6f, 4, new Color(0.38f, 0.32f, 0.25f))
+                .Build("stump");
+            // a quadcopter frame with four rotors (recon and strike drones)
+            var quad = new MeshBuilder()
+                .Box(new Vector3(0, 0, 0), new Vector3(0.26f, 0.08f, 0.32f), White)
+                .Box(new Vector3(0, 0.02f, 0), new Vector3(0.9f, 0.03f, 0.05f), Dark).Box(new Vector3(0, 0.02f, 0), new Vector3(0.05f, 0.03f, 0.9f), Dark)
+                .Box(new Vector3(0, -0.05f, 0.1f), new Vector3(0.06f, 0.05f, 0.06f), Glass);
+            foreach (var c in new[] { new Vector3(0.42f, 0.04f, 0.42f), new Vector3(-0.42f, 0.04f, 0.42f), new Vector3(0.42f, 0.04f, -0.42f), new Vector3(-0.42f, 0.04f, -0.42f) })
+                quad.Cylinder(c, 0.17f, 0.17f, 0.01f, 10, new Color(0.55f, 0.58f, 0.6f));
+            Rotor4 = quad.Build("quadcopter");
+            Drone = Rotor4;
+            // autonomous tank: low faceted hull, unmanned (no hatches), sensor mast and a glowing sensor strip
+            AutoTankHull = new MeshBuilder()
+                .Box(new Vector3(-0.38f, 0, 0), new Vector3(0.16f, 0.18f, 1.05f), Dark)
+                .Box(new Vector3(0.38f, 0, 0), new Vector3(0.16f, 0.18f, 1.05f), Dark)
+                .Wedge(new Vector3(0, 0.1f, 0), new Vector3(0.66f, 0.17f, 1f), 0.04f, White)
+                .Box(new Vector3(0, 0.27f, 0.42f), new Vector3(0.5f, 0.02f, 0.04f), new Color(0.3f, 0.9f, 1f))
+                .Build("autotank_hull");
+            AutoTankTurret = new MeshBuilder()
+                .Wedge(new Vector3(0, 0.27f, -0.08f), new Vector3(0.42f, 0.12f, 0.46f), 0.03f, White)
+                .Tube(new Vector3(0, 0.33f, 0.12f), 0.72f, 0.03f, 6, Dark)
+                .Box(new Vector3(-0.12f, 0.39f, -0.2f), new Vector3(0.03f, 0.22f, 0.03f), Dark)
+                .Box(new Vector3(-0.12f, 0.61f, -0.2f), new Vector3(0.09f, 0.04f, 0.05f), new Color(0.3f, 0.9f, 1f))
+                .Build("autotank_turret");
+            Dome = new MeshBuilder().Blob(Vector3.zero, new Vector3(0.5f, 0.5f, 0.5f), White).Build("dome");
+            // a gutted tower: walls with jagged, uneven tops and no floors
+            var broken = new MeshBuilder();
+            for (int k = 0; k < 4; k++)
+            {
+                float h = 0.55f + 0.45f * Mathf.Abs(Mathf.Sin(k * 2.3f));
+                var side = k switch { 0 => new Vector3(0, 0, 0.47f), 1 => new Vector3(0, 0, -0.47f), 2 => new Vector3(0.47f, 0, 0), _ => new Vector3(-0.47f, 0, 0) };
+                var size = k < 2 ? new Vector3(1f, h, 0.06f) : new Vector3(0.06f, h * 0.8f, 1f);
+                broken.Box(side, size, new Color(0.55f, 0.53f, 0.5f));
+                broken.Box(side + new Vector3(k < 2 ? 0.25f : 0, h, k < 2 ? 0 : 0.2f), new Vector3(k < 2 ? 0.3f : 0.06f, 0.12f, k < 2 ? 0.06f : 0.3f), new Color(0.5f, 0.48f, 0.45f));
+            }
+            BrokenTower = broken.Build("broken_tower");
         }
     }
 }

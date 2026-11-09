@@ -1,0 +1,189 @@
+/* Shattered Empires interface: the world stays the focus.
+   - Surfaces: dark, slightly blue-green translucent glass; one warm brass accent for focus and action.
+   - Type: Barlow Semi Condensed for everything functional, Cormorant for titles only.
+   - Rhythm: 4/8 px spacing; 6 px radius on surfaces, 4 px on controls.
+   - Colour means something: green good, amber attention, red trouble; never decoration.
+   Panels open beside the world (left), the selection card sits bottom centre, the minimap bottom
+   right, alerts bottom left; nothing covers the middle of the screen. */
+
+:root {
+    -unity-font: resource("Fonts/BarlowSemiCondensed-Regular");
+    font-size: 15px;
+    color: rgb(230, 225, 212);
+}
+
+.se-root { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+
+.glass {
+    background-color: rgba(14, 21, 24, 0.9);
+    border-color: rgba(255, 255, 255, 0.07);
+    border-top-color: rgba(214, 170, 82, 0.35);
+    border-width: 1px;
+    border-radius: 6px;
+}
+
+.title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 26px; color: rgb(242, 230, 198); margin-bottom: 6px; }
+.heading { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 16px; color: rgb(234, 204, 140); margin-bottom: 4px; letter-spacing: 0.3px; }
+.muted { color: rgb(146, 162, 158); font-size: 13px; }
+.small { font-size: 13px; }
+.good { color: rgb(142, 212, 132); }
+.bad { color: rgb(242, 116, 96); }
+.warn { color: rgb(240, 188, 86); }
+.row { flex-direction: row; align-items: center; }
+.grow { flex-grow: 1; }
+.wrap { flex-wrap: wrap; }
+.section { margin-top: 10px; padding-top: 8px; border-top-width: 1px; border-color: rgba(255, 255, 255, 0.06); }
+
+/* ---------------------------------------------------------------- buttons */
+.btn {
+    -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold");
+    background-color: rgba(36, 47, 50, 0.96);
+    border-color: rgba(255, 255, 255, 0.08);
+    border-bottom-color: rgba(0, 0, 0, 0.35);
+    border-width: 1px;
+    border-radius: 4px;
+    color: rgb(232, 224, 204);
+    padding: 5px 10px;
+    margin: 2px;
+    font-size: 14px;
+    flex-direction: row;
+    align-items: center;
+    -unity-text-align: middle-center;
+    transition-property: background-color, border-color, translate;
+    transition-duration: 0.12s;
+}
+.btn:hover { background-color: rgba(56, 70, 70, 0.98); border-color: rgba(230, 186, 96, 0.7); }
+.btn:active { background-color: rgba(92, 78, 44, 1); translate: 0 1px; }
+.btn.primary { background-color: rgb(184, 138, 54); color: rgb(22, 20, 14); border-color: rgb(238, 198, 112); }
+.btn.primary:hover { background-color: rgb(210, 160, 66); }
+.btn.selected { border-color: rgb(236, 196, 110); background-color: rgba(98, 82, 44, 0.96); color: rgb(250, 236, 200); }
+.btn:disabled { opacity: 0.4; }
+.btn.close {
+    position: absolute; right: 8px; top: 8px; width: 28px; height: 28px; padding: 0;
+    background-color: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); font-size: 14px;
+}
+.btn.close:hover { background-color: rgba(170, 60, 40, 0.7); }
+/* an icon and its label side by side, never overlapping */
+.btn .icon { width: 20px; height: 20px; margin-right: 6px; flex-shrink: 0; }
+.btn .label { flex-shrink: 1; -unity-text-align: middle-left; }
+
+/* ---------------------------------------------------------------- top bar */
+.topbar {
+    position: absolute; left: 0; right: 0; top: 0; height: 42px;
+    flex-direction: row; align-items: center; padding: 0 10px;
+    background-color: rgba(10, 15, 17, 0.92);
+    border-bottom-width: 1px; border-color: rgba(214, 170, 82, 0.22);
+}
+.era-pill {
+    flex-direction: column; justify-content: center; padding: 0 14px 0 6px; margin-right: 12px; height: 100%;
+    border-right-width: 1px; border-color: rgba(255, 255, 255, 0.08);
+}
+.era-name { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 13px; letter-spacing: 1.5px; color: rgb(236, 204, 136); }
+.era-next { font-size: 11px; color: rgb(140, 156, 152); }
+.res {
+    flex-direction: row; align-items: center; margin-right: 6px; padding: 3px 8px; border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.03);
+    transition-property: background-color; transition-duration: 0.15s;
+}
+.res:hover { background-color: rgba(255, 255, 255, 0.09); }
+.res .dot { width: 12px; height: 12px; border-radius: 6px; margin-right: 6px; border-width: 1px; border-color: rgba(0, 0, 0, 0.35); }
+.res .amount { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; min-width: 30px; }
+.res .rate { font-size: 12px; margin-left: 4px; }
+.res.short { background-color: rgba(160, 50, 30, 0.4); border-width: 1px; border-color: rgba(240, 110, 80, 0.5); }
+.gauge { width: 80px; height: 6px; background-color: rgba(255, 255, 255, 0.1); border-radius: 3px; margin: 0 6px; overflow: hidden; }
+.gauge-fill { height: 100%; background-color: rgb(214, 186, 86); border-radius: 3px; }
+.focus-pill { padding: 4px 12px; border-radius: 12px; background-color: rgba(168, 58, 38, 0.75); margin-left: 8px; font-size: 13px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+
+.tooltip {
+    position: absolute; width: 360px; padding: 10px 12px;
+    background-color: rgba(8, 13, 15, 0.97); border-color: rgba(214, 170, 82, 0.35); border-width: 1px; border-radius: 6px;
+}
+.flow-row { flex-direction: row; justify-content: space-between; font-size: 13px; padding: 1px 0; }
+
+/* ---------------------------------------------------------------- rail and panels */
+.rail { position: absolute; left: 10px; top: 54px; width: 58px; }
+.rail .btn { width: 54px; height: 54px; padding: 4px; margin: 0 0 6px 0; flex-direction: column; justify-content: center; background-color: rgba(14, 21, 24, 0.88); }
+.rail .btn .icon { width: 24px; height: 24px; margin: 0 0 3px 0; }
+.rail .btn .label { font-size: 11px; -unity-text-align: middle-center; color: rgb(196, 192, 178); }
+.rail .btn.selected { border-left-width: 3px; border-left-color: rgb(236, 196, 110); }
+.rail .btn.selected .label { color: rgb(246, 226, 180); }
+
+.panel { position: absolute; left: 76px; top: 54px; width: 440px; max-height: 78%; padding: 14px 16px; }
+.panel.wide { width: 900px; }
+.tabs { flex-direction: row; margin-bottom: 10px; flex-wrap: wrap; padding-bottom: 6px; border-bottom-width: 1px; border-color: rgba(255, 255, 255, 0.06); }
+
+.card {
+    position: absolute; bottom: 12px; left: 21%; right: 18%; min-height: 110px; padding: 12px 14px;
+}
+.train-grid { flex-direction: row; flex-wrap: wrap; margin-top: 4px; }
+.train-btn { width: 98px; height: 94px; margin: 3px; padding: 5px 4px; flex-direction: column; align-items: center; justify-content: flex-start; }
+.train-btn .icon { width: 44px; height: 32px; margin: 2px 0 3px 0; }
+.train-btn .label { font-size: 12px; -unity-text-align: middle-center; white-space: normal; }
+.train-btn .cost { font-size: 11px; color: rgb(168, 184, 176); }
+.badge {
+    position: absolute; right: 3px; top: 3px; min-width: 20px; height: 20px; border-radius: 10px; padding: 0 4px;
+    background-color: rgb(206, 158, 66); color: rgb(20, 18, 12); font-size: 12px; -unity-text-align: middle-center;
+    -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold");
+}
+.queue { flex-direction: row; flex-wrap: wrap; margin-top: 6px; }
+.queue-item { width: 48px; height: 42px; margin: 2px; border-radius: 4px; background-color: rgba(255, 255, 255, 0.06); border-width: 1px; border-color: rgba(255, 255, 255, 0.05); align-items: center; justify-content: center; }
+.queue-item .icon { width: 34px; height: 24px; }
+.queue-item .count { position: absolute; right: 3px; bottom: 0; font-size: 11px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+.progress { height: 4px; background-color: rgba(255, 255, 255, 0.1); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background-color: rgb(142, 212, 132); }
+
+.list-item { padding: 7px 8px; border-radius: 4px; margin-bottom: 2px; border-bottom-width: 1px; border-color: rgba(255, 255, 255, 0.03); }
+.list-item:hover { background-color: rgba(255, 255, 255, 0.05); }
+
+/* research tree: eras left to right, branches colour-coded down each column */
+.era { width: 168px; margin-right: 8px; }
+.tech {
+    margin: 2px 0; padding: 6px 7px; border-radius: 4px; background-color: rgba(255, 255, 255, 0.04);
+    border-width: 1px; border-left-width: 3px; border-color: rgba(255, 255, 255, 0.05);
+    transition-property: background-color; transition-duration: 0.12s;
+}
+.tech:hover { background-color: rgba(255, 255, 255, 0.09); border-right-color: rgba(230, 186, 96, 0.7); border-top-color: rgba(230, 186, 96, 0.7); border-bottom-color: rgba(230, 186, 96, 0.7); }
+.tech.done { background-color: rgba(80, 130, 70, 0.28); }
+.tech.current { background-color: rgba(120, 100, 50, 0.5); border-top-color: rgb(236, 196, 110); border-right-color: rgb(236, 196, 110); border-bottom-color: rgb(236, 196, 110); }
+.tech.queued { border-top-color: rgba(236, 196, 110, 0.45); border-right-color: rgba(236, 196, 110, 0.45); border-bottom-color: rgba(236, 196, 110, 0.45); }
+.tech.locked { opacity: 0.5; }
+.unlocks { font-size: 10px; color: rgba(220, 214, 196, 0.68); margin-top: 2px; white-space: normal; }
+.branch-chip { padding: 2px 8px; margin-right: 6px; margin-bottom: 6px; border-radius: 3px; border-left-width: 3px; background-color: rgba(255, 255, 255, 0.05); }
+.branch-civ { border-left-color: rgb(132, 186, 104); }
+.branch-industry { border-left-color: rgb(214, 150, 74); }
+.branch-infra { border-left-color: rgb(150, 150, 160); }
+.branch-logistics { border-left-color: rgb(196, 176, 92); }
+.branch-military { border-left-color: rgb(196, 86, 72); }
+.branch-advanced { border-left-color: rgb(110, 160, 220); }
+.branch-society { border-left-color: rgb(170, 120, 190); }
+
+/* minimap: bottom right, framed, with the camera footprint drawn over it */
+.minimap { position: absolute; right: 12px; bottom: 12px; width: 280px; height: 200px; padding: 5px; }
+.minimap-image { position: absolute; left: 5px; top: 5px; right: 5px; bottom: 5px; border-radius: 3px; }
+
+/* alerts: a quiet feed, never over the world's centre */
+.feed { position: absolute; left: 12px; bottom: 12px; width: 360px; }
+.note {
+    padding: 6px 10px; margin-top: 4px; border-radius: 4px; font-size: 13px;
+    background-color: rgba(10, 15, 17, 0.85); border-left-width: 3px; border-color: rgba(214, 170, 82, 0.6);
+}
+.note.critical { background-color: rgba(120, 34, 22, 0.9); border-color: rgb(244, 120, 90); }
+.banner { position: absolute; top: 54px; left: 33%; right: 33%; padding: 8px 14px; -unity-text-align: middle-center; border-top-color: rgb(244, 120, 90); }
+
+/* tutorial */
+.coach { position: absolute; right: 16px; top: 54px; width: 340px; padding: 14px; border-top-color: rgb(236, 196, 110); }
+.highlight { position: absolute; border-width: 3px; border-color: rgb(244, 196, 90); border-radius: 6px; }
+
+/* menu */
+.menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: center; justify-content: center; background-color: rgba(4, 7, 8, 0.35); }
+.menu-box { width: 470px; padding: 26px 28px; }
+.menu-title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 60px; color: rgb(244, 232, 202); -unity-text-align: middle-center; margin-bottom: 2px; letter-spacing: 6px; }
+.menu-sub { -unity-text-align: middle-center; color: rgb(188, 174, 138); margin-bottom: 20px; font-size: 15px; letter-spacing: 1px; }
+.menu .btn { height: 40px; font-size: 16px; margin: 3px 0; }
+.field { background-color: rgba(0, 0, 0, 0.4); border-color: rgba(255, 255, 255, 0.1); border-width: 1px; border-radius: 4px; color: rgb(234, 226, 206); margin: 2px 0; }
+
+/* cinematic */
+.letterbox { position: absolute; left: 0; right: 0; height: 12%; background-color: rgb(0, 0, 0); }
+.caption { position: absolute; left: 12%; right: 12%; bottom: 17%; -unity-text-align: middle-center; -unity-font: resource("Fonts/CormorantGaramond"); font-size: 34px; color: rgb(240, 232, 214); white-space: normal; }
+.skip { position: absolute; right: 22px; bottom: 14px; font-size: 13px; color: rgb(170, 170, 160); }
+.fade { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background-color: rgb(0, 0, 0); }

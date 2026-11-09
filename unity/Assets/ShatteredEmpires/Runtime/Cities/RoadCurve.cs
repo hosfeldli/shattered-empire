@@ -1,0 +1,188 @@
+using System;
+using SE.Core.World;
+using Unity.Mathematics;
+using UnityEngine;
+
+namespace SE.Runtime.Cities
+{
+    /// <summary>
+    /// Street geometry, shared by the street meshes and the traffic on them so cars sit exactly on the
+    /// road. The server only says which hex edges carry a road; how a street runs inside a hex is ours:
+    ///
+    /// - every street crosses a hex edge at that edge's midpoint (so neighbours always join up);
+    /// - in an open hex the streets meet at a junction placed off-centre (stable per hex), with gentle
+    ///   bends, so a city's network meanders instead of drawing a hex lattice;
+    /// - in a hex with a building the streets never cut through it: they wrap around the block along
+    ///   the hex's edge, linking the road edges in order around the hex (leaving the widest gap open),
+    ///   and a lone road edge stops at the kerb instead of laying a private driveway.
+    ///
+    /// A path through a hex (in edge → out edge) is a chain of up to six quadratic Bézier pieces.
+    /// </summary>
+    public static unsafe class RoadCurve
+    {
+        public const float Inradius = 0.8660254f;
+        /// <summary>Hexes holding a building (kept current by the city renderer).</summary>
+        public static bool[] Occupied = Array.Empty<bool>();
+        public static bool Built(int t) => t >= 0 && t < Occupied.Length && Occupied[t];
+
+        public static float Width(int cls) => cls == 1 ? 0.075f : cls == 2 ? 0.11f : cls == 3 ? 0.16f : 0.07f;
+
+        static float H(int a, int b) => CityRenderer.Hash(a, b);
+
+        public static float2 Centre(WorldModel w, int t) => new float2(w.Grid.CenterX(t), w.Grid.CenterZ(t));
+
+        /// <summary>Where the street on edge d of hex t crosses the edge (in t's coordinates).</summary>
+        public static float2 Mid(WorldModel w, int t, int d) => Centre(w, t) + new float2(HexMath.DirX[d], HexMath.DirZ[d]) * Inradius;
+
+        /// <summary>The junction of an open hex: off-centre by a stable amount, so streets meander.</summary>
+        public static float2 Node(WorldModel w, int t)
+        {
+            float a = H(t, 501) * 6.2832f, r = 0.08f + H(t, 502) * 0.2f;
+            return Centre(w, t) + new float2(Mathf.Cos(a), Mathf.Sin(a)) * r;
+        }
+
+        /// <summary>
+        /// Control point of the half-street from edge d's midpoint to the junction: straight in from
+        /// the edge (so it lines up with the neighbour's half), bending toward the off-centre junction.
+        /// </summary>
+        public static float2 HalfControl(WorldModel w, int t, int d, float2 node)
+        {
+            float2 m = Mid(w, t, d);
+            return m - new float2(HexMath.DirX[d], HexMath.DirZ[d]) * (math.distance(m, node) * 0.5f);
+        }
+
+        /// <summary>Road edges of hex t (usable or not), in direction order.</summary>
+        public static int Edges(WorldModel w, int t, int* outDirs)
+        {
+            int n = 0;
+            for (int d = 0; d < 6; d++) if (w.RoadClass(t, d) != 0 && w.Grid.Nb[t * 6 + d] >= 0) outDirs[n++] = d;
+            return n;
+        }
+
+        /// <summary>
+        /// For a built hex: the order the streets are linked around the block. The chain starts after
+        /// the widest gap between consecutive road edges and goes round from there.
+        /// </summary>
+        public static int Chain(WorldModel w, int t, int* chain)
+        {
+            int* e = stackalloc int[6];
+            int n = Edges(w, t, e);
+            if (n == 0) return 0;
+            int bestGap = -1, start = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int gap = ((e[(i + 1) % n] - e[i]) + 6) % 6;
+                if (n == 1) gap = 6;
+                if (gap > bestGap) { bestGap = gap; start = (i + 1) % n; }
+            }
+            for (int i = 0; i < n; i++) chain[i] = e[(start + i) % n];
+            return n;
+        }
+
+        /// <summary>The control point that carries a street from edge e round the block to edge f.</summary>
+        public static float2 AroundControl(WorldModel w, int t, int e, int f)
+        {
+            int steps = ((f - e) + 6) % 6;
+            if (steps == 0) steps = 6;
+            float theta = steps * 60f * Mathf.Deg2Rad;
+            float2 me = new float2(HexMath.DirX[e], HexMath.DirZ[e]), mf = new float2(HexMath.DirX[f], HexMath.DirZ[f]);
+            // (opposite edges: no bisector; go round on the side the edge order turns toward)
+            float2 bis = math.normalizesafe(me + mf, new float2(me.y, -me.x));
+            // keep the curve's middle at about the edge-midpoint radius, hugging the hex boundary
+            float avg = Inradius * Mathf.Cos(theta * 0.5f);
+            float r = 2f * 0.84f - avg;
+            // the inner-side bisector for steps > 3 would point the wrong way: walk round the other side
+            if (steps > 3) bis = -bis;
+            return Centre(w, t) + bis * r;
+        }
+
+        /// <summary>
+        /// Bézier pieces of the path through hex t from edge a to edge b (b == a: a dead end, in and back).
+        /// Returns the number of pieces written into p0/p1/p2 (at most 6).
+        /// </summary>
+        public static int Pieces(WorldModel w, int t, int a, int b, float2* p0, float2* p1, float2* p2)
+        {
+            float2 ma = Mid(w, t, a), mb = Mid(w, t, b);
+            if (!Built(t))
+            {
+                // two half-streets meeting at the junction, each leaving its edge square-on
+                float2 node = Node(w, t);
+                p0[0] = ma; p1[0] = HalfControl(w, t, a, node); p2[0] = node;
+                p0[1] = node; p1[1] = HalfControl(w, t, b, node); p2[1] = mb;
+                return 2;
+            }
+            int* chain = stackalloc int[6];
+            int n = Chain(w, t, chain);
+            int ia = -1, ib = -1;
+            for (int i = 0; i < n; i++) { if (chain[i] == a) ia = i; if (chain[i] == b) ib = i; }
+            if (ia < 0 || ib < 0 || ia == ib)
+            {
+                // a dead end at the kerb: a short loop just inside the hex
+                float2 c = Centre(w, t);
+                float2 inward = math.normalizesafe(c - ma) * 0.16f;
+                p0[0] = ma; p1[0] = ma + inward + new float2(-inward.y, inward.x) * 0.6f; p2[0] = mb;
+                return 1;
+            }
+            int step = ib > ia ? 1 : -1, k = 0;
+            for (int i = ia; i != ib && k < 6; i += step, k++)
+            {
+                int e = chain[i], f = chain[i + step];
+                p0[k] = Mid(w, t, e);
+                // the control point is the same whichever way round it is driven
+                p1[k] = step > 0 ? AroundControl(w, t, e, f) : AroundControl(w, t, f, e);
+                p2[k] = Mid(w, t, f);
+            }
+            return k;
+        }
+
+        public static float2 Bezier(float2 a, float2 c, float2 b, float s, out float2 tangent)
+        {
+            float u = 1f - s;
+            tangent = 2f * u * (c - a) + 2f * s * (b - c);
+            return u * u * a + 2f * u * s * c + s * s * b;
+        }
+
+        /// <summary>A point at fraction s of the path through hex t from edge a to edge b, and its heading.</summary>
+        public static void Route(WorldModel w, int t, int a, int b, float s, out float x, out float z, out float yaw)
+        {
+            float2* p0 = stackalloc float2[6]; float2* p1 = stackalloc float2[6]; float2* p2 = stackalloc float2[6];
+            int n = Pieces(w, t, a, b, p0, p1, p2);
+            s = Mathf.Clamp01(s) * n;
+            int i = Math.Min(n - 1, (int)s);
+            var p = Bezier(p0[i], p1[i], p2[i], s - i, out var tan);
+            x = p.x; z = p.y;
+            yaw = math.lengthsq(tan) > 1e-8f ? Mathf.Atan2(tan.x, tan.y) : 0f;
+        }
+
+        /// <summary>Approximate length of the path through hex t from edge a to edge b.</summary>
+        public static float Length(WorldModel w, int t, int a, int b)
+        {
+            float2* p0 = stackalloc float2[6]; float2* p1 = stackalloc float2[6]; float2* p2 = stackalloc float2[6];
+            int n = Pieces(w, t, a, b, p0, p1, p2);
+            float len = 0;
+            for (int i = 0; i < n; i++) len += (math.distance(p0[i], p1[i]) + math.distance(p1[i], p2[i]) + math.distance(p0[i], p2[i])) * 0.5f;
+            return Mathf.Max(0.05f, len);
+        }
+
+        public static bool IsWet(WorldModel w, int t) => t >= 0 && (w.IsRiver(t) || w.View.Water[t] > -1e8f);
+
+        /// <summary>Bridge deck height for a street piece in hex t that leaves by the edges toward na and nb, or -inf.</summary>
+        public static float Deck(WorldModel w, int t, int na, int nb)
+        {
+            if (!IsWet(w, t) && !IsWet(w, na) && !IsWet(w, nb)) return float.NegativeInfinity;
+            var v = w.View;
+            float top = Mathf.Max(v.Water[t], w.Height[t]);
+            if (na >= 0) top = Mathf.Max(top, Mathf.Max(v.Water[na], w.Height[na]));
+            if (nb >= 0) top = Mathf.Max(top, Mathf.Max(v.Water[nb], w.Height[nb]));
+            return top + 0.06f;
+        }
+
+        /// <summary>Road surface height at (x, z): the ground across the road's width, or the bridge deck.</summary>
+        public static float Height(WorldModel w, float deck, float x, float z)
+        {
+            var v = w.View;
+            float y = Mathf.Max(v.GroundHeight(x, z), Mathf.Max(v.GroundHeight(x + 0.06f, z), v.GroundHeight(x - 0.06f, z)));
+            return Mathf.Max(y, deck) + 0.016f;
+        }
+    }
+}

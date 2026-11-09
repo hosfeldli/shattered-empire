@@ -6,6 +6,8 @@ using SE.Core.Diagnostics;
 using SE.Core.Protocol;
 using SE.Core.Stress;
 using SE.Net;
+using SE.Runtime.Audio;
+using SE.Runtime.Battlefields;
 using SE.Runtime.CameraControl;
 using SE.Runtime.Cities;
 using SE.Runtime.Effects;
@@ -15,22 +17,24 @@ using SE.Runtime.Military;
 using SE.Runtime.Rendering;
 using SE.Runtime.Session;
 using SE.Runtime.Social;
+using SE.Runtime.UI;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.UIElements;
 using Debug = UnityEngine.Debug;
 
 namespace SE.Runtime.App
 {
     /// <summary>
     /// The client's single entry point and frame loop. Order each frame: network (bounded apply, acks
-    /// first) → playback clock → camera and input → effects from combat events → incremental world
-    /// rebuilds (jobs) → instance buffers → draw calls. There is no per-object Update anywhere.
+    /// first) → playback clock → camera and input → effects and sound from combat events → incremental
+    /// world rebuilds (jobs) → instance buffers → draw calls → interface. No per-object Update anywhere.
     /// </summary>
-    public sealed class GameBootstrap : MonoBehaviour
+    public sealed class GameBootstrap : MonoBehaviour, IGameActions
     {
-        enum Phase { Menu, Connecting, Playing, Stress }
+        enum Phase { Menu, Connecting, Playing, Stress, Intro }
 
         LaunchOptions opts;
         Phase phase = Phase.Menu;
@@ -38,24 +42,31 @@ namespace SE.Runtime.App
         GameConnection net;
         TerrainRenderer terrain;
         FogField fog;
+        GroundField ground;
         CityRenderer city;
+        WarzoneRenderer warzone;
+        TrafficSystem traffic;
         UnitRenderer units;
         EffectsRenderer fx;
+        Atmosphere atmosphere;
+        AudioDirector audioDirector;
         RtsCamera rts;
         Commander commander;
+        Hud hud;
+        UIDocument uiDocument;
+        IntroDirector intro;
         readonly WrapImages images = new WrapImages();
         readonly PerfRecorder perf = new PerfRecorder();
         readonly FrameStats recent = new FrameStats();
-        InstanceBatch marks;
         Light sun;
         readonly Stopwatch clock = Stopwatch.StartNew();
         double Now => clock.Elapsed.TotalSeconds;
         float time;
-
-        // menu state
-        string serverUrl = LaunchOptions.PublicServer, playerName = "Commander", joinCode = "", menuStatus = "";
+        string serverUrl = LaunchOptions.PublicServer, playerName = "Commander";
         string pendingMode;
         bool showDiag, hideUi;
+        int ruinRev = -1, buildingRev = -1;
+        readonly HashSet<int> buildingTiles = new HashSet<int>();
 
         // benchmarks
         StressScenario stress;
@@ -71,57 +82,102 @@ namespace SE.Runtime.App
         float probeAt;
         string shotSegment = "";
         float shotAt;
-        // stall attribution (see Update)
         double stallNet, stallPresent, stallTerrain, stallCity, stallUnits;
         int stallMsgs, gcLast, gc1Last;
         static double Ms(long since) => (Stopwatch.GetTimestamp() - since) * 1000.0 / Stopwatch.Frequency;
+
+        // ------------------------------------------------------------------ IGameActions
+        public string Server { get => serverUrl; set => serverUrl = value; }
+        public string PlayerName { get => playerName; set => playerName = value; }
+        public AudioDirector Audio => audioDirector;
+        public bool CanInvite => phase == Phase.Playing && net?.SessionMatch != null && SocialPlatform.Current.Available;
+        public void InviteFriends() => SocialPlatform.Current.InviteFriends(net?.SessionMatch, "");
+        public void Quit() => Application.Quit();
+        public void FocusTile(int tile, float distance) => rts.FocusTile(tile, distance);
 
         // ------------------------------------------------------------------ start-up
         void Awake()
         {
             opts = LaunchOptions.FromCommandLine();
             Application.runInBackground = true;
-            QualitySettings.vSyncCount = opts.Int("vsync", opts.Has("perf") || opts.Get("mode") == "stress" ? 0 : 1);
+            bool bench = opts.Has("perf") || opts.Get("mode") == "stress";
+            QualitySettings.vSyncCount = opts.Int("vsync", bench ? 0 : 1);
             Application.targetFrameRate = QualitySettings.vSyncCount == 0 ? 1000 : -1;
             var cam = Camera.main;
-            if (cam == null) { cam = new GameObject("Main Camera") { tag = "MainCamera" }.AddComponent<Camera>(); }
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0.55f, 0.62f, 0.7f);
+            if (cam == null) cam = new GameObject("Main Camera") { tag = "MainCamera" }.AddComponent<Camera>();
+            if (cam.GetComponent<UniversalAdditionalCameraData>() == null) cam.gameObject.AddComponent<UniversalAdditionalCameraData>();
             cam.fieldOfView = 40f;
             sun = FindFirstObjectByType<Light>();
             if (sun == null) sun = new GameObject("Sun").AddComponent<Light>();
             sun.type = LightType.Directional;
             sun.transform.rotation = Quaternion.Euler(47f, -32f, 0f);
-            sun.color = new Color(1f, 0.95f, 0.86f);
-            sun.intensity = 1.25f;
             sun.shadows = LightShadows.Soft;
-            sun.shadowStrength = 0.85f;
             RenderSettings.ambientMode = AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = new Color(0.56f, 0.63f, 0.72f);
-            RenderSettings.ambientEquatorColor = new Color(0.44f, 0.44f, 0.4f);
-            RenderSettings.ambientGroundColor = new Color(0.22f, 0.2f, 0.17f);
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.Linear;
-            RenderSettings.fogColor = new Color(0.6f, 0.66f, 0.72f);
-            Shader.SetGlobalFloat("_SE_Wetness", 0f);
 
             RenderResources.Load();
             session = new ClientSession();
             terrain = new TerrainRenderer(session.World);
             fog = new FogField();
+            ground = new GroundField();
             city = new CityRenderer(session.World, session.Structures) { CivColor = id => session.CivColor(id) };
+            warzone = new WarzoneRenderer(session.World)
+            {
+                DefenceAt = t => buildingByTile.TryGetValue(t, out var b) && IsDefence(b.type) ? b.type : null,
+                BuildingOwnerAt = t => buildingByTile.TryGetValue(t, out var b) ? b.owner : -1,
+            };
+            traffic = new TrafficSystem(session.World);
             units = new UnitRenderer();
+            units.InTrench = t => warzone.HasTrench(t);
             fx = new EffectsRenderer();
+            atmosphere = new Atmosphere(cam, sun);
             rts = new RtsCamera(cam);
             rts.Bind(session.World);
             commander = new Commander(session, rts, units);
-            marks = new InstanceBatch(MeshKit.Ring, RenderResources.Instanced, 64) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, Buffering = 3 };
             session.BeforeGeometryChange = terrain.CompleteAll;
             session.Welcomed += OnWelcomed;
             session.Other += OnOther;
-            ApplyQuality(opts.Get("quality", "high"));
-            if (opts.Has("server")) serverUrl = opts.Get("server");
-            if (opts.Has("name")) playerName = opts.Get("name");
+            if (!bench) audioDirector = new AudioDirector(cam);
+            if (audioDirector != null) atmosphere.Thunder += delay => audioDirector.Play("thunder", new float3(rts.Focus.x, 4, rts.Focus.z), 0.8f, 30f, 3, rts.Distance);
+            if (!opts.Has("no-ui")) BuildInterface();
+            ApplyQuality(opts.Get("quality", PlayerPrefs.GetString("se.quality", "high")));
+            serverUrl = opts.Has("server") ? opts.Get("server") : PlayerPrefs.GetString("se.server", LaunchOptions.PublicServer);
+            playerName = opts.Get("name", PlayerPrefs.GetString("se.name", "Commander"));
+        }
+
+        void BuildInterface()
+        {
+            var go = new GameObject("SE Interface");
+            uiDocument = go.AddComponent<UIDocument>();
+            var ps = ScriptableObject.CreateInstance<PanelSettings>();
+            ps.themeStyleSheet = Resources.Load<ThemeStyleSheet>("UI/SETheme");
+            ps.scaleMode = PanelScaleMode.ScaleWithScreenSize;
+            ps.referenceResolution = new Vector2Int(1920, 1080);
+            ps.screenMatchMode = PanelScreenMatchMode.MatchWidthOrHeight;
+            ps.match = 0.5f;
+            uiDocument.panelSettings = ps;
+            hud = new Hud(uiDocument.rootVisualElement, session, commander, units, this);
+            hud.TileScreen = tile =>
+            {
+                var g = session.World.Grid;
+                float x = g.NearX(g.CenterX(tile), rts.Focus.x), z = g.CenterZ(tile);
+                return rts.ToScreen(new Vector3(x, session.World.GroundHeight(x, z), z));
+            };
+            hud.CameraFocus = () => rts.Focus;
+            hud.Map.FocusMap = (x, z) => { int t = session.World.Grid.TileAt(x, z); if (t >= 0) rts.FocusTile(t, rts.Distance); };
+            var corners = new Vector2[4];
+            hud.Map.ViewCorners = () =>
+            {
+                // where the screen's corners meet the ground (a little inside the top edge, which may see sky)
+                Vector2[] screen = { new Vector2(0, 0), new Vector2(Screen.width, 0), new Vector2(Screen.width, Screen.height * 0.92f), new Vector2(0, Screen.height * 0.92f) };
+                for (int k = 0; k < 4; k++)
+                {
+                    if (!rts.TryGround(screen[k], out var gp)) return null;
+                    corners[k] = new Vector2(gp.x, gp.z);
+                }
+                return corners;
+            };
         }
 
         void Start()
@@ -129,8 +185,9 @@ namespace SE.Runtime.App
             var mode = opts.Get("mode");
             if (mode == "stress") StartStress();
             else if (mode != "") StartMatch(mode, opts.Get("match"));
-            if (phase == Phase.Menu && mode != "stress")
-                SocialPlatform.Current.JoinRequested += code => StartMatch("join", code);
+            else if (PlayerPrefs.GetInt("se.intro.seen", 0) == 0 && hud != null) PlayIntro();
+            else ShowMenu("");
+            SocialPlatform.Current.JoinRequested += code => StartMatch("join", code);
         }
 
         public void ApplyQuality(string preset)
@@ -155,26 +212,63 @@ namespace SE.Runtime.App
                     terrain.TreeDensity = 1f; terrain.TreeDistance = 110; terrain.LodDistance = 70; fx.Intensity = 1f;
                     break;
             }
+            terrain.MarkAllDirty();
+        }
+
+        // ------------------------------------------------------------------ menu with a living world behind it
+        void ShowMenu(string status)
+        {
+            phase = Phase.Menu;
+            net?.Dispose(); net = null;
+            stress = null; perfRunning = false;
+            var gen = StressWorld.Generate(160, 3);
+            session.ApplyWelcome(new WelcomeMessage { W = 160, H = 160, Wrap = true, CivId = 0, Seed = 3, Match = "menu", Civs = new[] { new CivInfo { Id = 0, Name = "", Color = 0x8a7a5a } } });
+            session.ApplyGeo(gen.Geo);
+            for (int i = 0; i < session.World.Visible.Length; i++) session.World.Visible[i] = 0xff;
+            session.World.ApplyVisibility(session.World.Visible);
+            fog.Enabled = false;
+            rts.UserControl = false;
+            rts.PitchOverride = 30f;
+            rts.FocusTile(session.World.Grid.N / 2 + session.World.Grid.W / 3, 55f);
+            hud?.ShowMenu(true, status);
+        }
+
+        public void PlayIntro()
+        {
+            if (uiDocument == null) return;
+            hud.ShowMenu(false, null);
+            hud.ShowGame(false);
+            phase = Phase.Intro;
+            fog.Enabled = false;
+            rts.PitchOverride = -1f;
+            intro = new IntroDirector(session, rts, atmosphere, fx, audioDirector, uiDocument.rootVisualElement);
+            intro.Finished += () => { intro = null; ShowMenu(""); };
+            intro.Start();
         }
 
         // ------------------------------------------------------------------ matches
-        void StartMatch(string mode, string match)
+        public void StartMatch(string mode, string match)
         {
+            if (string.IsNullOrEmpty(mode)) { ShowMenu(""); return; }
+            PlayerPrefs.SetString("se.server", serverUrl); PlayerPrefs.SetString("se.name", playerName); PlayerPrefs.Save();
             net?.Dispose();
             net = new GameConnection(() => Now);
             session.Attach(net);
             pendingMode = mode;
             phase = Phase.Connecting;
-            menuStatus = "Connecting to " + serverUrl + "…";
-            battleKey = opts.Get("battle");
+            fog.Enabled = true;
+            rts.PitchOverride = -1f;
+            hud?.ShowMenu(true, "Connecting to " + serverUrl + "…");
+            battleKey = opts.Get("battle", mode == "sandbox" ? "massive" : "");
             perfZooms = opts.Floats("perf-zooms", 14f, 40f);
             perfSeconds = opts.Float("perf", 0);
             perfOut = opts.Get("perf-out");
+            arena = -1;
             if (mode == "rejoin")
             {
                 net.SessionMatch = PlayerPrefs.GetString("se.match", "");
                 net.SessionToken = PlayerPrefs.GetString("se.token", "");
-                if (net.SessionMatch == "") { menuStatus = "No earlier match to return to."; phase = Phase.Menu; return; }
+                if (net.SessionMatch == "") { ShowMenu("No earlier match to return to."); return; }
             }
             else if (mode == "join" || mode == "spectate")
                 net.Send(new JObject { ["t"] = mode, ["match"] = match, ["name"] = playerName });
@@ -192,10 +286,22 @@ namespace SE.Runtime.App
 
         void OnWelcomed()
         {
-            phase = phase == Phase.Stress ? Phase.Stress : Phase.Playing;
+            if (phase == Phase.Connecting) phase = Phase.Playing;
+            if (session.Rejoined && phase == Phase.Playing)
+            {
+                // a reconnect: everything stays on screen, the selection and orders in progress included
+                commander.Say("Reconnected", true, time);
+                return;
+            }
             terrain.SetSeed(session.Welcome.Seed);
+            city.Seed = session.Welcome.Seed;
             fx.ClearPersistent();
             units.Selected.Clear();
+            commander.Cancel();
+            if (phase != Phase.Playing) return;
+            rts.UserControl = true;
+            hud?.ShowMenu(false, null);
+            hud?.ShowGame(true);
             if (net != null)
             {
                 PlayerPrefs.SetString("se.match", net.SessionMatch ?? "");
@@ -203,18 +309,17 @@ namespace SE.Runtime.App
                 PlayerPrefs.Save();
             }
             // a rejoin of the same match keeps the camera where it was; a new match starts at home
-            if (session.Welcome.Start >= 0 && (rts.Distance <= 0 || pendingMode != "rejoin-same")) rts.FocusTile(session.Welcome.Start, 30f);
+            if (session.Welcome.Start >= 0 && pendingMode != "rejoin-same") rts.FocusTile(session.Welcome.Start, 30f);
             pendingMode = "rejoin-same";
             if (!string.IsNullOrEmpty(battleKey) && session.Welcome.Sandbox && arena < 0) StageBattle();
         }
 
         void OnOther(ServerMessage m)
         {
-            if (m.T == "error" && phase == Phase.Connecting) { menuStatus = m.Error; }
-            if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby") menuStatus = "Waiting in the match lobby (code " + ProtocolDecoder.Str(m.Raw["match"], "") + ")";
+            if (m.T == "error" && phase == Phase.Connecting) hud?.ShowMenu(true, m.Error);
+            if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby") hud?.ShowMenu(true, "Waiting in the match lobby (code " + ProtocolDecoder.Str(m.Raw["match"], "") + "). Share the code, or invite friends on Steam.");
         }
 
-        /// <summary>The Godot client's --battle staging, through the same server commands.</summary>
         void StageBattle()
         {
             net.Command(new JObject { ["c"] = "sandbox", ["op"] = "scenario", ["key"] = battleKey }, r =>
@@ -226,8 +331,7 @@ namespace SE.Runtime.App
                 rts.FocusTile(arena, 24f);
                 var all = new List<int>();
                 foreach (var t in battleUnits) all.Add((int)t);
-                int third = all.Count / 3;
-                net.Command(new JObject { ["c"] = "fortify", ["units"] = new JArray(all.GetRange(0, third).ToArray()) });
+                net.Command(new JObject { ["c"] = "fortify", ["units"] = new JArray(all.GetRange(0, all.Count / 3).ToArray()) });
                 Invoke(nameof(Advance), 6f);
                 if (perfSeconds > 0 && !perfRunning) StartCoroutine(LivePerf());
             });
@@ -235,7 +339,7 @@ namespace SE.Runtime.App
 
         void Advance()
         {
-            if (battleUnits == null) return;
+            if (battleUnits == null || net == null) return;
             var all = new List<int>();
             foreach (var t in battleUnits) all.Add((int)t);
             int third = all.Count / 3;
@@ -264,9 +368,12 @@ namespace SE.Runtime.App
         }
 
         // ------------------------------------------------------------------ offline stress scene (M2)
-        void StartStress()
+        public void StartStress()
         {
+            hud?.ShowMenu(false, null);
+            hud?.ShowGame(false);
             phase = Phase.Stress;
+            rts.PitchOverride = -1f;
             int seed = opts.Int("seed", 7);
             int size = opts.Int("stress-size", 256);
             stressSeconds = opts.Float("stress-seconds", 60);
@@ -275,17 +382,17 @@ namespace SE.Runtime.App
             session.ApplyWelcome(new WelcomeMessage
             {
                 W = size, H = size, Wrap = true, CivId = 0, Seed = seed, Match = "stress", Ruleset = "native-v4",
-                Civs = new[] { new CivInfo { Id = 0, Name = "Ironford Compact", Color = 0x3f7fbf, Human = true }, new CivInfo { Id = 1, Name = "Ashen Directorate", Color = 0xbf4a3a } },
+                Civs = new[] { new CivInfo { Id = 0, Name = "Meridian Reclamation", Color = 0x3f7fbf, Human = true }, new CivInfo { Id = 1, Name = "Ashfall Directorate", Color = 0xbf4a3a } },
             });
             session.ApplyGeo(gen.Geo);
             stress = new StressScenario(seed);
             stress.Setup(session.World, opts.Int("stress-units", 1000), opts.Int("stress-buildings", 450));
+            session.World.MarkRoadsChanged();
             session.Age = opts.Int("stress-age", 3);
             fog.Enabled = false;
             rts.UserControl = false;
-            var g = session.World.Grid;
             int city0 = stress.CityTile, front = stress.ArenaTile;
-            tour = new CameraTour(g)
+            tour = new CameraTour(session.World.Grid)
                 .Add("city_strategic", city0, city0, 150, 120, 0, 6)
                 .Add("city_tactical", city0, city0, 14, 12, 18, 8, () => stress.BurstBuild(10))
                 .Add("fast_pan", city0, front, 35, 35, 0, 4)
@@ -293,7 +400,6 @@ namespace SE.Runtime.App
                 .Add("battle_operational", front, front, 40, 40, 6, 6)
                 .Add("strategic_sweep", front, -1, 240, 240, 0, 8)
                 .Add("zoom_dive", front, front, 240, 10, 0, 4);
-            menuStatus = "Stress scene: " + stress.UnitCount + " units, " + stress.BuildingCount + " buildings";
         }
 
         void StepStress(float dt)
@@ -301,14 +407,8 @@ namespace SE.Runtime.App
             var snap = stress.Step(dt);
             if (snap != null) session.ApplySnapshot(snap);
             tour.Update(dt, rts, out string segment);
-            // the first seconds build every chunk; measure the steady state, as a player would see it
             if (time > 4f) perf.Begin(segment);
-            // -shots DIR: one screenshot in the middle of each tour segment (visual check of the scene)
-            if (opts.Has("shots") && segment != shotSegment && time > 4f)
-            {
-                shotSegment = segment;
-                shotAt = time + 1.5f;
-            }
+            if (opts.Has("shots") && segment != shotSegment && time > 4f) { shotSegment = segment; shotAt = time + 1.5f; }
             if (shotAt > 0 && time >= shotAt)
             {
                 shotAt = 0;
@@ -318,15 +418,14 @@ namespace SE.Runtime.App
             }
             if (time >= stressSeconds + 4f)
             {
+                Debug.Log("PHASES avg/max ms: " + PhaseSummary(false));
                 PerfRecorder.Save(perfOut, perf.Report(j =>
                 {
                     j.Str("scenario", "offline-stress").Num("map", session.World.Grid.W).Num("units", stress.UnitCount).Num("buildings", stress.BuildingCount)
                      .Num("terrain_chunks_built", terrain.ChunksBuilt).Num("city_cells", city.CellCount).Num("particles_skipped", fx.Skipped);
                 }));
                 if (!Application.isEditor) Application.Quit();
-                stress = null;
-                rts.UserControl = true;
-                phase = Phase.Playing;
+                ShowMenu("");
             }
         }
 
@@ -336,25 +435,26 @@ namespace SE.Runtime.App
             long t0 = Stopwatch.GetTimestamp();
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.25f);
             time += dt;
-            // a long previous frame is logged with where its time went, so stalls name their cause
             double lastFrameMs = Time.unscaledDeltaTime * 1000.0;
             int gcNow = System.GC.CollectionCount(0);
-            if (lastFrameMs > 50 && time > 2f)
-                Debug.Log($"STALL {lastFrameMs:F0} ms: net {stallNet:F1} present {stallPresent:F1} (terrain {stallTerrain:F1} city {stallCity:F1} units {stallUnits:F1} = pos {units.PositionsMs:F1} build {units.BuildMs:F1} upload {units.UploadMs:F1}) gc0 +{gcNow - gcLast} gc1 +{System.GC.CollectionCount(1) - gc1Last} msgs {stallMsgs}");
+            if (lastFrameMs > 50 && time > 2f && (phase == Phase.Stress || perfRunning))
+                Debug.Log($"STALL {lastFrameMs:F0} ms: net {stallNet:F1} present {stallPresent:F1} [{PhaseSummary(true)}] units pos {units.PositionsMs:F1} build {units.BuildMs:F1} upload {units.UploadMs:F1} gc0 +{gcNow - gcLast} gc1 +{System.GC.CollectionCount(1) - gc1Last} msgs {stallMsgs} particles {fx.Live}");
             gcLast = gcNow; gc1Last = System.GC.CollectionCount(1);
             long tn = Stopwatch.GetTimestamp();
             int before = session.Snapshots + session.GeoMessages;
             net?.Update(4.0);
             stallNet = Ms(tn); stallMsgs = session.Snapshots + session.GeoMessages - before;
-            if (phase == Phase.Connecting && net != null && net.State == GameConnection.Status.Retrying) menuStatus = "Cannot reach " + serverUrl + "; retrying…";
-            if (phase != Phase.Stress && phase != Phase.Menu) SocialPlatform.Current.Tick();
+            if (phase == Phase.Connecting && net != null && net.State == GameConnection.Status.Retrying) hud?.ShowMenu(true, "Cannot reach " + serverUrl + "; retrying…");
+            if (phase == Phase.Playing) SocialPlatform.Current.Tick();
             if (stress != null) StepStress(dt);
+            intro?.Update(dt);
+            if (phase == Phase.Menu) { rts.Yaw += dt * 2.5f; rts.Apply(); }
             if (InputFacade.Pressed(KeyCode.F3)) showDiag = !showDiag;
             if (InputFacade.Pressed(KeyCode.F10)) hideUi = !hideUi;
             long tp = Stopwatch.GetTimestamp();
             if (session.Ready) Present(dt);
             stallPresent = Ms(tp);
-            // live probe for command acknowledgment latency during benchmarks (a no-op order)
+            hud?.Update(time);
             if (perfRunning && net != null && net.State == GameConnection.Status.Ready && time > probeAt)
             {
                 probeAt = time + 0.5f;
@@ -371,37 +471,140 @@ namespace SE.Runtime.App
             session.Units.AdvanceClock(dt, session.PlayRate, session.Paused);
             if (session.DirtyChunks.Count > 0) { terrain.MarkDirty(session.DirtyChunks); session.DirtyChunks.Clear(); }
             if (session.DirtyCells.Count > 0) { city.MarkDirty(session.DirtyCells); session.DirtyCells.Clear(); }
-            if (phase != Phase.Stress) rts.Update(dt);
-            commander.Update(time, PointerOverUi());
+            if (ruinRev != session.RuinRevision)
+            {
+                ruinRev = session.RuinRevision;
+                city.Ruins.Clear();
+                foreach (var r in session.Ruins) if (r.Tile >= 0 && r.Tile < world.Grid.N) { city.Ruins[r.Tile] = r; city.MarkDirty(new[] { world.ChunkOf(r.Tile) }); }
+            }
+            bool overUi = hud != null && hud.IsPointerOverUi(InputFacade.MousePosition);
+            if (phase == Phase.Playing && !(hud?.MenuVisible ?? false)) rts.Update(dt);
+            rts.Shake = fx.Shake;
+            if (phase == Phase.Playing) commander.Update(time, overUi);
+            long tq = Stopwatch.GetTimestamp();
             PresentEvents();
+            Mark(0, ref tq);
             fog.Update(world);
+            if (ground.Update(world, session.Battlefield, session.BattlefieldRevision, session.Weather, session.WeatherRevision, world.UrbanRevision))
+                for (int i = 0; i < world.Grid.N; i++) if (ground.IsWasteland(i)) terrain.SetBlocked(i, true);
+            Mark(1, ref tq);
             var camMap = rts.MapPosition;
             long ts = Stopwatch.GetTimestamp();
             terrain.Update(camMap);
             stallTerrain = Ms(ts); ts = Stopwatch.GetTimestamp();
+            Mark(2, ref tq);
             city.Age = session.Age;
             city.Update(camMap, terrain);
+            Mark(3, ref tq);
+            warzone.Update(session.Trenches, session.TrenchRevision, session.Battlefield, session.BattlefieldRevision, DefenceSignature(), ground.IsWasteland);
+            Mark(4, ref tq);
+            traffic.RequireVisible = fog.Enabled;
+            traffic.Update(dt, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, time, atmosphere.Dim * (1f - atmosphere.Storm * 0.5f));
+            Mark(5, ref tq);
             stallCity = Ms(ts); ts = Stopwatch.GetTimestamp();
             var cam = rts.Cam;
             float camX = cam.transform.position.x;
             units.Update(session.Units, world, session.CivColor, camX, rts.Distance, time, dt);
             stallUnits = Ms(ts);
+            Mark(6, ref tq);
+            atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);
+            Mark(7, ref tq);
             fx.Update(dt, camX, world.Grid.Period, world.Grid.Wrap);
-            RenderSettings.fogStartDistance = rts.Distance * 2.5f;
-            RenderSettings.fogEndDistance = rts.Distance * 6f + 250f;
+            Mark(8, ref tq);
+            if (audioDirector != null) UpdateAudio(dt);
             images.Begin(cam, world.Grid.Period, world.Grid.Wrap);
             terrain.Draw(images, cam.transform.position);
             city.Draw(images);
+            warzone.Draw(images);
+            traffic.Draw();
             units.Draw();
             fx.Draw(images);
-            DrawOrders(world);
+            atmosphere.Draw();
+            if (phase == Phase.Playing) commander.DrawOverlay(images, time);
+            Mark(9, ref tq);
+            phaseFrames++;
+        }
+
+        // per-phase cost of Present (diagnostics: logged with stalls and summarised after a benchmark)
+        static readonly string[] PhaseNames = { "events", "fog+ground", "terrain", "city", "warzone", "traffic", "units", "atmosphere", "fx", "draw" };
+        readonly double[] phaseMs = new double[10], phaseSum = new double[10], phaseMax = new double[10];
+        long phaseFrames;
+        void Mark(int k, ref long since)
+        {
+            long now = Stopwatch.GetTimestamp();
+            double ms = (now - since) * 1000.0 / Stopwatch.Frequency;
+            since = now;
+            phaseMs[k] = ms; phaseSum[k] += ms; if (ms > phaseMax[k]) phaseMax[k] = ms;
+        }
+
+        string PhaseSummary(bool last)
+        {
+            var sb = new StringBuilder();
+            for (int k = 0; k < PhaseNames.Length; k++)
+                sb.Append(PhaseNames[k]).Append(' ').Append((last ? phaseMs[k] : phaseSum[k] / Mathf.Max(1, phaseFrames)).ToString("0.00"))
+                  .Append(last ? "" : "/" + phaseMax[k].ToString("0.0")).Append("  ");
+            return sb.ToString();
+        }
+
+        // Trenches join the defences beside them: rebuild them only when the defences themselves change,
+        // not whenever any building's health or progress ticks.
+        int defenceRev = -1, defenceSig;
+        readonly Dictionary<int, (string type, int owner)> buildingByTile = new Dictionary<int, (string, int)>();
+        int DefenceSignature()
+        {
+            if (defenceRev == session.Structures.Revision) return defenceSig;
+            defenceRev = session.Structures.Revision;
+            buildingByTile.Clear();
+            unchecked
+            {
+                int sig = 17;
+                foreach (var b in session.Structures.Buildings.Values)
+                {
+                    if (b.Tile < 0) continue;
+                    buildingByTile[b.Tile] = (b.Type, b.Owner);
+                    if (IsDefence(b.Type)) sig = sig * 31 + b.Tile * 7 + b.Owner + (b.Done ? 1 : 0);
+                }
+                defenceSig = sig;
+            }
+            return defenceSig;
+        }
+
+        static bool IsDefence(string type) => type == "bunker" || type == "guard_post" || type == "fort" || type == "aa_battery";
+
+        void UpdateAudio(float dt)
+        {
+            var w = session.World;
+            int focusTile = w.Grid.TileAt(rts.Focus.x, rts.Focus.z);
+            float urban = 0, river = 0; int n = 0;
+            if (focusTile >= 0)
+                for (int d = -1; d < 6; d++)
+                {
+                    int t = d < 0 ? focusTile : w.Grid.Nb[focusTile * 6 + d];
+                    if (t < 0) continue;
+                    n++;
+                    if (w.IsUrban(t) || HasBuilding(t)) urban++;
+                    if (w.IsRiver(t) || (w.GeoFlags[t] & 128) != 0) river = 1;
+                }
+            float wind = Mathf.Clamp01(atmosphere.WindMap.x * atmosphere.WindMap.x + atmosphere.WindMap.z * atmosphere.WindMap.z);
+            audioDirector.Update(dt, session.Units, id => units.TryGetPosition(session.Units, id, out var p) ? p : (Vector2?)null, w,
+                new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, n > 0 ? urban / n : 0, river, atmosphere.Rain, wind);
+        }
+
+        bool HasBuilding(int tile)
+        {
+            if (buildingRev != session.Structures.Revision)
+            {
+                buildingRev = session.Structures.Revision;
+                buildingTiles.Clear();
+                foreach (var b in session.Structures.Buildings.Values) buildingTiles.Add(b.Tile);
+            }
+            return buildingTiles.Contains(tile);
         }
 
         float fireAt;
         void PresentEvents()
         {
             var world = session.World;
-            var g = world.Grid;
             var store = session.Units;
             float reach = Mathf.Max(60f, rts.Distance * 3f);
             foreach (var e in session.Events)
@@ -412,28 +615,34 @@ namespace SE.Runtime.App
                     {
                         var p = UnitOrTile(e.Shooter, e.From, 0.06f);
                         if (!Near(p, reach)) break;
-                        bool heavy = false, aa = false;
+                        bool heavy = false, aa = false; string sound = "rifle";
                         if (store.TryGet(e.Shooter, out var shooter))
                         {
                             var type = store.Types.Name(shooter.TypeIndex);
                             heavy = type.Contains("tank") || type == "field_gun" || type == "sp_artillery" || type == "armored_car";
                             aa = type == "air_defense";
+                            sound = type.Contains("tank") || type == "field_gun" ? "cannon" : type == "armored_car" || type == "scout_buggy" ? "mg" : type == "mech_infantry" ? "autocannon" : aa ? "flak" : "rifle";
                         }
                         fx.Muzzle(p, heavy);
+                        var target = UnitOrTile(e.Target, e.To, 0.05f);
+                        fx.Tracer(p, target, heavy);
                         units.NoteShot(e.Shooter, e.Target, time);
+                        audioDirector?.Play(sound, p, heavy ? 0.9f : 0.5f, heavy ? 4f : 1.5f, heavy ? 2 : 1, rts.Distance);
                         if (aa || IsAirTarget(e.Target))
                         {
                             // anti-aircraft fire bursts in the sky around the target
-                            var t = UnitOrTile(e.Target, e.To, 0f);
                             for (int k = 0; k < 3; k++)
-                                fx.AirBurst(t + new float3(UnityEngine.Random.Range(-0.4f, 0.4f), 1.1f + UnityEngine.Random.Range(0f, 0.9f), UnityEngine.Random.Range(-0.4f, 0.4f)));
+                                fx.AirBurst(target + new float3(UnityEngine.Random.Range(-0.4f, 0.4f), 1.1f + UnityEngine.Random.Range(0f, 0.9f), UnityEngine.Random.Range(-0.4f, 0.4f)));
+                            audioDirector?.Play("flak", target + new float3(0, 1.5f, 0), 0.7f, 5f, 2, rts.Distance);
                         }
                         break;
                     }
                     case "launch":
                     {
                         var p = TileCentre(e.From, 0.08f);
-                        if (Near(p, reach)) fx.Muzzle(p, true);
+                        if (!Near(p, reach)) break;
+                        fx.Muzzle(p, true);
+                        audioDirector?.Play("launch", p, 0.9f, 5f, 2, rts.Distance);
                         break;
                     }
                     case "impact":
@@ -442,8 +651,12 @@ namespace SE.Runtime.App
                         p.y = world.GroundHeight(p.x, p.z);
                         if (!Near(p, reach)) { fx.Crater(p, 0.2f); break; }
                         float scale = Mathf.Max(0.6f, e.Radius > 0 ? e.Radius * 1.4f : 0.7f);
-                        if (e.Airburst) fx.AirBurst(p + new float3(0, 0.6f, 0));
-                        else { fx.Explosion(p, scale); fx.Crater(p, 0.16f * scale + 0.06f); }
+                        if (e.Airburst) { fx.AirBurst(p + new float3(0, 0.6f, 0)); audioDirector?.Play("flak", p, 0.8f, 5f, 2, rts.Distance); }
+                        else
+                        {
+                            fx.Explosion(p, scale); fx.Crater(p, 0.16f * scale + 0.06f);
+                            audioDirector?.Play(scale > 1.1f ? "explosion_big" : "explosion", p, 1f, 6f, 3, rts.Distance);
+                        }
                         break;
                     }
                     case "hit":
@@ -456,7 +669,9 @@ namespace SE.Runtime.App
                     case "bhit":
                     {
                         var p = TileCentre(e.To, 0.1f) + Jitter(0.3f);
-                        if (Near(p, reach)) fx.Explosion(p, 0.7f);
+                        if (!Near(p, reach)) break;
+                        fx.Explosion(p, 0.7f);
+                        audioDirector?.Play(e.Outcome == "destroyed" ? "collapse" : "explosion", p, 1f, 6f, 3, rts.Distance);
                         break;
                     }
                     case "kill":
@@ -467,24 +682,49 @@ namespace SE.Runtime.App
                         if (t.Contains("tank") || t.Contains("car") || t.Contains("truck") || t.Contains("buggy") || t.Contains("artillery") || t == "mech_infantry" || t == "air_defense" || t == "missile_battery")
                         {
                             fx.Wreck(p, UnityEngine.Random.value * 6.28f, 0.16f);
-                            if (Near(p, reach)) fx.Explosion(p, 0.9f);
+                            if (Near(p, reach)) { fx.Explosion(p, 0.9f); audioDirector?.Play("explosion_big", p, 1f, 6f, 3, rts.Distance); }
                         }
+                        break;
+                    }
+                    case "mimpact":
+                    {
+                        // a strategic warhead or (half strength) a destroyed reactor: seen and heard from afar
+                        var p = TileCentre(e.To, 0f);
+                        fx.Strategic(p, e.Half ? 0.5f : 1f);
+                        audioDirector?.Play("strategic", p, 1f, 60f, 5, rts.Distance);
                         break;
                     }
                 }
             }
             session.Events.Clear();
-            // burning buildings
+            // burning buildings and burning wrecks
             fireAt -= Time.unscaledDeltaTime;
             if (fireAt <= 0)
             {
                 fireAt = 0.15f;
+                bool closeEnough = rts.Distance < 70f;
                 foreach (var b in session.Structures.Buildings.Values)
                 {
-                    if (!b.Fire || b.Tile < 0) continue;
-                    var p = TileCentre(b.Tile, 0.12f);
-                    if (Near(p, reach)) fx.Fire(p + Jitter(0.25f), 0.35f);
+                    if (b.Tile < 0) continue;
+                    if (b.Fire)
+                    {
+                        var p = TileCentre(b.Tile, 0.12f);
+                        if (Near(p, reach)) fx.Fire(p + Jitter(0.25f), 0.35f);
+                        continue;
+                    }
+                    // working industry breathes: soot from stacks, steam from cooling towers
+                    if (!closeEnough || !b.Done || b.Staffed == 0 && b.Owner == session.CivId) continue;
+                    if (!city.Stacks.TryGetValue(b.Id, out var stacks) || UnityEngine.Random.value > 0.45f) continue;
+                    var c = TileCentre(b.Tile, 0f);
+                    if (!Near(c, Mathf.Min(reach, 45f))) continue;
+                    foreach (var s in stacks)
+                    {
+                        // stacks are composed in the base image; bring them next to the camera
+                        var sp = s.Pos; sp.x = world.Grid.NearX(sp.x, rts.Focus.x);
+                        fx.Smoke(sp, atmosphere.WindMap, s.Steam, s.Size);
+                    }
                 }
+                foreach (var p in warzone.BurningWrecks) if (Near(p, reach)) fx.Fire(p, 0.15f);
             }
         }
 
@@ -519,154 +759,55 @@ namespace SE.Runtime.App
             return dx * dx + dz * dz < reach * reach;
         }
 
-        void DrawOrders(SE.Core.World.WorldModel world)
-        {
-            marks.Clear();
-            foreach (var o in commander.Orders)
-            {
-                float a = 1f - Mathf.Clamp01((time - o.Time) / (o.State == "pending" ? 8f : 1.5f));
-                var col = o.State == "pending" ? new float4(1f, 0.82f, 0.25f, 0.6f) : o.State == "accepted" ? new float4(0.35f, 1f, 0.45f, 0.6f * a) : new float4(1f, 0.3f, 0.25f, 0.8f * a);
-                float pulse = o.State == "pending" ? 0.5f + 0.1f * Mathf.Sin(time * 8f) : 0.5f + (1f - a) * 0.3f;
-                var p = MapSpace.W(new float3(o.MapPoint.x, world.GroundHeight(o.MapPoint.x, o.MapPoint.z) + 0.02f, o.MapPoint.z));
-                marks.Add(InstanceData.TRS(p, 0, new float3(pulse), col));
-            }
-            marks.DrawImages(images);
-        }
-
-        bool PointerOverUi()
-        {
-            var m = InputFacade.MousePosition;
-            float y = Screen.height - m.y;
-            return y < 34 || (y > Screen.height - 28);
-        }
-
         void OnDestroy()
         {
-            terrain?.Dispose(); city?.Dispose(); units?.Dispose(); fx?.Dispose(); fog?.Dispose(); marks?.Dispose();
+            terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); traffic?.Dispose(); units?.Dispose(); fx?.Dispose(); fog?.Dispose(); ground?.Dispose();
+            atmosphere?.Dispose(); audioDirector?.Dispose(); commander?.Dispose();
             net?.Dispose();
             session?.World.Dispose();
         }
 
         void OnApplicationQuit() { if (phase != Phase.Stress) SocialPlatform.Current.Shutdown(); }
 
-        // ------------------------------------------------------------------ interface (minimal; UI Toolkit HUD arrives in M6)
-        GUIStyle title, label, small, button, field, panel;
-        string hudText = "", diagText = "";
-        float hudAt;
-
-        void Styles()
-        {
-            if (title != null) return;
-            title = new GUIStyle(GUI.skin.label) { fontSize = 46, alignment = TextAnchor.MiddleCenter, normal = { textColor = new Color(0.93f, 0.9f, 0.82f) } };
-            label = new GUIStyle(GUI.skin.label) { fontSize = 15, normal = { textColor = new Color(0.92f, 0.9f, 0.84f) } };
-            small = new GUIStyle(GUI.skin.label) { fontSize = 12, wordWrap = true, normal = { textColor = new Color(0.8f, 0.83f, 0.8f) } };
-            button = new GUIStyle(GUI.skin.button) { fontSize = 15, fixedHeight = 34 };
-            field = new GUIStyle(GUI.skin.textField) { fontSize = 14, fixedHeight = 26 };
-            var bg = new Texture2D(1, 1); bg.SetPixel(0, 0, new Color(0.07f, 0.11f, 0.12f, 0.82f)); bg.Apply();
-            panel = new GUIStyle(GUI.skin.box) { normal = { background = bg } };
-        }
+        // ------------------------------------------------------------------ diagnostics overlay (F3)
+        GUIStyle small, box;
+        string diagText = "";
+        float diagAt;
 
         void OnGUI()
         {
-            Styles();
-            if (phase == Phase.Menu || phase == Phase.Connecting) { Menu(); return; }
-            if (time > hudAt) { hudAt = time + 0.25f; BuildTexts(); }
-            if (!hideUi && phase == Phase.Playing)
+            if (!(showDiag || phase == Phase.Stress) || hideUi) return;
+            if (small == null)
             {
-                GUI.Box(new Rect(0, 0, Screen.width, 32), GUIContent.none, panel);
-                GUI.Label(new Rect(10, 6, Screen.width - 240, 24), hudText, small);
-                var social = SocialPlatform.Current;
-                if (social.Available && net?.SessionMatch != null && GUI.Button(new Rect(Screen.width - 170, 2, 160, 28), "Invite friends")) social.InviteFriends(net.SessionMatch, "");
-                if (commander.Dragging(out var r)) GUI.Box(new Rect(r.x, Screen.height - r.yMax, r.width, r.height), GUIContent.none);
-                if (time < commander.FeedbackUntil) GUI.Label(new Rect(Screen.width / 2 - 250, Screen.height - 70, 500, 24), commander.Feedback, label);
-                if (InputFacade.Alt && rts.TryGround(InputFacade.MousePosition, out var gp))
-                {
-                    // tile details only while Alt is held
-                    int t = session.World.Grid.TileAt(gp.x, gp.z);
-                    if (t >= 0) GUI.Label(new Rect(InputFacade.MousePosition.x + 16, Screen.height - InputFacade.MousePosition.y, 260, 22), TileName(t), small);
-                }
+                small = new GUIStyle(GUI.skin.label) { fontSize = 12, wordWrap = true, normal = { textColor = new Color(0.85f, 0.88f, 0.84f) } };
+                var bg = new Texture2D(1, 1); bg.SetPixel(0, 0, new Color(0.05f, 0.08f, 0.09f, 0.8f)); bg.Apply();
+                box = new GUIStyle(GUI.skin.box) { normal = { background = bg } };
             }
-            if (showDiag || phase == Phase.Stress)
-            {
-                GUI.Box(new Rect(8, 40, 430, 250), GUIContent.none, panel);
-                GUI.Label(new Rect(16, 46, 420, 240), diagText, small);
-            }
+            if (time > diagAt) { diagAt = time + 0.25f; diagText = Diagnostics(); }
+            GUI.Box(new Rect(Screen.width - 446, 48, 438, 236), GUIContent.none, box);
+            GUI.Label(new Rect(Screen.width - 438, 54, 424, 226), diagText, small);
         }
 
-        static readonly string[] Biomes = { "Deep sea", "Shallows", "Grassland", "Plains", "Forest", "Desert", "Tundra", "Marsh", "Hills", "Mountains", "Peaks", "Lava fields", "Ash waste" };
-        string TileName(int t)
-        {
-            var w = session.World;
-            string b = w.Biome[t] < Biomes.Length ? Biomes[w.Biome[t]] : "Unknown";
-            if (w.IsLake(t)) b = "Lake"; else if (w.IsRiver(t)) b += ", river";
-            return b;
-        }
-
-        void BuildTexts()
+        string Diagnostics()
         {
             var sb = new StringBuilder(256);
-            if (session.Econ?["res"] is JObject res)
-            {
-                var rates = session.Econ["rates"] as JObject;
-                foreach (var p in res.Properties())
-                {
-                    float rate = ProtocolDecoder.Float(rates?[p.Name]);
-                    sb.Append(p.Name).Append(' ').Append(Mathf.RoundToInt(ProtocolDecoder.Float(p.Value)));
-                    if (Mathf.Abs(rate) >= 0.05f) sb.Append(rate > 0 ? " +" : " ").Append(rate.ToString("0.#"));
-                    sb.Append("    ");
-                }
-            }
-            else sb.Append(session.StatusText);
-            hudText = sb.ToString();
-            sb.Clear();
             var f = recent.Frames;
             sb.Append("FPS ").Append((1000.0 / Mathf.Max(0.01f, (float)f.Average())).ToString("0")).Append("   frame p50 ").Append(f.Percentile(0.5).ToString("0.0"))
               .Append(" p95 ").Append(f.Percentile(0.95).ToString("0.0")).Append(" p99 ").Append(f.Percentile(0.99).ToString("0.0")).Append(" ms   stalls>100ms ").Append(recent.Over100).Append('\n');
             sb.Append("units ").Append(session.Units.Count).Append(" drawn ").Append(units.Drawn).Append(" instances ").Append(units.Instances)
               .Append("   buildings ").Append(session.Structures.Buildings.Count).Append(" cells ").Append(city.CellCount).Append('\n');
             sb.Append("terrain chunks built ").Append(terrain.ChunksBuilt).Append(" dirty ").Append(terrain.DirtyCount).Append(" drawn ").Append(terrain.DrawnChunks)
-              .Append("   particles ").Append(fx.Live).Append('\n');
+              .Append("   particles ").Append(fx.Live).Append("   cars ").Append(traffic.Count).Append('\n');
             sb.Append("camera ").Append(rts.Distance.ToString("0")).Append("   snapshots ").Append(session.Snapshots).Append(" apply ").Append(session.ApplyMs.ToString("0.00")).Append(" ms\n");
+            sb.Append("weather cloud ").Append(atmosphere.Cloud.ToString("0.00")).Append(" rain ").Append(atmosphere.Rain.ToString("0.00")).Append("   trenches ").Append(session.Trenches.Length).Append('\n');
             if (net != null)
             {
                 sb.Append("net ").Append(net.State).Append(" proto ").Append(net.ProtocolVersion).Append(" [").Append(string.Join(",", net.Capabilities)).Append("] rtt ").Append(net.RttMs.ToString("0")).Append(" ms\n");
                 sb.Append("backlog ").Append(net.Link.Backlog).Append(" decode ").Append(net.Link.LastDecodeMs.ToString("0.0")).Append(" ms  in ").Append((net.Link.BytesIn / 1048576.0).ToString("0.0")).Append(" MB\n");
                 sb.Append("commands in flight ").Append(net.Commands.InFlight).Append("  ack p95 ").Append(net.Commands.AckMs.Percentile(0.95).ToString("0")).Append(" ms  timeouts ").Append(net.Commands.Timeouts).Append('\n');
             }
-            if (stress != null) sb.Append(menuStatus).Append('\n');
-            sb.Append("GPU ").Append(SystemInfo.graphicsDeviceName).Append("  F3 diagnostics  F10 hide UI");
-            diagText = sb.ToString();
-        }
-
-        void Menu()
-        {
-            float w = 420, x = (Screen.width - w) / 2, y = Screen.height * 0.16f;
-            GUI.Box(new Rect(0, 0, Screen.width, Screen.height), GUIContent.none, panel);
-            GUI.Label(new Rect(0, y, Screen.width, 60), "SHATTERED EMPIRES", title);
-            y += 80;
-            GUI.Label(new Rect(x, y, w, 22), "Server", label); y += 24;
-            serverUrl = GUI.TextField(new Rect(x, y, w, 26), serverUrl, field); y += 30;
-            if (GUI.Button(new Rect(x, y, w / 2 - 4, 24), "Public server")) serverUrl = LaunchOptions.PublicServer;
-            if (GUI.Button(new Rect(x + w / 2 + 4, y, w / 2 - 4, 24), "Local server")) serverUrl = LaunchOptions.LocalServer;
-            y += 32;
-            GUI.Label(new Rect(x, y, w, 22), "Name", label); y += 24;
-            playerName = GUI.TextField(new Rect(x, y, w, 26), playerName, field); y += 40;
-            GUI.enabled = phase == Phase.Menu;
-            if (GUI.Button(new Rect(x, y, w, 34), "Campaign against the AI", button)) StartMatch("ai", ""); y += 40;
-            if (GUI.Button(new Rect(x, y, w, 34), "Watch AI empires", button)) StartMatch("observe", ""); y += 40;
-            if (GUI.Button(new Rect(x, y, w, 34), "Return to my last match", button)) StartMatch("rejoin", ""); y += 40;
-            if (GUI.Button(new Rect(x, y, w, 34), "Combat sandbox (1,000 units)", button)) { battleKey = "massive"; opts = LaunchOptions.Parse(new[] { "", "-battle", "massive" }); StartMatch("sandbox", ""); }
-            y += 40;
-            joinCode = GUI.TextField(new Rect(x, y, w * 0.6f, 30), joinCode, field);
-            if (GUI.Button(new Rect(x + w * 0.62f, y, w * 0.38f, 30), "Join match code")) StartMatch("join", joinCode.Trim().ToLowerInvariant());
-            y += 40;
-            if (GUI.Button(new Rect(x, y, w, 34), "Performance stress scene", button)) StartStress(); y += 40;
-            if (GUI.Button(new Rect(x, y, w, 34), "Quit", button)) Application.Quit(); y += 44;
-            GUI.enabled = true;
-            if (phase == Phase.Connecting && GUI.Button(new Rect(x, y, w, 28), "Cancel")) { net?.Close(); phase = Phase.Menu; menuStatus = ""; }
-            y += 32;
-            var social = SocialPlatform.Current;
-            GUI.Label(new Rect(x, y, w, 60), menuStatus + (social.Available ? "\n" + social.Status : ""), small);
+            sb.Append("GPU ").Append(SystemInfo.graphicsDeviceName).Append("  F3 diagnostics  F10 hide");
+            return sb.ToString();
         }
     }
 

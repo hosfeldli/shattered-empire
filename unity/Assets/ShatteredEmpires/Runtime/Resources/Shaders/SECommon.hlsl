@@ -10,11 +10,38 @@
 TEXTURE2D(_SE_FogTex); SAMPLER(sampler_SE_FogTex);
 float4 _SE_FogParams;   // x = 1/period, y = 1/depth, z = enabled (0/1), w = explored-dim strength
 
+// map texture coordinates of a Unity world position (Unity z is the map's z mirrored; see MapSpace)
+float2 SE_MapUV(float3 positionWS) { return float2(positionWS.x * _SE_FogParams.x, -positionWS.z * _SE_FogParams.y); }
+
 float SE_Visibility(float3 positionWS)
 {
     if (_SE_FogParams.z < 0.5) return 1.0;
-    float2 uv = float2(positionWS.x * _SE_FogParams.x, positionWS.z * _SE_FogParams.y);
-    return SAMPLE_TEXTURE2D_LOD(_SE_FogTex, sampler_SE_FogTex, uv, 0).r;
+    return SAMPLE_TEXTURE2D_LOD(_SE_FogTex, sampler_SE_FogTex, SE_MapUV(positionWS), 0).r;
+}
+
+// per-hex ground state: r = developed city ground, g = shelled ground (no-man's land),
+// b = rain-wet ground, a = crater density
+TEXTURE2D(_SE_GroundTex); SAMPLER(sampler_SE_GroundTex);
+float4 SE_Ground(float3 positionWS) { return SAMPLE_TEXTURE2D_LOD(_SE_GroundTex, sampler_SE_GroundTex, SE_MapUV(positionWS), 0); }
+
+// drifting cloud shadows: x = cover (0..1), y = wind x, z = wind z, w = speed
+float4 _SE_Clouds;
+float SE_CloudNoise(float2 p)
+{
+    float2 i = floor(p), f = frac(p);
+    float2 u = f * f * (3 - 2 * f);
+    float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5);
+    float b = frac(sin(dot(i + float2(1, 0), float2(127.1, 311.7))) * 43758.5);
+    float c = frac(sin(dot(i + float2(0, 1), float2(127.1, 311.7))) * 43758.5);
+    float d = frac(sin(dot(i + float2(1, 1), float2(127.1, 311.7))) * 43758.5);
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+half SE_CloudShadow(float3 positionWS)
+{
+    if (_SE_Clouds.x <= 0.01) return 0;
+    float2 p = positionWS.xz * 0.045 - _SE_Clouds.yz * _Time.y * _SE_Clouds.w * 0.02;
+    float n = SE_CloudNoise(p) * 0.6 + SE_CloudNoise(p * 2.3 + 7.1) * 0.4;
+    return smoothstep(1.0 - _SE_Clouds.x * 0.85, 1.05 - _SE_Clouds.x * 0.6, n) * 0.5;
 }
 
 half3 SE_Shade(half3 albedo, float3 positionWS, half3 normalWS, half emission)

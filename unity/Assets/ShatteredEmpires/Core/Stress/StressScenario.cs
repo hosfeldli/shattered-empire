@@ -54,12 +54,62 @@ namespace SE.Core.Stress
 
         public StressScenario(int seed) { rng = new Random(seed); }
 
+        // presentation records a real match would carry: trench lines, old-world ruins, shelled ground, weather
+        readonly List<TrenchRecord> trenches = new List<TrenchRecord>();
+        readonly List<RuinRecord> ruins = new List<RuinRecord>();
+        readonly Dictionary<int, float> intensity = new Dictionary<int, float>();
+        readonly Dictionary<int, float> craters = new Dictionary<int, float>();
+        float weatherAt, weatherPhase;
+
+        void DigTrenchLines()
+        {
+            // two opposing WW1-style lines across the front, facing each other, with the hexes linked
+            for (int side = 0; side < 2; side++)
+            {
+                int anchor = WalkEast(ArenaTile, side == 0 ? -4 : 6);
+                int t = anchor;
+                for (int k = 0; k < 7; k++) t = g.Nb[t * 6 + 2] >= 0 ? g.Nb[t * 6 + 2] : t;   // walk north-west
+                var line = new List<int>();
+                for (int k = 0; k < 14; k++)
+                {
+                    if (!world.IsSea(t) && !world.IsLake(t)) line.Add(t);
+                    int nx = g.Nb[t * 6 + (k % 2 == 0 ? 4 : 5)];                                // south-west / south-east zig-zag
+                    if (nx < 0) break;
+                    t = nx;
+                }
+                for (int k = 0; k < line.Count; k++)
+                {
+                    int route = 0;
+                    for (int d = 0; d < 6; d++) { int n = g.Nb[line[k] * 6 + d]; if (n >= 0 && line.Contains(n)) route |= 1 << d; }
+                    trenches.Add(new TrenchRecord { Tile = line[k], Owner = side, Reinforced = k % 4 == 0, Dir = side == 0 ? 0 : 3, Progress = k < line.Count - 2 ? 100 : 60, Hp = 100, Route = route });
+                }
+            }
+        }
+
+        void PlaceRuins()
+        {
+            // salvage sites of the old world around the city and across the land
+            foreach (int t in Disk(CityTile, 20))
+            {
+                if (world.IsSea(t) || world.IsLake(t) || world.Owner[t] == 0 || rng.NextDouble() > 0.035) continue;
+                string[] kinds = { "city", "tower", "suburb", "plant", "suburb" };
+                ruins.Add(new RuinRecord { Tile = t, Type = kinds[rng.Next(kinds.Length)], Flags = rng.NextDouble() < 0.3 ? 2 : 0 });
+            }
+        }
+
         public void Setup(WorldModel model, int unitTarget, int buildingTarget)
         {
             world = model; g = model.Grid;
             CityTile = FindFlatLand(g.W / 2 + g.W * (g.H / 2));
             ArenaTile = FindFlatLand(WalkEast(CityTile, 22));
             BuildCity(buildingTarget);
+            DigTrenchLines();
+            PlaceRuins();
+            // the front has been shelled for a while: churned ground between the lines
+            foreach (int t in Disk(WalkEast(ArenaTile, 1), 5)) intensity[t] = Math.Max(1, 4 - g.Dist(t, WalkEast(ArenaTile, 1)) / 2);
+            // the city's developed core
+            foreach (int t in Disk(CityTile, 4)) if (!world.IsSea(t)) world.Urban[t >> 3] |= (byte)(1 << (t & 7));
+            world.ApplyUrban(world.Urban);
             int half = unitTarget / 2;
             for (int k = 0; k < unitTarget; k++)
             {
@@ -230,7 +280,13 @@ namespace SE.Core.Stress
                 if (a.Owner == b.Owner) continue;
                 bool artillery = a.Type.Contains("artillery") || a.Type == "mortar_team" || a.Type == "field_gun" || a.Type == "missile_battery";
                 pendingEvents.Add(new CombatEvent { Kind = artillery ? "launch" : "fire", Seq = ++eventSeq, From = a.Tile, To = b.Tile, Shooter = a.Id, Target = b.Id, Weapon = artillery ? 3 : 1, Flight = artillery ? 1.5f : 0 });
-                pendingEvents.Add(new CombatEvent { Kind = artillery ? "impact" : "hit", Seq = ++eventSeq, From = a.Tile, To = Near(b.Tile, 1), Target = b.Id, Outcome = "hit", Radius = artillery ? 0.6f : 0, Damage = 10 });
+                int hitTile = Near(b.Tile, 1);
+                pendingEvents.Add(new CombatEvent { Kind = artillery ? "impact" : "hit", Seq = ++eventSeq, From = a.Tile, To = hitTile, Target = b.Id, Outcome = "hit", Radius = artillery ? 0.6f : 0, Damage = 10 });
+                if (artillery)
+                {
+                    craters[hitTile] = Math.Min(3f, (craters.TryGetValue(hitTile, out float cd) ? cd : 0f) + 0.2f);
+                    intensity[hitTile] = Math.Min(4f, (intensity.TryGetValue(hitTile, out float iv) ? iv : 0f) + 0.05f);
+                }
                 {
                     b.Hp -= rng.Next(4, 12);
                     if (b.Hp <= 0)
@@ -309,11 +365,39 @@ namespace SE.Core.Stress
             }
             msg.Units = list.ToArray();
             if (pendingEvents.Count > 0) { msg.Events = pendingEvents.ToArray(); pendingEvents.Clear(); }
+            weatherAt -= 0.2f;
+            if (weatherAt <= 0)
+            {
+                // a rain band drifting east across the map, clouds around it
+                weatherAt = 2f;
+                weatherPhase += 0.08f;
+                int cw = (g.W + 7) / 8, ch = (g.H + 7) / 8;
+                var cloud = new byte[cw * ch]; var rain = new byte[cw * ch]; var wet = new byte[cw * ch];
+                float cityCx = (CityTile % g.W) / 8f, cityCy = (CityTile / g.W) / 8f;
+                for (int y = 0; y < ch; y++)
+                    for (int x = 0; x < cw; x++)
+                    {
+                        float bx = cityCx - 8 + (weatherPhase * 3f) % 20f;
+                        float d = (float)Math.Sqrt((x - bx) * (x - bx) * 0.5f + (y - cityCy) * (y - cityCy));
+                        float c = Math.Max(0f, 1f - d / 7f);
+                        cloud[y * cw + x] = (byte)(Math.Min(1f, c * 1.4f + 0.15f) * 255);
+                        rain[y * cw + x] = (byte)(Math.Max(0f, c - 0.35f) * 1.6f * 255);
+                        wet[y * cw + x] = (byte)(Math.Min(1f, c * 1.2f) * 255);
+                    }
+                msg.WeatherState = new WeatherState { Version = (int)(weatherPhase * 100), CellsW = cw, CellsH = ch, Cell = 8, WindAngle = 0.4f, WindSpeed = 0.6f, Cloud = cloud, Rain = rain, Wet = wet };
+            }
             econAt -= 0.2f;
             if (econAt <= 0 || full)
             {
                 econAt = 1f;
                 msg.HasEcon = true;
+                msg.Trenches = trenches.ToArray();
+                msg.Ruins = ruins.ToArray();
+                var bf = new BattlefieldState();
+                var cl = new List<CraterRecord>(); foreach (var kv in craters) cl.Add(new CraterRecord { Tile = kv.Key, Depth = kv.Value });
+                var il = new List<TileValue>(); foreach (var kv in intensity) il.Add(new TileValue { Tile = kv.Key, Value = kv.Value });
+                bf.Craters = cl.ToArray(); bf.Intensity = il.ToArray();
+                msg.BattlefieldState = bf;
                 msg.Buildings = buildings.ToArray();
                 msg.Cities = new[] { new CityRecord { Id = 1, Owner = 0, Name = "Ironford", Tile = CityTile, Pop = 860, Capital = true, Radius = 6, Tier = 3 } };
             }

@@ -151,11 +151,12 @@ namespace SE.Core.Protocol
                         Kind = Str(e["k"], ""), Outcome = Str(e["o"]), UnitType = Str(e["ty"]), Seq = Int(e["i"]),
                         From = Int(e["a"], -1), To = Int(e["b"], -1), Shooter = Int(e["s"], -1), Target = Int(e["t"], -1),
                         Weapon = Int(e["w"], -1), Damage = Int(e["d"]), Owner = Int(e["ow"], -1), Flight = Float(e["f"]),
-                        Radius = Float(e["r"]), Airburst = Int(e["ab"]) == 1,
+                        Radius = Float(e["r"]), Airburst = Int(e["ab"]) == 1, Half = Int(e["h"]) == 1,
                     };
                 }
             }
             s.Weather = o["wx"] as JObject;
+            s.WeatherState = WorldRecordDecoder.Weather(s.Weather);
             s.Observer = o["obs"] as JObject;
             if (o["econ"] is JObject econ)
             {
@@ -163,6 +164,9 @@ namespace SE.Core.Protocol
                 s.Econ = econ;
                 s.Fieldworks = o["fw"];
                 s.Battlefield = o["bf"] as JObject;
+                s.Trenches = WorldRecordDecoder.Trenches(s.Fieldworks);
+                s.BattlefieldState = WorldRecordDecoder.Battlefield(s.Battlefield);
+                s.Ruins = WorldRecordDecoder.Ruins(o["ruins"]);
                 if (o["buildings"] is JArray ba)
                 {
                     s.Buildings = new BuildingRecord[ba.Count];
@@ -177,7 +181,15 @@ namespace SE.Core.Protocol
                             Hp = Int(b["hp"], 100), Done = Int(b["d"]) == 1, Progress = Int(b["p"]), Active = Int(b["a"]) == 1,
                             State = Str(b["st"]), Fire = Int(b["f"]) == 1, Memory = Int(b["mem"]) == 1, Level = Int(b["lv"], 1),
                             Tier = Int(b["ti"]), City = Int(b["c"], -1), QueueLength = q?.Count ?? 0, TrainProgress = Int(b["tr"]),
+                            Staffed = Int(b["s"]), Why = Str(b["w"]), UpgradeCost = b["uc"] as JObject, RepairCost = Int(b["rc"]), Repeat = Str(b["rp"]),
                         };
+                        if (q != null)
+                        {
+                            var types = new string[q.Count];
+                            for (int qi = 0; qi < q.Count; qi++) types[qi] = q[qi] is JArray qa && qa.Count > 0 ? Str(qa[0], "") : "";
+                            s.Buildings[k].Queue = types;
+                        }
+                        if (b["wk"] is JArray wk && wk.Count >= 2) { s.Buildings[k].WorksKind = Str(wk[0]) == "r" ? "repair" : "upgrade"; s.Buildings[k].WorksPct = Int(wk[1]); }
                     }
                 }
                 if (o["cities"] is JArray ca)
@@ -191,7 +203,17 @@ namespace SE.Core.Protocol
                         {
                             Id = Int(c["id"]), Owner = Int(c["o"], -1), Name = Str(c["n"], ""), Tile = Int(c["t"], -1),
                             Pop = Float(c["pop"]), Capital = Int(c["cap"]) == 1, Radius = Int(c["r"], 2), Tier = Int(c["ti"]),
+                            Housing = Int(c["h"]), Jobs = Int(c["jobs"]), Unemployed = Int(c["un"]), Stability = Int(c["st"], -1), GrowthRate = Float(c["gr"]),
+                            GrowthTile = -1,
                         };
+                        if (c["gz"] is JArray gz && gz.Count >= 4)
+                        {
+                            s.Cities[k].GrowthKind = Str(gz[0]); s.Cities[k].GrowthTile = Int(gz[1], -1); s.Cities[k].GrowthBuilt = Int(gz[2]); s.Cities[k].GrowthTarget = Int(gz[3]);
+                        }
+                        if (c["development"] is JObject dev)
+                        {
+                            s.Cities[k].MayorOn = Bool(dev["on"], true); s.Cities[k].Priority = Str(dev["priority"], "balanced"); s.Cities[k].Activity = Str(dev["activity"]);
+                        }
                     }
                 }
             }

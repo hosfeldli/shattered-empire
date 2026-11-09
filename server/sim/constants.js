@@ -117,9 +117,10 @@ export const TECHS = {
   special_operations: { name: 'Special Operations', age: 3, cost: 1150, req: ['small_arms'], desc: 'Special forces (hidden beyond 2 hexes).' },
   energy_shields: { name: 'Energy Shields', age: 3, cost: 1250, req: ['computing', 'electrification'], desc: 'Shield generators: a dome over everything of yours within 3 hexes soaks up incoming fire until it is worn down, then recharges once the shooting stops. Needs power.' },
   federal_union: { name: 'Federal Union', age: 3, cost: 1150, req: ['higher_education'], desc: 'Federal Republic government.' },
+  nuclear_fission: { name: 'Nuclear Fission', age: 3, cost: 1250, req: ['electrification', 'higher_education'], desc: 'Nuclear plants: a great deal of power from a little ore, but a destroyed reactor explodes (half a strategic warhead) and leaves fallout.' },
   // Advanced Systems
   robotics: { name: 'Robotics', age: 4, cost: 2000, req: ['computing', 'mechanization'], desc: 'Robotics complex: autonomous tanks.' },
-  fusion_power: { name: 'Fusion Power', age: 4, cost: 2100, req: ['electrification', 'computing'], desc: 'Fusion plants: abundant power without fuel.' },
+  fusion_power: { name: 'Fusion Power', age: 4, cost: 2100, req: ['nuclear_fission', 'computing'], desc: 'Fusion plants: abundant, safe power without fuel.' },
   strike_swarms: { name: 'Strike Swarms', age: 4, cost: 2100, req: ['drones', 'robotics'], desc: 'Strike drone swarms.' },
   exo_armor: { name: 'Exo Armor', age: 4, cost: 2000, req: ['robotics'], desc: 'Exo-armored infantry.' },
   climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['mechanized_agriculture'], desc: 'Engineered climate: +20% farm yields in your territory.' },
@@ -142,7 +143,7 @@ export const GOVS = {
 // research branches (the research screen's lanes); governments favour some of them
 export const TECH_CAT = {
   agronomy: 'civ', schooling: 'civ', higher_education: 'civ', mechanized_agriculture: 'civ', climate_engineering: 'civ',
-  salvage_engineering: 'industry', metallurgy: 'industry', electrification: 'industry', petroleum: 'industry', munitions_industry: 'industry', computing: 'industry', materials_recycling: 'industry', fusion_power: 'industry',
+  salvage_engineering: 'industry', metallurgy: 'industry', electrification: 'industry', petroleum: 'industry', munitions_industry: 'industry', computing: 'industry', materials_recycling: 'industry', nuclear_fission: 'industry', fusion_power: 'industry',
   surveying: 'infra', seafaring: 'infra', civil_engineering: 'infra', highways: 'infra', railways: 'infra',
   small_arms: 'military', fortification: 'military', field_artillery: 'military', mechanization: 'military', aviation: 'military', self_propelled_guns: 'military', air_defense: 'military', special_operations: 'military', air_operations: 'military', precision_missiles: 'military', missile_defense: 'military', strategic_missiles: 'military', improved_servicing: 'military',
   motorization: 'logistics', logistics: 'logistics', networked_command: 'logistics', drones: 'logistics',
@@ -216,7 +217,7 @@ export const BUILDINGS = {
   shield_generator: { name: 'Shield Generator', glyph: '\u{1F6E1}', age: 3, tech: 'energy_shields', cost: { steel: 220, electronics: 120 }, time: 32, hp: 520, place: 'any', anywhere: true, power: -6, cat: 'military', shield: { radius: 3, cap: 900, regen: 30, delay: 5 },
     desc: 'Projects an energy dome over your troops and buildings within 3 hexes: incoming fire is absorbed until the dome is worn down; it recharges 5 s after the last hit. Off without power.' },
   fusion_plant: { name: 'Fusion Plant', glyph: '☢', age: 4, tech: 'fusion_power', cost: { steel: 400, electronics: 200 }, time: 45, hp: 700, place: 'flat', jobs: ['specialist', 2], power: 30, cat: 'power' },
-  nuclear_plant: { name: 'Nuclear Plant', glyph: '☢', age: 3, tech: 'computing', cost: { materials: 220, steel: 320, electronics: 60 }, time: 50, hp: 900, place: 'flat', jobs: ['specialist', 3], consume: { ore: 0.05 }, power: 45, cat: 'power', meltdown: true },
+  nuclear_plant: { name: 'Nuclear Plant', glyph: '☢', age: 3, tech: 'nuclear_fission', cost: { materials: 220, steel: 320, electronics: 60 }, time: 50, hp: 900, place: 'flat', jobs: ['specialist', 3], consume: { ore: 0.05 }, power: 45, cat: 'power', meltdown: true },
   robotics_complex: { name: 'Robotics Complex', glyph: '\u{1F916}', age: 4, tech: 'robotics', cost: { steel: 400, electronics: 250 }, time: 45, hp: 600, place: 'flat', power: -5, cat: 'military',
     trains: ['autonomous_tank', 'exo_infantry', 'strike_swarm'] },
   missile_silo: { name: 'Missile Silo', glyph: '\u{1F680}', age: 4, tech: 'strategic_missiles', cost: { materials: 400, steel: 600, electronics: 300, credits: 1500 }, time: 60, hp: 900, place: 'flat', power: -4, cat: 'military', silo: true, desc: 'Builds one strategic missile at a time through a long, expensive project.' },

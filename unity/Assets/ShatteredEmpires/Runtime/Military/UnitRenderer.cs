@@ -19,16 +19,21 @@ namespace SE.Runtime.Military
     /// </summary>
     public sealed class UnitRenderer : IDisposable
     {
-        enum Model { Soldier, Hull, Turret, Apc, Truck, Car, Buggy, Gun, Launcher, Exo, Fighter, Bomber, Heli, Rotor, Drone, Marker, Ring, Count }
+        enum Model { Soldier, Hull, Turret, Apc, Truck, Car, Buggy, Gun, Launcher, Exo, Fighter, Bomber, Heli, Rotor, Drone, Marker, Ring, AutoHull, AutoTurret, Count }
 
         enum Kind { Infantry, Exo, Tank, AutoTank, Apc, ArmoredCar, Buggy, Truck, FieldGun, SpGun, Launcher, AirDefense, Heli, Fighter, Bomber, Drone, Swarm, Mortar }
 
         readonly InstanceBatch[] batches = new InstanceBatch[(int)Model.Count];
         Kind[] kindOf = new Kind[0];
         float[] yaw = new float[0], turret = new float[0], px = new float[0], pz = new float[0], seen = new float[0];
+        // flight state per slot: aircraft fly continuously toward where the server says they are
+        float[] airX = new float[0], airZ = new float[0], airH = new float[0], airBank = new float[0];
+        bool[] airLive = new bool[0];
         int[] ids = new int[0];
         readonly Dictionary<int, (int target, float time)> lastShot = new Dictionary<int, (int, float)>();
         public readonly HashSet<int> Selected = new HashSet<int>();
+        /// <summary>Whether a tile holds a finished trench (troops there are drawn down in it).</summary>
+        public Func<int, bool> InTrench;
         public int Drawn { get; private set; }
         public int Instances { get; private set; }
         /// <summary>Last frame's cost by phase (diagnostics and stall attribution).</summary>
@@ -41,7 +46,7 @@ namespace SE.Runtime.Military
             Mesh[] meshes =
             {
                 MeshKit.Soldier, MeshKit.TankHull, MeshKit.TankTurret, MeshKit.Apc, MeshKit.Truck, MeshKit.Car, MeshKit.Buggy, MeshKit.Gun,
-                MeshKit.Rocket, MeshKit.Mech, MeshKit.Fighter, MeshKit.Bomber, MeshKit.HeliBody, MeshKit.Rotor, MeshKit.Drone, MeshKit.Marker, MeshKit.Ring,
+                MeshKit.Rocket, MeshKit.Mech, MeshKit.Fighter, MeshKit.Bomber, MeshKit.HeliBody, MeshKit.Rotor, MeshKit.Drone, MeshKit.Marker, MeshKit.Ring, MeshKit.AutoTankHull, MeshKit.AutoTankTurret,
             };
             for (int i = 0; i < batches.Length; i++)
             {
@@ -95,9 +100,33 @@ namespace SE.Runtime.Military
             int s = Math.Max(n, yaw.Length * 2);
             Array.Resize(ref yaw, s); Array.Resize(ref turret, s); Array.Resize(ref px, s); Array.Resize(ref pz, s);
             Array.Resize(ref seen, s); Array.Resize(ref kindOf, s);
+            Array.Resize(ref airX, s); Array.Resize(ref airZ, s); Array.Resize(ref airH, s); Array.Resize(ref airBank, s); Array.Resize(ref airLive, s);
             int old = ids.Length;
             Array.Resize(ref ids, s);
             for (int i = old; i < s; i++) ids[i] = -1;
+        }
+
+        // Military paint: each faction fields its own camouflage scheme, with only a hint of its colour.
+        // Aircraft wear lighter sky greys; autonomous machines a dark gunmetal.
+        static readonly float3[] Camo =
+        {
+            new float3(0.33f, 0.35f, 0.22f),   // olive drab
+            new float3(0.37f, 0.39f, 0.38f),   // field grey
+            new float3(0.56f, 0.49f, 0.35f),   // desert sand
+            new float3(0.22f, 0.29f, 0.21f),   // forest green
+            new float3(0.31f, 0.35f, 0.39f),   // slate
+            new float3(0.4f, 0.33f, 0.25f),    // dark earth
+            new float3(0.45f, 0.44f, 0.36f),   // khaki
+            new float3(0.27f, 0.3f, 0.28f),    // dark green-grey
+        };
+
+        static float3 Paint(int owner, Kind kind, float3 team)
+        {
+            float3 camo = Camo[((owner % Camo.Length) + Camo.Length) % Camo.Length];
+            if (IsAir(kind)) camo = math.lerp(camo, new float3(0.55f, 0.58f, 0.6f), 0.65f);
+            if (kind == Kind.AutoTank || kind == Kind.Exo) camo = math.lerp(camo, new float3(0.2f, 0.21f, 0.23f), 0.5f);
+            float tint = kind == Kind.Infantry || kind == Kind.Mortar ? 0.22f : 0.12f;
+            return math.lerp(camo, team, tint);
         }
 
         static float Approach(float a, float b, float rate)
@@ -129,8 +158,10 @@ namespace SE.Runtime.Military
                     kindOf[s] = Classify(store.Types.Name(u.TypeIndex));
                     store.Heading(s, out float hx0, out float hz0);
                     yaw[s] = turret[s] = hx0 != 0 || hz0 != 0 ? Mathf.Atan2(hx0, hz0) : (u.Id * 0.618f) % 6.283f;
+                    airLive[s] = false;
                 }
                 store.Position(s, out px[s], out pz[s]);
+                if (IsAir(kindOf[s])) Fly(s, u.Id, kindOf[s], store, grid, time, dt);
             }
             long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
             for (int s = 0; s < store.SlotCount; s++)
@@ -145,6 +176,8 @@ namespace SE.Runtime.Military
                 if (tile >= 0 && tile < grid.N && world.Road[tile] != 0 && (world.IsRiver(tile) || view.Water[tile] > -1e8f))
                     ground = Mathf.Max(ground, Mathf.Max(view.Water[tile], world.Height[tile]) + 0.06f);
                 else if (tile >= 0 && tile < grid.N && view.Water[tile] > ground) ground = view.Water[tile];   // embarked
+                // troops in a finished trench stand down in it, below the parapet
+                if (InTrench != null && tile >= 0 && InTrench(tile) && (kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo || kind == Kind.FieldGun)) ground -= 0.035f;
                 // facing: along the path when moving; toward the last target when engaging
                 store.Heading(s, out float hx, out float hz);
                 bool moving = hx != 0 || hz != 0;
@@ -165,11 +198,14 @@ namespace SE.Runtime.Military
                 turret[s] = Approach(turret[s], wantTurret, dt * 3.5f);
                 float4 team = civColor(u.Owner);
                 float hp = Mathf.Clamp01(u.Hp / 100f);
-                float4 body = new float4(math.lerp(new float3(0.36f, 0.38f, 0.3f), team.xyz, 0.5f) * (0.55f + 0.45f * hp), 0);
+                float4 body = new float4(Paint(u.Owner, kind, team.xyz) * (0.7f + 0.3f * hp), 0);
                 var p = new float3(x, ground, z);
                 drawn++;
                 if (Selected.Contains(u.Id))
                     batches[(int)Model.Ring].Add(T(new float3(x, ground + 0.015f, z), 0, new float3(level == 0 ? markerScale * 1.4f : 0.42f), new float4(0.3f, 1f, 0.45f, 0.8f)));
+                else if (level > 0 && !IsAir(kind))
+                    // whose unit it is, at a glance: a faint team ring on the ground (the paint stays military)
+                    batches[(int)Model.Ring].Add(T(new float3(x, ground + 0.012f, z), 0, new float3(kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo ? 0.3f : 0.26f), new float4(team.xyz, 0.22f)));
                 if (level == 0)
                 {
                     // strategic: one readable marker per unit, air units above the ground
@@ -191,9 +227,10 @@ namespace SE.Runtime.Military
                     case Kind.SpGun:
                     {
                         float k = kind == Kind.AutoTank ? 1.18f : 1f;
-                        var tint = kind == Kind.AutoTank ? new float4(body.xyz * 0.7f + new float3(0.05f, 0.06f, 0.08f), 0.05f) : body;
-                        batches[(int)Model.Hull].Add(T(p, yaw[s], new float3(sc * k), tint));
-                        batches[(int)Model.Turret].Add(T(p, turret[s], new float3(sc * k, sc * k, sc * k * (kind == Kind.SpGun ? 1.5f : 1f)), tint));
+                        var tint = kind == Kind.AutoTank ? new float4(body.xyz, 0.05f) : body;
+                        bool auto = kind == Kind.AutoTank;
+                        batches[(int)(auto ? Model.AutoHull : Model.Hull)].Add(T(p, yaw[s], new float3(sc * k), tint));
+                        batches[(int)(auto ? Model.AutoTurret : Model.Turret)].Add(T(p, turret[s], new float3(sc * k, sc * k, sc * k * (kind == Kind.SpGun ? 1.5f : 1f)), tint));
                         break;
                     }
                     case Kind.Apc:
@@ -221,7 +258,7 @@ namespace SE.Runtime.Military
                         batches[(int)Model.Turret].Add(T(p + new float3(0, sc * 0.05f, 0), turret[s], new float3(sc * 0.6f, sc * 0.6f, sc * 0.4f), body));
                         break;
                     default:
-                        AddAircraft(kind, u.Id, p, level, time, body, camX, grid);
+                        AddAircraft(kind, s, u.Id, p, level, time, body);
                         break;
                 }
             }
@@ -278,30 +315,67 @@ namespace SE.Runtime.Military
             }
         }
 
-        void AddAircraft(Kind kind, int id, float3 p, int level, float time, float4 body, float camX, HexGrid grid)
+        /// <summary>
+        /// Flight model (presentation only). The server moves aircraft hex by hex along strafing passes
+        /// and patrol rings; here each aircraft chases that position with a limited turn rate. Jets
+        /// never slow below cruise, so they overshoot, bank and swing round for the next pass;
+        /// helicopters slow down but keep circling their station; nothing hovers in a clump.
+        /// </summary>
+        void Fly(int s, int id, Kind kind, UnitStore store, HexGrid grid, float time, float dt)
         {
-            // patrol orbits around the server position: helicopters circle the area they cover, jets
-            // fly wide loops and bank through turns; nothing hovers in place
-            float phase = (id * 0.6180339f) % 1f * 6.283f;
-            float radius, speed, alt;
+            float cruise, top, turn, lead;
             switch (kind)
             {
-                case Kind.Heli: radius = 0.55f; speed = 0.55f; alt = 0.75f; break;
-                case Kind.Fighter: radius = 1.5f; speed = 1.4f; alt = 2.0f; break;
-                case Kind.Bomber: radius = 2.0f; speed = 0.7f; alt = 2.6f; break;
-                case Kind.Swarm: radius = 0.35f; speed = 1.6f; alt = 1.0f; break;
-                default: radius = 0.45f; speed = 0.9f; alt = 1.2f; break;
+                case Kind.Fighter: cruise = 1.5f; top = 2.6f; turn = 1.5f; lead = 0.6f; break;
+                case Kind.Bomber: cruise = 0.9f; top = 1.4f; turn = 0.65f; lead = 0.8f; break;
+                case Kind.Heli: cruise = 0.22f; top = 1.2f; turn = 2.2f; lead = 0.35f; break;
+                case Kind.Swarm: cruise = 0.5f; top = 1.9f; turn = 3.2f; lead = 0.3f; break;
+                default: cruise = 0.35f; top = 1.6f; turn = 2.8f; lead = 0.3f; break;
             }
-            float a = phase + time * speed;
-            // fighters fly a figure-eight; others a slightly eccentric circle
-            float ox = kind == Kind.Fighter ? Mathf.Sin(a) * radius : Mathf.Cos(a) * radius;
-            float oz = kind == Kind.Fighter ? Mathf.Sin(a) * Mathf.Cos(a) * radius : Mathf.Sin(a) * radius * 0.85f;
-            float vx = kind == Kind.Fighter ? Mathf.Cos(a) : -Mathf.Sin(a);
-            float vz = kind == Kind.Fighter ? Mathf.Cos(2 * a) : Mathf.Cos(a) * 0.85f;
-            float heading = Mathf.Atan2(vx, vz);
-            float bank = kind == Kind.Heli ? -0.15f : kind == Kind.Fighter ? -Mathf.Sin(a) * 0.9f : -0.35f;
-            var pos = p + new float3(ox, alt + Mathf.Sin(time * 0.7f + phase) * 0.05f, oz);
-            var rot = quaternion.EulerZXY(0, MapSpace.Yaw(heading), -bank);   // map heading into Unity space; mirroring flips the roll
+            float sx = px[s], sz = pz[s];
+            store.Heading(s, out float hx, out float hz);
+            bool moving = hx != 0 || hz != 0;
+            if (!airLive[s] || Mathf.Abs(grid.DxWrap(airX[s], sx)) + Mathf.Abs(sz - airZ[s]) > 8f)
+            {
+                airLive[s] = true;
+                airX[s] = sx; airZ[s] = sz; airH[s] = yaw[s]; airBank[s] = 0;
+            }
+            // the point being chased: ahead along the server path, or a station ring when on station
+            float tx, tz;
+            if (moving) { float l = Mathf.Sqrt(hx * hx + hz * hz); tx = sx + hx / l * lead; tz = sz + hz / l * lead; }
+            else
+            {
+                float phase = (id * 0.6180339f) % 1f * 6.283f;
+                float r = kind == Kind.Heli ? 0.55f : kind == Kind.Fighter ? 1.3f : kind == Kind.Bomber ? 1.8f : 0.45f;
+                float a = phase + time * (kind == Kind.Heli ? 0.45f : 0.8f);
+                tx = sx + Mathf.Cos(a) * r; tz = sz + Mathf.Sin(a) * r * 0.85f;
+            }
+            float dx = grid.DxWrap(airX[s], tx), dz = tz - airZ[s];
+            float d = Mathf.Sqrt(dx * dx + dz * dz);
+            float want = d > 1e-4f ? Mathf.Atan2(dx, dz) : airH[s];
+            float before = airH[s];
+            airH[s] = Approach(airH[s], want, turn * dt);
+            float turnRate = Mathf.DeltaAngle(before * Mathf.Rad2Deg, airH[s] * Mathf.Rad2Deg) * Mathf.Deg2Rad / Mathf.Max(dt, 1e-4f);
+            float speed = Mathf.Clamp(d * 1.6f, cruise, top);
+            airX[s] += Mathf.Sin(airH[s]) * speed * dt;
+            airZ[s] += Mathf.Cos(airH[s]) * speed * dt;
+            float bankWant = Mathf.Clamp(turnRate * (kind == Kind.Heli ? 0.12f : 0.45f), -1.0f, 1.0f);
+            airBank[s] = Mathf.Lerp(airBank[s], bankWant, 1f - Mathf.Exp(-dt * 4f));
+            // aircraft are drawn (and shoot from) where they fly, not where the server hex is
+            px[s] = airX[s]; pz[s] = airZ[s];
+        }
+
+        void AddAircraft(Kind kind, int slot, int id, float3 p, int level, float time, float4 body)
+        {
+            float phase = (id * 0.6180339f) % 1f * 6.283f;
+            float alt = kind == Kind.Heli ? 0.75f : kind == Kind.Fighter ? 2.0f : kind == Kind.Bomber ? 2.6f : 1.0f;
+            float a = phase + time * 1.6f;
+            float heading = airH[slot];
+            float bank = -airBank[slot];
+            // helicopters nose down when moving fast
+            float pitch = kind == Kind.Heli ? Mathf.Clamp(Mathf.Abs(airBank[slot]) * 0.2f + 0.08f, 0, 0.3f) : 0f;
+            var pos = p + new float3(0, alt + Mathf.Sin(time * 0.7f + phase) * 0.05f, 0);
+            var rot = quaternion.EulerZXY(pitch, MapSpace.Yaw(heading), -bank);   // map heading into Unity space; mirroring flips the roll
             float s = level == 2 ? 1f : 1.5f;
             switch (kind)
             {

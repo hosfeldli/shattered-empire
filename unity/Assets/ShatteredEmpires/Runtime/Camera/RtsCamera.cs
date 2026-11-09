@@ -28,7 +28,12 @@ namespace SE.Runtime.CameraControl
 
         public void Bind(WorldModel w) => world = w;
 
-        public float Pitch => Mathf.Lerp(48f, 72f, Mathf.InverseLerp(MinDistance, MaxDistance * 0.6f, Distance));
+        /// <summary>A fixed pitch for cinematic shots (negative: follow the zoom).</summary>
+        public float PitchOverride = -1f;
+        /// <summary>Camera shake amount (set from nearby blasts; decays in the effects system).</summary>
+        public float Shake;
+
+        public float Pitch => PitchOverride >= 0 ? PitchOverride : Mathf.Lerp(48f, 72f, Mathf.InverseLerp(MinDistance, MaxDistance * 0.6f, Distance));
 
         /// <summary>The camera position in map coordinates.</summary>
         public Vector3 MapPosition => MapSpace.ToMap(Cam.transform.position);
@@ -105,7 +110,8 @@ namespace SE.Runtime.CameraControl
             // look north (+z in Unity space) and down; yaw turns the view
             var look = Quaternion.Euler(Pitch, Yaw, 0);
             var focusUnity = MapSpace.ToUnity(Focus);
-            Cam.transform.SetPositionAndRotation(focusUnity - look * Vector3.forward * Distance, look);
+            var shake = Shake > 0.001f ? new Vector3(Mathf.PerlinNoise(Time.unscaledTime * 23f, 0.3f) - 0.5f, Mathf.PerlinNoise(0.7f, Time.unscaledTime * 21f) - 0.5f, 0) * Shake * Mathf.Min(1.5f, Distance * 0.03f) : Vector3.zero;
+            Cam.transform.SetPositionAndRotation(focusUnity - look * Vector3.forward * Distance + look * shake, look);
             Cam.farClipPlane = Mathf.Max(600f, Distance * 6f);
             Cam.nearClipPlane = Mathf.Clamp(Distance * 0.02f, 0.05f, 2f);
         }

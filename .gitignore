@@ -13,3 +13,7 @@ desktop/node_modules/
 desktop/build/steam_appid.txt
 dist/native/
 dist/native-publish/
+
+# service account keys never go into the repository
+stem-*.json
+*service-account*.json

@@ -261,7 +261,13 @@ function flyMission(g, u, m, dt) {
       // hit ground threats near the army they cover
       const threat = sectorThreat(g, u, center, m.radius + (d.role === 'fighter' ? 3 : 1), d.role === 'fighter' ? 'air' : m.kind === 'support' ? 'ground' : 'any');
       if (threat && d.atk > 0 && (a.ammo > 0 || !d.ammo)) { u.order = { kind: 'attack', target: threat, resume: undefined }; u.repathAt = 0; return; }
-      if (!u.path.length) u.path = ring(center, m.radius, u.tile).filter((t) => t !== u.tile);
+      if (!u.path.length) {
+        // aircraft on station keep circling; a flight spreads over two orbits so it never bunches
+        const r = Math.max(1, (m.radius | 0) + ((u.id & 1) && m.radius > 1 ? -1 : 0));
+        const orbit = ring(center, r, u.tile);
+        if (orbit.length && orbit[0] !== u.tile && dist(orbit[0], u.tile) > 1) u.path = hexLine(u.tile, orbit[0]).slice(1, -1);
+        u.path.push(...orbit.filter((t) => t !== u.tile));
+      }
       break;
     }
     case 'strike': {

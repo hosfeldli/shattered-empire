@@ -90,7 +90,7 @@ namespace SE.Core.World
             for (int i = 0; i < Water.Length; i++) Water[i] = TerrainView.NoWater;
             ChunksW = (Grid.W + ChunkSize - 1) / ChunkSize;
             ChunksH = (Grid.H + ChunkSize - 1) / ChunkSize;
-            Epoch++; GeometryRevision++; VisibilityRevision++; RoadRevision++;
+            Epoch++; GeometryRevision++; VisibilityRevision++; RoadRevision++; LayoutRevision++;
         }
 
         void Pin()
@@ -103,7 +103,15 @@ namespace SE.Core.World
                 Biome = (byte*)PinArray(Biome), Nb = (int*)PinArray(Grid.Nb),
             };
             GeoPtr = (byte*)PinArray(Geo);
+            // ridge-noise cache for main-thread height queries (pure function of position: never stale)
+            ridgeCache = new float[Grid.N * 42];
+            ridgeFilled = new byte[Grid.N];
+            view.RidgeCache = (float*)PinArray(ridgeCache);
+            view.RidgeFilled = (byte*)PinArray(ridgeFilled);
         }
+
+        float[] ridgeCache;
+        byte[] ridgeFilled;
 
         /// <summary>The pinned raw geo bytes (6 per hex), for jobs that need flow and deposit data.</summary>
         public byte* GeoPtr { get; private set; }
@@ -158,20 +166,20 @@ namespace SE.Core.World
         /// Apply terrain geometry. Returns the chunks whose meshes must be rebuilt: a hex's shape changes
         /// its neighbours' corners, so neighbouring chunks are included.
         /// </summary>
-        public HashSet<int> ApplyGeo(GeoMessage m)
+        public HashSet<int> ApplyGeo(GeoMessage m, bool keepExisting = false)
         {
             var touched = new HashSet<int>();
             if (!Ready) return touched;
             int cs = m.ChunkSize > 0 ? m.ChunkSize : ChunkSize;
             int stride = m.Stride > 0 ? m.Stride : GeoStride;
-            if (m.Full)
+            if (m.Full && !keepExisting)
             {
                 Array.Clear(Known, 0, Known.Length);
                 Array.Clear(Height, 0, Height.Length);
                 for (int c = 0; c < ChunksW * ChunksH; c++) touched.Add(c);
             }
             int w = Grid.W;
-            bool heightChanged = m.Full;
+            bool heightChanged = m.Full && !keepExisting;
             foreach (var chunk in m.Chunks)
             {
                 int k = 0;
@@ -182,6 +190,13 @@ namespace SE.Core.World
                     int r = chunk.Cy * cs + cell / cs;
                     int i = r * w + q;
                     if (q >= w || r >= Grid.H || k * stride + GeoStride > chunk.Data.Length) { k++; continue; }
+                    if (keepExisting && Known[i] != 0)
+                    {
+                        // a re-send after a reconnect: skip hexes that are exactly as we have them
+                        bool same = true;
+                        for (int b = 0; b < GeoStride && same; b++) same = Geo[i * GeoStride + b] == chunk.Data[k * stride + b];
+                        if (same) { k++; continue; }
+                    }
                     for (int b = 0; b < GeoStride; b++) Geo[i * GeoStride + b] = chunk.Data[k * stride + b];
                     Biome[i] = Geo[i * GeoStride + 1];
                     GeoFlags[i] = Geo[i * GeoStride + 3];
@@ -229,8 +244,11 @@ namespace SE.Core.World
             }
         }
 
-        /// <summary>Apply tile records. Fills the changed tile list and returns whether any road changed.</summary>
-        public bool ApplyTiles(TileRecord[] tiles, List<int> changed)
+        /// <summary>
+        /// Apply tile records. Fills the changed tile list, adds the render cells a road change touches
+        /// (the hex and its neighbours, which share its streets) and returns whether any road changed.
+        /// </summary>
+        public bool ApplyTiles(TileRecord[] tiles, List<int> changed, HashSet<int> roadCells = null)
         {
             bool roads = false;
             foreach (var t in tiles)
@@ -239,7 +257,11 @@ namespace SE.Core.World
                 if (i < 0 || i >= Grid.N) continue;
                 Terrain[i] = (byte)t.Terrain;
                 Resource[i] = (byte)t.Resource;
-                if (Road[i] != t.Roads) roads = true;
+                if (Road[i] != t.Roads)
+                {
+                    roads = true;
+                    if (roadCells != null) TouchAround(i, roadCells);
+                }
                 Road[i] = t.Roads;
                 TileFlags[i] = t.Flags;
                 Owner[i] = t.Owner;
@@ -257,11 +279,41 @@ namespace SE.Core.World
             VisibilityRevision++;
         }
 
-        public void ApplyUrban(byte[] bits)
+        /// <summary>Apply district bits; the render cells of every changed hex (and its neighbours) go into <paramref name="cells"/>.</summary>
+        public void ApplyUrban(byte[] bits, HashSet<int> cells = null)
         {
             if (bits == null || bits.Length != Urban.Length) return;
-            Buffer.BlockCopy(bits, 0, Urban, 0, bits.Length);
+            if (!ReferenceEquals(bits, Urban))
+            {
+                bool any = false;
+                for (int k = 0; k < bits.Length; k++)
+                {
+                    int diff = bits[k] ^ Urban[k];
+                    if (diff == 0) continue;
+                    any = true;
+                    if (cells != null)
+                        for (int b = 0; b < 8; b++)
+                            if ((diff & (1 << b)) != 0 && k * 8 + b < Grid.N) TouchAround(k * 8 + b, cells);
+                }
+                if (!any) return;
+                Buffer.BlockCopy(bits, 0, Urban, 0, bits.Length);
+            }
+            UrbanRevision++;
         }
+
+        void TouchAround(int i, HashSet<int> cells)
+        {
+            cells.Add(ChunkOf(i));
+            for (int d = 0; d < 6; d++) { int nb = Grid.Nb[i * 6 + d]; if (nb >= 0) cells.Add(ChunkOf(nb)); }
+        }
+
+        public int UrbanRevision { get; private set; }
+
+        /// <summary>Increments when the whole street layout must be redrawn (a reset, or a locally composed scene).</summary>
+        public int LayoutRevision { get; private set; }
+
+        /// <summary>For locally composed scenes (stress test, intro) that write road bits directly.</summary>
+        public void MarkRoadsChanged() { RoadRevision++; LayoutRevision++; }
 
         /// <summary>Road type on edge d of hex i (0 none; server roads.js edge.type), packed 4 bits per edge.</summary>
         public int RoadClass(int i, int d) => (Road[i] >> (d * 4)) & 7;
