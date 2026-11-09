@@ -268,7 +268,7 @@ export class Game {
 
   makeBuilding(civ, type, tile, done) {
     const def = BUILDINGS[type];
-    const b = { id: this.id_(), owner: civ.id, type, tile, hp: done ? def.hp : def.hp * 0.1, maxHp: def.hp, done: !!done, progress: done ? 1 : 0, queue: [], staffed: 0, cityId: -1, cooldown: 0, rally: -1, active: false, placedAt: this.time,
+    const b = { id: this.id_(), owner: civ.id, type, tile, hp: done ? def.hp : def.hp * 0.1, maxHp: def.hp, done: !!done, progress: done ? 1 : 0, queue: [], staffed: 0, cityId: -1, cooldown: 0, rally: -1, active: false, placedAt: this.time, era: civ.age || 0,
       state: done ? 'operational' : 'construction', funded: true, fire: 0, crew: 0, qn: done ? 0 : (civ.buildSeq = (civ.buildSeq || 0) + 1) };
     this.buildings.set(b.id, b);
     this.tileB[tile] = b.id;
@@ -602,7 +602,7 @@ export class Game {
   applyLevel(b) {
     const lv = b.level || 1, base = BUILDINGS[b.type].hp, k = b.type === 'house' ? 0.5 : 0.4;
     b.level = lv + 1; b.maxHp = Math.round(base * (1 + k * lv)); b.hp = Math.min(b.maxHp, b.hp + base * k);
-    b.upgradedAt = this.time;
+    b.upgradedAt = this.time; b.era = this.civs[b.owner]?.age ?? b.era;
   }
   cancelWorks(civ, b) {
     if (!b || b.owner !== civ.id || !b.works) return { error: 'No works to cancel here' };
@@ -761,7 +761,7 @@ export class Game {
       const hp = Math.round((100 * b.hp) / b.maxHp), lv = b.level > 1 ? b.level : undefined, p = Math.round(b.progress * 100);
       const r = mem.get(b.id);
       if (r && r.o === b.owner && r.hp === hp && r.lv === lv && r.p === p && r.d === (b.done ? 1 : 0) && r.st === b.state) { r.ls = Math.round(this.time); continue; }
-      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: b.type === 'town' && b.tier ? b.tier : undefined, ls: Math.round(this.time) });
+      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, ea: b.era, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: b.type === 'town' && b.tier ? b.tier : undefined, ls: Math.round(this.time) });
     }
     if (mem.size > 4000) {
       const oldest = [...mem.values()].sort((a, b) => a.ls - b.ls).slice(0, mem.size - 4000);
@@ -911,7 +911,7 @@ export class Game {
     for (const b of this.buildings.values()) {
       if (b.owner !== civ.id && !vis[b.tile]) continue;
       const own = b.owner === civ.id || god;
-      buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
+      buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, ea: b.era, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2), qw: !b.done && b.waiting ? b.waiting : undefined, qn: own && !b.done ? b.qn ?? b.id : undefined,
         lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ut: own && timedWorks(this) && b.done && !b.works && (b.type === 'house' ? (b.level || 1) < 3 : upgradable(b.type) && (b.level || 1) < MAX_LEVEL) ? Math.ceil(this.worksSeconds(b) / tempo(this, 'construction')) : undefined, rc: own && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) : undefined, rt: own && timedWorks(this) && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(this.repairSeconds(b) / tempo(this, 'construction')) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, wk: b.works ? [b.works.k === 'repair' ? 'r' : 'u', Math.round(100 * (1 - b.works.left / b.works.total)), b.works.halt ? 1 : 0, b.owner === civ.id && b.works.rate ? Math.ceil(b.works.left / b.works.rate) : -1, b.works.paused ? 1 : 0, b.works.priority ? 1 : 0] : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
@@ -1517,7 +1517,7 @@ export class Game {
             if (timedWorks(this)) { this.startWorks(b, 'upgrade', cost, this.worksSeconds(b)); this.world.touch(b.tile); return { reply: { t: 'ack', level: b.level || 1, works: b.works.total, cost } }; }
             const lv = b.level || 1;
             b.level = lv + 1; b.maxHp = Math.round(BUILDINGS[b.type].hp * (1 + 0.4 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS[b.type].hp * 0.4);
-            b.upgradedAt = this.time; this.world.touch(b.tile);
+            b.upgradedAt = this.time; b.era = this.civs[b.owner]?.age ?? b.era; this.world.touch(b.tile);
             return { reply: { t: 'ack', level: b.level, cost } };
           }
           if (!b || b.owner !== civ.id || b.type !== 'house' || !b.done) return { error: 'only finished buildings can be upgraded' };
@@ -1530,7 +1530,7 @@ export class Game {
           this.pay(civ, cost, b.tile);
           if (timedWorks(this)) { this.startWorks(b, 'upgrade', cost, this.worksSeconds(b)); this.world.touch(b.tile); return null; }
           b.level = lv + 1; b.maxHp = Math.round(BUILDINGS.house.hp * (1 + 0.5 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS.house.hp * 0.5);
-          b.upgradedAt = this.time; this.world.touch(b.tile);
+          b.upgradedAt = this.time; b.era = this.civs[b.owner]?.age ?? b.era; this.world.touch(b.tile);
           return null;
         }
         case 'upgradeDefense': {
@@ -1736,7 +1736,7 @@ export class Game {
       }
       const lv = x.b.level || 1, base = BUILDINGS[x.b.type].hp, k = x.b.type === 'house' ? 0.5 : 0.4;
       x.b.level = lv + 1; x.b.maxHp = Math.round(base * (1 + k * lv)); x.b.hp = Math.min(x.b.maxHp, x.b.hp + base * k);
-      x.b.upgradedAt = this.time; this.world.touch(x.b.tile);
+      x.b.upgradedAt = this.time; x.b.era = this.civs[x.b.owner]?.age ?? x.b.era; this.world.touch(x.b.tile);
       upgraded.push({ id: x.b.id, level: x.b.level });
     }
     return { upgraded, skipped, cost: spent, capacity: upgraded.reduce((s2, u) => s2 + homes(this.buildings.get(u.id)), 0), policy };

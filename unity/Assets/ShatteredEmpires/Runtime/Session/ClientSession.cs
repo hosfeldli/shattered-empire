@@ -54,6 +54,13 @@ namespace SE.Runtime.Session
         public readonly HashSet<int> DirtyCells = new HashSet<int>();
         public readonly List<CombatEvent> Events = new List<CombatEvent>();
         public readonly List<(float time, string text, string level)> Notes = new List<(float, string, string)>();
+        /// <summary>Where and what each note is about (same index as <see cref="Notes"/>).</summary>
+        public readonly List<NoteInfo> NoteMeta = new List<NoteInfo>();
+        public struct NoteInfo { public int Tile; public string Kind, Title; }
+        /// <summary>The map location of the most recent important alert (-1: none), for "jump to alert".</summary>
+        public int LastAlertTile = -1;
+        /// <summary>Notes received in all (keeps counting after old ones are trimmed from the list).</summary>
+        public long NotesTotal;
         readonly Dictionary<int, float4> civColors = new Dictionary<int, float4>();
         readonly System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
 
@@ -80,7 +87,14 @@ namespace SE.Runtime.Session
                 case "s": if (World.Ready) ApplySnapshot(m.Snapshot); break;
                 case "note":
                     Notes.Add((ProtocolDecoder.Float(m.Raw["time"]), ProtocolDecoder.Str(m.Raw["text"], ""), ProtocolDecoder.Str(m.Raw["level"], "info")));
-                    if (Notes.Count > 200) Notes.RemoveRange(0, Notes.Count - 200);
+                    NoteMeta.Add(new NoteInfo { Tile = ProtocolDecoder.Int(m.Raw["tile"], -1), Kind = ProtocolDecoder.Str(m.Raw["kind"], ""), Title = ProtocolDecoder.Str(m.Raw["title"]) });
+                    {
+                        string lv = ProtocolDecoder.Str(m.Raw["level"], "info");
+                        int tile = ProtocolDecoder.Int(m.Raw["tile"], -1);
+                        if (tile >= 0 && (lv == "critical" || lv == "major")) LastAlertTile = tile;
+                    }
+                    NotesTotal++;
+                    if (Notes.Count > 200) { Notes.RemoveRange(0, Notes.Count - 200); NoteMeta.RemoveRange(0, NoteMeta.Count - 200); }
                     break;
                 case "paused":
                     Paused = ProtocolDecoder.Bool(m.Raw["on"]);

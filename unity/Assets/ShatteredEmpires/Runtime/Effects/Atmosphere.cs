@@ -41,6 +41,8 @@ namespace SE.Runtime.Effects
         public Color SunTint = Color.white;
         public Color AmbientTint = Color.white;
         public float3 WindMap = new float3(0.6f, 0, 0.3f);
+        /// <summary>How strongly weather is drawn (a player setting, 0–1); the simulation's weather is unchanged.</summary>
+        public float VisualIntensity = 1f;
         float lightningAt, lightning;
         readonly System.Random rng = new System.Random(17);
         public event Action<float> Thunder;   // distance-ish delay seconds, for the audio
@@ -129,8 +131,8 @@ namespace SE.Runtime.Effects
             Shader.SetGlobalVector(WindId, new Vector4(windU.x, windU.z, math.length(WindMap), 0));
             Shader.SetGlobalFloat(RainId, Rain);
             Shader.SetGlobalFloat(WetId, Wet * 0.5f);
-            if (fx != null && Rain > 0.05f && camDistance < 140f && world.Ready)
-                fx.Rain(focusMap, Rain * Mathf.Lerp(1f, 0.3f, camDistance / 140f), WindMap, (x, z) => world.GroundHeight(x, z), Mathf.Clamp(camDistance * 0.55f, 4f, 30f));
+            if (fx != null && Rain > 0.05f && camDistance < 140f && world.Ready && VisualIntensity > 0.01f)
+                fx.Rain(focusMap, Rain * VisualIntensity * Mathf.Lerp(1f, 0.3f, camDistance / 140f), WindMap, (x, z) => world.GroundHeight(x, z), Mathf.Clamp(camDistance * 0.55f, 4f, 30f));
             puffAt -= dt;
             if (puffAt <= 0 && world.Ready) { puffAt = 0.25f; BuildClouds(world, wx, focusMap, camDistance, time); }
         }
@@ -147,7 +149,7 @@ namespace SE.Runtime.Effects
             // above the clouds at strategic zoom: keep them thin so the map stays readable
             float camHeight = cam.transform.position.y;
             // (the ground keeps its drifting cloud shadows, which carry the weather at that scale)
-            float alphaScale = Mathf.Lerp(1f, 0.07f, Mathf.Clamp01((camHeight - 22f) / 55f));
+            float alphaScale = Mathf.Lerp(1f, 0.07f, Mathf.Clamp01((camHeight - 22f) / 55f)) * VisualIntensity;
             if (alphaScale < 0.08f && Storm < 0.3f) return;
             float drift = time * 0.35f;
             for (int dz = -rz; dz <= rz && puffCount < MaxPuffs; dz++)

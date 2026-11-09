@@ -180,7 +180,7 @@ namespace SE.Core.Protocol
                             Id = Int(b["id"]), Owner = Int(b["o"], -1), Type = Str(b["ty"], ""), Tile = Int(b["t"], -1),
                             Hp = Int(b["hp"], 100), Done = Int(b["d"]) == 1, Progress = Int(b["p"]), Active = Int(b["a"]) == 1,
                             State = Str(b["st"]), Fire = Int(b["f"]) == 1, Memory = Int(b["mem"]) == 1, Level = Int(b["lv"], 1),
-                            Tier = Int(b["ti"]), City = Int(b["c"], -1), QueueLength = q?.Count ?? 0, TrainProgress = Int(b["tr"]),
+                            Tier = Int(b["ti"]), Era = Int(b["ea"], -1), City = Int(b["c"], -1), QueueLength = q?.Count ?? 0, TrainProgress = Int(b["tr"]),
                             Staffed = Int(b["s"]), Why = Str(b["w"]), UpgradeCost = b["uc"] as JObject, RepairCost = Int(b["rc"]), Repeat = Str(b["rp"]),
                         };
                         if (q != null)

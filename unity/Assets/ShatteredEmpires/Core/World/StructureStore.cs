@@ -26,6 +26,9 @@ namespace SE.Core.World
         }
 
         /// <summary>What a building looks like, packed: anything outside this key is not visual.</summary>
+        /// <summary>Damage band of a building (target spec §8.3): 0 intact (85–100%), 1 light (60–85), 2 heavy (35–60), 3 critical (below 35).</summary>
+        public static int DamageBand(int hpPercent) => hpPercent >= 85 ? 0 : hpPercent >= 60 ? 1 : hpPercent >= 35 ? 2 : 3;
+
         public static long VisualKey(in BuildingRecord b)
         {
             unchecked
@@ -36,7 +39,8 @@ namespace SE.Core.World
                 k = k * 31 + b.Tier;
                 k = k * 31 + (b.Done ? 1 : 0);
                 k = k * 31 + (b.Done ? 0 : b.Progress / 10);    // construction shows in 10% steps
-                k = k * 31 + (b.Hp >= 100 ? 4 : b.Hp / 25);     // damage shows in quarter steps
+                k = k * 31 + DamageBand(b.Hp);                   // damage shows in the design's bands
+                k = k * 31 + b.Era;
                 k = k * 31 + (b.Fire ? 1 : 0);
                 k = k * 31 + (b.Memory ? 1 : 0);
                 k = k * 31 + b.Tile;

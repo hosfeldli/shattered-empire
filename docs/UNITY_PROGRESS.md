@@ -232,34 +232,85 @@ What testing does **not** yet cover: a person playing a full live match in the U
 ## 7. Known issues
 
 - **Street rings:** in districts where every hex has roads on all six sides, streets wrapping each built hex read as a lattice of rings (visible in the era-0 stress shot). The fix is to link fewer edges round dense blocks.
-- **Minimap and camera vs the spec:** the target spec says no permanent minimap (map lenses instead) and a fixed 60° camera pitch. The minimap shipped in `6ecd9d3`; the pitch is fixed in the uncommitted work.
 - **Diplomacy state:** the client does not receive it, so the minimap shows every other faction's units as foreign.
 - **Benchmark coverage:** the stress scene has no staffed buildings, so smoke and steam are not exercised there.
 - **Windows publishing script:** `tools/publish-downloads.mjs` cannot run on Windows (`execFileSync('gcloud')` cannot start the `.cmd` wrapper), so publishing was done by hand.
 
-## 8. In progress (uncommitted, not yet compiled or tested)
+## 8. Target-specification batch (built and verified locally, not yet deployed)
 
-Started against the target specification:
+Built against [UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md) after `6ecd9d3`. It compiles, all tests pass and the stress benchmark holds. It has not been played by a person and is not on the live site.
 
-- **Server, `formations.js`:** `deploy` accepts `preview: true` and returns the planned slots, refused hexes, overflow and label without committing.
-- **`Commander.cs`, battle-line drawing:**
-  - A right-click moves on release; a right-drag draws a line with a live server preview.
-  - F flips the facing, Alt makes an advancing line, Shift queues, and release commits.
-- **`Commander.cs`, other controls:**
-  - Control groups: Ctrl+1–9 to set, 1–9 to select, a double press jumps the camera there.
-  - Follow the selection (F); double-click on open ground centres the view; attack-move key (T).
-- **`RtsCamera.cs`:**
-  - Fixed 60° pitch; Shift fast pan.
-  - Follow target, smooth jumps, and a jump history (Backspace returns).
-- **`InputFacade.cs`:**
-  - A general key map, which fixes many keys that never registered under the Input System backend.
-  - A typing guard (no game keys while a text field has focus).
-  - Remappable named actions saved per player.
+### Commands and camera
 
-Still to do for this batch:
+- **Battle lines** (spec §15.3):
+  - A right-drag draws a line; a right-click still moves (on release).
+  - While dragging, the server plans the deployment as a dry run (`deploy` with `preview: true`, in `formations.js`). The map shows each unit's slot in green and refused ground in red, and the hint counts placed, overflowing and refused units.
+  - F flips the facing, Alt makes an advancing line, Shift queues it, Esc cancels, and release commits.
+- **Control groups:** Ctrl+1–9 to set, 1–9 to select, Shift+number to add, a double press jumps the camera there.
+- **Other unit keys:** F follows the selection, T then a click attack-moves, H holds, X withdraws.
+- **Camera:**
+  - Fixed 60° pitch (spec §14); Shift fast pan.
+  - Smooth jumps; Backspace returns to the previous view.
+  - Double-click on open ground centres the view; Space jumps to the latest important alert.
+  - Moving the camera by hand always cancels following.
+- **Input:**
+  - Every key now registers under the Input System backend (only a handful did before).
+  - No game key fires while a text field has focus.
+  - All shortcuts are remappable in Settings and saved per player.
 
-- Escape should cancel a battle line mid-drag.
-- Draw the battle-line preview in the world overlay, with a hint line.
-- Settings UI for rebinding.
-- Turn the minimap into an optional lens.
-- Compile and test.
+### Interface
+
+- **Minimap:** now a Map Lens, off by default (Overview → Map Lenses, or M), per the spec's map-first interface.
+- **Alerts in three tiers:**
+  - critical: banner;
+  - major: compact notice with Go;
+  - everything else: chronicle only, with Go buttons.
+- **Result cards:** concluded battles show the server's after-action report as a result card (title, outcome, losses, Go there).
+- **Alert feed fix:** after 200 notes, new alerts stopped appearing (the list was trimmed but the "already shown" count was not). It now counts with a running total.
+- **Research:**
+  - Search by name, effect or unlock; matches are outlined and the rest fade.
+  - Hovering a technology highlights everything it needs and everything that needs it.
+  - The progress bar updates in place, so typing in the search box is never interrupted.
+- **Build palette:** search by name or category.
+- **Observe tab** (spectators): follow a nation, whole map or that nation's fog of war, match speed (pause, 1×–8×), and the server's AI inspector report.
+- **Settings:**
+  - Interface scale, screen shake, reduced motion, weather intensity and high-contrast markers.
+  - Edge pan and pan speed.
+  - Shortcut rebinding with restore defaults.
+
+### Cities
+
+- **Historical continuity** (spec §7.2):
+  - The server records the era each building was built in (`era`, sent as `ea`); an upgrade brings it up to the current era.
+  - The client draws each building in its own era, so old districts keep their architecture.
+  - Old saves without the record follow the current era as before.
+- **Five-stage construction** (spec §8.2): survey stakes, excavation and foundations, structural frame, walls and roof, finishing. A site waiting for materials or workers is visibly dormant: tarped, crane parked.
+- **Damage bands** (spec §8.3): 85/60/35%. Scorch marks, rubble heaps and broken wall sections grow with each band, deterministic per building. Buildings redraw only when they cross a band.
+- **Upgrade levels 2–3** change every building kind, not just homes: annex halls, silos, loading aprons, domes for civic buildings, revetments and hardened blocks for military sites.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Unity compile | Clean |
+| EditMode tests | 6/6 |
+| Standalone .NET checks | 11,383 |
+| Server suite | 195/197 after the fix below. The only failures are the two pre-existing macOS-only updater tests. |
+| New server tests (`test/spec-2026-11.test.js`) | The deploy preview plans exactly what the real order does and changes nothing; buildings keep their era and an upgrade updates it; the era reaches the client. |
+
+On the first server run, the new era test failed because the test called the snapshot function wrongly; the era logic itself was correct. It passes after the fix.
+
+Stress benchmark ([report](benchmarks/unity-stress-2026-11-08-spec-batch.json)):
+
+| Segment | Deployed build (`6ecd9d3`) | This batch |
+| --- | --- | --- |
+| city strategic | 241 fps, p99 11.2 | 269 fps, p99 9.4 |
+| city tactical | 165 fps, p99 14.2 | 172 fps, p99 12.1 |
+| battle tactical | 183 fps, p99 13.3 | 188 fps, p99 8.1 |
+| battle operational | 233 fps, p99 11.7 | 259 fps, p99 7.3 |
+| frames > 50 ms | 0 | 0 |
+
+### Not yet covered
+
+- Live play with a person: battle-line feel, rebinding and the observe tab against a real server.
+- Server deployment of the preview and era changes. The live server is still `6ecd9d3`, so a client built from this batch would get no line preview from the live server, and no building eras until it is redeployed.

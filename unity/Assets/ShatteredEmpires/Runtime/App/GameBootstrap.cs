@@ -156,6 +156,7 @@ namespace SE.Runtime.App
             ps.referenceResolution = new Vector2Int(1920, 1080);
             ps.screenMatchMode = PanelScreenMatchMode.MatchWidthOrHeight;
             ps.match = 0.5f;
+            ps.scale = GameSettings.UiScale;
             uiDocument.panelSettings = ps;
             hud = new Hud(uiDocument.rootVisualElement, session, commander, units, this);
             hud.TileScreen = tile =>
@@ -188,6 +189,11 @@ namespace SE.Runtime.App
             else if (PlayerPrefs.GetInt("se.intro.seen", 0) == 0 && hud != null) PlayIntro();
             else ShowMenu("");
             SocialPlatform.Current.JoinRequested += code => StartMatch("join", code);
+        }
+
+        public void ApplyUiScale(float scale)
+        {
+            if (uiDocument != null && uiDocument.panelSettings != null) uiDocument.panelSettings.scale = Mathf.Clamp(scale, 0.75f, 1.6f);
         }
 
         public void ApplyQuality(string preset)
@@ -479,7 +485,13 @@ namespace SE.Runtime.App
             }
             bool overUi = hud != null && hud.IsPointerOverUi(InputFacade.MousePosition);
             if (phase == Phase.Playing && !(hud?.MenuVisible ?? false)) rts.Update(dt);
-            rts.Shake = fx.Shake;
+            // comfort settings: shake, flashes, edge pan, pan speed, weather, marker contrast
+            rts.Shake = fx.Shake * GameSettings.ShakeScale;
+            if (GameSettings.ReducedMotion) fx.Flash = Mathf.Min(fx.Flash, 0.15f);
+            rts.EdgePan = GameSettings.EdgePan;
+            rts.PanSpeed = GameSettings.CameraSpeed;
+            atmosphere.VisualIntensity = GameSettings.WeatherIntensity;
+            units.HighContrast = GameSettings.HighContrastMarkers;
             if (phase == Phase.Playing) commander.Update(time, overUi);
             long tq = Stopwatch.GetTimestamp();
             PresentEvents();

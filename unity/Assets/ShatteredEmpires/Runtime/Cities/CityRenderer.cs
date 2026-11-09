@@ -421,10 +421,14 @@ namespace SE.Runtime.Cities
             yaw += (Hash(seed, 5) - 0.5f) * 0.22f;
             cx += (Hash(seed, 6) - 0.5f) * 0.1f; cz += (Hash(seed, 7) - 0.5f) * 0.1f;
             float4 civ = CivColor(b.Owner);
-            float dmg = b.Hp >= 100 ? 1f : 0.55f + 0.45f * b.Hp / 100f;
+            // damage darkens by band, not by every point of health
+            int band = StructureStore.DamageBand(b.Hp);
+            float dmg = band == 0 ? 1f : band == 1 ? 0.88f : band == 2 ? 0.74f : 0.6f;
             float memory = b.Memory ? 0.6f : 1f;
             float3 tint = new float3(dmg * memory);
-            int era = Math.Max(0, Math.Min(4, Age));
+            // historical continuity: a building keeps the architecture of the era it was built (or last
+            // upgraded) in; only old saves without that record follow the nation's current era
+            int era = Math.Max(0, Math.Min(4, b.Era >= 0 ? b.Era : Age));
             if (!b.Done)
             {
                 ComposeSite(b, cx, cz, yaw, seed);
@@ -452,6 +456,8 @@ namespace SE.Runtime.Cities
                 case "wonder": Wonder(ctx); break;
                 default: Industry(ctx); break;
             }
+            if (ctx.Level >= 2 && b.Type != "house" && b.Type != "town" && b.Type != "wonder") UpgradeExtras(ctx, b.Type);
+            DamageOverlay(b, cx, cz, yaw, seed);
         }
 
         struct Ctx
@@ -1151,16 +1157,134 @@ namespace SE.Runtime.Cities
             Module(c, Part.Cone, 0, 0, new float3(0.5f, 0.6f, 0.5f), new float3(0.6f, 0.8f, 1f), 0.4f, 3.6f, 0.6f);
         }
 
+        /// <summary>
+        /// Construction in five visible stages (target spec §8.2): survey and ground preparation,
+        /// excavation and foundations, structural frame, walls and roof, finishing. A site waiting for
+        /// materials or workers is visibly dormant: tarps over the work, the crane parked, no fresh earth.
+        /// </summary>
         void ComposeSite(in BuildingRecord b, float cx, float cz, float yaw, int seed)
         {
-            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = CivColor(b.Owner).xyz, Era = Age, Level = 1 };
+            int era = b.Era >= 0 ? Math.Min(4, b.Era) : Math.Max(0, Math.Min(4, Age));
+            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = CivColor(b.Owner).xyz, Era = era, Level = 1 };
             float prog = Mathf.Clamp01(b.Progress / 100f);
-            Module(c, Part.Box, 0, 0, new float3(0.8f, 0.02f, 0.6f), new float3(0.5f, 0.46f, 0.4f));
-            float h = 0.05f + prog * 0.3f;
-            Module(c, Part.Box, 0, 0, new float3(0.55f, h, 0.4f), new float3(0.62f, 0.6f, 0.56f));
-            // scaffold poles
-            for (int k = 0; k < 4; k++) Module(c, Part.Box, (k % 2 == 0 ? -1 : 1) * 0.3f, (k < 2 ? -1 : 1) * 0.22f, new float3(0.012f, h + 0.08f, 0.012f), new float3(0.7f, 0.6f, 0.35f));
-            Module(c, Part.Crane, 0.42f, 0.3f, new float3(0.55f, 0.5f + prog * 0.2f, 0.55f), new float3(1, 1, 1), Hash(seed, 2) * 3);
+            int stage = Mathf.Min(4, (int)(prog * 5f));
+            string st = b.State ?? "";
+            bool dormant = st.Contains("wait") || st.Contains("stall") || st.Contains("plan") || st.Contains("paused") || st.Contains("blocked");
+            var earth = new float3(0.46f, 0.38f, 0.29f);
+            var concrete = new float3(0.62f, 0.6f, 0.56f);
+            var steel = new float3(0.5f, 0.42f, 0.32f);
+            var scaffoldCol = new float3(0.72f, 0.6f, 0.32f);
+            // the cleared plot, fenced, with materials stacked by the gate
+            Module(c, Part.Box, 0, 0, new float3(0.95f, 0.012f, 0.75f), dormant ? earth * 0.85f : earth);
+            for (int k = 0; k < 4; k++)
+            {
+                float a = k * Mathf.PI * 0.5f;
+                Module(c, Part.Box, Mathf.Cos(a) * 0.47f, Mathf.Sin(a) * 0.37f, new float3(k % 2 == 0 ? 0.012f : 0.92f, 0.035f, k % 2 == 0 ? 0.72f : 0.012f), new float3(0.82f, 0.55f, 0.2f));
+            }
+            Module(c, Part.Box, -0.38f, 0.28f, new float3(0.14f, 0.05f + prog * 0.03f, 0.1f), era == 0 ? Timber(seed) : concrete * 0.9f);
+            switch (stage)
+            {
+                case 0:
+                    // survey stakes and the first spoil heap
+                    for (int k = 0; k < 6; k++) Module(c, Part.Box, -0.3f + (k % 3) * 0.3f, k < 3 ? -0.2f : 0.2f, new float3(0.01f, 0.06f, 0.01f), new float3(0.9f, 0.4f, 0.2f));
+                    Module(c, Part.Cone, 0.3f, 0.25f, new float3(0.2f, 0.08f, 0.2f), earth * 0.9f);
+                    break;
+                case 1:
+                    // excavated pit and foundation slab
+                    Module(c, Part.Box, 0, 0, new float3(0.62f, 0.02f, 0.46f), earth * 0.6f, 0, -0.015f);
+                    Module(c, Part.Box, 0, 0, new float3(0.58f, 0.03f, 0.42f), concrete, 0, 0.0f);
+                    Module(c, Part.Cone, 0.36f, 0.24f, new float3(0.22f, 0.12f, 0.22f), earth * 0.85f);
+                    break;
+                default:
+                {
+                    // the frame rises; walls and roof follow; scaffolding comes down at the end
+                    float full = 0.36f;
+                    float frameH = stage == 2 ? full * Mathf.InverseLerp(0.4f, 0.6f, prog) + 0.06f : full;
+                    Module(c, Part.Box, 0, 0, new float3(0.58f, 0.03f, 0.42f), concrete);
+                    for (int k = 0; k < 6; k++)
+                        Module(c, Part.Box, -0.26f + (k % 3) * 0.26f, k < 3 ? -0.19f : 0.19f, new float3(0.025f, frameH, 0.025f), era >= 2 ? steel : concrete * 0.95f);
+                    for (int f = 1; f <= (int)(frameH / 0.12f); f++)
+                        Module(c, Part.Box, 0, 0, new float3(0.56f, 0.015f, 0.4f), concrete * 0.92f, 0, f * 0.12f);
+                    if (stage >= 3)
+                    {
+                        float walls = stage == 3 ? Mathf.InverseLerp(0.6f, 0.8f, prog) : 1f;
+                        Module(c, Part.Box, 0, 0, new float3(0.57f, full * walls, 0.41f), era == 0 ? Timber(seed) : era == 1 ? Brick(seed) : Concrete(seed));
+                        if (stage == 4) Module(c, Part.Roof, 0, 0, new float3(0.6f, 0.08f, 0.44f), era == 0 ? Sheet(seed) : RoofTone(seed), 0, full);
+                    }
+                    if (stage <= 3)
+                        for (int k = 0; k < 4; k++) Module(c, Part.Box, (k % 2 == 0 ? -1 : 1) * 0.32f, (k < 2 ? -1 : 1) * 0.24f, new float3(0.012f, full + 0.08f, 0.012f), scaffoldCol);
+                    break;
+                }
+            }
+            if (dormant)
+            {
+                // nothing moving: the work is covered and the crane is parked low
+                Module(c, Part.Box, 0, 0, new float3(0.6f, 0.012f, 0.44f), Tarp(seed), 0.05f, 0.04f + prog * 0.3f);
+                Module(c, Part.Crane, 0.42f, 0.3f, new float3(0.45f, 0.35f, 0.45f), new float3(0.65f, 0.65f, 0.65f), 0f);
+            }
+            else if (stage >= 1 && stage <= 3)
+                Module(c, Part.Crane, 0.42f, 0.3f, new float3(0.55f, 0.5f + prog * 0.25f, 0.55f), new float3(1, 1, 1), Hash(seed, 2) * 3);
+        }
+
+        /// <summary>
+        /// Upgrades change the building, not just a number (target spec §8.1): level 2 adds a second
+        /// hall or wing in the building's own materials; level 3 adds storage, loading infrastructure or
+        /// reinforcement. Military sites gain revetments and a hardened block instead.
+        /// </summary>
+        void UpgradeExtras(in Ctx c, string type)
+        {
+            bool military = type == "barracks" || type == "fort" || type == "camp" || type == "guard_post" || type == "bunker" || type == "aa_battery";
+            bool civic = type == "academy" || type == "university" || type == "market";
+            float3 wall = military ? Olive : civic ? Stucco(c.Seed) : c.Era == 0 ? Sheet(c.Seed) : c.Era >= 2 ? Rust(c.Seed) : Brick(c.Seed);
+            if (military)
+            {
+                var sand = new float3(0.62f, 0.55f, 0.4f);
+                for (int k = 0; k < 3; k++) Module(c, Part.Box, -0.55f + k * 0.28f, 0.6f, new float3(0.24f, 0.06f, 0.06f), sand, (Hash(c.Seed, 300 + k) - 0.5f) * 0.3f);
+                if (c.Level >= 3) Module(c, Part.Box, 0.55f, 0.5f, new float3(0.26f, 0.12f, 0.22f), new float3(0.52f, 0.51f, 0.48f));
+                return;
+            }
+            Module(c, Part.Box, -0.52f, 0.5f, new float3(0.3f, 0.16f + c.Era * 0.02f, 0.24f), wall);
+            Module(c, Part.Roof, -0.52f, 0.5f, new float3(0.32f, 0.06f, 0.26f), civic ? Copper : new float3(0.3f, 0.3f, 0.32f), 0, 0.16f + c.Era * 0.02f);
+            if (c.Level >= 3)
+            {
+                if (civic) Module(c, Part.Dome, 0.52f, 0.5f, new float3(0.2f, 0.16f, 0.2f), Copper, 0, 0.12f);
+                else
+                {
+                    for (int k = 0; k < 2; k++) Module(c, Part.Silo, 0.5f + k * 0.15f, -0.55f, new float3(0.12f, 0.24f, 0.12f), new float3(0.66f, 0.66f, 0.64f));
+                    Module(c, Part.Box, 0.5f, 0.55f, new float3(0.3f, 0.02f, 0.18f), new float3(0.42f, 0.41f, 0.39f));   // a loading apron
+                    Module(c, Part.Box, 0.52f, 0.55f, new float3(0.12f, 0.05f, 0.08f), Container(c.Seed + 9));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Visible damage by band (target spec §8.3): light damage scorches and scatters debris; heavy
+        /// damage tears out sections and heaps rubble; critical damage leaves broken walls standing in
+        /// the wreckage. Deterministic per building, so it looks the same after a reload.
+        /// </summary>
+        void DamageOverlay(in BuildingRecord b, float cx, float cz, float yaw, int seed)
+        {
+            int band = StructureStore.DamageBand(b.Hp);
+            if (band == 0 || !b.Done) return;
+            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = new float3(0.5f), Era = 1, Level = 1 };
+            var soot = new float3(0.12f, 0.11f, 0.1f);
+            var rubble = new float3(0.46f, 0.43f, 0.39f);
+            int scorch = band * 2;
+            for (int k = 0; k < scorch; k++)
+            {
+                float a = Hash(seed, 200 + k) * 6.28f, r = 0.15f + Hash(seed, 210 + k) * 0.45f;
+                Module(c, Part.Box, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(0.12f + Hash(seed, 220 + k) * 0.1f, 0.006f, 0.1f), soot, a, 0.01f);
+            }
+            int heaps = band == 1 ? 2 : band == 2 ? 4 : 7;
+            for (int k = 0; k < heaps; k++)
+            {
+                float a = Hash(seed, 230 + k) * 6.28f, r = 0.3f + Hash(seed, 240 + k) * 0.35f;
+                float s = (0.08f + Hash(seed, 250 + k) * 0.06f) * (0.7f + band * 0.25f);
+                Module(c, Part.Cone, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(s * 1.6f, s * 0.6f, s * 1.6f), rubble * (0.85f + 0.2f * Hash(seed, 260 + k)));
+            }
+            if (band >= 2)
+                for (int k = 0; k < band - 1; k++)
+                    Module(c, Part.Broken, (Hash(seed, 270 + k) - 0.5f) * 0.6f, (Hash(seed, 280 + k) - 0.5f) * 0.5f, new float3(0.18f, 0.12f + band * 0.06f, 0.14f), rubble * 0.9f, Hash(seed, 290 + k) * 3f);
         }
 
         public void Draw(WrapImages images)

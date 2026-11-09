@@ -192,6 +192,14 @@ namespace SE.Net
             return rid;
         }
 
+        /// <summary>A spectator's command (follow a nation, fog of war, match speed): its own envelope on the server.</summary>
+        public int ObserverCommand(JObject command, Action<ServerMessage> callback = null)
+        {
+            int rid = Commands.Register(command, callback, clock());
+            Send(new JObject { ["t"] = "obsCmd", ["rid"] = rid, ["cmd"] = command });
+            return rid;
+        }
+
         void SendRaw(JObject o, bool high) => link.Send(o.ToString(Formatting.None), high);
 
         public void ForgetSession() { SessionMatch = null; SessionToken = null; queued.Clear(); Commands.Clear(); }

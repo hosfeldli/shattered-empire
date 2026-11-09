@@ -1,4 +1,4 @@
-﻿# Shattered Empires — development queue
+# Shattered Empires — development queue
 
 Updated 2026-11-08 (Unity visual pass, research overhaul, road-aware governors). Every item from the 2026-11-08 feedback pass is recorded here. What has been done in detail: [UNITY_PROGRESS.md](UNITY_PROGRESS.md). The full target specification and its gaps: [UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md). The client is
 moving from Godot to Unity ([UNITY_MIGRATION.md](UNITY_MIGRATION.md)), so each item says where
@@ -152,7 +152,7 @@ reporter retracted it in the same message.
 
 The owner's complete Unity-edition specification is condensed in
 [UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md), which tracks each requirement. Items started against
-it, uncommitted and not yet compiled (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 8):
+it, built and tested locally, not yet deployed (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 8):
 
 | | Item | Where | Milestone |
 | --- | --- | --- | --- |
@@ -160,5 +160,7 @@ it, uncommitted and not yet compiled (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md)
 | [~] | Control groups (Ctrl+1–9 set, 1–9 select, double press jumps), follow selection, attack-move key | unity | M5 |
 | [~] | Camera: fixed 60° pitch, Shift fast pan, smooth jumps, Backspace returns to the previous view | unity | M5 |
 | [~] | Input: every key registers under the Input System, no game keys while typing, remappable shortcuts | unity | M6 |
-| [ ] | Minimap becomes an optional Map Lens (the spec has no permanent minimap) | unity | M6 |
-| [ ] | Historical continuity: buildings keep the era they were built in | server + unity | M4 |
+| [~] | Minimap becomes an optional Map Lens (the spec has no permanent minimap) | unity | M6 |
+| [~] | Historical continuity: buildings keep the era they were built in | server + unity | M4 |
+| [~] | Five-stage construction, damage bands, upgrade-level extensions for every building kind | unity | M4 |
+| [~] | Alerts by severity with Go buttons, battle result cards, research and build search, accessibility settings, observer controls | unity | M6 |

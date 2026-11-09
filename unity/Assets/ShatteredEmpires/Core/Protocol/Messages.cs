@@ -44,6 +44,8 @@ namespace SE.Core.Protocol
     public struct BuildingRecord
     {
         public int Id, Owner, Tile, Hp, Progress, Level, Tier, City;
+        /// <summary>The era the building was built (or last upgraded) in; -1 when the server didn't say (older saves).</summary>
+        public int Era;
         public string Type, State;
         public bool Done, Fire, Memory, Active;
         /// <summary>Training queue length and progress of the head item (own buildings).</summary>

@@ -20,6 +20,8 @@ namespace SE.Runtime.CameraControl
         public float Yaw;
         public float MinDistance = 2.5f, MaxDistance = 260f;
         public bool EdgePan = true;
+        /// <summary>Pan speed multiplier (a player setting).</summary>
+        public float PanSpeed = 1f;
         public bool UserControl = true;
         WorldModel world;
         Vector3 velocity;   // map units per second
@@ -33,7 +35,16 @@ namespace SE.Runtime.CameraControl
         /// <summary>Camera shake amount (set from nearby blasts; decays in the effects system).</summary>
         public float Shake;
 
-        public float Pitch => PitchOverride >= 0 ? PitchOverride : Mathf.Lerp(48f, 72f, Mathf.InverseLerp(MinDistance, MaxDistance * 0.6f, Distance));
+        /// <summary>The strategic view keeps one fixed pitch at every zoom (the design's 60°), so the map never tilts as you zoom.</summary>
+        public const float BasePitch = 60f;
+        public float Pitch => PitchOverride >= 0 ? PitchOverride : BasePitch;
+
+        /// <summary>When set, the camera glides after this map point (a followed unit or formation); any manual pan stops following.</summary>
+        public System.Func<Vector3?> FollowTarget;
+        public bool Following => FollowTarget != null;
+
+        // where the camera was before each jump (Backspace returns there)
+        readonly System.Collections.Generic.List<(Vector3 focus, float distance)> history = new System.Collections.Generic.List<(Vector3, float)>();
 
         /// <summary>The camera position in map coordinates.</summary>
         public Vector3 MapPosition => MapSpace.ToMap(Cam.transform.position);
@@ -41,8 +52,37 @@ namespace SE.Runtime.CameraControl
         public void FocusTile(int tile, float distance)
         {
             if (world == null || !world.Ready || tile < 0) return;
+            Remember();
             Focus = new Vector3(world.Grid.CenterX(tile), Focus.y, world.Grid.CenterZ(tile));
             Distance = TargetDistance = distance;
+        }
+
+        /// <summary>Glide (not cut) to a map point, keeping the zoom unless one is given; the jump is remembered.</summary>
+        public void JumpTo(Vector3 map, float distance = -1f)
+        {
+            Remember();
+            jumpTarget = map; jumping = true;
+            if (distance > 0) TargetDistance = distance;
+        }
+
+        Vector3 jumpTarget;
+        bool jumping;
+
+        void Remember()
+        {
+            if (history.Count > 0 && (history[history.Count - 1].focus - Focus).sqrMagnitude < 4f) return;
+            history.Add((Focus, TargetDistance));
+            if (history.Count > 16) history.RemoveAt(0);
+        }
+
+        /// <summary>Return to where the camera was before the last jump.</summary>
+        public bool Back()
+        {
+            if (history.Count == 0) return false;
+            var (f, d) = history[history.Count - 1];
+            history.RemoveAt(history.Count - 1);
+            jumpTarget = f; jumping = true; TargetDistance = d; FollowTarget = null;
+            return true;
         }
 
         /// <summary>A screen-relative direction (x right, y forward) as a map-space vector.</summary>
@@ -70,15 +110,28 @@ namespace SE.Runtime.CameraControl
                 }
                 if (InputFacade.Held(KeyCode.Q)) Yaw -= 90f * dt;
                 if (InputFacade.Held(KeyCode.E)) Yaw += 90f * dt;
+                if (InputFacade.Action("back")) Back();
                 var dir = ScreenToMap(right, forward);
                 if (dir.sqrMagnitude > 1f) dir.Normalize();
-                var want = dir * Distance * 1.1f;
+                bool manual = dir.sqrMagnitude > 0.01f || InputFacade.MiddleHeld;
+                if (manual) { FollowTarget = null; jumping = false; }   // the player's hand always wins
+                var want = dir * Distance * (InputFacade.Shift ? 2.4f : 1.1f) * PanSpeed;
                 velocity = Vector3.Lerp(velocity, want, 1f - Mathf.Exp(-dt * 10f));
                 Focus += velocity * dt;
                 if (InputFacade.MiddleHeld)
                 {
                     var d = InputFacade.MouseDelta;
                     Focus += ScreenToMap(-d.x, -d.y) * Distance * 0.0022f;
+                }
+                // following a unit, or gliding to a jump target, eases the focus there
+                Vector3? goal = jumping ? jumpTarget : FollowTarget?.Invoke();
+                if (FollowTarget != null && goal == null) FollowTarget = null;   // the followed unit is gone
+                if (goal is Vector3 gp && world != null && world.Ready)
+                {
+                    float dx = world.Grid.DxWrap(Focus.x, gp.x), dz = gp.z - Focus.z;
+                    float k = 1f - Mathf.Exp(-dt * (jumping ? 6f : 4f));
+                    Focus += new Vector3(dx * k, 0, dz * k);
+                    if (jumping && dx * dx + dz * dz < 0.01f) jumping = false;
                 }
                 float scroll = InputFacade.Scroll;
                 if (Mathf.Abs(scroll) > 0.01f)

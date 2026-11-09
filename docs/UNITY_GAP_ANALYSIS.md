@@ -11,8 +11,8 @@ Legend:
 - **Missing** — not started.
 - **Server** — the server has it and the Unity client must expose it.
 
-Status reflects commit `6ecd9d3` plus the uncommitted battle-line and camera work (section 8 of the
-progress record).
+Status reflects commit `6ecd9d3` plus the target-specification batch (section 8 of the progress
+record). **Done (local)** means built and tested locally but not yet deployed.
 
 ## Decisions the specification fixes
 
@@ -49,13 +49,13 @@ progress record).
 | --- | --- | --- |
 | Cities read as settlements with history, districts and streets | Partial | Street geometry, infill, parks, plazas and the per-kind colour language. No parcel planner or district recipes yet. |
 | Four settlement tiers with distinct looks | Partial | The town centre skyline grows with era and tier. No explicit tier-specific layouts. |
-| Historical continuity: old buildings keep their era, new ones are built in the new style | **Missing** | **Conflicts with the current implementation**: every building restyles to the current era. Needs a per-building "built in era" (from the server or recorded on first sight). |
+| Historical continuity: old buildings keep their era, new ones are built in the new style | Done (local) | **Conflicts with the current implementation**: every building restyles to the current era. Needs a per-building "built in era" (from the server or recorded on first sight). |
 | Deterministic parcels and street networks per city seed | Partial | Deterministic from tile and building ids. The server owns roads; the client lays streets within hexes. |
 | Visual contracts (nothing implies a route or bridge that isn't real; inactive factories don't animate) | Partial | Streets follow the server's road edges; your own unstaffed buildings do not smoke (staffing is not visible for other nations). Not systematically enforced. |
 | All 32 active building types modelled | Partial | Every type renders. Many share generic models (the `Industry` fallback for the steel mill, refinery, munitions, motor works, heavy assembly, electronics, drone works, robotics); unique models remain to be done. |
-| Upgrade levels 1–3 change the model | Partial | Homes change by level. Other types do not yet. |
-| Five-stage visible construction | Partial | A generic site with scaffold and crane, growing with progress. No stages, crews or stalled state. |
-| Damage bands (85/60/35%) and persistent ruins | Partial | Damage tints the model, fires burn, and destruction leaves a ruin record. No per-band geometry. |
+| Upgrade levels 1–3 change the model | Done (local) | Every kind gains annexes, storage or reinforcement. |
+| Five-stage visible construction | Done (local) | Five stages and a dormant look when waiting. No work crews yet. |
+| Damage bands (85/60/35%) and persistent ruins | Done (local) | Per-band scorch, rubble and broken walls; ruins persist. Not yet material-specific (glass, steel, masonry). |
 | Visible civilians and vehicles | Partial | Traffic simulation done. Pedestrians were removed at the owner's request (2026-11-08); the spec asks for sidewalk pedestrians, which needs reconciling. |
 | City reactions (prosperity, shortage, war, reconstruction) | Missing | |
 
@@ -68,7 +68,7 @@ progress record).
 | Guide Growth and mayors | Done | On the city card. |
 | Construction visibility (ETA, committed and missing resources, why paused) | Partial | The building card shows state and works. The construction queue is not surfaced. |
 | Five eras, connected research graph | Done | Research overhaul: Nuclear Fission added; Fusion follows. |
-| Research search; queue a route with prerequisites | Partial | Shift-click queues the route. No search; no highlighting of prerequisites and unlocks on selection. |
+| Research search; queue a route with prerequisites | Done (local) | Shift-click queues the route. No search; no highlighting of prerequisites and unlocks on selection. |
 | Pacing targets | Not measured | Server tempo `native-v4`; validate in play. |
 
 ## Part IV — Military
@@ -79,18 +79,18 @@ progress record).
 | Infantry animation vocabulary | Missing | Procedural bob and spacing only. |
 | Vehicle movement (tracks, suspension, steering) | Partial | Hull and turret facing. No suspension or track motion. |
 | LOD from figures to badges to army markers | Partial | Three levels (tactical, operational, strategic markers). No count badges or army-group markers. |
-| Camera: WASD, Shift fast pan, middle drag, cursor zoom | Done* | *Shift fast pan is in the uncommitted batch. |
-| Camera: follow, jump to cities/armies/alerts, back, double-click centre | Partial* | *Follow, back and double-click centre are in the uncommitted batch. Jump to alert is not done. |
+| Camera: WASD, Shift fast pan, middle drag, cursor zoom | Done | |
+| Camera: follow, jump to cities/armies/alerts, back, double-click centre | Done (local) | Space jumps to the latest alert; Go buttons on cities, armies, notices and the chronicle. |
 | Selection: click, box, Shift add, double-click same type | Done | |
-| Control groups | Partial* | *Uncommitted batch. |
+| Control groups | Done (local) | |
 | Behaviours: Defend / Attack / Explore plus Hold, Withdraw, Attack-move | Partial | Stance buttons and keys. The single primary-behaviour display is missing. |
-| **Battle-line drawing with preview, facing flip, advancing line, queue** | Partial* | *Uncommitted batch, built on the server planner and a new preview mode. The overlay drawing of the preview remains. |
+| **Battle-line drawing with preview, facing flip, advancing line, queue** | Done (local) | *Uncommitted batch, built on the server planner and a new preview mode. The overlay drawing of the preview remains. |
 | Detach and reassign formation members; reinforce a line | Server | `formation` ops exist; no Unity UI. |
 | Immediate feedback on every order; refusal reasons | Done | Pending, accepted and refused markers with the server's reason. |
 | Combat effects from real server events | Done | Fire, impact, hit, kill, launch and strategic events drive all effects. |
 | Muzzle origin per model and figure | Partial | From the unit centre. |
 | Persistent battlefield transformation | Partial | Craters, wrecks, scarred ground, trenches. No vegetation destruction or recovery over time. |
-| After-action battle report | Missing | |
+| After-action battle report | Done (local) | The server's report shown as a result card. |
 | Trenches drawn as routes and joined to defences | Done | |
 | Air mission cycle; flight presentation | Partial | The server runs the cycle; Unity has the flight model. No airfield ground activity. |
 | Strategic missile launch workflow and presentation | Partial | Strategic blast and shockwave. No launch or targeting UI and no silo animation. |
@@ -100,7 +100,7 @@ progress record).
 | Requirement | Status | Notes |
 | --- | --- | --- |
 | Layered national AI, campaigns, fog-limited perception | Server | Existing server AI. Measured validation remains. |
-| AI observation mode (follow nation, speed, fog toggle, decisions) | Partial | "Watch AI empires" starts a match. No spectator controls in the Unity interface yet. |
+| AI observation mode (follow nation, speed, fog toggle, decisions) | Done (local) | "Watch AI empires" starts a match. No spectator controls in the Unity interface yet. |
 | Developer AI overlay | Missing | |
 | Production repeat; distribute across selected buildings; shared rally | Partial | Distribution and rally done. The repeat toggle is not exposed. |
 | Opportunity Director suggestions | Missing in Unity | |
@@ -110,12 +110,12 @@ progress record).
 | Requirement | Status | Notes |
 | --- | --- | --- |
 | Map-first; top bar with resources, weather, alerts, settings | Partial | The top bar has resources, power, people and the era. Weather and alert icons are missing. |
-| Build, Army, Research as primary; Overview with Cities, Economy, Rivals, Chronicle, Map Lenses | Partial | Rail and Overview tabs exist. **Map Lenses are missing. The minimap should become a lens, not a permanent fixture.** |
-| Searchable build palette with model preview | Partial | Grouped palette with costs. No search and no 3D preview at the cursor. |
-| Input guarantees | Partial* | Typing guard, remapping storage and Esc are in the uncommitted batch. Enter-to-confirm and the remapping UI are missing. |
+| Build, Army, Research as primary; Overview with Cities, Economy, Rivals, Chronicle, Map Lenses | Done (local) | Map Lenses tab; the minimap is a lens, off by default. More lenses (resources, supply, threat) remain. |
+| Searchable build palette with model preview | Partial | Search done (local). No 3D preview at the cursor yet. |
+| Input guarantees | Done (local) | Typing guard, remappable shortcuts with a settings UI, Esc cancels the innermost action, presses never repeat. Enter-to-confirm is not wired to specific dialogs yet. |
 | Research card details and a structured-connector graph | Partial | Tooltips carry the details. There are no connectors. |
 | City card with tier, workforce, housing, threats, mayor | Partial | |
-| Alerts by severity (critical, actionable, info); result cards | Partial | A quiet feed and a critical banner. No actionable notices or result cards. |
+| Alerts by severity (critical, actionable, info); result cards | Done (local) | A quiet feed and a critical banner. No actionable notices or result cards. |
 | Main menu: Continue, New Campaign, Multiplayer, Watch AI, Sandbox, Tutorial, Settings | Partial | Equivalent entries with different labels. No world-generation options. |
 | Opening cinematic descending to the capital | Partial | The intro cinematic exists. No descent into the actual start. |
 | Tutorial as a quiet real match | Partial | 10 coached steps in a normal match. |
@@ -151,19 +151,17 @@ progress record).
 
 ## Suggested order of work
 
-Based on the specification's priorities and what is already half built:
+The first batch of this list (controls, battle lines, historical continuity, construction stages,
+damage bands, alerts, search, settings and observer controls) is built and tested locally. Next:
 
-1. **Finish and verify the uncommitted control batch:**
-   - battle-line overlay and Esc cancel;
-   - rebinding UI;
-   - the minimap becomes a Map Lens;
-   - jump to alert.
-2. **Historical continuity:** buildings keep the era they were built in. This needs a "built in era" per building.
-3. **Construction stages and damage bands** on buildings; after-action battle reports; alerts by severity with result cards.
-4. **Interface:**
-   - research search and selection highlighting;
-   - build palette search with a cursor preview;
-   - accessibility settings;
-   - observer controls.
-5. **Unique models** for the shared industrial fallbacks; upgrade-level variants beyond homes.
-6. **Separate benchmark scenes**, and a full live playtest in Unity before promoting it from "preview".
+1. **Deploy and playtest the batch.** The live server needs the deploy preview and building eras;
+   then a person should play a full match in the Unity client and report how battle lines, control
+   groups and the new panels feel.
+2. **Street rings in dense districts:** link fewer edges round blocks where every hex is road-covered.
+3. **Build placement preview:** the proposed 3D model at the cursor, matching the generated building.
+4. **Unique models** for the industrial types that share the generic fallback (steel mill, refinery,
+   munitions, motor works, heavy assembly, electronics, drone works, robotics), and work crews on
+   construction sites.
+5. **More Map Lenses:** resources, supply and threat. A workforce and staffing panel.
+6. **Separate benchmark scenes** (city, megacity, 100/500/1,000/2,000 battles, seam crossing,
+   save/rejoin, two-hour session) before promoting Unity from "preview".

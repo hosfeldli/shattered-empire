@@ -168,6 +168,11 @@
     background-color: rgba(10, 15, 17, 0.85); border-left-width: 3px; border-color: rgba(214, 170, 82, 0.6);
 }
 .note.critical { background-color: rgba(120, 34, 22, 0.9); border-color: rgb(244, 120, 90); }
+.note .btn.note-go { margin: 0 0 0 8px; padding: 2px 8px; font-size: 12px; }
+.result-card { position: absolute; top: 96px; left: 35%; right: 35%; padding: 16px 18px; border-top-color: rgb(236, 196, 110); }
+.search { margin-bottom: 8px; }
+.tech.match { border-top-color: rgb(120, 200, 255); border-right-color: rgb(120, 200, 255); border-bottom-color: rgb(120, 200, 255); }
+.tech.related { background-color: rgba(110, 160, 220, 0.18); }
 .banner { position: absolute; top: 54px; left: 33%; right: 33%; padding: 8px 14px; -unity-text-align: middle-center; border-top-color: rgb(244, 120, 90); }
 
 /* tutorial */

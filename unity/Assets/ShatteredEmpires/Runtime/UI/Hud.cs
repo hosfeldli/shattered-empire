@@ -18,6 +18,7 @@ namespace SE.Runtime.UI
         void Quit();
         void FocusTile(int tile, float distance);
         void ApplyQuality(string preset);
+        void ApplyUiScale(float scale);
         void InviteFriends();
         bool CanInvite { get; }
         string Server { get; set; }
@@ -48,7 +49,7 @@ namespace SE.Runtime.UI
         float refreshAt, bannerUntil;
         int quantity = 1;
         string cardSignature = "", panelSignature = "";
-        int noteCount;
+        long noteCount;
         public bool MenuVisible => menu.style.display == DisplayStyle.Flex;
 
         public Hud(VisualElement rootElement, ClientSession s, Commander c, Military.UnitRenderer u, IGameActions actions)
@@ -170,8 +171,29 @@ namespace SE.Runtime.UI
             BuildMenu();
         }
 
-        /// <summary>The minimap (the bootstrap wires its camera hooks).</summary>
+        /// <summary>The minimap (the bootstrap wires its camera hooks). A map lens, off unless chosen (the design keeps the main view map-first).</summary>
         public Minimap Map;
+        static bool MinimapLens
+        {
+            get => PlayerPrefs.GetInt("se.lens.minimap", 0) == 1;
+            set { PlayerPrefs.SetInt("se.lens.minimap", value ? 1 : 0); PlayerPrefs.Save(); }
+        }
+
+        void SetMinimapLens(bool on)
+        {
+            MinimapLens = on;
+            Map.style.display = on && topbar.resolvedStyle.display != DisplayStyle.None ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        /// <summary>Global shortcuts (remappable): panels, the minimap lens, jump to the latest alert.</summary>
+        void Shortcuts()
+        {
+            if (Input.InputFacade.Action("build")) Toggle("build");
+            if (Input.InputFacade.Action("research")) Toggle("research");
+            if (Input.InputFacade.Action("overview")) Toggle("overview");
+            if (Input.InputFacade.Pressed(KeyCode.M)) SetMinimapLens(!MinimapLens);
+            if (Input.InputFacade.Action("alert") && session.LastAlertTile >= 0) game.FocusTile(session.LastAlertTile, 22f);
+        }
 
         void Toggle(string name)
         {
@@ -185,7 +207,8 @@ namespace SE.Runtime.UI
         public void ShowGame(bool on)
         {
             var d = on ? DisplayStyle.Flex : DisplayStyle.None;
-            topbar.style.display = d; rail.style.display = d; feed.style.display = d; Map.style.display = d;
+            topbar.style.display = d; rail.style.display = d; feed.style.display = d;
+            Map.style.display = on && MinimapLens ? DisplayStyle.Flex : DisplayStyle.None;
             if (!on) { panel.style.display = DisplayStyle.None; card.style.display = DisplayStyle.None; coach.style.display = DisplayStyle.None; }
             else if (PlayerPrefs.GetInt("se.tutorial.done", 0) == 0 && !session.Spectator) { tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }
         }
@@ -239,8 +262,12 @@ namespace SE.Runtime.UI
             hintText.text = feedback ? commander.Feedback : modeHint;
             hintText.style.color = feedback ? (commander.FeedbackGood ? new Color(0.65f, 0.9f, 0.6f) : new Color(1f, 0.55f, 0.45f)) : new Color(0.9f, 0.88f, 0.8f);
             if (time > bannerUntil) banner.style.display = DisplayStyle.None;
-            Map.Tick(time);
+            if (Map.resolvedStyle.display != DisplayStyle.None) Map.Tick(time);
+            // no game keys while a text field (search, chat, settings) has focus
+            Input.InputFacade.Typing = root.panel?.focusController?.focusedElement is TextField;
+            if (rebinding != null) { RebindStep(); return; }   // the next key belongs to the shortcut being set
             if (openPanel != "" && Input.InputFacade.Pressed(KeyCode.Escape)) { openPanel = ""; Refresh(true); }
+            Shortcuts();
             TileReadout();
             Tutorial(time);
             if (time < refreshAt) return;
@@ -489,21 +516,46 @@ namespace SE.Runtime.UI
         // ------------------------------------------------------------------ alerts: quiet unless it matters
         void Notes()
         {
+            // three tiers (target spec §30): critical interrupts with a banner; major is a compact,
+            // actionable notice (Go there); everything else goes to the chronicle only. Concluded
+            // battles and other outcomes get a result card.
             var notes = session.Notes;
-            if (notes.Count == noteCount) return;
-            for (int i = noteCount; i < notes.Count; i++)
+            long total = session.NotesTotal;
+            if (total == noteCount) return;
+            long first = total - notes.Count;   // the index of notes[0] in the running count
+            for (long k = Math.Max(noteCount, first); k < total; k++)
             {
+                int i = (int)(k - first);
                 var (t, text, level) = notes[i];
-                // first builds, discoveries and routine news go to the chronicle only (no pop-ups)
-                if (level != "critical" && level != "major") continue;
+                var meta = i < session.NoteMeta.Count ? session.NoteMeta[i] : default;
                 if (text.StartsWith("(earlier)")) continue;
-                var n = L(text, "note" + (level == "critical" ? " critical" : ""), feed);
-                n.style.whiteSpace = WhiteSpace.Normal;
-                n.schedule.Execute(() => n.RemoveFromHierarchy()).StartingIn(level == "critical" ? 12000 : 7000);
+                if (meta.Kind == "result" || !string.IsNullOrEmpty(meta.Title)) ResultCard(meta.Title ?? "Outcome", text, meta.Tile);
+                if (level != "critical" && level != "major") continue;
+                var n = El("note row" + (level == "critical" ? " critical" : ""), feed);
+                var label = L(text, "grow", n); label.style.whiteSpace = WhiteSpace.Normal;
+                int tile = meta.Tile;
+                if (tile >= 0) B("Go", () => game.FocusTile(tile, 22f), n, null, "note-go");
+                n.schedule.Execute(() => n.RemoveFromHierarchy()).StartingIn(level == "critical" ? 14000 : 8000);
                 if (level == "critical") { bannerText.text = text; banner.style.display = DisplayStyle.Flex; bannerUntil = Time.unscaledTime + 4f; }
                 while (feed.childCount > 5) feed.RemoveAt(0);
             }
-            noteCount = notes.Count;
+            noteCount = total;
+        }
+
+        VisualElement resultCard;
+
+        /// <summary>A concise outcome card (battle won or lost, a city taken…): title, summary, Go there, dismiss.</summary>
+        void ResultCard(string title, string text, int tile)
+        {
+            resultCard?.RemoveFromHierarchy();
+            resultCard = El("result-card glass", root);
+            L(title, "title", resultCard);
+            L(text, "", resultCard).style.whiteSpace = WhiteSpace.Normal;
+            var row = El("row", resultCard);
+            if (tile >= 0) B("Go there", () => { game.FocusTile(tile, 22f); resultCard?.RemoveFromHierarchy(); }, row, null, "primary");
+            B("Dismiss", () => resultCard?.RemoveFromHierarchy(), row);
+            var card0 = resultCard;
+            card0.schedule.Execute(() => card0.RemoveFromHierarchy()).StartingIn(15000);
         }
 
         // ------------------------------------------------------------------ contextual card
@@ -704,8 +756,12 @@ namespace SE.Runtime.UI
         {
             panel.style.display = openPanel == "" ? DisplayStyle.None : DisplayStyle.Flex;
             if (openPanel == "") return;
-            string sig = openPanel + panelTab + "|" + (openPanel == "research" ? Econ?["research"] + "|" + Econ?["progress"] + "|" + (Econ?["queue"] as JArray)?.Count + "|" + (Econ?["techs"] as JArray)?.Count : openPanel == "build" ? Age + "|" + (Econ?["techs"] as JArray)?.Count : openPanel == "overview" ? panelTab + "|" + session.Snapshots / 20 : "");
-            if (!force && sig == panelSignature) return;
+            // the signature says when the panel's structure changes; live values (research progress)
+            // update in place, so typing in a panel's search box is never interrupted by a rebuild
+            bool typingHere = Input.InputFacade.Typing;
+            string sig = openPanel + panelTab + "|" + (openPanel == "research" ? Econ?["research"] + "|" + (Econ?["queue"] as JArray)?.Count + "|" + (Econ?["techs"] as JArray)?.Count : openPanel == "build" ? Age + "|" + (Econ?["techs"] as JArray)?.Count : openPanel == "overview" ? panelTab + "|" + (panelTab == "Observe" || panelTab == "Map Lenses" ? "" : (session.Snapshots / 20).ToString()) : "");
+            if (openPanel == "research") ResearchProgressLive();
+            if (!force && (sig == panelSignature || typingHere)) return;
             panelSignature = sig;
             panel.Clear();
             panel.EnableInClassList("wide", openPanel == "research" || openPanel == "overview");
@@ -732,13 +788,23 @@ namespace SE.Runtime.UI
         void BuildPanel()
         {
             L("Build", "title", panel);
+            var search = new TextField { value = buildQuery };
+            search.AddToClassList("field"); search.AddToClassList("search");
+            search.textEdition.placeholder = "Search buildings…";
+            panel.Add(search);
             var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 640; panel.Add(scroll);
             var techs = Techs();
             int age = Age;
             var defs = Defs?["BUILDINGS"] as JObject;
+            var entries = new List<(VisualElement el, string text, VisualElement heading)>();
+            search.RegisterValueChangedCallback(e =>
+            {
+                buildQuery = e.newValue ?? "";
+                FilterBuild(entries);
+            });
             foreach (var (title, types) in BuildGroups)
             {
-                L(title, "heading", scroll);
+                var heading = L(title, "heading", scroll);
                 var grid = El("row wrap", scroll);
                 foreach (var type in types)
                 {
@@ -754,8 +820,10 @@ namespace SE.Runtime.UI
                     b.tooltip = (ok ? CostText(def["cost"]) : tech != null && !techs.Contains(tech) ? "Research " + NameOf("TECHS", tech) : "Requires a later era") + (Affordable(def["cost"]) ? "" : " · not enough now: it will wait in the queue");
                     b.SetEnabled(ok);
                     b.name = "build-" + type;
+                    entries.Add((b, (NameOf("BUILDINGS", type) + " " + title + " " + type).ToLowerInvariant(), heading));
                 }
             }
+            FilterBuild(entries);
             L("Roads and fortifications", "heading", scroll);
             var tools = El("row wrap", scroll);
             B("Dirt road", () => { commander.Begin(Commander.Mode.Road, "1"); openPanel = ""; }, tools, "road");
@@ -779,11 +847,21 @@ namespace SE.Runtime.UI
                 float cost = ProtocolDecoder.Float(Defs?["TECHS"]?[current]?["cost"], 1);
                 float prog = ProtocolDecoder.Float(Econ?["progress"]);
                 var box = El(null, head); box.style.width = 320;
-                L($"Researching {NameOf("TECHS", current)} · {Mathf.RoundToInt(100 * prog / Mathf.Max(1, cost))}%", "small", box);
-                var bar = El("progress", box); El("progress-fill", bar).style.width = new Length(Mathf.Clamp01(prog / Mathf.Max(1, cost)) * 100, LengthUnit.Percent);
+                researchLabel = L($"Researching {NameOf("TECHS", current)} · {Mathf.RoundToInt(100 * prog / Mathf.Max(1, cost))}%", "small", box);
+                var bar = El("progress", box); researchFill = El("progress-fill", bar);
+                researchFill.style.width = new Length(Mathf.Clamp01(prog / Mathf.Max(1, cost)) * 100, LengthUnit.Percent);
             }
+            else { researchLabel = null; researchFill = null; }
             if (queue.Count > 0) L("Queued: " + string.Join(" → ", queue.Select(q => NameOf("TECHS", q))), "muted small", panel);
-            L("Click an available technology to research it now; Shift+click to add it (and what it needs) to the queue.", "muted small", panel);
+            L("Click an available technology to research it now; Shift+click to add it (and what it needs) to the queue. Hover to see what it needs and what it leads to.", "muted small", panel);
+            // search by name, effect or unlock: matches are outlined, the rest fade
+            var search = new TextField { value = researchQuery };
+            search.AddToClassList("field"); search.AddToClassList("search");
+            search.textEdition.placeholder = "Search technologies, units or buildings…";
+            panel.Add(search);
+            var techButtons = new Dictionary<string, Button>();
+            var techText = new Dictionary<string, string>();
+            search.RegisterValueChangedCallback(e => { researchQuery = e.newValue ?? ""; ApplyResearchFilter(techButtons, techText); });
             var ages = Defs?["AGES"] as JArray;
             var row = El("row", panel);
             row.style.alignItems = Align.FlexStart;
@@ -846,9 +924,65 @@ namespace SE.Runtime.UI
                         + (what != null && what.Count > 0 ? "\nUnlocks: " + string.Join(", ", what) : "")
                         + (req.Count > 0 ? "\nNeeds: " + string.Join(", ", req.Select(r => NameOf("TECHS", r) + (techs.Contains(r) ? " ✓" : ""))) : "")
                         + (done ? "" : available ? "\nClick to research now · Shift+click to queue" : "\nShift+click to queue it with what it needs");
+                    techButtons[k] = t;
+                    techText[k] = (NameOf("TECHS", k) + " " + ProtocolDecoder.Str(p.Value["desc"], "") + " " + (what != null ? string.Join(" ", what) : "")).ToLowerInvariant();
+                    string key = k;
+                    t.RegisterCallback<PointerEnterEvent>(e => HighlightRelated(all, key, techButtons, true));
+                    t.RegisterCallback<PointerLeaveEvent>(e => HighlightRelated(all, key, techButtons, false));
                     col.Add(t);
                 }
             }
+            ApplyResearchFilter(techButtons, techText);
+        }
+
+        string buildQuery = "";
+
+        void FilterBuild(List<(VisualElement el, string text, VisualElement heading)> entries)
+        {
+            string q = buildQuery.Trim().ToLowerInvariant();
+            var visibleHeadings = new HashSet<VisualElement>();
+            foreach (var (el, text, heading) in entries)
+            {
+                bool show = q.Length == 0 || text.Contains(q);
+                el.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+                if (show) visibleHeadings.Add(heading);
+            }
+            foreach (var (_, _, heading) in entries) heading.style.display = visibleHeadings.Contains(heading) ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        string researchQuery = "";
+        Label researchLabel;
+        VisualElement researchFill;
+
+        /// <summary>Progress of the current research, updated in place (the panel is not rebuilt for it).</summary>
+        void ResearchProgressLive()
+        {
+            string current = ProtocolDecoder.Str(Econ?["research"]);
+            if (researchLabel == null || researchFill == null || current == null) return;
+            float cost = ProtocolDecoder.Float(Defs?["TECHS"]?[current]?["cost"], 1), prog = ProtocolDecoder.Float(Econ?["progress"]);
+            researchLabel.text = $"Researching {NameOf("TECHS", current)} · {Mathf.RoundToInt(100 * prog / Mathf.Max(1, cost))}%";
+            researchFill.style.width = new Length(Mathf.Clamp01(prog / Mathf.Max(1, cost)) * 100, LengthUnit.Percent);
+        }
+
+        void ApplyResearchFilter(Dictionary<string, Button> buttons, Dictionary<string, string> text)
+        {
+            string q = researchQuery.Trim().ToLowerInvariant();
+            foreach (var kv in buttons)
+            {
+                bool hit = q.Length > 0 && text.TryGetValue(kv.Key, out var s) && s.Contains(q);
+                kv.Value.EnableInClassList("match", hit);
+                kv.Value.style.opacity = q.Length == 0 || hit ? StyleKeyword.Null : new StyleFloat(0.3f);
+            }
+        }
+
+        /// <summary>Hovering a technology lights up everything it needs (all the way down) and everything that needs it.</summary>
+        void HighlightRelated(JObject all, string key, Dictionary<string, Button> buttons, bool on)
+        {
+            var related = new HashSet<string>();
+            void Down(string k) { if (all[k]?["req"] is JArray req) foreach (var r in req) { string s = (string)r; if (related.Add(s)) Down(s); } }
+            void Up(string k) { foreach (var p in all.Properties()) if (p.Value["req"] is JArray req && req.Any(x => (string)x == k) && related.Add(p.Name)) Up(p.Name); }
+            Down(key); Up(key);
+            foreach (var r in related) if (buttons.TryGetValue(r, out var b)) b.EnableInClassList("related", on);
         }
 
         static string BranchName(string b) => b switch
@@ -860,7 +994,9 @@ namespace SE.Runtime.UI
         void OverviewPanel()
         {
             var tabs = El("tabs", panel);
-            foreach (var t in new[] { "Economy", "Cities", "Armies", "Rivals", "Chronicle", "Actions" })
+            var tabNames = new List<string> { "Economy", "Cities", "Armies", "Rivals", "Chronicle", "Map Lenses", "Actions" };
+            if (session.Spectator) tabNames.Insert(0, "Observe");
+            foreach (var t in tabNames)
             {
                 string tt = t;
                 B(t, () => { panelTab = tt; Refresh(true); }, tabs).EnableInClassList("selected", (panelTab == "" ? "Economy" : panelTab) == t);
@@ -927,13 +1063,79 @@ namespace SE.Runtime.UI
                     for (int i = session.Notes.Count - 1; i >= Math.Max(0, session.Notes.Count - 80); i--)
                     {
                         var (t, text, level) = session.Notes[i];
-                        L($"{(int)(t / 60)}:{(int)(t % 60):00}  {text}", level == "critical" ? "bad small" : level == "major" ? "warn small" : "small", scroll).style.whiteSpace = WhiteSpace.Normal;
+                        var row = El("row", scroll);
+                        L($"{(int)(t / 60)}:{(int)(t % 60):00}  {text}", (level == "critical" ? "bad small" : level == "major" ? "warn small" : "small") + " grow", row).style.whiteSpace = WhiteSpace.Normal;
+                        int tile = i < session.NoteMeta.Count ? session.NoteMeta[i].Tile : -1;
+                        if (tile >= 0) B("Go", () => game.FocusTile(tile, 22f), row);
                     }
+                    break;
+                case "Map Lenses":
+                    L("Lenses add information over the map without covering it. They stay as you leave them.", "muted small", scroll).style.whiteSpace = WhiteSpace.Normal;
+                    var lensRow = El("row", scroll);
+                    var mini = B(MinimapLens ? "Minimap: on" : "Minimap: off", () => { SetMinimapLens(!MinimapLens); Refresh(true); }, lensRow);
+                    mini.EnableInClassList("selected", MinimapLens);
+                    L("(M toggles)", "muted small", lensRow);
+                    break;
+                case "Observe":
+                    ObservePanel(scroll);
                     break;
                 case "Actions":
                     ActionsCatalogue(scroll);
                     break;
             }
+        }
+
+        /// <summary>
+        /// AI observation (spectators): follow a nation, its fog of war or the whole map, the match
+        /// speed, and that nation's current plan from the server's AI inspector.
+        /// </summary>
+        void ObservePanel(VisualElement scroll)
+        {
+            var net = session.Net;
+            if (net == null) return;
+            L("Follow a nation", "heading", scroll);
+            var row = El("row wrap", scroll);
+            foreach (var civ in session.Welcome.Civs)
+            {
+                int id = civ.Id;
+                var b = B(civ.Name, () => net.ObserverCommand(new JObject { ["c"] = "follow", ["civ"] = id }, r => { if (r.Error != null) commander.Say(r.Error, false, Time.unscaledTime); }), row);
+                b.EnableInClassList("selected", session.CivId == id);
+            }
+            L("What you see", "heading section", scroll);
+            var fog = El("row", scroll);
+            B("Whole map", () => net.ObserverCommand(new JObject { ["c"] = "fog", ["on"] = false }), fog);
+            B("Their fog of war", () => net.ObserverCommand(new JObject { ["c"] = "fog", ["on"] = true }), fog);
+            L("Match speed", "heading section", scroll);
+            var speed = El("row", scroll);
+            foreach (var s in new[] { 0, 1, 2, 4, 8 })
+            {
+                int sp = s;
+                B(s == 0 ? "Pause" : s + "×", () => net.ObserverCommand(new JObject { ["c"] = "speed", ["speed"] = sp }, r => commander.Say(r.Error ?? (sp == 0 ? "Paused" : $"Speed {sp}×"), r.Error == null, Time.unscaledTime)), speed)
+                    .EnableInClassList("selected", Mathf.Approximately(session.PlayRate, sp));
+            }
+            L("Their plan", "heading section", scroll);
+            var plan = L("Ask the AI inspector what this nation is doing and why.", "muted small", scroll);
+            plan.style.whiteSpace = WhiteSpace.Normal;
+            B("Inspect AI decisions", () => net.ObserverCommand(new JObject { ["c"] = "aiDiag", ["civ"] = session.CivId }, r =>
+            {
+                var d = r.Raw?["diag"];
+                plan.text = d == null || d.Type == JTokenType.Null ? "No AI plan for this nation (a human player, or no report yet)." : Summarise(d);
+            }), scroll);
+        }
+
+        static string Summarise(JToken diag)
+        {
+            // the inspector report is free-form: show its top-level facts briefly
+            var sb = new System.Text.StringBuilder();
+            if (diag is JObject o)
+                foreach (var p in o.Properties().Take(14))
+                {
+                    string v = p.Value.Type == JTokenType.Object || p.Value.Type == JTokenType.Array ? p.Value.ToString(Newtonsoft.Json.Formatting.None) : p.Value.ToString();
+                    if (v.Length > 160) v = v.Substring(0, 157) + "…";
+                    sb.Append(p.Name).Append(": ").Append(v).Append('\n');
+                }
+            else sb.Append(diag.ToString());
+            return sb.ToString();
         }
 
         /// <summary>Every remaining game action, from the catalogue shared with the Godot client.</summary>
@@ -1024,11 +1226,59 @@ namespace SE.Runtime.UI
                 Volume("Ambience", a.Ambience, v => a.Ambience = v);
                 Volume("Music", a.MusicVolume, v => a.MusicVolume = v);
             }
-            L("Interface", "heading", panel);
-            var r = El("row wrap", panel);
+            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 520; panel.Add(scroll);
+            L("Accessibility and comfort", "heading section", scroll);
+            Setting(scroll, "Interface scale", App.GameSettings.UiScale, 0.75f, 1.6f, v => { App.GameSettings.UiScale = v; game.ApplyUiScale(v); });
+            Toggle(scroll, "Screen shake", App.GameSettings.ScreenShake, v => App.GameSettings.ScreenShake = v);
+            Toggle(scroll, "Reduced motion (no shake or flashes, gentler camera)", App.GameSettings.ReducedMotion, v => App.GameSettings.ReducedMotion = v);
+            Toggle(scroll, "High-contrast unit and ownership markers", App.GameSettings.HighContrastMarkers, v => App.GameSettings.HighContrastMarkers = v);
+            Setting(scroll, "Weather effects", App.GameSettings.WeatherIntensity, 0f, 1f, v => App.GameSettings.WeatherIntensity = v);
+            L("Camera", "heading section", scroll);
+            Toggle(scroll, "Pan at the screen edge", App.GameSettings.EdgePan, v => App.GameSettings.EdgePan = v);
+            Setting(scroll, "Pan speed", App.GameSettings.CameraSpeed, 0.5f, 2f, v => App.GameSettings.CameraSpeed = v);
+            L("Controls", "heading section", scroll);
+            L("Click a shortcut, then press the new key (Esc keeps the old one).", "muted small", scroll);
+            foreach (var act in Input.InputFacade.Actions)
+            {
+                var row = El("row", scroll);
+                L(act.Label, "grow small", row);
+                string id = act.Id;
+                var key = B(rebinding == id ? "press a key…" : Input.InputFacade.KeyFor(id).ToString(), () => { rebinding = id; panelSignature = ""; Refresh(true); }, row);
+                key.style.minWidth = 110;
+                key.EnableInClassList("selected", rebinding == id);
+            }
+            B("Restore default keys", () => { Input.InputFacade.ResetBindings(); panelSignature = ""; Refresh(true); }, scroll);
+            L("Interface", "heading section", scroll);
+            var r = El("row wrap", scroll);
             B("Restart the tutorial", () => { PlayerPrefs.SetInt("se.tutorial.done", 0); tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }, r);
             B("Play the intro", () => game.PlayIntro(), r);
             B("Leave match", () => game.StartMatch("", ""), r);
+        }
+
+        string rebinding;
+
+        /// <summary>While a shortcut is being rebound, the next key press becomes its key.</summary>
+        void RebindStep()
+        {
+            if (rebinding == null) return;
+            var k = Input.InputFacade.AnyKeyPressed();
+            if (k == KeyCode.None) return;
+            if (k != KeyCode.Escape) Input.InputFacade.Rebind(rebinding, k);
+            rebinding = null; panelSignature = ""; Refresh(true);
+        }
+
+        void Setting(VisualElement parent, string label, float value, float min, float max, Action<float> set)
+        {
+            var s = new Slider(label, min, max) { value = value };
+            s.RegisterValueChangedCallback(e => set(e.newValue));
+            parent.Add(s);
+        }
+
+        void Toggle(VisualElement parent, string label, bool value, Action<bool> set)
+        {
+            var t = new UnityEngine.UIElements.Toggle(label) { value = value };
+            t.RegisterValueChangedCallback(e => set(e.newValue));
+            parent.Add(t);
         }
 
         void Volume(string label, float value, Action<float> set)

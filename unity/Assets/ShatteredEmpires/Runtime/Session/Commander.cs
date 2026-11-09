@@ -146,6 +146,7 @@ namespace SE.Runtime.Session
             if (!session.Ready) return;
             var mouse = InputFacade.MousePosition;
             hoverTile = pointerOverUi ? -1 : TileUnderCursor();
+            if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
             if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { Cancel(); return; }
             switch (Current)
             {
@@ -197,6 +198,8 @@ namespace SE.Runtime.Session
                             if (u.InUse && u.Owner == session.CivId && u.TypeIndex == bestType && ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) units.Selected.Add(u.Id);
                         }
                 }
+                else if (!box && doubleClick && tile >= 0 && BuildingAt(tile) == null && cam.TryGround(mouse, out var centre))
+                    cam.JumpTo(centre);   // double-click on open ground: centre the view there
                 else if (!box && tile >= 0 && BuildingAt(tile) is BuildingRecord b && (b.Owner == session.CivId || session.Spectator))
                 {
                     // buildings: a click selects one; a double-click every building of that type on screen
@@ -213,21 +216,142 @@ namespace SE.Runtime.Session
             }
             units.Selected.RemoveWhere(id => !session.Units.SlotOf.ContainsKey(id));
             SelectedBuildings.RemoveWhere(id => !session.Structures.Buildings.ContainsKey(id));
-            if (!overUi && InputFacade.RightDown && units.Selected.Count > 0 && cam.TryGround(InputFacade.MousePosition, out var ground))
+            // right button: a click moves (on release); a drag draws a battle line
+            if (!overUi && InputFacade.RightDown && units.Selected.Count > 0 && cam.TryGround(mouse, out var ground))
             {
-                int tile = session.World.Grid.TileAt(ground.x, ground.z);
-                if (tile >= 0) Move(tile, ground, InputFacade.Shift || InputFacade.Ctrl, time);
+                rightPress = true; lineDrag = false; lineReverse = false; linePreview = null;
+                lineStartScreen = mouse; lineStartGround = ground; linePath.Clear();
+                int t0 = session.World.Grid.TileAt(ground.x, ground.z);
+                if (t0 >= 0) linePath.Add(t0);
             }
             else if (!overUi && InputFacade.RightDown && SelectedBuildings.Count > 0 && units.Selected.Count == 0)
             {
                 int tile = TileUnderCursor();
                 if (tile >= 0) SetRally(tile, time);
             }
+            if (rightPress) BattleLine(time, mouse);
             if (units.Selected.Count > 0)
             {
-                if (InputFacade.Pressed(KeyCode.H)) UnitCommand("hold", null, "Holding position");
-                if (InputFacade.Pressed(KeyCode.X)) UnitCommand("withdraw", null, "Withdrawing");
+                if (InputFacade.Action("hold")) UnitCommand("hold", null, "Holding position");
+                if (InputFacade.Action("withdraw")) UnitCommand("withdraw", null, "Withdrawing");
+                if (InputFacade.Action("attack")) Begin(Mode.Target, "", new JObject { ["c"] = "move", ["units"] = "@units", ["tile"] = "@map", ["attackMove"] = true });
+                if (!lineDrag && InputFacade.Action("follow")) ToggleFollow(time);
             }
+            ControlGroups(time);
+        }
+
+        // ------------------------------------------------------------------ battle lines
+        // Right-drag across the map: the server plans who stands where (a dry run while dragging, so the
+        // preview is exactly what will happen), invalid ground shows red, units that don't fit are
+        // counted. F flips the facing, Alt makes it an advancing line, Shift queues it; release commits.
+        bool rightPress, lineDrag, lineReverse;
+        Vector2 lineStartScreen;
+        Vector3 lineStartGround;
+        readonly List<int> linePath = new List<int>();
+        JObject linePreview;
+        float linePreviewAt;
+        int lineToken;
+        public bool DrawingLine => lineDrag;
+
+        void BattleLine(float time, Vector2 mouse)
+        {
+            if (!lineDrag && (mouse - lineStartScreen).magnitude > 16f) lineDrag = true;
+            if (lineDrag)
+            {
+                if (InputFacade.Action("flip")) { lineReverse = !lineReverse; linePreviewAt = 0; }
+                int t = TileUnderCursor();
+                if (t >= 0 && linePath.Count > 0 && linePath[linePath.Count - 1] != t && linePath.Count < 24) { linePath.Add(t); linePreviewAt = Mathf.Min(linePreviewAt, time + 0.12f); }
+                if (time >= linePreviewAt && linePath.Count >= 2) { linePreviewAt = time + 0.25f; DeployCommand(true, time); }
+            }
+            if (!InputFacade.RightUp) return;
+            rightPress = false;
+            if (lineDrag && linePath.Count >= 2) DeployCommand(false, time);
+            else
+            {
+                int tile = session.World.Grid.TileAt(lineStartGround.x, lineStartGround.z);
+                if (tile >= 0) Move(tile, lineStartGround, InputFacade.Shift || InputFacade.Ctrl, time);
+            }
+            lineDrag = false;
+            linePreview = null;
+        }
+
+        void DeployCommand(bool preview, float time)
+        {
+            if (session.Net == null) return;
+            var cmd = new JObject
+            {
+                ["c"] = "deploy", ["units"] = new JArray(new List<int>(units.Selected).ToArray()),
+                ["line"] = new JArray(linePath[0], linePath[linePath.Count - 1]), ["path"] = new JArray(linePath.ToArray()),
+                ["mode"] = "line", ["behavior"] = InputFacade.Alt ? "attackMove" : "defend", ["reverse"] = lineReverse,
+            };
+            if (preview) cmd["preview"] = true;
+            else if (InputFacade.Shift) cmd["queue"] = true;
+            int token = ++lineToken;
+            var point = lineStartGround;
+            if (!preview) { var order = new Order { MapPoint = point, Time = time }; Orders.Add(order); }
+            session.Net.Command(cmd, r =>
+            {
+                if (preview)
+                {
+                    if (token == lineToken && lineDrag) linePreview = r.Error == null ? r.Raw : null;
+                    return;
+                }
+                if (r.Error != null) { Say(r.Error, false, Time.unscaledTime); return; }
+                var d = r.Raw?["deploy"] as JObject;
+                if (d?["queued"] != null) { Say($"Battle line queued for {d["queued"]} units", true, Time.unscaledTime); return; }
+                int placed = ProtocolDecoder.Int(d?["placed"]), partial = ProtocolDecoder.Int(d?["partial"]), unreachable = ProtocolDecoder.Int(d?["unreachable"]);
+                int overflow = (d?["overflow"] as JArray)?.Count ?? 0;
+                Say($"Line formed ({ProtocolDecoder.Str(d?["label"], "line")}): {placed} deploying" + (partial + unreachable > 0 ? $" · {partial + unreachable} can't reach" : "") + (overflow > 0 ? $" · {overflow} don't fit" : ""), unreachable == 0, Time.unscaledTime);
+            });
+        }
+
+        // ------------------------------------------------------------------ control groups and following
+        readonly Dictionary<int, HashSet<int>> groups = new Dictionary<int, HashSet<int>>();
+        int lastGroup = -1;
+        float lastGroupAt;
+
+        void ControlGroups(float time)
+        {
+            for (int k = 1; k <= 9; k++)
+            {
+                if (!InputFacade.Pressed(KeyCode.Alpha0 + k)) continue;
+                if (InputFacade.Ctrl)
+                {
+                    groups[k] = new HashSet<int>(units.Selected);
+                    Say(units.Selected.Count > 0 ? $"Group {k}: {units.Selected.Count} units" : $"Group {k} cleared", true, time);
+                    continue;
+                }
+                if (!groups.TryGetValue(k, out var g) || g.Count == 0) continue;
+                g.RemoveWhere(id => !session.Units.SlotOf.ContainsKey(id));
+                if (!InputFacade.Shift) { units.Selected.Clear(); SelectedBuildings.Clear(); SelectedCity = -1; }
+                foreach (var id in g) units.Selected.Add(id);
+                SelectionChanged?.Invoke();
+                // pressing the same group twice quickly brings the camera to it
+                if (lastGroup == k && time - lastGroupAt < 0.4f && SelectionCentre() is Vector3 c) cam.JumpTo(c);
+                lastGroup = k; lastGroupAt = time;
+            }
+        }
+
+        /// <summary>The middle of the current selection (map coordinates), wrap-aware.</summary>
+        public Vector3? SelectionCentre()
+        {
+            var g = session.World.Grid;
+            float sx = 0, sz = 0; int n = 0; float refX = 0;
+            foreach (var id in units.Selected)
+            {
+                if (!units.TryGetPosition(session.Units, id, out var p)) continue;
+                if (n == 0) refX = p.x;
+                sx += refX + g.DxWrap(refX, p.x); sz += p.y; n++;
+            }
+            if (n == 0) return null;
+            return new Vector3(sx / n, 0, sz / n);
+        }
+
+        void ToggleFollow(float time)
+        {
+            if (cam.Following) { cam.FollowTarget = null; Say("Stopped following", true, time); return; }
+            cam.FollowTarget = SelectionCentre;
+            Say("Following the selection · move the camera to stop", true, time);
         }
 
         // ------------------------------------------------------------------ building placement
@@ -434,6 +558,23 @@ namespace SE.Runtime.Session
                     }
                 else foreach (var t in path) Disc(t, new float4(0.95f, 0.8f, 0.35f, 0.5f));
             }
+            if (lineDrag)
+            {
+                // the line as drawn, then (once the server has planned it) every unit's slot: green where
+                // it will stand, red where the ground refuses it
+                foreach (var t in linePath) Ring(t, new float4(1f, 0.85f, 0.35f, 0.7f), 1.2f);
+                if (linePreview?["slots"] is JArray slots)
+                {
+                    var perTile = new Dictionary<int, int>();
+                    foreach (JArray s in slots) { int t = (int)s[1]; perTile[t] = perTile.TryGetValue(t, out int n) ? n + 1 : 1; }
+                    foreach (var kv in perTile)
+                    {
+                        Disc(kv.Key, new float4(0.35f, 0.9f, 0.5f, 0.35f + 0.1f * Mathf.Min(4, kv.Value)));
+                        for (int k = 0; k < Mathf.Min(4, kv.Value); k++) Ring(kv.Key, new float4(0.6f, 1f, 0.7f, 0.8f), 0.35f + k * 0.18f);
+                    }
+                }
+                if (linePreview?["invalid"] is JArray bad) foreach (var t in bad) Disc((int)t, new float4(0.95f, 0.3f, 0.25f, 0.55f));
+            }
             if ((Current == Mode.Growth || Current == Mode.Rally || Current == Mode.Target) && hoverTile >= 0) Ring(hoverTile, new float4(0.95f, 0.8f, 0.35f, 0.9f), 1.6f + 0.15f * Mathf.Sin(time * 6f));
             float pulse = 1.5f + 0.1f * Mathf.Sin(time * 8f);
             foreach (var t in pendingSites.Keys) Ring(t, new float4(1f, 0.82f, 0.25f, 0.9f), pulse);
@@ -452,6 +593,17 @@ namespace SE.Runtime.Session
 
         public string ModeHint()
         {
+            if (lineDrag)
+            {
+                string plan = "";
+                if (linePreview != null)
+                {
+                    int slots = (linePreview["slots"] as JArray)?.Count ?? 0, over = (linePreview["overflow"] as JArray)?.Count ?? 0, bad = (linePreview["invalid"] as JArray)?.Count ?? 0;
+                    plan = $"{slots} placed ({ProtocolDecoder.Str(linePreview["label"], "line")})" + (over > 0 ? $" · {over} don't fit" : "") + (bad > 0 ? $" · {bad} hexes refused" : "") + " · ";
+                }
+                return plan + (InputFacade.Alt ? "Advancing line" : "Defensive line") + (lineReverse ? " · facing flipped" : "")
+                    + $" · release to deploy · {InputFacade.KeyFor("flip")} flips facing · Alt advances · Shift queues · Esc cancels";
+            }
             switch (Current)
             {
                 case Mode.Place: return "Click a highlighted site · drag to place several · Shift keeps placing · right-click or Esc to stop";

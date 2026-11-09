@@ -34,6 +34,8 @@ namespace SE.Runtime.Military
         public readonly HashSet<int> Selected = new HashSet<int>();
         /// <summary>Whether a tile holds a finished trench (troops there are drawn down in it).</summary>
         public Func<int, bool> InTrench;
+        /// <summary>High-contrast markers (accessibility): stronger ownership rings and fully saturated strategic markers.</summary>
+        public bool HighContrast;
         public int Drawn { get; private set; }
         public int Instances { get; private set; }
         /// <summary>Last frame's cost by phase (diagnostics and stall attribution).</summary>
@@ -205,12 +207,13 @@ namespace SE.Runtime.Military
                     batches[(int)Model.Ring].Add(T(new float3(x, ground + 0.015f, z), 0, new float3(level == 0 ? markerScale * 1.4f : 0.42f), new float4(0.3f, 1f, 0.45f, 0.8f)));
                 else if (level > 0 && !IsAir(kind))
                     // whose unit it is, at a glance: a faint team ring on the ground (the paint stays military)
-                    batches[(int)Model.Ring].Add(T(new float3(x, ground + 0.012f, z), 0, new float3(kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo ? 0.3f : 0.26f), new float4(team.xyz, 0.22f)));
+                    batches[(int)Model.Ring].Add(T(new float3(x, ground + 0.012f, z), 0, new float3((kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo ? 0.3f : 0.26f) * (HighContrast ? 1.25f : 1f)),
+                        HighContrast ? new float4(math.saturate(team.xyz * 1.6f), 0.9f) : new float4(team.xyz, 0.22f)));
                 if (level == 0)
                 {
                     // strategic: one readable marker per unit, air units above the ground
                     float alt = IsAir(kind) ? 1.2f : 0.05f;
-                    var mc = new float4(team.xyz, IsAir(kind) ? 0.35f : 0.15f);
+                    var mc = HighContrast ? new float4(math.saturate(team.xyz * 1.6f), 0.8f) : new float4(team.xyz, IsAir(kind) ? 0.35f : 0.15f);
                     batches[(int)Model.Marker].Add(T(p + new float3(0, alt, 0), yaw[s], new float3(markerScale, markerScale * (kind == Kind.Infantry ? 0.6f : 1f), markerScale), mc));
                     continue;
                 }
