@@ -1,6 +1,6 @@
 ﻿# Shattered Empires — development queue
 
-Updated 2026-11-08 (Unity visual pass, research overhaul, road-aware governors). Every item from the 2026-11-08 feedback pass is recorded here. The client is
+Updated 2026-11-08 (Unity visual pass, research overhaul, road-aware governors). Every item from the 2026-11-08 feedback pass is recorded here. What has been done in detail: [UNITY_PROGRESS.md](UNITY_PROGRESS.md). The full target specification and its gaps: [UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md). The client is
 moving from Godot to Unity ([UNITY_MIGRATION.md](UNITY_MIGRATION.md)), so each item says where
 the work lands:
 
@@ -147,3 +147,18 @@ reporter retracted it in the same message.
 | [~] | Cities less patterned: streets meet at off-centre junctions, wrap round built blocks, no private driveways; varied block layouts | unity | M4 |
 | [~] | Full interface pass: design tokens, era pill, active rail, panel close, minimap with camera footprint and click-to-move | unity | M6 |
 | [ ] | Streets wrapping every built hex in a fully road-covered district read as a lattice of rings: link fewer edges round dense blocks | unity | M4 |
+
+## 12. Target specification (2026-11-08)
+
+The owner's complete Unity-edition specification is condensed in
+[UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md), which tracks each requirement. Items started against
+it, uncommitted and not yet compiled (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 8):
+
+| | Item | Where | Milestone |
+| --- | --- | --- | --- |
+| [~] | Battle-line drawing: right-drag with a live server preview, F flips facing, Alt advances, Shift queues, release commits | server + unity | M5 |
+| [~] | Control groups (Ctrl+1–9 set, 1–9 select, double press jumps), follow selection, attack-move key | unity | M5 |
+| [~] | Camera: fixed 60° pitch, Shift fast pan, smooth jumps, Backspace returns to the previous view | unity | M5 |
+| [~] | Input: every key registers under the Input System, no game keys while typing, remappable shortcuts | unity | M6 |
+| [ ] | Minimap becomes an optional Map Lens (the spec has no permanent minimap) | unity | M6 |
+| [ ] | Historical continuity: buildings keep the era they were built in | server + unity | M4 |

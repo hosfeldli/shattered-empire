@@ -134,6 +134,13 @@ Consequences, per this plan:
   the official download until the Unity client passes M8.
 - Work continues with M3 (live multiplayer in Unity).
 
+## Progress and target
+
+- [UNITY_PROGRESS.md](UNITY_PROGRESS.md) records what has been built, changed, verified and
+  deployed, with commits, benchmarks and known issues.
+- [UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md) condenses the owner's complete target
+  specification (received 2026-11-08) and marks each requirement done, partial or missing.
+
 ## Feature parity
 
 Parity means working game actions, not buttons. The parity matrix is
