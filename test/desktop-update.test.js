@@ -55,7 +55,7 @@ test('the macOS swap script waits for the app, swaps the bundle and restores it 
   assert.ok(!fs.existsSync(fresh) && !fs.existsSync(app + '.old'));
 });
 
-test('the manifest marks update packages; the retired Electron builds stay reachable but are not offered', { timeout: 60000 }, async () => {
+test('legacy manifests still identify update packages, but retired Electron downloads are not publicly served', { timeout: 60000 }, async () => {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'se-dist-'));
   for (const n of ['ShatteredEmpires-0.1.7-mac-arm64.dmg', 'ShatteredEmpires-0.1.7-mac-arm64.zip', 'ShatteredEmpires-0.1.7-win-x64-setup.exe', 'ShatteredEmpires-0.1.7-win-x64-setup.exe.blockmap']) fs.writeFileSync(path.join(dist, n), n);
   const m = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('../desktop/scripts/manifest.mjs', import.meta.url)), dist, '0.1.7'], { encoding: 'utf8' }));
@@ -65,11 +65,11 @@ test('the manifest marks update packages; the retired Electron builds stay reach
   const port = await new Promise((r) => srv.on('message', (x) => x.t === 'listening' && r(x.port)));
   try {
     const page = await (await fetch(`http://127.0.0.1:${port}/`)).text();
-    // the download page offers the native client now; Electron installers are no longer listed
+    // Archived release metadata cannot restore retired installers or update links.
     assert.doesNotMatch(page, /0\.1\.7-win-x64-setup\.exe/); assert.doesNotMatch(page, /0\.1\.7-mac-arm64\.dmg/);
     assert.doesNotMatch(page, /\.zip/, 'update packages are not offered to people');
     const api = await (await fetch(`http://127.0.0.1:${port}/api/downloads`)).json();
-    assert.ok(api.files.some((f) => f.kind === 'update'), 'but apps can find them');
-    assert.equal((await fetch(`http://127.0.0.1:${port}/download/file/ShatteredEmpires-0.1.7-mac-arm64.zip`)).status, 200);
+    assert.deepEqual(api.files, []);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/download/file/ShatteredEmpires-0.1.7-mac-arm64.zip`)).status, 404);
   } finally { srv.kill(); }
 });

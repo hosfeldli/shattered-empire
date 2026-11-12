@@ -3,7 +3,7 @@ name: Unity client
 # The Unity client (docs/UNITY_MIGRATION.md). Every push and PR runs the engine-independent core
 # against server fixtures and a live local server; with Unity credentials configured it also
 # compiles the project, runs EditMode tests and builds Windows x64. Builds from main are published as
-# an opt-in 'unity-preview' download; the official download stays the Godot build until M8.
+# the Windows Unity ZIP. It is the site's only download and remains labeled as a preview.
 # Repository secrets: UNITY_LICENSE (Personal/Plus .ulf contents) or UNITY_SERIAL, plus UNITY_EMAIL
 # and UNITY_PASSWORD.
 on:
