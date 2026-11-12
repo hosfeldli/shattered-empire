@@ -1,0 +1,30 @@
+{
+    "name": "SE.Steam",
+    "rootNamespace": "SE.Steam",
+    "references": [
+        "SE.Runtime",
+        "com.rlabrecque.steamworks.net"
+    ],
+    "includePlatforms": [
+        "Editor",
+        "LinuxStandalone64",
+        "macOSStandalone",
+        "WindowsStandalone64"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "SE_STEAM"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.rlabrecque.steamworks.net",
+            "expression": "0.0.1",
+            "define": "SE_STEAM"
+        }
+    ],
+    "noEngineReferences": false
+}

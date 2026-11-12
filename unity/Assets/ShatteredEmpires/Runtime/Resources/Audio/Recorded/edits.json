@@ -1,0 +1,164 @@
+[
+  {
+    "file": "rifle_01.ogg",
+    "source": "firearms/Prepared SFX Library/AR-15/D_24P.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=65,afade=t=out:st=1.4:d=0.3,volume=0.85,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "rifle_02.ogg",
+    "source": "firearms/Prepared SFX Library/AR-15/D_32P.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=65,afade=t=out:st=1.4:d=0.3,volume=0.85,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "rifle_03.ogg",
+    "source": "firearms/Prepared SFX Library/AK-47/C_31P.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=65,afade=t=out:st=1.5:d=0.3,volume=0.8,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "mg_01.ogg",
+    "source": "firearms/Prepared SFX Library/Carl Gustav M45/G_24P.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=70,afade=t=out:st=1.5:d=0.35,volume=0.8,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "mg_02.ogg",
+    "source": "firearms/Prepared SFX Library/AK-47/C_34P.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=70,afade=t=out:st=1.5:d=0.35,volume=0.8,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "cannon_01.ogg",
+    "source": "cannon.ogg",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=35,afade=t=out:st=3.4:d=0.5,volume=0.85,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "blast_01.ogg",
+    "source": "explosions/explode.wav",
+    "processing": "highpass=f=30,afade=t=out:st=2.7:d=0.5,volume=0.78,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "blast_02.ogg",
+    "source": "explosions/explodemini.wav",
+    "processing": "highpass=f=45,afade=t=out:st=2.3:d=0.5,volume=0.78,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "debris_01.ogg",
+    "source": "bfh1_rock_falling_03.ogg",
+    "processing": "highpass=f=100,afade=t=out:st=1.9:d=0.3,volume=0.9,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "debris_02.ogg",
+    "source": "bfh1_rock_breaking_01.ogg",
+    "processing": "highpass=f=100,afade=t=out:st=1.4:d=0.3,volume=0.9,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "metal_01.ogg",
+    "source": "bfh1_metal_hit_01.ogg",
+    "processing": "highpass=f=90,volume=0.85,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "wood_01.ogg",
+    "source": "bfh1_wood_breaking_01.ogg",
+    "processing": "highpass=f=100,volume=0.85,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "glass_01.ogg",
+    "source": "bfh1_glass_breaking_02.ogg",
+    "processing": "highpass=f=120,volume=0.75,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "confirm_01.ogg",
+    "source": "bfh1_metal_hit_04.ogg",
+    "processing": "highpass=f=650,lowpass=f=3800,afade=t=out:st=0.13:d=0.1,volume=0.35,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "thunder_01.ogg",
+    "source": "thunder.ogg",
+    "processing": "highpass=f=28,afade=t=in:d=0.02,afade=t=out:st=12:d=1,volume=0.75,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "engine_tank.ogg",
+    "source": "engine.ogg",
+    "processing": "atrim=start=0:duration=3.8,asetpts=PTS-STARTPTS,highpass=f=38,lowpass=f=5500,asplit[a][b];[a]atrim=start=0.57,asetpts=PTS-STARTPTS[c];[b]atrim=duration=0.57,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=0.57:c1=tri:c2=tri,volume=0.75,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "engine_truck.ogg",
+    "source": "truck.ogg",
+    "processing": "atrim=start=2:duration=12,asetpts=PTS-STARTPTS,highpass=f=45,lowpass=f=6500,asplit[a][b];[a]atrim=start=1.2,asetpts=PTS-STARTPTS[c];[b]atrim=duration=1.2,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=1.2:c1=tri:c2=tri,volume=0.6,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "engine_rotor.ogg",
+    "source": "rotor.ogg",
+    "processing": "atrim=start=0.5:duration=5.5,asetpts=PTS-STARTPTS,highpass=f=40,lowpass=f=6500,asplit[a][b];[a]atrim=start=0.825,asetpts=PTS-STARTPTS[c];[b]atrim=duration=0.825,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=0.825:c1=tri:c2=tri,volume=0.7,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "engine_jet.ogg",
+    "source": "jet.ogg",
+    "processing": "atrim=start=2:duration=5,asetpts=PTS-STARTPTS,highpass=f=45,lowpass=f=7000,asplit[a][b];[a]atrim=start=0.75,asetpts=PTS-STARTPTS[c];[b]atrim=duration=0.75,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=0.75:c1=tri:c2=tri,volume=0.55,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "amb_wind.ogg",
+    "source": "wind.ogg",
+    "processing": "atrim=start=10:duration=32,asetpts=PTS-STARTPTS,highpass=f=100,lowpass=f=9000,asplit[a][b];[a]atrim=start=1.2,asetpts=PTS-STARTPTS[c];[b]atrim=duration=1.2,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=1.2:c1=tri:c2=tri,volume=0.45,alimiter=limit=0.89:level=disabled",
+    "stereo": true
+  },
+  {
+    "file": "amb_rain.ogg",
+    "source": "rain.ogg",
+    "processing": "atrim=start=6:duration=32,asetpts=PTS-STARTPTS,highpass=f=100,lowpass=f=10000,asplit[a][b];[a]atrim=start=1.2,asetpts=PTS-STARTPTS[c];[b]atrim=duration=1.2,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=1.2:c1=tri:c2=tri,volume=0.42,alimiter=limit=0.89:level=disabled",
+    "stereo": true
+  },
+  {
+    "file": "amb_river.ogg",
+    "source": "river.ogg",
+    "processing": "atrim=start=12:duration=32,asetpts=PTS-STARTPTS,highpass=f=90,lowpass=f=10000,asplit[a][b];[a]atrim=start=1.2,asetpts=PTS-STARTPTS[c];[b]atrim=duration=1.2,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=1.2:c1=tri:c2=tri,volume=0.5,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "amb_forest.ogg",
+    "source": "forest.ogg",
+    "processing": "atrim=start=5:duration=32,asetpts=PTS-STARTPTS,highpass=f=130,asplit[a][b];[a]atrim=start=1.2,asetpts=PTS-STARTPTS[c];[b]atrim=duration=1.2,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=1.2:c1=tri:c2=tri,volume=0.6,alimiter=limit=0.89:level=disabled",
+    "stereo": true
+  },
+  {
+    "file": "amb_industry.ogg",
+    "source": "industry.ogg",
+    "processing": "atrim=start=4:duration=16,asetpts=PTS-STARTPTS,highpass=f=65,lowpass=f=6000,asplit[a][b];[a]atrim=start=1.2,asetpts=PTS-STARTPTS[c];[b]atrim=duration=1.2,asetpts=PTS-STARTPTS[d];[c][d]acrossfade=d=1.2:c1=tri:c2=tri,volume=0.38,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  },
+  {
+    "file": "music_calm.ogg",
+    "source": "calm.mp3",
+    "processing": "highpass=f=35,volume=0.6,alimiter=limit=0.89:level=disabled",
+    "stereo": true
+  },
+  {
+    "file": "music_combat.ogg",
+    "source": "score.wav",
+    "processing": "highpass=f=35,volume=0.6,alimiter=limit=0.89:level=disabled",
+    "stereo": true
+  },
+  {
+    "file": "pistol_01.ogg",
+    "source": "firearms/Prepared SFX Library/1911/A_34P.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-46dB:start_silence=0.008,highpass=f=90,afade=t=out:st=0.9:d=0.25,volume=0.65,alimiter=limit=0.89:level=disabled",
+    "stereo": false
+  }
+]

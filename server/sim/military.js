@@ -14,6 +14,7 @@ import { siegeDamage } from './cities.js';
 import { fireUnit, fireBuilding, chooseTarget, firingPosition, coverPosition, emit, onUnitLost, CS, lineOfFire } from './combat.js';
 import { UNIT_WEAPON, WEAPONS, BUILDING_WEAPON, weaponVs } from './weapons.js';
 import { addWreck, engineerClear, scarCost, addWear } from './battlefield.js';
+import { meltdown } from './missiles.js';
 
 export function spawnUnit(g, civ, type, tile) {
   const def = UNITS[type];
@@ -26,6 +27,46 @@ export function spawnUnit(g, civ, type, tile) {
 }
 
 const isAir = (u) => !!UNITS[u.type].air;
+
+// The next leg of an aircraft's attack. Helicopters orbit the target at weapon range, half a circle
+// per leg; fast aircraft fly a line through it and three hexes beyond, and the next leg brings them
+// back round for another pass.
+export function attackRun(u, tt, def) {
+  const nbs = (t) => { const o = []; for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0) o.push(n); } return o; };
+  if (def.role === 'support') {
+    const r = Math.max(1, Math.min(2, def.range));
+    const pts = disk(tt, r).filter((t) => dist(t, tt) === r);
+    if (!pts.length) return [];
+    const out = [], left = new Set(pts);
+    let cur = pts.reduce((b, t) => (dist(t, u.tile) < dist(b, u.tile) ? t : b), pts[0]);
+    for (let k = 0; k < Math.ceil(pts.length / 2) && left.size; k++) {
+      out.push(cur); left.delete(cur);
+      let nx = null, nd = Infinity;
+      for (const t of left) { const d = dist(cur, t); if (d < nd) { nd = d; nx = t; } }
+      if (nx == null) break;
+      cur = nx;
+    }
+    return out.filter((t) => t !== u.tile);
+  }
+  // strafing pass: from here through the target and on past it
+  const path = [];
+  let cur = u.tile, guard = 0;
+  while (cur !== tt && guard++ < 64) {
+    let best = cur, bd = dist(cur, tt);
+    for (const n of nbs(cur)) if (dist(n, tt) < bd) { bd = dist(n, tt); best = n; }
+    if (best === cur) break;
+    path.push(best); cur = best;
+  }
+  let prev = path.length > 1 ? path[path.length - 2] : u.tile;
+  if (prev === cur) { const n0 = nbs(cur)[0]; if (n0 == null) return path; prev = n0; }
+  for (let i = 0; i < 3; i++) {
+    let best = cur, bd = -1;
+    for (const n of nbs(cur)) { const d = dist(n, prev); if (d > bd) { bd = d; best = n; } }
+    if (best === cur) break;
+    path.push(best); prev = cur; cur = best;
+  }
+  return path;
+}
 // can this unit's weapon engage that target at all (explicit target classes)
 export function canHit(attDef, target) { return !target.grounded && weaponVs(UNIT_WEAPON[attDef.key], UNITS[target.type]) > 0; }
 
@@ -98,7 +139,13 @@ export function unitsStep(g, dt) {
           u.tgt = u.order.target.kind === 'unit' ? u.order.target.id : -u.order.target.id;
           const inRange = dist(u.tile, tt) <= def.range;
           const lof = inRange && (wpn.arc || lineOfFire(g, u.tile, tt, false, !!def.air || (u.order.target.kind === 'unit' && !!UNITS[g.units.get(u.order.target.id)?.type]?.air)).ok);
-          if (inRange && lof) {
+          if (inRange && lof && def.air) {
+            // aircraft never stop to shoot: jets make strafing passes through the target and come
+            // round again; helicopters circle it at weapon range and fire on the move
+            cstat = u.cooldown > 0.6 && wpn.mode === 'projectile' ? CS.reloading : CS.engaging;
+            if (u.cooldown <= 0) fireUnit(g, u, u.order.target, tt);
+            if (!u.path.length || u.runAt !== tt) { u.runAt = tt; u.path = attackRun(u, tt, def); u.field = false; u.goal = u.path.length ? u.path[u.path.length - 1] : u.tile; }
+          } else if (inRange && lof) {
             holdPosition = u.prog === 0;
             if (holdPosition) { u.path = []; u.next = -1; u.field = false; }
             cstat = u.cooldown > 0.6 && wpn.mode === 'projectile' ? CS.reloading : CS.engaging;
@@ -363,6 +410,8 @@ export function damageBuilding(g, b, amount, attackerCivId, cause) {
   b.hp -= amount; b.lastHit = g.time;
   if (b.hp > 0) { if (cause === 'combat' || cause === 'quake' || cause === 'lava') g.ignite(b, cause === 'lava' ? 1 : 0.15); g.refreshState(b); return; }
   const owner = g.civs[b.owner];
+  // a destroyed reactor explodes (once)
+  if (BUILDINGS[b.type].meltdown && !b.melted) { b.melted = true; meltdown(g, b, attackerCivId); if (!g.buildings.has(b.id)) return; }
   if (b.type === 'town') {
     const city = [...g.cities.values()].find((c) => c.buildingId === b.id);
     if (attackerCivId != null && city) {

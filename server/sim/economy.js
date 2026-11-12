@@ -36,7 +36,13 @@ export function recomputeTerritory(g) {
   }
   let changed = false;
   for (let i = 0; i < N; i++) {
-    const o = isWater(w.terr[i]) && best[i] > 2 ? -1 : owner[i];
+    // open water belongs to a city near its centre, and along its own shoreline within its radius,
+    // so coastal cities can grow over the water's edge and build ports (2026-11-08)
+    let o = owner[i];
+    if (isWater(w.terr[i]) && best[i] > 2) {
+      o = -1;
+      if (owner[i] >= 0 && !w.lake[i]) for (let d = 0; d < 6; d++) { const n = NB[i * 6 + d]; if (n >= 0 && !isWater(w.terr[n]) && owner[n] === owner[i]) { o = owner[i]; break; } }
+    }
     if (w.owner[i] !== o) { w.owner[i] = o; changed = true; }
   }
   if (changed) g.navVersion++;

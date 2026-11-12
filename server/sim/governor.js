@@ -100,8 +100,37 @@ export function districtScore(g, civ, c, type, t) {
   s += Math.min(3, same) * like - clash * 1.5;
   // street frontage: next to the built-up area (the city's street network) or on a real road
   if (urban || w.road[t]) s += street;
-  if (w.road[t]) s += freight * (w.road[t] >= 2 ? 1.3 : 1);
+  // road-aware: frontage on a street that actually connects back to the city counts for more than
+  // a stray track, and a hex one step from the network is still serviceable
+  const reach = roadReach(g, c);
+  let connected = reach.has(t) ? 1 : 0;
+  if (!connected) for (let d = 0; d < 6 && !connected; d++) { const n = NB[t * 6 + d]; if (n >= 0 && reach.has(n)) connected = 0.5; }
+  s += street * connected * 0.8;
+  if (w.road[t]) s += freight * (w.road[t] >= 2 ? 1.3 : 1) * (reach.has(t) ? 1 : 0.5);
   return s;
+}
+
+// The hexes a city's streets reach from its centre (usable road edges, up to 8 steps), cached briefly.
+export function roadReach(g, c) {
+  const at = c._reachAt ?? -Infinity;
+  if (c._reach && g.time - at < 20) return c._reach;
+  const seen = new Set([c.tile]);
+  if (g.roads) {
+    let frontier = [c.tile];
+    for (let depth = 0; depth < 8 && frontier.length; depth++) {
+      const next = [];
+      for (const t of frontier)
+        for (let d = 0; d < 6; d++) {
+          const n = NB[t * 6 + d];
+          if (n < 0 || seen.has(n) || !g.roads.usable(t, n)) continue;
+          seen.add(n); next.push(n);
+        }
+      frontier = next;
+    }
+  }
+  Object.defineProperty(c, '_reach', { value: seen, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(c, '_reachAt', { value: g.time, writable: true, configurable: true, enumerable: false });
+  return seen;
 }
 
 export function pickTile(g, civ, c, type, gv) {
@@ -312,6 +341,7 @@ function roads(g, civ, c, gv, level = 'autonomous') {
     plan.segments.forEach((s) => { if (s.reason === 'already built') { s.ok = true; s.skip = false; } });
     if (governorCanSpend(civ, gv, plan.cost) && !g.roads.startProject(g, civ, plan).error) { log(g, c, 'Repairing a damaged road segment.'); return true; }
   }
+  if (upgradeStreets(g, civ, c, gv, level)) return true;
   if (!c.isolated) return linkRoads(g, civ, c, gv, level);
   // connect to whichever already-connected city is closest, not necessarily the capital
   const hubs = g.cityOf(civ).filter((o) => o !== c && !o.isolated).sort((a, b) => dist(a.tile, c.tile) - dist(b.tile, c.tile)).slice(0, 3);
@@ -334,6 +364,25 @@ function roads(g, civ, c, gv, level = 'autonomous') {
   if (g.roads.startProject(g, civ, plan).error) return false;
   gv.noRouteNoted = false;
   log(g, c, `Building ${ROAD_TYPES[type].name.toLowerCase()} to ${hub.name} (${plan.length} hexes, ${plan.bridges} bridges) to rejoin the supply network.`);
+  return true;
+}
+
+// The mayor upgrades the city's own roads as research unlocks better ones: dirt streets become paved
+// once Civil Engineering is known, a few segments at a time, busiest first, within the budget.
+function upgradeStreets(g, civ, c, gv, level) {
+  if (level !== 'autonomous' || g.time < (gv.streetAt || 0)) return false;
+  gv.streetAt = g.time + 25;
+  const target = Math.min(2, bestRoadType(civ));
+  if (target < 2) return false;
+  const old = [];
+  for (const t of disk(c.tile, c.radius || 3)) for (const e of g.roads.edgesOf(t))
+    if (e.type < target && e.type >= 1 && e.cond > 0 && g.world.owner[e.a] === civ.id && g.world.owner[e.b] === civ.id && !old.includes(e)) old.push(e);
+  if (!old.length) return false;
+  old.sort((a, b) => g.roads.tileTraffic(b.a) + g.roads.tileTraffic(b.b) - g.roads.tileTraffic(a.a) - g.roads.tileTraffic(a.b));
+  const e = old[0];
+  const plan = g.roads.plan(g, civ, [e.a, e.b], target); plan.by = 'governor:' + c.id;
+  if (!plan.buildable || !governorCanSpend(civ, gv, plan.cost) || g.roads.startProject(g, civ, plan).error) return false;
+  log(g, c, `Paving a street (${old.length - 1} more to upgrade).`);
   return true;
 }
 

@@ -33,18 +33,24 @@ export const WEAPONS = {
   howitzer: { name: 'Howitzer',       mode: 'projectile', arc: true, cooldown: 3.5, flight: 2.4, blast: 1, falloff: 0.5, supp: 30, vsArmor: 0.8, he: 1.6, impact: 'artillery', targets: ['ground'] },
   missile:  { name: 'Guided missiles',mode: 'projectile', cooldown: 4.0, flight: 1.4, blast: 1, falloff: 0.3, supp: 26, vsArmor: 1.3, he: 1.2, impact: 'missile', guided: true, targets: ['ground'] },
   rockets:  { name: 'Rocket pods',    mode: 'projectile', cooldown: 2.4, flight: 0.6, blast: 0, supp: 18, vsArmor: 1.1, he: 0.6, impact: 'rocket', salvo: 3, targets: ['ground'] },
+  // field guns: direct-fire anti-tank guns (flat trajectory, line of fire needed), strongest against
+  // hard targets and vehicles; their high-explosive shells still hurt infantry less
+  atgun:    { name: 'Field gun',      mode: 'projectile', cooldown: 2.6, flight: 0.3, blast: 0, supp: 14, vsArmor: 1.6, he: 0.45, impact: 'cannon', targets: ['ground'] },
   drone_strike: { name: 'Loitering munitions', mode: 'projectile', cooldown: 2.0, flight: 0.8, blast: 0, supp: 16, vsArmor: 1.2, he: 0.5, impact: 'rocket', guided: true, targets: ['ground'] },
 };
 
 // Which weapon each unit type carries (civilian units carry none).
 export const UNIT_WEAPON = {
-  engineer: 'carbine', scout_buggy: 'mg', militia: 'carbine', rifle_squad: 'rifle', special_forces: 'smg_team', exo_infantry: 'smg_team',
-  mortar_team: 'mortar', armored_car: 'mg', field_gun: 'howitzer', mech_infantry: 'autocannon', tank: 'cannon', autonomous_tank: 'cannon',
+  // engineers are non-combat: they repair and build, and carry no weapon
+  scout_buggy: 'mg', militia: 'carbine', rifle_squad: 'rifle', special_forces: 'smg_team', exo_infantry: 'smg_team',
+  mortar_team: 'mortar', armored_car: 'mg', field_gun: 'atgun', mech_infantry: 'autocannon', tank: 'cannon', autonomous_tank: 'cannon',
   sp_artillery: 'howitzer', helicopter: 'rockets', missile_battery: 'missile', air_defense: 'flak', strike_swarm: 'drone_strike',
   fighter: 'aam', bomber: 'bombs', oneway_drone: 'warhead',
 };
 export const BUILDING_WEAPON = { town: 'mg', bunker: 'mg', fort: 'fortgun', camp: 'rifle', guard_post: 'mg_light', aa_battery: 'airburst' };
 
+// Append new profiles so historical event indices remain stable.
+WEAPONS.pistol = { name: 'Defensive pistol', mode: 'hitscan', cooldown: 1.4, burst: 1, supp: 1, vsArmor: .08, tracer: 'light', targets: ['ground'] };
 export const WEAPON_KEYS = Object.keys(WEAPONS);
 export const weaponOf = (unitType) => WEAPONS[UNIT_WEAPON[unitType]] || null;
 

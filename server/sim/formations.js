@@ -77,7 +77,7 @@ export function deployOrder(g, civ, cmd, auth = '') {
   const density = ['auto', 'spread', 'balanced', 'tight'].includes(cmd.density) ? cmd.density : 'auto';
   const depth = [1, 2, 3].includes(cmd.depth) ? cmd.depth : 'auto';
   // queued deployments wait behind the current order
-  if (cmd.queue) {
+  if (cmd.queue && !cmd.preview) {
     const key = (g.deployKey = (g.deployKey || 0) + 1);
     for (const u of units) { (u.queue || (u.queue = [])).push({ deploy: { ...cmd, queue: false, key, units: units.map((x) => x.id) }, tile: line[0] }); if (u.order.kind === 'idle' && !u.path.length) { u.queue.pop(); } }
     if (units.every((u) => u.order.kind === 'idle' && !u.path.length)) return deployOrder(g, civ, { ...cmd, queue: false }, auth);
@@ -98,6 +98,12 @@ export function deployOrder(g, civ, cmd, auth = '') {
     // a drawn curve: up to 24 valid hexes in drawing order
     const path = Array.isArray(cmd.path) ? cmd.path.filter((t) => Number.isInteger(t) && t >= 0 && t < N).slice(0, 24) : null;
     plan = planDeployment(e, units.map(plannable), line, { mode, density, depth, reverse: !!cmd.reverse, away, path: path && path.length > 2 ? path : null });
+  }
+  // a dry run while the player is still dragging: who would stand where, which hexes are refused and
+  // who does not fit. Nothing changes until the line is released.
+  if (cmd.preview) {
+    return { reply: { t: 'deployPreview', line: plan.line?.length ? plan.line : line, slots: [...plan.slots.entries()], invalid: plan.invalid || [], overflow: plan.overflow || [],
+      label: plan.label, perHex: [...plan.perHex.entries()], facing: plan.facing ?? null, ranks: plan.ranks ?? 0 } };
   }
   release(g, units.map((u) => u.id));
   const id = g.nextFormationId = (g.nextFormationId || 0) + 1;

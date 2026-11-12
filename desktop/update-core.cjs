@@ -26,7 +26,7 @@ function archOf(name) { return /arm64/i.test(name) ? 'arm64' : /x64|x86_64|amd64
 // macOS: where the running .app bundle lives, and whether it can be replaced in place (not from the
 // disk image, not from a translocated read-only copy in Downloads)
 function macBundle(execPath) {
-  const app = path.resolve(execPath, '..', '..', '..');
+  const app = path.posix.resolve(execPath, '..', '..', '..');
   if (!app.endsWith('.app')) return { app: null, why: 'not running from an app bundle' };
   if (app.startsWith('/Volumes/')) return { app, why: 'running from the disk image: drag Shattered Empires to Applications first' };
   if (app.includes('/AppTranslocation/')) return { app, why: 'macOS is running a protected copy: move Shattered Empires to Applications and open it from there' };

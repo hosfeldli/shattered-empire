@@ -1,0 +1,2104 @@
+[
+  {
+    "page": "Cities",
+    "id": "city_plan",
+    "title": "Development recommendations",
+    "command": {
+      "c": "cityPlan",
+      "city": "@city"
+    },
+    "fields": [
+      {
+        "key": "city",
+        "label": "City",
+        "source": "cities",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Cities",
+    "id": "city_diag",
+    "title": "City condition and recovery",
+    "command": {
+      "c": "cityDiag",
+      "city": "@city"
+    },
+    "fields": [
+      {
+        "key": "city",
+        "label": "City",
+        "source": "cities",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Military",
+    "id": "found",
+    "title": "Found a settlement",
+    "command": {
+      "c": "found",
+      "unit": "@unit"
+    },
+    "fields": [
+      {
+        "key": "unit",
+        "label": "Colonist convoy",
+        "source": "colonists",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Military",
+    "id": "auto_settle",
+    "title": "Let colonist find a site",
+    "command": {
+      "c": "autoSettle",
+      "unit": "@unit"
+    },
+    "fields": [
+      {
+        "key": "unit",
+        "label": "Colonist convoy",
+        "source": "colonists",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Buildings",
+    "id": "upgrade",
+    "title": "Upgrade building",
+    "command": {
+      "c": "upgrade",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
+    "id": "repair",
+    "title": "Repair damage",
+    "command": {
+      "c": "repair",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
+    "id": "cancel_works",
+    "title": "Cancel upgrade or repair",
+    "command": {
+      "c": "cancelWorks",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Buildings",
+    "id": "pause_works",
+    "title": "Pause or resume works",
+    "command": {
+      "c": "pauseWorks",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
+    "id": "prioritise_works",
+    "title": "Prioritise these works",
+    "command": {
+      "c": "worksPriority",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
+    "id": "fund_next",
+    "title": "Fund this site next",
+    "command": {
+      "c": "buildNext",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
+    "id": "aa_upgrade",
+    "title": "Upgrade air defense",
+    "command": {
+      "c": "upgradeDefense",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Buildings",
+    "id": "demolish",
+    "title": "Demolish building",
+    "command": {
+      "c": "demolish",
+      "id": "@building"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Buildings",
+    "id": "upgrade_preview",
+    "title": "Preview housing upgrades",
+    "command": {
+      "c": "batchUpgrade",
+      "ids": "@buildings",
+      "policy": "@policy",
+      "preview": true
+    },
+    "fields": [
+      {
+        "key": "policy",
+        "label": "Budget policy",
+        "choices": [
+          "affordable",
+          "all"
+        ],
+        "default": "affordable"
+      }
+    ],
+    "requires": "buildings"
+  },
+  {
+    "page": "Buildings",
+    "id": "batch_upgrade",
+    "title": "Upgrade selected buildings",
+    "command": {
+      "c": "batchUpgrade",
+      "ids": "@buildings",
+      "policy": "@policy",
+      "preview": false
+    },
+    "fields": [
+      {
+        "key": "policy",
+        "label": "Budget policy",
+        "choices": [
+          "affordable",
+          "all"
+        ],
+        "default": "affordable"
+      }
+    ],
+    "requires": "buildings",
+    "request_id": true
+  },
+  {
+    "page": "Production",
+    "id": "train",
+    "title": "Train at facility",
+    "command": {
+      "c": "train",
+      "building": "@building",
+      "unit": "@type"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      },
+      {
+        "key": "type",
+        "label": "Unit type",
+        "source": "training_types",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Production",
+    "id": "batch_train",
+    "title": "Batch recruitment",
+    "command": {
+      "c": "batchTrain",
+      "buildings": "@buildings",
+      "unit": "@type",
+      "count": "@count",
+      "policy": "@policy",
+      "army": "@army"
+    },
+    "fields": [
+      {
+        "key": "type",
+        "label": "Unit type",
+        "source": "training_types",
+        "default": null
+      },
+      {
+        "key": "count",
+        "label": "Total units",
+        "kind": "number",
+        "default": 4,
+        "min": 1,
+        "max": 60
+      },
+      {
+        "key": "policy",
+        "label": "Budget policy",
+        "choices": [
+          "partial",
+          "all"
+        ],
+        "default": "partial"
+      },
+      {
+        "key": "army",
+        "label": "Rally army",
+        "source": "armies_optional",
+        "default": 0
+      }
+    ],
+    "requires": "buildings",
+    "request_id": true
+  },
+  {
+    "page": "Production",
+    "id": "repeat",
+    "title": "Repeat production",
+    "command": {
+      "c": "repeat",
+      "buildings": "@buildings",
+      "unit": "@type"
+    },
+    "fields": [
+      {
+        "key": "type",
+        "label": "Unit type",
+        "source": "training_types",
+        "default": null
+      }
+    ],
+    "requires": "buildings"
+  },
+  {
+    "page": "Production",
+    "id": "repeat_stop",
+    "title": "Stop repeat production",
+    "command": {
+      "c": "repeat",
+      "buildings": "@buildings",
+      "unit": null
+    },
+    "fields": [],
+    "requires": "buildings"
+  },
+  {
+    "page": "Production",
+    "id": "cancel_train",
+    "title": "Cancel training entry",
+    "command": {
+      "c": "cancelTrain",
+      "building": "@building",
+      "index": "@index"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      },
+      {
+        "key": "index",
+        "label": "Queue position (first is 0)",
+        "kind": "number",
+        "default": 0,
+        "min": 0,
+        "max": 100
+      }
+    ]
+  },
+  {
+    "page": "Production",
+    "id": "clear_train",
+    "title": "Clear selected training queues",
+    "command": {
+      "c": "clearQueue",
+      "buildings": "@buildings"
+    },
+    "fields": [],
+    "requires": "buildings",
+    "confirm": true
+  },
+  {
+    "page": "Production",
+    "id": "rally",
+    "title": "Set facility rally point",
+    "command": {
+      "c": "rally",
+      "building": "@building",
+      "army": "@army",
+      "tile": "@map"
+    },
+    "fields": [
+      {
+        "key": "building",
+        "label": "Building",
+        "source": "buildings",
+        "default": null
+      },
+      {
+        "key": "army",
+        "label": "Rally army",
+        "source": "armies_optional",
+        "default": 0
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Production",
+    "id": "rally_all",
+    "title": "Set all facility rally points",
+    "command": {
+      "c": "rallyAll",
+      "army": "@army",
+      "tile": "@map"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Rally army",
+        "source": "armies_optional",
+        "default": 0
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Construction",
+    "id": "road_cancel",
+    "title": "Cancel road project",
+    "command": {
+      "c": "roadCancel",
+      "id": "@project"
+    },
+    "fields": [
+      {
+        "key": "project",
+        "label": "Project",
+        "source": "roads",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Construction",
+    "id": "trench_cancel",
+    "title": "Cancel trench project",
+    "command": {
+      "c": "trenchCancel",
+      "id": "@project"
+    },
+    "fields": [
+      {
+        "key": "project",
+        "label": "Project",
+        "source": "trenches",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Construction",
+    "id": "clear_ruin",
+    "title": "Clear ruins",
+    "command": {
+      "c": "clearRuin",
+      "tile": "@map"
+    },
+    "fields": [],
+    "map": "point",
+    "preview": false
+  },
+  {
+    "page": "Construction",
+    "id": "rebuild",
+    "title": "Rebuild settlement",
+    "command": {
+      "c": "rebuild",
+      "tile": "@map"
+    },
+    "fields": [],
+    "map": "point",
+    "preview": true
+  },
+  {
+    "page": "Construction",
+    "id": "clear_pass",
+    "title": "Blast a mountain pass",
+    "command": {
+      "c": "clearPass",
+      "tile": "@map"
+    },
+    "fields": [],
+    "map": "point",
+    "preview": false
+  },
+  {
+    "page": "Construction",
+    "id": "remove_trench",
+    "title": "Remove completed trench",
+    "command": {
+      "c": "trenchDemolish",
+      "tiles": "@tiles"
+    },
+    "fields": [],
+    "map": "line"
+  },
+  {
+    "page": "Construction",
+    "id": "clear_fieldworks",
+    "title": "Clear fieldworks at selected units",
+    "command": {
+      "c": "clearFieldworks",
+      "units": "@units",
+      "finished": true
+    },
+    "fields": [],
+    "requires": "units"
+  },
+  {
+    "page": "Research",
+    "id": "research_add",
+    "title": "Queue technology",
+    "command": {
+      "c": "researchQueue",
+      "op": "add",
+      "tech": "@tech"
+    },
+    "fields": [
+      {
+        "key": "tech",
+        "label": "Technology",
+        "source": "TECHS",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Research",
+    "id": "research_goal",
+    "title": "Set research goal",
+    "command": {
+      "c": "researchQueue",
+      "op": "goal",
+      "tech": "@tech"
+    },
+    "fields": [
+      {
+        "key": "tech",
+        "label": "Technology",
+        "source": "TECHS",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Research",
+    "id": "research_front",
+    "title": "Move to queue front",
+    "command": {
+      "c": "researchQueue",
+      "op": "front",
+      "tech": "@tech"
+    },
+    "fields": [
+      {
+        "key": "tech",
+        "label": "Technology",
+        "source": "TECHS",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Research",
+    "id": "research_remove",
+    "title": "Remove technology",
+    "command": {
+      "c": "researchQueue",
+      "op": "remove",
+      "tech": "@tech"
+    },
+    "fields": [
+      {
+        "key": "tech",
+        "label": "Technology",
+        "source": "TECHS",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Research",
+    "id": "research_now",
+    "title": "Research now",
+    "command": {
+      "c": "research",
+      "tech": "@tech"
+    },
+    "fields": [
+      {
+        "key": "tech",
+        "label": "Technology",
+        "source": "TECHS",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Research",
+    "id": "research_move",
+    "title": "Move queued technology",
+    "command": {
+      "c": "researchQueue",
+      "op": "move",
+      "tech": "@tech",
+      "index": "@index"
+    },
+    "fields": [
+      {
+        "key": "tech",
+        "label": "Technology",
+        "source": "queued_tech",
+        "default": null
+      },
+      {
+        "key": "index",
+        "label": "Queue position (first is 0)",
+        "kind": "number",
+        "default": 0,
+        "min": 0,
+        "max": 40
+      }
+    ]
+  },
+  {
+    "page": "Research",
+    "id": "research_clear",
+    "title": "Clear research queue",
+    "command": {
+      "c": "researchQueue",
+      "op": "clear"
+    },
+    "fields": [],
+    "confirm": true
+  },
+  {
+    "page": "Military",
+    "id": "hold",
+    "title": "Hold position",
+    "command": {
+      "c": "hold",
+      "units": "@units"
+    },
+    "fields": [],
+    "requires": "units",
+    "confirm": false
+  },
+  {
+    "page": "Military",
+    "id": "stop",
+    "title": "Stop current orders",
+    "command": {
+      "c": "stop",
+      "units": "@units"
+    },
+    "fields": [],
+    "requires": "units",
+    "confirm": false
+  },
+  {
+    "page": "Military",
+    "id": "withdraw",
+    "title": "Withdraw to safety",
+    "command": {
+      "c": "withdraw",
+      "units": "@units"
+    },
+    "fields": [],
+    "requires": "units",
+    "confirm": false
+  },
+  {
+    "page": "Military",
+    "id": "disband",
+    "title": "Demobilize selected units",
+    "command": {
+      "c": "disband",
+      "units": "@units"
+    },
+    "fields": [],
+    "requires": "units",
+    "confirm": true
+  },
+  {
+    "page": "Military",
+    "id": "stance",
+    "title": "Set stance",
+    "command": {
+      "c": "stance",
+      "units": "@units",
+      "stance": "@stance",
+      "releaseFormation": true
+    },
+    "fields": [
+      {
+        "key": "stance",
+        "label": "Stance",
+        "source": "STANCES",
+        "default": null
+      }
+    ],
+    "requires": "units"
+  },
+  {
+    "page": "Military",
+    "id": "engagement",
+    "title": "Engagement policy",
+    "command": {
+      "c": "engage",
+      "units": "@units",
+      "policy": "@policy"
+    },
+    "fields": [
+      {
+        "key": "policy",
+        "label": "Target priority",
+        "source": "ENGAGE_POLICIES",
+        "default": null
+      }
+    ],
+    "requires": "units"
+  },
+  {
+    "page": "Military",
+    "id": "refit",
+    "title": "Refit selected units",
+    "command": {
+      "c": "refit",
+      "units": "@units",
+      "to": "@type"
+    },
+    "fields": [
+      {
+        "key": "type",
+        "label": "New unit type",
+        "source": "refit_types",
+        "default": null
+      }
+    ],
+    "requires": "units"
+  },
+  {
+    "page": "Military",
+    "id": "move",
+    "title": "Move selected",
+    "command": {
+      "c": "move",
+      "units": "@units",
+      "tile": "@map",
+      "attackMove": false,
+      "formation": "@shape",
+      "queue": "@queue"
+    },
+    "fields": [
+      {
+        "key": "shape",
+        "label": "Movement shape",
+        "source": "FORMATIONS",
+        "default": null
+      },
+      {
+        "key": "queue",
+        "label": "Queue behind current orders",
+        "kind": "bool",
+        "default": false
+      }
+    ],
+    "requires": "units",
+    "map": "point"
+  },
+  {
+    "page": "Military",
+    "id": "attack_move",
+    "title": "Advance and engage",
+    "command": {
+      "c": "move",
+      "units": "@units",
+      "tile": "@map",
+      "attackMove": true,
+      "formation": "@shape",
+      "queue": "@queue"
+    },
+    "fields": [
+      {
+        "key": "shape",
+        "label": "Movement shape",
+        "source": "FORMATIONS",
+        "default": null
+      },
+      {
+        "key": "queue",
+        "label": "Queue behind current orders",
+        "kind": "bool",
+        "default": false
+      }
+    ],
+    "requires": "units",
+    "map": "point"
+  },
+  {
+    "page": "Military",
+    "id": "focus",
+    "title": "Focus fire on target",
+    "command": {
+      "c": "attack",
+      "units": "@units",
+      "target": "@target",
+      "focus": true
+    },
+    "fields": [],
+    "requires": "units",
+    "map": "enemy"
+  },
+  {
+    "page": "Military",
+    "id": "fortify",
+    "title": "Dig in selected units",
+    "command": {
+      "c": "fortify",
+      "units": "@units"
+    },
+    "fields": [],
+    "requires": "units",
+    "preview_command": "fortifyPreview"
+  },
+  {
+    "page": "Armies",
+    "id": "army_create",
+    "title": "Form army from selection",
+    "command": {
+      "c": "army",
+      "op": "create",
+      "units": "@units",
+      "name": "@name"
+    },
+    "fields": [
+      {
+        "key": "name",
+        "label": "Army name",
+        "kind": "text",
+        "default": "New Army"
+      }
+    ],
+    "requires": "units"
+  },
+  {
+    "page": "Armies",
+    "id": "army_add",
+    "title": "Add selected units",
+    "command": {
+      "c": "army",
+      "op": "add",
+      "id": "@army",
+      "units": "@units"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Armies",
+    "id": "army_remove",
+    "title": "Detach selected units",
+    "command": {
+      "c": "army",
+      "op": "remove",
+      "id": "@army",
+      "units": "@units"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Armies",
+    "id": "army_disband",
+    "title": "Disband army",
+    "command": {
+      "c": "army",
+      "op": "disband",
+      "id": "@army",
+      "units": "@units"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Armies",
+    "id": "army_rename",
+    "title": "Rename army",
+    "command": {
+      "c": "army",
+      "op": "rename",
+      "id": "@army",
+      "name": "@name"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "name",
+        "label": "Name",
+        "kind": "text",
+        "default": "New name"
+      }
+    ]
+  },
+  {
+    "page": "Armies",
+    "id": "army_shape",
+    "title": "Set army formation",
+    "command": {
+      "c": "army",
+      "op": "formation",
+      "id": "@army",
+      "formation": "@shape"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "shape",
+        "label": "Formation",
+        "source": "FORMATIONS",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Armies",
+    "id": "army_stance",
+    "title": "Set army stance",
+    "command": {
+      "c": "army",
+      "op": "stance",
+      "id": "@army",
+      "stance": "@stance"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "stance",
+        "label": "Stance",
+        "source": "STANCES",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Armies",
+    "id": "army_move",
+    "title": "March",
+    "command": {
+      "c": "army",
+      "op": "order",
+      "id": "@army",
+      "kind": "move",
+      "tile": "@map",
+      "radius": "@radius"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "radius",
+        "label": "Defense radius",
+        "kind": "number",
+        "default": 4,
+        "min": 2,
+        "max": 8
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Armies",
+    "id": "army_attackMove",
+    "title": "Advance and engage",
+    "command": {
+      "c": "army",
+      "op": "order",
+      "id": "@army",
+      "kind": "attackMove",
+      "tile": "@map",
+      "radius": "@radius"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "radius",
+        "label": "Defense radius",
+        "kind": "number",
+        "default": 4,
+        "min": 2,
+        "max": 8
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Armies",
+    "id": "army_defend",
+    "title": "Defend a zone",
+    "command": {
+      "c": "army",
+      "op": "order",
+      "id": "@army",
+      "kind": "defend",
+      "tile": "@map",
+      "radius": "@radius"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "radius",
+        "label": "Defense radius",
+        "kind": "number",
+        "default": 4,
+        "min": 2,
+        "max": 8
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Armies",
+    "id": "army_offensive",
+    "title": "Prepare offensive",
+    "command": {
+      "c": "army",
+      "op": "order",
+      "id": "@army",
+      "kind": "offensive",
+      "tile": "@map",
+      "radius": "@radius"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "radius",
+        "label": "Defense radius",
+        "kind": "number",
+        "default": 4,
+        "min": 2,
+        "max": 8
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Armies",
+    "id": "army_hold",
+    "title": "Hold position",
+    "command": {
+      "c": "army",
+      "op": "order",
+      "id": "@army",
+      "kind": "hold",
+      "radius": "@radius"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "radius",
+        "label": "Defense radius",
+        "kind": "number",
+        "default": 4,
+        "min": 2,
+        "max": 8
+      }
+    ]
+  },
+  {
+    "page": "Formations",
+    "id": "formation_rejoin",
+    "title": "Rejoin assigned slots",
+    "command": {
+      "c": "formation",
+      "op": "rejoin",
+      "id": "@formation",
+      "units": "@units"
+    },
+    "fields": [
+      {
+        "key": "formation",
+        "label": "Formation",
+        "source": "formations",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Formations",
+    "id": "formation_reinforce",
+    "title": "Add selected reinforcements",
+    "command": {
+      "c": "formation",
+      "op": "reinforce",
+      "id": "@formation",
+      "units": "@units"
+    },
+    "fields": [
+      {
+        "key": "formation",
+        "label": "Formation",
+        "source": "formations",
+        "default": null
+      }
+    ],
+    "confirm": false
+  },
+  {
+    "page": "Formations",
+    "id": "formation_dissolve",
+    "title": "Dissolve formation",
+    "command": {
+      "c": "formation",
+      "op": "dissolve",
+      "id": "@formation",
+      "units": "@units"
+    },
+    "fields": [
+      {
+        "key": "formation",
+        "label": "Formation",
+        "source": "formations",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Formations",
+    "id": "formation_behavior",
+    "title": "Change behavior",
+    "command": {
+      "c": "formation",
+      "op": "behavior",
+      "id": "@formation",
+      "behavior": "@behavior"
+    },
+    "fields": [
+      {
+        "key": "formation",
+        "label": "Formation",
+        "source": "formations",
+        "default": null
+      },
+      {
+        "key": "behavior",
+        "label": "Behavior",
+        "choices": [
+          "hold",
+          "defend",
+          "attackMove"
+        ],
+        "default": "defend"
+      }
+    ]
+  },
+  {
+    "page": "Formations",
+    "id": "formation_shift",
+    "title": "Shift formation line",
+    "command": {
+      "c": "formation",
+      "op": "shift",
+      "id": "@formation",
+      "line": "@line"
+    },
+    "fields": [
+      {
+        "key": "formation",
+        "label": "Formation",
+        "source": "formations",
+        "default": null
+      }
+    ],
+    "map": "line"
+  },
+  {
+    "page": "Logistics",
+    "id": "logistics_inspect",
+    "title": "Inspect transport network",
+    "command": {
+      "c": "inspectLogistics"
+    },
+    "fields": []
+  },
+  {
+    "page": "Logistics",
+    "id": "truck_return",
+    "title": "Return supply truck",
+    "command": {
+      "c": "returnSupplyTruck",
+      "truck": "@truck"
+    },
+    "fields": [
+      {
+        "key": "truck",
+        "label": "Truck",
+        "source": "trucks",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Logistics",
+    "id": "supply_policy_formation",
+    "title": "Formation resupply policy",
+    "command": {
+      "c": "supplyPolicy",
+      "formation": "@formation",
+      "auto": "@auto",
+      "threshold": "@threshold",
+      "preset": "@preset"
+    },
+    "fields": [
+      {
+        "key": "formation",
+        "label": "Formation",
+        "source": "formations",
+        "default": null
+      },
+      {
+        "key": "auto",
+        "label": "Automatic resupply",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "key": "threshold",
+        "label": "Supply threshold %",
+        "kind": "number",
+        "default": 40,
+        "min": 15,
+        "max": 80
+      },
+      {
+        "key": "preset",
+        "label": "Package",
+        "choices": [
+          "auto",
+          "infantry",
+          "armored",
+          "fortification",
+          "emergency"
+        ],
+        "default": "auto"
+      }
+    ]
+  },
+  {
+    "page": "Logistics",
+    "id": "supply_policy_army",
+    "title": "Army resupply policy",
+    "command": {
+      "c": "supplyPolicy",
+      "army": "@army",
+      "auto": "@auto",
+      "threshold": "@threshold",
+      "preset": "@preset"
+    },
+    "fields": [
+      {
+        "key": "army",
+        "label": "Army",
+        "source": "armies",
+        "default": null
+      },
+      {
+        "key": "auto",
+        "label": "Automatic resupply",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "key": "threshold",
+        "label": "Supply threshold %",
+        "kind": "number",
+        "default": 40,
+        "min": 15,
+        "max": 80
+      },
+      {
+        "key": "preset",
+        "label": "Package",
+        "choices": [
+          "auto",
+          "infantry",
+          "armored",
+          "fortification",
+          "emergency"
+        ],
+        "default": "auto"
+      }
+    ]
+  },
+  {
+    "page": "Air",
+    "id": "air_patrol",
+    "title": "patrol",
+    "command": {
+      "c": "airMission",
+      "units": "@units",
+      "base": "@base",
+      "kind": "patrol",
+      "tile": "@map",
+      "count": "@count",
+      "radius": "@radius",
+      "repeat": "@repeat"
+    },
+    "fields": [
+      {
+        "key": "base",
+        "label": "Airbase",
+        "source": "airbases_optional",
+        "default": null
+      },
+      {
+        "key": "count",
+        "label": "Aircraft when auto-selecting",
+        "kind": "number",
+        "default": 3,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "key": "radius",
+        "label": "Patrol radius",
+        "kind": "number",
+        "default": 4,
+        "min": 1,
+        "max": 12
+      },
+      {
+        "key": "repeat",
+        "label": "Repeat mission",
+        "kind": "bool",
+        "default": false
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Air",
+    "id": "air_strike",
+    "title": "strike",
+    "command": {
+      "c": "airMission",
+      "units": "@units",
+      "base": "@base",
+      "kind": "strike",
+      "tile": "@map",
+      "count": "@count",
+      "radius": "@radius",
+      "repeat": "@repeat"
+    },
+    "fields": [
+      {
+        "key": "base",
+        "label": "Airbase",
+        "source": "airbases_optional",
+        "default": null
+      },
+      {
+        "key": "count",
+        "label": "Aircraft when auto-selecting",
+        "kind": "number",
+        "default": 3,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "key": "radius",
+        "label": "Patrol radius",
+        "kind": "number",
+        "default": 4,
+        "min": 1,
+        "max": 12
+      },
+      {
+        "key": "repeat",
+        "label": "Repeat mission",
+        "kind": "bool",
+        "default": false
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Air",
+    "id": "air_support",
+    "title": "support",
+    "command": {
+      "c": "airMission",
+      "units": "@units",
+      "base": "@base",
+      "kind": "support",
+      "tile": "@map",
+      "count": "@count",
+      "radius": "@radius",
+      "repeat": "@repeat"
+    },
+    "fields": [
+      {
+        "key": "base",
+        "label": "Airbase",
+        "source": "airbases_optional",
+        "default": null
+      },
+      {
+        "key": "count",
+        "label": "Aircraft when auto-selecting",
+        "kind": "number",
+        "default": 3,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "key": "radius",
+        "label": "Patrol radius",
+        "kind": "number",
+        "default": 4,
+        "min": 1,
+        "max": 12
+      },
+      {
+        "key": "repeat",
+        "label": "Repeat mission",
+        "kind": "bool",
+        "default": false
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Air",
+    "id": "air_scout",
+    "title": "scout",
+    "command": {
+      "c": "airMission",
+      "units": "@units",
+      "base": "@base",
+      "kind": "scout",
+      "tile": "@map",
+      "count": "@count",
+      "radius": "@radius",
+      "repeat": "@repeat"
+    },
+    "fields": [
+      {
+        "key": "base",
+        "label": "Airbase",
+        "source": "airbases_optional",
+        "default": null
+      },
+      {
+        "key": "count",
+        "label": "Aircraft when auto-selecting",
+        "kind": "number",
+        "default": 3,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "key": "radius",
+        "label": "Patrol radius",
+        "kind": "number",
+        "default": 4,
+        "min": 1,
+        "max": 12
+      },
+      {
+        "key": "repeat",
+        "label": "Repeat mission",
+        "kind": "bool",
+        "default": false
+      }
+    ],
+    "map": "point"
+  },
+  {
+    "page": "Air",
+    "id": "air_return",
+    "title": "Return aircraft to base",
+    "command": {
+      "c": "airMission",
+      "units": "@units",
+      "base": "@base",
+      "kind": "return",
+      "count": "@count",
+      "radius": "@radius",
+      "repeat": "@repeat"
+    },
+    "fields": [
+      {
+        "key": "base",
+        "label": "Airbase",
+        "source": "airbases_optional",
+        "default": null
+      },
+      {
+        "key": "count",
+        "label": "Aircraft when auto-selecting",
+        "kind": "number",
+        "default": 3,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "key": "radius",
+        "label": "Patrol radius",
+        "kind": "number",
+        "default": 4,
+        "min": 1,
+        "max": 12
+      },
+      {
+        "key": "repeat",
+        "label": "Repeat mission",
+        "kind": "bool",
+        "default": false
+      }
+    ]
+  },
+  {
+    "page": "Air",
+    "id": "air_home",
+    "title": "Assign aircraft home base",
+    "command": {
+      "c": "airHome",
+      "units": "@units",
+      "base": "@base"
+    },
+    "fields": [
+      {
+        "key": "base",
+        "label": "Airbase",
+        "source": "airbases",
+        "default": null
+      }
+    ],
+    "requires": "units"
+  },
+  {
+    "page": "Strategic",
+    "id": "missile_build",
+    "title": "Build missile",
+    "command": {
+      "c": "missileBuild",
+      "silo": "@silo"
+    },
+    "fields": [
+      {
+        "key": "silo",
+        "label": "Missile silo",
+        "source": "silos",
+        "default": null
+      }
+    ]
+  },
+  {
+    "page": "Strategic",
+    "id": "missile_launch",
+    "title": "Plan strategic missile strike",
+    "command": {
+      "c": "missileLaunch",
+      "tile": "@map"
+    },
+    "fields": [],
+    "map": "point",
+    "preview": true,
+    "confirm": true
+  },
+  {
+    "page": "Rivals",
+    "id": "diplo_war",
+    "title": "Initiate hostilities",
+    "command": {
+      "c": "diplo",
+      "to": "@nation",
+      "action": "war"
+    },
+    "fields": [
+      {
+        "key": "nation",
+        "label": "Nation",
+        "source": "nations",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Rivals",
+    "id": "diplo_disengage",
+    "title": "Disengage and pull back",
+    "command": {
+      "c": "diplo",
+      "to": "@nation",
+      "action": "disengage"
+    },
+    "fields": [
+      {
+        "key": "nation",
+        "label": "Nation",
+        "source": "nations",
+        "default": null
+      }
+    ],
+    "confirm": true
+  },
+  {
+    "page": "Observer",
+    "id": "observer_follow",
+    "title": "Follow civilization",
+    "command": {
+      "c": "follow",
+      "civ": "@civ"
+    },
+    "fields": [
+      {
+        "key": "civ",
+        "label": "Civilization",
+        "source": "all_nations",
+        "default": null
+      }
+    ],
+    "audience": "observer"
+  },
+  {
+    "page": "Observer",
+    "id": "observer_speed",
+    "title": "Simulation speed",
+    "command": {
+      "c": "speed",
+      "speed": "@speed"
+    },
+    "fields": [
+      {
+        "key": "speed",
+        "label": "Speed",
+        "choices": [
+          [
+            0,
+            "Paused"
+          ],
+          [
+            1,
+            "1\u00d7"
+          ],
+          [
+            2,
+            "2\u00d7"
+          ],
+          [
+            4,
+            "4\u00d7"
+          ],
+          [
+            8,
+            "8\u00d7"
+          ]
+        ],
+        "default": 1
+      }
+    ],
+    "audience": "observer"
+  },
+  {
+    "page": "Observer",
+    "id": "observer_fog",
+    "title": "Fog of war",
+    "command": {
+      "c": "fog",
+      "on": "@on"
+    },
+    "fields": [
+      {
+        "key": "on",
+        "label": "Enable fog",
+        "kind": "bool",
+        "default": true
+      }
+    ],
+    "audience": "observer"
+  },
+  {
+    "page": "Observer",
+    "id": "observer_diag",
+    "title": "AI decision report",
+    "command": {
+      "c": "aiDiag",
+      "civ": "@civ"
+    },
+    "fields": [
+      {
+        "key": "civ",
+        "label": "Civilization",
+        "source": "all_nations",
+        "default": null
+      }
+    ],
+    "audience": "observer"
+  },
+  {
+    "page": "Sandbox",
+    "id": "scenario",
+    "title": "Stage battle scenario",
+    "command": {
+      "c": "sandbox",
+      "op": "scenario",
+      "key": "@scenario"
+    },
+    "fields": [
+      {
+        "key": "scenario",
+        "label": "Scenario",
+        "choices": [
+          "rifles",
+          "mixed",
+          "armor",
+          "artillery",
+          "large",
+          "air",
+          "strategic"
+        ],
+        "default": "mixed"
+      }
+    ],
+    "audience": "sandbox"
+  },
+  {
+    "page": "Sandbox",
+    "id": "spawn",
+    "title": "Spawn force",
+    "command": {
+      "c": "sandbox",
+      "op": "spawn",
+      "type": "@type",
+      "civ": "@civ",
+      "n": "@count",
+      "tile": "@map"
+    },
+    "fields": [
+      {
+        "key": "type",
+        "label": "Unit type",
+        "source": "UNITS",
+        "default": null
+      },
+      {
+        "key": "civ",
+        "label": "Side",
+        "choices": [
+          [
+            0,
+            "Your side"
+          ],
+          [
+            1,
+            "Enemy"
+          ]
+        ],
+        "default": 0
+      },
+      {
+        "key": "count",
+        "label": "Units",
+        "kind": "number",
+        "default": 5,
+        "min": 1,
+        "max": 30
+      }
+    ],
+    "map": "point",
+    "audience": "sandbox"
+  },
+  {
+    "page": "Sandbox",
+    "id": "advance_enemy",
+    "title": "Order enemy attack",
+    "command": {
+      "c": "sandbox",
+      "op": "advance",
+      "tile": "@map"
+    },
+    "fields": [],
+    "map": "point",
+    "audience": "sandbox"
+  },
+  {
+    "page": "Sandbox",
+    "id": "clear_forces",
+    "title": "Clear sandbox forces",
+    "command": {
+      "c": "sandbox",
+      "op": "clear"
+    },
+    "fields": [],
+    "audience": "sandbox",
+    "confirm": true
+  },
+  {
+    "page": "Resources",
+    "id": "producer_sites",
+    "title": "Find and plan a producer",
+    "command": {},
+    "fields": [
+      {
+        "key": "type",
+        "label": "Building type",
+        "source": "BUILDINGS"
+      }
+    ],
+    "tool": "build",
+    "tool_option": "@type"
+  },
+  {
+    "page": "Construction",
+    "id": "construction_build",
+    "title": "Place buildings (drag for several)",
+    "command": {},
+    "fields": [
+      {
+        "key": "type",
+        "label": "Building type",
+        "source": "BUILDINGS"
+      }
+    ],
+    "tool": "build",
+    "tool_option": "@type"
+  },
+  {
+    "page": "Construction",
+    "id": "construction_road",
+    "title": "Draw road or railway",
+    "command": {},
+    "fields": [
+      {
+        "key": "type",
+        "label": "Road class",
+        "choices": [
+          [
+            1,
+            "Dirt"
+          ],
+          [
+            2,
+            "Paved"
+          ],
+          [
+            3,
+            "Highway"
+          ],
+          [
+            4,
+            "Railway"
+          ]
+        ],
+        "default": 1
+      }
+    ],
+    "tool": "road",
+    "tool_option": "@type"
+  },
+  {
+    "page": "Construction",
+    "id": "construction_bridge",
+    "title": "Draw bridge between banks",
+    "command": {},
+    "fields": [
+      {
+        "key": "class",
+        "label": "Bridge class",
+        "source": "BRIDGE_CLASSES"
+      }
+    ],
+    "tool": "bridge",
+    "tool_option": "@class"
+  },
+  {
+    "page": "Construction",
+    "id": "construction_trench",
+    "title": "Draw defensive trench line",
+    "command": {},
+    "fields": [
+      {
+        "key": "type",
+        "label": "Trench class",
+        "choices": [
+          "basic",
+          "reinforced"
+        ],
+        "default": "basic"
+      }
+    ],
+    "tool": "trench",
+    "tool_option": "@type"
+  },
+  {
+    "page": "Formations",
+    "id": "formation_deploy",
+    "title": "Deploy selected units along frontage",
+    "command": {},
+    "fields": [],
+    "tool": "deploy",
+    "requires": "units"
+  },
+  {
+    "page": "Battles",
+    "id": "battle_reinforce",
+    "title": "Reinforce this battle",
+    "command": {
+      "c": "move",
+      "units": "@units",
+      "tile": "@battle_tile",
+      "attackMove": true
+    },
+    "fields": [],
+    "requires": "units"
+  },
+  {
+    "page": "Battles",
+    "id": "battle_hold",
+    "title": "Hold nearby forces",
+    "command": {
+      "c": "hold",
+      "units": "@battle_units"
+    },
+    "fields": []
+  },
+  {
+    "page": "Battles",
+    "id": "battle_withdraw",
+    "title": "Withdraw nearby forces",
+    "command": {
+      "c": "withdraw",
+      "units": "@battle_units"
+    },
+    "fields": []
+  },
+  {
+    "page": "Military",
+    "id": "unit_condition",
+    "title": "Explain unit orders and condition",
+    "command": {
+      "c": "diagnose",
+      "unit": "@unit"
+    },
+    "fields": [
+      {
+        "key": "unit",
+        "label": "Unit",
+        "source": "units"
+      }
+    ]
+  },
+  {
+    "page": "Military",
+    "id": "surrender",
+    "title": "Surrender this campaign",
+    "command": {
+      "c": "surrender"
+    },
+    "fields": [],
+    "confirm": true
+  },
+  {
+    "id": "city_development",
+    "page": "Cities",
+    "title": "Automatic development",
+    "fields": [
+      {
+        "key": "city",
+        "source": "cities",
+        "label": "City",
+        "default": null
+      },
+      {
+        "key": "on",
+        "kind": "bool",
+        "default": true,
+        "label": "Automatic development"
+      },
+      {
+        "key": "priority",
+        "choices": [
+          [
+            "balanced",
+            "Balanced"
+          ],
+          [
+            "industry",
+            "Industry"
+          ],
+          [
+            "agriculture",
+            "Agriculture"
+          ],
+          [
+            "military",
+            "Military"
+          ]
+        ],
+        "label": "Development priority",
+        "default": null
+      }
+    ],
+    "command": {
+      "c": "cityDevelopment",
+      "city": "@city",
+      "on": "@on",
+      "priority": "@priority"
+    }
+  }
+]

@@ -7,3 +7,10 @@ test
 infra
 *.md
 desktop
+
+stem-*.json
+*service-account*.json
+unity
+godot
+dist
+

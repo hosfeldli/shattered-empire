@@ -1,0 +1,30 @@
+RECORDED SOUND AND MUSIC
+
+The Free Firearm Sound Library — Ben Jaszczak, Brian Nelson, Kevin Heras and Matthew Nanney. CC0 1.0.
+https://opengameart.org/content/the-free-firearm-sound-library
+
+Cannon fire — Thimras. CC0 1.0.
+https://opengameart.org/content/cannon-fire
+
+2 High Quality Explosions — Michel Baradari, submitted by qubodup. CC BY 3.0.
+https://opengameart.org/content/2-high-quality-explosions
+
+Engine-loop heavy vehicle/tank — Nayckron, based on work by qubodup. CC BY 3.0.
+https://opengameart.org/content/engine-loop-heavy-vehicletank
+
+75 CC0 breaking / falling / hit sfx — rubberduck. CC0 1.0.
+https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx
+
+Environment and vehicle recordings — Joseph SARDIN, DenisChardonnet, Dj Lio and Axeline T., BigSoundBank. CC0 1.0.
+https://bigsoundbank.com/
+
+Unexplored Expansion — Bo Jingles. CC0 1.0.
+https://opengameart.org/content/unexplored-expansion
+
+Determined Pursuit (epic orchestra loop) — Emma_MA. CC0 1.0.
+https://opengameart.org/content/determined-pursuit-epic-orchestra-loop
+
+Recordings edited for the game: excerpts, mono conversion for spatial emitters, filtering, crossfaded loop joins, gain reduction, limiting and Vorbis encoding. File provenance and edits are distributed in Audio/SOURCES.md and Recorded/edits.json.
+
+Creative Commons Attribution 3.0: https://creativecommons.org/licenses/by/3.0/
+Creative Commons Zero 1.0: https://creativecommons.org/publicdomain/zero/1.0/

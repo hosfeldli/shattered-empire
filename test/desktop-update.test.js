@@ -8,6 +8,7 @@ import { execFileSync, fork } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { cmpVersion, pickUpdate, macBundle, macSwapScript, winInstallArgs } = require('../desktop/update-core.cjs');
@@ -42,7 +43,7 @@ test('a macOS bundle is replaced in place only from a real install location', ()
   assert.match(macBundle('/private/var/folders/x/AppTranslocation/ABC/d/Shattered Empires.app/Contents/MacOS/Shattered Empires').why, /Applications/);
 });
 
-test('the macOS swap script waits for the app, swaps the bundle and restores it on failure', () => {
+test('the macOS swap script waits for the app, swaps the bundle and restores it on failure', { skip: process.platform === 'win32' ? 'Requires a POSIX shell; macOS runtime gate runs on macOS.' : false }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-swap-'));
   const app = path.join(dir, "Shattered Empires's.app"), fresh = path.join(dir, '.new.app');
   fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'v'), 'old');
@@ -54,17 +55,18 @@ test('the macOS swap script waits for the app, swaps the bundle and restores it 
   assert.ok(!fs.existsSync(fresh) && !fs.existsSync(app + '.old'));
 });
 
-test('the manifest marks update packages, and the download page offers only installers', { timeout: 60000 }, async () => {
+test('the manifest marks update packages; the retired Electron builds stay reachable but are not offered', { timeout: 60000 }, async () => {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'se-dist-'));
   for (const n of ['ShatteredEmpires-0.1.7-mac-arm64.dmg', 'ShatteredEmpires-0.1.7-mac-arm64.zip', 'ShatteredEmpires-0.1.7-win-x64-setup.exe', 'ShatteredEmpires-0.1.7-win-x64-setup.exe.blockmap']) fs.writeFileSync(path.join(dist, n), n);
-  const m = JSON.parse(execFileSync(process.execPath, [new URL('../desktop/scripts/manifest.mjs', import.meta.url).pathname, dist, '0.1.7'], { encoding: 'utf8' }));
+  const m = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('../desktop/scripts/manifest.mjs', import.meta.url)), dist, '0.1.7'], { encoding: 'utf8' }));
   assert.deepEqual(m.files.map((f) => [f.name.split('-').pop(), f.kind, f.arch]).sort(), [['arm64.dmg', 'install', 'arm64'], ['arm64.zip', 'update', 'arm64'], ['setup.exe', 'install', 'x64']]);
   fs.writeFileSync(path.join(dist, 'manifest.json'), JSON.stringify(m));
-  const srv = fork(new URL('../server/index.js', import.meta.url).pathname, [], { env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DOWNLOAD_DIR: dist, SNAPSHOT_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'se-dlu-')) }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+  const srv = fork(fileURLToPath(new URL('../server/index.js', import.meta.url)), [], { env: { ...process.env, PORT: '0', HOST: '127.0.0.1', DOWNLOAD_DIR: dist, SNAPSHOT_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'se-dlu-')) }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
   const port = await new Promise((r) => srv.on('message', (x) => x.t === 'listening' && r(x.port)));
   try {
     const page = await (await fetch(`http://127.0.0.1:${port}/`)).text();
-    assert.match(page, /0\.1\.7-win-x64-setup\.exe/); assert.match(page, /0\.1\.7-mac-arm64\.dmg/);
+    // the download page offers the native client now; Electron installers are no longer listed
+    assert.doesNotMatch(page, /0\.1\.7-win-x64-setup\.exe/); assert.doesNotMatch(page, /0\.1\.7-mac-arm64\.dmg/);
     assert.doesNotMatch(page, /\.zip/, 'update packages are not offered to people');
     const api = await (await fetch(`http://127.0.0.1:${port}/api/downloads`)).json();
     assert.ok(api.files.some((f) => f.kind === 'update'), 'but apps can find them');

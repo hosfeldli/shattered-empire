@@ -1,0 +1,292 @@
+/* Shattered Empires interface: the world stays the focus.
+   - Surfaces: dark, slightly blue-green translucent glass; one warm brass accent for focus and action.
+   - Type: Barlow Semi Condensed for everything functional, Cormorant for titles only.
+   - Rhythm: 4/8 px spacing; 6 px radius on surfaces, 4 px on controls.
+   - Colour means something: green good, amber attention, red trouble; never decoration.
+   Panels open beside the world (left), the selection card sits bottom centre, the minimap bottom
+   right, alerts bottom left; nothing covers the middle of the screen. */
+
+:root {
+    -unity-font: resource("Fonts/BarlowSemiCondensed-Regular");
+    font-size: 15px;
+    color: rgb(230, 225, 212);
+}
+
+.se-root { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+
+.glass {
+    background-color: rgba(14, 21, 24, 0.9);
+    border-color: rgba(255, 255, 255, 0.07);
+    border-top-color: rgba(214, 170, 82, 0.35);
+    border-width: 1px;
+    border-radius: 6px;
+}
+
+.title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 26px; color: rgb(242, 230, 198); margin-bottom: 6px; }
+.heading { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 16px; color: rgb(234, 204, 140); margin-bottom: 4px; letter-spacing: 0.3px; }
+.muted { color: rgb(146, 162, 158); font-size: 13px; }
+.small { font-size: 13px; }
+.good { color: rgb(142, 212, 132); }
+.bad { color: rgb(242, 116, 96); }
+.warn { color: rgb(240, 188, 86); }
+.row { flex-direction: row; align-items: center; }
+.grow { flex-grow: 1; }
+.wrap { flex-wrap: wrap; }
+.section { margin-top: 10px; padding-top: 8px; border-top-width: 1px; border-color: rgba(255, 255, 255, 0.06); }
+
+/* ---------------------------------------------------------------- buttons */
+.btn {
+    -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold");
+    background-color: rgba(36, 47, 50, 0.96);
+    border-color: rgba(255, 255, 255, 0.08);
+    border-bottom-color: rgba(0, 0, 0, 0.35);
+    border-width: 1px;
+    border-radius: 4px;
+    color: rgb(232, 224, 204);
+    padding: 5px 10px;
+    margin: 2px;
+    font-size: 14px;
+    flex-direction: row;
+    align-items: center;
+    -unity-text-align: middle-center;
+    transition-property: background-color, border-color, translate;
+    transition-duration: 0.12s;
+}
+.btn:hover { background-color: rgba(56, 70, 70, 0.98); border-color: rgba(230, 186, 96, 0.7); }
+.btn:active { background-color: rgba(92, 78, 44, 1); translate: 0 1px; }
+.btn.primary { background-color: rgb(184, 138, 54); color: rgb(22, 20, 14); border-color: rgb(238, 198, 112); }
+.btn.primary:hover { background-color: rgb(210, 160, 66); }
+.btn.selected { border-color: rgb(236, 196, 110); background-color: rgba(98, 82, 44, 0.96); color: rgb(250, 236, 200); }
+.btn:disabled { opacity: 0.4; }
+.btn.close {
+    position: absolute; right: 8px; top: 8px; width: 28px; height: 28px; padding: 0;
+    background-color: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); font-size: 14px;
+}
+.btn.close:hover { background-color: rgba(170, 60, 40, 0.7); }
+/* an icon and its label side by side, never overlapping */
+.btn .icon { width: 20px; height: 20px; margin-right: 6px; flex-shrink: 0; }
+.btn .label { flex-shrink: 1; -unity-text-align: middle-left; }
+
+/* ---------------------------------------------------------------- top bar */
+.topbar {
+    position: absolute; left: 0; right: 0; top: 0; height: 42px;
+    flex-direction: row; align-items: center; padding: 0 10px;
+    background-color: rgba(10, 15, 17, 0.92);
+    border-bottom-width: 1px; border-color: rgba(214, 170, 82, 0.22);
+}
+.era-pill {
+    flex-direction: column; justify-content: center; padding: 0 14px 0 6px; margin-right: 12px; height: 100%;
+    border-right-width: 1px; border-color: rgba(255, 255, 255, 0.08);
+}
+.era-name { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 13px; letter-spacing: 1.5px; color: rgb(236, 204, 136); }
+.era-next { font-size: 11px; color: rgb(140, 156, 152); }
+.res {
+    flex-direction: row; align-items: center; margin-right: 6px; padding: 3px 8px; border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.03);
+    transition-property: background-color; transition-duration: 0.15s;
+}
+.res:hover { background-color: rgba(255, 255, 255, 0.09); }
+.res .dot { width: 12px; height: 12px; border-radius: 6px; margin-right: 6px; border-width: 1px; border-color: rgba(0, 0, 0, 0.35); }
+.res .amount { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; min-width: 30px; }
+.res .rate { font-size: 12px; margin-left: 4px; }
+.res.short { background-color: rgba(160, 50, 30, 0.4); border-width: 1px; border-color: rgba(240, 110, 80, 0.5); }
+.gauge { width: 80px; height: 6px; background-color: rgba(255, 255, 255, 0.1); border-radius: 3px; margin: 0 6px; overflow: hidden; }
+.gauge-fill { height: 100%; background-color: rgb(214, 186, 86); border-radius: 3px; }
+.focus-pill { padding: 4px 12px; border-radius: 12px; background-color: rgba(168, 58, 38, 0.75); margin-left: 8px; font-size: 13px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+
+.tooltip {
+    position: absolute; width: 360px; padding: 10px 12px;
+    background-color: rgba(8, 13, 15, 0.97); border-color: rgba(214, 170, 82, 0.35); border-width: 1px; border-radius: 6px;
+}
+.flow-row { flex-direction: row; justify-content: space-between; font-size: 13px; padding: 1px 0; }
+
+/* ---------------------------------------------------------------- rail and panels */
+.rail { position: absolute; left: 10px; top: 54px; width: 58px; }
+.rail .btn { width: 54px; height: 54px; padding: 4px; margin: 0 0 6px 0; flex-direction: column; justify-content: center; background-color: rgba(14, 21, 24, 0.88); }
+.rail .btn .icon { width: 24px; height: 24px; margin: 0 0 3px 0; }
+.rail .btn .label { font-size: 11px; -unity-text-align: middle-center; color: rgb(196, 192, 178); }
+.rail .btn.selected { border-left-width: 3px; border-left-color: rgb(236, 196, 110); }
+.rail .btn.selected .label { color: rgb(246, 226, 180); }
+
+.panel { position: absolute; left: 76px; top: 54px; width: 440px; max-height: 78%; padding: 14px 16px; }
+.panel.wide { width: 900px; }
+.tabs { flex-direction: row; margin-bottom: 10px; flex-wrap: wrap; padding-bottom: 6px; border-bottom-width: 1px; border-color: rgba(255, 255, 255, 0.06); }
+
+.card {
+    position: absolute; bottom: 12px; left: 21%; right: 18%; min-height: 110px; padding: 12px 14px;
+}
+.action-card { left: 24%; right: 15%; min-height: 0; padding: 9px 12px; max-height: 52%; }
+.action-rail { width: 68px; }
+.action-rail .btn { width: 64px; height: 52px; }
+.action-resource { margin-right: 8px; }
+.action-resource .amount { margin-left: 6px; }
+.action-train { width: 190px; min-height: 76px; flex-wrap: wrap; justify-content: flex-start; padding: 8px 9px; border-left-width: 2px; border-left-color: rgba(148, 174, 154, .45); }
+.action-train .cost { font-size: 11px; color: rgb(162, 182, 177); }
+.action-train .label { font-size: 15px; }
+.unit-role-caption { width: 100%; font-size: 10px; color: rgb(148, 173, 166); letter-spacing: .35px; margin-top: 4px; white-space: normal; }
+.unit-role-description { color: rgb(180, 195, 186); font-size: 13px; white-space: normal; margin: 4px 0 6px 0; }
+.action-meter { margin: 4px 0 6px 0; }
+.action-meter-track { height: 3px; margin-top: 4px; background-color: rgba(190, 209, 195, .10); border-radius: 2px; overflow: hidden; }
+.action-meter-fill { height: 100%; width: 0; background-color: rgb(139, 183, 154); border-radius: 2px; transition-property: width; transition-duration: .16s; }
+.production-line { margin-top: 6px; padding: 5px 8px; background-color: rgba(166, 187, 172, .055); border-left-width: 2px; border-left-color: rgba(139, 183, 154, .4); }
+.production-line .action-meter { margin-bottom: 0; }
+.abilities-row { border-top-width: 1px; border-top-color: rgba(255, 255, 255, .07); margin-top: 5px; padding-top: 5px; }
+.action-resource { border-right-width: 1px; border-right-color: rgba(190, 209, 195, .12); padding-right: 12px; margin-right: 12px; }
+.action-card .force-chip { font-size: 12px; padding: 3px 7px; color: rgb(208, 219, 210); }
+.facility-choice { min-height: 30px; }
+.force-chip { background-color: rgba(142, 169, 151, 0.12); border-radius: 3px; margin: 1px 5px 3px 0; padding: 2px 6px; }
+.objective-layer { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+.objective-marker { position: absolute; padding: 2px 3px; border-radius: 3px; background-color: rgba(13, 20, 22, 0.94); }
+.objective-marker .icon { width: 15px; height: 15px; margin-right: 3px; }
+.objective-name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
+.objective-track { height: 3px; margin-top: 2px; background-color: rgba(255, 255, 255, 0.16); }
+.objective-fill { height: 3px; }
+.train-grid { flex-direction: row; flex-wrap: wrap; margin-top: 4px; }
+.train-btn { width: 98px; height: 94px; margin: 3px; padding: 5px 4px; flex-direction: column; align-items: center; justify-content: flex-start; }
+.train-btn .icon { width: 44px; height: 32px; margin: 2px 0 3px 0; }
+.train-btn .label { font-size: 12px; -unity-text-align: middle-center; white-space: normal; }
+.train-btn .cost { font-size: 11px; color: rgb(168, 184, 176); }
+.badge {
+    position: absolute; right: 3px; top: 3px; min-width: 20px; height: 20px; border-radius: 10px; padding: 0 4px;
+    background-color: rgb(206, 158, 66); color: rgb(20, 18, 12); font-size: 12px; -unity-text-align: middle-center;
+    -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold");
+}
+.queue { flex-direction: row; flex-wrap: wrap; margin-top: 6px; }
+.queue-item { width: 48px; height: 42px; margin: 2px; border-radius: 4px; background-color: rgba(255, 255, 255, 0.06); border-width: 1px; border-color: rgba(255, 255, 255, 0.05); align-items: center; justify-content: center; }
+.queue-item .icon { width: 34px; height: 24px; }
+.queue-item .count { position: absolute; right: 3px; bottom: 0; font-size: 11px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+.progress { height: 4px; background-color: rgba(255, 255, 255, 0.1); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background-color: rgb(142, 212, 132); }
+
+.list-item { padding: 7px 8px; border-radius: 4px; margin-bottom: 2px; border-bottom-width: 1px; border-color: rgba(255, 255, 255, 0.03); }
+.list-item:hover { background-color: rgba(255, 255, 255, 0.05); }
+
+/* research tree: eras left to right, branches colour-coded down each column */
+.era { width: 168px; margin-right: 8px; }
+.tech {
+    margin: 2px 0; padding: 6px 7px; border-radius: 4px; background-color: rgba(255, 255, 255, 0.04);
+    border-width: 1px; border-left-width: 3px; border-color: rgba(255, 255, 255, 0.05);
+    transition-property: background-color; transition-duration: 0.12s;
+}
+.tech:hover { background-color: rgba(255, 255, 255, 0.09); border-right-color: rgba(230, 186, 96, 0.7); border-top-color: rgba(230, 186, 96, 0.7); border-bottom-color: rgba(230, 186, 96, 0.7); }
+.tech.done { background-color: rgba(80, 130, 70, 0.28); }
+.tech.current { background-color: rgba(120, 100, 50, 0.5); border-top-color: rgb(236, 196, 110); border-right-color: rgb(236, 196, 110); border-bottom-color: rgb(236, 196, 110); }
+.tech.queued { border-top-color: rgba(236, 196, 110, 0.45); border-right-color: rgba(236, 196, 110, 0.45); border-bottom-color: rgba(236, 196, 110, 0.45); }
+.tech.locked { opacity: 0.5; }
+.unlocks { font-size: 10px; color: rgba(220, 214, 196, 0.68); margin-top: 2px; white-space: normal; }
+.branch-chip { padding: 2px 8px; margin-right: 6px; margin-bottom: 6px; border-radius: 3px; border-left-width: 3px; background-color: rgba(255, 255, 255, 0.05); }
+.branch-civ { border-left-color: rgb(132, 186, 104); }
+.branch-industry { border-left-color: rgb(214, 150, 74); }
+.branch-infra { border-left-color: rgb(150, 150, 160); }
+.branch-logistics { border-left-color: rgb(196, 176, 92); }
+.branch-military { border-left-color: rgb(196, 86, 72); }
+.branch-advanced { border-left-color: rgb(110, 160, 220); }
+.branch-society { border-left-color: rgb(170, 120, 190); }
+
+/* minimap: bottom right, framed, with the camera footprint drawn over it */
+.minimap { position: absolute; right: 12px; bottom: 12px; width: 280px; height: 200px; padding: 5px; }
+.minimap-image { position: absolute; left: 5px; top: 5px; right: 5px; bottom: 5px; border-radius: 3px; }
+
+/* alerts: a quiet feed, never over the world's centre */
+.feed { position: absolute; left: 12px; bottom: 12px; width: 360px; }
+.note {
+    padding: 6px 10px; margin-top: 4px; border-radius: 4px; font-size: 13px;
+    background-color: rgba(10, 15, 17, 0.85); border-left-width: 3px; border-color: rgba(214, 170, 82, 0.6);
+}
+.note.critical { background-color: rgba(120, 34, 22, 0.9); border-color: rgb(244, 120, 90); }
+.note .btn.note-go { margin: 0 0 0 8px; padding: 2px 8px; font-size: 12px; }
+.result-card { position: absolute; top: 96px; left: 35%; right: 35%; padding: 16px 18px; border-top-color: rgb(236, 196, 110); }
+.search { margin-bottom: 8px; }
+.tech.match { border-top-color: rgb(120, 200, 255); border-right-color: rgb(120, 200, 255); border-bottom-color: rgb(120, 200, 255); }
+.tech.related { background-color: rgba(110, 160, 220, 0.18); }
+.banner { position: absolute; top: 54px; left: 33%; right: 33%; padding: 8px 14px; -unity-text-align: middle-center; border-top-color: rgb(244, 120, 90); }
+
+/* tutorial */
+.coach { position: absolute; right: 16px; top: 54px; width: 340px; padding: 14px; border-top-color: rgb(236, 196, 110); }
+.highlight { position: absolute; border-width: 3px; border-color: rgb(244, 196, 90); border-radius: 6px; }
+
+/* menu */
+/* the title upper left over the living world (bible §6) */
+.menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: flex-start; justify-content: flex-start; padding: 6% 0 0 5%; background-color: rgba(4, 7, 8, 0.12); }
+.menu-box { width: 440px; padding: 24px 26px; }
+.menu-title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 60px; color: rgb(244, 232, 202); -unity-text-align: middle-center; margin-bottom: 2px; letter-spacing: 6px; }
+.menu-box .menu-title { font-size: 42px; letter-spacing: 4px; white-space: normal; -unity-text-align: middle-left; }
+.menu-box .menu-sub { white-space: normal; -unity-text-align: middle-left; }
+.panel .ring-site { width: 47%; }
+.menu-sub { -unity-text-align: middle-center; color: rgb(188, 174, 138); margin-bottom: 20px; font-size: 15px; letter-spacing: 1px; }
+.menu .btn { height: 36px; font-size: 15px; margin: 2px 0; }
+.btn.menu-item { -unity-text-align: middle-left; padding-left: 14px; letter-spacing: 1.2px; transition-duration: 0.15s; }
+.btn.menu-item:hover { padding-left: 20px; border-left-width: 3px; border-left-color: rgb(236, 196, 110); }
+.menu-help { margin-top: 10px; min-height: 36px; font-size: 13px; color: rgb(200, 188, 156); white-space: normal; }
+.menu-version { position: absolute; left: 16px; bottom: 12px; font-size: 11px; color: rgba(220, 214, 196, 0.55); }
+.field { background-color: rgba(0, 0, 0, 0.4); border-color: rgba(255, 255, 255, 0.1); border-width: 1px; border-radius: 4px; color: rgb(234, 226, 206); margin: 2px 0; }
+
+/* cinematic */
+.letterbox { position: absolute; left: 0; right: 0; height: 12%; background-color: rgb(0, 0, 0); }
+.caption { position: absolute; left: 12%; right: 12%; bottom: 17%; -unity-text-align: middle-center; -unity-font: resource("Fonts/CormorantGaramond"); font-size: 34px; color: rgb(240, 232, 214); white-space: normal; }
+.skip { position: absolute; right: 22px; bottom: 14px; font-size: 13px; color: rgb(170, 170, 160); }
+.fade { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background-color: rgb(0, 0, 0); }
+
+/* loading: real stages over the world (bible §8) */
+.loading { position: absolute; left: 50%; bottom: 14%; width: 420px; translate: -50% 0; padding: 16px 20px; }
+.loading-title { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 26px; letter-spacing: 4px; color: rgb(242, 230, 198); margin-bottom: 8px; -unity-text-align: middle-center; }
+.loading-step { font-size: 13px; color: rgba(200, 200, 190, 0.45); padding: 2px 0; }
+.loading-step.done { color: rgb(142, 212, 132); }
+.loading-step.current { color: rgb(242, 222, 170); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+.loading-bar { height: 3px; margin-top: 10px; background-color: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.loading-bar-run { width: 30%; height: 100%; background-color: rgb(214, 170, 82); }
+
+/* the opening descent's title card (bible §9) */
+.title-card { position: absolute; left: 0; right: 0; top: 30%; align-items: center; }
+.title-card-main { -unity-font: resource("Fonts/CormorantGaramond"); font-size: 40px; letter-spacing: 3px; color: rgb(244, 234, 210); }
+.title-card-sub { font-size: 16px; letter-spacing: 2px; color: rgb(214, 200, 164); margin-top: 4px; }
+
+/* game speed and the pause menu (bible §26, §33) */
+.speed-strip { position: absolute; right: 12px; top: 52px; flex-direction: row; padding: 3px; transition-property: opacity; transition-duration: 0.6s; }
+.speed-strip .btn { min-width: 36px; height: 28px; padding: 0 8px; }
+.topbar, .rail { transition-property: opacity; transition-duration: 0.6s; }
+.pause-menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: center; justify-content: center; background-color: rgba(4, 7, 8, 0.45); }
+.pause-menu .menu-box { width: 340px; }
+
+/* placement card beside the cursor (bible §28) */
+.place-card { position: absolute; width: 260px; padding: 8px 10px; }
+
+/* strategic badge counts (bible §29) */
+.badge-count {
+    position: absolute; font-size: 12px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: rgb(246, 240, 224);
+    background-color: rgba(10, 15, 17, 0.75); border-radius: 7px; padding: 0 5px; min-width: 14px; -unity-text-align: middle-center;
+}
+
+/* city card summary (bible §31) */
+.city-facts { flex-direction: row; flex-wrap: wrap; margin: 6px 0; }
+.city-fact { width: 25%; padding-right: 8px; }
+.fact-value { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; }
+.ring-site-grid { flex-direction: row; flex-wrap: wrap; flex-shrink: 0; margin-top: 7px; margin-bottom: 4px; }
+.ring-site { width: 23%; min-height: 42px; margin: 2px; padding: 5px; background-color: rgba(81, 107, 102, .19); border-color: rgba(137, 162, 147, .32); border-width: 1px; }
+.ring-site.locked { opacity: .56; background-color: rgba(112, 99, 76, .13); }
+.ring-site.selected { border-color: rgb(215, 180, 108); background-color: rgba(159, 128, 72, .22); }
+.ring-site .label { flex-grow: 1; flex-shrink: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.pickup-reward { position: absolute; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 16px; color: rgb(242, 216, 160); background-color: rgba(18, 25, 25, .7); border-radius: 4px; padding: 3px 7px; }
+.action-card { left: 26%; right: 21%; max-height: 30%; padding: 10px 14px; }
+.action-card.expanded-details { max-height: 52%; }
+.action-card.active-tool-card { left: 30%; right: 27%; }
+.action-card .compact-sites .ring-site { min-height: 28px; margin: 2px; padding: 4px 6px; }
+.action-card .compact-sites .ring-site .label { font-size: 11px; }
+.context-facilities { margin-top: 6px; }
+.context-facility { width: 48%; min-height: 32px; margin: 2px; padding: 5px 7px; }
+.context-facility .label { white-space: normal; font-size: 12px; }
+.action-card .action-train { width: 23%; min-height: 34px; padding: 5px; margin: 3px; flex-direction: row; }
+.action-card .action-train .label { white-space: normal; font-size: 12px; }
+.compact-rail .btn { width: 42px; height: 42px; min-height: 42px; padding: 8px; flex-direction: row; }
+.compact-rail .btn .label { display: none; }
+.compact-rail .btn .icon { width: 23px; height: 23px; margin: 0; }
+.compact-rail:hover .btn { width: 118px; }
+.compact-rail:hover .btn .label { display: flex; margin-left: 9px; }
+.action-resource { min-width: 115px; }
+.menu-box { width: 370px; padding: 25px 24px; border-left-width: 2px; border-left-color: rgb(178, 151, 99); background-color: rgba(10, 18, 23, .89); }
+.menu-eyebrow { font-size: 10px; letter-spacing: 3px; color: rgb(173, 160, 131); margin-bottom: 16px; }
+.menu-box .menu-title { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 42px; letter-spacing: 3px; }
+.menu-box .menu-sub { font-size: 13px; color: rgb(175, 185, 183); margin-bottom: 24px; }
+.menu .btn { height: 34px; font-size: 14px; margin: 2px 0; background-color: rgba(34, 46, 51, .82); }
+.menu .btn.primary { background-color: rgb(167, 136, 80); border-color: rgb(194, 163, 105); }
+.menu .btn:hover { background-color: rgba(67, 83, 87, .95); border-color: rgb(183, 158, 109); }

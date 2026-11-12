@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compiles the Unity client's engine-independent core (Assets/ShatteredEmpires/Core) as plain
+       .NET and checks it against fixtures produced by the server. Runs without the Unity Editor:
+         node unity/Tests.Standalone/make-fixtures.mjs
+         dotnet run -c Release -project unity/Tests.Standalone -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>9.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Assets/ShatteredEmpires/Core/**/*.cs" />
+    <Compile Include="../Assets/ShatteredEmpires/Net/**/*.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="LiveCheck.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>

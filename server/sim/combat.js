@@ -34,7 +34,12 @@ export function eventsFor(g, since, vis, god) {
     const e = ev[k];
     if (god) { out.push(e); continue; }
     const seeA = e.a >= 0 && vis[e.a] === 1, seeB = e.b >= 0 && vis[e.b] === 1;
-    if (e.k === 'fire' || e.k === 'launch') {
+    if (e.ax !== undefined || e.bx !== undefined) {
+      if (seeB || seeA && (e.k === 'fire' || e.k === 'launch')) out.push({
+        ...e, ...(seeA ? {} : { a: -1, s: undefined, ax: undefined, az: undefined }),
+        ...(seeB ? {} : { b: -1, t: undefined, bx: undefined, bz: undefined }),
+      });
+    } else if (e.k === 'fire' || e.k === 'launch') {
       if (seeA) out.push(e);
       else if (seeB) out.push({ ...e, a: -1, s: undefined });
     } else if (seeB) out.push(seeA ? e : { ...e, a: -1, s: undefined });

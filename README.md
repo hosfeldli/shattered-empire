@@ -2,11 +2,17 @@
 
 A grand-scale RTS where you rebuild a civilization on a shattered world that wraps around east to west. Armies hold real ground behind supplied, entrenched lines; cities grow from a real population ledger, workers are allocated to the jobs that matter, governors and rival empires plan with the same tools you do, and armies are drawn from your people.
 
-**Native development:** the active client target is [Godot 4.7.2](godot/README.md). The
-[Living World Engine checklist](godot/docs/LWE_REQUIREMENTS.md) tracks the complete procedural-world
-design and [native status](godot/docs/STATUS.md) records validation and remaining gates. The older
-Electron/PixiJS sources and documentation below are retained as reference; new client work targets
-Godot. Native builds are currently development previews.
+**Client migration (2026-11-08):** the client is moving from Godot to **Unity 6.3 LTS** for
+performance. The Unity performance gate passed and the project has committed to Unity. New Godot
+client development is frozen. The Node.js server stays authoritative and unchanged. See the
+[migration plan](docs/UNITY_MIGRATION.md), the [Unity client](unity/README.md) and the
+[development queue](docs/DEVELOPMENT_QUEUE.md). The [Godot 4.7.2 client](godot/README.md) is
+preserved as the behavioural reference (tag `godot-reference-2026-11-08`). It remains the official
+download until the Unity client passes its release gates, and it is published automatically from
+`main` (`native.yml`). The Electron installers are no longer published. The
+[Living World Engine checklist](godot/docs/LWE_REQUIREMENTS.md) and [native status](godot/docs/STATUS.md)
+describe the Godot client. The older Electron/PixiJS sources and documentation below are kept for
+reference.
 
 The [streamlined native redesign](godot/docs/NATIVE_REDESIGN.md) replaces government/treaty
 management and removes trading entirely in new native matches, with versioned legacy-save support.

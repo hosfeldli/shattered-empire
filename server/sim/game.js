@@ -45,7 +45,9 @@ const LEVEL_OF = { tech: 'info', build: 'info', unit: 'info', history: 'info', r
   quake: 'major', eruption: 'major', rift: 'minor', uplift: 'minor', drought: 'major', river: 'minor', warning: 'major', rebel: 'major', loss: 'major', isolated: 'major', blocked: 'major', proposal: 'major', war: 'major', error: 'minor',
   famine: 'critical', fall: 'critical', wonder: 'critical' };
 
-const CITY_NAMES = ['Aldmoor', 'Brightwater', 'Cindervale', 'Dunhollow', 'Emberfell', 'Frosthaven', 'Greywatch', 'Highcrag', 'Ironford', 'Juniper', 'Kingsreach', 'Lowmarsh', 'Mistport', 'Northgate', 'Oakheart', 'Pinecrest', 'Quarrytown', 'Redcliff', 'Stonebridge', 'Thornfield', 'Umberdale', 'Valewind', 'Westmarch', 'Yarrow', 'Zephyr Rock', 'Ashmere', 'Blackreed', 'Coldspring', 'Deepwell', 'Eastbrook', 'Foundry Hill', 'Gantry', 'Harrowgate', 'Isolde', 'Jetty'];
+// Settlements of a world rebuilding among the ruins of the old one: named for what survivors found
+// there (salvage, a standing structure, a landmark of the collapse), not fantasy-medieval places.
+const CITY_NAMES = ['Ironford', 'Rustwater', 'Cinderhold', 'Saltreach', 'Gantry', 'Lastlight', 'Breakwater', 'Pylon Ridge', 'New Haven', 'Scrapton', 'Ashby Crossing', 'Fallow Yard', 'Overpass', 'Turbine Hill', 'Drydock', 'Signal Point', 'Ember Station', 'Quarry Nine', 'Concrete Bay', 'Relay', 'Hollowgate', 'Silo Plains', 'Mender\'s Rest', 'Vault Seven', 'Copperline', 'Dam Town', 'Sunken Market', 'Terminal', 'Greenhouse', 'Kiln', 'Last Bridge', 'Waystation', 'Haven Deep', 'Northlight', 'Reclaim'];
 
 const ESSENTIAL = new Set(['farm', 'house', 'port']);
 
@@ -216,7 +218,8 @@ export class Game {
   canHitUnit(u, e) { return canHit(UNITS[u.type], e); }
   onBaseLost(b) { onBuildingLost(this, b); }
   damageBuilding(b, amount, attacker, cause) { damageBuilding(this, b, amount, attacker, cause); }
-  maxHouses(civ) { return 3 + 2 * Math.min(3, civ.age); }
+  // homes per city: enough from the start for a real housing district (2026-11-08: was 3 early on)
+  maxHouses(civ) { return 6 + 3 * Math.min(3, civ.age); }
 
   // Alerts carry a level so players can tell routine news from emergencies.
   notify(civId, text, extra = {}) {
@@ -265,7 +268,7 @@ export class Game {
 
   makeBuilding(civ, type, tile, done) {
     const def = BUILDINGS[type];
-    const b = { id: this.id_(), owner: civ.id, type, tile, hp: done ? def.hp : def.hp * 0.1, maxHp: def.hp, done: !!done, progress: done ? 1 : 0, queue: [], staffed: 0, cityId: -1, cooldown: 0, rally: -1, active: false, placedAt: this.time,
+    const b = { id: this.id_(), owner: civ.id, type, tile, hp: done ? def.hp : def.hp * 0.1, maxHp: def.hp, done: !!done, progress: done ? 1 : 0, queue: [], staffed: 0, cityId: -1, cooldown: 0, rally: -1, active: false, placedAt: this.time, era: civ.age || 0,
       state: done ? 'operational' : 'construction', funded: true, fire: 0, crew: 0, qn: done ? 0 : (civ.buildSeq = (civ.buildSeq || 0) + 1) };
     this.buildings.set(b.id, b);
     this.tileB[tile] = b.id;
@@ -296,7 +299,7 @@ export class Game {
     if (waterPort) { if (!this.waterPortSite(civ, t)) return false; }
     else if (w.river[t] || isWater(ter) || !Number.isFinite(TERRAIN[ter].move) || ter === T.LAVA) return false;
     if (def.anywhere) { if (w.owner[t] !== civ.id && !civ.supply[t]) return false; if (w.owner[t] >= 0 && w.owner[t] !== civ.id) return false; }
-    else if (w.owner[t] !== civ.id) return false;
+    else if (w.owner[t] !== civ.id && !(waterPort && w.owner[t] < 0)) return false;   // a quay may reach unclaimed sea
     if (def.wonder && [...this.buildings.values()].some((b) => b.type === 'wonder' && b.owner === civ.id)) return false;
     if (type === 'house') {
       const cid = this.nearestCityId(civ.id, t);
@@ -310,7 +313,7 @@ export class Game {
   // an ocean (not lake or river) hex in our waters with a dry shore hex of ours beside it
   waterPortSite(civ, t) {
     const w = this.world;
-    if (!isWater(w.terr[t]) || w.lake[t] || w.river[t] || w.owner[t] !== civ.id) return false;
+    if (!isWater(w.terr[t]) || w.lake[t] || w.river[t] || (w.owner[t] !== civ.id && w.owner[t] >= 0)) return false;
     for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && !isWater(w.terr[n]) && !w.river[n] && w.owner[n] === civ.id && Number.isFinite(TERRAIN[w.terr[n]].move)) return true; }
     return false;
   }
@@ -599,7 +602,7 @@ export class Game {
   applyLevel(b) {
     const lv = b.level || 1, base = BUILDINGS[b.type].hp, k = b.type === 'house' ? 0.5 : 0.4;
     b.level = lv + 1; b.maxHp = Math.round(base * (1 + k * lv)); b.hp = Math.min(b.maxHp, b.hp + base * k);
-    b.upgradedAt = this.time;
+    b.upgradedAt = this.time; b.era = this.civs[b.owner]?.age ?? b.era;
   }
   cancelWorks(civ, b) {
     if (!b || b.owner !== civ.id || !b.works) return { error: 'No works to cancel here' };
@@ -628,31 +631,15 @@ export class Game {
       if (civ.human) this.autoTech(civ);
       if (!civ.researching) { civ.progress = 0; continue; }
       const k = civ.researching, tech = TECHS[k];
-      const paid = civ.techPaid || (civ.techPaid = {});
-      if (tech.goods && !paid[k]) {
-        if (this.canAfford(civ, tech.goods)) { this.pay(civ, tech.goods, undefined, 'research'); paid[k] = 1; }
-        else {
-          civ.researchWait = k; civ.waitT = (civ.waitT || 0) + dt; civ.progress = tp[k] || 0;
-          // never stall silently: say once per technology what is missing
-          if (civ.human && civ.waitNoted !== k) {
-            civ.waitNoted = k;
-            const missing = Object.entries(tech.goods).filter(([g2, v]) => (civ.res[g2] || 0) < v).map(([g2, v]) => `${Math.ceil(v - (civ.res[g2] || 0))} more ${g2}`).join(' and ');
-            this.notify(civ.id, `Research of ${tech.name} is waiting for goods: ${missing}. Build or staff production for them; research resumes on its own.`, { kind: 'tech', level: 'major' });
-          }
-          if (civ.waitT > 20) {
-            const alt = Object.keys(TECHS).find((x) => x !== k && researchReady(civ, x) && (!TECHS[x].goods || paid[x] || this.canAfford(civ, TECHS[x].goods)));
-            if (alt) { civ.queue = [k, ...civ.queue.filter((x) => x !== k && x !== alt)]; civ.researching = alt; civ.waitT = 0; civ.researchWait = null; }
-          }
-          continue;
-        }
-      }
+      // Research never waits for goods (2026-11-08): it advances on research output alone, so the
+      // tree is never blocked by a shortage elsewhere in the economy.
       civ.researchWait = null; civ.waitT = 0; civ.waitNoted = null;
       // progress belongs to the technology: switching away and back loses nothing
       tp[k] = (tp[k] || 0) + civ.researchRate * dt;
       civ.progress = tp[k];
       if (tp[k] >= tech.cost) {
         civ.techs.add(k);
-        delete tp[k]; delete paid[k];
+        delete tp[k]; if (civ.techPaid) delete civ.techPaid[k];
         this.notify(civ.id, `Research complete: ${tech.name}.`, { kind: 'tech', sound: 'research' });
         civ.researching = null; civ.progress = 0;
         civ.queue = civ.queue.filter((x) => !civ.techs.has(x));
@@ -772,9 +759,11 @@ export class Game {
     for (const b of this.buildings.values()) {
       if (b.owner === civ.id || !vis[b.tile] || this.allied(civ.id, b.owner)) continue;
       const hp = Math.round((100 * b.hp) / b.maxHp), lv = b.level > 1 ? b.level : undefined, p = Math.round(b.progress * 100);
+      const tier = b.site && this.siteById ? this.siteById.get(b.site)?.tier : b.type === 'town' && b.tier ? b.tier : undefined;
       const r = mem.get(b.id);
-      if (r && r.o === b.owner && r.hp === hp && r.lv === lv && r.p === p && r.d === (b.done ? 1 : 0) && r.st === b.state) { r.ls = Math.round(this.time); continue; }
-      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: b.type === 'town' && b.tier ? b.tier : undefined, ls: Math.round(this.time) });
+      if (r && r.o === b.owner && r.hp === hp && r.lv === lv && r.p === p && r.d === (b.done ? 1 : 0) && r.st === b.state && r.ti === tier) { r.ls = Math.round(this.time); continue; }
+      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, ea: b.era, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: tier,
+        ...(b.x !== undefined ? { px: b.x, pz: b.z, yaw: b.yaw } : {}), ls: Math.round(this.time) });
     }
     if (mem.size > 4000) {
       const oldest = [...mem.values()].sort((a, b) => a.ls - b.ls).slice(0, mem.size - 4000);
@@ -859,24 +848,8 @@ export class Game {
     return this.viewerSnapshot(civ, view, full, econ);
   }
 
-  viewerSnapshot(civ, view, full, econ) {
-    const w = this.world;
-    const k = view.known || civ;   // where this viewer's sent-tile bookkeeping lives
-    if (full) { k.knownVer.fill(0); k.knownOwner.fill(-2); k.visKey = ''; k.knownStab = false; }
-    const vis = view.vis, explored = view.explored;
-    const tiles = [];
-    const stabOK = view.god || civ.techs.has('surveying');
-    for (let i = 0; i < N; i++) {
-      // land we knew as our own that changed hands is always sent, seen or not: a nation knows which
-      // of its territory it has lost (otherwise a captured city's land stays drawn in our colour)
-      const lost = k.knownOwner[i] === civ.id && w.owner[i] !== civ.id;
-      if (!vis[i] && !(full && explored[i]) && !lost) continue;
-      if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
-        k.knownVer[i] = w.ver[i]; k.knownOwner[i] = w.owner[i];
-        tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));
-      }
-    }
-    if (stabOK) k.knownStab = true;
+  unitSnapshot(civ, view) {
+    const w = this.world, vis = view.vis;
     const units = [];
     for (const u of this.units.values()) {
       if (!view.god && u.owner !== civ.id && (!vis[u.tile] || civ.smokeHide?.[u.tile] || !this.detects(civ.id, u))) continue;   // smoke over our own land hides what is in it
@@ -894,6 +867,25 @@ export class Game {
     }
     const paths = {};
     for (const u of this.units.values()) if ((u.owner === civ.id || view.god) && (u.path.length || u.field)) paths[u.id] = u.field ? [u.slot] : u.path.slice(0, view.god ? 16 : 40);
+    return { units, paths };
+  }
+
+  viewerSnapshot(civ, view, full, econ) {
+    const w = this.world;
+    const k = view.known || civ;
+    if (full) { k.knownVer.fill(0); k.knownOwner.fill(-2); k.visKey = ''; k.knownStab = false; }
+    const vis = view.vis, explored = view.explored;
+    const tiles = [];
+    const stabOK = view.god || civ.techs.has('surveying');
+    for (let i = 0; i < N; i++) {
+      const lost = k.knownOwner[i] === civ.id && w.owner[i] !== civ.id;
+      if (!vis[i] && !(full && explored[i]) && !lost) continue;
+      if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
+        k.knownVer[i] = w.ver[i]; k.knownOwner[i] = w.owner[i];
+        tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));
+      }
+    }
+    if (stabOK) k.knownStab = true;
     // combat events since this viewer's last delivery (a fresh view starts from now)
     if (full) k.evSeq = this.eventSeq;
     const ev = eventsFor(this, k.evSeq || 0, vis, view.god);
@@ -901,7 +893,7 @@ export class Game {
     let visB64;
     const key = packBits(vis).toString('base64');
     if (key !== k.visKey) { k.visKey = key; visB64 = key; }
-    const msg = { t: 's', time: +this.time.toFixed(1), tick: this.tickN, units, paths };
+    const msg = { t: 's', time: +this.time.toFixed(1), tick: this.tickN, ...this.unitSnapshot(civ, view) };
     if (ev.length) msg.ev = ev;
     if (tiles.length) msg.tiles = tiles;
     // regional weather (whole map: the sky is seen from anywhere), sent when it changes
@@ -924,7 +916,7 @@ export class Game {
     for (const b of this.buildings.values()) {
       if (b.owner !== civ.id && !vis[b.tile]) continue;
       const own = b.owner === civ.id || god;
-      buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
+      buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, ea: b.era, hp: Math.round((100 * b.hp) / b.maxHp), d: b.done ? 1 : 0, p: Math.round(b.progress * 100), a: b.active || b.queue.length ? 1 : 0,
         st: b.state, f: b.fire > 0 ? 1 : 0, cr: b.done ? 0 : +(b.crew || 0).toFixed(2), qw: !b.done && b.waiting ? b.waiting : undefined, qn: own && !b.done ? b.qn ?? b.id : undefined,
         lv: b.level > 1 ? b.level : undefined, r: own && BUILDINGS[b.type].trains && b.rally >= 0 ? b.rally : undefined, pr: own && b.out && Object.keys(b.out).length ? Object.entries(b.out).filter(([, v]) => v > 0.005).map(([k, v]) => [k, +v.toFixed(2)]) : undefined, sh: BUILDINGS[b.type].shield && b.done ? Math.round((100 * (b.shield || 0)) / BUILDINGS[b.type].shield.cap) : undefined, ug: b.upgraded ? 1 : undefined, uc: own && b.done && upgradable(b.type) && (b.level || 1) < MAX_LEVEL ? levelUpgradeCost(b.type, b.level || 1) : undefined, ut: own && timedWorks(this) && b.done && !b.works && (b.type === 'house' ? (b.level || 1) < 3 : upgradable(b.type) && (b.level || 1) < MAX_LEVEL) ? Math.ceil(this.worksSeconds(b) / tempo(this, 'construction')) : undefined, rc: own && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(10 + (BUILDINGS[b.type].cost.materials || 40) * 0.2) : undefined, rt: own && timedWorks(this) && b.done && b.hp < b.maxHp && !b.works ? Math.ceil(this.repairSeconds(b) / tempo(this, 'construction')) : undefined, ti: b.type === 'town' && b.tier ? b.tier : undefined, mi: own && BUILDINGS[b.type].silo ? b.missiles || 0 : undefined, mp: own && b.project ? Math.round(100 * (1 - b.project.left / b.project.total)) : undefined, na: b.noAmmo ? 1 : undefined, af: b.lastFire && this.time - b.lastFire < 1.5 ? b.aimAt : undefined, up: b.upgradedAt && this.time - b.upgradedAt < 3 ? 1 : undefined, wk: b.works ? [b.works.k === 'repair' ? 'r' : 'u', Math.round(100 * (1 - b.works.left / b.works.total)), b.works.halt ? 1 : 0, b.owner === civ.id && b.works.rate ? Math.ceil(b.works.left / b.works.rate) : -1, b.works.paused ? 1 : 0, b.works.priority ? 1 : 0] : undefined, ...(own ? { s: b.staffed, w: b.why || undefined, lk: b.lock ?? undefined, off: b.off ? 1 : undefined, tr: b.queue.length ? Math.max(0, Math.min(100, Math.round(100 * (1 - b.queue[0].left / Math.max(1, UNITS[b.queue[0].unit]?.time || 1))))) : undefined, q: b.queue.map((q) => [q.unit, Math.max(0, Math.round(q.left))]), c: b.cityId, r: b.rally, rp: b.repeat || undefined, ra: b.rallyArmy || undefined, gov: (this.cities.get(b.cityId)?.governor?.queue || []).includes(b.id) ? 1 : 0 } : {}) });
     }
@@ -1530,7 +1522,7 @@ export class Game {
             if (timedWorks(this)) { this.startWorks(b, 'upgrade', cost, this.worksSeconds(b)); this.world.touch(b.tile); return { reply: { t: 'ack', level: b.level || 1, works: b.works.total, cost } }; }
             const lv = b.level || 1;
             b.level = lv + 1; b.maxHp = Math.round(BUILDINGS[b.type].hp * (1 + 0.4 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS[b.type].hp * 0.4);
-            b.upgradedAt = this.time; this.world.touch(b.tile);
+            b.upgradedAt = this.time; b.era = this.civs[b.owner]?.age ?? b.era; this.world.touch(b.tile);
             return { reply: { t: 'ack', level: b.level, cost } };
           }
           if (!b || b.owner !== civ.id || b.type !== 'house' || !b.done) return { error: 'only finished buildings can be upgraded' };
@@ -1543,7 +1535,7 @@ export class Game {
           this.pay(civ, cost, b.tile);
           if (timedWorks(this)) { this.startWorks(b, 'upgrade', cost, this.worksSeconds(b)); this.world.touch(b.tile); return null; }
           b.level = lv + 1; b.maxHp = Math.round(BUILDINGS.house.hp * (1 + 0.5 * lv)); b.hp = Math.min(b.maxHp, b.hp + BUILDINGS.house.hp * 0.5);
-          b.upgradedAt = this.time; this.world.touch(b.tile);
+          b.upgradedAt = this.time; b.era = this.civs[b.owner]?.age ?? b.era; this.world.touch(b.tile);
           return null;
         }
         case 'upgradeDefense': {
@@ -1749,7 +1741,7 @@ export class Game {
       }
       const lv = x.b.level || 1, base = BUILDINGS[x.b.type].hp, k = x.b.type === 'house' ? 0.5 : 0.4;
       x.b.level = lv + 1; x.b.maxHp = Math.round(base * (1 + k * lv)); x.b.hp = Math.min(x.b.maxHp, x.b.hp + base * k);
-      x.b.upgradedAt = this.time; this.world.touch(x.b.tile);
+      x.b.upgradedAt = this.time; x.b.era = this.civs[x.b.owner]?.age ?? x.b.era; this.world.touch(x.b.tile);
       upgraded.push({ id: x.b.id, level: x.b.level });
     }
     return { upgraded, skipped, cost: spent, capacity: upgraded.reduce((s2, u) => s2 + homes(this.buildings.get(u.id)), 0), policy };

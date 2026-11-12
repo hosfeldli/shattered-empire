@@ -11,7 +11,8 @@
 // Units in a deployed formation keep their places; a player's direct order always wins (the
 // automation only picks up units that have been idle for a few seconds).
 import { UNITS, TERRAIN, BUILDINGS, isWater, W, H } from './constants.js';
-import { disk, dist } from './hex.js';
+import { disk, dist, center } from './hex.js';
+import { hash2 } from './rng.js';
 import { findPath } from './path.js';
 import { GARRISON } from './combat.js';
 import { timedWorks } from './rulesets.js';
@@ -88,12 +89,21 @@ function explore(g, civ, u, claim, claimed) {
   let failures = exploreFailures.get(u);
   if (!failures) exploreFailures.set(u, failures = new Map());
   for (const [tile, until] of failures) if (until <= g.time) failures.delete(tile);
+  // Each explorer favours its own heading (changing every few minutes) and a little randomness per
+  // destination, so a group spreads out across the map instead of all walking to the same frontier.
+  const epoch = Math.floor(g.time / 180);
+  const heading = hash2(u.id, epoch, 911) * Math.PI * 2;
+  const [ux, uz] = center(u.tile);
   const options = [];
   for (const t of disk(u.tile, 46)) {
     if (t === u.tile || claimed(civ, t) || failures.has(t) || !ground(g, t)) continue;
     const d = dist(u.tile, t);
-    if (!ex[t]) options.push({ t, score: d });
-    else if (d >= 4) options.push({ t, score: 100 + (civ.seenAt?.[t] || 0) * .001 + d * .01 });
+    const [tx, tz] = center(t);
+    let dx = tx - ux; if (dx > W * 0.866) dx -= W * 1.732; else if (dx < -W * 0.866) dx += W * 1.732;
+    const off = Math.abs(((Math.atan2(tz - uz, dx) - heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    const jitter = 0.65 + 0.7 * hash2(u.id, t, epoch);
+    if (!ex[t]) options.push({ t, score: d * jitter + off * 5 });
+    else if (d >= 4) options.push({ t, score: 100 + (civ.seenAt?.[t] || 0) * .001 + d * .01 + off * 2 });
   }
   options.sort((a, b) => a.score - b.score || a.t - b.t);
   // Never issue an impossible or partial order: doing so leaves the unit standing on the
@@ -110,7 +120,7 @@ function explore(g, civ, u, claim, claimed) {
       continue;
     }
     claim(civ, t);
-    for (const near of disk(t, 3)) claim(civ, near);
+    for (const near of disk(t, 6)) claim(civ, near);       // explorers keep well apart
     return;
   }
   u.idleSince = g.time + 4;
@@ -175,9 +185,39 @@ function engineer(g, civ, u, claim, claimed) {
     s -= d * 3;
     if (s > score) { score = s; target = b; }
   }
-  if (!target) return;
+  if (!target) { spread(g, civ, u, claim, claimed); return; }
   claim(civ, target.tile);
   if (dist(u.tile, target.tile) <= 1) return;                // already beside it: working
   const spot = disk(target.tile, 1).find((t) => t !== target.tile && ground(g, t)) ?? target.tile;
+  g.orderMove(civ, [u.id], spot, false, 'line', { auth: 'auto' });
+}
+
+// Engineers with nothing to repair or build spread across the nation: every city keeps at least one
+// where possible, and spare engineers go to the cities with the most construction and damage.
+function spread(g, civ, u, claim, claimed) {
+  const cities = [...g.cities.values()].filter((c) => c.owner === civ.id);
+  if (cities.length < 2) return;
+  const nearest = (t) => { let best = null, bd = Infinity; for (const c of cities) { const d = dist(t, c.tile); if (d < bd) { bd = d; best = c; } } return best; };
+  const count = new Map(cities.map((c) => [c.id, 0]));
+  for (const e of g.units.values()) if (e.owner === civ.id && UNITS[e.type].engineer) { const c = nearest(e.tile); count.set(c.id, count.get(c.id) + 1); }
+  const home = nearest(u.tile);
+  if (count.get(home.id) <= 1) return;                       // the only engineer here: stay
+  // need: buildings under construction or damaged, per engineer already there
+  const need = new Map(cities.map((c) => [c.id, 0.5]));
+  for (const b of g.buildings.values()) {
+    if (b.owner !== civ.id || (b.done && b.hp >= b.maxHp * 0.95)) continue;
+    const c = nearest(b.tile); need.set(c.id, need.get(c.id) + 1);
+  }
+  let best = null, bs = -Infinity;
+  for (const c of cities) {
+    if (c === home || claimed(civ, c.tile)) continue;
+    const have = count.get(c.id);
+    const s = (have === 0 ? 100 : 0) + need.get(c.id) / (have + 1) - dist(u.tile, c.tile) * 0.02;
+    if (s > bs) { bs = s; best = c; }
+  }
+  const homeScore = need.get(home.id) / count.get(home.id);
+  if (!best || (count.get(best.id) > 0 && bs <= homeScore + 0.5)) return;
+  claim(civ, best.tile);
+  const spot = disk(best.tile, 1).find((t) => t !== best.tile && ground(g, t)) ?? best.tile;
   g.orderMove(civ, [u.id], spot, false, 'line', { auth: 'auto' });
 }

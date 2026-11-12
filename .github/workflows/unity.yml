@@ -1,0 +1,144 @@
+name: Unity client
+
+# The Unity client (docs/UNITY_MIGRATION.md). Every push and PR runs the engine-independent core
+# against server fixtures and a live local server; with Unity credentials configured it also
+# compiles the project, runs EditMode tests and builds Windows x64. Builds from main are published as
+# an opt-in 'unity-preview' download; the official download stays the Godot build until M8.
+# Repository secrets: UNITY_LICENSE (Personal/Plus .ulf contents) or UNITY_SERIAL, plus UNITY_EMAIL
+# and UNITY_PASSWORD.
+on:
+  push:
+    branches: [main, feature/unity-client]
+    paths: ['unity/**', 'server/**', 'tools/publish-downloads.mjs', '.github/workflows/unity.yml']
+  pull_request:
+    paths: ['unity/**', 'server/**', '.github/workflows/unity.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: unity-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UNITY_VERSION: '6000.3.28f1'
+  BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
+
+jobs:
+  core:
+    name: Core parity and live networking
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: npm ci --no-audit --no-fund
+      - name: Server fixtures and parity checks
+        run: |
+          node unity/Tests.Standalone/make-fixtures.mjs
+          dotnet run -c Release --project unity/Tests.Standalone
+      - name: Live match against a local server (handshake, deltas, 1,000-unit battle, rejoin, ack latency)
+        run: |
+          mkdir -p /tmp/se-live
+          PORT=8141 ADMIT_OFF=1 SNAPSHOT_DIR=/tmp/se-live node server/index.js > /tmp/se-live/server.log 2>&1 &
+          sleep 3
+          dotnet run -c Release --project unity/Tests.Standalone -- --live ws://127.0.0.1:8141/ws 45
+
+  license:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        run: |
+          if [ -n "$UNITY_LICENSE$UNITY_SERIAL" ]; then echo "available=true" >> "$GITHUB_OUTPUT"; else echo "available=false" >> "$GITHUB_OUTPUT"; echo "::notice::Unity credentials are not configured; skipping Unity compile and build"; fi
+
+  editor:
+    name: Compile, EditMode tests, Windows build
+    needs: [core, license]
+    if: needs.license.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund && node unity/Tests.Standalone/make-fixtures.mjs
+      - uses: actions/cache@v4
+        with:
+          path: unity/Library
+          key: unity-library-${{ hashFiles('unity/Packages/manifest.json', 'unity/ProjectSettings/ProjectVersion.txt') }}
+          restore-keys: unity-library-
+      - name: EditMode tests
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: unity
+          unityVersion: ${{ env.UNITY_VERSION }}
+          testMode: editmode
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+      - name: Windows x64 player
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: unity
+          unityVersion: ${{ env.UNITY_VERSION }}
+          targetPlatform: StandaloneWindows64
+          buildMethod: SE.EditorTools.BuildScript.BuildWindows
+          customParameters: -buildOutput build/StandaloneWindows64/ShatteredEmpires.exe
+      - name: Package
+        run: |
+          HASH="${GITHUB_SHA::12}"
+          mkdir -p dist/publish
+          (cd unity/build/StandaloneWindows64 && sudo zip -qr "$GITHUB_WORKSPACE/dist/publish/ShatteredEmpires-Unity-Preview-${HASH}-Windows-x64.zip" .)
+          echo "BUILD=$HASH" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unity-preview-${{ env.BUILD }}
+          path: dist/publish/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish the opt-in preview
+    needs: editor
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/publish
+          merge-multiple: true
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Publish unity-preview
+        run: |
+          node tools/publish-downloads.mjs --dir=dist/publish --kind=unity-preview --build="${GITHUB_SHA::12}" --bucket="$BUCKET"
+          echo "### Unity preview ${GITHUB_SHA::12} published (opt-in): https://game.liamhosfeld.com/download" >> "$GITHUB_STEP_SUMMARY"

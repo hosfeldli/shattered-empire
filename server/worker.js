@@ -7,6 +7,8 @@ import zlib from 'node:zlib';
 globalThis.SE_MAP_SIZE = workerData.mapSize;
 globalThis.SE_WRAP = workerData.wrap !== false;   // bounded only for matches saved before wrapping existed
 const { Game } = await import('./sim/game.js');
+const { ActionGame } = await import('./sim/actionGame.js');
+const { ACTION_RULESET } = await import('./sim/rulesets.js');
 const { GAME_DEFS, TICK_HZ, aiProfile } = await import('./sim/constants.js');
 const { serializeGame, restoreGame } = await import('./sim/persist.js');
 const { geoViewer, geoMessage } = await import('./sim/terrainGeo.js');
@@ -15,12 +17,13 @@ let game;
 if (workerData.restore) {
   game = restoreGame(JSON.parse(zlib.gunzipSync(Buffer.from(workerData.restore)).toString()));
 } else {
-  game = new Game({ id: workerData.id, seed: workerData.seed, slots: workerData.slots, rebels: false, style: workerData.style, ruleset: workerData.ruleset });
-  if (workerData.sandbox) { const { makeSandbox } = await import('./sim/sandbox.js'); makeSandbox(game); }
+  const Simulation = workerData.ruleset === ACTION_RULESET ? ActionGame : Game;
+  game = new Simulation({ ...workerData, restore: false, rebels: false });
+  if (workerData.sandbox && game.ruleset !== ACTION_RULESET) { const { makeSandbox } = await import('./sim/sandbox.js'); makeSandbox(game); }
 }
 // live matches let AI planning slide a tick when a tick runs long (tests and replays stay strict)
 game.adaptive = process.env.SE_ADAPTIVE !== '0';
-if (workerData.sandbox) { game.sandbox = true; game.sandboxReveal = true; for (const c of game.civs) if (!c.human) c.ai = null; }
+if (workerData.sandbox) { game.sandbox = true; game.sandboxReveal = true; for (const c of game.civs) if (!c.human) c.ai = null; game.refreshVisibility(); }
 const post = (m) => parentPort.postMessage(m);
 const out = [];
 const deltas = new Map();               // civId -> snapshot delta encoder (capability 'udelta')
@@ -136,7 +139,7 @@ parentPort.on('message', (m) => {
       const civ = game.civs[m.civId];
       civ.connected = true;
       send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
-        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
+        civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
       if (m.caps?.includes('udelta')) deltas.set(m.civId, deltaEncoder()); else deltas.delete(m.civId);
       for (const [, msg] of game.snapshots(m.civId)) sendSnap(m.civId, msg);
       if (m.caps?.includes('geo')) { geoViewers.set(m.civId, geoViewer()); sendGeo(m.civId, true); } else geoViewers.delete(m.civId);
@@ -148,7 +151,7 @@ parentPort.on('message', (m) => {
     } else if (m.t === 'obsWelcome') {
       const o = game.setObserver({ connected: true });
       send(-2, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style },
-        civs: game.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
+        civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
       send(-2, game.observerSnapshot(true));
       // spectators share one channel: a full sync for a newcomer is harmless to the others
       if (m.caps?.includes('geo')) { if (!geoViewers.has(-2)) geoViewers.set(-2, geoViewer()); sendGeo(-2, true); }
@@ -166,7 +169,7 @@ parentPort.on('message', (m) => {
       } else if (c.c === 'aiDiag') {
         // the developer inspector: a spectator may read any AI's full plan and decision record
         const civ = game.civs[c.civ | 0];
-        send(-2, { t: 'ack', rid: m.rid, diag: civ?.ai?.brain ? civ.ai.brain.report(true) : null });
+        send(-2, { t: 'ack', rid: m.rid, diag: civ?.aiPlan ?? (civ?.ai?.brain ? civ.ai.brain.report(true) : null) });
       } else if (c.c === 'speed') {
         if (!OBSERVE) error = 'Speed control is only available when spectating an AI match';
         else { game.speed = [0, 1, 2, 4, 8].includes(+c.speed) ? +c.speed : 1; send(-2, { t: 'ack', rid: m.rid, speed: game.speed }); }

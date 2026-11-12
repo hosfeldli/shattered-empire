@@ -267,7 +267,7 @@ test('extraction sites yield from the land without workers; woods around a timbe
   assert.ok(mill.active, 'and counts as working');
 });
 
-test('research picks itself when nothing is chosen; eras begin on their own; later techs wait for goods', () => {
+test('research picks itself when nothing is chosen; eras begin on their own; research never waits for goods', () => {
   const g = newGame(7);
   const civ = g.civs[0];
   run(g, 20);
@@ -275,12 +275,10 @@ test('research picks itself when nothing is chosen; eras begin on their own; lat
   for (const k of Object.keys(TECHS_AGE0())) civ.techs.add(k);
   run(g, 10);
   assert.equal(civ.age, 1, 'the next era begins as soon as enough of this era is known, at no cost');
-  // an Industrial technology needs its goods before work starts
+  // an Industrial technology proceeds even with its goods out of stock (2026-11-08)
   civ.researching = 'metallurgy'; civ.res.materials = 0; civ.res.ore = 0;
   const p0 = civ.techProgress.metallurgy || 0; run(g, 30);
-  if (civ.researching === 'metallurgy') assert.equal(civ.techProgress.metallurgy || 0, p0, 'no progress without the goods');
-  rich(civ); civ.researching = 'metallurgy'; run(g, 20);
-  assert.ok((civ.techProgress.metallurgy || 0) > 0 || civ.techs.has('metallurgy'), 'with the goods it proceeds');
+  assert.ok((civ.techProgress.metallurgy || 0) > p0 || civ.techs.has('metallurgy'), 'progress without the goods');
 });
 
 test('drag placement: one order places many, queues what cannot be paid, refuses bad hexes', () => {

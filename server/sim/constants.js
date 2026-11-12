@@ -117,9 +117,10 @@ export const TECHS = {
   special_operations: { name: 'Special Operations', age: 3, cost: 1150, req: ['small_arms'], desc: 'Special forces (hidden beyond 2 hexes).' },
   energy_shields: { name: 'Energy Shields', age: 3, cost: 1250, req: ['computing', 'electrification'], desc: 'Shield generators: a dome over everything of yours within 3 hexes soaks up incoming fire until it is worn down, then recharges once the shooting stops. Needs power.' },
   federal_union: { name: 'Federal Union', age: 3, cost: 1150, req: ['higher_education'], desc: 'Federal Republic government.' },
+  nuclear_fission: { name: 'Nuclear Fission', age: 3, cost: 1250, req: ['electrification', 'higher_education'], desc: 'Nuclear plants: a great deal of power from a little ore, but a destroyed reactor explodes (half a strategic warhead) and leaves fallout.' },
   // Advanced Systems
   robotics: { name: 'Robotics', age: 4, cost: 2000, req: ['computing', 'mechanization'], desc: 'Robotics complex: autonomous tanks.' },
-  fusion_power: { name: 'Fusion Power', age: 4, cost: 2100, req: ['electrification', 'computing'], desc: 'Fusion plants: abundant power without fuel.' },
+  fusion_power: { name: 'Fusion Power', age: 4, cost: 2100, req: ['nuclear_fission', 'computing'], desc: 'Fusion plants: abundant, safe power without fuel.' },
   strike_swarms: { name: 'Strike Swarms', age: 4, cost: 2100, req: ['drones', 'robotics'], desc: 'Strike drone swarms.' },
   exo_armor: { name: 'Exo Armor', age: 4, cost: 2000, req: ['robotics'], desc: 'Exo-armored infantry.' },
   climate_engineering: { name: 'Climate Engineering', age: 4, cost: 2000, req: ['mechanized_agriculture'], desc: 'Engineered climate: +20% farm yields in your territory.' },
@@ -142,7 +143,7 @@ export const GOVS = {
 // research branches (the research screen's lanes); governments favour some of them
 export const TECH_CAT = {
   agronomy: 'civ', schooling: 'civ', higher_education: 'civ', mechanized_agriculture: 'civ', climate_engineering: 'civ',
-  salvage_engineering: 'industry', metallurgy: 'industry', electrification: 'industry', petroleum: 'industry', munitions_industry: 'industry', computing: 'industry', materials_recycling: 'industry', fusion_power: 'industry',
+  salvage_engineering: 'industry', metallurgy: 'industry', electrification: 'industry', petroleum: 'industry', munitions_industry: 'industry', computing: 'industry', materials_recycling: 'industry', nuclear_fission: 'industry', fusion_power: 'industry',
   surveying: 'infra', seafaring: 'infra', civil_engineering: 'infra', highways: 'infra', railways: 'infra',
   small_arms: 'military', fortification: 'military', field_artillery: 'military', mechanization: 'military', aviation: 'military', self_propelled_guns: 'military', air_defense: 'military', special_operations: 'military', air_operations: 'military', precision_missiles: 'military', missile_defense: 'military', strategic_missiles: 'military', improved_servicing: 'military',
   motorization: 'logistics', logistics: 'logistics', networked_command: 'logistics', drones: 'logistics',
@@ -216,6 +217,7 @@ export const BUILDINGS = {
   shield_generator: { name: 'Shield Generator', glyph: '\u{1F6E1}', age: 3, tech: 'energy_shields', cost: { steel: 220, electronics: 120 }, time: 32, hp: 520, place: 'any', anywhere: true, power: -6, cat: 'military', shield: { radius: 3, cap: 900, regen: 30, delay: 5 },
     desc: 'Projects an energy dome over your troops and buildings within 3 hexes: incoming fire is absorbed until the dome is worn down; it recharges 5 s after the last hit. Off without power.' },
   fusion_plant: { name: 'Fusion Plant', glyph: '☢', age: 4, tech: 'fusion_power', cost: { steel: 400, electronics: 200 }, time: 45, hp: 700, place: 'flat', jobs: ['specialist', 2], power: 30, cat: 'power' },
+  nuclear_plant: { name: 'Nuclear Plant', glyph: '☢', age: 3, tech: 'nuclear_fission', cost: { materials: 220, steel: 320, electronics: 60 }, time: 50, hp: 900, place: 'flat', jobs: ['specialist', 3], consume: { ore: 0.05 }, power: 45, cat: 'power', meltdown: true },
   robotics_complex: { name: 'Robotics Complex', glyph: '\u{1F916}', age: 4, tech: 'robotics', cost: { steel: 400, electronics: 250 }, time: 45, hp: 600, place: 'flat', power: -5, cat: 'military',
     trains: ['autonomous_tank', 'exo_infantry', 'strike_swarm'] },
   missile_silo: { name: 'Missile Silo', glyph: '\u{1F680}', age: 4, tech: 'strategic_missiles', cost: { materials: 400, steel: 600, electronics: 300, credits: 1500 }, time: 60, hp: 900, place: 'flat', power: -4, cat: 'military', silo: true, desc: 'Builds one strategic missile at a time through a long, expensive project.' },
@@ -230,14 +232,14 @@ import { WEAPONS, UNIT_WEAPON, BUILDING_WEAPON, WEAPON_KEYS } from './weapons.js
 // Aircraft: fuel = seconds aloft, ammo = engagements per sortie, svc = base servicing seconds, alt = low/high.
 export const UNITS = {
   colonist: { name: 'Colonist Convoy', glyph: 'Co', men: 0, age: 0, move: 'infantry', cat: 'civilian', cost: { food: 80, materials: 50, credits: 20 }, pop: 3, time: 12, hp: 50, atk: 0, def: 1, range: 0, speed: 0.6, vision: 2, civilian: true },
-  engineer: { name: 'Engineer Team', glyph: 'En', men: 8, age: 0, move: 'infantry', cat: 'support', cost: { food: 30, materials: 40 }, pop: 1, time: 10, hp: 70, atk: 2, def: 3, range: 1, speed: 0.7, vision: 2, engineer: true },
+  engineer: { name: 'Engineer Team', glyph: 'En', men: 8, age: 0, move: 'infantry', cat: 'support', cost: { food: 30, materials: 40 }, pop: 1, time: 10, hp: 70, atk: 0, def: 3, range: 0, noncombat: true, speed: 0.7, vision: 2, engineer: true },
   scout_buggy: { name: 'Scout Buggy', glyph: 'Sc', men: 3, age: 0, move: 'wheeled', cat: 'wheeled', cost: { food: 20, materials: 25 }, pop: 1, time: 8, hp: 60, atk: 3, def: 2, range: 1, speed: 1.7, vision: 5 },
   militia: { name: 'Militia', glyph: 'Mi', men: 12, age: 0, move: 'infantry', cat: 'infantry', cost: { food: 30, materials: 15 }, pop: 1, time: 9, hp: 90, atk: 6, def: 5, range: 1, speed: 0.7, vision: 2 },
   rifle_squad: { name: 'Rifle Squad', glyph: 'Ri', men: 10, age: 0, tech: 'small_arms', move: 'infantry', cat: 'infantry', cost: { food: 40, materials: 30, credits: 10 }, pop: 1, time: 11, hp: 100, atk: 9, def: 6, range: 2, speed: 0.7, vision: 3 },
   mortar_team: { name: 'Mortar Team', glyph: 'Mo', men: 6, age: 1, tech: 'munitions_industry', move: 'infantry', cat: 'artillery', cost: { food: 40, steel: 15, munitions: 15 }, pop: 1, time: 13, hp: 80, atk: 13, def: 3, range: 4, speed: 0.6, vision: 2, bonus: { infantry: 1.4 }, vsBuildings: 1.5 },
   armored_car: { name: 'Armored Car', glyph: 'AC', men: 4, age: 1, tech: 'motorization', move: 'wheeled', cat: 'wheeled', cost: { steel: 40, fuel: 20, credits: 20 }, pop: 1, time: 14, hp: 150, atk: 12, def: 9, range: 2, speed: 1.4, vision: 4, bonus: { infantry: 1.15 } },
   supply_truck: { name: 'Supply Truck', glyph: 'Tr', men: 2, age: 1, tech: 'motorization', move: 'wheeled', cat: 'support', cost: { materials: 50, steel: 15, fuel: 15 }, pop: 1, time: 12, hp: 70, atk: 0, def: 2, range: 0, speed: 1.2, vision: 2, civilian: true, supplyRadius: 4 },
-  field_gun: { name: 'Field Gun', glyph: 'FG', men: 6, age: 1, tech: 'field_artillery', move: 'wheeled', cat: 'artillery', cost: { steel: 50, munitions: 30 }, pop: 2, time: 18, hp: 90, atk: 24, def: 2, range: 5, speed: 0.6, vision: 2, vsBuildings: 2.5 },
+  field_gun: { name: 'Field Gun', glyph: 'FG', men: 6, age: 1, tech: 'field_artillery', move: 'wheeled', cat: 'artillery', cost: { steel: 50, munitions: 30 }, pop: 2, time: 18, hp: 90, atk: 24, def: 2, range: 4, speed: 0.6, vision: 3, vsBuildings: 2.5, direct: true },
   mech_infantry: { name: 'Mechanized Infantry', glyph: 'MI', men: 10, age: 2, tech: 'mechanization', move: 'tracked', cat: 'tracked', cost: { food: 40, steel: 70, fuel: 30 }, pop: 1, time: 16, hp: 190, atk: 17, def: 13, range: 2, speed: 1.1, vision: 3 },
   tank: { name: 'Main Battle Tank', glyph: 'Tk', men: 4, age: 2, tech: 'mechanization', move: 'tracked', cat: 'tracked', cost: { steel: 105, fuel: 40, munitions: 15 }, pop: 1, time: 20, hp: 280, atk: 28, def: 18, range: 2, speed: 1.0, vision: 3, bonus: { wheeled: 1.5, infantry: 1.2, tracked: 1.2 } },
   sp_artillery: { name: 'Self-Propelled Gun', glyph: 'SP', men: 5, age: 2, tech: 'self_propelled_guns', move: 'tracked', cat: 'artillery', cost: { steel: 100, fuel: 30, munitions: 40 }, pop: 2, time: 20, hp: 150, atk: 34, def: 6, range: 6, speed: 0.8, vision: 3, vsBuildings: 2.5 },
@@ -309,7 +311,8 @@ for (const a of AGES) { if (a.time) a.time = Math.round(a.time * PACE.era); if (
 for (const [k, u] of Object.entries(UNITS)) { const w = WEAPONS[UNIT_WEAPON[k]]; u.aa = w ? (w.targets.includes('air') ? w.airMul || 1 : w.targets.includes('lowair') ? (w.airMul || 1) * 0.5 : 0) : 0; }
 
 export const CIV_COLORS = [0x3b82f6, 0xef4444, 0x22c55e, 0xeab308, 0xa855f7, 0x06b6d4, 0xf97316, 0xec4899, 0x84cc16, 0xf43f5e, 0x14b8a6, 0xd4a373];
-export const CIV_NAMES = ['Azure Dominion', 'Crimson Directorate', 'Verdant League', 'Golden Compact', 'Violet Syndicate', 'Cyan Federation', 'Ember Republic', 'Rose Assembly', 'Lime Concord', 'Scarlet Union', 'Teal Commonwealth', 'Umber Protectorate'];
+// Post-collapse powers: survivor states, salvage authorities and coalitions of rebuilt cities.
+export const CIV_NAMES = ['Meridian Reclamation', 'Ashfall Directorate', 'Verdant Accord', 'Concord of the Drowned Coast', 'Iron Salvage Authority', 'Northern Relay Republic', 'Cinder Covenant', 'Free Cities of the Breach', 'Hollowmark Union', 'Last Light Federation', 'Kestrel Protectorate', 'Vault Seven Assembly'];
 export const MAX_CIVS = 12;
 export const REBEL = { name: 'Free Companies', color: 0x8b8b8b };
 

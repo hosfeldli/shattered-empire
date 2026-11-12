@@ -38,14 +38,15 @@ export const FIELD_POS = { perCiv: 24, total: 120, cover: 0.12, after: 15, aband
 // overlaps merge into the aggregate crater depth. Position comes from a hash, never the game RNG.
 export const IMPACT = Object.freeze({ perTile: 6, total: 6000 });
 export const IMPACT_CLASSES = ['mortar', 'shell', 'bomb', 'missile', 'strategic'];
-function recordImpact(g, t, cls, severity) {
+function recordImpact(g, t, cls, severity, position) {
   const list = g.impacts.get(t) || [];
   const seed = ((t * 2654435761) ^ (g.eventSeq * 40503) ^ (g.tickN * 97)) >>> 0;
-  const x = ((seed % 1000) / 1000 - 0.5) * 0.44, z = (((seed >>> 10) % 1000) / 1000 - 0.5) * 0.44;
+  const x = position?.x ?? ((seed % 1000) / 1000 - 0.5) * 0.44, z = position?.z ?? (((seed >>> 10) % 1000) / 1000 - 0.5) * 0.44;
+  const oldCount = list.length;
   list.push({ c: cls, x: +x.toFixed(3), z: +z.toFixed(3), s: +Math.min(1, severity).toFixed(2), seed: seed % 100000, at: g.time });
   while (list.length > IMPACT.perTile) list.shift();
   g.impacts.set(t, list);
-  g.impactCount = (g.impactCount || 0) + 1;
+  g.impactCount = (g.impactCount || 0) + list.length - oldCount;
   if (g.impactCount > IMPACT.total && g.impacts.size > IMPACT.total / IMPACT.perTile) {
     let oldest = -1, at = Infinity;
     for (const [tile, l] of g.impacts) if (l[0].at < at) { at = l[0].at; oldest = tile; }
@@ -59,12 +60,12 @@ function forgetImpact(g, t, all = false) {
   if (!list.length) g.impacts.delete(t);
 }
 
-export function addCrater(g, t, depth, cls = 'shell') {
+export function addCrater(g, t, depth, cls = 'shell', position = null) {
   if (isWater(g.world.terr[t]) || g.world.terr[t] === T.PEAK) return;
   const c = g.craters.get(t) || { d: 0, at: 0 };
   c.d = Math.min(3, c.d + depth); c.at = g.time;
   addIntensity(g, t, 2.5 * depth);
-  recordImpact(g, t, cls, depth / 3);
+  recordImpact(g, t, cls, depth / 3, position);
   addScorch(g, t, cls === 'strategic' || cls === 'bomb' ? 0.45 : 0.2);
   g.craters.set(t, c); g.world.dirty.add(t); g.bfVer++;
 }
@@ -88,13 +89,13 @@ export function addWear(g, t, move) {
   g.wear.set(t, r);
 }
 
-export function addWreck(g, t, type, owner) {
+export function addWreck(g, t, type, owner, position = null) {
   const def = UNITS[type];
   if (!def || def.civilian && def.move === 'infantry') return;
   if (def.move === 'infantry') return;
   const list = g.wrecks.get(t) || [];
   if (list.length >= 3) list.shift();
-  list.push({ type, owner, burn: def.air ? 25 : 45, at: g.time });
+  list.push({ type, owner, burn: def.air ? 25 : 45, at: g.time, ...(position || {}) });
   addIntensity(g, t, 4);
   g.wrecks.set(t, list); g.world.dirty.add(t); g.bfVer++;
   addSmoke(g, t, 0.55, 30);
@@ -129,7 +130,7 @@ export function scarCost(g, t, moveClass) {
   return c;
 }
 
-export function battlefieldStep(g, dt) {
+export function battlefieldStep(g, dt, { fieldPositions = true } = {}) {
   // smoke: burning wrecks and buildings keep it coming; otherwise it thins and clears
   for (const [t, list] of g.wrecks) {
     for (const wr of list) if (wr.burn > 0) { wr.burn -= dt; addSmoke(g, t, 0.6, 6); if (wr.burn <= 0) g.bfVer++; }
@@ -152,7 +153,7 @@ export function battlefieldStep(g, dt) {
       if (e.v <= 0.5) { g.intensity.delete(t); if (e.st) { g.world.dirty.add(t); g.bfVer++; } continue; }
       const st = intensityStage(e.v); if (st !== e.st) { e.st = st; g.world.dirty.add(t); g.bfVer++; }
     }
-    fieldPositionsStep(g, step);
+    if (fieldPositions) fieldPositionsStep(g, step);
   }
   // craters soften over time (faster on roads, which crews patch)
   for (const [t, c] of g.craters) {
@@ -244,7 +245,7 @@ export function rememberBattlefield(g, civ) {
     const stage = g.intensity.get(t)?.st || 0;
     if (!cr && !wrecks?.length && !stage && !g.scorch.has(t) && !g.wear.has(t)) { memory.delete(t); continue; }
     memory.set(t, { crater: cr?.d || 0, intensity: stage,
-      wrecks: (wrecks || []).map((wr) => [wr.type, wr.burn > 0 ? 1 : 0, wr.owner]),
+      wrecks: (wrecks || []).map(wreckWire),
       impacts: (g.impacts.get(t) || []).map((m) => [m.c, m.x, m.z, m.s, m.seed]),
       scorch: Math.round((g.scorch.get(t)?.v || 0) * 10), wear: Math.round((g.wear.get(t)?.v || 0) * 10) });
   }
@@ -260,11 +261,17 @@ export function rememberBattlefield(g, civ) {
   }
 }
 
+function wreckWire(wr) {
+  const row = [wr.type, wr.burn > 0 ? 1 : 0, wr.owner];
+  if (Number.isFinite(wr.x) && Number.isFinite(wr.z)) row.push(+wr.x.toFixed(3), +wr.z.toFixed(3), +(wr.yaw || 0).toFixed(3));
+  return row;
+}
+
 export function battlefieldSnapshot(g, vis, explored, memory = null, god = false) {
   const c = [], w = [], s = [];
   if (god || !memory) {
     for (const [t, cr] of g.craters) if (vis[t] || explored[t]) c.push([t, cr.d]);
-    for (const [t, list] of g.wrecks) if (vis[t] || explored[t]) for (const wr of list) w.push([t, wr.type, wr.burn > 0 ? 1 : 0, wr.owner]);
+    for (const [t, list] of g.wrecks) if (vis[t] || explored[t]) for (const wr of list) w.push([t, ...wreckWire(wr)]);
   } else {
     for (const [t, known] of memory) {
       if (!explored[t] && !vis[t]) continue;

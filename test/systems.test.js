@@ -10,6 +10,7 @@ import { recomputeTradeNetwork } from '../server/sim/economy.js';
 import { findPath, stepCost } from '../server/sim/path.js';
 import { T, N, isWater, BUILDINGS } from '../server/sim/constants.js';
 import { disk, dist, NB } from '../server/sim/hex.js';
+import { governorCanSpend } from '../server/sim/governor.js';
 
 const newGame = (seed = 7, extra = {}) => new Game({ id: 't' + seed + Math.random(), seed, slots: [{ human: true }, { personality: 'builder' }], rebels: false, ...extra });
 const run = (g, ticks) => { for (let i = 0; i < ticks; i++) { g.tick(); g.outbox.length = 0; } };
@@ -95,13 +96,12 @@ test('a human city governor builds within its reserve and permissions, and expla
   assert.ok(c.governor.log.length > 0 && c.governor.log.every((l) => typeof l.text === 'string' && l.text.length > 10), 'decisions are logged with reasons');
   assert.ok(civ.cmdlog.some((l) => l.by.startsWith('governor:')), 'human command history attributes governor actions');
   assert.ok(![...g.units.values()].some((u) => u.owner === 0 && u.type === 'colonist'), 'no settling without permission');
-  // reserve: with everything reserved the governor cannot spend
-  const mine = () => [...g.buildings.values()].filter((b) => b.owner === 0).length;
+  // reserve: the governor never spends into the reserved share. (Checked on the spending rule itself:
+  // the native ruleset fixes the reserve at 35%, and with six homes allowed per city ordinary income
+  // soon pays for another block, which the old three-home cap used to hide.)
   civ.res.materials = 100;
-  g.command(0, { c: 'governor', city: c.id, reserve: 0.9, perms: { roads: false, repair: false } });
-  const n0 = mine();
-  run(g, 300);
-  assert.equal(mine(), n0, 'with 90% reserved and only 100 materials the governor builds nothing');
+  assert.equal(governorCanSpend(civ, { ...c.governor, reserve: 0.9 }, BUILDINGS.house.cost), false, 'with 90% reserved and only 100 materials it cannot spend 45');
+  assert.equal(governorCanSpend(civ, { ...c.governor, reserve: 0.2 }, BUILDINGS.house.cost), true, 'with 20% reserved it can');
 });
 
 test('a city cut off from the network lives on local reserves and recovers when reconnected', () => {
