@@ -59,5 +59,14 @@ namespace SE.Runtime.App
 
         public const string PublicServer = "wss://game.liamhosfeld.com/ws";
         public const string LocalServer = "ws://127.0.0.1:8137/ws";
+
+        // Old developer builds saved localhost under the same application preferences as releases.
+        // A shipped player must recover from that preference without requiring a registry edit.
+        public static string ResolveServer(string value, bool allowLoopback = false)
+        {
+            if (!Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var uri)
+                || (uri.Scheme != "ws" && uri.Scheme != "wss") || !string.IsNullOrEmpty(uri.UserInfo)) return PublicServer;
+            return uri.IsLoopback && !allowLoopback ? PublicServer : uri.AbsoluteUri;
+        }
     }
 }

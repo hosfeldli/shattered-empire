@@ -75,7 +75,7 @@ Shader "SE/Billboard"
                     sincos(p.shape.x, s, c);
                     float2 q = float2(v.positionOS.x * c - v.positionOS.y * s, v.positionOS.x * s + v.positionOS.y * c) * p.position.w;
                     // flames stay upright and taller than wide
-                    if (kind > 0.5) q = float2(v.positionOS.x * 0.7, v.positionOS.y * 1.3 + 0.3) * p.position.w;
+                    if (kind > 0.5) q = float2(v.positionOS.x * .52, (v.positionOS.y + .5) * 2.15) * p.position.w;
                     float3 right = UNITY_MATRIX_V[0].xyz;
                     float3 up = kind > 0.5 ? float3(0, 1, 0) : UNITY_MATRIX_V[1].xyz;
                     world = centre + right * q.x + up * q.y;
@@ -109,15 +109,19 @@ Shader "SE/Billboard"
                 {
                     // flame: distorted upward-scrolling noise inside a teardrop, hot core to sooty tips
                     float2 uv = i.uv;
-                    float2 q = float2(uv.x * 2.2 + i.shape.z, uv.y * 1.6 - t * 2.6);
-                    float n = fbm(q + fbm(q * 1.7 + t * 0.6) * 0.9);
-                    float width = lerp(0.62, 0.08, uv.y);
-                    float body = 1 - smoothstep(width * 0.55, width, abs(uv.x - 0.5) + (n - 0.5) * 0.25);
-                    body *= smoothstep(0.0, 0.12, uv.y) * (1 - smoothstep(0.55 + n * 0.35, 1.0, uv.y));
-                    float heat = saturate(body * (1.4 - uv.y) * (0.6 + n));
-                    color = lerp(half3(0.55, 0.06, 0.01), half3(1.0, 0.45, 0.06), saturate(heat * 1.6));
-                    color = lerp(color, half3(1.0, 0.92, 0.65), saturate(heat * 2.2 - 1.1));
-                    color *= 1.6 + i.shape.w;
+                    float speed = 1.25 + frac(i.shape.z * .13) * .7;
+                    float2 q = float2(uv.x * 4.3 + i.shape.z, uv.y * 2.7 - t * speed);
+                    float curl = fbm(q * .64 + float2(t * .18, -t * .28));
+                    float n = fbm(q + float2(curl * 1.3, curl * .5));
+                    float center = .5 + sin(uv.y * 6.0 - t * speed + i.shape.z) * uv.y * .10;
+                    float width = lerp(.43, .012, uv.y);
+                    float body = 1 - smoothstep(width * .22, width, abs(uv.x - center) + (n - .48) * .28);
+                    body *= smoothstep(0.0, .035, uv.y) * (1 - smoothstep(.48 + n * .42, .97, uv.y));
+                    body *= smoothstep(.20, .62, n + (1 - uv.y) * .25);
+                    float heat = saturate((1 - uv.y) * .85 + n * .40);
+                    color = lerp(half3(.34, .018, .002), half3(1, .31, .018), saturate(heat * 1.4));
+                    color = lerp(color, half3(1, .72, .24), saturate(heat * 2 - 1.2));
+                    color *= .85 + i.shape.w * .25;
                     a = body * i.color.a;
                     color *= i.color.rgb;
                 }

@@ -28,3 +28,39 @@ Recordings edited for the game: excerpts, mono conversion for spatial emitters, 
 
 Creative Commons Attribution 3.0: https://creativecommons.org/licenses/by/3.0/
 Creative Commons Zero 1.0: https://creativecommons.org/publicdomain/zero/1.0/
+
+Generic trailer music — Emma_MA. CC0 / public domain since January 2017.
+https://opengameart.org/content/generic-trailer-music
+Edited 64-second cinematic excerpt, filtered, gain reduced, faded and limited.
+
+25 CC0 bang / firework SFX — rubberduck. CC0 1.0.
+https://opengameart.org/content/25-cc0-bang-firework-sfx
+Selected cannon, firework and shot recordings, trimmed, filtered, mono and limited.
+
+Residue-sfx — FacadeGaikan. CC0 1.0.
+https://opengameart.org/content/residue-sfx
+Shortened and filtered ammopickup and healthboost cues for resource collection.
+
+A Legend Will Rise (Orchestral) — CodeManu. CC0 1.0.
+https://opengameart.org/content/a-legend-will-rise-orchestral
+Menu theme edited with filtering, reduced gain, fades and limiting.
+
+100 CC0 SFX #2 — rubberduck. CC0 1.0.
+https://opengameart.org/content/100-cc0-sfx-2
+Selected construction, water, pre-collapse city and mechanical loops, filtered and converted to mono.
+
+Storm & Siren — TinyWorlds. CC0 1.0.
+https://opengameart.org/content/storm-siren
+Filtered and faded excerpt of the recorded warning siren.
+
+Mechanical Explosion — Spring Spring. CC0 1.0.
+https://opengameart.org/content/mechanical-explosion
+Trimmed, filtered metal-destruction layer.
+
+Muffled Distant Explosion — NenadSimic. CC0 1.0.
+https://opengameart.org/content/muffled-distant-explosion
+Filtered and limited designed distant impact layer.
+
+Fireplace Sound loop — PagDev. CC0 1.0.
+https://opengameart.org/content/fireplace-sound-loop
+Filtered and faded 20-second excerpt for positional burning sounds.

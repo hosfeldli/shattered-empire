@@ -43,6 +43,7 @@ namespace SE.Runtime.Military
         bool[] airLive = new bool[0];
         int[] ids = new int[0];
         readonly Dictionary<int, (int target, float time, Vector2? point)> lastShot = new Dictionary<int, (int, float, Vector2?)>();
+        readonly Dictionary<int, int> shotCounts = new Dictionary<int, int>();
         public readonly HashSet<int> Selected = new HashSet<int>();
         /// <summary>Whether a tile holds a finished trench (troops there are drawn down in it).</summary>
         public Func<int, bool> InTrench;
@@ -139,7 +140,7 @@ namespace SE.Runtime.Military
         /// <summary>A shot seen in the combat stream: the shooter keeps facing its target for a while.</summary>
         public void NoteShot(int shooter, int target, float time, Vector2? point = null)
         {
-            if (shooter > 0) lastShot[shooter] = (target, time, point);
+            if (shooter > 0) { lastShot[shooter] = (target, time, point); shotCounts.TryGetValue(shooter, out int shots); shotCounts[shooter] = shots + 1; }
         }
 
         void Ensure(int n)
@@ -236,7 +237,7 @@ namespace SE.Runtime.Military
                     speed[s] = Mathf.Lerp(speed[s], Mathf.Min(4f, Mathf.Sqrt(dx * dx + dz * dz) / dt), 1f - Mathf.Exp(-dt * 10f));
                     wheelPhase[s] = (wheelPhase[s] + Mathf.Sqrt(dx * dx + dz * dz) / .0247f) % (Mathf.PI * 2f);
                     treadTravel[s] += Mathf.Sqrt(dx * dx + dz * dz);
-                    gaitPhase[s] = (gaitPhase[s] + Mathf.Sqrt(dx * dx + dz * dz) / .031f * math.PI) % (math.PI * 2);
+                    gaitPhase[s] = (gaitPhase[s] + Mathf.Sqrt(dx * dx + dz * dz) / (kindOf[s] == Kind.Exo ? .068f : .056f) * math.PI * 2) % (math.PI * 2);
                 }
                 if (IsAir(kindOf[s]))
                 {
@@ -405,7 +406,7 @@ namespace SE.Runtime.Military
             foreach (var b in details) inst += b.Count;
             Instances = inst;
             // forget shots nobody remembers any more
-            if (lastShot.Count > 4096) lastShot.Clear();
+            if (lastShot.Count > 4096) { lastShot.Clear(); shotCounts.Clear(); }
         }
 
         unsafe void AddSquad(int slot, int id, Kind kind, float3 p, float facing, int level, bool moving, bool fighting, float time,
@@ -433,7 +434,8 @@ namespace SE.Runtime.Military
                 var foot = new float3(fx, Mathf.Max(fy, ground - 0.05f), fz);
                 float phase = gaitPhase[slot] + f * .71f;
                 if (level == 2)
-                    AddFigure(torsoOf[slot], foot, facing + j * .20f, scale, body, moving ? math.saturate(speed[slot] / .11f) : 0f, spread[slot], phase, shotAge, equipment, view, assisting);
+                    AddFigure(torsoOf[slot], foot, facing + j * .20f, scale, body, moving ? math.saturate(speed[slot] / .11f) : 0f, spread[slot], phase, shotAge, equipment, view, assisting,
+                        shotCounts.TryGetValue(id, out int shots) && shots > 0 && shots % 8 == 0);
                 else
                     batches[(int)model].Add(T(foot, facing + j * 0.3f, new float3(scale), body));
             }
@@ -456,12 +458,13 @@ namespace SE.Runtime.Military
             return false;
         }
 
-        unsafe void AddFigure(Detail torso, float3 foot, float facing, float scale, float4 color, float stride, float aim, float phase, float shotAge, int equipment, TerrainView groundView = default, bool assisting = false)
+        unsafe void AddFigure(Detail torso, float3 foot, float facing, float scale, float4 color, float stride, float aim, float phase, float shotAge, int equipment, TerrainView groundView = default, bool assisting = false, bool reloadCycle = false)
         {
             float step = Mathf.Sin(phase) * stride, crouch = aim * (1f - stride) * .115f;
             float recoil = shotAge >= 0f && shotAge < .25f ? Mathf.Exp(-shotAge * 19) * (1 - Mathf.Exp(-shotAge * 180)) * .065f : 0f;
-            float reload = shotAge > .40f && shotAge < 1.15f ? Mathf.Sin((shotAge - .40f) / .75f * Mathf.PI) : 0;
-            float bob = -Mathf.Abs(step) * .018f + Mathf.Sin(phase * 2) * .006f * stride;
+            float reload = reloadCycle && shotAge > .50f && shotAge < 1.45f ? Mathf.Sin((shotAge - .50f) / .95f * Mathf.PI) : 0;
+            float breathe = Mathf.Sin(Time.time * 1.8f + phase) * .003f * (1 - stride);
+            float bob = -Mathf.Abs(step) * .018f + Mathf.Sin(phase * 2) * .006f * stride + breathe;
             var root = MapSpace.W(foot) + new float3(0, (bob - crouch) * scale, 0);
             var turn = quaternion.RotateY(MapSpace.Yaw(facing));
             var chest = math.mul(turn, quaternion.EulerZXY(.095f * stride + .19f * aim, step * .08f, step * .052f));
@@ -485,8 +488,12 @@ namespace SE.Runtime.Military
                 float s = side * step;
                 var hip = root + math.rotate(turn, new float3(side * .072f, .454f, 0) * scale);
                 float cycle = phase + (side < 0 ? math.PI : 0);
-                float swing = Mathf.Max(0, Mathf.Cos(cycle));
-                var ankle = MapSpace.W(foot) + math.rotate(turn, new float3(side * .072f, .029f + swing * swing * .095f * stride, Mathf.Sin(cycle) * .22f * stride) * scale);
+                float cycle01 = math.frac(cycle / (math.PI * 2));
+                bool planted = cycle01 < .54f;
+                float swing = planted ? 0 : Mathf.Clamp01((cycle01 - .54f) / .46f);
+                float advance = planted ? Mathf.Lerp(.22f, -.22f, cycle01 / .54f) : Mathf.Lerp(-.22f, .22f, Mathf.SmoothStep(0, 1, swing));
+                float lift = planted ? 0 : Mathf.Sin(swing * math.PI) * .115f;
+                var ankle = MapSpace.W(foot) + math.rotate(turn, new float3(side * .072f, .029f + lift * stride, advance * stride) * scale);
                 if (groundView.W > 0)
                 {
                     float floor = groundView.GroundHeight(ankle.x, -ankle.z);

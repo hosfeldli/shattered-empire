@@ -1,0 +1,154 @@
+[
+  {
+    "file": "cannon_02.ogg",
+    "source": "bangs/cannon_02.ogg",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-45dB:start_silence=0.003,highpass=f=38,lowpass=f=12500,volume=0.85,afade=t=out:st=2.8:d=0.5,alimiter=limit=0.84:level=disabled",
+    "seconds": 3.3,
+    "stereo": false,
+    "sourceSha256": "716392af61b29dabe637c2616091207f390d25357aae3d4c625df5dfea7e961d"
+  },
+  {
+    "file": "cannon_03.ogg",
+    "source": "bangs/cannon_04.ogg",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-45dB:start_silence=0.003,highpass=f=40,volume=0.8,afade=t=out:st=2.5:d=0.5,alimiter=limit=0.84:level=disabled",
+    "seconds": 3,
+    "stereo": false,
+    "sourceSha256": "58714ef1d8c73a52cd9358c783de4b961ee96259de112c6493a1028bc60410e8"
+  },
+  {
+    "file": "blast_03.ogg",
+    "source": "bangs/fw_04.ogg",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-45dB:start_silence=0.003,highpass=f=30,lowpass=f=8500,volume=0.75,afade=t=out:st=3.4:d=0.6,alimiter=limit=0.84:level=disabled",
+    "seconds": 4,
+    "stereo": false,
+    "sourceSha256": "48c5f564ebba962c3f54cd6bc6d4d958c47e9a795aabe8a91643afaa9fdf4c11"
+  },
+  {
+    "file": "blast_04.ogg",
+    "source": "bangs/bang_04.ogg",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-45dB:start_silence=0.003,highpass=f=45,volume=0.8,afade=t=out:st=2.8:d=0.4,alimiter=limit=0.84:level=disabled",
+    "seconds": 3.2,
+    "stereo": false,
+    "sourceSha256": "fb3b76187c36e185a331d2250268132dbf2eb490a6c0414d69e3570c72b4f2e6"
+  },
+  {
+    "file": "flak_01.ogg",
+    "source": "bangs/shot_02.ogg",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-45dB:start_silence=0.003,highpass=f=130,lowpass=f=10500,volume=0.7,afade=t=out:st=0.8:d=0.2,alimiter=limit=0.84:level=disabled",
+    "seconds": 1,
+    "stereo": false,
+    "sourceSha256": "4b9b62ff7f430d9d257a07efc54be8192c2e01668fe5e2461f217b2f8fe33a77"
+  },
+  {
+    "file": "pickup_01.ogg",
+    "source": "residue/residue-sfx/ammopickup.ogg",
+    "processing": "highpass=f=300,lowpass=f=6500,volume=0.28,afade=t=out:st=0.22:d=0.10,alimiter=limit=0.84:level=disabled",
+    "seconds": 0.32,
+    "stereo": false,
+    "sourceSha256": "246c0ed6d8fce9849a032f6018d507f6a36e45541bd6c705a6cac1b910860a94"
+  },
+  {
+    "file": "energy_01.ogg",
+    "source": "residue/residue-sfx/healthboost.ogg",
+    "processing": "highpass=f=350,lowpass=f=4500,volume=0.22,afade=t=out:st=0.30:d=0.12,alimiter=limit=0.84:level=disabled",
+    "seconds": 0.42,
+    "stereo": false,
+    "sourceSha256": "e9bf081206e392e07c9b6208e5440b5244e58fd4b37d41990d0b9872b499f66d"
+  },
+  {
+    "file": "music_intro.ogg",
+    "source": "trailer.mp3",
+    "processing": "atrim=start=28:duration=64,asetpts=PTS-STARTPTS,highpass=f=38,volume=0.72,afade=t=in:d=1.8,afade=t=out:st=60:d=4,alimiter=limit=0.84:level=disabled",
+    "seconds": 64,
+    "stereo": true,
+    "sourceSha256": "f1bbeeaa8155afc180fba14e0a3b127ffdc157ad3c0b35e7e679265306fad682"
+  },
+  {
+    "file": "music_menu.ogg",
+    "source": "menu-score.mp3",
+    "processing": "highpass=f=38,volume=0.62,afade=t=in:d=1.5,afade=t=out:st=66:d=3.6,alimiter=limit=0.84:level=disabled",
+    "seconds": 69.6,
+    "stereo": true,
+    "sourceSha256": "6c38472a541777c3ac2826e8623f1424a1d2ccc3757e16cafb270b004e64a65b"
+  },
+  {
+    "file": "siren_01.ogg",
+    "source": "siren.ogg",
+    "processing": "atrim=start=0:duration=24,asetpts=PTS-STARTPTS,highpass=f=180,lowpass=f=5500,volume=0.70,afade=t=in:d=0.8,afade=t=out:st=21:d=3,alimiter=limit=0.84:level=disabled",
+    "seconds": 24,
+    "stereo": false,
+    "sourceSha256": "3658a27bde10028531371ffbc2d57810fad0cecbff4b2d496714cd4aa7176d99"
+  },
+  {
+    "file": "mechanical_blast.ogg",
+    "source": "mechanical.wav",
+    "processing": "silenceremove=start_periods=1:start_duration=0.001:start_threshold=-45dB:start_silence=0.003,highpass=f=75,volume=0.68,afade=t=out:st=2.3:d=0.6,alimiter=limit=0.84:level=disabled",
+    "seconds": 2.9,
+    "stereo": false,
+    "sourceSha256": "13e9f713bd0d5921b223b01d29d68bb7625a1a1fbf1894af35ebfd5ef72c8632"
+  },
+  {
+    "file": "distant_blast.ogg",
+    "source": "distant-blast.wav",
+    "processing": "highpass=f=28,lowpass=f=1500,volume=0.85,afade=t=out:st=4:d=0.8,alimiter=limit=0.84:level=disabled",
+    "seconds": 4.8,
+    "stereo": false,
+    "sourceSha256": "13a0bf75af94ec6d332bc71cba489b573466e05c4b17288158b3d683b41de39f"
+  },
+  {
+    "file": "amb_construction.ogg",
+    "source": "environment/sfx100v2_loop_construction_site.ogg",
+    "processing": "highpass=f=120,lowpass=f=8000,volume=0.55,alimiter=limit=0.84:level=disabled",
+    "seconds": 0,
+    "stereo": false,
+    "sourceSha256": "2037a4b9825c9e9e9434841c35b7241b6e8718b16925f05fdd9d8ed01269bf80"
+  },
+  {
+    "file": "amb_city.ogg",
+    "source": "environment/sfx100v2_loop_highway.ogg",
+    "processing": "highpass=f=110,lowpass=f=4200,volume=0.42,alimiter=limit=0.84:level=disabled",
+    "seconds": 0,
+    "stereo": false,
+    "sourceSha256": "e20f1110657b69dccc15a23dc16863a9186123818bc1de38209f85cc771c4678"
+  },
+  {
+    "file": "amb_river_close.ogg",
+    "source": "environment/sfx100v2_loop_water_02.ogg",
+    "processing": "highpass=f=80,lowpass=f=14000,volume=0.52,alimiter=limit=0.84:level=disabled",
+    "seconds": 0,
+    "stereo": false,
+    "sourceSha256": "32bc3462ebd2376d9b84e8f602969f8c2a475f589adee9804207e19116cda768"
+  },
+  {
+    "file": "tracks_detail.ogg",
+    "source": "environment/sfx100v2_loop_machine_03.ogg",
+    "processing": "highpass=f=250,lowpass=f=4700,volume=0.28,alimiter=limit=0.84:level=disabled",
+    "seconds": 0,
+    "stereo": false,
+    "sourceSha256": "0508e8b7c73e0492ff58abc2dcae303f5492c1e14b51dc62a74387db1ca13b73"
+  },
+  {
+    "file": "amb_fire.ogg",
+    "source": "fire.wav",
+    "processing": "atrim=start=3:duration=20,asetpts=PTS-STARTPTS,highpass=f=100,lowpass=f=12000,volume=0.45,afade=t=in:d=0.4,afade=t=out:st=19.5:d=0.5,alimiter=limit=0.84:level=disabled",
+    "seconds": 20,
+    "stereo": false,
+    "sourceSha256": "85ca0cc60d0c037fff8b185e31ad1fcdbda6ce45eee17c3ee1318d1b8f59e330"
+  },
+  {
+    "file": "mg_burst_01.ogg",
+    "source": "unity/Assets/ShatteredEmpires/Runtime/Resources/Audio/Recorded/mg_01.ogg",
+    "processing": "asplit=3[a][b][c];[b]adelay=80:all=1[b1];[c]adelay=160:all=1[c1];[a][b1][c1]amix=inputs=3:normalize=0,highpass=f=90,lowpass=f=14000,volume=0.72,afade=t=out:st=0.5:d=0.12,alimiter=limit=0.84:level=disabled",
+    "seconds": 0.62,
+    "stereo": false,
+    "sourceSha256": "7d970902b671205f8ce0d7006d9ade58153d5c3934315da402b5d4921f326503"
+  },
+  {
+    "file": "mg_burst_02.ogg",
+    "source": "unity/Assets/ShatteredEmpires/Runtime/Resources/Audio/Recorded/mg_02.ogg",
+    "processing": "asplit=3[a][b][c];[b]adelay=80:all=1[b1];[c]adelay=160:all=1[c1];[a][b1][c1]amix=inputs=3:normalize=0,highpass=f=90,lowpass=f=14000,volume=0.72,afade=t=out:st=0.5:d=0.12,alimiter=limit=0.84:level=disabled",
+    "seconds": 0.62,
+    "stereo": false,
+    "sourceSha256": "a65b7f6a122d2b72d343d3cc48ab9fb35d9fad761886d373869e6e1df8c43ee8"
+  }
+]

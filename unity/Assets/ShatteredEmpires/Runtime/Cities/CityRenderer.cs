@@ -19,7 +19,7 @@ namespace SE.Runtime.Cities
     public sealed unsafe partial class CityRenderer : IDisposable
     {
         enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Car, Truck,
-            Concrete, Brick, Siding, Glass, Asphalt, MetalRoof, Shell, Collapse, Tree, Dish, Count }
+            Concrete, Brick, Siding, Glass, Asphalt, MetalRoof, Shell, Collapse, Tree, Dish, Wire, TankObstacle, StrategicHatch, Count }
 
         sealed class Cell
         {
@@ -146,7 +146,7 @@ namespace SE.Runtime.Cities
             var cell = new Cell();
             Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo,
                 MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MilitaryMeshes.CargoTruck,
-                MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish };
+                MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish, MeshKit.Coil, MeshKit.TankObstacle, MeshKit.StrategicHatch };
             for (int i = 0; i < cell.Batches.Length; i++)
             {
                 SurfaceKind material = (Part)i switch
@@ -557,6 +557,8 @@ namespace SE.Runtime.Cities
                 case "house": House(ctx); break;
                 case "modern_block": ModernBlock(ctx, false, b.State == "ruin" || b.State == "overgrown", b.State == "overgrown"); break;
                 case "modern_office": ModernBlock(ctx, true, b.State == "ruin" || b.State == "overgrown", b.State == "overgrown"); break;
+                case "cinematic_rowhouse": case "cinematic_industrial": case "cinematic_civic":
+                    CinematicDistrictBuilding(ctx, b.Type, b.State == "ruin" || b.State == "overgrown", b.State == "overgrown"); break;
                 case "town": if (b.HasPosition) Headquarters(ctx); else Centre(ctx); break;
                 case "farm": Farm(ctx); break;
                 case "barracks": case "camp": if (b.HasPosition) MilitaryBarracks(ctx); else Base(ctx, false); break;
@@ -601,7 +603,7 @@ namespace SE.Runtime.Cities
             }
             // Modern skyline blocks provide their own roof plant and damaged shell.
             // Legacy factory annexes and damage piles do not belong to these parcels.
-            if (b.Type == "modern_block" || b.Type == "modern_office") return;
+            if (b.Type == "modern_block" || b.Type == "modern_office" || b.Type.StartsWith("cinematic_", StringComparison.Ordinal)) return;
             if (b.HasPosition && ctx.Tier >= 2) MilitaryTierEquipment(ctx, b.Type);
             if (ctx.Level >= 2 && b.Type != "house" && b.Type != "town" && b.Type != "wonder") UpgradeExtras(ctx, b.Type);
             if (!Showcase) ParcelExtras(ctx, b.Type);
@@ -689,8 +691,8 @@ namespace SE.Runtime.Cities
                     }
                     Module(site, Part.Concrete, x, z, new float3(w + .010f, h + .010f, .011f), trim, turn, lift - .005f);
                     float lit = Hash(seed, floor * 13 + i);
-                    var tint = math.lerp(new float3(.24f, .33f, .37f), new float3(.53f, .60f, .61f), lit * .7f);
-                    Module(site, Part.Glass, x + sn * .006f, z + cs * .006f, new float3(w, h, .009f), tint, turn, lift, lit > .85f ? .18f : 0f);
+                    var tint = lit > .68f ? new float3(.69f, .56f, .35f) : math.lerp(new float3(.24f, .33f, .37f), new float3(.53f, .60f, .61f), lit * .7f);
+                    Module(site, Part.Glass, x + sn * .006f, z + cs * .006f, new float3(w, h, .009f), tint, turn, lift, lit > .68f ? .42f : 0f);
                     Module(site, Part.Concrete, x + sn * .009f, z + cs * .009f, new float3(.005f, h, .011f), trim * .81f, turn, lift);
                     if (floor > 0 && Hash(seed, 54 + i) < .22f)
                         Module(site, Part.Concrete, x + sn * .021f, z + cs * .021f, new float3(w * 1.28f, .012f, .055f), trim * .88f, turn, lift - .012f);

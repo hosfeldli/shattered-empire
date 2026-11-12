@@ -64,7 +64,7 @@ namespace SE.Runtime.App
                 foreach (var id in session.Units.SlotOf.Keys) if (session.Units.TryGet(id, out var unit) && session.Units.Types.Name(unit.TypeIndex) == "tank" && units.TryGetPosition(session.Units, id, out var armor))
                 { frames.Insert(3, ("03b_armor_detail", new Vector3(armor.x, 0, armor.y), 2.8f)); break; }
                 foreach (var id in session.Units.SlotOf.Keys) if (session.Units.TryGet(id, out var unit) && session.Units.Types.Name(unit.TypeIndex) == "rifle_squad" && units.TryGetPosition(session.Units, id, out var infantry))
-                { frames.Insert(4, ("03c_infantry_detail", new Vector3(infantry.x, 0, infantry.y), 2.5f)); break; }
+                { frames.Insert(4, ("03c_infantry_detail", new Vector3(infantry.x, 0, infantry.y), .95f)); break; }
             }
             foreach (var frame in frames)
             {
@@ -128,8 +128,28 @@ namespace SE.Runtime.App
         IEnumerator ReviewIntroScenes()
         {
             string directory = opts.Get("review-intro"); Directory.CreateDirectory(directory);
+            if (opts.Has("review-environment")) intro?.Skip();
             for (int beat = 0; beat < 8 && phase == Phase.Intro; beat++)
             {
+                if (beat == 1)
+                {
+                    foreach (float sample in new[] { .18f, .32f, .43f, .64f, .84f, .94f })
+                    {
+                        while (phase == Phase.Intro && intro != null && (intro.Beat < beat || intro.BeatProgress < sample)) yield return null;
+                        if (phase != Phase.Intro || intro == null || intro.Beat != beat) break;
+                        string name = "attack_" + Mathf.RoundToInt(sample * 100);
+                        yield return new WaitForEndOfFrame();
+                        CaptureReviewFrame(Path.Combine(directory, name + ".png"));
+                        yield return CaptureReviewHud(Path.Combine(directory, name + "_captions.png"));
+                        if (sample == .64f)
+                        {
+                            CaptureReviewFrame(Path.Combine(directory, "intro_2.png"));
+                            yield return CaptureReviewHud(Path.Combine(directory, "intro_2_captions.png"));
+                        }
+                    }
+                    while (phase == Phase.Intro && intro != null && intro.Beat == beat) yield return null;
+                    continue;
+                }
                 while (phase == Phase.Intro && intro != null && (intro.Beat < beat || intro.BeatProgress < .64f)) yield return null;
                 if (phase != Phase.Intro || intro == null) break;
                 yield return new WaitForEndOfFrame();
@@ -140,6 +160,35 @@ namespace SE.Runtime.App
             yield return new WaitForSecondsRealtime(4);
             CaptureReviewFrame(Path.Combine(directory, "menu_world.png"));
             yield return CaptureReviewHud(Path.Combine(directory, "menu_interface.png"));
+            foreach (string page in new[] { "campaign", "multiplayer", "guide", "settings" })
+            {
+                hud.ReviewMenuPage(page);
+                yield return null; yield return new WaitForEndOfFrame();
+                yield return CaptureReviewHud(Path.Combine(directory, "menu_" + page + "_top.png"));
+                hud.ReviewMenuScrollEnd();
+                yield return null; yield return new WaitForEndOfFrame();
+                yield return CaptureReviewHud(Path.Combine(directory, "menu_" + page + "_bottom.png"));
+            }
+            hud.ReviewMenuPage("main");
+            var savedFocus = rts.Focus; float savedDistance = rts.Distance, savedYaw = rts.Yaw, savedPitch = rts.PitchOverride;
+            int forest = -1; float bestForest = float.MaxValue; var world = session.World; var grid = world.Grid;
+            for (int tile = 0; tile < grid.N; tile++)
+            {
+                if (world.Known[tile] == 0 || world.Biome[tile] != 4 || world.IsLake(tile) || world.IsRiver(tile)) continue;
+                float score = (new Vector2(grid.CenterX(tile), grid.CenterZ(tile)) - new Vector2(savedFocus.x, savedFocus.z)).sqrMagnitude;
+                if (score < bestForest) { bestForest = score; forest = tile; }
+            }
+            if (forest >= 0)
+            {
+                rts.Focus = new Vector3(grid.CenterX(forest), 0, grid.CenterZ(forest));
+                rts.Distance = rts.TargetDistance = 3.2f; rts.Yaw = -24; rts.PitchOverride = 39; rts.Apply();
+                yield return new WaitForSecondsRealtime(1);
+                CaptureReviewFrame(Path.Combine(directory, "environment_foliage.png"));
+            }
+            rts.Focus = new Vector3(0, 0, grid.Depth * .42f); rts.Distance = rts.TargetDistance = 36; rts.Yaw = 0; rts.PitchOverride = 43; rts.Apply();
+            yield return new WaitForSecondsRealtime(1);
+            CaptureReviewFrame(Path.Combine(directory, "environment_ocean.png"));
+            rts.Focus = savedFocus; rts.Distance = rts.TargetDistance = savedDistance; rts.Yaw = savedYaw; rts.PitchOverride = savedPitch; rts.Apply();
             Debug.Log("Unity cinematic review captured to " + Path.GetFullPath(directory));
             if (opts.Get("review-quit", "1") != "0") Application.Quit();
         }

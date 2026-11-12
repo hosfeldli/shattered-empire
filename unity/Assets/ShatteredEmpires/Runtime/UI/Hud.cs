@@ -253,13 +253,29 @@ namespace SE.Runtime.UI
         /// </summary>
         void BuildMenu()
         {
-            menuBox = El("menu-box glass", menu);
-            var foot = L($"Version {Application.version} · Unity {Application.unityVersion} · Windows / macOS", "menu-version", menu);
+            menuFrame = El("menu-box glass", menu);
+            menuScroll = Scroll(menuFrame);
+            menuScroll.AddToClassList("menu-scroll");
+            menuBox = menuScroll.contentContainer;
+            var foot = L($"Version {Application.version} · Unity {Application.unityVersion} · Windows preview", "menu-version", menu);
             foot.pickingMode = PickingMode.Ignore;
             MenuPage("main");
         }
 
-        VisualElement menuBox;
+        VisualElement menuBox, menuFrame;
+        ScrollView menuScroll;
+
+        static ScrollView Scroll(VisualElement into)
+        {
+            var scroll = new ScrollView(ScrollViewMode.Vertical) { horizontalScrollerVisibility = ScrollerVisibility.Hidden,
+                verticalScrollerVisibility = ScrollerVisibility.Auto, mouseWheelScrollSize = 38 };
+            scroll.AddToClassList("bounded-scroll");
+            scroll.style.minHeight = 0;
+            scroll.style.flexShrink = 1;
+            scroll.contentContainer.style.flexShrink = 0;
+            into.Add(scroll);
+            return scroll;
+        }
         Label menuHelp;
         string menuPage = "main";
 
@@ -280,11 +296,13 @@ namespace SE.Runtime.UI
         void MenuPage(string page)
         {
             menuPage = page;
+            menuFrame.EnableInClassList("menu-wide", page != "main");
             menuBox.Clear();
+            menuScroll.scrollOffset = Vector2.zero;
             L("RECLAMATION COMMAND", "menu-eyebrow", menuBox);
-            var title = L("SHATTERED EMPIRES", "menu-title", menuBox);
+            var title = L(page == "main" ? "SHATTERED EMPIRES" : page == "campaign" ? "NEW CAMPAIGN" : page == "multiplayer" ? "MULTIPLAYER" : page == "settings" ? "SETTINGS" : "FIELD GUIDE", "menu-title", menuBox);
             title.style.unityTextAlign = TextAnchor.MiddleLeft;
-            var sub = L("Reclaim the ruins. Command an empire.", "menu-sub", menuBox);
+            var sub = L(page == "main" ? "Reclaim the ruins. Command an empire." : page == "settings" ? "Tune the battlefield to your command." : page == "guide" ? "Orders, objectives and battlefield roles." : "Choose your next operation.", "menu-sub", menuBox);
             sub.style.unityTextAlign = TextAnchor.MiddleLeft;
             switch (page)
             {
@@ -295,6 +313,13 @@ namespace SE.Runtime.UI
                 default: MainPage(); break;
             }
             menuStatus = L(menuStatus?.text ?? "", "muted small", menuBox); menuStatus.style.whiteSpace = WhiteSpace.Normal;
+        }
+
+        // Used only by the explicitly requested seeded visual-capture launch mode.
+        public void ReviewMenuPage(string page) => MenuPage(page);
+        public void ReviewMenuScrollEnd()
+        {
+            menuFrame.Query<ScrollView>().ForEach(s => s.verticalScroller.value = s.verticalScroller.highValue);
         }
 
         void MainPage()
@@ -379,7 +404,7 @@ namespace SE.Runtime.UI
                 string rule = id;
                 B(label, () => { campaign.Objective = rule; MenuPage("campaign"); }, victory).EnableInClassList("selected", campaign.Objective == id);
             }
-            Toggle(menuBox, "East–west wrapping", campaign.Wrap, on => campaign.Wrap = on);
+            campaign.Wrap = false;
             L("Nation", "muted small", menuBox);
             var nation = new TextField { value = game.PlayerName }; nation.AddToClassList("field"); menuBox.Add(nation);
             nation.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
@@ -425,10 +450,10 @@ namespace SE.Runtime.UI
             serverField = new TextField { value = game.Server }; serverField.AddToClassList("field"); serverField.AddToClassList("grow"); srv.Add(serverField);
             serverField.RegisterValueChangedCallback(e => game.Server = e.newValue);
             B("Public", () => { serverField.value = App.LaunchOptions.PublicServer; }, srv);
-            B("Local", () => { serverField.value = App.LaunchOptions.LocalServer; }, srv);
+            if (Application.isEditor || Debug.isDebugBuild) B("Local", () => { serverField.value = App.LaunchOptions.LocalServer; }, srv);
             var row = El("row", menuBox);
             B("Back", () => MenuPage("main"), row);
-            B("Performance stress scene", () => game.StartStress(), row);
+            if (Application.isEditor || Debug.isDebugBuild) B("Performance stress scene", () => game.StartStress(), row);
         }
 
         // ------------------------------------------------------------------ field guide (bible §33)
@@ -455,7 +480,7 @@ namespace SE.Runtime.UI
             var search = new TextField(); search.AddToClassList("field"); search.AddToClassList("search");
             search.textEdition.placeholder = "Search the guide…";
             into.Add(search);
-            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 420; into.Add(scroll);
+            var scroll = El("menu-list", into);
             var entries = new List<(VisualElement el, string text)>();
             foreach (var (topic, text) in inMenu || session.ActionRts ? ActionGuide : Guide)
             {
@@ -585,7 +610,8 @@ namespace SE.Runtime.UI
         {
             if (pauseMenu != null) { pauseMenu.RemoveFromHierarchy(); pauseMenu = null; return; }
             pauseMenu = El("pause-menu", root);
-            var box = El("menu-box glass", pauseMenu);
+            var frame = El("menu-box glass", pauseMenu);
+            var box = Scroll(frame).contentContainer;
             L("Paused", "title", box);
             B("Resume", () => TogglePauseMenu(), box, null, "primary menu-item");
             B("Save", () => commander.Say("Your match is saved on the server continuously; Continue returns to it.", true, Time.unscaledTime), box, null, "menu-item");
@@ -1208,6 +1234,8 @@ namespace SE.Runtime.UI
             panel.EnableInClassList("wide", openPanel == "research" || openPanel == "overview");
             var close = B("✕", () => { openPanel = ""; Refresh(true); }, panel, null, "close");
             close.tooltip = "Close (Esc)";
+            var frame = panel;
+            panel = Scroll(frame).contentContainer;
             switch (openPanel)
             {
                 case "build": BuildPanel(); break;
@@ -1216,6 +1244,7 @@ namespace SE.Runtime.UI
                 case "settings": SettingsPanel(); break;
                 case "guide": GuidePage(panel, false); break;
             }
+            panel = frame;
         }
 
         static readonly (string title, string[] types)[] BuildGroups =
@@ -1234,7 +1263,7 @@ namespace SE.Runtime.UI
             search.AddToClassList("field"); search.AddToClassList("search");
             search.textEdition.placeholder = "Search buildings…";
             panel.Add(search);
-            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 640; panel.Add(scroll);
+            var scroll = El("menu-list", panel);
             var techs = Techs();
             int age = Age;
             var defs = Defs?["BUILDINGS"] as JObject;
@@ -1443,7 +1472,7 @@ namespace SE.Runtime.UI
                 string tt = t;
                 B(t, () => { panelTab = tt; Refresh(true); }, tabs).EnableInClassList("selected", (panelTab == "" ? "Economy" : panelTab) == t);
             }
-            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 620; panel.Add(scroll);
+            var scroll = El("menu-list", panel);
             switch (panelTab == "" ? "Economy" : panelTab)
             {
                 case "Economy":
@@ -1669,7 +1698,7 @@ namespace SE.Runtime.UI
                 Volume("Music", a.MusicVolume, v => a.MusicVolume = v);
                 B("Sound and music credits", () => { openPanel = "guide"; panelSignature = ""; Refresh(true); }, panel);
             }
-            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 520; panel.Add(scroll);
+            var scroll = El("menu-list", panel);
             L("Accessibility and comfort", "heading section", scroll);
             Setting(scroll, "Interface scale", App.GameSettings.UiScale, 0.75f, 1.6f, v => { App.GameSettings.UiScale = v; game.ApplyUiScale(v); });
             Toggle(scroll, "Screen shake", App.GameSettings.ScreenShake, v => App.GameSettings.ScreenShake = v);
@@ -1693,9 +1722,9 @@ namespace SE.Runtime.UI
             B("Restore default keys", () => { Input.InputFacade.ResetBindings(); RefreshSettings(); }, scroll);
             L("Interface", "heading section", scroll);
             var r = El("row wrap", scroll);
-            B("Restart the tutorial", () => { PlayerPrefs.SetInt("se.tutorial.done", 0); tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }, r);
+            if (!MenuVisible) B("Restart the tutorial", () => { PlayerPrefs.SetInt("se.tutorial.done", 0); tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }, r);
             B("Play the intro", () => game.PlayIntro(), r);
-            B("Leave match", () => game.StartMatch("", ""), r);
+            if (!MenuVisible) B("Leave match", () => game.StartMatch("", ""), r);
         }
 
         string rebinding;

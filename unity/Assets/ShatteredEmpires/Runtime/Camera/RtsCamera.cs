@@ -18,11 +18,12 @@ namespace SE.Runtime.CameraControl
         public Vector3 Focus;
         public float Distance = 40f, TargetDistance = 40f;
         public float Yaw;
-        public float MinDistance = 2.5f, MaxDistance = 260f;
+        public float MinDistance = .9f, MaxDistance = 260f;
         public bool EdgePan = true;
         /// <summary>Pan speed multiplier (a player setting).</summary>
         public float PanSpeed = 1f;
         public bool UserControl = true;
+        public bool PointerOverUi;
         WorldModel world;
         Vector3 velocity;   // map units per second
 
@@ -102,7 +103,7 @@ namespace SE.Runtime.CameraControl
                 if (InputFacade.ActionHeld("pan_left") || InputFacade.Held(KeyCode.LeftArrow)) right -= 1;
                 if (InputFacade.ActionHeld("pan_right") || InputFacade.Held(KeyCode.RightArrow)) right += 1;
                 var mp = InputFacade.MousePosition;
-                if (EdgePan && Application.isFocused && mp.x >= 0 && mp.y >= 0 && mp.x <= Screen.width && mp.y <= Screen.height)
+                if (!PointerOverUi && EdgePan && Application.isFocused && mp.x >= 0 && mp.y >= 0 && mp.x <= Screen.width && mp.y <= Screen.height)
                 {
                     const float edge = 6f;
                     if (mp.x < edge) right -= 1; else if (mp.x > Screen.width - edge) right += 1;
@@ -118,7 +119,7 @@ namespace SE.Runtime.CameraControl
                 var want = dir * Distance * (InputFacade.Shift ? 2.4f : 1.1f) * PanSpeed;
                 velocity = Vector3.Lerp(velocity, want, 1f - Mathf.Exp(-dt * 10f));
                 Focus += velocity * dt;
-                if (InputFacade.MiddleHeld)
+                if (InputFacade.MiddleHeld && !PointerOverUi)
                 {
                     var d = InputFacade.MouseDelta;
                     Focus += ScreenToMap(-d.x, -d.y) * Distance * 0.0022f;
@@ -133,7 +134,7 @@ namespace SE.Runtime.CameraControl
                     Focus += new Vector3(dx * k, 0, dz * k);
                     if (jumping && dx * dx + dz * dz < 0.01f) jumping = false;
                 }
-                float scroll = InputFacade.Scroll;
+                float scroll = PointerOverUi ? 0 : InputFacade.Scroll;
                 if (Mathf.Abs(scroll) > 0.01f)
                 {
                     // zoom toward the point under the cursor

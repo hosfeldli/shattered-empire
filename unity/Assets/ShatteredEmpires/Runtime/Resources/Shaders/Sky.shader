@@ -25,6 +25,7 @@ Shader "SE/Sky"
                 half4 _Zenith, _Horizon, _Ground;
                 float _Overcast, _Flash;
             CBUFFER_END
+            float _SE_Glare;
             struct Attributes { float3 positionOS : POSITION; };
             struct Varyings { float4 positionCS : SV_POSITION; float3 dir : TEXCOORD0; };
             float CloudNoise(float2 p)
@@ -58,7 +59,7 @@ Shader "SE/Sky"
                 Light sun = GetMainLight();
                 float s = saturate(dot(d, sun.direction));
                 half sunFade = 1 - _Overcast * 0.85;
-                col += sun.color * (pow(s, 900) * 6 + pow(s, 40) * 0.25 + pow(s, 6) * 0.08) * sunFade;
+                col += sun.color * (pow(s, 1600) * 2.0 + pow(s, 70) * .08 + pow(s, 10) * .025) * sunFade * _SE_Glare;
                 col += _Flash * half3(1, 0.95, 0.85) * 2;
                 return half4(col, 1);
             }

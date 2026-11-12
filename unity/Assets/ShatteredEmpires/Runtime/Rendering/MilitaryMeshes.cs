@@ -380,13 +380,18 @@ namespace SE.Runtime.Rendering
                     .Box(P((i - 1) * .074f, .608f, .133f), P(.065f, .015f, .042f), Edge * .82f);
             var skin = new Color(.88f, .70f, .54f);
             m.Surface(SurfaceKind.Fabric).Beam(P(0, .752f, 0), P(0, .806f, .006f), .044f, .045f, 8, cloth)
-                .Surface(SurfaceKind.Plain).Blob(P(0, .845f, .009f), P(.087f, .106f, .081f), skin)
+                .Surface(SurfaceKind.Skin).Ellipsoid(P(0, .845f, .009f), P(.084f, .106f, .079f), skin)
                 .Armor(P(0, .820f, .084f), P(.034f, .036f, .035f), V(.026f, .021f), .009f, skin)
-                .Blob(P(-.087f, .838f, .012f), P(.015f, .028f, .019f), skin)
-                .Blob(P(.087f, .838f, .012f), P(.015f, .028f, .019f), skin);
-            m.Surface(SurfaceKind.Armor).Armor(P(0, .867f, .003f), P(.214f, .094f, .212f), V(.168f, .158f), .038f,
-                engineer ? new Color(.98f, .74f, .36f) : cloth)
-                .Box(P(0, .864f, .082f), P(.156f, .024f, .062f), Dark);
+                .Ellipsoid(P(-.087f, .838f, .012f), P(.015f, .028f, .019f), skin, 4, 8)
+                .Ellipsoid(P(.087f, .838f, .012f), P(.015f, .028f, .019f), skin, 4, 8);
+            var helmet = engineer ? new Color(.83f, .67f, .37f) : cloth;
+            m.Surface(SurfaceKind.Armor).Ellipsoid(P(0, .877f, .003f), P(.113f, .093f, .112f), helmet, 5, 14, true)
+                .Cylinder(P(0, .868f, .003f), engineer ? .125f : .112f, .113f, .015f, 14, helmet * .88f)
+                .Box(P(0, .864f, .082f), P(.137f, .015f, .029f), Dark);
+            for (int eye = -1; eye <= 1; eye += 2)
+                m.Surface(SurfaceKind.Plain).Box(P(eye * .034f, .851f, .082f), P(.017f, .007f, .006f), Dark * .68f);
+            m.Surface(SurfaceKind.Fabric).Box(P(.15f, .49f, .01f), P(.036f, .11f, .078f), cloth * .72f)
+                .Box(P(-.15f, .48f, -.01f), P(.035f, .085f, .064f), cloth * .78f);
             m.Surface(SurfaceKind.Fabric).Beam(P(-.083f, .854f, .04f), P(-.058f, .783f, .044f), .009f, .008f, 5, Dark)
                 .Beam(P(.083f, .854f, .04f), P(.058f, .783f, .044f), .009f, .008f, 5, Dark)
                 .Surface(SurfaceKind.Armor).Box(P(-.103f, .844f, -.001f), P(.034f, .060f, .062f), Dark)
@@ -414,7 +419,10 @@ namespace SE.Runtime.Rendering
             if (end && arm)
                 m.Surface(SurfaceKind.Fabric).Blob(P(0, -length, .009f), P(.047f, .055f, .040f), Dark);
             if (!end && !arm)
+            {
                 m.Surface(SurfaceKind.Armor).Armor(P(0, -length, .035f), P(.109f, .093f, .090f), V(.100f, .075f), .022f, Edge);
+                m.Surface(SurfaceKind.Fabric).Box(P(.065f, -length * .45f, .012f), P(.032f, .10f, .083f), Paint * .82f);
+            }
             return m;
         }
     }

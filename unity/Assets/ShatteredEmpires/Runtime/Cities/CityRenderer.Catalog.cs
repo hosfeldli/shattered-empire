@@ -312,7 +312,7 @@ namespace SE.Runtime.Cities
             var conc = new float3(0.5f, 0.5f, 0.47f);
             Module(c, Part.Cylinder, 0, 0, new float3(0.5f, 0.05f, 0.5f), conc);
             for (int s = -1; s <= 1; s += 2) Module(c, Part.Box, s * 0.07f, 0, new float3(0.13f, 0.03f, 0.3f), new float3(0.32f, 0.33f, 0.31f), 0, 0.05f);   // the doors
-            Module(c, Part.Box, 0, 0.18f, new float3(0.04f, 0.02f, 0.02f), new float3(1f, 0.25f, 0.15f), 0, 0.07f, 1.5f);   // warning light
+            Module(c, Part.Box, 0, 0.18f, new float3(0.012f, 0.009f, 0.012f), new float3(.45f, .035f, .018f), 0, 0.07f, .02f);   // dim warning lens
             Module(c, Part.Box, 0.45f, 0.35f, new float3(0.3f, 0.14f, 0.24f), conc * 0.95f);
             Module(c, Part.Box, -0.45f, 0.4f, new float3(0.14f, 0.1f, 0.14f), conc * 0.9f);
             for (int k = 0; k < 4; k++) { float a = k * 1.5708f; Module(c, Part.Box, Mathf.Cos(a) * 0.7f, Mathf.Sin(a) * 0.7f, new float3(k % 2 == 0 ? 0.01f : 1.4f, 0.05f, k % 2 == 0 ? 1.4f : 0.01f), SteelGrey); }

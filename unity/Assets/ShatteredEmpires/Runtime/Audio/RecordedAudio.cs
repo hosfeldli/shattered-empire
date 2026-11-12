@@ -19,21 +19,24 @@ namespace SE.Runtime.Audio
             }
             Shot("rifle", "rifle_01", "rifle_02", "rifle_03");
             Shot("pistol", "pistol_01");
-            Shot("mg", "mg_01", "mg_02");
+            Shot("mg", "mg_burst_01", "mg_burst_02");
             Shot("autocannon", "cannon_01");
-            Shot("cannon", "cannon_01");
+            Shot("cannon", "cannon_02", "cannon_03", "cannon_01");
             Shot("launch", "blast_02");
-            Shot("explosion", "blast_02", "blast_01");
-            Shot("explosion_big", "blast_01");
+            Shot("explosion", "blast_04", "blast_02", "mechanical_blast");
+            Shot("explosion_big", "blast_01", "blast_03");
             Shot("strategic", "blast_01");
-            Shot("flak", "blast_02");
+            Shot("flak", "flak_01");
+            Shot("pickup", "pickup_01"); Shot("energy", "energy_01");
+            Shot("siren", "siren_01"); Shot("distant_blast", "distant_blast");
             Shot("collapse", "debris_01", "debris_02");
             Shot("metal", "metal_01"); Shot("wood", "wood_01"); Shot("glass", "glass_01");
             Shot("thunder", "thunder_01"); Shot("capture", "confirm_01");
             foreach (var pair in new[] {
                 ("tank", "engine_tank"), ("truck", "engine_truck"), ("jet", "engine_jet"), ("rotor", "engine_rotor"),
                 ("drone", "engine_rotor"), ("wind", "amb_wind"), ("rain", "amb_rain"), ("river", "amb_river"),
-                ("nature", "amb_forest"), ("industry", "amb_industry"), ("music_calm", "music_calm"), ("music_combat", "music_combat") })
+                ("nature", "amb_forest"), ("industry", "amb_industry"), ("music_calm", "music_calm"), ("music_combat", "music_combat"), ("music_intro", "music_intro"), ("music_menu", "music_menu"),
+                ("city", "amb_city"), ("construction", "amb_construction"), ("river_close", "amb_river_close"), ("tracks", "tracks_detail"), ("fire", "amb_fire") })
             {
                 var clip = Resources.Load<AudioClip>("Audio/Recorded/" + pair.Item2);
                 if (clip != null) Loops[pair.Item1] = clip;

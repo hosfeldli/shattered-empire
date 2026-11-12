@@ -18,8 +18,8 @@ namespace SE.Runtime.Audio
     /// </summary>
     public sealed class AudioDirector : IDisposable
     {
-        sealed class Voice { public AudioSource Src; public AudioLowPassFilter Lp; public float Until, Gain; public int Priority; }
-        sealed class Engine { public AudioSource Src; public AudioLowPassFilter Lp; public int Unit = -1; public string Clip; }
+        sealed class Voice { public AudioSource Src; public AudioLowPassFilter Lp; public float Until, Gain; public int Priority; public string Key; }
+        sealed class Engine { public AudioSource Src, Tracks; public AudioLowPassFilter Lp; public int Unit = -1; public string Clip; }
 
         readonly GameObject root;
         readonly Transform listener;
@@ -33,7 +33,9 @@ namespace SE.Runtime.Audio
         readonly List<(float d, int id, string clip)> enginePicks = new List<(float, int, string)>(64);
         readonly HashSet<int> engineKeep = new HashSet<int>();
         readonly AudioSource music;
-        bool cinematicMusic;
+        bool cinematicMusic, menuMusic;
+        float cinematicGain = 1, cinematicCityGain;
+        float3 cinematicCityPoint;
         readonly System.Random rng = new System.Random(3);
         public float Master = 1f, Effects = 1f, Ambience = .65f, MusicVolume = .4f;
         float time, battleHeat, voiceGain = 1, environmentAt;
@@ -64,10 +66,15 @@ namespace SE.Runtime.Audio
                 go.transform.SetParent(root.transform);
                 var s = go.AddComponent<AudioSource>();
                 s.playOnAwake = false; s.loop = true; s.spatialBlend = 1f; s.rolloffMode = AudioRolloffMode.Logarithmic; s.dopplerLevel = .08f; s.maxDistance = 90f; s.minDistance = .9f;
-                engines.Add(new Engine { Src = s, Lp = go.AddComponent<AudioLowPassFilter>() });
+                var tracks = go.AddComponent<AudioSource>(); tracks.playOnAwake = false; tracks.loop = true;
+                tracks.spatialBlend = 1; tracks.minDistance = .55f; tracks.maxDistance = 22; tracks.dopplerLevel = 0;
+                tracks.rolloffMode = AudioRolloffMode.Logarithmic;
+                if (RecordedAudio.Loops.TryGetValue("tracks", out var trackClip)) tracks.clip = trackClip;
+                engines.Add(new Engine { Src = s, Tracks = tracks, Lp = go.AddComponent<AudioLowPassFilter>() });
             }
-            foreach (var name in new[] { "wind", "rain", "river", "industry", "nature", "music_calm", "music_combat" })
-                beds[name] = Bed(RecordedAudio.Loops.TryGetValue(name, out var clip) ? clip : null, name == "river" || name == "industry");
+            foreach (var name in new[] { "wind", "rain", "river", "industry", "nature", "music_calm", "music_combat", "music_menu", "river_close", "construction", "city", "fire" })
+                beds[name] = Bed(RecordedAudio.Loops.TryGetValue(name, out var clip) ? clip : null,
+                    name == "river" || name == "river_close" || name == "industry" || name == "construction" || name == "city" || name == "fire");
             music = root.AddComponent<AudioSource>();
             music.playOnAwake = false; music.spatialBlend = 0f; music.loop = false;
             Load();
@@ -97,49 +104,61 @@ namespace SE.Runtime.Audio
         }
 
         /// <summary>Play a one-shot at a map position. Priority decides voice stealing when all are busy.</summary>
-        public void Play(string name, float3 mapPos, float volume = 1f, float minDistance = 2f, int priority = 1, float camDistance = 40f)
+        public void Play(string name, float3 mapPos, float volume = 1f, float minDistance = 2f, int priority = 1, float camDistance = 40f, float delay = 0)
         {
             if (!RecordedAudio.Shots.TryGetValue(name, out var clips)) return;
+            var u = MapSpace.W(mapPos);
+            float reach = name == "strategic" || name == "thunder" || name == "distant_blast" ? 500 : name.Contains("explosion") || name == "siren" ? 130 : 85;
+            if (Vector3.Distance(listener.position, u) > reach) return;
             // rate limit: the same sound at most a few times per 0.1 s (big battles stay readable)
             int cap = name == "rifle" || name == "mg" ? 3 : 2;
             if (lastPlayed.TryGetValue(name, out float last) && time - last < 0.1f) { if (burst[name] >= cap) return; burst[name]++; }
             else { lastPlayed[name] = time; burst[name] = 1; }
             Voice v = null;
-            foreach (var x in voices) if (!x.Src.isPlaying) { v = x; break; }
+            foreach (var x in voices) if (x.Until <= time && !x.Src.isPlaying) { v = x; break; }
             if (v == null)
             {
                 foreach (var x in voices) if (x.Priority < priority && (v == null || x.Until < v.Until)) v = x;
                 if (v == null) return;
             }
-            var u = MapSpace.W(mapPos);
+            v.Src.Stop();
             v.Src.transform.position = new Vector3(u.x, u.y, u.z);
             v.Src.clip = clips[rng.Next(clips.Length)];
             // keep battles audible at operational zoom: the sound "reaches" further when zoomed out
             v.Src.minDistance = Mathf.Clamp(minDistance * .45f, .7f, 12f) * Mathf.Max(1f, camDistance / 65f);
-            v.Src.maxDistance = name == "strategic" || name == "thunder" ? 500 : name.Contains("explosion") ? 130 : 85;
+            v.Src.maxDistance = reach;
             v.Gain = volume * (name == "rifle" || name == "mg" ? .42f : .60f);
             v.Src.volume = v.Gain * Effects * Master * voiceGain;
             v.Src.pitch = name == "strategic" ? .64f : name == "autocannon" ? 1.28f : name == "flak" ? 1.25f : .97f + (float)rng.NextDouble() * .06f;
             v.Src.priority = Mathf.Clamp(180 - priority * 24, 16, 220);
             float dist = Vector3.Distance(listener.position, v.Src.transform.position);
             v.Lp.cutoffFrequency = Mathf.Lerp(18000f, 1100f, Mathf.Clamp01((dist - v.Src.minDistance) / 70f));
-            v.Priority = priority;
-            v.Until = time + v.Src.clip.length / v.Src.pitch;
-            v.Src.Play();
+            v.Priority = priority; v.Key = name;
+            v.Until = time + delay + v.Src.clip.length / v.Src.pitch;
+            if (delay > 0) v.Src.PlayDelayed(delay); else v.Src.Play();
             if (priority >= 2) battleHeat = Mathf.Min(1f, battleHeat + 0.08f);
         }
 
         public void PlayMusic(bool on)
         {
             cinematicMusic = on;
-            if (on && RecordedAudio.Loops.TryGetValue("music_calm", out var score)) { music.clip = score; music.volume = MusicVolume * Master * .52f; music.Play(); }
+            if (on && RecordedAudio.Loops.TryGetValue("music_intro", out var score)) { music.clip = score; music.volume = MusicVolume * Master * .70f; music.Play(); }
             else music.Stop();
         }
 
         public float MusicTime => music.isPlaying ? music.time : 0f;
+        public void CinematicCity(float level, float3 position) { cinematicCityGain = Mathf.Clamp01(level); cinematicCityPoint = position; }
+        public void CinematicDynamics(float intensity) { cinematicGain = Mathf.Clamp01(intensity); }
+        public void StopCue(string key) { foreach (var voice in voices) if (voice.Key == key) { voice.Src.Stop(); voice.Until = 0; } }
+        public void MenuScore(bool on)
+        {
+            if (on && !menuMusic && beds.TryGetValue("music_menu", out var score) && score.clip != null)
+            { score.time = 0; score.Play(); }
+            menuMusic = on;
+        }
 
         /// <summary>Per frame: engines on the nearest vehicles and aircraft, and the ambience mix.</summary>
-        public void Update(float dt, UnitStore units, Func<int, Vector2?> unitPos, WorldModel world, float3 focusMap, float camDistance, float urbanNear, float riverNear, float rain, float wind, StructureStore structures = null)
+        public void Update(float dt, UnitStore units, Func<int, Vector2?> unitPos, WorldModel world, float3 focusMap, float camDistance, float urbanNear, float riverNear, float rain, float wind, StructureStore structures = null, IReadOnlyList<float3> burningWrecks = null)
         {
             time += dt;
             listener.SetPositionAndRotation((Vector3)MapSpace.W(focusMap) + new Vector3(0, Mathf.Clamp(camDistance * .065f, 1.2f, 6f), 0), cameraTransform.rotation);
@@ -152,20 +171,27 @@ namespace SE.Runtime.Audio
             float strategic = Mathf.Clamp01((camDistance - 60f) / 140f);
             float a = Ambience * Master;
             Fade("wind", (.08f + wind * .15f) * a, dt);
-            Fade("nature", close * (1f - urbanNear) * (1f - rain) * .26f * a * (1 - battleHeat * .65f), dt);
-            Fade("river", close * riverNear * .38f * a, dt);
+            Fade("nature", close * (1f - urbanNear) * (1f - rain) * .26f * a * (1 - battleHeat * .65f) * (1 - cinematicCityGain), dt);
+            Fade("river", localRiver ? close * riverNear * .32f * a : 0, dt);
+            float riverDetail = Mathf.Pow(Mathf.Clamp01((14 - camDistance) / 11), 1.4f);
+            Fade("river_close", localRiver ? riverDetail * riverNear * .52f * a : 0, dt);
             Fade("rain", rain * (.10f + close * .24f) * a, dt);
-            float score = cinematicMusic ? 0 : MusicVolume * Master * .30f;
+            float score = cinematicMusic || menuMusic ? 0 : MusicVolume * Master * .30f;
             Fade("music_calm", score * (1 - battleHeat), dt * .25f);
             Fade("music_combat", score * battleHeat, dt * .25f);
-            music.volume = MusicVolume * Master * .52f;
+            Fade("music_menu", menuMusic && !cinematicMusic ? MusicVolume * Master * .58f : 0, dt * .4f);
+            music.volume = MusicVolume * Master * .70f * cinematicGain;
+            beds["city"].transform.position = MapSpace.W(cinematicCityPoint);
+            Fade("city", cinematicMusic ? cinematicCityGain * .42f * a : 0, dt);
             // Local water and machinery remain anchored; only the broad weather bed is stereo.
             if (world.Ready && time >= environmentAt)
             {
                 environmentAt = time + .35f;
-                UpdateLocalAmbience(world, structures, focusMap);
+                UpdateLocalAmbience(world, structures, focusMap, burningWrecks);
             }
             Fade("industry", localIndustry ? close * .34f * a : 0, dt);
+            Fade("construction", localConstruction ? close * .34f * a : 0, dt);
+            Fade("fire", localFire ? close * .33f * a : 0, dt);
         }
 
         void Fade(string bed, float target, float dt)
@@ -196,7 +222,7 @@ namespace SE.Runtime.Audio
             picks.Sort((x, y) => x.d.CompareTo(y.d));
             var keep = engineKeep; keep.Clear();
             for (int k = 0; k < Math.Min(engines.Count, picks.Count); k++) keep.Add(picks[k].id);
-            foreach (var e in engines) if (e.Unit >= 0 && !keep.Contains(e.Unit)) { e.Unit = -1; e.Src.Stop(); }
+            foreach (var e in engines) if (e.Unit >= 0 && !keep.Contains(e.Unit)) { e.Unit = -1; e.Src.Stop(); e.Tracks.Stop(); }
             for (int k = 0; k < Math.Min(engines.Count, picks.Count); k++)
             {
                 var (d, id, clip) = picks[k];
@@ -212,6 +238,7 @@ namespace SE.Runtime.Audio
                     e.Src.time = (float)rng.NextDouble() * e.Src.clip.length * 0.9f;
                     e.Src.pitch = clip == "drone" ? 1.85f : .97f + (float)rng.NextDouble() * .06f;
                     e.Src.Play();
+                    if (clip == "tank" && e.Tracks.clip != null) e.Tracks.Play(); else e.Tracks.Stop();
                 }
                 var p = unitPos(id).Value;
                 float x = world.Grid.NearX(p.x, focusMap.x);
@@ -223,34 +250,49 @@ namespace SE.Runtime.Audio
                 e.Lp.cutoffFrequency = Mathf.Lerp(9000, 900, Mathf.Clamp01(d / 65));
                 if (units.TryGet(id, out var record))
                 {
-                    float movement = Mathf.Clamp01(Mathf.Sqrt(record.Motion.Vx * record.Motion.Vx + record.Motion.Vz * record.Motion.Vz) / .7f);
+                    float movement = Mathf.Clamp01(Mathf.Sqrt(record.Motion.Vx * record.Motion.Vx + record.Motion.Vz * record.Motion.Vz) / .20f);
                     float targetPitch = clip == "drone" ? 1.85f : clip == "jet" || clip == "rotor" ? .94f + movement * .10f : .84f + movement * .26f;
                     e.Src.pitch = Mathf.Lerp(e.Src.pitch, targetPitch, .06f);
+                    e.Tracks.volume = clip == "tank" ? movement * .23f * Effects * Master * (1 - Mathf.Clamp01(d / 22)) : 0;
+                    e.Tracks.pitch = .78f + movement * .40f;
                     if (record.Motion.Present && record.Motion.Altitude < .08f && (clip == "jet" || clip == "rotor")) e.Src.volume *= .25f;
                 }
             }
         }
 
-        bool localIndustry;
-        void UpdateLocalAmbience(WorldModel world, StructureStore structures, float3 focus)
+        bool localIndustry, localRiver, localConstruction, localFire;
+        void UpdateLocalAmbience(WorldModel world, StructureStore structures, float3 focus, IReadOnlyList<float3> burningWrecks)
         {
             var g = world.Grid; int center = g.TileAt(focus.x, focus.z); float best = float.MaxValue;
+            localRiver = false;
             if (center >= 0) for (int d = -1; d < 6; d++)
             {
                 int tile = d < 0 ? center : g.Nb[center * 6 + d];
                 if (tile < 0 || world.Known[tile] == 0 || !world.IsRiver(tile)) continue;
                 float x = g.NearX(g.CenterX(tile), focus.x), z = g.CenterZ(tile);
                 float dist = math.distancesq(new float2(focus.x, focus.z), new float2(x, z));
-                if (dist >= best) continue; best = dist;
+                if (dist >= best) continue; best = dist; localRiver = true;
                 beds["river"].transform.position = MapSpace.W(new float3(x, world.GroundHeight(x, z), z));
+                beds["river_close"].transform.position = beds["river"].transform.position;
             }
-            best = 36; localIndustry = false;
+            best = 36; localIndustry = false; localConstruction = false; localFire = false;
+            float constructionDistance = 25, fireDistance = 36;
+            if (burningWrecks != null) foreach (var fire in burningWrecks)
+            {
+                float d = math.distancesq(fire.xz, focus.xz); if (d > fireDistance) continue;
+                fireDistance = d; localFire = true; beds["fire"].transform.position = MapSpace.W(fire);
+            }
             if (structures == null) return;
             foreach (var b in structures.Buildings.Values)
             {
-                if (b.Memory || !b.Done || !b.Active || b.Type != "power_plant" && b.Type != "motor_works" && b.Type != "steel_mill") continue;
+                if (b.Memory) continue;
                 float x = g.NearX(b.HasPosition ? b.X : g.CenterX(b.Tile), focus.x), z = b.HasPosition ? b.Z : g.CenterZ(b.Tile);
                 float dist = math.distancesq(new float2(focus.x, focus.z), new float2(x, z));
+                if (!b.Done && b.Progress > 0 && dist < constructionDistance)
+                { constructionDistance = dist; localConstruction = true; beds["construction"].transform.position = MapSpace.W(new float3(x, world.GroundHeight(x, z), z)); }
+                if (b.Fire && dist < fireDistance)
+                { fireDistance = dist; localFire = true; beds["fire"].transform.position = MapSpace.W(new float3(x, world.GroundHeight(x, z), z)); }
+                if (!b.Done || !b.Active || b.Type != "power_plant" && b.Type != "motor_works" && b.Type != "steel_mill") continue;
                 if (dist >= best) continue; best = dist; localIndustry = true;
                 beds["industry"].transform.position = MapSpace.W(new float3(x, world.GroundHeight(x, z) + .10f, z));
             }

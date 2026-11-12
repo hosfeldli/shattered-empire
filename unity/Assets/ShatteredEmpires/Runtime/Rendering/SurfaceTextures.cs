@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace SE.Runtime.Rendering
 {
-    public enum SurfaceKind { Plain, Concrete, Brick, SheetMetal, RoofTile, Asphalt, Armor, Rubber, Fabric, Glass, Soil, Rock, Count }
+    public enum SurfaceKind { Plain, Concrete, Brick, SheetMetal, RoofTile, Asphalt, Armor, Rubber, Fabric, Glass, Soil, Rock, Foliage, Skin, Count }
 
     /// <summary>Tileable material maps. Channels store albedo variation, relief, smoothness and cavity.</summary>
     static class SurfaceTextures

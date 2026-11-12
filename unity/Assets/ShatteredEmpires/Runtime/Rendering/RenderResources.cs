@@ -6,7 +6,7 @@ namespace SE.Runtime.Rendering
     /// <summary>Shaders (shipped through Resources so builds include them) and the shared materials.</summary>
     public static class RenderResources
     {
-        public static Material Instanced, InstancedGloss, Foliage, Terrain, Water, Additive, AlphaBlend;
+        public static Material Instanced, InstancedGloss, Foliage, GroundCover, Terrain, Water, Additive, AlphaBlend;
         static readonly Material[] SurfaceMaterials = new Material[(int)SurfaceKind.Count];
 
         public static Material Surface(SurfaceKind kind)
@@ -25,11 +25,17 @@ namespace SE.Runtime.Rendering
         public static void Load()
         {
             if (Instanced != null) return;
+            Shader.SetGlobalFloat("_SE_CityPower", 1);
+            Shader.SetGlobalFloat("_SE_Glare", 1);
             Instanced = Make("Shaders/InstancedLit", "SE Instanced");
             InstancedGloss = Make("Shaders/InstancedLit", "SE Instanced Gloss");
             InstancedGloss.SetFloat("_Gloss", 0.6f);
             Foliage = new Material(Instanced) { name = "SE Foliage" };
             Foliage.SetFloat("_Wind", 1f);
+            Foliage.SetFloat("_Cull", 0f);
+            Foliage.SetTexture("_LeavesTex", Resources.Load<Texture2D>("Textures/FoliageBranches"));
+            GroundCover = new Material(Foliage) { name = "SE Meadow grass" };
+            GroundCover.SetFloat("_Wind", 2f);
             Shader.SetGlobalTexture("_SE_SurfaceMaps", SurfaceTextures.Build());
             var architecture = Resources.Load<Texture2D>("Textures/ArchitectureAtlas");
             Shader.SetGlobalTexture("_SE_ArchitectureAtlas", architecture);

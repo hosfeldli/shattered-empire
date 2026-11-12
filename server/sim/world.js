@@ -133,6 +133,15 @@ export class World {
     }
     // --- The Great Rift: a subsiding fracture through the continent, leaving an isthmus.
     this.makeRift(rng);
+    // Bounded battlefields terminate in real coastal water, rather than cutting an old
+    // cylindrical continent at a vertical edge. The outer deep-water band also meets
+    // the client's continuous ocean at the same depth and surface color.
+    if (!WRAP) for (let i = 0; i < N; i++) {
+      const edge = Math.min(qOf(i), W - 1 - qOf(i), rOf(i), H - 1 - rOf(i));
+      if (edge >= 4) continue;
+      const coast = 1 - edge / 4;
+      this.elev[i] = Math.min(this.elev[i], -0.55 * coast * coast);
+    }
     // --- Climate
     const waterDist = this.distanceToWater();
     // westerly winds carry sea moisture east; mountains wring it out (rain shadows behind ranges)

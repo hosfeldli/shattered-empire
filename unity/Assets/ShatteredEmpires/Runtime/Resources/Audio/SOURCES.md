@@ -1,6 +1,6 @@
 # Audio sources
 
-The runtime uses `Recorded/`, a selected set of 27 edited recordings and music tracks.
+The runtime uses `Recorded/`, a selected set of edited recordings and music tracks.
 Archives and conversion executables stay outside Unity Assets. `Recorded/edits.json`
 records the input, filters, channel conversion and gain for every output.
 Recreate the edits with `node tools/prepare-unity-audio.cjs <download-directory> <ffmpeg-executable>`.
@@ -69,6 +69,60 @@ The aircraft pass is an edited source, not an exact military jet recording.
 [source](https://opengameart.org/content/unexplored-expansion).
 `music_combat`: **Determined Pursuit (epic orchestra loop)**, Emma_MA,
 [source](https://opengameart.org/content/determined-pursuit-epic-orchestra-loop).
-High-pass filtered, gain reduced, Vorbis encoded; calm music also accompanies the introduction.
+High-pass filtered, gain reduced, Vorbis encoded; these are the adaptive match music layers.
+
+## Cinematic score and additional combat detail — CC0 1.0
+
+`music_intro`: **Generic trailer music**, Emma_MA.
+[Source and author's public-domain declaration](https://opengameart.org/content/generic-trailer-music).
+The author released this track into the public domain in January 2017. The introduction uses
+a 64-second excerpt beginning at 00:28, with a high-pass filter, reduced gain, fades and limiting.
+The recorded orchestral score is stereo; it is independent of the spatial world effects.
+
+`music_menu`: **A Legend Will Rise (Orchestral)**, CodeManu, CC0 1.0.
+[Source](https://opengameart.org/content/a-legend-will-rise-orchestral).
+Full 69.6-second orchestral theme with filtering, reduced gain, opening and ending fades, limiting
+and stereo Vorbis encoding. The menu theme crossfades independently of the match score.
+
+`cannon_02/03`, `blast_03/04`, `flak_01`: **25 CC0 bang / firework SFX**, rubberduck.
+[Source](https://opengameart.org/content/25-cc0-bang-firework-sfx).
+Selected cannon, firework and shot recordings, trimmed, filtered, gain reduced, limited,
+converted to mono for positional playback and Vorbis encoded. These are designed battle
+layers, not recordings of specific modern weapons.
+
+`pickup_01`, `energy_01`: **Residue-sfx**, FacadeGaikan.
+[Source](https://opengameart.org/content/residue-sfx).
+Original ammopickup and healthboost cues, shortened, band-limited, gain reduced,
+converted to mono and Vorbis encoded. Used as restrained positional collection cues.
+
+`Recorded/oga-edits.json` includes source checksums and exact processing. Recreate these
+additions with `node tools/prepare-oga-audio.cjs <download-directory> <ffmpeg-executable>`.
+
+## Local ambience, warning and destruction additions — CC0 1.0
+
+**100 CC0 SFX #2**, rubberduck: [source](https://opengameart.org/content/100-cc0-sfx-2).
+`amb_construction` uses the construction-site loop; `amb_city` uses the highway loop for the
+pre-collapse cinematic only; `amb_river_close` uses water_02 for a close water layer;
+`tracks_detail` uses machine_03 as a quiet designed mechanical layer under moving tracked vehicles.
+These are filtered, gain reduced and mono for positional playback. The track layer is a designed
+mechanical texture, not a claim to be an authentic tank-track recording.
+
+**Storm & Siren**, TinyWorlds: [source](https://opengameart.org/content/storm-siren).
+`siren_01` is a filtered 24-second excerpt of the June 2013 flood-warning recording. It accompanies
+the cinematic warning and stops when the sequence enters the long winter.
+
+**Mechanical Explosion**, Spring Spring: [source](https://opengameart.org/content/mechanical-explosion).
+`mechanical_blast` is a trimmed, filtered and limited metal-destruction layer.
+
+**Muffled Distant Explosion**, NenadSimic: [source](https://opengameart.org/content/muffled-distant-explosion).
+`distant_blast` is a filtered, gain reduced designed low-frequency impact and reverberation layer.
+The source is a pitched log-drum design, not a field recording of a nuclear explosion.
+
+**Fireplace Sound loop**, PagDev: [source](https://opengameart.org/content/fireplace-sound-loop).
+`amb_fire` uses a filtered 20-second excerpt, with short joining fades and mono conversion.
+Playback follows visible burning wrecks and buildings, subject to a bounded local mix.
+
+`mg_burst_01/02` layer the already credited Free Firearm Sound Library recordings into short,
+three-discharge bursts, filtered, faded and limited. Authoritative firing events trigger the bursts.
 
 Credits are available in the in-game Field Guide and Settings. No endorsement by the authors is implied.

@@ -31,7 +31,7 @@ namespace SE.Runtime.App
     /// Shots 1–4 share the same city and framing so the change reads as one history. Captions only (no
     /// narration needed), letterboxed, graded; Space, Enter or Escape skips at once and nothing keeps running.
     /// </summary>
-    public sealed class IntroDirector
+    public sealed partial class IntroDirector
     {
         sealed class Shot
         {
@@ -53,7 +53,7 @@ namespace SE.Runtime.App
         readonly AudioDirector audio;
         readonly CityRenderer cityView;
         readonly VisualElement overlay;
-        readonly Label caption, title, subtitle, skip;
+        readonly Label caption, title, subtitle, skip, chapter;
         readonly VisualElement fade;
         readonly List<Shot> shots = new List<Shot>();
         readonly List<float3> fires = new List<float3>();
@@ -64,7 +64,7 @@ namespace SE.Runtime.App
         readonly Dictionary<int, Vector2[]> militaryApproaches = new Dictionary<int, Vector2[]>();
         readonly List<int> cityTiles = new List<int>();
         int shot = -1, nextId = 1;
-        float t, fireAt, snapAt;
+        float t, fireAt, snapAt, volleyAt;
         bool struck1, struck2, struck3;
         readonly bool[] incoming = new bool[3];
         float3 cityP, siloP;
@@ -83,8 +83,13 @@ namespace SE.Runtime.App
             var top = new VisualElement(); top.AddToClassList("letterbox"); top.style.top = 0; overlay.Add(top);
             var bottom = new VisualElement(); bottom.AddToClassList("letterbox"); bottom.style.bottom = 0; overlay.Add(bottom);
             caption = new Label(""); caption.AddToClassList("caption"); overlay.Add(caption);
+            chapter = new Label(""); chapter.style.position = Position.Absolute; chapter.style.left = new Length(5, LengthUnit.Percent);
+            chapter.style.top = new Length(14, LengthUnit.Percent); chapter.style.fontSize = 15; chapter.style.letterSpacing = 3;
+            chapter.style.color = new Color(.83f, .78f, .66f); chapter.style.unityFont = Resources.Load<Font>("Fonts/BarlowSemiCondensed-SemiBold"); overlay.Add(chapter);
             title = new Label("SHATTERED EMPIRES"); title.AddToClassList("menu-title"); title.style.position = Position.Absolute; title.style.left = 0; title.style.right = 0; title.style.top = new Length(38, LengthUnit.Percent); title.style.fontSize = 84; title.style.opacity = 0; overlay.Add(title);
-            subtitle = new Label("Reclaim the ruins. Command an empire."); subtitle.AddToClassList("menu-sub"); subtitle.style.position = Position.Absolute; subtitle.style.left = 0; subtitle.style.right = 0; subtitle.style.top = new Length(52, LengthUnit.Percent); subtitle.style.opacity = 0; overlay.Add(subtitle);
+            title.style.unityFont = Resources.Load<Font>("Fonts/BarlowSemiCondensed-SemiBold");
+            title.style.letterSpacing = 9;
+            subtitle = new Label("FROM ASHES. EMPIRES RISE."); subtitle.AddToClassList("menu-sub"); subtitle.style.position = Position.Absolute; subtitle.style.left = 0; subtitle.style.right = 0; subtitle.style.top = new Length(54, LengthUnit.Percent); subtitle.style.opacity = 0; overlay.Add(subtitle);
             fade = new VisualElement(); fade.AddToClassList("fade"); fade.pickingMode = PickingMode.Ignore; overlay.Add(fade);
             skip = new Label("Space · Enter · Esc to skip"); skip.AddToClassList("skip"); overlay.Add(skip);
             uiRoot.Add(overlay);
@@ -93,10 +98,11 @@ namespace SE.Runtime.App
         // ------------------------------------------------------------------ the set
         public void Start()
         {
-            var gen = StressWorld.Generate(128, 11);
+            var gen = StressWorld.Generate(128, 11, bounded: true);
+            AuthorCinematicGeography(gen.Geo);
             session.ApplyWelcome(new WelcomeMessage
             {
-                W = 128, H = 128, Wrap = true, CivId = 0, Seed = 11, Match = "intro", Ruleset = "native-v4",
+                W = 128, H = 128, Wrap = false, CivId = 0, Seed = 11, Match = "intro", Ruleset = "native-v4",
                 Civs = new[] { new CivInfo { Id = 0, Name = "Survivors", Color = 0x7a8a5a, Human = true }, new CivInfo { Id = 1, Name = "Ashfall Directorate", Color = 0x9a4a3a } },
             });
             session.ApplyGeo(gen.Geo);
@@ -106,22 +112,23 @@ namespace SE.Runtime.App
             session.Age = 0;
 
             // the city of the world before, on a coast: towers, a centre, markets, streets
-            int coast = DryDistrict(FindCoastalLand());
+            int coast = 58 * g.W + 64;
             cityP = Centre(coast, 0);
-            BuildModernCity(coast);
+            BuildMetropolitanCity(coast);
             // the valley of shot 5 and 8: a modest settlement, fields, a gravel road
-            int valleyT = DryDistrict(Walk(Walk(coast, 0, 12), 5, 3));
+            int valleyT = DryDistrict(84 * g.W + 42);
             BuildMilitaryDistrict(valleyT, 0, 1, valley);
             for (int t2 = Walk(valleyT, 3, 5), k = 0; k < 10; k++) { roadA.Add(t2); int n = g.Nb[t2 * 6 + 0]; if (n < 0 || w.IsSea(n)) break; Road(t2, 0, 1); t2 = n; }
             // the rival's industrial town and its border road (shot 6)
-            int rivalT = DryDistrict(Walk(Walk(valleyT, 1, 9), 0, 4));
+            int rivalT = DryDistrict(90 * g.W + 91);
             BuildMilitaryDistrict(rivalT, 1, 2, rival);
             for (int t2 = Walk(rivalT, 3, 1), k = 0; k < 12; k++) { roadB.Add(t2); int n = g.Nb[t2 * 6 + 3]; if (n < 0 || w.IsSea(n)) break; Road(t2, 3, 2); t2 = n; }
             // the silo in a quiet, damaged industrial place (shot 7)
-            int siloT = DryDistrict(Walk(Walk(coast, 4, 6), 5, 4));
+            int siloT = DryDistrict(73 * g.W + 80);
             siloP = Centre(siloT, 0);
             var silo = MilitaryBuilding(siloT, "missile_silo", 1, 3);
             strategic.Add(silo);
+            BuildSiloSurroundings(siloT);
             w.MarkRoadsChanged();
             w.ApplyUrban(w.Urban);
             Stage(city, valley, rival, strategic);
@@ -157,6 +164,31 @@ namespace SE.Runtime.App
             weather = new WeatherState { CellsW = 1, CellsH = 1, Cell = 1024, Cloud = new byte[1], Rain = new byte[1], Wet = new byte[1], Fog = new byte[1], Storm = new byte[1], WindAngle = 0.5f, WindSpeed = 0.5f };
             atmosphere.Grain.intensity.Override(.035f);
             cam.UserControl = false;
+            // Give the military reveal and catastrophe room to develop. The entire eight-beat
+            // sequence is scored as one 56-second piece, with a quiet warning before the title.
+            shots[0].Caption = "We built a world that could never fall.";
+            shots[0].D0 = 17; shots[0].D1 = 12; shots[0].Yaw0 = 12; shots[0].Yaw1 = 30; shots[0].Pitch = 25;
+            shots[1].Seconds = 7; shots[1].Caption = "Then the sky burned.";
+            shots[1].D0 = 12; shots[1].D1 = 19; shots[1].Yaw0 = 30; shots[1].Yaw1 = 41; shots[1].Pitch = 25;
+            shots[2].Caption = "Decades beneath a sunless sky."; shots[2].D0 = 17; shots[2].D1 = 11; shots[2].Yaw0 = 41;
+            shots[3].Caption = "The earth endured."; shots[3].D0 = 11; shots[3].D1 = 15;
+            shots[4].Seconds = 7; shots[4].Caption = "We reclaimed what remained.";
+            shots[4].D0 = 14; shots[4].D1 = 7; shots[4].Yaw0 = -48; shots[4].Yaw1 = -12; shots[4].Pitch = 29;
+            shots[5].Seconds = 8; shots[5].Caption = "We raised armies. We built empires.";
+            shots[5].From = rivalP + new float3(1.0f, 0, 1.1f); shots[5].To = rivalP + new float3(-.8f, 0, .3f);
+            shots[5].D0 = 8.4f; shots[5].D1 = 5.8f; shots[5].Yaw0 = 83; shots[5].Yaw1 = 116;
+            shots[5].Tick = RivalReveal;
+            if (militaryApproaches.TryGetValue(1, out var militaryRoad))
+            {
+                var entry = Vector2.Lerp(militaryRoad[0], militaryRoad[2], .48f);
+                var exit = Vector2.Lerp(militaryRoad[0], militaryRoad[2], .70f);
+                shots[5].From = new float3(entry.x, w.GroundHeight(entry.x, entry.y) + .12f, entry.y);
+                shots[5].To = new float3(exit.x, w.GroundHeight(exit.x, exit.y) + .12f, exit.y);
+                shots[5].D0 = 3.6f; shots[5].D1 = 5.6f; shots[5].Yaw0 = 128; shots[5].Yaw1 = 155; shots[5].Pitch = 22;
+            }
+            shots[6].Caption = "The old fire never died.";
+            shots[7].Seconds = 10; shots[7].D0 = 9; shots[7].D1 = 72; shots[7].Yaw0 = -22; shots[7].Yaw1 = 14; shots[7].Pitch = 32;
+            DirectCollapseSequence();
             audio?.PlayMusic(true);
             shot = 0; t = 0;
             shots[0].Enter?.Invoke();
@@ -169,19 +201,24 @@ namespace SE.Runtime.App
         {
             var origin = new Vector2(g.CenterX(center), g.CenterZ(center));
             Vector2 P(float x, float z) => origin + new Vector2(x, z);
-            sceneRoads.Add(new[] { P(-4.1f, -.85f), P(-2, -.43f), P(0, 0), P(1.9f, .40f), P(4, 1.0f) });
+            sceneRoads.Add(new[] { P(-5.5f, -1.2f), P(-2, -.43f), P(0, 0), P(1.9f, .40f), P(5.5f, 1.2f) });
             sceneRoads.Add(new[] { P(-1.1f, -3.1f), P(-.54f, -1.4f), P(0, 0), P(.65f, 1.6f), P(.9f, 3.2f) });
-            for (int i = 0; i < 9; i++) for (int side = -1; side <= 1; side += 2)
+            for (int district = -1; district <= 1; district++)
             {
-                float x = -3.35f + i * .83f;
-                var point = P(x - side * .13f, x * .22f + side * .69f);
+            if (district != 0) sceneRoads.Add(new[] { P(-5.1f, -1.12f + district * 1.6f), P(-1.8f, -.40f + district * 1.6f), P(2, .44f + district * 1.6f), P(5.2f, 1.14f + district * 1.6f) });
+            for (int i = 0; i < 12; i++) for (int side = -1; side <= 1; side += 2)
+            {
+                float x = -4.65f + i * .83f;
+                var point = P(x - side * .13f, x * .22f + side * .58f + district * 1.6f);
                 if (Mathf.Abs(point.x - origin.x - (point.y - origin.y) * .38f) < .44f) continue;
                 int tile = g.TileAt(point.x, point.y);
                 if (tile < 0 || w.IsSea(tile) || w.IsLake(tile) || w.IsRiver(tile)) continue;
-                var b = Building(tile, i % 4 == 0 ? "modern_office" : "modern_block", 0, 2 + (i * 3 + (side > 0 ? 1 : 0)) % 5, 2);
+                int floors = district == -1 ? 5 + (i * 3 + (side > 0 ? 1 : 0)) % 3 : 2 + (i * 3 + (side > 0 ? 1 : 0)) % 5;
+                var b = Building(tile, i % 3 == 0 || district == -1 ? "modern_office" : "modern_block", 0, floors, 2);
                 b.HasPosition = b.HasYaw = true; b.X = point.x; b.Z = point.y;
                 b.Yaw = Mathf.Atan2(side * .22f, -side); b.Slot = b.Id;
                 city.Add(b); if (!cityTiles.Contains(tile)) cityTiles.Add(tile); SetUrban(tile, true);
+            }
             }
         }
 
@@ -238,37 +275,18 @@ namespace SE.Runtime.App
         }
 
         // ------------------------------------------------------------------ beat actions
-        void Catastrophe(float u)
-        {
-            // three bright trails cross the distant sky; flashes; a delayed shock that pushes dust over the roofs
-            void Strike(ref bool done, int index, float at, float3 offset)
-            {
-                var target = cityP + offset; target.y = w.GroundHeight(target.x, target.z) + .04f;
-                if (!incoming[index] && u >= at - .16f)
-                {
-                    incoming[index] = true;
-                    fx.Projectile(target + new float3(-7, 14, -5), target, "warhead", .96f);
-                }
-                if (done || u < at) return;
-                done = true;
-                fx.Strategic(target, .31f);
-                audio?.Play("strategic", target, 1f, 60f, 5, cam.Distance);
-            }
-            Strike(ref struck1, 0, .25f, new float3(5, 0, -4));
-            Strike(ref struck2, 1, .45f, new float3(-4, 0, -5));
-            Strike(ref struck3, 2, .65f, new float3(1, 0, -7));
-            atmosphere.Dim = Mathf.Lerp(0.7f, 0.35f, Mathf.Clamp01((u - 0.6f) / 0.4f));
-        }
+        void Catastrophe(float u) => MetropolitanAttack(u);
 
         void Ruin()
         {
             // the same city, long afterwards: shells of towers, roads broken, a few fires
             fx.ClearPersistent();
+            fires.Clear();
             var rng = new System.Random(9);
             for (int i = 0; i < city.Count; i++)
             {
                 var b = city[i]; b.State = "ruin"; b.Hp = 10; b.Active = false; city[i] = b;
-                if (rng.NextDouble() < 0.2) fires.Add(Centre(b.Tile, 0.1f));
+                if (fires.Count < 14 && rng.NextDouble() < .12) fires.Add(new float3(b.X, w.GroundHeight(b.X, b.Z) + .05f, b.Z));
             }
             foreach (var t2 in cityTiles) { SetUrban(t2, false); for (int d = 0; d < 6; d++) if (((w.Road[t2] >> (d * 4)) & 7) != 0 && rng.NextDouble() < 0.6) w.Road[t2] |= 8 << (d * 4); }
             w.MarkRoadsChanged(); w.ApplyUrban(w.Urban);
@@ -293,6 +311,23 @@ namespace SE.Runtime.App
             // rain eases to sun across the shot
             weather.Rain[0] = (byte)(Mathf.Clamp01(0.6f - u * 0.9f) * 255);
             atmosphere.Dim = Mathf.Lerp(0.75f, 1f, u);
+            atmosphere.Haze = Mathf.Lerp(.5f, .16f, u);
+        }
+
+        void RivalReveal(float u)
+        {
+            Column(roadB, 1, u, new[] { "tank", "tank", "tank", "tank", "tank", "tank", "air_defense", "sp_artillery", "rifle_squad", "rifle_squad", "rifle_squad", "rifle_squad" });
+            if (!militaryApproaches.TryGetValue(1, out var route)) return;
+            if (u > .28f && u < .84f && Time.unscaledTime >= volleyAt)
+            {
+                volleyAt = Time.unscaledTime + 1.8f;
+                var direction = (route[2] - route[0]).normalized;
+                var p = Vector2.Lerp(route[0], route[2], .42f + u * .30f);
+                var origin = new float3(p.x + direction.x * .15f, w.GroundHeight(p.x, p.y) + .17f, p.y + direction.y * .15f);
+                var impact = origin + new float3(direction.x * 3.5f, -.10f, direction.y * 3.5f);
+                fx.Muzzle(origin, true); fx.Projectile(origin, impact, "cannon", .48f);
+                audio?.Play("cannon", origin, .9f, 3, 3, cam.Distance);
+            }
         }
 
         void Column(List<int> path, int owner, float u, string[] types)
@@ -320,14 +355,26 @@ namespace SE.Runtime.App
         void MilitaryColumn(Vector2[] route, int owner, float progress, string[] types)
         {
             if (Time.unscaledTime < snapAt) return; snapAt = Time.unscaledTime + .16f;
-            var actors = new UnitWire[types.Length];
+            bool airPass = owner == 1 && shot == 5;
+            var actors = new UnitWire[types.Length + (airPass ? 2 : 0)];
             var direction = (route[2] - route[0]).normalized;
-            for (int i = 0; i < actors.Length; i++)
+            for (int i = 0; i < types.Length; i++)
             {
-                float t = Mathf.Clamp01(.42f + progress * .30f - i * .13f);
+                float t = Mathf.Clamp01(.53f + progress * .30f - (owner == 1 ? i / 2 : i) * .09f);
                 var p = Vector2.Lerp(route[0], route[2], t);
+                if (owner == 1) p += new Vector2(-direction.y, direction.x) * (i % 2 == 0 ? .17f : -.17f) * (i >= 8 ? 1.8f : 1);
                 actors[i] = new UnitWire { Id = 100 + owner * 20 + i, Owner = owner, Type = types[i], Tile = g.TileAt(p.x, p.y), Next = -1, Hp = 100, AirState = -1,
                     Motion = new WorldMotion { Present = true, X = p.x, Z = p.y, Yaw = Mathf.Atan2(direction.x, direction.y), Vx = direction.x * .20f, Vz = direction.y * .20f } };
+            }
+            if (airPass)
+            {
+                var midpoint = Vector2.Lerp(route[0], route[2], .62f);
+                for (int i = 0; i < 2; i++)
+                {
+                    var p = midpoint + new Vector2((progress - .5f) * 15 - i * .42f, .9f + i * .32f);
+                    actors[types.Length + i] = new UnitWire { Id = 180 + i, Owner = owner, Type = "fighter", Tile = g.TileAt(p.x, p.y), Next = -1, Hp = 100, AirState = 2,
+                        Motion = new WorldMotion { Present = true, X = p.x, Z = p.y, Yaw = math.PI * .5f, Vx = 1.875f, Altitude = 1.25f + i * .12f } };
+                }
             }
             session.ApplySnapshot(new SnapshotMessage { Time = Time.unscaledTime, Units = actors });
         }
@@ -336,7 +383,7 @@ namespace SE.Runtime.App
         {
             // one red warning light, pulsing; the silence is the point
             float pulse = Mathf.Pow(.5f + .5f * Mathf.Sin(u * math.PI * 4), 2);
-            if (pulse > .1f) fx.WarningBeacon(siloP + new float3(.32f, .46f, -.16f), pulse);
+            if (pulse > .1f) fx.WarningBeacon(siloP + new float3(.42f, .40f, .12f), pulse);
         }
 
         void TitleCard(float u)
@@ -359,6 +406,7 @@ namespace SE.Runtime.App
             cam.PitchOverride = s.Pitch;
             cam.Apply();
             atmosphere.Dim = s.Dim; atmosphere.SunElevation = s.Elevation; atmosphere.SunAzimuth = s.Azimuth;
+            atmosphere.Glare = shot == 6 ? 0 : .55f;
             atmosphere.SunTint = s.Sun; atmosphere.SunTintAmount = s.Tint; atmosphere.AmbientTint = s.Ambient;
             weather.Cloud[0] = (byte)(s.Cloud * 255); weather.Rain[0] = (byte)(s.Rain * 255); weather.Wet[0] = (byte)(s.Rain * 255);
             session.Weather = weather; session.WeatherRevision++;
@@ -370,10 +418,14 @@ namespace SE.Runtime.App
                 if (s.Ash > 0) fx.Rain(new float3(cam.Focus.x, 0, cam.Focus.z), s.Ash * 0.25f, new float3(0.2f, 0, 0.1f), (x, z) => w.GroundHeight(x, z), 8f);
             }
             s.Tick?.Invoke(u);
+            UpdateCinematicSound(u);
             // captions fade in after the shot settles and out before the cut; shots 1–4 dissolve into one
             // another (one continuous history), later shots cut through a brief black
             float cIn = Mathf.Clamp01((t - 0.8f) / 1.0f), cOut = Mathf.Clamp01((s.Seconds - t - 0.4f) / 0.8f);
             caption.text = s.Caption;
+            chapter.text = shot == 0 ? "BEFORE THE COLLAPSE" : shot == 1 ? (u < .56f ? "STRATEGIC WARNING · MULTIPLE INBOUND TRACKS" : "EMERGENCY BROADCAST · CONTACT LOST")
+                : shot == 2 ? "THE LONG WINTER" : shot == 3 ? "THE WORLD RETURNS" : shot == 4 ? "THE RECLAMATION" : shot == 5 ? "RIVAL EMPIRES" : shot == 6 ? "STRATEGIC ARSENAL · STANDBY" : "";
+            chapter.style.opacity = Mathf.Min(cIn, cOut) * .85f;
             caption.style.opacity = Mathf.Min(cIn, cOut);
             float edge = Mathf.Min(t, s.Seconds - t);
             float cut = shot < 3 ? 0.35f : 0.9f;
@@ -386,6 +438,8 @@ namespace SE.Runtime.App
             }
         }
 
+        public void Skip() => Finish();
+
         void Finish()
         {
             if (Done) return;
@@ -393,9 +447,14 @@ namespace SE.Runtime.App
             overlay.RemoveFromHierarchy();
             atmosphere.Grain.intensity.Override(0f);
             atmosphere.Dim = 1f; atmosphere.SunTintAmount = 0f; atmosphere.SunElevation = 47f; atmosphere.SunAzimuth = -32f; atmosphere.AmbientTint = Color.white;
+            atmosphere.Glare = 1;
+            atmosphere.Haze = .16f;
+            Shader.SetGlobalFloat("_SE_CityPower", 1);
+            audio?.CinematicCity(0, cityP);
+            audio?.StopCue("siren"); audio?.StopCue("strategic"); audio?.StopCue("distant_blast");
+            fx.ClearPersistent();
             cam.PitchOverride = -1f; cam.UserControl = true;
             audio?.PlayMusic(false);
-            PlayerPrefs.SetInt("se.intro.seen", 1);
             Finished?.Invoke();
         }
 

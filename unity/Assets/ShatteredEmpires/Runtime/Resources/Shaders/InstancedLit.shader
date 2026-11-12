@@ -8,10 +8,13 @@ Shader "SE/InstancedLit"
         _Gloss ("Gloss", Range(0, 1)) = 0.1
         _Surface ("Surface", Float) = 0
         _Wind ("Wind", Float) = 0
+        _Cull ("Cull", Float) = 2
+        _LeavesTex ("Leafy branch cutout", 2D) = "white" {}
     }
     SubShader
     {
         Tags { "RenderType" = "Opaque" "RenderPipeline" = "UniversalPipeline" "Queue" = "Geometry" }
+        Cull [_Cull]
 
         HLSLINCLUDE
         #include "SECommon.hlsl"
@@ -28,6 +31,7 @@ Shader "SE/InstancedLit"
         float _Gloss;
         float _Surface;
         float _Wind;
+        TEXTURE2D(_LeavesTex); SAMPLER(sampler_LeavesTex);
 
         void SE_InstanceTransform(uint id, float3 positionOS, float3 normalOS, out float3 positionWS, out float3 normalWS, out float4 color)
         {
@@ -41,7 +45,8 @@ Shader "SE/InstancedLit"
                 float gust = .55 + .45 * sin(_Time.y * .63 + phase * .37);
                 float sway = sin(_Time.y * 1.8 + phase) * .7 + sin(_Time.y * 3.7 + phase * 1.43) * .3;
                 float2 wind = _SE_Wind.xy / max(.15, length(_SE_Wind.xy));
-                float bend = h * h * (.006 + min(_SE_Wind.z, 3) * .012) * (gust + sway * .36);
+                float weight = _Wind > 1.5 ? h * .9 : h * h;
+                float bend = weight * (.006 + min(_SE_Wind.z, 3) * .012) * (gust + sway * .36);
                 positionWS.xz += bend * wind;
             }
             // non-uniform scale: normals use the inverse transpose of the 3x3 part, which is the
@@ -49,6 +54,7 @@ Shader "SE/InstancedLit"
             float3x3 m3 = (float3x3)m;
             float3x3 cof = float3x3(cross(m3[1], m3[2]), cross(m3[2], m3[0]), cross(m3[0], m3[1]));
             normalWS = normalize(mul(cof, normalOS));
+            if (_Wind > 1.5) normalWS = normalize(lerp(normalWS, float3(0, 1, 0), .65));
             color = inst.color;
         }
         ENDHLSL
@@ -56,6 +62,7 @@ Shader "SE/InstancedLit"
         Pass
         {
             Name "ForwardLit"
+            AlphaToMask On
             Tags { "LightMode" = "UniversalForward" }
             HLSLPROGRAM
             #pragma target 4.5
@@ -66,7 +73,7 @@ Shader "SE/InstancedLit"
             #pragma multi_compile_fragment _ _ADDITIONAL_LIGHTS
             #pragma multi_compile_fog
 
-            struct Attributes { float3 positionOS : POSITION; float3 normalOS : NORMAL; float4 vcolor : COLOR; float2 surface : TEXCOORD1; };
+            struct Attributes { float3 positionOS : POSITION; float3 normalOS : NORMAL; float4 vcolor : COLOR; float2 uv : TEXCOORD0; float2 surface : TEXCOORD1; };
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
@@ -77,6 +84,7 @@ Shader "SE/InstancedLit"
                 float3 materialPos : TEXCOORD4;
                 half3 materialNormal : TEXCOORD5;
                 nointerpolation uint surface : TEXCOORD6;
+                float2 uv : TEXCOORD7;
             };
 
             Varyings vert(Attributes v, uint instanceID : SV_InstanceID)
@@ -87,7 +95,9 @@ Shader "SE/InstancedLit"
                 o.positionWS = p;
                 o.normalWS = n;
                 // vertex colour tints parts of a mesh (windows, tracks, roofs); white keeps the instance colour
-                o.color = half4(c.rgb * v.vcolor.rgb, c.a * v.vcolor.a);
+                // Bark keeps its own warm albedo rather than inheriting a green canopy tint.
+                half3 tint = v.surface.x == 13 || _Wind > .5 && v.vcolor.r > v.vcolor.g * 1.15 ? half3(1, 1, 1) : c.rgb;
+                o.color = half4(tint * v.vcolor.rgb, c.a * v.vcolor.a);
                 o.positionCS = TransformWorldToHClip(p);
                 o.fogCoord = ComputeFogFactor(o.positionCS.z);
                 SEInstance inst = _Instances[instanceID];
@@ -96,6 +106,7 @@ Shader "SE/InstancedLit"
                 o.materialPos = v.positionOS * s;
                 o.materialNormal = v.normalOS;
                 o.surface = (uint)max(v.surface.x, _Surface);
+                o.uv = v.uv;
                 return o;
             }
 
@@ -105,7 +116,16 @@ Shader "SE/InstancedLit"
                 half3 albedo = i.color.rgb;
                 half photoVariation = 1.0h;
                 half smoothness = _Gloss;
-                if (i.surface != 0u)
+                half coverage = 1;
+                if (i.surface == 12u)
+                {
+                    half4 leaf = SAMPLE_TEXTURE2D(_LeavesTex, sampler_LeavesTex, i.uv);
+                    clip(leaf.a - .35h);
+                    coverage = leaf.a;
+                    albedo *= .65h + leaf.rgb * 2.5h;
+                }
+                else if (i.surface == 13u) smoothness = .14h;
+                else if (i.surface != 0u)
                 {
                     half4 surface = SE_Surface(i.materialPos, i.materialNormal, i.surface);
                     smoothness = surface.b;
@@ -123,9 +143,11 @@ Shader "SE/InstancedLit"
                         n = SE_Relief(i.positionWS, n, surface.g, i.surface == 8u ? .00035h : .0015h);
                     }
                 }
-                half3 color = SE_Shade(SRGBToLinear(saturate(albedo)) * photoVariation, i.positionWS, n, i.color.a);
+                half3 color = SE_Shade(SRGBToLinear(saturate(albedo)) * photoVariation, i.positionWS, n, i.color.a * _SE_CityPower);
                 half3 viewDir = normalize(GetWorldSpaceViewDir(i.positionWS));
                 Light sun = GetMainLight(TransformWorldToShadowCoord(i.positionWS));
+                if (_Wind > .5)
+                    color += SRGBToLinear(albedo) * sun.color * .12h * saturate(dot(-n, sun.direction)) * sun.shadowAttenuation;
                 half spec = pow(saturate(dot(n, normalize(sun.direction + viewDir))), lerp(12.0h, 78.0h, smoothness))
                     * smoothness * smoothness * sun.shadowAttenuation;
                 if (i.surface == 9u)
@@ -133,8 +155,8 @@ Shader "SE/InstancedLit"
                     half fresnel = pow(1.0h - saturate(dot(n, viewDir)), 4.0h);
                     color += lerp(half3(0.05h, 0.07h, 0.09h), SE_Ambient(reflect(-viewDir, n)), fresnel) * 0.23h;
                 }
-                color += sun.color * spec;
-                return half4(SE_ApplyFog(color, i.positionWS, i.fogCoord), 1);
+                color += sun.color * spec * _SE_Glare;
+                return half4(SE_ApplyFog(color, i.positionWS, i.fogCoord), coverage);
             }
             ENDHLSL
         }
@@ -143,20 +165,21 @@ Shader "SE/InstancedLit"
         {
             Name "ShadowCaster"
             Tags { "LightMode" = "ShadowCaster" }
-            ZWrite On ZTest LEqual ColorMask 0 Cull Back
+            ZWrite On ZTest LEqual ColorMask 0 Cull [_Cull]
             HLSLPROGRAM
             #pragma target 4.5
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
-            struct Attributes { float3 positionOS : POSITION; float3 normalOS : NORMAL; };
-            float4 vert(Attributes v, uint instanceID : SV_InstanceID) : SV_POSITION
+            struct Attributes { float3 positionOS : POSITION; float3 normalOS : NORMAL; float2 uv : TEXCOORD0; float2 surface : TEXCOORD1; };
+            struct DepthVaryings { float4 positionCS : SV_POSITION; float2 uv : TEXCOORD0; nointerpolation uint surface : TEXCOORD1; };
+            DepthVaryings vert(Attributes v, uint instanceID : SV_InstanceID)
             {
                 float3 p, n; float4 c;
                 SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, p, n, c);
-                return SE_ShadowPositionCS(p, n);
+                DepthVaryings o; o.positionCS = SE_ShadowPositionCS(p, n); o.uv = v.uv; o.surface = (uint)v.surface.x; return o;
             }
-            half4 frag() : SV_Target { return 0; }
+            half4 frag(DepthVaryings i) : SV_Target { if (i.surface == 12u) clip(SAMPLE_TEXTURE2D(_LeavesTex, sampler_LeavesTex, i.uv).a - .35h); return 0; }
             ENDHLSL
         }
 
@@ -169,14 +192,15 @@ Shader "SE/InstancedLit"
             #pragma target 4.5
             #pragma vertex vert
             #pragma fragment frag
-            struct Attributes { float3 positionOS : POSITION; float3 normalOS : NORMAL; };
-            float4 vert(Attributes v, uint instanceID : SV_InstanceID) : SV_POSITION
+            struct Attributes { float3 positionOS : POSITION; float3 normalOS : NORMAL; float2 uv : TEXCOORD0; float2 surface : TEXCOORD1; };
+            struct DepthVaryings { float4 positionCS : SV_POSITION; float2 uv : TEXCOORD0; nointerpolation uint surface : TEXCOORD1; };
+            DepthVaryings vert(Attributes v, uint instanceID : SV_InstanceID)
             {
                 float3 p, n; float4 c;
                 SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, p, n, c);
-                return TransformWorldToHClip(p);
+                DepthVaryings o; o.positionCS = TransformWorldToHClip(p); o.uv = v.uv; o.surface = (uint)v.surface.x; return o;
             }
-            half4 frag() : SV_Target { return 0; }
+            half4 frag(DepthVaryings i) : SV_Target { if (i.surface == 12u) clip(SAMPLE_TEXTURE2D(_LeavesTex, sampler_LeavesTex, i.uv).a - .35h); return 0; }
             ENDHLSL
         }
     }

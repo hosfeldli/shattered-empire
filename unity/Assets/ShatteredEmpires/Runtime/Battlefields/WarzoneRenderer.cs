@@ -19,7 +19,7 @@ namespace SE.Runtime.Battlefields
     /// </summary>
     public sealed unsafe class WarzoneRenderer : IDisposable
     {
-        enum Part { Floor, Bag, Plank, Coil, Post, Stump, Debris, Wreck, LightWreck, GunWreck, AirWreck, Branch, Count }
+        enum Part { Floor, Bag, Plank, Coil, Post, Stump, Debris, Wreck, LightWreck, GunWreck, AirWreck, Branch, TankObstacle, Count }
 
         readonly InstanceBatch[] batches = new InstanceBatch[(int)Part.Count];
         readonly WorldModel world;
@@ -35,7 +35,7 @@ namespace SE.Runtime.Battlefields
         {
             world = w;
             Mesh[] meshes = { MeshKit.Box, MeshKit.Sandbags, MeshKit.Box, MeshKit.Coil, MeshKit.Cylinder, WorldMeshes.SnappedTree(), MeshKit.Box, MeshKit.Wreck,
-                WorldMeshes.LightVehicleWreck(), MeshKit.Wreck, WorldMeshes.AircraftWreck(), WorldMeshes.FallenBranch() };
+                WorldMeshes.LightVehicleWreck(), MeshKit.Wreck, WorldMeshes.AircraftWreck(), WorldMeshes.FallenBranch(), MeshKit.TankObstacle };
             foreach (int index in new[] { 5, 8, 10, 11 }) ownedMeshes.Add(meshes[index]);
             for (int i = 0; i < batches.Length; i++)
                 batches[i] = new InstanceBatch(meshes[i], RenderResources.Instanced, 256) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
@@ -188,7 +188,12 @@ namespace SE.Runtime.Battlefields
                 }
                 // reinforced lines have concrete firing steps and the odd machine-gun post
                 if (t.Reinforced && b % 3 == 1)
+                {
                     Put(Part.Debris, new float3(pf.x, Ground(pf.x, pf.y), pf.y), yaw, new float3(0.045f, 0.032f, 0.04f), new float3(0.52f, 0.51f, 0.48f));
+                    var wire = pf + side * front * .075f;
+                    Put(Part.Coil, new float3(wire.x, Ground(wire.x, wire.y), wire.y), yaw + math.PI * .5f,
+                        new float3(.23f, .11f, .11f), new float3(.78f, .77f, .72f));
+                }
             }
         }
 
@@ -235,8 +240,9 @@ namespace SE.Runtime.Battlefields
                 {
                     // barbed wire belts on pickets
                     float yaw = Hash(tile, 99) * 3.14f + (pick - 0.5f) * 0.6f;
-                    Put(Part.Coil, new float3(x, y, z), yaw, new float3(0.22f, 0.035f, 0.035f), new float3(0.32f, 0.3f, 0.28f));
-                    Put(Part.Post, new float3(x, y, z), 0, new float3(0.008f, 0.06f, 0.008f), new float3(0.36f, 0.3f, 0.22f));
+                    Put(Part.Coil, new float3(x, y, z), yaw, new float3(.32f, .15f, .15f), new float3(.78f, .76f, .70f));
+                    if (k % 3 == 1) Put(Part.TankObstacle, new float3(x + .13f, y, z + .12f), yaw + .7f,
+                        new float3(.19f), new float3(.85f, .82f, .76f));
                 }
                 else
                 {
