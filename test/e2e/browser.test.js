@@ -252,11 +252,17 @@ test('research workspace: full-screen graph, inspect without researching, queue 
   assert.equal(await page.isVisible('#drawer'), true);
   assert.ok(await page.locator('#rwG .node').count() >= 30, 'every technology is a node');
   // selecting a late node only inspects it
+  // The earlier governor test enables autonomous research. Freeze simulation while checking
+  // a UI-only inspection so an unrelated governor tick cannot change the observed project.
+  await page.evaluate(() => window.__actions().cmd({ c: 'pause', on: true }));
+  await page.waitForFunction(() => window.__S.paused === true);
+  await page.waitForTimeout(400);
   const research0 = await page.evaluate(() => window.__S.econ.research);
   const bb = await page.locator('#rwG .node[data-tech=mechanization]').boundingBox();
   await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
   await page.waitForSelector('#rwInsp [data-rw=queue]');
   assert.equal(await page.evaluate(() => window.__S.econ.research), research0, 'inspecting does not start research');
+  await page.evaluate(() => window.__actions().cmd({ c: 'pause', on: false }));
   await page.click('#rwInsp [data-rw=queue]');
   await page.waitForFunction(() => window.__S.econ.queue.includes('mechanization') && window.__S.econ.queue.indexOf('motorization') < window.__S.econ.queue.indexOf('mechanization'), null, { timeout: 15000 });
   // reorder keeps prerequisites first
