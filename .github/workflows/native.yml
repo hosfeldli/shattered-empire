@@ -1,13 +1,8 @@
-name: Native builds
+name: Legacy Godot builds (manual archive)
 
-# Builds the Godot native client for Windows and macOS on every change to main and publishes it to
-# game.liamhosfeld.com/download as the official build (kind 'native'). This replaces the Electron
-# installers on the download page. The Unity client publishes separately as an opt-in preview
-# (unity.yml) until it passes its release gates (docs/UNITY_MIGRATION.md, M8).
+# Historical clients can be built on demand as GitHub artifacts. They are no longer
+# published to the website; public distribution is the Windows Unity ZIP only.
 on:
-  push:
-    branches: [main]
-    paths: ['godot/**', 'server/**', 'tools/build-native.mjs', 'tools/publish-downloads.mjs', '.github/workflows/native.yml']
   workflow_dispatch:
 
 concurrency:
@@ -16,7 +11,6 @@ concurrency:
 
 env:
   GODOT_VERSION: '4.7.2'
-  BUCKET: ${{ vars.SNAPSHOT_BUCKET || 'stem-471602-se-snapshots' }}
 
 jobs:
   build:
@@ -53,29 +47,3 @@ jobs:
           path: dist/publish/*
           if-no-files-found: error
 
-  publish:
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist/publish
-          merge-multiple: true
-      - id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Publish the official native build
-        run: |
-          node tools/publish-downloads.mjs --dir=dist/publish --kind=native --build="${GITHUB_SHA::12}" --bucket="$BUCKET"
-          echo "### Native build ${GITHUB_SHA::12} published: https://game.liamhosfeld.com/download" >> "$GITHUB_STEP_SUMMARY"

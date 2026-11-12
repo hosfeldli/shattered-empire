@@ -1,7 +1,7 @@
 // The public site: game.liamhosfeld.com is a downloader for the desktop app, served by the game server
 // itself (same load balancer -> Cloud Run path). Builds live in Cloud Storage under downloads/
 // (uploaded by the desktop release workflow) with a manifest.json; locally, DOWNLOAD_DIR works too.
-//   GET / and /download         page with the latest build for each platform
+//   GET / and /download         the current Windows Unity ZIP
 //   GET /api/downloads         the manifest (JSON)
 //   GET /download/file/<name>  the installer, streamed (attachment)
 import fs from 'node:fs';
@@ -10,7 +10,15 @@ import { Readable } from 'node:stream';
 import { gcsToken } from './storage.js';
 
 const API = 'https://storage.googleapis.com';
-const PLATFORMS = { win: 'Windows', mac: 'macOS' };
+// Distribution is Windows Unity only. Retired clients remain in private storage,
+// but are neither listed nor served by the public download routes.
+function windowsManifest(m) {
+  const files = (m.files || []).filter(f => f.platform === 'win' && f.kind === 'unity-preview' && /\.zip$/i.test(f.name))
+    .sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
+  const file = files[0];
+  return { version: m.version ?? null, unity: file ? { build: file.build || m.unity?.build, date: file.date || m.unity?.date } : null,
+    files: file ? [file] : [] };
+}
 
 export function makeDownloads(log) {
   const dir = process.env.DOWNLOAD_DIR || '';
@@ -27,7 +35,7 @@ export function makeDownloads(log) {
         if (r.ok) m = await r.json();
       }
     } catch (e) { log.warn?.('downloads manifest: ' + e.message); }
-    cache = m && Array.isArray(m.files) ? m : { version: null, files: [] }; cacheAt = Date.now();
+    cache = windowsManifest(m && Array.isArray(m.files) ? m : { version: null, files: [] }); cacheAt = Date.now();
     return cache;
   }
 
@@ -38,7 +46,7 @@ export function makeDownloads(log) {
     const m = await manifest();
     const f = m.files.find((x) => x.name === name);
     if (!f || name.includes('/') || name.includes('..')) { res.writeHead(404); return res.end('not found'); }
-    const head = { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${name}"`, 'cache-control': 'public, max-age=3600', 'x-file-size': String(f.size || '') };
+    const head = { 'content-type': 'application/zip', 'content-disposition': `attachment; filename="${name}"`, 'cache-control': 'public, max-age=3600', 'x-file-size': String(f.size || '') };
     if (dir) {
       const p = path.join(dir, name); if (!fs.existsSync(p)) { res.writeHead(404); return res.end('not found'); }
       res.writeHead(200, head); return fs.createReadStream(p).pipe(res);
@@ -52,39 +60,16 @@ export function makeDownloads(log) {
     body.pipe(res);
   }
 
-  // Which builds the page offers. The official build is the newest native client ('native', published
-  // automatically from main; older 'native-preview' uploads count until one exists). Unity client
-  // previews ('unity-preview') are listed separately as opt-in. The retired Electron installers
-  // ('install' / 'update' / unlabelled) are no longer offered, though their files stay in storage and
-  // their links keep working.
-  function offered(m) {
-    const official = m.files.filter((f) => f.kind === 'native');
-    return {
-      official: official.length ? official : m.files.filter((f) => f.kind === 'native-preview'),
-      unity: m.files.filter((f) => f.kind === 'unity-preview'),
-    };
-  }
-
-  async function page(res, ua = '') {
+  async function page(res) {
     const m = await manifest();
-    const guess = /Mac OS X|Macintosh/.test(ua) ? 'mac' : /Windows/.test(ua) ? 'win' : /Linux/.test(ua) ? 'linux' : '';
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const size = (b) => (b > 1e6 ? (b / 1e6).toFixed(0) + ' MB' : b ? Math.round(b / 1e3) + ' kB' : '');
-    const link = (f) => `<a class="btn" href="/download/file/${encodeURIComponent(f.name)}">${esc(f.label || f.name)}</a> <span class="muted">${size(f.size)}${f.sha256 ? ` · sha256 ${esc(f.sha256.slice(0, 12))}…` : ''}</span>`;
-    const { official, unity } = offered(m);
-    const rows = Object.entries(PLATFORMS).map(([k, label]) => {
-      const fs2 = official.filter((f) => f.platform === k);
-      const us = unity.filter((f) => f.platform === k);
-      return `<section class="${k === guess ? 'you' : ''}"><h2>${label}${k === guess ? ' <small>(your system)</small>' : ''}</h2>${fs2.length ? fs2.map(link).join('<br>') : '<p class="muted">No build yet.</p>'}${us.length ? `<p class="muted" style="margin:10px 0 2px">New engine preview (opt-in):</p>${us.map(link).join('<br>')}` : ''}</section>`;
-    }).join('');
-    const build = official.find((f) => f.build)?.build || m.native?.build || null;
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+    const file = m.files[0];
+    const download = file ? `<section class="download"><p class="eyebrow">WINDOWS · 64-BIT</p><h2>Ready to reclaim the ruins?</h2><a class="btn" href="/download/file/${encodeURIComponent(file.name)}" download>Download for Windows (ZIP)</a><p class="muted">${size(file.size)} · Unity preview${file.build ? ` · Build ${esc(file.build)}` : ''}</p><ol><li>Save the ZIP and choose <b>Extract All</b> into a local folder.</li><li>Open the extracted folder and run <b>ShatteredEmpires.exe</b>.</li></ol><p class="muted">Keep the accompanying files and folders together. An internet connection is required to play.</p>${file.sha256 ? `<details><summary>Verify your download</summary><p class="checksum">SHA-256: ${esc(file.sha256)}</p></details>` : ''}</section>` : '<section><h2>Windows download</h2><p>The next build is being published. Please try again shortly.</p></section>';
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shattered Empires — Desktop</title>
-<style>body{margin:0;background:#122025;color:#e9e4d6;font:16px/1.5 'Barlow Semi Condensed',system-ui,sans-serif}main{max-width:720px;margin:0 auto;padding:40px 16px}h1{font-family:'IM Fell English SC',Georgia,serif;font-weight:400;font-size:40px;margin:0 0 8px}h2{font-size:20px;margin:0 0 8px}section{background:#1a2c32;border:1px solid #2c3d40;border-radius:6px;padding:14px 16px;margin:12px 0}section.you{border-color:#d9a43a}img.map{width:100%;max-height:240px;object-fit:cover;border-radius:6px;margin:8px 0 12px;image-rendering:pixelated}.btn{display:inline-block;background:#d9a43a;color:#13201f;font-weight:700;padding:8px 14px;border-radius:4px;text-decoration:none;margin:4px 8px 4px 0}.muted{color:#9fb0ab;font-size:14px}a{color:#d9a43a}small{font-weight:400;color:#9fb0ab}</style></head>
-<body><main><h1>Shattered Empires</h1><img class="map" src="/api/preview?seed=${Date.now() % 100000}" alt="A generated continent"><p>A grand-scale strategy game on a continent that is still tearing itself apart. Download the game for Windows or macOS; every match is played on the game servers here, against the AI or with friends.${build ? ` Build <b>${esc(build)}</b>.` : ''}</p>${rows}
-${official.length ? '<p class="muted">Windows is a portable .exe. On macOS, unzip the download and move the app to Applications. Builds are unsigned or ad-hoc signed and the Mac app is not notarized, so system security may require an explicit first-launch override. Native builds do not auto-update: download the newest one here.</p>' : ''}
-${unity.length ? '<p class="muted">The new-engine preview is the Unity client in development: same servers, same matches, still missing parts of the interface.</p>' : ''}
-<p class="muted">An internet connection is required to play.</p></main></body></html>`);
+<style>body{margin:0;background:radial-gradient(ellipse at top,#23383c,#101b20 75%);color:#e9e4d6;font:16px/1.6 system-ui,sans-serif;min-height:100vh}main{max-width:660px;margin:0 auto;padding:64px 22px}h1{font-family:Georgia,serif;font-weight:400;font-size:clamp(34px,7vw,48px);line-height:1.15;margin:12px 0 20px}h2{font-size:23px;margin:0 0 20px}.eyebrow{color:#d5b877;font-size:12px;letter-spacing:2px;margin:0 0 10px}section{background:#192b30;border:1px solid #3d5050;border-top:2px solid #c3a564;border-radius:6px;padding:26px;margin:32px 0}.btn{display:block;background:#d2b373;color:#13201f;font-size:18px;font-weight:700;padding:15px 18px;border-radius:4px;text-align:center;text-decoration:none}.btn:hover{background:#e4c689}.btn:focus-visible{outline:3px solid #eef4ef;outline-offset:4px}.muted,details{color:#afbfba;font-size:14px}ol{padding-left:22px}li{margin:9px 0}summary{cursor:pointer}.checksum{font:12px/1.6 monospace;overflow-wrap:anywhere}</style></head>
+<body><main><p class="eyebrow">RECLAMATION COMMAND</p><h1>Shattered Empires</h1><p>Reclaim ruined cities, develop military bases, and command free-moving armies in a world shaped by war.</p>${download}</main></body></html>`);
   }
   return { manifest, file, page };
 }

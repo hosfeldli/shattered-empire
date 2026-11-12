@@ -7,9 +7,11 @@ performance. The Unity performance gate passed and the project has committed to 
 client development is frozen. The Node.js server stays authoritative and unchanged. See the
 [migration plan](docs/UNITY_MIGRATION.md), the [Unity client](unity/README.md) and the
 [development queue](docs/DEVELOPMENT_QUEUE.md). The [Godot 4.7.2 client](godot/README.md) is
-preserved as the behavioural reference (tag `godot-reference-2026-11-08`). It remains the official
-download until the Unity client passes its release gates, and it is published automatically from
-`main` (`native.yml`). The Electron installers are no longer published. The
+preserved as the behavioural reference (tag `godot-reference-2026-11-08`). Public distribution now
+offers only the **Windows Unity ZIP** at [the download page](https://game.liamhosfeld.com/download).
+It remains labeled as a preview while the remaining Unity release gates are completed. Mac and
+Godot downloads are retired; `native.yml` only produces legacy artifacts on manual request.
+The Electron installers are no longer published. The
 [Living World Engine checklist](godot/docs/LWE_REQUIREMENTS.md) and [native status](godot/docs/STATUS.md)
 describe the Godot client. The older Electron/PixiJS sources and documentation below are kept for
 reference.
