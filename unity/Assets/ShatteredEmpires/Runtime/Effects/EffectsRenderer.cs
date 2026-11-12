@@ -147,10 +147,11 @@ namespace SE.Runtime.Effects
         /// <summary>Continuous fire on a burning building: flames, embers and a smoke column.</summary>
         public void Fire(float3 p, float size)
         {
-            for (int k = 0; k < 2; k++)
+            for (int k = 0; k < 3; k++)
             {
                 var o = new float3(R() - 0.5f, 0, R() - 0.5f) * size;
-                Emit(p + o, new float3(0, 0.08f + R() * 0.08f, 0), size * (0.35f + R() * 0.25f), -0.05f, 0.45f + R() * 0.35f, new float3(1f, 1f, 1f), new float3(0.9f, 0.7f, 0.6f), 0.9f, true, 0.4f, 0.4f, 0.05f, Flame);
+                Emit(p + o, new float3(Wind.x * .035f, .045f + R() * .055f, Wind.z * .035f), size * (.24f + R() * .22f),
+                    -.018f, .35f + R() * .38f, new float3(1, .91f, .72f), new float3(.78f, .42f, .16f), .82f, true, .16f, .5f, .015f, Flame);
             }
             if (R() < 0.6f)
             {
@@ -158,7 +159,8 @@ namespace SE.Runtime.Effects
                 Emit(p + new float3(R() - 0.5f, 0.1f, R() - 0.5f) * size, ev, 0.004f, 0, 1.2f + R(), new float3(1f, 0.6f, 0.2f), new float3(0.8f, 0.2f, 0.05f), 1f, true, 2f, 0.3f, 0.2f, Streak, default, true);
             }
             float g = R() * 0.06f;
-            Emit(p + new float3(0, 0.25f, 0), new float3(R() - 0.5f, 1.4f, R() - 0.5f) * 0.18f, size * 0.55f, 0.45f, 5f + R() * 2f, new float3(0.08f + g, 0.075f + g, 0.07f + g), new float3(0.32f, 0.31f, 0.3f), 0.55f, false, 0, 0.35f, 0.08f);
+            Emit(p + new float3(0, size * .7f, 0), Wind * .07f + new float3((R() - .5f) * .05f, .20f, (R() - .5f) * .05f),
+                size * .42f, size * .55f, 3.3f + R() * 1.4f, new float3(.08f + g, .075f + g, .07f + g), new float3(.32f, .31f, .3f), .46f, false, 0, .35f, .055f);
         }
 
         /// <summary>
@@ -175,24 +177,38 @@ namespace SE.Runtime.Effects
                 var v = new float3(R() - 0.5f, 0.6f + R() * 0.5f, R() - 0.5f) * 1.6f * scale;
                 Emit(p + new float3(0, 0.3f, 0), v, 0.9f * scale, 1.4f * scale, 1.6f + R(), new float3(1f, 0.7f, 0.3f), new float3(0.6f, 0.15f, 0.05f), 0.95f, true, 2.5f, 1.5f, 0.6f);
             }
-            for (int k = 0; k < 40; k++)
+            for (int k = 0; k < 28; k++)
             {
                 float h = R();
-                var v = new float3((R() - 0.5f) * 0.2f, 1.5f + h * 1.6f, (R() - 0.5f) * 0.2f) * scale;
+                var v = new float3((R() - 0.5f) * 0.12f, .72f + h * .65f, (R() - 0.5f) * 0.12f) * scale;
                 float g = 0.12f + R() * 0.1f;
-                Emit(p + new float3((R() - 0.5f) * 0.6f, 0.4f, (R() - 0.5f) * 0.6f) * scale, v, 1.0f * scale, 0.9f * scale, 14f + R() * 6f, new float3(0.45f + g, 0.33f + g, 0.25f + g), new float3(0.5f, 0.48f, 0.47f), 0.75f, false, 0, 0.45f, -0.04f);
+                Emit(p + new float3((R() - 0.5f) * .32f, .4f + h * 1.65f, (R() - 0.5f) * .32f) * scale, v,
+                    .36f * scale, .12f * scale, 12f + R() * 4f, new float3(.40f + g, .36f + g, .30f + g),
+                    new float3(.44f, .44f, .43f), .65f, false, 0, .26f, .015f);
             }
             for (int k = 0; k < 28; k++)
             {
-                var o = RandDir(); o.y = math.abs(o.y) * 0.3f;
-                Emit(p + new float3(0, 3.2f * scale, 0) + o * 0.6f * scale, o * 0.9f * scale, 1.6f * scale, 1.1f * scale, 16f + R() * 6f, new float3(0.7f, 0.5f, 0.38f), new float3(0.55f, 0.53f, 0.52f), 0.7f, false, 0, 0.35f, 0.02f);
+                float angle = k * 2.39996f;
+                var o = new float3(math.cos(angle), .12f + R() * .2f, math.sin(angle));
+                float radius = .8f + R() * .9f;
+                Emit(p + new float3(0, 2.6f * scale, 0) + o * radius * scale,
+                    new float3(o.x * .25f, .75f, o.z * .25f) * scale, .53f * scale, .15f * scale,
+                    14f + R() * 4f, new float3(.57f, .52f, .45f), new float3(.52f, .52f, .51f), .64f, false, 0, .20f, .025f);
             }
             GroundShock(p, 22 * scale, 2.4f);
+            // A filled cap above the stem: the outer billows alone make a hollow ring.
+            for (int k = 0; k < 20; k++)
+            {
+                float a = k * 2.39996f, r = math.sqrt(R()) * 1.1f;
+                var offset = new float3(math.cos(a) * r, 3.1f + R() * .45f, math.sin(a) * r) * scale;
+                Emit(p + offset, new float3(0, .70f, 0) * scale, .72f * scale, .15f * scale, 13f + R() * 3f,
+                    new float3(.52f, .48f, .42f), new float3(.48f, .49f, .49f), .60f, false, 0, .18f, .02f);
+            }
             for (int k = 0; k < 48; k++)
             {
                 float a = k * 6.283f / 48;
                 var v = new float3(math.cos(a), 0.05f, math.sin(a)) * (6f + R() * 2f) * scale;
-                Emit(p + new float3(0, 0.12f, 0), v, 0.5f * scale, 0.8f * scale, 3.5f + R(), new float3(0.6f, 0.55f, 0.47f), new float3(0.55f, 0.52f, 0.48f), 0.45f, false, 0, 0.9f, 0.02f);
+                Emit(p + new float3(0, 0.12f, 0), v, .18f * scale, .18f * scale, 2.3f + R() * .6f, new float3(.6f, .55f, .47f), new float3(.55f, .52f, .48f), .36f, false, 0, .7f, .02f);
             }
         }
 
@@ -243,7 +259,12 @@ namespace SE.Runtime.Effects
             for (int k = 0; k < 3; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 6f, new float3(0.1f, 0.1f, 0.1f), new float3(0.3f, 0.3f, 0.3f), 0.5f, false, 0, 0.4f, 0.06f);
         }
 
-        public void ClearPersistent() { craters.Clear(); wrecks.Clear(); craterHead = wreckHead = 0; count = flightCount = waveCount = waveVertexCount = 0; }
+        public void ClearPersistent()
+        {
+            craters.Clear(); wrecks.Clear(); missileBodies?.Clear(); missileBodies?.MarkDirty();
+            craterHead = wreckHead = 0; count = flightCount = waveCount = waveVertexCount = 0;
+            Flash = Shake = 0;
+        }
 
         public void Update(float dt, float camX, float period, bool wrap, float simulationRate = 1f)
         {
@@ -266,7 +287,7 @@ namespace SE.Runtime.Effects
                 p.Pos += p.Vel * dt;
                 p.Size = Mathf.Max(0.002f, p.Size + p.Grow * dt);
                 if (p.Kind == Puff) p.Rot += p.Spin * dt;
-                float fade = p.Kind == Ring ? 1f - t : t < 0.1f ? t / 0.1f : 1f - Mathf.SmoothStep(0.4f, 1f, t);
+                float fade = p.Kind == Ring ? 1f - t : t < .1f ? t / .1f : 1f - Mathf.SmoothStep(0, 1, Mathf.InverseLerp(.4f, 1f, t));
                 float x = wrap ? HexMath.NearX(p.Pos.x, camX, period, true) : p.Pos.x;
                 float3 stretch = p.StretchWithVelocity ? p.Vel * 0.04f : p.Stretch;
                 var g = new ParticleGpu
@@ -294,6 +315,7 @@ namespace SE.Runtime.Effects
             craters.DrawImages(images);
             wrecks.DrawImages(images);
             DrawGroundWaves(images);
+            missileBodies?.DrawImages(images);
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
             frameSlot = (frameSlot + 1) % 3;
             if (alphaCount > 0)
@@ -315,6 +337,7 @@ namespace SE.Runtime.Effects
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
             craters.Dispose(); wrecks.Dispose();
+            missileBodies?.Dispose();
             if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
             if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);
             if (lightRoot != null) UnityEngine.Object.Destroy(lightRoot);

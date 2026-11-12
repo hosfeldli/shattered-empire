@@ -166,13 +166,12 @@ namespace SE.Runtime.Cities
 
         void StrategicFacility(in Ctx c)
         {
-            Module(c, Part.Concrete, -.10f, -.17f, new float3(.69f, .18f, .59f), FacilityConcrete * .85f);
+            Module(c, Part.StrategicHatch, -.10f, -.17f, new float3(.76f), new float3(.90f));
             for (int side = -1; side <= 1; side += 2)
             {
-                Module(c, Part.Siding, -.10f + side * .12f, -.17f, new float3(.225f, .032f, .39f), FacilitySteel, 0, .18f);
-                Module(c, Part.Concrete, -.10f + side * .38f, -.17f, new float3(.044f, .27f, .68f), FacilityConcrete);
+                Module(c, Part.Concrete, -.10f + side * .46f, -.17f, new float3(.08f, .065f, .78f), FacilityConcrete);
             }
-            Module(c, Part.Concrete, -.10f, -.51f, new float3(.80f, .26f, .045f), FacilityConcrete);
+            Module(c, Part.Concrete, -.10f, -.62f, new float3(.90f, .07f, .065f), FacilityConcrete);
             Module(c, Part.Concrete, .39f, .17f, new float3(.23f, .17f, .34f), FacilityConcrete);
             Shutter(c, .39f, .347f, .12f, .13f);
             Module(c, Part.Cylinder, .42f, .12f, new float3(.018f, .30f, .018f), FacilitySteel, 0, .17f);

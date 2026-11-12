@@ -142,7 +142,8 @@ namespace SE.Runtime.App
             if (audioDirector != null) atmosphere.Thunder += delay => audioDirector.Play("thunder", new float3(rts.Focus.x, 4, rts.Focus.z), 0.8f, 30f, 3, rts.Distance);
             if (!opts.Has("no-ui")) BuildInterface();
             ApplyQuality(opts.Get("quality", PlayerPrefs.GetString("se.quality", "high")));
-            serverUrl = opts.Has("server") ? opts.Get("server") : PlayerPrefs.GetString("se.server", LaunchOptions.PublicServer);
+            serverUrl = LaunchOptions.ResolveServer(opts.Has("server") ? opts.Get("server") : PlayerPrefs.GetString("se.server", LaunchOptions.PublicServer),
+                opts.Has("server") || Application.isEditor || Debug.isDebugBuild);
             playerName = opts.Get("name", PlayerPrefs.GetString("se.name", "Commander"));
         }
 
@@ -186,7 +187,7 @@ namespace SE.Runtime.App
             var mode = opts.Get("mode");
             if (mode == "stress") StartStress();
             else if (mode != "") StartMatch(mode, opts.Get("match"));
-            else if ((opts.Has("review-intro") || PlayerPrefs.GetInt("se.intro.seen", 0) == 0) && hud != null) PlayIntro();
+            else if (hud != null) PlayIntro();
             else ShowMenu("");
             SocialPlatform.Current.JoinRequested += code => StartMatch("join", code);
         }
@@ -203,22 +204,22 @@ namespace SE.Runtime.App
             {
                 case "low":
                     if (urp) { urp.shadowDistance = 45; urp.msaaSampleCount = 1; urp.renderScale = 0.85f; }
-                    terrain.TreeDensity = 0.5f; terrain.TreeDistance = 60; terrain.LodDistance = 45; fx.Intensity = 0.5f;
+                    terrain.TreeDensity = 0.5f; terrain.TreeDistance = 310; terrain.LodDistance = 45; fx.Intensity = 0.5f;
                     units.OperationalDistance = 12f;
                     break;
                 case "medium":
                     if (urp) { urp.shadowDistance = 80; urp.msaaSampleCount = 2; urp.renderScale = 1f; }
-                    terrain.TreeDensity = 0.75f; terrain.TreeDistance = 85; terrain.LodDistance = 60; fx.Intensity = 0.75f;
+                    terrain.TreeDensity = 0.75f; terrain.TreeDistance = 340; terrain.LodDistance = 60; fx.Intensity = 0.75f;
                     units.OperationalDistance = 18f;
                     break;
                 case "ultra":
                     if (urp) { urp.shadowDistance = 200; urp.msaaSampleCount = 4; urp.renderScale = 1f; }
-                    terrain.TreeDensity = 1.25f; terrain.TreeDistance = 150; terrain.LodDistance = 100; fx.Intensity = 1.2f;
+                    terrain.TreeDensity = 1.25f; terrain.TreeDistance = 420; terrain.LodDistance = 100; fx.Intensity = 1.2f;
                     units.OperationalDistance = 31f;
                     break;
                 default:
                     if (urp) { urp.shadowDistance = 130; urp.msaaSampleCount = 4; urp.renderScale = 1f; }
-                    terrain.TreeDensity = 1f; terrain.TreeDistance = 110; terrain.LodDistance = 70; fx.Intensity = 1f;
+                    terrain.TreeDensity = 1f; terrain.TreeDistance = 380; terrain.LodDistance = 70; fx.Intensity = 1f;
                     units.OperationalDistance = 24f;
                     break;
             }
@@ -228,11 +229,12 @@ namespace SE.Runtime.App
         // ------------------------------------------------------------------ menu with a living world behind it
         void ShowMenu(string status)
         {
+            audioDirector?.MenuScore(true);
             phase = Phase.Menu;
             rts.Cam.orthographic = false;
             net?.Dispose(); net = null;
             stress = null; perfRunning = false;
-            var gen = StressWorld.Generate(80, 3);
+            var gen = StressWorld.Generate(80, 3, bounded: true);
             session.ApplyWelcome(new WelcomeMessage { W = 80, H = 80, Wrap = false, CivId = 0, Seed = 3, Match = "menu", Civs = new[] { new CivInfo { Id = 0, Name = "Reclamation Command", Color = 0x8a9276 } } });
             session.World.ActionLandscape = true;
             city.ActionRts = false;
@@ -250,6 +252,7 @@ namespace SE.Runtime.App
         public void PlayIntro()
         {
             if (uiDocument == null) return;
+            audioDirector?.MenuScore(false);
             hud.ShowMenu(false, null);
             hud.ShowGame(false);
             phase = Phase.Intro;
@@ -266,6 +269,8 @@ namespace SE.Runtime.App
         public void StartMatch(string mode, string match)
         {
             if (string.IsNullOrEmpty(mode)) { ShowMenu(""); return; }
+            audioDirector?.MenuScore(false);
+            serverUrl = LaunchOptions.ResolveServer(serverUrl, opts.Has("server") || Application.isEditor || Debug.isDebugBuild);
             if (!opts.Has("review") && !opts.Has("review-intro"))
             { PlayerPrefs.SetString("se.server", serverUrl); PlayerPrefs.SetString("se.name", playerName); PlayerPrefs.Save(); }
             net?.Dispose();
@@ -618,6 +623,7 @@ namespace SE.Runtime.App
                 foreach (var r in session.Ruins) if (r.Tile >= 0 && r.Tile < world.Grid.N) { city.Ruins[r.Tile] = r; city.MarkDirty(new[] { world.ChunkOf(r.Tile) }); }
             }
             bool overUi = hud != null && hud.IsPointerOverUi(InputFacade.MousePosition);
+            rts.PointerOverUi = overUi;
             if (phase == Phase.Playing && !(hud?.MenuVisible ?? false))
             { if (reviewCapturing) rts.UserControl = false; rts.Update(dt); }
             // comfort settings: shake, flashes, edge pan, pan speed, weather, marker contrast
@@ -748,7 +754,7 @@ namespace SE.Runtime.App
                 }
             float wind = Mathf.Clamp01(atmosphere.WindMap.x * atmosphere.WindMap.x + atmosphere.WindMap.z * atmosphere.WindMap.z);
             audioDirector.Update(dt, session.Units, id => units.TryGetPosition(session.Units, id, out var p) ? p : (Vector2?)null, w,
-                new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, n > 0 ? urban / n : 0, river, atmosphere.Rain, wind, session.Structures);
+                new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, n > 0 ? urban / n : 0, river, atmosphere.Rain, wind, session.Structures, warzone.BurningWrecks);
         }
 
         bool HasBuilding(int tile)
@@ -775,7 +781,7 @@ namespace SE.Runtime.App
                     case "pickup":
                         var pickupPoint = EventPoint(e, true, .11f);
                         fx.Capture(pickupPoint, new float3(.73f, .62f, .40f));
-                        audioDirector?.Play("capture", pickupPoint, .24f, 4, 0, rts.Distance);
+                        audioDirector?.Play("pickup", pickupPoint, .45f, 4, 0, rts.Distance);
                         if (e.Owner == session.CivId) hud?.ShowPickupReward(pickupPoint, e.Amount, time);
                         break;
                     case "capture":

@@ -10,10 +10,11 @@ namespace SE.Runtime.Effects
         {
             public float3 From, To, Last;
             public float Age, Duration, Arc, Trail;
-            public bool Rocket, Strategic;
+            public bool Rocket, Strategic, Warhead;
         }
         readonly Flight[] flights = new Flight[512];
         int flightCount;
+        InstanceBatch missileBodies;
         public float3 Wind;
         readonly Light[] flashLights = new Light[4];
         readonly float[] flashLife = new float[4];
@@ -60,12 +61,16 @@ namespace SE.Runtime.Effects
                 Arc = strategic ? math.min(13, distance * .48f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
                 Rocket = weapon == "warhead" || weapon == "missile" || weapon == "rockets" || weapon == "aam" || weapon == "drone_strike",
                 Strategic = strategic,
+                Warhead = weapon == "warhead",
             };
         }
 
         void UpdateFlights(float dt)
         {
             if (dt <= 0) return;
+            if (missileBodies == null) missileBodies = new InstanceBatch(MeshKit.StrategicMissile, RenderResources.Instanced, 64)
+                { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e4f) };
+            missileBodies.Clear();
             for (int i = 0; i < flightCount; i++)
             {
                 ref var f = ref flights[i];
@@ -75,18 +80,29 @@ namespace SE.Runtime.Effects
                 float3 p = math.lerp(f.From, f.To, t) + new float3(0, 4 * f.Arc * t * (1 - t), 0);
                 var step = p - f.Last;
                 var heading = math.normalizesafe(step, new float3(0, 0, 1));
-                float size = f.Strategic ? .035f : f.Rocket ? .016f : .007f;
+                if (f.Rocket)
+                    missileBodies.Add(InstanceData.TRS(MapSpace.W(p), quaternion.LookRotationSafe(MapSpace.W(heading), new float3(0, 1, 0)),
+                        new float3(f.Warhead ? .44f : .085f), new float4(.93f, .92f, .86f, 0)));
+                float size = f.Warhead ? .055f : f.Strategic ? .035f : f.Rocket ? .016f : .007f;
                 Emit(p, float3.zero, size, 0, .04f, new float3(1, .84f, .5f), new float3(1, .50f, .18f), 1, true,
-                    f.Rocket ? 2f : 1f, 0, 0, Streak, -heading * (f.Rocket ? .12f : .07f));
+                    f.Rocket ? 2f : 1f, 0, 0, Streak, -heading * (f.Warhead ? .65f : f.Rocket ? .12f : .07f));
                 f.Trail += dt;
-                if (f.Rocket && f.Trail >= .045f)
+                if (f.Warhead && !f.Strategic)
+                {
+                    var trail = f.From - p;
+                    if (math.lengthsq(trail) > .1f)
+                        Emit((f.From + p) * .5f, float3.zero, .032f, 0, math.max(.025f, dt * 1.4f),
+                            new float3(.78f, .79f, .77f), new float3(.68f, .71f, .72f), .22f, false, 0, 0, 0, Streak, trail);
+                }
+                else if (f.Rocket && f.Trail >= .045f)
                 {
                     f.Trail = 0;
-                    Emit(p - heading * .05f, Wind * .10f, size * 1.8f, f.Strategic ? .26f : .10f,
-                        f.Strategic ? 4f : 1.2f, new float3(.70f, .70f, .67f), new float3(.50f, .52f, .53f), .30f, false, 0, .6f, .025f);
+                    Emit(p - heading * (f.Warhead ? .25f : .05f), Wind * .10f, size * 1.8f, f.Warhead || f.Strategic ? .18f : .10f,
+                        f.Warhead || f.Strategic ? 4f : 1.2f, new float3(.78f, .79f, .77f), new float3(.58f, .60f, .61f), f.Warhead ? .60f : .30f, false, 0, .6f, .025f);
                 }
                 f.Last = p;
             }
+            missileBodies.MarkDirty();
         }
 
         public void Impact(float3 p, float scale, int biome, bool armor = false)

@@ -73,7 +73,7 @@ namespace SE.Core.Stress
             public int Size;
         }
 
-        public static Result Generate(int size, int seed)
+        public static Result Generate(int size, int seed, bool bounded = false)
         {
             int w = size, h = size, n = w * h;
             var elev = new float[n];
@@ -174,6 +174,17 @@ namespace SE.Core.Stress
                         int i = r * w + q;
                         mask[cell >> 3] |= (byte)(1 << (cell & 7));
                         float e = elev[i];
+                        if (bounded)
+                        {
+                            int edge = Math.Min(Math.Min(q, w - 1 - q), Math.Min(r, h - 1 - r));
+                            if (edge < 4)
+                            {
+                                float coast = 1 - edge / 4f;
+                                e = elev[i] = Math.Min(e, -.55f * coast * coast);
+                                biome[i] = e < -.18f ? Deep : Shallow;
+                                river[i] = lake[i] = false; flowDir[i] = -1;
+                            }
+                        }
                         int fb = river[i] ? Math.Min(4, (int)Math.Floor(Math.Log(Math.Max(1, flow[i] / 6.0), 2)) + 1) : 0;
                         bool water = biome[i] <= 1;
                         data.Add(ClampByte((e + 1f) * 127.5f));

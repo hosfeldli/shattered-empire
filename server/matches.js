@@ -75,7 +75,7 @@ export class MatchManager {
     if (why) throw new Error(why);
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
       seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: !action && !sandbox && opts.rebels !== false, worker: null, stats: null,
-      ruleset, wrap: action ? opts.wrap === true : true, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
+      ruleset, wrap: !action, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
       teamSize, tutorial: action && !pvp && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination' };
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);

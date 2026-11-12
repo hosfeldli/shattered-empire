@@ -27,6 +27,8 @@ float4 SE_Ground(float3 positionWS) { return SAMPLE_TEXTURE2D_LOD(_SE_GroundTex,
 // drifting cloud shadows: x = cover (0..1), y = wind x, z = wind z, w = speed
 float4 _SE_Clouds;
 float4 _SE_Wind; // world-space x/z vector, strength
+float _SE_Glare;
+float _SE_CityPower;
 half4 _SE_AmbientSky, _SE_AmbientEquator, _SE_AmbientGround;
 float4 _SE_Haze;
 half4 _SE_HazeColor;

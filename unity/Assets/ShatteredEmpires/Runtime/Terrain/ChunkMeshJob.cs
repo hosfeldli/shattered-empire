@@ -53,7 +53,8 @@ namespace SE.Runtime.Landscape
         [ReadOnly] public NativeArray<byte> Blocked;       // chunk-local: no trees (towns, roads, buildings)
         public NativeArray<InstanceData> TreesA;           // broadleaf
         public NativeArray<InstanceData> TreesB;           // conifer
-        public NativeArray<int> Counts;                    // [trees A, trees B]
+        public NativeArray<InstanceData> Grass, Understory;
+        public NativeArray<int> Counts;                    // trees A/B, grass, understory
         public NativeArray<float> BoundsOut;               // min xyz, max xyz
 
         TerrainView View => new TerrainView
@@ -176,8 +177,17 @@ namespace SE.Runtime.Landscape
 
         void WaterVertex(ref NativeArray<TerrainVertex> wv, ref int vw, in TerrainView v, float level, float x, float z)
         {
-            float depth = level - v.GroundHeight(x, z);
+            float depth = StandingDepth(v, level, x, z);
             wv[vw++] = new TerrainVertex { Position = new float3(x - OriginX, level, -z), Normal = new float3(0, 1, 0), Color = Pack(new float3(0, 1, 1), depth / 0.9f) };
+        }
+
+        static float StandingDepth(in TerrainView view, float level, float x, float z)
+        {
+            // Outer hex corners can round just beyond the finite map. The generic terrain
+            // query returns zero there; treating that as a seabed clipped away the last
+            // water triangles and exposed a bright zigzag against the ocean horizon.
+            int tile = HexMath.TileAt(x, z, view.W, view.H, view.Wrap != 0);
+            return tile < 0 ? .9f : level - view.GroundHeight(x, z);
         }
 
         // Clip each water triangle to the actual terrain intersection before upload.
@@ -188,9 +198,9 @@ namespace SE.Runtime.Landscape
         {
             float3* input = stackalloc float3[3];
             float3* clipped = stackalloc float3[4];
-            input[0] = new float3(a, level - view.GroundHeight(a.x, a.y));
-            input[1] = new float3(b, level - view.GroundHeight(b.x, b.y));
-            input[2] = new float3(c, level - view.GroundHeight(c.x, c.y));
+            input[0] = new float3(a, StandingDepth(view, level, a.x, a.y));
+            input[1] = new float3(b, StandingDepth(view, level, b.x, b.y));
+            input[2] = new float3(c, StandingDepth(view, level, c.x, c.y));
             int count = 0;
             for (int edge = 0; edge < 3; edge++)
             {
@@ -294,7 +304,7 @@ namespace SE.Runtime.Landscape
             var lix = lo.GetIndexData<uint>();
             int vh = 0, ih = 0, vl = 0, il = 0;
             float* h7 = stackalloc float[7];
-            int treeA = 0, treeB = 0;
+            int treeA = 0, treeB = 0, grass = 0, understory = 0;
             for (int lr = 0; lr < Cs; lr++)
                 for (int lq = 0; lq < Cs; lq++)
                 {
@@ -375,7 +385,9 @@ namespace SE.Runtime.Landscape
                     // trees
                     if (seaFloor || v.IsLake(i) || Blocked[lr * Cs + lq] != 0) continue;
                     int b = Biome[i];
-                    float count = b == 4 ? 9 : b == 6 ? 2 : b == 7 ? 3 : b == 8 ? 2 : b == 9 ? 1.2f : b == 2 ? 0.9f : b == 3 ? 0.35f : 0;
+                    float groveNoise = noise.snoise(new float2(cx, cz) * .095f + Seed * .013f) * .5f + .5f;
+                    float grove = math.smoothstep(.40f, .72f, groveNoise);
+                    float count = b == 4 ? 5.5f + grove * 4 : b == 6 ? 1.3f : b == 7 ? 2 : b == 8 ? 1 + grove * 2 : b == 9 ? .8f : b == 2 ? .12f + grove * 2.4f : b == 3 ? grove * 1.25f : 0;
                     count *= TreeDensity;
                     int whole = (int)count;
                     if (Hash(i, Seed + 5) < count - whole) whole++;
@@ -391,23 +403,44 @@ namespace SE.Runtime.Landscape
                         float z = cz + u * HexMath.CornerZ[k] + w * HexMath.CornerZ[k2];
                         if ((GeoFlags[i] & 1) != 0 && u + w < 0.35f) continue;   // keep river channels clear
                         float y = v.GroundHeight(x, z);
+                        if (math.abs(v.DamageHeight(i, x, z)) > .012f) continue;
                         // The detailed tree library is normalized to about one unit tall.
                         // Mature canopy needs a comparable scale to the command buildings.
                         float s = 0.38f + Hash(i * 23 + t, Seed + 4) * 0.23f;
                         bool conifer = b == 6 || b == 9 || b == 8 || (b == 4 && Hash(i, Seed + 9) < 0.3f) || y > 3f;
                         float g = Hash(i * 29 + t, Seed + 6);
-                        int grove = (int)math.floor(cx / 12f) + (int)math.floor(cz / 12f) * 4099;
-                        float autumn = Hash(grove, Seed + 11) < .055f ? 1f : 0f;
+                        int groveId = (int)math.floor(cx / 12f) + (int)math.floor(cz / 12f) * 4099;
+                        float autumn = Hash(groveId, Seed + 11) < .055f ? 1f : 0f;
                         var col = conifer ? new float4(.26f + g * .04f, .35f + g * .05f, .25f, 0)
                             : new float4(.36f + g * .07f + autumn * .14f, .44f + g * .06f - autumn * .04f, .29f + g * .025f, 0);
                         var inst = InstanceData.TRS(MapSpace.W(x, y - 0.01f, z), MapSpace.Yaw(Hash(i * 31 + t, Seed) * 6.283f), new float3(s, s * (0.9f + g * 0.4f), s), col);
                         if (conifer) { if (treeB < TreesB.Length) TreesB[treeB++] = inst; }
                         else if (treeA < TreesA.Length) TreesA[treeA++] = inst;
                     }
+                    // Meadows and forest edges have coherent groundcover, with a quiet soil base
+                    // beneath it. All placement is seeded and regenerated only with its chunk.
+                    int plants = (int)((b == 2 || b == 3 ? 48 : b == 4 || b == 7 ? 30 : b == 8 ? 18 : 0) * TreeDensity);
+                    for (int t = 0; t < plants; t++)
+                    {
+                        int k = (int)(Hash(i * 47 + t, Seed + 31) * 6) % 6, k2 = (k + 1) % 6;
+                        float u = Hash(i * 53 + t, Seed + 32), v2 = Hash(i * 59 + t, Seed + 33);
+                        if (u + v2 > 1) { u = 1 - u; v2 = 1 - v2; }
+                        float x = cx + u * HexMath.CornerX[k] + v2 * HexMath.CornerX[k2];
+                        float z = cz + u * HexMath.CornerZ[k] + v2 * HexMath.CornerZ[k2];
+                        if ((GeoFlags[i] & 1) != 0 && u + v2 < .55f) continue;
+                        if (math.abs(v.DamageHeight(i, x, z)) > .006f) continue;
+                        float y = v.GroundHeight(x, z), variation = Hash(i * 61 + t, Seed + 34);
+                        float scale = .68f + variation * .47f;
+                        var color = new float4(.47f + variation * .10f, .53f + variation * .07f, .31f + variation * .065f, 0);
+                        var plant = InstanceData.TRS(MapSpace.W(x, y - .007f, z), MapSpace.Yaw(variation * 6.283f), new float3(scale), color);
+                        if (grass < Grass.Length) Grass[grass++] = plant;
+                        if (t < 3 && (b == 4 || b == 7 || groveNoise > .63f) && variation > .38f && understory < Understory.Length)
+                            Understory[understory++] = InstanceData.TRS(MapSpace.W(x, y, z), MapSpace.Yaw(variation * 6.283f), new float3(.55f + variation * .40f), color);
+                    }
                 }
             lo.subMeshCount = 1;
             lo.SetSubMesh(0, new SubMeshDescriptor(0, il), MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
-            Counts[0] = treeA; Counts[1] = treeB;
+            Counts[0] = treeA; Counts[1] = treeB; Counts[2] = grass; Counts[3] = understory;
 
             // ---------------- water: flat hexes at the water level, river ribbons along the flow
             var wm = Meshes[2];

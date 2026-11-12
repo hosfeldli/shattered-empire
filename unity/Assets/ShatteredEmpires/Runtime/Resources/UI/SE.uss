@@ -290,3 +290,23 @@
 .menu .btn { height: 34px; font-size: 14px; margin: 2px 0; background-color: rgba(34, 46, 51, .82); }
 .menu .btn.primary { background-color: rgb(167, 136, 80); border-color: rgb(194, 163, 105); }
 .menu .btn:hover { background-color: rgba(67, 83, 87, .95); border-color: rgb(183, 158, 109); }
+
+/* Every menu has a real viewport: growing content never pushes actions off screen. */
+.menu { padding-bottom: 6%; }
+.menu-box { max-height: 100%; min-height: 0; flex-shrink: 1; }
+.menu-scroll { max-height: 690px; }
+.bounded-scroll { flex-shrink: 1; min-height: 0; }
+.bounded-scroll > .unity-scroll-view__content-viewport { min-height: 0; }
+.bounded-scroll .unity-scroll-view__content-container > * { flex-shrink: 0; }
+.bounded-scroll .unity-scroller--vertical { width: 10px; margin-left: 8px; }
+.bounded-scroll .unity-scroller__high-button, .bounded-scroll .unity-scroller__low-button { display: none; }
+.bounded-scroll .unity-base-slider__dragger { background-color: rgb(139, 128, 100); border-radius: 3px; }
+.panel { min-height: 0; }
+.panel > .bounded-scroll { margin-top: 22px; }
+.menu-box.menu-wide { width: 570px; }
+.menu-box { max-width: 92%; }
+.menu-wide .menu-title { font-size: 30px; }
+.menu-wide .menu-sub { margin-bottom: 12px; }
+.action-card > .bounded-scroll { min-height: 0; }
+.menu-list { flex-shrink: 0; }
+.pause-menu { padding-top: 6%; padding-bottom: 6%; }

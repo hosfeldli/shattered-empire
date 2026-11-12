@@ -89,10 +89,13 @@ Shader "SE/Water"
                 half skyVariation = .94h + .06h * SE_CloudNoise(p * .17 + wind * t * .008);
                 half3 reflection = lerp(SE_Ambient(half3(0, 1, 0)) * half3(.72h, .88h, 1.08h), half3(.20h, .28h, .34h), .35h) * skyVariation;
                 half spec = pow(saturate(dot(n, normalize(sun.direction + view))), 180.0h) * .34h * sun.shadowAttenuation;
-                half3 color = lerp(bed * illumination, reflection, fresnel) + sun.color * spec;
-                half alpha = coverage * lerp(.82h, .95h, saturate(depth * 3.0h));
+                half3 color = lerp(bed * illumination, reflection, fresnel) + sun.color * spec * _SE_Glare;
+                half alpha = coverage * lerp(.82h, 1.0h, saturate(depth * 3.0h));
                 alpha = lerp(alpha, 1.0h, _Horizon);
-                return half4(SE_ApplyFog(color, i.positionWS, i.fogCoord), alpha);
+                // The horizon is a very large quad. Clamped fog factors interpolated from
+                // its remote vertices otherwise disagree with the finely tessellated sea.
+                float fragmentFog = ComputeFogFactor(TransformWorldToHClip(i.positionWS).z);
+                return half4(SE_ApplyFog(color, i.positionWS, fragmentFog), alpha);
             }
             ENDHLSL
         }

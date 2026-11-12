@@ -253,6 +253,9 @@ namespace SE.Runtime.Cities
         {
             for (int k = 0; k < 7; k++)
                 Module(c, Part.Concrete, (k - 3) * .065f, .018f * math.sin(k), new float3(.060f, .065f + (k % 2) * .01f, .12f), new float3(.53f, .49f, .39f), (k % 2 == 0 ? .04f : -.04f));
+            Module(c, Part.Wire, 0, -.11f, new float3(.42f, .12f, .12f), new float3(.84f, .82f, .77f));
+            for (int side = -1; side <= 1; side += 2)
+                Module(c, Part.TankObstacle, side * .19f, .15f, new float3(.14f), new float3(.90f, .88f, .80f), side * .24f);
         }
 
         void SensorPost(in Ctx c)

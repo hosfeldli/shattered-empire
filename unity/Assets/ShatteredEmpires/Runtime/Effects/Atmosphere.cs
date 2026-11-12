@@ -31,6 +31,8 @@ namespace SE.Runtime.Effects
         ColorAdjustments grading;
         Vignette vignette;
         public FilmGrain Grain;
+        Bloom bloom;
+        public float Glare = 1;
         public float Cloud, Rain, Storm, Fog, Wet;
         // mood overrides for cinematic shots (dusk, night, dawn); defaults leave the day untouched
         public float Dim = 1f, SunTintAmount = 0f, SunElevation = -1f, SunAzimuth = -32f;
@@ -68,7 +70,7 @@ namespace SE.Runtime.Effects
             data.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
             profile = ScriptableObject.CreateInstance<VolumeProfile>();
             var tone = profile.Add<Tonemapping>(true); tone.mode.Override(TonemappingMode.Neutral);
-            var bloom = profile.Add<Bloom>(true); bloom.threshold.Override(1.15f); bloom.intensity.Override(.12f); bloom.scatter.Override(.6f);
+            bloom = profile.Add<Bloom>(true); bloom.threshold.Override(1.15f); bloom.intensity.Override(.12f); bloom.scatter.Override(.6f);
             grading = profile.Add<ColorAdjustments>(true); grading.postExposure.Override(.18f); grading.contrast.Override(3f); grading.saturation.Override(-5f);
             var wb = profile.Add<WhiteBalance>(true); wb.temperature.Override(0f);
             vignette = profile.Add<Vignette>(true); vignette.intensity.Override(.035f); vignette.smoothness.Override(.6f);
@@ -109,6 +111,8 @@ namespace SE.Runtime.Effects
                 Thunder?.Invoke(0.5f + R() * 3f);
             }
             float flash = Mathf.Max(fx != null ? fx.Flash : 0, lightning);
+            bloom.intensity.Override(.10f * Mathf.Clamp01(Glare));
+            Shader.SetGlobalFloat("_SE_Glare", Mathf.Clamp01(Glare));
             sun.intensity = (Mathf.Lerp(1.38f, .78f, overcast) + flash * 2.5f) * Dim;
             sun.color = Color.Lerp(Color.Lerp(new Color(1f, .97f, .92f), new Color(.93f, .96f, 1f), overcast), SunTint, SunTintAmount);
             if (SunElevation >= 0) sun.transform.rotation = Quaternion.Euler(SunElevation, SunAzimuth, 0);

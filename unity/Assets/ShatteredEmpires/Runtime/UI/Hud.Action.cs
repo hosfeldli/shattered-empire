@@ -155,12 +155,16 @@ namespace SE.Runtime.UI
             live.Clear();
             card.EnableInClassList("expanded-details", showUnitDetails && units.Selected.Count > 0);
             card.EnableInClassList("active-tool-card", commander.Current != Commander.Mode.Select);
+            var frame = card;
+            card = Scroll(frame).contentContainer;
             if (commander.Current != Commander.Mode.Select) ActionToolCard();
             else if (commander.SelectedPickup != 0) ActionPickupCard();
             else if (site.Id > 0) ActionSiteCard(card, site, false);
             else if (commander.SelectedBuildings.Count > 0) ActionBuildingCard();
             else if (units.Selected.Count > 0) ActionUnitCard();
-            card.style.display = card.childCount > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            bool populated = card.childCount > 0;
+            card = frame;
+            card.style.display = populated ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
         void ActionSiteCard(VisualElement into, ObjectiveSite site, bool expanded)
@@ -241,7 +245,7 @@ namespace SE.Runtime.UI
                 return;
             }
             L("Build in selected site", "heading section", into);
-            var choices = new ScrollView(ScrollViewMode.Vertical); choices.style.maxHeight = expanded ? 290 : 170; into.Add(choices);
+            var choices = El("menu-list", into);
             var grid = El("row wrap", choices);
             foreach (var type in Facilities)
             {
@@ -350,7 +354,7 @@ namespace SE.Runtime.UI
                     if (!(group["units"] is JArray members) || members.Count == 0) continue;
                     B($"Reinforce group {id}", () => Cmd(new JObject { ["c"] = "rallyGroup", ["buildings"] = new JArray(ids), ["group"] = id }, $"Reinforcing group {id}"), controls);
                 }
-            var choices = new ScrollView(ScrollViewMode.Vertical); choices.style.maxHeight = 210; into.Add(choices);
+            var choices = El("menu-list", into);
             var grid = El("train-grid", choices);
             var available = trainers.SelectMany(b => (JArray)Defs["BUILDINGS"][b.Type]["trains"]).Select(t => (string)t).Distinct();
             foreach (string type in available)
@@ -498,7 +502,7 @@ namespace SE.Runtime.UI
             B("×", () => { openPanel = ""; Refresh(true); }, panel, null, "close");
             if (openPanel == "settings") { SettingsPanel(); return; }
             if (openPanel == "guide") { GuidePage(panel, false); return; }
-            var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 620; panel.Add(scroll);
+            var scroll = El("menu-list", panel);
             if (openPanel == "build") ActionBuildPanel(scroll);
             else if (openPanel == "research") ActionUpgradePanel(scroll);
             else ActionOverview(scroll);

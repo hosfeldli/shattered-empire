@@ -164,6 +164,30 @@ namespace SE.Runtime.Rendering
             return this;
         }
 
+        public MeshBuilder Ellipsoid(Vector3 center, Vector3 radius, Color color, int rings = 6, int sides = 12, bool dome = false)
+        {
+            int start = v.Count;
+            for (int y = 0; y <= rings; y++) for (int x = 0; x <= sides; x++)
+            {
+                float pitch = Mathf.PI * (dome ? .5f : 1) * y / rings, yaw = Mathf.PI * 2 * x / sides;
+                var d = new Vector3(Mathf.Sin(pitch) * Mathf.Cos(yaw), Mathf.Cos(pitch), Mathf.Sin(pitch) * Mathf.Sin(yaw));
+                v.Add(center + Vector3.Scale(d, radius));
+                n.Add(new Vector3(d.x / radius.x, d.y / radius.y, d.z / radius.z).normalized);
+                c.Add(color); uv.Add(new Vector2(x / (float)sides, y / (float)rings)); surfaces.Add(new Vector2((int)surface, 0));
+            }
+            void Face(int a, int b, int d)
+            {
+                if (Vector3.Dot(Vector3.Cross(v[b] - v[a], v[d] - v[a]), n[a] + n[b] + n[d]) < 0) { int swap = b; b = d; d = swap; }
+                t.Add(a); t.Add(b); t.Add(d);
+            }
+            for (int y = 0; y < rings; y++) for (int x = 0; x < sides; x++)
+            {
+                int a = start + y * (sides + 1) + x, b = a + 1, d = a + sides + 1;
+                Face(a, b, d); Face(b, d + 1, d);
+            }
+            return this;
+        }
+
         public Mesh Build(string name)
         {
             var m = new Mesh { name = name, indexFormat = v.Count > 65000 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
@@ -183,7 +207,7 @@ namespace SE.Runtime.Rendering
         static readonly Color Roofing = new Color(0.62f, 0.58f, 0.55f);
 
         public static Mesh Box, Roof, Cylinder, Cone, Quad, Disc, Marker, Ring;
-        public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, Shrub;
+        public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, DeciduousFar, ConiferFar, Shrub, Grass, Understory, TankObstacle, StrategicHatch, StrategicMissile;
         public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
         public static Mesh Tower, Skyscraper, Silo, Chimney, Crane, Wreck;
         public static Mesh ShipHull, Coil, Sandbags, Stump, Rotor4, AutoTankHull, AutoTankTurret, Dome, BrokenTower, RuinShell, CollapsedBlock;
@@ -406,10 +430,18 @@ namespace SE.Runtime.Rendering
             BrokenTower = broken.Build("broken_tower");
             MilitaryMeshes.Build();
             Car = MilitaryMeshes.CivilianCar;
-            DeciduousLo = Deciduous;
-            ConiferLo = Conifer;
-            Deciduous = WorldMeshes.Tree(false);
-            Conifer = WorldMeshes.Tree(true);
+            DeciduousLo = VegetationMeshes.Tree(false, true);
+            ConiferLo = VegetationMeshes.Tree(true, true);
+            DeciduousFar = VegetationMeshes.DistantCanopy(false);
+            ConiferFar = VegetationMeshes.DistantCanopy(true);
+            Deciduous = VegetationMeshes.Tree(false);
+            Conifer = VegetationMeshes.Tree(true);
+            Grass = VegetationMeshes.Grass();
+            Understory = VegetationMeshes.Understory();
+            Coil = WorldMeshes.WireBelt();
+            TankObstacle = WorldMeshes.TankObstacle();
+            StrategicHatch = WorldMeshes.StrategicHatch();
+            StrategicMissile = WorldMeshes.StrategicMissile();
             Skyscraper = WorldMeshes.Tower(false);
             BrokenTower = WorldMeshes.Tower(true);
             RuinShell = WorldMeshes.Shell();

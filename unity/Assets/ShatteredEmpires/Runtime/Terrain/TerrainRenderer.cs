@@ -22,7 +22,7 @@ namespace SE.Runtime.Landscape
             public Bounds Bounds;
             public bool HasMesh, Dirty, Building, HasWater;
             public float OriginX;
-            public InstanceBatch TreesA, TreesB;
+            public InstanceBatch TreesA, TreesB, Grass, Understory;
         }
 
         sealed class Pending
@@ -31,7 +31,7 @@ namespace SE.Runtime.Landscape
             public JobHandle Handle;
             public Mesh.MeshDataArray Meshes;
             public NativeArray<byte> Blocked;
-            public NativeArray<InstanceData> TreesA, TreesB;
+            public NativeArray<InstanceData> TreesA, TreesB, Grass, Understory;
             public NativeArray<int> Counts;
             public NativeArray<float> Bounds;
         }
@@ -89,8 +89,11 @@ namespace SE.Runtime.Landscape
             var mesh = new MeshBuilder(); var grid = world.Grid;
             var color = new Color(0, 1, 1, 1);
             horizonMaterial.SetVector("_OceanBounds", new Vector4(grid.W, grid.H, grid.Wrap ? 1 : 0, 0));
-            mesh.Quad(new Vector3(-450, 0, 450), new Vector3(grid.Period + 450, 0, 450),
-                new Vector3(grid.Period + 450, 0, -grid.H * 1.5f - 450), new Vector3(-450, 0, -grid.H * 1.5f - 450), color);
+            // The camera far plane lies well inside this continuous ocean. No repeated map images
+            // or visible water edge, even at maximum strategic zoom.
+            const float horizon = 12000;
+            mesh.Quad(new Vector3(-horizon, 0, horizon), new Vector3(grid.Period + horizon, 0, horizon),
+                new Vector3(grid.Period + horizon, 0, -grid.H * 1.5f - horizon), new Vector3(-horizon, 0, -grid.H * 1.5f - horizon), color);
             oceanHorizon = mesh.Build("Ocean beyond playable geography");
         }
 
@@ -169,7 +172,9 @@ namespace SE.Runtime.Landscape
                 Blocked = new NativeArray<byte>(cs * cs, Allocator.Persistent),
                 TreesA = new NativeArray<InstanceData>(cs * cs * 10, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
                 TreesB = new NativeArray<InstanceData>(cs * cs * 10, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
-                Counts = new NativeArray<int>(2, Allocator.Persistent),
+                Grass = new NativeArray<InstanceData>(cs * cs * 64, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
+                Understory = new NativeArray<InstanceData>(cs * cs * 4, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
+                Counts = new NativeArray<int>(4, Allocator.Persistent),
                 Bounds = new NativeArray<float>(6, Allocator.Persistent),
             };
             for (int lr = 0; lr < cs; lr++)
@@ -187,7 +192,7 @@ namespace SE.Runtime.Landscape
                 Trenches = v.Trenches,
                 W = world.Grid.W, H = world.Grid.H, WrapFlag = world.Grid.Wrap ? 1 : 0, Period = world.Grid.Period,
                 Cx = cx, Cy = cy, Cs = cs, Seed = seed, OriginX = ch.OriginX, TreeDensity = TreeDensity,
-                Meshes = p.Meshes, Layout = layout, Blocked = p.Blocked, TreesA = p.TreesA, TreesB = p.TreesB, Counts = p.Counts, BoundsOut = p.Bounds,
+                Meshes = p.Meshes, Layout = layout, Blocked = p.Blocked, TreesA = p.TreesA, TreesB = p.TreesB, Grass = p.Grass, Understory = p.Understory, Counts = p.Counts, BoundsOut = p.Bounds,
             };
             p.Handle = job.Schedule();
             pending.Add(p);
@@ -214,7 +219,7 @@ namespace SE.Runtime.Landscape
                 bounds.center += new Vector3(ch.OriginX, 0, 0);
                 // Tree batches share the terrain chunk's culling bounds. Include the
                 // canopy and wind motion so edge-of-screen forests do not disappear.
-                bounds.Expand(new Vector3(.9f, 1.6f, .9f));
+                bounds.Expand(new Vector3(1.2f, 1.9f, 1.2f));
                 ch.Bounds = bounds;
                 ch.HasMesh = ch.Hi.vertexCount > 0;
                 ch.HasWater = ch.Water.vertexCount > 0;
@@ -222,14 +227,18 @@ namespace SE.Runtime.Landscape
                 {
                     ch.TreesA = new InstanceBatch(MeshKit.Deciduous, RenderResources.Foliage, 256);
                     ch.TreesB = new InstanceBatch(MeshKit.Conifer, RenderResources.Foliage, 256);
+                    ch.Grass = new InstanceBatch(MeshKit.Grass, RenderResources.GroundCover, 512);
+                    ch.Understory = new InstanceBatch(MeshKit.Understory, RenderResources.Foliage, 128);
                 }
                 Fill(ch.TreesA, p.TreesA, p.Counts[0], bounds);
                 Fill(ch.TreesB, p.TreesB, p.Counts[1], bounds);
+                Fill(ch.Grass, p.Grass, p.Counts[2], bounds);
+                Fill(ch.Understory, p.Understory, p.Counts[3], bounds);
                 ch.Building = false;
                 ChunksBuilt++;
             }
             else p.Meshes.Dispose();
-            p.Blocked.Dispose(); p.TreesA.Dispose(); p.TreesB.Dispose(); p.Counts.Dispose(); p.Bounds.Dispose();
+            p.Blocked.Dispose(); p.TreesA.Dispose(); p.TreesB.Dispose(); p.Grass.Dispose(); p.Understory.Dispose(); p.Counts.Dispose(); p.Bounds.Dispose();
         }
 
         static void Fill(InstanceBatch batch, NativeArray<InstanceData> src, int count, Bounds bounds)
@@ -276,9 +285,13 @@ namespace SE.Runtime.Landscape
                     {
                         var shadows = dist < TreeShadowDistance ? ShadowCastingMode.On : ShadowCastingMode.Off;
                         ch.TreesA.Shadows = shadows; ch.TreesB.Shadows = shadows;
-                        ch.TreesA.Draw(off, k, meshOverride: dist < 24f ? null : MeshKit.DeciduousLo);
-                        ch.TreesB.Draw(off, k, meshOverride: dist < 24f ? null : MeshKit.ConiferLo);
+                        ch.TreesA.Draw(off, k, meshOverride: dist < 18f ? null : dist < 55f ? MeshKit.DeciduousLo : MeshKit.DeciduousFar);
+                        ch.TreesB.Draw(off, k, meshOverride: dist < 18f ? null : dist < 55f ? MeshKit.ConiferLo : MeshKit.ConiferFar);
                     }
+                    if (dist < 28f * Mathf.Clamp(TreeDensity, .55f, 1.1f))
+                    { ch.Grass.Shadows = ShadowCastingMode.Off; ch.Grass.Draw(off, k); }
+                    if (dist < 65f * Mathf.Clamp(TreeDensity, .6f, 1.1f))
+                    { ch.Understory.Shadows = ShadowCastingMode.Off; ch.Understory.Draw(off, k); }
                     DrawnChunks++;
                 }
             }
@@ -288,7 +301,7 @@ namespace SE.Runtime.Landscape
         {
             if (c == null) return;
             if (c.Hi != null) { Object.Destroy(c.Hi); Object.Destroy(c.Lo); Object.Destroy(c.Water); }
-            c.TreesA?.Dispose(); c.TreesB?.Dispose();
+            c.TreesA?.Dispose(); c.TreesB?.Dispose(); c.Grass?.Dispose(); c.Understory?.Dispose();
         }
 
         public void Dispose()
