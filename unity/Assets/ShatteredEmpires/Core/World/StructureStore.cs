@@ -44,6 +44,8 @@ namespace SE.Core.World
                 k = k * 31 + (b.Fire ? 1 : 0);
                 k = k * 31 + (b.Memory ? 1 : 0);
                 k = k * 31 + b.Tile;
+                if (b.HasPosition) { k = k * 31 + b.X.GetHashCode(); k = k * 31 + b.Z.GetHashCode(); }
+                if (b.HasYaw) k = k * 31 + b.Yaw.GetHashCode();
                 return k;
             }
         }

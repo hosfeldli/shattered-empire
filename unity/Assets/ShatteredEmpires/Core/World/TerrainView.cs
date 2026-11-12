@@ -27,6 +27,9 @@ namespace SE.Core.World
         public byte* GeoFlags;    // geo byte 3: river | lake<<1 | soil<<2 | ruin<<3 | ...
         public byte* Biome;       // geo byte 1
         public int* Nb;           // neighbour table, 6 per hex
+        public float* Impacts;    // six persistent [local x, local z, radius, depth] records per cell
+        public byte* ImpactCounts;
+        public float* Trenches;   // per cell: local x, local z, facing, depth
 
         public const float NoWater = -1e9f;
         public const float LakeDepth = 0.14f;
@@ -253,7 +256,107 @@ namespace SE.Core.World
             LocateSector(dx, dz, out int k, out float u, out float v);
             float* h7 = stackalloc float[7];
             SectorHeights(t, k, h7, true);
-            return SectorPoint(h7, u, v);
+            float ground = SectorPoint(h7, u, v);
+            float level = NearWaterLevel(t);
+            if (level > NoWater * .5f)
+            {
+                float shoulder = Math.Max(0, 1f - Math.Abs(ground - level) / .16f);
+                if (shoulder > 0)
+                {
+                    const float reach = .22f;
+                    float smooth = (ground * 2f + BaseAt(x + reach, z, ground) + BaseAt(x - reach, z, ground)
+                        + BaseAt(x, z + reach, ground) + BaseAt(x, z - reach, ground)) / 6f;
+                    ground += (smooth - ground) * .72f * shoulder * shoulder;
+                }
+                float band = Math.Max(0, 1f - Math.Abs(ground - level) / .085f);
+                int cells = Math.Max(4, (int)Math.Round(Period * 1.7f));
+                float scale = cells / Period;
+                ground += (PeriodicNoise(x * scale + 19.3f, z * scale + 7.1f, cells) - .5f) * .052f * band * band;
+            }
+            return ground + DamageHeight(t, x, z);
+        }
+
+        float BaseAt(float x, float z, float fallback)
+        {
+            int tile = HexMath.TileAt(x, z, W, H, Wrap != 0);
+            if (tile < 0 || Known[tile] == 0) return fallback;
+            float dx = HexMath.DxWrap(HexMath.CenterX(tile, W), x, Period, Wrap != 0), dz = z - HexMath.CenterZ(tile, W);
+            LocateSector(dx, dz, out int sector, out float u, out float v);
+            float* heights = stackalloc float[7];
+            SectorHeights(tile, sector, heights, true);
+            return SectorPoint(heights, u, v);
+        }
+
+        public float NearWaterLevel(int tile)
+        {
+            float level = Water[tile];
+            for (int d = 0; d < 6; d++)
+            {
+                int n = Nb[tile * 6 + d];
+                if (n >= 0 && Known[n] != 0) level = Math.Max(level, Water[n]);
+            }
+            return level;
+        }
+
+        public bool HasShore(int tile)
+        {
+            bool water = Water[tile] > NoWater * .5f;
+            for (int d = 0; d < 6; d++)
+            {
+                int n = Nb[tile * 6 + d];
+                if (n >= 0 && Known[n] != 0 && (Water[n] > NoWater * .5f) != water) return true;
+            }
+            return false;
+        }
+
+        public bool HasDamage(int t)
+        {
+            if (ImpactCounts == null) return false;
+            if (Trenches != null && Trenches[t * 4 + 3] > 0) return true;
+            if (ImpactCounts[t] != 0) return true;
+            for (int d = 0; d < 6; d++) { int n = Nb[t * 6 + d]; if (n >= 0 && (ImpactCounts[n] != 0 || Trenches != null && Trenches[n * 4 + 3] > 0)) return true; }
+            return false;
+        }
+
+        /// <summary>Persistent irregular crater bowls and displaced rims, shared by meshes and actors.</summary>
+        public float DamageHeight(int t, float x, float z)
+        {
+            if (ImpactCounts == null || Impacts == null) return 0;
+            float bowl = 0, rim = 0;
+            for (int cell = -1; cell < 6; cell++)
+            {
+                int n = cell < 0 ? t : Nb[t * 6 + cell];
+                if (n < 0) continue;
+                float dx = HexMath.DxWrap(HexMath.CenterX(n, W), x, Period, Wrap != 0), dz = z - HexMath.CenterZ(n, W);
+                if (Trenches != null && Trenches[n * 4 + 3] > 0)
+                {
+                    int tr = n * 4;
+                    float tx = dx - Trenches[tr], tz = dz - Trenches[tr + 1], a = Trenches[tr + 2];
+                    float sn = (float)Math.Sin(a), cs = (float)Math.Cos(a);
+                    float across = Math.Abs(tx * sn + tz * cs), along = Math.Abs(-tx * cs + tz * sn);
+                    float width = Math.Max(0, Math.Min(1, (.11f - across) / .035f));
+                    float ends = Math.Max(0, Math.Min(1, (.88f - along) / .12f));
+                    bowl = Math.Min(bowl, -Trenches[tr + 3] * width * ends);
+                }
+                for (int k = 0; k < ImpactCounts[n]; k++)
+                {
+                    int index = (n * 6 + k) * 4;
+                    float ox = dx - Impacts[index], oz = dz - Impacts[index + 1], radius = Impacts[index + 2];
+                    float rr = (float)Math.Sqrt(ox * ox + oz * oz) / radius;
+                    if (rr >= 1.6f) continue;
+                    float angle = index * 1.618034f, sn = (float)Math.Sin(angle), cs = (float)Math.Cos(angle);
+                    float ex = (ox * cs + oz * sn) * 1.10f, ez = (-ox * sn + oz * cs) * .91f;
+                    float theta = (float)Math.Atan2(ez, ex);
+                    rr = (float)Math.Sqrt(ex * ex + ez * ez) / radius;
+                    rr *= 1f + .075f * (float)Math.Sin(theta * 3 + angle) + .035f * (float)Math.Cos(theta * 7 - angle);
+                    float inner = Math.Max(0, 1f - rr * rr);
+                    bowl = Math.Min(bowl, -Impacts[index + 3] * inner * inner);
+                    float edge = Math.Max(0, 1f - Math.Abs(rr - 1.02f) / .30f);
+                    rim = Math.Max(rim, Impacts[index + 3] * .23f * edge * edge);
+                }
+            }
+            // An older crater's rim is flattened inside a newer overlapping bowl.
+            return bowl + rim * Math.Max(0, 1 + bowl / .045f);
         }
 
         /// <summary>Surface of standing water under (x, z), or NoWater on dry land.</summary>

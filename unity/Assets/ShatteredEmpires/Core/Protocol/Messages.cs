@@ -34,7 +34,33 @@ namespace SE.Core.Protocol
         /// <summary>Aircraft state code (owner view: air[0]; others: 0 grounded, 2 airborne), -1 for ground units.</summary>
         public int AirState;
         public int AirMission, AirMissionTile, AirRadius;
+        public WorldMotion Motion;
     }
+
+    public readonly struct WorldPoint
+    {
+        public readonly float X, Z;
+        public WorldPoint(float x, float z) { X = x; Z = z; }
+    }
+
+    public struct WorldMotion
+    {
+        public bool Present;
+        public float X, Z, Yaw, Vx, Vz, Cooldown, Altitude;
+        public int Equipment;
+    }
+
+    public struct ObjectiveSite
+    {
+        public int Id, Tile, Owner, Capturing, Headquarters, Tier, Capacity, RingVersion, VisualTier;
+        public float X, Z, Radius, Capture, Build, DevelopedAt, Tenure, Maturity;
+        public bool IsBase, Contested, Operational, Memory, Starting;
+        public string Name, Kind;
+        public int[] Slots;
+        public BaseParcel[] Parcels;
+    }
+    public struct BaseParcel { public int Tile, Id, Tier; public float X, Z, Yaw, Width, Depth; public string PreviousType; }
+    public struct ResourcePickup { public int Id, Tile, Amount; public float X, Z; public bool Memory, Replenishes; public string Resource; }
 
     public struct TileRecord
     {
@@ -58,6 +84,11 @@ namespace SE.Core.Protocol
         public string Why, WorksKind;
         public Newtonsoft.Json.Linq.JObject UpgradeCost;
         public int RepairCost;
+        public bool HasPosition, HasYaw;
+        public float X, Z, Yaw;
+        public int Missiles, Slot;
+        public int RallyGroup;
+        public string Project;
     }
 
     public struct CityRecord
@@ -76,12 +107,14 @@ namespace SE.Core.Protocol
     /// <summary>A combat event (server combat.js emit): fire, launch, hit, bhit, impact, supp, kill.</summary>
     public struct CombatEvent
     {
-        public string Kind, Outcome, UnitType;
-        public int Seq, From, To, Shooter, Target, Weapon, Damage, Owner;
+        public string Kind, Outcome, UnitType, Resource;
+        public int Seq, From, To, Shooter, Target, Weapon, Damage, Owner, Amount;
         public float Flight, Radius;
         public bool Airburst;
         /// <summary>A half-strength strategic blast (a destroyed reactor).</summary>
         public bool Half;
+        public bool HasOrigin, HasDestination;
+        public WorldPoint Origin, Destination;
     }
 
     public sealed class SnapshotMessage
@@ -95,6 +128,10 @@ namespace SE.Core.Protocol
         public int[] Gone = System.Array.Empty<int>();
         public Dictionary<int, int[]> Paths = new Dictionary<int, int[]>();
         public int[] PathsGone = System.Array.Empty<int>();
+        public Dictionary<int, WorldPoint[]> WorldPaths = new Dictionary<int, WorldPoint[]>();
+        public int[] WorldPathsGone = System.Array.Empty<int>();
+        public ObjectiveSite[] Objectives;
+        public ResourcePickup[] Pickups;
         public TileRecord[] Tiles;
         public byte[] Visibility;
         public byte[] Urban;
@@ -107,6 +144,7 @@ namespace SE.Core.Protocol
         public JToken Fieldworks;
         public JObject Battlefield;
         public JObject Observer;
+        public JObject ActionPlan;
         // typed presentation records (decoded off the main thread)
         public TrenchRecord[] Trenches;
         public RuinRecord[] Ruins;
@@ -133,6 +171,7 @@ namespace SE.Core.Protocol
         public string Name;
         public uint Color;   // 0xRRGGBB
         public bool Human, Rebel;
+        public int Team;
     }
 
     public sealed class WelcomeMessage

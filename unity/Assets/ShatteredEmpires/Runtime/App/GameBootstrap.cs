@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System;
 using System.Diagnostics;
 using System.Text;
 using Newtonsoft.Json.Linq;
@@ -32,7 +33,7 @@ namespace SE.Runtime.App
     /// first) → playback clock → camera and input → effects and sound from combat events → incremental
     /// world rebuilds (jobs) → instance buffers → draw calls → interface. No per-object Update anywhere.
     /// </summary>
-    public sealed class GameBootstrap : MonoBehaviour, IGameActions
+    public sealed partial class GameBootstrap : MonoBehaviour, IGameActions
     {
         enum Phase { Menu, Connecting, Playing, Stress, Intro }
 
@@ -45,7 +46,6 @@ namespace SE.Runtime.App
         GroundField ground;
         CityRenderer city;
         WarzoneRenderer warzone;
-        TrafficSystem traffic;
         UnitRenderer units;
         EffectsRenderer fx;
         Atmosphere atmosphere;
@@ -113,6 +113,7 @@ namespace SE.Runtime.App
             sun.transform.rotation = Quaternion.Euler(47f, -32f, 0f);
             sun.shadows = LightShadows.Soft;
             RenderSettings.ambientMode = AmbientMode.Trilight;
+            GraphicsSettings.lightsUseLinearIntensity = true;
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.Linear;
 
@@ -127,7 +128,6 @@ namespace SE.Runtime.App
                 DefenceAt = t => buildingByTile.TryGetValue(t, out var b) && IsDefence(b.type) ? b.type : null,
                 BuildingOwnerAt = t => buildingByTile.TryGetValue(t, out var b) ? b.owner : -1,
             };
-            traffic = new TrafficSystem(session.World);
             units = new UnitRenderer();
             units.InTrench = t => warzone.HasTrench(t);
             fx = new EffectsRenderer();
@@ -186,7 +186,7 @@ namespace SE.Runtime.App
             var mode = opts.Get("mode");
             if (mode == "stress") StartStress();
             else if (mode != "") StartMatch(mode, opts.Get("match"));
-            else if (PlayerPrefs.GetInt("se.intro.seen", 0) == 0 && hud != null) PlayIntro();
+            else if ((opts.Has("review-intro") || PlayerPrefs.GetInt("se.intro.seen", 0) == 0) && hud != null) PlayIntro();
             else ShowMenu("");
             SocialPlatform.Current.JoinRequested += code => StartMatch("join", code);
         }
@@ -204,18 +204,22 @@ namespace SE.Runtime.App
                 case "low":
                     if (urp) { urp.shadowDistance = 45; urp.msaaSampleCount = 1; urp.renderScale = 0.85f; }
                     terrain.TreeDensity = 0.5f; terrain.TreeDistance = 60; terrain.LodDistance = 45; fx.Intensity = 0.5f;
+                    units.OperationalDistance = 12f;
                     break;
                 case "medium":
                     if (urp) { urp.shadowDistance = 80; urp.msaaSampleCount = 2; urp.renderScale = 1f; }
                     terrain.TreeDensity = 0.75f; terrain.TreeDistance = 85; terrain.LodDistance = 60; fx.Intensity = 0.75f;
+                    units.OperationalDistance = 18f;
                     break;
                 case "ultra":
                     if (urp) { urp.shadowDistance = 200; urp.msaaSampleCount = 4; urp.renderScale = 1f; }
                     terrain.TreeDensity = 1.25f; terrain.TreeDistance = 150; terrain.LodDistance = 100; fx.Intensity = 1.2f;
+                    units.OperationalDistance = 31f;
                     break;
                 default:
                     if (urp) { urp.shadowDistance = 130; urp.msaaSampleCount = 4; urp.renderScale = 1f; }
                     terrain.TreeDensity = 1f; terrain.TreeDistance = 110; terrain.LodDistance = 70; fx.Intensity = 1f;
+                    units.OperationalDistance = 24f;
                     break;
             }
             terrain.MarkAllDirty();
@@ -225,17 +229,21 @@ namespace SE.Runtime.App
         void ShowMenu(string status)
         {
             phase = Phase.Menu;
+            rts.Cam.orthographic = false;
             net?.Dispose(); net = null;
             stress = null; perfRunning = false;
-            var gen = StressWorld.Generate(160, 3);
-            session.ApplyWelcome(new WelcomeMessage { W = 160, H = 160, Wrap = true, CivId = 0, Seed = 3, Match = "menu", Civs = new[] { new CivInfo { Id = 0, Name = "", Color = 0x8a7a5a } } });
+            var gen = StressWorld.Generate(80, 3);
+            session.ApplyWelcome(new WelcomeMessage { W = 80, H = 80, Wrap = false, CivId = 0, Seed = 3, Match = "menu", Civs = new[] { new CivInfo { Id = 0, Name = "Reclamation Command", Color = 0x8a9276 } } });
+            session.World.ActionLandscape = true;
+            city.ActionRts = false;
+            city.SetObjectives(Array.Empty<ObjectiveSite>());
             session.ApplyGeo(gen.Geo);
             for (int i = 0; i < session.World.Visible.Length; i++) session.World.Visible[i] = 0xff;
             session.World.ApplyVisibility(session.World.Visible);
             fog.Enabled = false;
             rts.UserControl = false;
-            rts.PitchOverride = 30f;
-            rts.FocusTile(session.World.Grid.N / 2 + session.World.Grid.W / 3, 55f);
+            rts.PitchOverride = 34f;
+            StageMenuWorld();
             hud?.ShowMenu(true, status);
         }
 
@@ -245,9 +253,11 @@ namespace SE.Runtime.App
             hud.ShowMenu(false, null);
             hud.ShowGame(false);
             phase = Phase.Intro;
+            atmosphere.GameplayMood();
+            city.ActionRts = false; city.SetObjectives(Array.Empty<ObjectiveSite>()); city.SetShowcaseRoads(null);
             fog.Enabled = false;
             rts.PitchOverride = -1f;
-            intro = new IntroDirector(session, rts, atmosphere, fx, audioDirector, uiDocument.rootVisualElement);
+            intro = new IntroDirector(session, rts, atmosphere, fx, audioDirector, city, uiDocument.rootVisualElement);
             intro.Finished += () => { intro = null; ShowMenu(""); };
             intro.Start();
         }
@@ -256,7 +266,8 @@ namespace SE.Runtime.App
         public void StartMatch(string mode, string match)
         {
             if (string.IsNullOrEmpty(mode)) { ShowMenu(""); return; }
-            PlayerPrefs.SetString("se.server", serverUrl); PlayerPrefs.SetString("se.name", playerName); PlayerPrefs.Save();
+            if (!opts.Has("review") && !opts.Has("review-intro"))
+            { PlayerPrefs.SetString("se.server", serverUrl); PlayerPrefs.SetString("se.name", playerName); PlayerPrefs.Save(); }
             net?.Dispose();
             net = new GameConnection(() => Now);
             session.Attach(net);
@@ -266,7 +277,7 @@ namespace SE.Runtime.App
             rts.PitchOverride = -1f;
             hud?.ShowMenu(false, null);
             hud?.ShowLoading(0);
-            battleKey = opts.Get("battle", mode == "sandbox" ? "massive" : "");
+            battleKey = opts.Get("battle", mode == "sandbox" ? "mixed" : "");
             perfZooms = opts.Floats("perf-zooms", 14f, 40f);
             perfSeconds = opts.Float("perf", 0);
             perfOut = opts.Get("perf-out");
@@ -281,21 +292,41 @@ namespace SE.Runtime.App
                 net.Send(new JObject { ["t"] = mode, ["match"] = match, ["name"] = playerName });
             else
             {
-                var msg = new JObject { ["t"] = "create", ["mode"] = mode, ["name"] = playerName, ["ruleset"] = "native-v4", ["ais"] = mode == "observe" ? 3 : 1 };
+                string ruleset = opts.Get("ruleset", "action-v2");
+                var msg = new JObject { ["t"] = "create", ["mode"] = mode, ["name"] = playerName, ["ruleset"] = ruleset, ["ais"] = mode == "observe" ? 4 : mode == "pvp" ? 0 : 1 };
+                if (mode == "pvp")
+                {
+                    msg["teamSize"] = pendingTeamSize;
+                    msg["humans"] = pendingTeamSize * 2;
+                    pendingTeamSize = 1;
+                }
                 if (opts.Has("seed")) msg["seed"] = opts.Int("seed", 0);
                 if (opts.Has("map")) msg["mapSize"] = opts.Get("map");
+                if (opts.Has("objective")) msg["objective"] = opts.Get("objective");
+                if (opts.Has("wrap")) msg["wrap"] = true;
                 // the New Campaign screen's choices (server options: style, mapSize, ais, difficulty, seed)
                 if (pendingCampaign != null && mode == "ai")
                 {
                     var c = pendingCampaign;
                     msg["style"] = c.Style; msg["mapSize"] = c.MapSize; msg["ais"] = c.Rivals; msg["difficulty"] = c.Difficulty;
+                    msg["objective"] = c.Objective; msg["wrap"] = c.Wrap; msg["tutorial"] = c.Tutorial;
                     if (int.TryParse(c.Seed, out int s)) msg["seed"] = s;
                     msg["title"] = c.Tutorial ? "Tutorial" : $"{playerName} · {c.Style}";
                 }
                 pendingCampaign = null;
                 if (opts.Has("perf") || opts.Has("bench"))
                     msg["rivals"] = new JArray(new JObject { ["personality"] = "warlord" }, new JObject { ["personality"] = "merchant" }, new JObject { ["personality"] = "builder" });
-                net.Send(msg);
+                var connection = net;
+                connection.Ready += () =>
+                {
+                    if (connection != net || connection.SessionMatch != null) return;
+                    if (ruleset == "action-v2" && (Array.IndexOf(connection.Capabilities, "action-rts") < 0 || Array.IndexOf(connection.Capabilities, "ring-cities-v1") < 0))
+                    {
+                        hud?.ShowMenu(true, "This server needs the ring-city RTS update. Restart your local server or select an updated server in Multiplayer.");
+                        return;
+                    }
+                    connection.Send(msg);
+                };
             }
             net.Connect(serverUrl);
         }
@@ -311,9 +342,14 @@ namespace SE.Runtime.App
             }
             terrain.SetSeed(session.Welcome.Seed);
             city.Seed = session.Welcome.Seed;
+            city.ActionRts = session.ActionRts;
+            city.SetShowcaseRoads(null);
+            if (phase != Phase.Intro && phase != Phase.Menu) atmosphere.GameplayMood();
+            rts.Cam.orthographic = session.ActionRts;
             fx.ClearPersistent();
             units.Selected.Clear();
             commander.Cancel();
+            commander.ResetAction();
             if (phase != Phase.Playing) return;
             hud?.ShowMenu(false, null);
             // a new match opens with the descent onto the capital (visual design bible §9); a sandbox,
@@ -321,7 +357,7 @@ namespace SE.Runtime.App
             bool descend = pendingMode != "rejoin-same" && session.Welcome.Start >= 0 && !session.Welcome.Sandbox && !session.Spectator && !perfRunning && !opts.Has("perf");
             if (descend) BeginDescent();
             else { rts.UserControl = true; hud?.ShowGame(true); hud?.ShowLoading(-1); }
-            if (net != null)
+            if (net != null && !opts.Has("review") && !opts.Has("review-intro"))
             {
                 PlayerPrefs.SetString("se.match", net.SessionMatch ?? "");
                 PlayerPrefs.SetString("se.token", net.SessionToken ?? "");
@@ -335,10 +371,18 @@ namespace SE.Runtime.App
 
         // ------------------------------------------------------------------ campaign start, loading and the descent
         CampaignOptions pendingCampaign;
+        int pendingTeamSize = 1;
+
+        public void HostMultiplayer(int teamSize)
+        {
+            pendingTeamSize = Mathf.Clamp(teamSize, 1, 4);
+            StartMatch("pvp", "");
+        }
 
         public void StartCampaign(CampaignOptions options)
         {
-            pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty, Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial };
+            pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty,
+                Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective };
             StartMatch("ai", "");
         }
 
@@ -372,7 +416,7 @@ namespace SE.Runtime.App
             string eraName = ProtocolDecoder.Str((session.Defs?["AGES"] as JArray)?[0]?["name"], "The Reclamation");
             string nation = "";
             foreach (var c in session.Welcome.Civs) if (c.Id == session.CivId) nation = c.Name;
-            hud?.ShowTitleCard($"{eraName} · Year One", nation);
+            hud?.ShowTitleCard(session.ActionRts ? "Secure the surrounding ruins" : $"{eraName} · Year One", nation);
         }
 
         /// <summary>
@@ -386,7 +430,7 @@ namespace SE.Runtime.App
             bool ready = LoadingStage() >= 4;
             hud?.ShowLoading(ready ? -1 : LoadingStage());
             if (ready) descentT += dt;
-            float u = Mathf.Clamp01(descentT / 6.5f), e = Mathf.SmoothStep(0, 1, u);
+            float u = Mathf.Clamp01(descentT / (session.ActionRts ? 4.5f : 6.5f)), e = Mathf.SmoothStep(0, 1, u);
             rts.Focus = Vector3.Lerp(descentTarget + new Vector3(0, 0, 6f), descentTarget, e);
             rts.Distance = rts.TargetDistance = Mathf.Lerp(230f, 30f, e * e * (3f - 2f * e));
             rts.Yaw = Mathf.Lerp(-12f, 0f, e);
@@ -407,6 +451,7 @@ namespace SE.Runtime.App
         {
             if (m.T == "error" && phase == Phase.Connecting) hud?.ShowMenu(true, m.Error);
             if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby") hud?.ShowMenu(true, "Waiting in the match lobby (code " + ProtocolDecoder.Str(m.Raw["match"], "") + "). Share the code, or invite friends on Steam.");
+            if (m.T == "over" && phase == Phase.Playing) hud?.MatchEnded(m.Raw?["winner"] as JObject);
         }
 
         void StageBattle()
@@ -539,11 +584,15 @@ namespace SE.Runtime.App
             if (phase == Phase.Playing) SocialPlatform.Current.Tick();
             if (stress != null) StepStress(dt);
             intro?.Update(dt);
-            if (phase == Phase.Menu) { rts.Yaw += dt * 2.5f; rts.Apply(); }
+            if (phase == Phase.Menu) { AnimateMenuWorld(); rts.Yaw += dt * .4f; rts.Apply(); }
             if (InputFacade.Pressed(KeyCode.F3)) showDiag = !showDiag;
             if (InputFacade.Pressed(KeyCode.F10)) hideUi = !hideUi;
             long tp = Stopwatch.GetTimestamp();
             if (session.Ready) Present(dt);
+            if (!reviewStarted && opts.Has("review") && time > 5 && (phase == Phase.Menu || phase == Phase.Playing && session.Snapshots >= 8))
+            { reviewStarted = true; StartCoroutine(ReviewScenes()); }
+            if (!reviewStarted && opts.Has("review-intro") && phase == Phase.Intro)
+            { reviewStarted = true; StartCoroutine(ReviewIntroScenes()); }
             stallPresent = Ms(tp);
             hud?.Update(time);
             if (perfRunning && net != null && net.State == GameConnection.Status.Ready && time > probeAt)
@@ -569,7 +618,8 @@ namespace SE.Runtime.App
                 foreach (var r in session.Ruins) if (r.Tile >= 0 && r.Tile < world.Grid.N) { city.Ruins[r.Tile] = r; city.MarkDirty(new[] { world.ChunkOf(r.Tile) }); }
             }
             bool overUi = hud != null && hud.IsPointerOverUi(InputFacade.MousePosition);
-            if (phase == Phase.Playing && !(hud?.MenuVisible ?? false)) rts.Update(dt);
+            if (phase == Phase.Playing && !(hud?.MenuVisible ?? false))
+            { if (reviewCapturing) rts.UserControl = false; rts.Update(dt); }
             // comfort settings: shake, flashes, edge pan, pan speed, weather, marker contrast
             rts.Shake = fx.Shake * GameSettings.ShakeScale;
             if (GameSettings.ReducedMotion) fx.Flash = Mathf.Min(fx.Flash, 0.15f);
@@ -577,7 +627,7 @@ namespace SE.Runtime.App
             rts.PanSpeed = GameSettings.CameraSpeed;
             atmosphere.VisualIntensity = GameSettings.WeatherIntensity;
             units.HighContrast = GameSettings.HighContrastMarkers;
-            if (phase == Phase.Playing) commander.Update(time, overUi);
+            if (phase == Phase.Playing && !reviewCapturing) commander.Update(time, overUi);
             long tq = Stopwatch.GetTimestamp();
             PresentEvents();
             Mark(0, ref tq);
@@ -591,36 +641,46 @@ namespace SE.Runtime.App
             stallTerrain = Ms(ts); ts = Stopwatch.GetTimestamp();
             Mark(2, ref tq);
             city.Age = session.Age;
+            city.SimulationTime = session.Units.RenderTime;
+            if (city.ActionRts) city.SetObjectives(session.Objectives.Values);
+            city.SetPickups(session.Pickups.Values);
             city.Update(camMap, terrain);
             // the building being placed, drawn where it would stand (green: allowed, red: not)
-            if (phase == Phase.Playing && commander.PlacementTile >= 0) city.SetGhost(commander.Option, commander.PlacementTile, session.CivId, commander.PlacementLegal && (commander.PlacementSite == null || ProtocolDecoder.Bool(commander.PlacementSite["valid"], true)));
+            if (phase == Phase.Playing && commander.RingPreviewParcel is BaseParcel ringParcel) city.SetGhost(commander.RingPreviewType, ringParcel.Tile, session.CivId, true, ringParcel);
+            else if (phase == Phase.Playing && commander.FieldPreviewParcel is BaseParcel fieldParcel) city.SetGhost(commander.Option, fieldParcel.Tile, session.CivId, commander.FieldPreviewValid, fieldParcel);
+            else if (phase == Phase.Playing && commander.PlacementTile >= 0) city.SetGhost(commander.Option, commander.PlacementTile, session.CivId, commander.PlacementLegal && (commander.PlacementSite == null || ProtocolDecoder.Bool(commander.PlacementSite["valid"], true)), commander.PlacementParcel);
             else city.ClearGhost();
             Mark(3, ref tq);
             warzone.Update(session.Trenches, session.TrenchRevision, session.Battlefield, session.BattlefieldRevision, DefenceSignature(), ground.IsWasteland);
             Mark(4, ref tq);
-            traffic.RequireVisible = fog.Enabled;
-            traffic.Update(dt, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, time, atmosphere.Dim * (1f - atmosphere.Storm * 0.5f));
             Mark(5, ref tq);
             stallCity = Ms(ts); ts = Stopwatch.GetTimestamp();
             var cam = rts.Cam;
             float camX = cam.transform.position.x;
-            units.Update(session.Units, world, session.CivColor, camX, rts.Distance, time, dt);
+            units.Update(session.Units, world, session.CivColor, camX, rts.Focus, rts.Distance, time, dt, session.Structures);
+            city.Animate(time, session.Units.RenderTime, rts.Focus, rts.Distance, atmosphere.WindMap);
             hud?.BadgeCounts(units.Badges, p => rts.ToScreen(new Vector3(p.x, p.y, p.z)));
+            hud?.DrawObjectives(s =>
+            {
+                float x = world.Grid.NearX(s.X, rts.Focus.x);
+                return rts.ToScreen(new Vector3(x, world.GroundHeight(x, s.Z) + .55f, s.Z));
+            }, rts.Distance);
+            hud?.DrawPickupRewards(p => rts.ToScreen(p), time);
             stallUnits = Ms(ts);
             Mark(6, ref tq);
             atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);
             Mark(7, ref tq);
-            fx.Update(dt, camX, world.Grid.Period, world.Grid.Wrap);
+            fx.Wind = atmosphere.WindMap;
+            if (fx.GroundAt == null) fx.GroundAt = world.GroundHeight;
+            fx.Update(dt, camX, world.Grid.Period, world.Grid.Wrap, phase == Phase.Playing ? session.Paused ? 0 : session.PlayRate : 1);
             Mark(8, ref tq);
             if (audioDirector != null) UpdateAudio(dt);
             images.Begin(cam, world.Grid.Period, world.Grid.Wrap);
             terrain.Draw(images, cam.transform.position);
             city.Draw(images);
             warzone.Draw(images);
-            traffic.Draw();
             units.Draw();
             fx.Draw(images);
-            atmosphere.Draw();
             if (phase == Phase.Playing) commander.DrawOverlay(images, time);
             Mark(9, ref tq);
             phaseFrames++;
@@ -688,7 +748,7 @@ namespace SE.Runtime.App
                 }
             float wind = Mathf.Clamp01(atmosphere.WindMap.x * atmosphere.WindMap.x + atmosphere.WindMap.z * atmosphere.WindMap.z);
             audioDirector.Update(dt, session.Units, id => units.TryGetPosition(session.Units, id, out var p) ? p : (Vector2?)null, w,
-                new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, n > 0 ? urban / n : 0, river, atmosphere.Rain, wind);
+                new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, n > 0 ? urban / n : 0, river, atmosphere.Rain, wind, session.Structures);
         }
 
         bool HasBuilding(int tile)
@@ -712,9 +772,20 @@ namespace SE.Runtime.App
             {
                 switch (e.Kind)
                 {
+                    case "pickup":
+                        var pickupPoint = EventPoint(e, true, .11f);
+                        fx.Capture(pickupPoint, new float3(.73f, .62f, .40f));
+                        audioDirector?.Play("capture", pickupPoint, .24f, 4, 0, rts.Distance);
+                        if (e.Owner == session.CivId) hud?.ShowPickupReward(pickupPoint, e.Amount, time);
+                        break;
+                    case "capture":
+                        var capturePoint = EventPoint(e, false, 0);
+                        fx.Capture(capturePoint, session.CivColor(e.Owner).xyz);
+                        audioDirector?.Play("capture", capturePoint, .75f, 8, 0, rts.Distance);
+                        break;
                     case "fire":
                     {
-                        var p = UnitOrTile(e.Shooter, e.From, 0.06f);
+                        var p = EventPoint(e, true, .06f);
                         if (!Near(p, reach)) break;
                         bool heavy = false, aa = false; string sound = "rifle";
                         if (store.TryGet(e.Shooter, out var shooter))
@@ -722,40 +793,51 @@ namespace SE.Runtime.App
                             var type = store.Types.Name(shooter.TypeIndex);
                             heavy = type.Contains("tank") || type == "field_gun" || type == "sp_artillery" || type == "armored_car";
                             aa = type == "air_defense";
-                            sound = type.Contains("tank") || type == "field_gun" ? "cannon" : type == "armored_car" || type == "scout_buggy" ? "mg" : type == "mech_infantry" ? "autocannon" : aa ? "flak" : "rifle";
+                            sound = type == "engineer" ? "pistol" : type.Contains("tank") || type == "field_gun" ? "cannon" : type == "armored_car" || type == "scout_buggy" ? "mg" : type == "mech_infantry" ? "autocannon" : aa ? "flak" : "rifle";
+                        }
+                        else if (session.Structures.Buildings.TryGetValue(e.Shooter, out var emplacement))
+                        {
+                            heavy = emplacement.Type == "turret" || emplacement.Type == "artillery_post" || emplacement.Type == "fort";
+                            aa = emplacement.Type == "aa_battery";
+                            sound = aa ? "flak" : heavy ? "cannon" : "mg";
                         }
                         fx.Muzzle(p, heavy);
-                        var target = UnitOrTile(e.Target, e.To, 0.05f);
+                        var target = EventPoint(e, false, .05f);
+                        p = WeaponMuzzle(e.Shooter, p, target);
                         fx.Tracer(p, target, heavy);
-                        units.NoteShot(e.Shooter, e.Target, time);
+                        units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(sound, p, heavy ? 0.9f : 0.5f, heavy ? 4f : 1.5f, heavy ? 2 : 1, rts.Distance);
                         if (aa || IsAirTarget(e.Target))
                         {
                             // anti-aircraft fire bursts in the sky around the target
-                            for (int k = 0; k < 3; k++)
-                                fx.AirBurst(target + new float3(UnityEngine.Random.Range(-0.4f, 0.4f), 1.1f + UnityEngine.Random.Range(0f, 0.9f), UnityEngine.Random.Range(-0.4f, 0.4f)));
-                            audioDirector?.Play("flak", target + new float3(0, 1.5f, 0), 0.7f, 5f, 2, rts.Distance);
+                            fx.AirBurst(target);
+                            audioDirector?.Play("flak", target, 0.7f, 5f, 2, rts.Distance);
                         }
                         break;
                     }
                     case "launch":
                     {
-                        var p = TileCentre(e.From, 0.08f);
+                        var p = EventPoint(e, true, .08f);
                         if (!Near(p, reach)) break;
+                        var target = EventPoint(e, false, .05f);
+                        p = WeaponMuzzle(e.Shooter, p, target);
+                        string weapon = ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "cannon");
                         fx.Muzzle(p, true);
-                        audioDirector?.Play("launch", p, 0.9f, 5f, 2, rts.Distance);
+                        fx.Projectile(p, target, weapon, e.Flight);
+                        units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
+                        audioDirector?.Play(weapon == "cannon" || weapon == "howitzer" || weapon == "atgun" || weapon == "fortgun" ? "cannon" : "launch", p, 0.9f, 5f, 2, rts.Distance);
                         break;
                     }
                     case "impact":
                     {
-                        var p = TileCentre(e.To, 0f) + Jitter(0.35f);
-                        p.y = world.GroundHeight(p.x, p.z);
-                        if (!Near(p, reach)) { fx.Crater(p, 0.2f); break; }
+                        var p = EventPoint(e, false, .01f);
+                        if (!Near(p, reach)) break;
                         float scale = Mathf.Max(0.6f, e.Radius > 0 ? e.Radius * 1.4f : 0.7f);
-                        if (e.Airburst) { fx.AirBurst(p + new float3(0, 0.6f, 0)); audioDirector?.Play("flak", p, 0.8f, 5f, 2, rts.Distance); }
+                        if (e.Airburst) { fx.AirBurst(p + new float3(0, IsAirTarget(e.Target) ? 0 : 1.6f, 0)); audioDirector?.Play("flak", p, 0.8f, 5f, 2, rts.Distance); }
                         else
                         {
-                            fx.Explosion(p, scale); fx.Crater(p, 0.16f * scale + 0.06f);
+                            fx.Impact(p, scale, e.To >= 0 && e.To < world.Grid.N ? world.Biome[e.To] : 2);
+                            if (!session.ActionRts) fx.Crater(p, .16f * scale + .06f);
                             audioDirector?.Play(scale > 1.1f ? "explosion_big" : "explosion", p, 1f, 6f, 3, rts.Distance);
                         }
                         break;
@@ -763,13 +845,13 @@ namespace SE.Runtime.App
                     case "hit":
                         if (e.Damage >= 8 && UnityEngine.Random.value < 0.5f)
                         {
-                            var p = UnitOrTile(e.Target, e.To, 0f) + Jitter(0.1f);
-                            if (Near(p, reach)) fx.Explosion(p, 0.3f);
+                            var p = EventPoint(e, false, .035f);
+                            if (Near(p, reach)) fx.Impact(p, .3f, 2, true);
                         }
                         break;
                     case "bhit":
                     {
-                        var p = TileCentre(e.To, 0.1f) + Jitter(0.3f);
+                        var p = EventPoint(e, false, .1f);
                         if (!Near(p, reach)) break;
                         fx.Explosion(p, 0.7f);
                         audioDirector?.Play(e.Outcome == "destroyed" ? "collapse" : "explosion", p, 1f, 6f, 3, rts.Distance);
@@ -777,12 +859,13 @@ namespace SE.Runtime.App
                     }
                     case "kill":
                     {
-                        var p = TileCentre(e.To, 0f) + Jitter(0.3f);
+                        var p = EventPoint(e, false, 0);
                         p.y = world.GroundHeight(p.x, p.z);
                         var t = e.UnitType ?? "";
+                        units.NoteCasualty(e.Target, t, e.Owner, p, world.Epoch, time);
                         if (t.Contains("tank") || t.Contains("car") || t.Contains("truck") || t.Contains("buggy") || t.Contains("artillery") || t == "mech_infantry" || t == "air_defense" || t == "missile_battery")
                         {
-                            fx.Wreck(p, UnityEngine.Random.value * 6.28f, 0.16f);
+                            if (!session.ActionRts) fx.Wreck(p, UnityEngine.Random.value * 6.28f, 0.16f);
                             if (Near(p, reach)) { fx.Explosion(p, 0.9f); audioDirector?.Play("explosion_big", p, 1f, 6f, 3, rts.Distance); }
                         }
                         break;
@@ -790,7 +873,7 @@ namespace SE.Runtime.App
                     case "mimpact":
                     {
                         // a strategic warhead or (half strength) a destroyed reactor: seen and heard from afar
-                        var p = TileCentre(e.To, 0f);
+                        var p = EventPoint(e, false, 0);
                         fx.Strategic(p, e.Half ? 0.5f : 1f);
                         audioDirector?.Play("strategic", p, 1f, 60f, 5, rts.Distance);
                         break;
@@ -809,7 +892,7 @@ namespace SE.Runtime.App
                     if (b.Tile < 0) continue;
                     if (b.Fire)
                     {
-                        var p = TileCentre(b.Tile, 0.12f);
+                        var p = b.HasPosition ? new float3(b.X, world.GroundHeight(b.X, b.Z) + .12f, b.Z) : TileCentre(b.Tile, .12f);
                         if (Near(p, reach)) fx.Fire(p + Jitter(0.25f), 0.35f);
                         continue;
                     }
@@ -826,6 +909,22 @@ namespace SE.Runtime.App
                     }
                 }
                 foreach (var p in warzone.BurningWrecks) if (Near(p, reach)) fx.Fire(p, 0.15f);
+                if (rts.Distance < 32)
+                {
+                    int budget = 0;
+                    for (int slot = 0; slot < store.SlotCount && budget < 24; slot++)
+                    {
+                        ref var unit = ref store.Records[slot];
+                        if (!unit.InUse || !unit.Motion.Present || IsAirTarget(unit.Id)) continue;
+                        string type = store.Types.Name(unit.TypeIndex);
+                        if (type.Contains("squad") || type.Contains("infantry") || type == "engineer" || type == "militia" || type == "anti_armor" || type == "special_forces" || type == "mortar_team") continue;
+                        if (!units.TryGetPosition(store, unit.Id, out var xz)) continue;
+                        var position = new float3(xz.x, world.GroundHeight(xz.x, xz.y), xz.y);
+                        if (!Near(position, 17)) continue;
+                        fx.EngineTrail(position, new float3(unit.Motion.Vx, 0, unit.Motion.Vz), unit.Hp < 35, atmosphere.Rain < .35f);
+                        budget++;
+                    }
+                }
             }
         }
 
@@ -862,7 +961,7 @@ namespace SE.Runtime.App
 
         void OnDestroy()
         {
-            terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); traffic?.Dispose(); units?.Dispose(); fx?.Dispose(); fog?.Dispose(); ground?.Dispose();
+            terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); units?.Dispose(); fx?.Dispose(); fog?.Dispose(); ground?.Dispose();
             atmosphere?.Dispose(); audioDirector?.Dispose(); commander?.Dispose();
             net?.Dispose();
             session?.World.Dispose();
@@ -898,7 +997,7 @@ namespace SE.Runtime.App
             sb.Append("units ").Append(session.Units.Count).Append(" drawn ").Append(units.Drawn).Append(" instances ").Append(units.Instances)
               .Append("   buildings ").Append(session.Structures.Buildings.Count).Append(" cells ").Append(city.CellCount).Append('\n');
             sb.Append("terrain chunks built ").Append(terrain.ChunksBuilt).Append(" dirty ").Append(terrain.DirtyCount).Append(" drawn ").Append(terrain.DrawnChunks)
-              .Append("   particles ").Append(fx.Live).Append("   cars ").Append(traffic.Count).Append('\n');
+              .Append("   particles ").Append(fx.Live).Append('\n');
             sb.Append("camera ").Append(rts.Distance.ToString("0")).Append("   snapshots ").Append(session.Snapshots).Append(" apply ").Append(session.ApplyMs.ToString("0.00")).Append(" ms\n");
             sb.Append("weather cloud ").Append(atmosphere.Cloud.ToString("0.00")).Append(" rain ").Append(atmosphere.Rain.ToString("0.00")).Append("   trenches ").Append(session.Trenches.Length).Append('\n');
             if (net != null)

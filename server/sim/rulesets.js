@@ -5,6 +5,7 @@ export const DELIBERATE_RULESET = 'native-v2';
 export const EXPANSIVE_RULESET = 'native-v3';
 // native-v4: the v3 tempo plus timed upgrade and repair works (no instant level-ups or heals).
 export const WORKS_RULESET = 'native-v4';
+export const ACTION_RULESET = 'action-v2';
 export const TEMPO = Object.freeze({
   infantryMovement: .65, wheeledMovement: .70, trackedMovement: .70,
   logisticsMovement: .75, aircraftMovement: .85, production: .70,
@@ -40,8 +41,9 @@ export const REMOVED_TECHS = new Set(['corporate_charter', 'federal_union']);
 export const REMOVED_COMMANDS = new Set(['gov', 'policy', 'tax', 'focus', 'import', 'importQuote', 'respond', 'workforce', 'workforcePreview', 'workerLock', 'govProposal']);
 export const nativeRules = (subject) => [NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET].includes(subject?.ruleset);
 export const timedWorks = (subject) => subject?.ruleset === WORKS_RULESET;
+export const actionRules = (subject) => subject?.ruleset === ACTION_RULESET;
 export function validateRuleset(id = LEGACY_RULESET) {
-  if (![LEGACY_RULESET, NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET].includes(id)) throw new Error(`Unsupported match ruleset: ${id}`);
+  if (![LEGACY_RULESET, NATIVE_RULESET, DELIBERATE_RULESET, EXPANSIVE_RULESET, WORKS_RULESET, ACTION_RULESET].includes(id)) throw new Error(`Unsupported match ruleset: ${id}`);
   return id;
 }
 export const tempo = (subject, key) => subject?.ruleset === WORKS_RULESET ? WORKS_TEMPO[key] : subject?.ruleset === EXPANSIVE_RULESET ? EXPANSIVE_TEMPO[key] : subject?.ruleset === DELIBERATE_RULESET ? DELIBERATE_TEMPO[key] : subject?.ruleset === NATIVE_RULESET ? TEMPO[key] : 1;

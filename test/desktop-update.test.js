@@ -43,7 +43,7 @@ test('a macOS bundle is replaced in place only from a real install location', ()
   assert.match(macBundle('/private/var/folders/x/AppTranslocation/ABC/d/Shattered Empires.app/Contents/MacOS/Shattered Empires').why, /Applications/);
 });
 
-test('the macOS swap script waits for the app, swaps the bundle and restores it on failure', () => {
+test('the macOS swap script waits for the app, swaps the bundle and restores it on failure', { skip: process.platform === 'win32' ? 'Requires a POSIX shell; macOS runtime gate runs on macOS.' : false }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-swap-'));
   const app = path.join(dir, "Shattered Empires's.app"), fresh = path.join(dir, '.new.app');
   fs.mkdirSync(app); fs.writeFileSync(path.join(app, 'v'), 'old');

@@ -13,9 +13,9 @@ namespace SE.Runtime.UI
     /// <summary>What the New Campaign screen chose (server match options: world style, size, rivals, difficulty, seed).</summary>
     public sealed class CampaignOptions
     {
-        public string Style = "continents", MapSize = "medium", Difficulty = "normal", Seed = "";
-        public int Rivals = 2;
-        public bool Tutorial;
+        public string Style = "pangaea", MapSize = "small", Difficulty = "normal", Seed = "", Objective = "domination";
+        public int Rivals = 1;
+        public bool Tutorial, Wrap;
     }
 
     public interface IGameActions
@@ -28,6 +28,7 @@ namespace SE.Runtime.UI
         void ApplyQuality(string preset);
         void ApplyUiScale(float scale);
         void StartCampaign(CampaignOptions options);
+        void HostMultiplayer(int teamSize);
         void InviteFriends();
         bool CanInvite { get; }
         string Server { get; set; }
@@ -42,7 +43,7 @@ namespace SE.Runtime.UI
     /// Training follows the Halo Wars model: select any number of production buildings and queue units
     /// once; the order is shared across all of them.
     /// </summary>
-    public sealed class Hud
+    public sealed partial class Hud
     {
         readonly VisualElement root;
         readonly ClientSession session;
@@ -200,12 +201,15 @@ namespace SE.Runtime.UI
             if (Input.InputFacade.Action("build")) Toggle("build");
             if (Input.InputFacade.Action("research")) Toggle("research");
             if (Input.InputFacade.Action("overview")) Toggle("overview");
-            if (Input.InputFacade.Pressed(KeyCode.M)) SetMinimapLens(!MinimapLens);
+            if (!session.ActionRts && Input.InputFacade.Pressed(KeyCode.M)) SetMinimapLens(!MinimapLens);
             if (Input.InputFacade.Action("alert") && session.LastAlertTile >= 0) game.FocusTile(session.LastAlertTile, 22f);
         }
 
         void Toggle(string name)
         {
+            if (session.ActionRts && name == "build" && openPanel != "build" &&
+                (!session.Objectives.TryGetValue(commander.SelectedObjective, out var site) || !site.IsBase || site.Owner != session.CivId))
+            { OpenFieldMenu(); return; }
             openPanel = openPanel == name ? "" : name;
             panelTab = "";
             panelSignature = "";
@@ -226,9 +230,15 @@ namespace SE.Runtime.UI
                     el.style.opacity = 0;
                     var e2 = el; e2.schedule.Execute(() => e2.style.opacity = 1).StartingIn(60);
                 }
-            Map.style.display = on && MinimapLens ? DisplayStyle.Flex : DisplayStyle.None;
+            Map.style.display = on && MinimapLens && !session.ActionRts ? DisplayStyle.Flex : DisplayStyle.None;
+            if (objectiveLayer != null) objectiveLayer.style.display = on && session.ActionRts ? DisplayStyle.Flex : DisplayStyle.None;
+            if (on) ApplyRulesetLayout();
             if (!on) { panel.style.display = DisplayStyle.None; card.style.display = DisplayStyle.None; coach.style.display = DisplayStyle.None; }
-            else if (PlayerPrefs.GetInt("se.tutorial.done", 0) == 0 && !session.Spectator) { tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }
+            else if (!session.Spectator && (session.ActionRts ? ProtocolDecoder.Int(Econ?["tutorialSite"]) > 0 : PlayerPrefs.GetInt("se.tutorial.done", 0) == 0))
+            {
+                tutorialStep = 0; stepAt = 0; coach.style.display = DisplayStyle.Flex;
+            }
+            else tutorialStep = -1;
         }
 
         // ------------------------------------------------------------------ menu
@@ -271,9 +281,10 @@ namespace SE.Runtime.UI
         {
             menuPage = page;
             menuBox.Clear();
+            L("RECLAMATION COMMAND", "menu-eyebrow", menuBox);
             var title = L("SHATTERED EMPIRES", "menu-title", menuBox);
             title.style.unityTextAlign = TextAnchor.MiddleLeft;
-            var sub = L("Rebuild civilization. Command its future.", "menu-sub", menuBox);
+            var sub = L("Reclaim the ruins. Command an empire.", "menu-sub", menuBox);
             sub.style.unityTextAlign = TextAnchor.MiddleLeft;
             switch (page)
             {
@@ -297,14 +308,14 @@ namespace SE.Runtime.UI
                 if (id == "continue")
                 {
                     enabled = match != "";
-                    text = enabled ? $"Continue · match {match}" : "Continue";
+                    text = enabled ? "Continue operation" : "Continue";
                 }
-                var b = B(text, () => MenuAction(action), menuBox, null, id == "campaign" || (id == "continue" && enabled) ? "primary menu-item" : "menu-item");
+                var b = B(text, () => MenuAction(action), menuBox, null, (id == "campaign" && match == "") || (id == "continue" && enabled) ? "primary menu-item" : "menu-item");
                 b.SetEnabled(enabled);
                 string why = id == "continue" && !enabled ? "No saved match yet: start a New Campaign." : help;
                 b.RegisterCallback<PointerEnterEvent>(e => { if (menuHelp != null) menuHelp.text = why; });
             }
-            menuHelp = L("Rebuild a civilization on a shattered world.", "menu-help", menuBox);
+            menuHelp = L("Scout. Capture. Rebuild. Deploy. Conquer.", "menu-help", menuBox);
         }
 
         void MenuAction(string id)
@@ -343,7 +354,7 @@ namespace SE.Runtime.UI
             }
             L("Map size", "muted small", menuBox);
             var sizes = El("row", menuBox);
-            foreach (var (id, label) in new[] { ("small", "Small · 128²"), ("medium", "Medium · 192²"), ("large", "Large · 256²") })
+            foreach (var (id, label) in new[] { ("small", "Skirmish"), ("medium", "Standard"), ("large", "Epic") })
             {
                 string v = id;
                 B(label, () => { campaign.MapSize = v; MenuPage("campaign"); }, sizes).EnableInClassList("selected", campaign.MapSize == id);
@@ -362,6 +373,13 @@ namespace SE.Runtime.UI
                 b.tooltip = h;
             }
             L(DifficultyHelp(campaign.Difficulty), "muted small", menuBox);
+            var victory = El("row wrap", menuBox);
+            foreach (var (id, label) in new[] { ("domination", "Military Domination"), ("control", "Territorial Control"), ("operation", "Operation") })
+            {
+                string rule = id;
+                B(label, () => { campaign.Objective = rule; MenuPage("campaign"); }, victory).EnableInClassList("selected", campaign.Objective == id);
+            }
+            Toggle(menuBox, "East–west wrapping", campaign.Wrap, on => campaign.Wrap = on);
             L("Nation", "muted small", menuBox);
             var nation = new TextField { value = game.PlayerName }; nation.AddToClassList("field"); menuBox.Add(nation);
             nation.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
@@ -391,7 +409,12 @@ namespace SE.Runtime.UI
             L("Your name", "muted small", menuBox);
             nameField = new TextField { value = game.PlayerName }; nameField.AddToClassList("field"); menuBox.Add(nameField);
             nameField.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
-            B("Host a match for friends", () => game.StartMatch("pvp", ""), menuBox, null, "primary");
+            var formats = El("row wrap", menuBox);
+            for (int n = 1; n <= 4; n++)
+            {
+                int size = n;
+                B($"Host {size}v{size}", () => game.HostMultiplayer(size), formats, null, n == 1 ? "primary" : null);
+            }
             L("Join with a match code", "muted small", menuBox);
             var join = El("row", menuBox);
             codeField = new TextField { value = "" }; codeField.AddToClassList("field"); codeField.AddToClassList("grow"); join.Add(codeField);
@@ -434,7 +457,7 @@ namespace SE.Runtime.UI
             into.Add(search);
             var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 420; into.Add(scroll);
             var entries = new List<(VisualElement el, string text)>();
-            foreach (var (topic, text) in Guide)
+            foreach (var (topic, text) in inMenu || session.ActionRts ? ActionGuide : Guide)
             {
                 var item = El("list-item", scroll);
                 L(topic, "heading", item);
@@ -446,6 +469,12 @@ namespace SE.Runtime.UI
                 string q = (e.newValue ?? "").Trim().ToLowerInvariant();
                 foreach (var (el, text) in entries) el.style.display = q.Length == 0 || text.Contains(q) ? DisplayStyle.Flex : DisplayStyle.None;
             });
+            var credits = Resources.Load<TextAsset>("Audio/Credits");
+            if (credits != null)
+            {
+                var fold = new Foldout { text = "Sound and music credits", value = false }; scroll.Add(fold);
+                L(credits.text, "small muted", fold).style.whiteSpace = WhiteSpace.Normal;
+            }
             if (inMenu) B("Back", () => MenuPage("main"), into);
         }
 
@@ -503,7 +532,8 @@ namespace SE.Runtime.UI
                 bool valid = commander.PlacementLegal && (site == null || ProtocolDecoder.Bool(site["valid"], true));
                 string reason = ProtocolDecoder.Str(site?["reason"]);
                 bool queued = ProtocolDecoder.Bool(site?["queued"]);
-                placeWhy.text = !valid ? (reason ?? "Not a legal site for this building") : queued ? "Not enough now: the site will wait for materials" : "Click to place · drag for several · Shift keeps placing";
+                placeWhy.text = !valid ? (reason ?? "This parcel is unavailable") : session.ActionRts ? "Click to begin construction" :
+                    queued ? "Not enough now: the site will wait for materials" : "Click to place · drag for several · Shift keeps placing";
                 placeWhy.EnableInClassList("bad", !valid); placeWhy.EnableInClassList("warn", valid && queued); placeWhy.EnableInClassList("good", valid && !queued);
             }
             placeCard.style.display = DisplayStyle.Flex;
@@ -629,6 +659,11 @@ namespace SE.Runtime.UI
             hint.style.display = modeHint.Length > 0 || feedback ? DisplayStyle.Flex : DisplayStyle.None;
             hintText.text = feedback ? commander.Feedback : modeHint;
             hintText.style.color = feedback ? (commander.FeedbackGood ? new Color(0.65f, 0.9f, 0.6f) : new Color(1f, 0.55f, 0.45f)) : new Color(0.9f, 0.88f, 0.8f);
+            if (session.ActionRts)
+            {
+                hint.style.bottom = StyleKeyword.Auto; hint.style.top = 58;
+                hint.style.display = feedback && commander.Feedback != "Order accepted" ? DisplayStyle.Flex : DisplayStyle.None;
+            }
             if (time > bannerUntil) banner.style.display = DisplayStyle.None;
             if (Map.resolvedStyle.display != DisplayStyle.None) Map.Tick(time);
             PlacementCard();
@@ -639,6 +674,7 @@ namespace SE.Runtime.UI
             // menu, then an open panel; with nothing open it brings up the pause menu
             if (Input.InputFacade.Pressed(KeyCode.Escape) && commander.EscapeFrame != Time.frameCount)
             {
+                if (session.ActionRts && CloseActionContext()) return;
                 if (pauseMenu != null) TogglePauseMenu();
                 else if (openPanel != "") { openPanel = ""; Refresh(true); }
                 else TogglePauseMenu();
@@ -647,7 +683,7 @@ namespace SE.Runtime.UI
             UpdateSpeedStrip();
             Shortcuts();
             TileReadout();
-            Tutorial(time);
+            if (session.ActionRts) ActionTutorial(time); else Tutorial(time);
             if (time < refreshAt) return;
             refreshAt = time + 0.25f;
             Refresh(false);
@@ -718,10 +754,10 @@ namespace SE.Runtime.UI
             // the rail shows which panel is open
             foreach (var name in new[] { "build", "army", "research", "overview", "settings" })
                 rail.Q<Button>("rail-" + name)?.EnableInClassList("selected", openPanel == name || (name == "army" && openPanel == "overview" && panelTab == "Armies"));
-            TopBar();
+            if (session.ActionRts) ActionTopBar(); else TopBar();
             Notes();
-            Card(force);
-            Panel(force);
+            if (session.ActionRts) { ActionCard(force); ActionPanel(force); }
+            else { Card(force); Panel(force); }
         }
 
         // ------------------------------------------------------------------ top bar: what you have, what flows, what is short
@@ -907,15 +943,18 @@ namespace SE.Runtime.UI
                 var (t, text, level) = notes[i];
                 var meta = i < session.NoteMeta.Count ? session.NoteMeta[i] : default;
                 if (text.StartsWith("(earlier)")) continue;
-                if (meta.Kind == "result" || !string.IsNullOrEmpty(meta.Title)) ResultCard(meta.Title ?? "Outcome", text, meta.Tile);
-                if (level != "critical" && level != "major") continue;
+                bool outcome = meta.Kind == "result" || !string.IsNullOrEmpty(meta.Title);
+                if (outcome && !session.ActionRts) ResultCard(meta.Title ?? "Outcome", text, meta.Tile);
+                if (level != "critical" && level != "major" && !(outcome && session.ActionRts)) continue;
                 var n = El("note row" + (level == "critical" ? " critical" : ""), feed);
                 var label = L(text, "grow", n); label.style.whiteSpace = WhiteSpace.Normal;
                 int tile = meta.Tile;
+                if (outcome && session.ActionRts)
+                    B("Report", () => ResultCard(meta.Title ?? "Outcome", text, tile), n, null, "note-go");
                 if (tile >= 0) B("Go", () => game.FocusTile(tile, 22f), n, null, "note-go");
                 n.schedule.Execute(() => n.RemoveFromHierarchy()).StartingIn(level == "critical" ? 14000 : 8000);
                 if (level == "critical") { bannerText.text = text; banner.style.display = DisplayStyle.Flex; bannerUntil = Time.unscaledTime + 4f; }
-                while (feed.childCount > 5) feed.RemoveAt(0);
+                while (feed.childCount > (session.ActionRts ? 2 : 5)) feed.RemoveAt(0);
             }
             noteCount = total;
         }
@@ -1628,6 +1667,7 @@ namespace SE.Runtime.UI
                 Volume("Effects", a.Effects, v => a.Effects = v);
                 Volume("Ambience", a.Ambience, v => a.Ambience = v);
                 Volume("Music", a.MusicVolume, v => a.MusicVolume = v);
+                B("Sound and music credits", () => { openPanel = "guide"; panelSignature = ""; Refresh(true); }, panel);
             }
             var scroll = new ScrollView(ScrollViewMode.Vertical); scroll.style.maxHeight = 520; panel.Add(scroll);
             L("Accessibility and comfort", "heading section", scroll);

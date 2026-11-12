@@ -3,7 +3,7 @@
 // path previews that changed, plus the ids that left view. A full set goes out first and every
 // `fullEvery` snapshots, so a viewer can never drift for long.
 export function deltaEncoder(fullEvery = 50) {
-  let units = new Map(), paths = new Map(), n = 0;
+  let units = new Map(), paths = new Map(), worldPaths = new Map(), n = 0;
   return (msg) => {
     if (msg.t !== 's' || !Array.isArray(msg.units)) return msg;
     const full = n++ % fullEvery === 0;
@@ -17,6 +17,18 @@ export function deltaEncoder(fullEvery = 50) {
     paths = np;
     const out = { ...msg, units: list, paths: pl };
     if (!full) { out.d = 1; if (gone.length) out.ug = gone; if (pg.length) out.pg = pg; }
+    if (msg.wp) {
+      const nw = new Map(), next = {}, removed = [];
+      for (const [id, route] of Object.entries(msg.wp)) {
+        const key = JSON.stringify(route);
+        nw.set(id, key);
+        if (full || worldPaths.get(id) !== key) next[id] = route;
+      }
+      if (!full) for (const id of worldPaths.keys()) if (!nw.has(id)) removed.push(Number(id));
+      worldPaths = nw;
+      out.wp = next;
+      if (removed.length) out.wpg = removed;
+    }
     return out;
   };
 }

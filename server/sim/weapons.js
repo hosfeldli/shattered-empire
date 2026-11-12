@@ -49,6 +49,8 @@ export const UNIT_WEAPON = {
 };
 export const BUILDING_WEAPON = { town: 'mg', bunker: 'mg', fort: 'fortgun', camp: 'rifle', guard_post: 'mg_light', aa_battery: 'airburst' };
 
+// Append new profiles so historical event indices remain stable.
+WEAPONS.pistol = { name: 'Defensive pistol', mode: 'hitscan', cooldown: 1.4, burst: 1, supp: 1, vsArmor: .08, tracer: 'light', targets: ['ground'] };
 export const WEAPON_KEYS = Object.keys(WEAPONS);
 export const weaponOf = (unitType) => WEAPONS[UNIT_WEAPON[unitType]] || null;
 

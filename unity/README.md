@@ -72,10 +72,19 @@ Preferences → Licenses. CI uses the `UNITY_LICENSE`/`UNITY_SERIAL`, `UNITY_EMA
 
 ## Status
 
-M1 (foundation) and the M2 stress scene are implemented. The project compiles, the EditMode tests
-pass and the Windows player builds. M2 is measured and meets the targets (see
-docs/UNITY_MIGRATION.md). On 2026-11-08 the project committed to Unity, and M3 (live multiplayer)
-is next.
+Unity now defaults to the versioned `action-v2` RTS ruleset: city-ruin capture, fixed 4/6/8
+headquarters rings, Materials/Energy, faction-wide command capacity and technology,
+buildable roads, independent field defenses and continuous authoritative armies.
+Ground units collect Materials caches; capturable abandoned energy plants provide Energy.
+Construction does not require engineer selection. Engineers repair and assist nearby allies
+automatically outside combat. See [the ring-city redesign](../docs/RING_CITY_REDESIGN.md).
+The model, material, animation, city, HUD and effects pass accompanies this rules change.
+See [implementation and acceptance report](../docs/ACTION_RTS_IMPLEMENTATION.md) for the exact
+scope and remaining approval gates. Older matches retain their own rules; use `-ruleset native-v4`
+only when creating an intentional legacy match.
+
+Use `-review DIRECTORY` in a live sandbox to capture actual gameplay at close, operational and
+strategic scales. Visual review and performance measurement are separate runs.
 
 Builds default to Mono. Pass `-il2cpp` to the build to use IL2CPP, which requires the Visual
 Studio C++ build tools. Use `-shots DIR` with `-mode stress` to capture one screenshot per tour

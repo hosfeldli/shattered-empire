@@ -19,7 +19,7 @@ using SE.Net;
 /// </summary>
 static class LiveCheck
 {
-    public static int Run(string url, int seconds)
+    public static int Run(string url, int seconds, string ruleset = "native-v4")
     {
         var clock = Stopwatch.StartNew();
         double Now() => clock.Elapsed.TotalSeconds;
@@ -83,7 +83,7 @@ static class LiveCheck
             }
         };
         conn.Connect(url);
-        conn.Send(new JObject { ["t"] = "create", ["mode"] = "sandbox", ["name"] = "UnityCheck", ["ruleset"] = "native-v4", ["ais"] = 1 });
+        conn.Send(new JObject { ["t"] = "create", ["mode"] = "sandbox", ["name"] = "UnityCheck", ["ruleset"] = ruleset, ["ais"] = 1, ["seed"] = 41 });
 
         double end = Now() + seconds, probeAt = 0, dropAt = Now() + seconds * 0.6;
         int probes = 0;
@@ -96,7 +96,7 @@ static class LiveCheck
             {
                 probeAt = Now() + 0.5;
                 probes++;
-                conn.Command(new JObject { ["c"] = "stance", ["units"] = new JArray(), ["stance"] = "defensive" });
+                conn.Command(ruleset.StartsWith("action-") ? new JObject { ["c"] = "hold", ["units"] = new JArray() } : new JObject { ["c"] = "stance", ["units"] = new JArray(), ["stance"] = "defensive" });
             }
             if (!dropped && Now() > dropAt && snaps > 20)
             {

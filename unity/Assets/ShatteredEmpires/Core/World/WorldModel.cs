@@ -20,6 +20,7 @@ namespace SE.Core.World
         public const int ChunkSize = 16;
 
         public HexGrid Grid { get; private set; }
+        public bool ActionLandscape;
         public int ChunksW { get; private set; }
         public int ChunksH { get; private set; }
 
@@ -30,6 +31,12 @@ namespace SE.Core.World
         public byte[] GeoFlags = Array.Empty<byte>();
         public float[] Height = Array.Empty<float>();
         public float[] Water = Array.Empty<float>();
+        float[] waterBefore = Array.Empty<float>(), heightBefore = Array.Empty<float>();
+        public float[] Impacts = Array.Empty<float>();
+        public byte[] ImpactCounts = Array.Empty<byte>();
+        public float[] TrenchGeometry = Array.Empty<float>();
+        readonly HashSet<int> trenchTiles = new HashSet<int>();
+        readonly HashSet<int> impactTiles = new HashSet<int>();
 
         // tile records (protocol 1)
         public byte[] Terrain = Array.Empty<byte>();
@@ -67,6 +74,9 @@ namespace SE.Core.World
                 GeoFlags = new byte[n];
                 Height = new float[n];
                 Water = new float[n];
+                waterBefore = new float[n]; heightBefore = new float[n];
+                Impacts = new float[n * 24]; ImpactCounts = new byte[n];
+                TrenchGeometry = new float[n * 4];
                 Terrain = new byte[n];
                 Owner = new int[n];
                 Road = new int[n];
@@ -85,7 +95,11 @@ namespace SE.Core.World
                 Array.Clear(Road, 0, Road.Length); Array.Clear(TileFlags, 0, TileFlags.Length);
                 Array.Clear(Resource, 0, Resource.Length); Array.Clear(ServerColor, 0, ServerColor.Length);
                 Array.Clear(Visible, 0, Visible.Length); Array.Clear(Urban, 0, Urban.Length);
+                Array.Clear(Impacts, 0, Impacts.Length); Array.Clear(ImpactCounts, 0, ImpactCounts.Length);
+                Array.Clear(TrenchGeometry, 0, TrenchGeometry.Length);
             }
+            impactTiles.Clear();
+            trenchTiles.Clear();
             for (int i = 0; i < Owner.Length; i++) Owner[i] = -1;
             for (int i = 0; i < Water.Length; i++) Water[i] = TerrainView.NoWater;
             ChunksW = (Grid.W + ChunkSize - 1) / ChunkSize;
@@ -101,6 +115,8 @@ namespace SE.Core.World
                 Height = (float*)PinArray(Height), Water = (float*)PinArray(Water),
                 Known = (byte*)PinArray(Known), GeoFlags = (byte*)PinArray(GeoFlags),
                 Biome = (byte*)PinArray(Biome), Nb = (int*)PinArray(Grid.Nb),
+                Impacts = (float*)PinArray(Impacts), ImpactCounts = (byte*)PinArray(ImpactCounts),
+                Trenches = (float*)PinArray(TrenchGeometry),
             };
             GeoPtr = (byte*)PinArray(Geo);
             // ridge-noise cache for main-thread height queries (pure function of position: never stale)
@@ -138,6 +154,67 @@ namespace SE.Core.World
             return (r / ChunkSize) * ChunksW + q / ChunkSize;
         }
 
+        public void ApplyTrenches(TrenchRecord[] records, Action beforeChange, HashSet<int> chunks, HashSet<int> cells)
+        {
+            if (!Ready) return;
+            var next = new Dictionary<int, TrenchRecord>();
+            foreach (var r in records) if (r.HasPosition && r.Tile >= 0 && r.Tile < Grid.N && r.Progress > 0) next[r.Tile] = r;
+            var candidates = new HashSet<int>(trenchTiles); candidates.UnionWith(next.Keys);
+            bool changed = false;
+            foreach (int tile in candidates)
+            {
+                next.TryGetValue(tile, out var r);
+                float x = r.HasPosition ? Grid.DxWrap(Grid.CenterX(tile), r.X) : 0, z = r.HasPosition ? r.Z - Grid.CenterZ(tile) : 0;
+                float depth = r.HasPosition ? (float)Math.Ceiling(r.Progress / 25f) * .013f : 0;
+                int i = tile * 4;
+                if (TrenchGeometry[i] == x && TrenchGeometry[i + 1] == z && TrenchGeometry[i + 2] == r.Facing && TrenchGeometry[i + 3] == depth) continue;
+                if (!changed) { beforeChange?.Invoke(); changed = true; }
+                TrenchGeometry[i] = x; TrenchGeometry[i + 1] = z; TrenchGeometry[i + 2] = r.Facing; TrenchGeometry[i + 3] = depth;
+                chunks.Add(ChunkOf(tile)); cells.Add(ChunkOf(tile));
+                for (int d = 0; d < 6; d++) { int n = Grid.Nb[tile * 6 + d]; if (n >= 0) { chunks.Add(ChunkOf(n)); cells.Add(ChunkOf(n)); } }
+            }
+            trenchTiles.Clear(); trenchTiles.UnionWith(next.Keys);
+            if (changed) GeometryRevision++;
+        }
+
+        public void ApplyImpacts(ImpactRecord[] records, Action beforeChange, HashSet<int> chunks, HashSet<int> cells)
+        {
+            if (!Ready) return;
+            var next = new Dictionary<int, List<ImpactRecord>>();
+            foreach (var r in records)
+            {
+                if (r.Tile < 0 || r.Tile >= Grid.N) continue;
+                if (!next.TryGetValue(r.Tile, out var list)) next[r.Tile] = list = new List<ImpactRecord>(6);
+                if (list.Count < 6) list.Add(r);
+            }
+            var candidates = new HashSet<int>(impactTiles); candidates.UnionWith(next.Keys);
+            bool changed = false;
+            foreach (int tile in candidates)
+            {
+                next.TryGetValue(tile, out var list);
+                int count = list?.Count ?? 0, offset = tile * 24;
+                var values = new float[24];
+                for (int k = 0; k < count; k++)
+                {
+                    var r = list[k];
+                    float power = r.Class == "strategic" ? 1f : r.Class == "bomb" || r.Class == "missile" ? .72f : r.Class == "mortar" ? .28f : .47f;
+                    values[k * 4] = r.X; values[k * 4 + 1] = r.Z;
+                    values[k * 4 + 2] = .15f + power * .35f + r.Severity * .08f;
+                    values[k * 4 + 3] = .035f + power * .10f;
+                }
+                bool same = ImpactCounts[tile] == count;
+                for (int k = 0; k < 24 && same; k++) same = Impacts[offset + k] == values[k];
+                if (same) continue;
+                if (!changed) { beforeChange?.Invoke(); changed = true; }
+                ImpactCounts[tile] = (byte)count;
+                Array.Copy(values, 0, Impacts, offset, 24);
+                chunks.Add(ChunkOf(tile)); cells.Add(ChunkOf(tile));
+                for (int d = 0; d < 6; d++) { int n = Grid.Nb[tile * 6 + d]; if (n >= 0) { chunks.Add(ChunkOf(n)); cells.Add(ChunkOf(n)); } }
+            }
+            impactTiles.Clear(); impactTiles.UnionWith(next.Keys);
+            if (changed) GeometryRevision++;
+        }
+
         public float Elevation(int i) => Geo[i * GeoStride] / 127.5f - 1f;
         public int Deposit(int i) => Geo[i * GeoStride + 4] & 15;
         public int FlowBucket(int i) => Geo[i * GeoStride + 4] >> 4;
@@ -170,6 +247,8 @@ namespace SE.Core.World
         {
             var touched = new HashSet<int>();
             if (!Ready) return touched;
+            bool watchBasins = ActionLandscape && (!m.Full || keepExisting);
+            if (watchBasins) { Array.Copy(Water, waterBefore, Water.Length); Array.Copy(Height, heightBefore, Height.Length); }
             int cs = m.ChunkSize > 0 ? m.ChunkSize : ChunkSize;
             int stride = m.Stride > 0 ? m.Stride : GeoStride;
             if (m.Full && !keepExisting)
@@ -214,6 +293,14 @@ namespace SE.Core.World
                 }
             }
             RecomputeWater();
+            if (watchBasins) for (int tile = 0; tile < Grid.N; tile++)
+            {
+                if (Known[tile] == 0 || Water[tile] == waterBefore[tile] && Height[tile] == heightBefore[tile]) continue;
+                // Discovering an upstream part of a lake can change its common level.
+                // Refresh existing banks too, so an old water mesh cannot leave a seam.
+                heightChanged = true; touched.Add(ChunkOf(tile));
+                for (int d = 0; d < 6; d++) { int n = Grid.Nb[tile * 6 + d]; if (n >= 0) touched.Add(ChunkOf(n)); }
+            }
             if (heightChanged) GeometryRevision++;
             return touched;
         }
@@ -233,12 +320,27 @@ namespace SE.Core.World
                 for (int cursor = 0; cursor < queue.Count; cursor++)
                 {
                     int t = queue[cursor];
-                    level = Math.Max(level, Height[t] + LakeDepth * 0.8f);
+                    float rawBed = TileHeightFromGeo(Geo[t * GeoStride], Biome[t], GeoFlags[t]);
+                    level = Math.Max(level, rawBed + LakeDepth * .8f);
                     for (int d = 0; d < 6; d++)
                     {
                         int nb = Grid.Nb[t * 6 + d];
                         if (nb >= 0 && !visited[nb] && Known[nb] != 0 && IsLake(nb)) { visited[nb] = true; queue.Add(nb); }
                     }
+                }
+                if (ActionLandscape)
+                {
+                    float bank = float.PositiveInfinity;
+                    foreach (int t in queue) for (int d = 0; d < 6; d++)
+                    {
+                        int n2 = Grid.Nb[t * 6 + d];
+                        if (n2 >= 0 && Known[n2] != 0 && !IsLake(n2)) bank = Math.Min(bank, Height[n2] - .025f);
+                    }
+                    level = Math.Min(level, bank);
+                    // The marked lake is impassable in the simulation. Give its basin one
+                    // coherent water plane and a bed below it, without drowning dry parcels.
+                    foreach (int t in queue)
+                        Height[t] = Math.Min(TileHeightFromGeo(Geo[t * GeoStride], Biome[t], GeoFlags[t]), level - LakeDepth);
                 }
                 foreach (int t in queue) Water[t] = level;
             }

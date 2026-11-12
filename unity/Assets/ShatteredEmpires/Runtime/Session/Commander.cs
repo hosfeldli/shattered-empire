@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using SE.Core.Protocol;
 using SE.Runtime.CameraControl;
@@ -18,7 +19,7 @@ namespace SE.Runtime.Session
     /// shows the server's reason; nothing is reported as refused unless the server said so, and a site
     /// already submitted is never submitted twice (fast clicking under load cannot double-place).
     /// </summary>
-    public sealed class Commander : IDisposable
+    public sealed partial class Commander : IDisposable
     {
         public enum Mode { Select, Place, Road, Bridge, Trench, Growth, Rally, Target }
 
@@ -72,6 +73,7 @@ namespace SE.Runtime.Session
             session = s; cam = c; units = u;
             rings = new InstanceBatch(MeshKit.Ring, RenderResources.Instanced, 512) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, Buffering = 3 };
             discs = new InstanceBatch(MeshKit.Disc, RenderResources.Instanced, 512) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, Buffering = 3 };
+            routeLines = new InstanceBatch(MeshKit.Box, RenderResources.Instanced, 256) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, Buffering = 3 };
         }
 
         public void Say(string text, bool good, float time) { Feedback = text; FeedbackGood = good; FeedbackUntil = time + 3.5f; }
@@ -80,7 +82,9 @@ namespace SE.Runtime.Session
         public void Begin(Mode mode, string option = "", JObject target = null)
         {
             Current = mode; Option = option ?? ""; TargetCommand = target;
+            dragging = false; ClearRingPreview(); FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++;
             path.Clear(); preview = null; legal.Clear(); legalReady = false;
+            worldStroke.Clear(); actionTrenchPreview = null;
             if (mode == Mode.Place && session.Net != null)
             {
                 int token = ++placementToken;
@@ -96,7 +100,7 @@ namespace SE.Runtime.Session
             else if (mode == Mode.Place) legalReady = false;
         }
 
-        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; }
+        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; worldStroke.Clear(); actionTrenchPreview = null; }
 
         public bool Dragging(out Rect rect)
         {
@@ -138,6 +142,7 @@ namespace SE.Runtime.Session
 
         BuildingRecord? BuildingAt(int tile)
         {
+            if (session.ActionRts) return SpatialBuildingAt(InputFacade.MousePosition);
             foreach (var b in session.Structures.Buildings.Values) if (b.Tile == tile) return b;
             return null;
         }
@@ -148,13 +153,16 @@ namespace SE.Runtime.Session
             if (!session.Ready) return;
             var mouse = InputFacade.MousePosition;
             hoverTile = pointerOverUi ? -1 : TileUnderCursor();
+            if (session.ActionRts) UpdateFieldPreview(time, pointerOverUi);
             if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { EscapeFrame = Time.frameCount; rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
             if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { EscapeFrame = Time.frameCount; Cancel(); return; }
             switch (Current)
             {
                 case Mode.Select: SelectMode(time, mouse, pointerOverUi); break;
-                case Mode.Place: PlaceMode(time, pointerOverUi); break;
-                case Mode.Road: case Mode.Bridge: case Mode.Trench: DrawMode(time, pointerOverUi); break;
+                case Mode.Place: if (session.ActionRts) PlaceBase(time, pointerOverUi); else PlaceMode(time, pointerOverUi); break;
+                case Mode.Trench: if (session.ActionRts) DrawActionTrench(time, pointerOverUi); else DrawMode(time, pointerOverUi); break;
+                case Mode.Road: if (session.ActionRts) DrawActionTrench(time, pointerOverUi); else DrawMode(time, pointerOverUi); break;
+                case Mode.Bridge: DrawMode(time, pointerOverUi); break;
                 case Mode.Growth: case Mode.Rally: case Mode.Target: PointMode(time, pointerOverUi); break;
             }
             Orders.RemoveAll(o => time - o.Time > (o.State == "pending" ? 8f : 1.5f));
@@ -162,7 +170,7 @@ namespace SE.Runtime.Session
             foreach (var kv in refusedSites) if (time - kv.Value.at > 2.5f) stale.Add(kv.Key);
             foreach (var t in stale) refusedSites.Remove(t);
             stale.Clear();
-            foreach (var kv in pendingSites) if (time - kv.Value > 10f || BuildingAt(kv.Key) != null) stale.Add(kv.Key);
+            foreach (var kv in pendingSites) if (time - kv.Value > 10f || (session.ActionRts ? session.Structures.Buildings.Values.Any(b => b.Slot == kv.Key) : BuildingAt(kv.Key) != null)) stale.Add(kv.Key);
             foreach (var t in stale) pendingSites.Remove(t);
         }
 
@@ -178,7 +186,7 @@ namespace SE.Runtime.Session
                 int tile = TileUnderCursor();
                 bool doubleClick = !box && time - lastClick < 0.32f && tile == lastClickTile;
                 lastClick = time; lastClickTile = tile;
-                if (!add) { units.Selected.Clear(); SelectedBuildings.Clear(); SelectedCity = -1; }
+                if (!add) { units.Selected.Clear(); SelectedBuildings.Clear(); SelectedCity = -1; SelectedObjective = SelectedPickup = SelectedRingSlot = 0; ClearRingPreview(); }
                 int best = -1; float bestD = 18f * 18f; int bestType = -1;
                 var st = session.Units;
                 for (int s = 0; s < st.SlotCount; s++)
@@ -200,6 +208,10 @@ namespace SE.Runtime.Session
                             if (u.InUse && u.Owner == session.CivId && u.TypeIndex == bestType && ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) units.Selected.Add(u.Id);
                         }
                 }
+                else if (!box && session.ActionRts && (SelectActionPickup(mouse) || SelectActionRing(mouse) || SelectActionObjective(mouse, tile)))
+                {
+                    // Objective cards cover both secured and undeveloped sites.
+                }
                 else if (!box && doubleClick && tile >= 0 && BuildingAt(tile) == null && cam.TryGround(mouse, out var centre))
                     cam.JumpTo(centre);   // double-click on open ground: centre the view there
                 else if (!box && tile >= 0 && BuildingAt(tile) is BuildingRecord b && (b.Owner == session.CivId || session.Spectator))
@@ -219,14 +231,15 @@ namespace SE.Runtime.Session
             units.Selected.RemoveWhere(id => !session.Units.SlotOf.ContainsKey(id));
             SelectedBuildings.RemoveWhere(id => !session.Structures.Buildings.ContainsKey(id));
             // right button: a click moves (on release); a drag draws a battle line
-            if (!overUi && InputFacade.RightDown && units.Selected.Count > 0 && cam.TryGround(mouse, out var ground))
+            if (!session.Spectator && !overUi && InputFacade.RightDown && units.Selected.Count > 0 && cam.TryGround(mouse, out var ground))
             {
                 rightPress = true; lineDrag = false; lineReverse = false; linePreview = null;
                 lineStartScreen = mouse; lineStartGround = ground; linePath.Clear();
+                worldLine.Clear(); worldLine.Add(ground); linePreviewAt = 0;
                 int t0 = session.World.Grid.TileAt(ground.x, ground.z);
                 if (t0 >= 0) linePath.Add(t0);
             }
-            else if (!overUi && InputFacade.RightDown && SelectedBuildings.Count > 0 && units.Selected.Count == 0)
+            else if (!session.Spectator && !overUi && InputFacade.RightDown && (SelectedBuildings.Count > 0 || SelectedObjective > 0) && units.Selected.Count == 0)
             {
                 int tile = TileUnderCursor();
                 if (tile >= 0) SetRally(tile, time);
@@ -257,6 +270,7 @@ namespace SE.Runtime.Session
 
         void BattleLine(float time, Vector2 mouse)
         {
+            if (session.ActionRts) { ActionBattleLine(time, mouse); return; }
             if (!lineDrag && (mouse - lineStartScreen).magnitude > 16f) lineDrag = true;
             if (lineDrag)
             {
@@ -316,16 +330,27 @@ namespace SE.Runtime.Session
         {
             for (int k = 1; k <= 9; k++)
             {
-                if (!InputFacade.Pressed(KeyCode.Alpha0 + k)) continue;
+                if (!InputFacade.Action("group_" + k)) continue;
                 if (InputFacade.Ctrl)
                 {
                     groups[k] = new HashSet<int>(units.Selected);
+                    if (session.ActionRts && !session.Spectator)
+                        session.Net?.Command(new JObject { ["c"] = "group", ["group"] = k, ["units"] = new JArray(new List<int>(units.Selected).ToArray()) });
                     Say(units.Selected.Count > 0 ? $"Group {k}: {units.Selected.Count} units" : $"Group {k} cleared", true, time);
                     continue;
                 }
+                if (session.ActionRts && session.Econ?["groups"] is JArray savedGroups)
+                {
+                    foreach (var group in savedGroups) if (ProtocolDecoder.Int(group["id"]) == k && group["units"] is JArray roster)
+                    {
+                        var members = new HashSet<int>();
+                        foreach (var member in roster) members.Add(ProtocolDecoder.Int(member));
+                        groups[k] = members;
+                    }
+                }
                 if (!groups.TryGetValue(k, out var g) || g.Count == 0) continue;
                 g.RemoveWhere(id => !session.Units.SlotOf.ContainsKey(id));
-                if (!InputFacade.Shift) { units.Selected.Clear(); SelectedBuildings.Clear(); SelectedCity = -1; }
+                if (!InputFacade.Shift) { units.Selected.Clear(); SelectedBuildings.Clear(); SelectedCity = -1; SelectedObjective = 0; }
                 foreach (var id in g) units.Selected.Add(id);
                 SelectionChanged?.Invoke();
                 // pressing the same group twice quickly brings the camera to it
@@ -359,7 +384,7 @@ namespace SE.Runtime.Session
         // ------------------------------------------------------------------ building placement
         /// <summary>The site under the cursor while placing, whether it is legal, and the server's site report (cost, time, reason).</summary>
         public int PlacementTile => Current == Mode.Place ? hoverTile : -1;
-        public bool PlacementLegal => !legalReady || legal.Contains(hoverTile);
+        public bool PlacementLegal => session.ActionRts && Current == Mode.Place ? PlacementParcel is BaseParcel parcel && legal.Contains(parcel.Id) : !legalReady || legal.Contains(hoverTile);
         public JObject PlacementSite;
         int siteTile = -1;
         float siteAt;
@@ -479,7 +504,7 @@ namespace SE.Runtime.Session
         {
             if (overUi) return;
             if (InputFacade.RightDown) { Cancel(); return; }
-            if (!InputFacade.LeftDown || hoverTile < 0) return;
+            if ((!InputFacade.LeftDown && !(session.ActionRts && InputFacade.Pressed(KeyCode.Return))) || hoverTile < 0) return;
             int tile = hoverTile;
             if (Current == Mode.Growth && SelectedCity >= 0)
             {
@@ -490,6 +515,11 @@ namespace SE.Runtime.Session
             {
                 var cmd = (JObject)TargetCommand.DeepClone();
                 Bind(cmd, tile);
+                if (session.ActionRts && cam.TryGround(InputFacade.MousePosition, out var p))
+                {
+                    cmd["point"] = Point(p);
+                    if (ProtocolDecoder.Str(cmd["c"]) == "move") { cmd["queue"] = InputFacade.Shift; ActionMoveOrders++; }
+                }
                 session.Net?.Command(cmd, r => Say(r.Error ?? "Order accepted", r.Error == null, Time.unscaledTime));
             }
             Cancel();
@@ -512,6 +542,7 @@ namespace SE.Runtime.Session
 
         void SetRally(int tile, float time)
         {
+            if (session.ActionRts) { SetActionRally(tile, time); return; }
             foreach (var id in SelectedBuildings)
                 session.Net?.Command(new JObject { ["c"] = "rally", ["building"] = id, ["tile"] = tile }, r => Say(r.Error ?? "Rally point set", r.Error == null, Time.unscaledTime));
         }
@@ -545,7 +576,7 @@ namespace SE.Runtime.Session
         /// <summary>Legal sites, the site under the cursor, pending and refused sites, the drawn path.</summary>
         public void DrawOverlay(WrapImages images, float time)
         {
-            rings.Clear(); discs.Clear();
+            rings.Clear(); discs.Clear(); routeLines.Clear();
             var w = session.World;
             if (!w.Ready) return;
             var g = w.Grid;
@@ -559,7 +590,7 @@ namespace SE.Runtime.Session
                 float x = g.CenterX(t), z = g.CenterZ(t);
                 discs.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + 0.03f, z)), 0, new float3(1.5f, 1f, 1.5f), col));
             }
-            if (Current == Mode.Place)
+            if (Current == Mode.Place && !session.ActionRts)
             {
                 foreach (var t in legal) if (g.Dist(t, Math.Max(0, hoverTile)) < 14 || hoverTile < 0) Ring(t, new float4(0.85f, 0.95f, 0.8f, 0.4f), 1.6f);
                 if (hoverTile >= 0) Disc(hoverTile, legal.Contains(hoverTile) || !legalReady ? new float4(0.35f, 0.9f, 0.45f, 0.6f) : new float4(0.95f, 0.3f, 0.25f, 0.6f));
@@ -577,7 +608,8 @@ namespace SE.Runtime.Session
                     }
                 else foreach (var t in path) Disc(t, new float4(0.95f, 0.8f, 0.35f, 0.5f));
             }
-            if (lineDrag)
+            if (session.ActionRts) DrawActionOverlay(images, time);
+            if (lineDrag && !session.ActionRts)
             {
                 // the line as drawn, then (once the server has planned it) every unit's slot: green where
                 // it will stand, red where the ground refuses it
@@ -618,9 +650,9 @@ namespace SE.Runtime.Session
             }
             if ((Current == Mode.Growth || Current == Mode.Rally || Current == Mode.Target) && hoverTile >= 0) Ring(hoverTile, new float4(0.95f, 0.8f, 0.35f, 0.9f), 1.6f + 0.15f * Mathf.Sin(time * 6f));
             float pulse = 1.5f + 0.1f * Mathf.Sin(time * 8f);
-            foreach (var t in pendingSites.Keys) Ring(t, new float4(1f, 0.82f, 0.25f, 0.9f), pulse);
-            foreach (var t in refusedSites.Keys) Ring(t, new float4(1f, 0.3f, 0.25f, 0.9f), 1.6f);
-            foreach (var id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var b)) Ring(b.Tile, new float4(0.4f, 1f, 0.5f, 0.85f), 1.75f);
+            if (!session.ActionRts) foreach (var t in pendingSites.Keys) Ring(t, new float4(1f, 0.82f, 0.25f, 0.9f), pulse);
+            if (!session.ActionRts) foreach (var t in refusedSites.Keys) Ring(t, new float4(1f, 0.3f, 0.25f, 0.9f), 1.6f);
+            foreach (var id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var b) && !session.ActionRts) Ring(b.Tile, new float4(.54f, .77f, .62f, .12f), 1.75f);
             foreach (var o in Orders)
             {
                 float a = 1f - Mathf.Clamp01((time - o.Time) / (o.State == "pending" ? 8f : 1.5f));
@@ -634,6 +666,7 @@ namespace SE.Runtime.Session
 
         public string ModeHint()
         {
+            if (session.ActionRts && (lineDrag || Current != Mode.Select)) return ActionModeHint();
             if (lineDrag)
             {
                 string plan = "";
@@ -658,6 +691,6 @@ namespace SE.Runtime.Session
             }
         }
 
-        public void Dispose() { rings.Dispose(); discs.Dispose(); }
+        public void Dispose() { rings.Dispose(); discs.Dispose(); routeLines.Dispose(); }
     }
 }

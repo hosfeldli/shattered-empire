@@ -77,6 +77,18 @@ namespace SE.Core.Protocol
             return def;
         }
 
+        static BaseParcel[] BaseParcels(JToken t)
+        {
+            if (!(t is JArray a)) return Array.Empty<BaseParcel>();
+            var records = new List<BaseParcel>();
+            foreach (var token in a) if (token is JArray p && p.Count >= 4)
+                records.Add(new BaseParcel { Tile = Int(p[0], -1), X = Float(p[1]), Z = Float(p[2]), Yaw = Float(p[3]),
+                    Id = p.Count > 4 ? Int(p[4]) : 0, Tier = p.Count > 5 ? Int(p[5], 1) : 1,
+                    Width = p.Count > 6 ? Float(p[6]) : .94f, Depth = p.Count > 7 ? Float(p[7]) : .88f,
+                    PreviousType = p.Count > 8 ? Str(p[8]) : null });
+            return records.ToArray();
+        }
+
         static int[] IntArray(JToken t)
         {
             if (!(t is JArray a)) return Array.Empty<int>();
@@ -122,6 +134,40 @@ namespace SE.Core.Protocol
             if (o["paths"] is JObject po)
                 foreach (var p in po.Properties())
                     if (int.TryParse(p.Name, NumberStyles.Integer, CultureInfo.InvariantCulture, out int id)) s.Paths[id] = IntArray(p.Value);
+            s.WorldPathsGone = IntArray(o["wpg"]);
+            if (o["wp"] is JObject worldPaths)
+                foreach (var path in worldPaths.Properties())
+                {
+                    if (!int.TryParse(path.Name, NumberStyles.Integer, CultureInfo.InvariantCulture, out int id) || !(path.Value is JArray points)) continue;
+                    var route = new List<WorldPoint>(points.Count);
+                    foreach (var point in points)
+                        if (point is JArray p && p.Count >= 2) route.Add(new WorldPoint(Float(p[0]), Float(p[1])));
+                    s.WorldPaths[id] = route.ToArray();
+                }
+            if (o["sites"] is JArray sites)
+            {
+                var records = new List<ObjectiveSite>(sites.Count);
+                foreach (var site in sites)
+                    if (site is JObject st) records.Add(new ObjectiveSite
+                    {
+                        Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
+                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]),
+                        X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
+                        IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Operational = Bool(st["operational"]),
+                        Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
+                        Slots = IntArray(st["slots"]),
+                        Parcels = BaseParcels(st["parcels"]),
+                        RingVersion = Int(st["ringVersion"]), DevelopedAt = Float(st["developedAt"]), Tenure = Float(st["tenure"]), Maturity = Float(st["maturity"]), VisualTier = Int(st["visualTier"], 1),
+                    });
+                s.Objectives = records.ToArray();
+            }
+            if (o["pickups"] is JArray pickups)
+            {
+                var records = new List<ResourcePickup>(pickups.Count);
+                foreach (var item in pickups) if (item is JObject p) records.Add(new ResourcePickup { Id = Int(p["id"]), Tile = Int(p["tile"], -1),
+                    X = Float(p["x"]), Z = Float(p["z"]), Amount = Int(p["amount"]), Resource = Str(p["resource"], "materials"), Memory = Bool(p["memory"]), Replenishes = Bool(p["replenishes"]) });
+                s.Pickups = records.ToArray();
+            }
             if (o["tiles"] is JArray ta)
             {
                 s.Tiles = new TileRecord[ta.Count];
@@ -152,12 +198,16 @@ namespace SE.Core.Protocol
                         From = Int(e["a"], -1), To = Int(e["b"], -1), Shooter = Int(e["s"], -1), Target = Int(e["t"], -1),
                         Weapon = Int(e["w"], -1), Damage = Int(e["d"]), Owner = Int(e["ow"], -1), Flight = Float(e["f"]),
                         Radius = Float(e["r"]), Airburst = Int(e["ab"]) == 1, Half = Int(e["h"]) == 1,
+                        HasOrigin = e["ax"] != null && e["az"] != null, HasDestination = e["bx"] != null && e["bz"] != null,
+                        Origin = new WorldPoint(Float(e["ax"]), Float(e["az"])), Destination = new WorldPoint(Float(e["bx"]), Float(e["bz"])),
+                        Amount = Int(e["amount"]), Resource = Str(e["resource"]),
                     };
                 }
             }
             s.Weather = o["wx"] as JObject;
             s.WeatherState = WorldRecordDecoder.Weather(s.Weather);
             s.Observer = o["obs"] as JObject;
+            s.ActionPlan = o["actionPlan"] as JObject;
             if (o["econ"] is JObject econ)
             {
                 s.HasEcon = true;
@@ -165,6 +215,17 @@ namespace SE.Core.Protocol
                 s.Fieldworks = o["fw"];
                 s.Battlefield = o["bf"] as JObject;
                 s.Trenches = WorldRecordDecoder.Trenches(s.Fieldworks);
+                if (s.Trenches != null && o["trenchWorld"] is JArray trenchWorld)
+                {
+                    var trenchIndex = new Dictionary<int, int>();
+                    for (int i = 0; i < s.Trenches.Length; i++) trenchIndex[s.Trenches[i].Tile] = i;
+                    foreach (var token in trenchWorld)
+                        if (token is JArray p && p.Count >= 4 && trenchIndex.TryGetValue(Int(p[0]), out int index))
+                        {
+                            s.Trenches[index].HasPosition = true;
+                            s.Trenches[index].X = Float(p[1]); s.Trenches[index].Z = Float(p[2]); s.Trenches[index].Facing = Float(p[3]);
+                        }
+                }
                 s.BattlefieldState = WorldRecordDecoder.Battlefield(s.Battlefield);
                 s.Ruins = WorldRecordDecoder.Ruins(o["ruins"]);
                 if (o["buildings"] is JArray ba)
@@ -182,6 +243,8 @@ namespace SE.Core.Protocol
                             State = Str(b["st"]), Fire = Int(b["f"]) == 1, Memory = Int(b["mem"]) == 1, Level = Int(b["lv"], 1),
                             Tier = Int(b["ti"]), Era = Int(b["ea"], -1), City = Int(b["c"], -1), QueueLength = q?.Count ?? 0, TrainProgress = Int(b["tr"]),
                             Staffed = Int(b["s"]), Why = Str(b["w"]), UpgradeCost = b["uc"] as JObject, RepairCost = Int(b["rc"]), Repeat = Str(b["rp"]),
+                            HasPosition = b["px"] != null && b["pz"] != null, X = Float(b["px"]), Z = Float(b["pz"]), HasYaw = b["yaw"] != null, Yaw = Float(b["yaw"]),
+                            Missiles = Int(b["mi"]), Slot = Int(b["slot"]), RallyGroup = Int(b["rg"]), Project = Str(b["project"]),
                         };
                         if (q != null)
                         {
@@ -238,6 +301,13 @@ namespace SE.Core.Protocol
                 if (air.Count > 4) { u.AirMission = Int(air[3], -1); u.AirMissionTile = Int(air[4], -1); }
                 if (air.Count > 6) u.AirRadius = Int(air[6]);
             }
+            if (n > 20 && a[20] is JArray p && p.Count >= 5) u.Motion = new WorldMotion
+            {
+                Present = true, X = Float(p[0]), Z = Float(p[1]), Yaw = Float(p[2]), Vx = Float(p[3]), Vz = Float(p[4]),
+                Cooldown = p.Count > 5 ? Float(p[5]) : 0,
+                Altitude = p.Count > 6 ? Float(p[6]) : 0,
+                Equipment = p.Count > 7 ? Int(p[7]) : 0,
+            };
             return u;
         }
 
@@ -276,7 +346,7 @@ namespace SE.Core.Protocol
                 var list = new List<CivInfo>();
                 foreach (var c in civs)
                     if (c is JObject co)
-                        list.Add(new CivInfo { Id = Int(co["id"]), Name = Str(co["name"], ""), Color = ParseColor(co["color"]), Human = Bool(co["human"]), Rebel = Bool(co["isRebel"]) || Bool(co["rebel"]) });
+                        list.Add(new CivInfo { Id = Int(co["id"]), Team = Int(co["team"], -1), Name = Str(co["name"], ""), Color = ParseColor(co["color"]), Human = Bool(co["human"]), Rebel = Bool(co["isRebel"]) || Bool(co["rebel"]) });
                 w.Civs = list.ToArray();
             }
             return w;

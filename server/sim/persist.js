@@ -1,7 +1,9 @@
-import { LEGACY_RULESET, nativeRules, normalizeNativeCiv } from './rulesets.js';
+import { LEGACY_RULESET, actionRules, nativeRules, normalizeNativeCiv } from './rulesets.js';
 // Full match serialization: everything needed to resume a match bit-for-bit (including the RNG),
 // so live games survive deploys, restarts and crashes, and replays can be verified.
 import { Game } from './game.js';
+import { ActionGame } from './actionGame.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES } from './actionDefinitions.js';
 import { WRAP } from './hex.js';
 import { BUILDINGS, TECHS, POLICIES } from './constants.js';
 import { AI } from './ai.js';
@@ -44,7 +46,10 @@ export function serializeGame(g) {
   const diplo = [];
   for (let a = 0; a < g.civs.length; a++) for (let b = a + 1; b < g.civs.length; b++) diplo.push([a, b, g.diplomacy.m[a][b]]);
   return {
-    v: 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
+    v: actionRules(g) ? 5 : 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
+    ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, tutorial: g.tutorial,
+      tutorialSite: g.tutorialSite, teamHold: g.teamHold, engagements: mapOut(g.engagements), reports: g.reports,
+      materialCaches: mapOut(g.materialCaches), roadProjects: g.roadProjects, armyLimit: g.armyLimit } } : {}),
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
     // v2: wrapped topology and world style
     wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style,
@@ -63,7 +68,13 @@ const revive = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? (v.$set
 export function restoreGame(data) {
   const savedWrap = data.wrap === undefined ? false : !!data.wrap;
   if (savedWrap !== WRAP) throw new Error(`snapshot topology (${savedWrap ? 'wrapped' : 'bounded'}) does not match this worker`);
-  const g = new Game({ id: data.id, seed: data.seed, slots: data.slots, ruleset: data.ruleset || LEGACY_RULESET, restore: true, rebels: data.civs.some((c) => c.isRebel), style: data.style || data.worldStyle || null });
+  const action = actionRules(data);
+  if (data.ruleset === 'action-v1') throw new Error('This save uses the earlier action-v1 economy. Ring cities require a new action-v2 match; the save has not been converted.');
+  if (action && (data.v !== 5 || !Array.isArray(data.action?.sites) || data.action.sites.some((s) => s.slots && (s.ringVersion !== 1 || s.slots.length !== 8))))
+    throw new Error('Unsupported ring-city RTS save format.');
+  const Simulation = action ? ActionGame : Game;
+  const g = new Simulation({ ...data.action, id: data.id, seed: data.seed, slots: data.slots, ruleset: data.ruleset || LEGACY_RULESET,
+    restore: true, rebels: data.civs.some((c) => c.isRebel), style: data.style || data.worldStyle || null });
   g.worldStyle = data.worldStyle ?? null;
   const w = g.world;
   if (w.elev.length !== data.size) throw new Error(`snapshot map size ${data.size} does not match this worker (${w.elev.length})`);
@@ -77,7 +88,7 @@ export function restoreGame(data) {
   g.roads.load(data.roads); g.roads.traffic = new Map(data.roads.traffic || []);
   g.units = new Map(data.units.map((u) => [u.id, u]));
   // buildings whose type has since left the game (seismic stations, stabilizers) are dropped
-  g.buildings = new Map(data.buildings.filter((b) => BUILDINGS[b.type]).map((b) => [b.id, b]));
+  g.buildings = new Map(data.buildings.filter((b) => (action ? ACTION_BUILDINGS : BUILDINGS)[b.type]).map((b) => [b.id, b]));
   g.cities = new Map(data.cities.map((c) => [c.id, { ...c, freight: c.capital ? Infinity : c.freight ?? 0 }]));
   // players' cities run themselves by default now: an older save's untouched advisor becomes autonomous
   for (const c of g.cities.values()) { const gv = c.governor, civ = data.civs[c.owner]; if (gv && civ && civ.human && !gv.chosen && (gv.level === 'advisor' || !gv.level)) { gv.level = 'autonomous'; gv.enabled = true; } }
@@ -100,7 +111,7 @@ export function restoreGame(data) {
     // saves from before difficulty profile v2 keep the multipliers they were started with
     if (o.diffProfile === undefined && c.isAI && !c.isRebel) { c.diffProfile = 'legacy'; c.fairPlay = false; }
     // technologies and policies that have since left the game are forgotten
-    if (c.techs instanceof Set) for (const t of [...c.techs]) if (!TECHS[t]) c.techs.delete(t);
+    if (c.techs instanceof Set) for (const t of [...c.techs]) if (!(action ? ACTION_UPGRADES : TECHS)[t]) c.techs.delete(t);
     if (c.policies instanceof Set) for (const t of [...c.policies]) if (!POLICIES[t]) c.policies.delete(t);
     if (Array.isArray(c.queue)) c.queue = c.queue.filter((t) => TECHS[t]);
     if (c.researching && !TECHS[c.researching]) c.researching = null;
@@ -116,7 +127,22 @@ export function restoreGame(data) {
   });
   for (const [a, b, r] of data.diplomacy.pairs) { g.diplomacy.m[a][b] = r; g.diplomacy.m[b][a] = r; }
   g.diplomacy.nextProposal = data.diplomacy.nextProposal;
-  g.rebuildTileUnits();
+  if (action) {
+    g.setSites(data.action.sites);
+    g.rebuildBuildingIndex();
+    g.materialCaches = new Map(data.action.materialCaches || []);
+    g.roadProjects = data.action.roadProjects || [];
+    for (const civ of g.civs) civ.cacheIntel ??= new Map();
+    g.tutorialSite = data.action.tutorialSite || 0;
+    g.teamHold = data.action.teamHold;
+    g.engagements = new Map(data.action.engagements || []);
+    g.reports = data.action.reports || [];
+    for (const u of g.units.values()) {
+      if (!ACTION_UNITS[u.type].air) g.movers.add(u);
+      g.targets.add(u);
+    }
+    for (const b of g.buildings.values()) g.targets.add(b);
+  } else g.rebuildTileUnits();
   return g;
 }
 

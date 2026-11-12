@@ -28,24 +28,25 @@ namespace SE.Runtime.Cities
         /// The building being placed, drawn at the site under the cursor exactly as it will be composed
         /// there (same recipe, same parcel), tinted green where it may go and red where it may not.
         /// </summary>
-        public void SetGhost(string type, int tile, int owner, bool valid)
+        public void SetGhost(string type, int tile, int owner, bool valid, SE.Core.Protocol.BaseParcel? parcel = null)
         {
             if (string.IsNullOrEmpty(type) || tile < 0 || !world.Ready) { ClearGhost(); return; }
-            string key = type + "|" + tile + "|" + valid + "|" + Age;
+            string key = type + "|" + tile + "|" + valid + "|" + Age + "|" + parcel?.X.ToString("F2") + "|" + parcel?.Z.ToString("F2");
             if (key == ghostKey) return;
             ghostKey = key;
-            if (ghost == null)
-            {
-                ghost = new Cell();
-                Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo, MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MeshKit.Truck };
-                for (int i = 0; i < ghost.Batches.Length; i++) ghost.Batches[i] = new Rendering.InstanceBatch(meshes[i], Rendering.RenderResources.Instanced, 32) { Shadows = UnityEngine.Rendering.ShadowCastingMode.Off };
-            }
+            if (ghost == null) ghost = CreateCell(true);
             var keep = current;
+            var keepStreets = streetGeometry;
+            int keepStreetQuads = streetQuads;
             current = ghost;
             foreach (var b in ghost.Batches) b.Clear();
+            BeginStreetMesh();
             bmin = new float3(1e9f); bmax = new float3(-1e9f);
-            ComposeBuilding(new SE.Core.Protocol.BuildingRecord { Id = -1, Owner = owner, Type = type, Tile = tile, Hp = 100, Done = true, Progress = 100, Level = 1, Era = Age, State = "ok" });
+            ComposeBuilding(new SE.Core.Protocol.BuildingRecord { Id = -1, Owner = owner, Type = type, Tile = tile, Hp = 100, Done = true, Progress = 100, Level = 1, Era = Age, State = "ok",
+                HasPosition = parcel.HasValue, HasYaw = parcel.HasValue, X = parcel?.X ?? 0, Z = parcel?.Z ?? 0, Yaw = parcel?.Yaw ?? 0, Slot = parcel?.Id ?? 0 });
+            FinishStreetMesh(ghost);
             current = keep;
+            streetGeometry = keepStreets; streetQuads = keepStreetQuads;
             var tintTo = valid ? new float3(0.45f, 1f, 0.55f) : new float3(1f, 0.35f, 0.3f);
             var bounds = new Bounds();
             bounds.SetMinMax(new Vector3(bmin.x, bmin.y - 0.2f, bmin.z), new Vector3(bmax.x, bmax.y + 0.2f, bmax.z));
@@ -73,6 +74,7 @@ namespace SE.Runtime.Cities
         {
             if (ghost == null || !ghost.Any || ghostKey == null) return;
             foreach (var b in ghost.Batches) b.DrawImages(images);
+            ghost.StreetBatch?.DrawImages(images);
         }
 
         /// <summary>Furnace halls, a blast furnace, tall stacks, a pipe rack and the ore stockyard; furnace glow at the doors.</summary>
@@ -80,6 +82,7 @@ namespace SE.Runtime.Cities
         {
             var hall = c.Era >= 2 ? Rust(c.Seed) : Brick(c.Seed) * 0.9f;
             Module(c, Part.Box, -0.2f, -0.2f, new float3(0.8f, 0.3f, 0.36f), hall);
+            Facade(c, -.2f, -.2f, .8f, .36f, .30f, 0, c.Seed, true);
             Module(c, Part.Roof, -0.2f, -0.2f, new float3(0.82f, 0.08f, 0.38f), Dark, 0, 0.3f);
             Module(c, Part.Box, -0.2f, -0.02f, new float3(0.16f, 0.1f, 0.01f), new float3(1f, 0.55f, 0.2f), 0, 0.02f, 1.6f);   // furnace glow
             Module(c, Part.Cylinder, 0.42f, -0.25f, new float3(0.2f, 0.5f, 0.2f), Dark * 1.3f);
@@ -134,7 +137,13 @@ namespace SE.Runtime.Cities
             var wall = c.Era >= 2 ? Rust(c.Seed) * 1.05f : Brick(c.Seed);
             Module(c, Part.Box, 0, -0.25f, new float3(1.0f, 0.24f, 0.4f), wall);
             for (int t = 0; t < 5; t++) Module(c, Part.Roof, -0.4f + t * 0.2f, -0.25f, new float3(0.2f, 0.07f, 0.4f), t % 2 == 0 ? Dark : Glass, 1.5708f, 0.24f);
-            for (int d = 0; d < 4; d++) Module(c, Part.Box, -0.36f + d * 0.24f, -0.045f, new float3(0.14f, 0.14f, 0.01f), new float3(0.3f, 0.32f, 0.34f));   // roller doors
+            for (int d = 0; d < 4; d++)
+            {
+                float x = -.36f + d * .24f;
+                Module(c, Part.Concrete, x, -.045f, new float3(.17f, .172f, .012f), new float3(.62f, .61f, .57f));
+                Module(c, Part.Siding, x, -.034f, new float3(.14f, .14f, .015f), new float3(.32f, .36f, .38f));
+                Module(c, Part.Glass, x, -.035f, new float3(.11f, .039f, .014f), new float3(.40f, .53f, .57f), 0, .186f);
+            }
             Module(c, Part.Box, 0, 0.35f, new float3(0.95f, 0.01f, 0.38f), new float3(0.36f, 0.36f, 0.37f));
             int rows = c.Level >= 2 ? 3 : 2;
             for (int r = 0; r < rows; r++)

@@ -22,7 +22,7 @@ static class Program
 
     static int Main(string[] args)
     {
-        if (args.Length > 1 && args[0] == "--live") return LiveCheck.Run(args[1], args.Length > 2 ? int.Parse(args[2]) : 40);
+        if (args.Length > 1 && args[0] == "--live") return LiveCheck.Run(args[1], args.Length > 2 ? int.Parse(args[2]) : 40, args.Length > 3 ? args[3] : "native-v4");
         string file = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "fixtures.json");
         if (!File.Exists(file)) { Console.WriteLine("missing fixtures: run node unity/Tests.Standalone/make-fixtures.mjs"); return 2; }
         var fx = JObject.Parse(File.ReadAllText(file));
@@ -114,6 +114,22 @@ static class Program
         Check(deadEnds == 0, $"every river flows into a river, lake or the sea ({deadEnds} dead ends)");
         CheckTerrainContinuity(big, "stress world");
         Console.WriteLine($"stress world: generate {genMs:F0} ms, apply {bigApply:F0} ms; sea {sea}, rivers {river}, lakes {lake}, mountains {mountain}");
+
+        // Repeated exploration/rejoin updates must not push lake beds farther down.
+        // This previously changed the lake level every time geometry was reapplied.
+        using (var waterWorld = new WorldModel())
+        {
+            waterWorld.Reset(256, 256, true);
+            waterWorld.ActionLandscape = true;
+            waterWorld.ApplyGeo(gen.Geo);
+            var firstHeight = (float[])waterWorld.Height.Clone();
+            var firstWater = (float[])waterWorld.Water.Clone();
+            for (int repeat = 0; repeat < 12; repeat++) waterWorld.RecomputeWater();
+            Check(firstHeight.SequenceEqual(waterWorld.Height) && firstWater.SequenceEqual(waterWorld.Water), "action lake basins are idempotent across repeated updates");
+            waterWorld.ApplyGeo(gen.Geo);
+            Check(firstHeight.SequenceEqual(waterWorld.Height) && firstWater.SequenceEqual(waterWorld.Water), "action lake levels survive a full geometry resend");
+            Check(Enumerable.Range(0, waterWorld.Grid.N).Where(waterWorld.IsLake).All(t => waterWorld.Height[t] < waterWorld.Water[t]), "action lake beds remain below their common surface");
+        }
 
         var scenario = new StressScenario(3);
         scenario.Setup(big, 1000, 450);

@@ -24,6 +24,7 @@ namespace SE.Core.Units
             public float Prog;
             public int AirState, AirMission, AirMissionTile, AirRadius;
             public bool InUse;
+            public WorldMotion Motion;
         }
 
         /// <summary>Positions in one snapshot, indexed by slot (Id[slot] says whose position it is).</summary>
@@ -34,12 +35,14 @@ namespace SE.Core.Units
             public int[] Tile = Array.Empty<int>();
             public int[] Next = Array.Empty<int>();
             public float[] Prog = Array.Empty<float>();
+            public WorldMotion[] Motion = Array.Empty<WorldMotion>();
 
             public void Ensure(int n)
             {
                 if (Id.Length >= n) return;
                 int size = Math.Max(n, Math.Max(64, Id.Length * 2));
                 Array.Resize(ref Id, size); Array.Resize(ref Tile, size); Array.Resize(ref Next, size); Array.Resize(ref Prog, size);
+                Array.Resize(ref Motion, size);
             }
         }
 
@@ -49,6 +52,7 @@ namespace SE.Core.Units
         public readonly Dictionary<int, int> SlotOf = new Dictionary<int, int>();
         readonly Stack<int> free = new Stack<int>();
         public readonly Dictionary<int, int[]> Paths = new Dictionary<int, int[]>();
+        public readonly Dictionary<int, WorldPoint[]> WorldPaths = new Dictionary<int, WorldPoint[]>();
         public readonly UnitTypes Types;
 
         readonly Frame[] frames = new Frame[History];
@@ -80,7 +84,7 @@ namespace SE.Core.Units
             grid = g;
             Array.Clear(Records, 0, Records.Length);
             SlotCount = 0; Count = 0;
-            SlotOf.Clear(); free.Clear(); Paths.Clear();
+            SlotOf.Clear(); free.Clear(); Paths.Clear(); WorldPaths.Clear();
             frameHead = -1; frameCount = 0; RenderTime = 0; SnapshotCount = 0;
             preparedFor = float.NaN; s0 = s1 = null;
             MembershipRevision++; Revision++;
@@ -105,6 +109,7 @@ namespace SE.Core.Units
         {
             if (!SlotOf.TryGetValue(id, out int slot)) return;
             SlotOf.Remove(id);
+            WorldPaths.Remove(id);
             Records[slot] = default;
             free.Push(slot);
             Count--;
@@ -133,12 +138,14 @@ namespace SE.Core.Units
                 u.Tile = a.Tile; u.Next = a.Next; u.Prog = a.Prog; u.Hp = a.Hp; u.Supply = a.Supply;
                 u.Flags = a.Flags; u.Target = a.Target; u.Formation = a.Formation; u.Veteran = a.Veteran; u.Morale = a.Morale;
                 u.AirState = a.AirState; u.AirMission = a.AirMission; u.AirMissionTile = a.AirMissionTile; u.AirRadius = a.AirRadius;
+                u.Motion = a.Motion;
             }
             if (m.Delta)
             {
                 foreach (int id in m.Gone) Remove(id);
                 foreach (var kv in m.Paths) Paths[kv.Key] = kv.Value;
                 foreach (int id in m.PathsGone) Paths.Remove(id);
+                foreach (int id in m.WorldPathsGone) WorldPaths.Remove(id);
             }
             else
             {
@@ -147,8 +154,10 @@ namespace SE.Core.Units
                 foreach (var kv in SlotOf) if (!seen.Contains(kv.Key)) gone.Add(kv.Key);
                 foreach (int id in gone) Remove(id);
                 Paths.Clear();
+                WorldPaths.Clear();
                 foreach (var kv in m.Paths) Paths[kv.Key] = kv.Value;
             }
+            foreach (var entry in m.WorldPaths) WorldPaths[entry.Key] = entry.Value;
             // record this snapshot's positions for every unit we now hold
             frameHead = (frameHead + 1) % History;
             if (frameCount < History) frameCount++;
@@ -160,6 +169,7 @@ namespace SE.Core.Units
                 ref var u = ref Records[s];
                 if (!u.InUse) { fr.Id[s] = -1; continue; }
                 fr.Id[s] = u.Id; fr.Tile[s] = u.Tile; fr.Next[s] = u.Next; fr.Prog[s] = u.Prog;
+                fr.Motion[s] = u.Motion;
             }
             SnapshotCount++;
             Revision++;
@@ -201,7 +211,15 @@ namespace SE.Core.Units
         {
             ok = fr != null && slot < fr.Id.Length && fr.Id[slot] == id;
             if (!ok) { x = z = 0; return; }
-            PathPoint(fr.Tile[slot], fr.Next[slot], fr.Prog[slot], out x, out z);
+            var motion = fr.Motion[slot];
+            if (motion.Present) { x = motion.X; z = motion.Z; }
+            else PathPoint(fr.Tile[slot], fr.Next[slot], fr.Prog[slot], out x, out z);
+        }
+
+        void Latest(in Record u, out float x, out float z)
+        {
+            if (u.Motion.Present) { x = u.Motion.X; z = u.Motion.Z; }
+            else PathPoint(u.Tile, u.Next, u.Prog, out x, out z);
         }
 
         /// <summary>Position between a hex and the next one on its path, in the image nearest the first.</summary>
@@ -219,15 +237,15 @@ namespace SE.Core.Units
         {
             Prepare();
             ref var u = ref Records[slot];
-            if (s1 == null) { PathPoint(u.Tile, u.Next, u.Prog, out x, out z); return; }
+            if (s1 == null) { Latest(u, out x, out z); return; }
             PosIn(s1, slot, u.Id, out float x1, out float z1, out bool ok1);
             if (single)
             {
-                if (ok1) { x = x1; z = z1; } else PathPoint(u.Tile, u.Next, u.Prog, out x, out z);
+                if (ok1) { x = x1; z = z1; } else Latest(u, out x, out z);
                 return;
             }
             PosIn(s0, slot, u.Id, out float x0, out float z0, out bool ok0);
-            if (!ok1) { if (ok0) { x = x0; z = z0; } else PathPoint(u.Tile, u.Next, u.Prog, out x, out z); return; }
+            if (!ok1) { if (ok0) { x = x0; z = z0; } else Latest(u, out x, out z); return; }
             if (!ok0) { x = x1; z = z1; return; }
             x = x0 + grid.DxWrap(x0, x1) * f;
             z = z0 + (z1 - z0) * f;
@@ -237,12 +255,24 @@ namespace SE.Core.Units
         public void Heading(int slot, out float dx, out float dz)
         {
             ref var u = ref Records[slot];
+            if (u.Motion.Present) { dx = u.Motion.Vx; dz = u.Motion.Vz; return; }
             dx = dz = 0;
             if (u.Next >= 0 && u.Next != u.Tile)
             {
                 dx = grid.DxWrap(grid.CenterX(u.Tile), grid.CenterX(u.Next));
                 dz = grid.CenterZ(u.Next) - grid.CenterZ(u.Tile);
             }
+        }
+
+        public float Facing(int slot)
+        {
+            Prepare();
+            var u = Records[slot];
+            if (s1 == null || slot >= s1.Id.Length || s1.Id[slot] != u.Id) return u.Motion.Yaw;
+            float to = s1.Motion[slot].Yaw;
+            if (single || slot >= s0.Id.Length || s0.Id[slot] != u.Id) return to;
+            float from = s0.Motion[slot].Yaw;
+            return from + (float)Math.Atan2(Math.Sin(to - from), Math.Cos(to - from)) * f;
         }
     }
 

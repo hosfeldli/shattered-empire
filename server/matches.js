@@ -1,4 +1,4 @@
-import { validateRuleset, LEGACY_RULESET } from './sim/rulesets.js';
+import { validateRuleset, LEGACY_RULESET, ACTION_RULESET } from './sim/rulesets.js';
 
 const CONGESTED_BYTES = 2 * 1024 * 1024;
 // Lobby, matchmaking and match lifecycle. Each running match lives in its own worker thread;
@@ -15,12 +15,13 @@ const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 
 const MAX_CIVS = 12;
 const IDLE_MS = 10 * 60 * 1000;
 const SIZES = { small: 128, medium: 192, large: 256 };
+const ACTION_SIZES = { small: 64, medium: 80, large: 112 };
 const autoSize = (n) => (n <= 4 ? 128 : n <= 8 ? 192 : 256);
 // Admission control (inside this process: no change to how many instances run). A new match is
 // refused, with a clear message, when the running matches already use most of the CPU time the
 // tick loops have, or when free memory would not hold another worker of that map size.
 const ADMIT_CPU = +(process.env.ADMIT_CPU_SHARE || 0.85);
-const WORKER_MB = { 128: 140, 192: 260, 256: 420 };
+const WORKER_MB = { 64: 90, 80: 105, 112: 130, 128: 140, 192: 260, 256: 420 };
 
 // the three systems with the highest p95 in a match (for /api/health and the logs)
 const slowest = (sys = {}) => Object.entries(sys).filter(([k]) => k !== 'tick').sort((a, b) => b[1].p95 - a[1].p95).slice(0, 3).map(([k, v]) => ({ system: k, p50: v.p50, p95: v.p95, p99: v.p99 }));
@@ -36,7 +37,7 @@ export class MatchManager {
 
   list() {
     return [...this.matches.values()].map((m) => ({
-      id: m.id, name: m.name, status: m.status, mode: m.mode, created: m.created, mapSize: m.mapSize, watchers: (m.watchers || []).filter((w) => w.ws).length,
+      id: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, created: m.created, mapSize: m.mapSize, watchers: (m.watchers || []).filter((w) => w.ws).length,
       slots: m.slots.map((s) => ({ name: s.name, human: s.human, taken: !!s.token, connected: !!s.ws })),
       time: m.stats?.time || 0,
     }));
@@ -46,14 +47,16 @@ export class MatchManager {
     // only running matches use a worker thread; parked ones are a saved file and never block a new match
     if ([...this.matches.values()].filter((x) => x.status !== 'parked').length >= MAX_MATCHES) throw new Error('Server is full, try again shortly');
     const ruleset = validateRuleset(opts.ruleset || LEGACY_RULESET);
-    const why = this.admit(SIZES[opts.mapSize] || 192);
-    if (why) throw new Error(why);
+    const action = ruleset === ACTION_RULESET;
     const id = crypto.randomBytes(3).toString('hex');
     const pvp = opts.mode === 'pvp';
     const observe = opts.mode === 'observe';   // AI-only match watched by spectators (no fog, speed control)
     const sandbox = opts.mode === 'sandbox';   // developer combat sandbox: one player, one passive opponent
     const humans = observe ? 0 : Math.max(1, Math.min(MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
-    const ais = sandbox ? 1 : observe ? Math.max(2, Math.min(MAX_CIVS, opts.ais ?? 4)) : Math.max(pvp ? 0 : 1, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
+    const teamSize = action && !sandbox ? Math.min(4, Math.max(1, opts.teamSize | 0)) : 1;
+    const desired = Math.min(MAX_CIVS, teamSize * 2);
+    const ais = sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) :
+      Math.max(pvp ? 0 : 1, action ? desired - humans : 0, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
     for (let i = 0; i < humans; i++) slots.push({ human: true, name: i === 0 ? String(opts.name || 'Player').slice(0, 24) : 'Open seat', token: null, ws: null });
@@ -66,10 +69,14 @@ export class MatchManager {
       const diff = DIFFS.includes(r.difficulty) ? r.difficulty : DIFFS.includes(opts.difficulty) ? opts.difficulty : 'normal';
       slots.push({ human: false, name: 'AI', personality: pers, difficulty: diff, fairPlay });
     }
-    const mapSize = SIZES[opts.mapSize] || autoSize(slots.length);
+    const mapSize = action ? (sandbox ? 64 : ACTION_SIZES[opts.mapSize] || (slots.length <= 2 ? 64 : slots.length <= 4 ? 80 : 112))
+      : (sandbox ? 128 : SIZES[opts.mapSize] || autoSize(slots.length));
+    const why = this.admit(mapSize);
+    if (why) throw new Error(why);
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
-      seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize: sandbox ? 128 : mapSize, rebels: sandbox ? false : opts.rebels !== false, worker: null, stats: null,
-      ruleset, wrap: true, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : null };
+      seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: !action && !sandbox && opts.rebels !== false, worker: null, stats: null,
+      ruleset, wrap: action ? opts.wrap === true : true, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
+      teamSize, tutorial: action && !pvp && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination' };
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
@@ -91,7 +98,9 @@ export class MatchManager {
     return slot;
   }
 
-  meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style, slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
+  meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style,
+    teamSize: m.teamSize, tutorial: m.tutorial, objective: m.objective,
+    slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
@@ -100,6 +109,7 @@ export class MatchManager {
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
+        teamSize: m.teamSize, tutorial: m.tutorial, objective: m.objective,
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
@@ -221,8 +231,9 @@ export class MatchManager {
         ctx.proto = r.proto; ctx.caps = r.caps;
         return this.send(ws, { t: 'hello', ok: true, proto: r.proto, server: PROTOCOL_VERSION, caps: r.caps, offered: CAPABILITIES, version: process.env.APP_VERSION || 'dev' });
       }
-      case 'list': return this.send(ws, { t: 'lobby', matches: this.list() });
+      case 'list': return this.send(ws, { t: 'lobby', matches: this.list().filter((m) => m.ruleset !== ACTION_RULESET || ctx.caps?.includes('ring-cities-v1')) });
       case 'create': {
+        if (msg.ruleset === ACTION_RULESET && (!ctx.caps?.includes('action-rts') || !ctx.caps?.includes('ring-cities-v1'))) throw new Error('This match requires the updated Unity client with ring-city RTS support.');
         const m = this.create(msg);
         const slot = m.mode === 'observe' ? this.watch(m, msg.name) : this.seat(m, msg.name);
         this.bind(ws, m, slot);
@@ -232,6 +243,7 @@ export class MatchManager {
       case 'spectate': {
         // watch any running match (no fog, no orders)
         const m = this.matches.get(String(msg.match || '').toLowerCase()); if (!m) throw new Error('No such match');
+        this.requireClient(ctx, m);
         if (m.status === 'lobby') throw new Error('Match has not started yet');
         const w = this.watch(m, msg.name);
         this.bind(ws, m, w);
@@ -240,6 +252,7 @@ export class MatchManager {
       }
       case 'join': {
         const m = this.matches.get(String(msg.match || '').toLowerCase()); if (!m) throw new Error('No such match');
+        this.requireClient(ctx, m);
         if (m.status !== 'lobby') throw new Error('Match already started');
         const slot = this.seat(m, msg.name);
         this.bind(ws, m, slot);
@@ -249,6 +262,7 @@ export class MatchManager {
       }
       case 'rejoin': {
         const m = this.matches.get(msg.match); if (!m) throw new Error('Match no longer exists');
+        this.requireClient(ctx, m);
         const slot = [...m.slots, ...(m.watchers || [])].find((s) => s.token && s.token === msg.token); if (!slot) throw new Error('Invalid session');
         if (slot.ws && slot.ws !== ws) { try { slot.ws.close(4000, 'replaced'); } catch { /* ignore */ } }
         this.bind(ws, m, slot);
@@ -266,6 +280,10 @@ export class MatchManager {
       case 'admin': if (!this.admin) throw new Error('Administration is not available'); return this.admin.handle(ws, msg);
       default: throw new Error('Unknown message');
     }
+  }
+
+  requireClient(ctx, match) {
+    if (match.ruleset === ACTION_RULESET && (!ctx.caps?.includes('action-rts') || !ctx.caps?.includes('ring-cities-v1'))) throw new Error('This match requires the updated Unity client with ring-city RTS support.');
   }
 
   bind(ws, m, slot) {

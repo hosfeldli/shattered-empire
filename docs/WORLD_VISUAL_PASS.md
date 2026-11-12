@@ -1,0 +1,42 @@
+# Clean world presentation pass
+
+Status: visually incomplete until the new Unity captures are reviewed. No art or performance approval is implied.
+
+The pass replaces the noisy ground treatment with a photographic grass, compacted earth, limestone and aggregate atlas. Biome colours use a restrained temperate palette; slow material variation replaces high-contrast blotches and repeating cliff stripes. Material colour is converted to linear reflectance once, and neutral daylight, stronger ambient fill and restrained grading retain readable shadows.
+
+Water triangles are clipped against the shared terrain surface before upload. This avoids relying on a depth prepass to include procedural terrain. Banks have a locally smoothed profile, bounded deterministic relief and finer geometry; water is clipped against the matching subdivisions. Dry land cannot receive the old foam overlay. Continuous Hermite channel curves share their end tangents and width, and insignificant headwater threads no longer appear as bright blue lines. Sources taper instead of ending in a rectangle, with wet earthen margins grounded along the channel. Channels stop where standing water covers them. Lake beds derive from immutable source geometry on every update, avoiding cumulative lowering during exploration and reconnects. Discovery refreshes previously rendered banks when a connected basin's common level changes. Distant ocean continues beyond the playable perimeter so strategic zoom does not expose the sea mesh's cut edge.
+
+Roads, shoulders and sidewalks are continuous terrain-following ribbons cached with their city render cell. Two-ended streets share a continuous tangent. Streets route around occupied historical parcels; their frontage does not move when reconstruction begins. Minor construction access becomes an understated gravel lane; paved through routes remain continuous. Entrance paths start at the actual facility doorway. Material and width stay consistent across cell boundaries. Bridge decks derive from the water surface rather than the highest adjacent land sample; piers and parapets occur over the crossing. Damaged road spans remain visibly interrupted. Traffic uses the same curves and height function.
+
+Ruins use supported concrete cores, partial masonry, roofless shells and collapsed floor slabs contained within the former building footprint. Random sideways intact skyscrapers and scattered decorative towers are removed from action maps. Discovered sites expose their historical parcel geometry without exposing enemy building occupancy. Their surviving foundations remain at stable positions as the site is captured and rebuilt.
+
+The starting Barracks and Supply Center have new asymmetric architectural recipes, recognisable entrances, restrained faction markings, loading areas and roof details. Individual building foundations reach the actual terrain. Yard surfaces follow the ground instead of floating at the building's floor height. Glazing and trim share the main building datum. Duplicate infill over historical ruins, bright rectangular civic lawns and repeated formal plazas are removed from action bases. Small landscaping uses branched tree geometry. Selection stays clear while unselected close-range ownership rings no longer overwhelm the models. Operational headquarters do not show an irrelevant capture boundary.
+
+Battlefield decoration follows material history: forest damage can leave short snapped trunks, and developed land can leave masonry fragments. Impacts on open grass no longer invent tall tree spikes or decorative barbed-wire defenses. Authoritative trenches, defenses, craters and typed wrecks retain their own presentation.
+
+## Generated material asset
+
+- Source/output: `unity/Assets/ShatteredEmpires/Runtime/Resources/Textures/TerrainAtlas.png`.
+- Generated using the built-in imagegen tool, without an external asset library.
+- Texture import uses sRGB albedo, mipmaps, trilinear filtering and anisotropic sampling. The shader samples each atlas region independently with explicit gradients and an edge inset.
+- The atlas stores albedo. Shader surface gradients provide restrained relief; it is not a scanned PBR material set.
+
+Final generation prompt:
+
+> Use case: photorealistic-natural. Asset type: production terrain ALBEDO material atlas for a grounded modern military RTS Unity landscape. Create one square high resolution texture atlas with precisely four equally sized square quadrants, edge to edge with no gaps or labels. TOP LEFT: closely cropped natural temperate short meadow grass, muted sage and olive blades with a little dry thatch, dense fine consistent coverage, not overgrown. TOP RIGHT: dry compacted brown gray earth and fine grit, no large stones. BOTTOM LEFT: weathered gray limestone rock surface with fine irregular mineral grain, restrained broad natural fissures, no banding. BOTTOM RIGHT: fine gray gravel and aged concrete aggregate suitable for courtyards. True orthographic top down flat material photography, even diffuse neutral illumination. Each quadrant is a separately seamless repeating square material, independently tileable on all four edges. All details at realistic small surface scale. Desaturated natural midtones, consistent uniform brightness, no dramatic lighting, no shadows, no perspective, no objects, no plants above the ground, no puddles, no white edges, no text, no vignette, no painted or illustrative appearance. Fine authentic photographic detail without large conspicuous spots or obvious repeated shapes.
+
+## Verification
+
+Major graphics development preceded review. The first capture round exposed excessive exposure and an unreliable procedural-depth shoreline; subsequent captures guided the explicit ambient lighting, geometry clipping, parcel routing and ruin revisions. After the user's instruction to perform only visual testing, work is restricted to building and inspecting the actual Unity scenes. No further functional, AI soak or load tests are scheduled in this pass.
+
+Camera coverage includes the complete base, close headquarters architecture, ruins at two scales, a lake bank, a river crossing, infantry, armor, a battle and strategic view. The captures are from the actual runtime world at 1920×1080, High quality; they are scene-only and do not include the screen-space HUD.
+
+Pending visual concerns: distant vegetation still uses simplified representations; roads can reveal the coarse authoritative network over long distances; bespoke authored building assets and animation clips remain unfinished. These changes improve the procedural library but do not constitute human art approval. Performance, balance, platform acceptance and extended-session testing are not performed in this visual-only iteration.
+
+## Architecture material asset
+
+Source/output: `unity/Assets/ShatteredEmpires/Runtime/Resources/Textures/ArchitectureAtlas.png`, generated using the built-in imagegen tool. Concrete, masonry, painted roof metal and asphalt use photographic albedo variation and surface-gradient relief with consistent physical sampling. Existing palette, faction markings, material roughness and model silhouettes remain responsible for identity.
+
+Final generation prompt:
+
+> Use case: photorealistic-natural. Asset type: seamless ALBEDO material atlas for a realistic modern military RTS in Unity. Create a square atlas divided into exactly four equal squares, no gutters, no labels, no borders. TOP LEFT: aged structural gray concrete wall, fine pores and subtle fine aggregate, very restrained light weathering, no large cracks or stains. TOP RIGHT: brown gray fired masonry brick wall, tightly staggered rectangular bricks with thin gray mortar joints, consistent dimensions and restrained natural color variation, believable modern industrial building. BOTTOM LEFT: faded slate gray galvanized standing seam metal roofing, narrow straight vertical seams with subtle fine material grain, matte metallic finish, no dramatic rust. BOTTOM RIGHT: medium dark weathered gray asphalt with fine aggregate, no paint or road markings, no large cracks. All four are flat orthographic front-on surface photography, each individual square seamless and tileable horizontally and vertically, uniform neutral diffuse lighting, flat albedo without baked shadows or reflections, fine realistic high resolution detail, carefully restrained contrast, no objects, no perspective, no text, no embellishments, no cinematic grading, no high contrast spots or large conspicuous features, no illustration or stylization.

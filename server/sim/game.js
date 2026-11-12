@@ -759,9 +759,11 @@ export class Game {
     for (const b of this.buildings.values()) {
       if (b.owner === civ.id || !vis[b.tile] || this.allied(civ.id, b.owner)) continue;
       const hp = Math.round((100 * b.hp) / b.maxHp), lv = b.level > 1 ? b.level : undefined, p = Math.round(b.progress * 100);
+      const tier = b.site && this.siteById ? this.siteById.get(b.site)?.tier : b.type === 'town' && b.tier ? b.tier : undefined;
       const r = mem.get(b.id);
-      if (r && r.o === b.owner && r.hp === hp && r.lv === lv && r.p === p && r.d === (b.done ? 1 : 0) && r.st === b.state) { r.ls = Math.round(this.time); continue; }
-      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, ea: b.era, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: b.type === 'town' && b.tier ? b.tier : undefined, ls: Math.round(this.time) });
+      if (r && r.o === b.owner && r.hp === hp && r.lv === lv && r.p === p && r.d === (b.done ? 1 : 0) && r.st === b.state && r.ti === tier) { r.ls = Math.round(this.time); continue; }
+      mem.set(b.id, { id: b.id, o: b.owner, ty: b.type, t: b.tile, ea: b.era, hp, d: b.done ? 1 : 0, p, st: b.state, lv, ti: tier,
+        ...(b.x !== undefined ? { px: b.x, pz: b.z, yaw: b.yaw } : {}), ls: Math.round(this.time) });
     }
     if (mem.size > 4000) {
       const oldest = [...mem.values()].sort((a, b) => a.ls - b.ls).slice(0, mem.size - 4000);
@@ -846,24 +848,8 @@ export class Game {
     return this.viewerSnapshot(civ, view, full, econ);
   }
 
-  viewerSnapshot(civ, view, full, econ) {
-    const w = this.world;
-    const k = view.known || civ;   // where this viewer's sent-tile bookkeeping lives
-    if (full) { k.knownVer.fill(0); k.knownOwner.fill(-2); k.visKey = ''; k.knownStab = false; }
-    const vis = view.vis, explored = view.explored;
-    const tiles = [];
-    const stabOK = view.god || civ.techs.has('surveying');
-    for (let i = 0; i < N; i++) {
-      // land we knew as our own that changed hands is always sent, seen or not: a nation knows which
-      // of its territory it has lost (otherwise a captured city's land stays drawn in our colour)
-      const lost = k.knownOwner[i] === civ.id && w.owner[i] !== civ.id;
-      if (!vis[i] && !(full && explored[i]) && !lost) continue;
-      if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
-        k.knownVer[i] = w.ver[i]; k.knownOwner[i] = w.owner[i];
-        tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));
-      }
-    }
-    if (stabOK) k.knownStab = true;
+  unitSnapshot(civ, view) {
+    const w = this.world, vis = view.vis;
     const units = [];
     for (const u of this.units.values()) {
       if (!view.god && u.owner !== civ.id && (!vis[u.tile] || civ.smokeHide?.[u.tile] || !this.detects(civ.id, u))) continue;   // smoke over our own land hides what is in it
@@ -881,6 +867,25 @@ export class Game {
     }
     const paths = {};
     for (const u of this.units.values()) if ((u.owner === civ.id || view.god) && (u.path.length || u.field)) paths[u.id] = u.field ? [u.slot] : u.path.slice(0, view.god ? 16 : 40);
+    return { units, paths };
+  }
+
+  viewerSnapshot(civ, view, full, econ) {
+    const w = this.world;
+    const k = view.known || civ;
+    if (full) { k.knownVer.fill(0); k.knownOwner.fill(-2); k.visKey = ''; k.knownStab = false; }
+    const vis = view.vis, explored = view.explored;
+    const tiles = [];
+    const stabOK = view.god || civ.techs.has('surveying');
+    for (let i = 0; i < N; i++) {
+      const lost = k.knownOwner[i] === civ.id && w.owner[i] !== civ.id;
+      if (!vis[i] && !(full && explored[i]) && !lost) continue;
+      if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
+        k.knownVer[i] = w.ver[i]; k.knownOwner[i] = w.owner[i];
+        tiles.push(tileRecord(w, i, stabOK, this.roads.packTile(i), this.ruins.has(i)));
+      }
+    }
+    if (stabOK) k.knownStab = true;
     // combat events since this viewer's last delivery (a fresh view starts from now)
     if (full) k.evSeq = this.eventSeq;
     const ev = eventsFor(this, k.evSeq || 0, vis, view.god);
@@ -888,7 +893,7 @@ export class Game {
     let visB64;
     const key = packBits(vis).toString('base64');
     if (key !== k.visKey) { k.visKey = key; visB64 = key; }
-    const msg = { t: 's', time: +this.time.toFixed(1), tick: this.tickN, units, paths };
+    const msg = { t: 's', time: +this.time.toFixed(1), tick: this.tickN, ...this.unitSnapshot(civ, view) };
     if (ev.length) msg.ev = ev;
     if (tiles.length) msg.tiles = tiles;
     // regional weather (whole map: the sky is seen from anywhere), sent when it changes

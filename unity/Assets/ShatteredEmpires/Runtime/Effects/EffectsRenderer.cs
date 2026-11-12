@@ -27,7 +27,7 @@ namespace SE.Runtime.Effects
     /// battle; when the budget is reached new cosmetic particles are skipped, never state. The API takes
     /// map coordinates (x east, z south); conversion to Unity space happens inside.
     /// </summary>
-    public sealed class EffectsRenderer : IDisposable
+    public sealed partial class EffectsRenderer : IDisposable
     {
         public const int Puff = 0, Flame = 1, Ring = 2, Streak = 3;
 
@@ -90,6 +90,7 @@ namespace SE.Runtime.Effects
         // ------------------------------------------------------------------ combat
         public void Explosion(float3 p, float scale)
         {
+            FlashLight(p, scale);
             int n = Mathf.Max(2, (int)(7 * Intensity));
             Emit(p + new float3(0, 0.05f * scale, 0), float3.zero, 0.4f * scale, 1.4f * scale, 0.16f, new float3(1f, 0.88f, 0.6f), new float3(1f, 0.5f, 0.2f), 1f, true, 2.5f);
             for (int k = 0; k < n; k++)
@@ -113,7 +114,7 @@ namespace SE.Runtime.Effects
                 var v = RandDir() * (1.2f + R()) * scale; v.y = math.abs(v.y) + 0.4f;
                 Emit(p + new float3(0, 0.05f, 0), v, 0.008f, 0, 0.4f + R() * 0.3f, new float3(1f, 0.8f, 0.4f), new float3(1f, 0.35f, 0.1f), 1f, true, 2f, 0.8f, -1.8f, Streak, default, true);
             }
-            if (scale > 0.8f) Emit(p + new float3(0, 0.02f, 0), float3.zero, 0.2f * scale, 1.6f * scale, 0.9f, new float3(0.55f, 0.5f, 0.42f), new float3(0.5f, 0.46f, 0.4f), 0.35f, false, 0, 1, 0, Ring);
+            if (scale > .48f) GroundShock(p, scale * 1.65f, .65f + scale * .24f);
             Shake = Mathf.Max(Shake, 0.12f * scale);
         }
 
@@ -186,8 +187,7 @@ namespace SE.Runtime.Effects
                 var o = RandDir(); o.y = math.abs(o.y) * 0.3f;
                 Emit(p + new float3(0, 3.2f * scale, 0) + o * 0.6f * scale, o * 0.9f * scale, 1.6f * scale, 1.1f * scale, 16f + R() * 6f, new float3(0.7f, 0.5f, 0.38f), new float3(0.55f, 0.53f, 0.52f), 0.7f, false, 0, 0.35f, 0.02f);
             }
-            Emit(p + new float3(0, 0.05f, 0), float3.zero, 0.5f, 26f * scale, 0.9f, new float3(1f, 0.9f, 0.75f), new float3(1f, 0.8f, 0.6f), 0.9f, true, 1.5f, 0, 0, Ring);
-            Emit(p + new float3(0, 0.08f, 0), float3.zero, 0.5f, 14f * scale, 2.4f, new float3(0.75f, 0.68f, 0.58f), new float3(0.6f, 0.56f, 0.5f), 0.6f, false, 0, 0, 0, Ring);
+            GroundShock(p, 22 * scale, 2.4f);
             for (int k = 0; k < 48; k++)
             {
                 float a = k * 6.283f / 48;
@@ -243,10 +243,14 @@ namespace SE.Runtime.Effects
             for (int k = 0; k < 3; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 6f, new float3(0.1f, 0.1f, 0.1f), new float3(0.3f, 0.3f, 0.3f), 0.5f, false, 0, 0.4f, 0.06f);
         }
 
-        public void ClearPersistent() { craters.Clear(); wrecks.Clear(); craterHead = wreckHead = 0; count = 0; }
+        public void ClearPersistent() { craters.Clear(); wrecks.Clear(); craterHead = wreckHead = 0; count = flightCount = waveCount = waveVertexCount = 0; }
 
-        public void Update(float dt, float camX, float period, bool wrap)
+        public void Update(float dt, float camX, float period, bool wrap, float simulationRate = 1f)
         {
+            UpdateFlights(dt * simulationRate);
+            UpdateGroundWaves(dt * simulationRate);
+            for (int i = 0; i < flashLights.Length; i++) if (flashLights[i] != null && flashLife[i] > 0)
+            { flashLife[i] -= dt; flashLights[i].intensity *= math.exp(-dt * 22); if (flashLife[i] <= 0) flashLights[i].enabled = false; }
             addCount = alphaCount = 0;
             Shake = Mathf.Max(0, Shake - dt * 1.6f);
             Flash = Mathf.Max(0, Flash - dt * 1.2f);
@@ -257,6 +261,7 @@ namespace SE.Runtime.Effects
                 if (p.Life >= p.Max) { pool[i] = pool[--count]; i--; continue; }
                 float t = p.Life / p.Max;
                 p.Vel *= Mathf.Max(0, 1 - p.Drag * dt);
+                if (p.Kind == Puff && !p.Additive && p.Rise >= 0) p.Vel += MapSpace.W(Wind) * (dt * .045f);
                 p.Vel.y += p.Rise * dt;
                 p.Pos += p.Vel * dt;
                 p.Size = Mathf.Max(0.002f, p.Size + p.Grow * dt);
@@ -288,6 +293,7 @@ namespace SE.Runtime.Effects
         {
             craters.DrawImages(images);
             wrecks.DrawImages(images);
+            DrawGroundWaves(images);
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
             frameSlot = (frameSlot + 1) % 3;
             if (alphaCount > 0)
@@ -309,6 +315,9 @@ namespace SE.Runtime.Effects
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
             craters.Dispose(); wrecks.Dispose();
+            if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
+            if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);
+            if (lightRoot != null) UnityEngine.Object.Destroy(lightRoot);
         }
     }
 }

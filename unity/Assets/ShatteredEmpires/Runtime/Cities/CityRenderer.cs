@@ -18,13 +18,17 @@ namespace SE.Runtime.Cities
     /// </summary>
     public sealed unsafe partial class CityRenderer : IDisposable
     {
-        enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Car, Truck, Count }
+        enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Car, Truck,
+            Concrete, Brick, Siding, Glass, Asphalt, MetalRoof, Shell, Collapse, Tree, Dish, Count }
 
         sealed class Cell
         {
             public readonly InstanceBatch[] Batches = new InstanceBatch[(int)Part.Count];
             public Bounds Bounds;
             public bool Any;
+            public Mesh Streets;
+            public InstanceBatch StreetBatch;
+            public readonly List<AnimatedFlag> Flags = new List<AnimatedFlag>();
         }
 
         readonly WorldModel world;
@@ -48,6 +52,7 @@ namespace SE.Runtime.Cities
         public double ComposeBudgetMs = 5.0;
         int epoch = -1, roadRevision = -1, age = -1;
         bool[] hasBuilding = new bool[0];
+        bool[] streetParcels = new bool[0];
 
         /// <summary>The district layer: which buildings form one neighbourhood, compound, estate or campus.</summary>
         public readonly DistrictPlanner Districts;
@@ -69,7 +74,8 @@ namespace SE.Runtime.Cities
                 cells.Clear();
                 Stacks.Clear();
                 hasBuilding = new bool[world.Grid.N];
-                RoadCurve.Occupied = hasBuilding;   // streets wrap round built hexes (drawing and traffic)
+                streetParcels = new bool[world.Grid.N];
+                RoadCurve.Occupied = streetParcels;
                 roadRevision = -1;
             }
             if (roadRevision != world.LayoutRevision)
@@ -80,12 +86,13 @@ namespace SE.Runtime.Cities
             if (age != Age)
             {
                 age = Age;   // a new era: new infill and buildings without a recorded era follow it
-                foreach (var c in cells.Keys) dirty.Add(c);
+                if (!ActionRts) foreach (var c in cells.Keys) dirty.Add(c);
             }
             // the district layer: when buildings or roads change, only hexes whose district relationships
             // changed are recomposed (a new house extends its neighbourhood, it does not re-roll it)
             Districts.WorldSeed = Seed;
             Districts.Update(dirty);
+            InvalidateRingDistricts();
             if (dirty.Count == 0) return;
             // nearest cells first, a bounded number per frame
             scratch.Clear();
@@ -95,6 +102,12 @@ namespace SE.Runtime.Cities
             int n = Math.Min(MaxCellsPerFrame, scratch.Count);
             Array.Clear(hasBuilding, 0, hasBuilding.Length);
             foreach (var b in structures.Buildings.Values) if (b.Tile >= 0 && b.Tile < hasBuilding.Length) hasBuilding[b.Tile] = true;
+            Array.Copy(hasBuilding, streetParcels, hasBuilding.Length);
+            if (ActionRts)
+            {
+                foreach (var lot in historicalParcels.Values) streetParcels[lot.parcel.Tile] = true;
+                foreach (var objective in objectiveByTile.Values) if (objective.IsBase) streetParcels[objective.Tile] = true;
+            }
             // a time budget, not a fixed count: district composition varies a lot per cell, and a burst of
             // heavy cells must not stall a frame (at least one cell always progresses)
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -120,11 +133,35 @@ namespace SE.Runtime.Cities
         {
             if (!cells.TryGetValue(id, out var cell))
             {
-                cell = new Cell();
-                Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo, MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MeshKit.Truck };
-                for (int i = 0; i < cell.Batches.Length; i++)
-                    cell.Batches[i] = new InstanceBatch(meshes[i], i == (int)Part.Skyscraper ? RenderResources.InstancedGloss : RenderResources.Instanced, 64);
+                cell = CreateCell(false);
                 cells[id] = cell;
+            }
+            return cell;
+        }
+
+        static Mesh satelliteDish;
+        static Cell CreateCell(bool preview)
+        {
+            if (satelliteDish == null) satelliteDish = WorldMeshes.SatelliteDish();
+            var cell = new Cell();
+            Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo,
+                MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MilitaryMeshes.CargoTruck,
+                MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish };
+            for (int i = 0; i < cell.Batches.Length; i++)
+            {
+                SurfaceKind material = (Part)i switch
+                {
+                    Part.Concrete or Part.Chimney => SurfaceKind.Concrete,
+                    Part.Brick => SurfaceKind.Brick,
+                    Part.Siding or Part.MetalRoof or Part.Silo => SurfaceKind.SheetMetal,
+                    Part.Glass => SurfaceKind.Glass,
+                    Part.Asphalt => SurfaceKind.Asphalt,
+                    Part.Roof => SurfaceKind.RoofTile,
+                    _ => SurfaceKind.Plain
+                };
+                var batch = new InstanceBatch(meshes[i], (Part)i == Part.Tree ? RenderResources.Foliage : RenderResources.Surface(material), i >= (int)Part.Concrete ? 24 : 64);
+                if (preview) batch.Shadows = UnityEngine.Rendering.ShadowCastingMode.Off;
+                cell.Batches[i] = batch;
             }
             return cell;
         }
@@ -136,6 +173,7 @@ namespace SE.Runtime.Cities
         /// <summary>Place a part at a map position with a map heading; converted to Unity space here only.</summary>
         void Put(Part part, float3 mapPos, float mapYaw, float3 size, float3 color, float emission = 0)
         {
+            if (part == Part.Car || part == Part.Truck) return;
             var p = MapSpace.W(mapPos);
             current.Batches[(int)part].Add(InstanceData.TRS(p, MapSpace.Yaw(mapYaw), size, new float4(color, emission)));
             float r = math.max(size.x, size.z);
@@ -155,7 +193,9 @@ namespace SE.Runtime.Cities
             Recomposed++;
             var cell = GetCell(cellId);
             current = cell;
+            cell.Flags.Clear();
             foreach (var b in cell.Batches) b.Clear();
+            BeginStreetMesh();
             bmin = new float3(1e9f); bmax = new float3(-1e9f);
             var g = world.Grid;
             int cs = WorldModel.ChunkSize, cx = cellId % world.ChunksW, cy = cellId / world.ChunksW;
@@ -167,20 +207,27 @@ namespace SE.Runtime.Cities
                     if (q >= g.W || r >= g.H) continue;
                     int t = r * g.W + q;
                     if (world.Known[t] == 0) continue;
-                    if (world.Road[t] != 0) ComposeStreets(t);
-                    if (world.Road[t] != 0 && world.IsUrban(t)) StreetLife(t);
-                    if (world.IsUrban(t) && !hasBuildingAt(t) && !Ruins.ContainsKey(t) && !world.IsSea(t) && !world.IsLake(t)) Infill(t);
+                    if (world.Road[t] != 0 && !Showcase) ComposeStreets(t);
+                    if (world.Road[t] != 0 && world.IsUrban(t) && !ActionRts && !Showcase) StreetLife(t);
+                    if (world.IsUrban(t) && !hasBuildingAt(t) && !Ruins.ContainsKey(t) && !world.IsSea(t) && !world.IsLake(t)
+                        && !ActionRts && !Showcase) Infill(t);
                     ComposeOldWorld(t);
                     terrain.SetBlocked(t, IsBlocked(t));
                 }
+            if (ActionRts) foreach (var site in objectiveByTile.Values)
+                if (site.IsBase && world.ChunkOf(site.Tile) == cellId) ComposeCityDistrict(site);
+            if (ActionRts) foreach (var pickup in pickups.Values)
+                if (world.ChunkOf(pickup.Tile) == cellId) MaterialsPickup(pickup);
+            if (Showcase) ComposeShowcaseStreets(cellId);
             foreach (var b in structures.Buildings.Values)
             {
                 if (b.Tile < 0 || b.Tile >= g.N || world.ChunkOf(b.Tile) != cellId || world.Known[b.Tile] == 0) continue;
                 ComposeBuilding(b);
-                if (b.Done) DistrictLinks(b.Tile);
+                if (b.Done && !ActionRts && !Showcase) DistrictLinks(b.Tile);
             }
             cell.Any = false;
             foreach (var batch in cell.Batches) if (batch.Count > 0) cell.Any = true;
+            FinishStreetMesh(cell);
             var bounds = new Bounds();
             if (cell.Any) bounds.SetMinMax(new Vector3(bmin.x, bmin.y - 0.2f, bmin.z), new Vector3(bmax.x, bmax.y + 0.2f, bmax.z));
             cell.Bounds = bounds;
@@ -194,6 +241,7 @@ namespace SE.Runtime.Cities
         /// <summary>A part with a full rotation (toppled towers, listing ships), in Unity space.</summary>
         void PutRot(Part part, float3 mapPos, quaternion unityRotation, float3 size, float3 color)
         {
+            if (part == Part.Car || part == Part.Truck) return;
             var p = MapSpace.W(mapPos);
             current.Batches[(int)part].Add(InstanceData.TRS(p, unityRotation, size, new float4(color, 0)));
             float r = math.cmax(size);
@@ -208,7 +256,14 @@ namespace SE.Runtime.Cities
         {
             var g = world.Grid;
             float cx = g.CenterX(t), cz = g.CenterZ(t);
-            if (Ruins.TryGetValue(t, out var ruin)) { Ruin(t, cx, cz, ruin.Type ?? "", (ruin.Flags & 4) != 0); return; }
+            if (ActionRts && objectiveByTile.TryGetValue(t, out var site))
+            {
+                if (site.Headquarters == 0 || !site.IsBase) ActionRuin(site);
+                return;
+            }
+            if (ActionRts) return;
+            if (Ruins.TryGetValue(t, out var ruin)) { if (!hasBuildingAt(t)) Ruin(t, cx, cz, ruin.Type ?? "", (ruin.Flags & 4) != 0); return; }
+            if (Showcase) return;
             if (hasBuildingAt(t) || world.Road[t] != 0 || world.IsUrban(t)) return;
             float h = Hash(t, Seed + 77);
             if (world.IsSea(t))
@@ -220,6 +275,7 @@ namespace SE.Runtime.Cities
                 return;
             }
             if (world.IsLake(t) || world.IsRiver(t) || world.Biome[t] >= 9) return;
+            if (ActionRts) return;
             if (h < 0.006f) Ruin(t, cx, cz, "tower", false);
             else if (h < 0.016f) Ruin(t, cx, cz, "suburb", world.Biome[t] == 4);
         }
@@ -234,33 +290,26 @@ namespace SE.Runtime.Cities
                 case "tower":
                 case "city":
                 {
-                    // a skyscraper lying where it fell, broken in two, with its stump still standing
-                    float yaw = Hash(seed, 2) * 6.28f;
-                    float len = 1.2f + Hash(seed, 3) * 0.8f;
-                    var fall = quaternion.EulerZXY(math.radians(86f + Hash(seed, 4) * 6f), MapSpace.Yaw(yaw), math.radians(Hash(seed, 5) * 12f - 6f));
-                    math.sincos(yaw, out float sn, out float cs);
-                    float3 basePos = new float3(cx - sn * 0.2f, Ground(cx, cz) - 0.05f, cz - cs * 0.2f);
-                    PutRot(Part.Skyscraper, basePos + new float3(0, 0.12f, 0), fall, new float3(0.32f, len, 0.32f), concrete * 0.9f);
-                    Module(c, Part.Broken, 0, 0, new float3(0.36f, 0.35f + Hash(seed, 6) * 0.3f, 0.36f), concrete);
-                    for (int k = 0; k < 5; k++) Module(c, Part.Cone, (Hash(seed, 10 + k) - 0.5f) * 1.1f, (Hash(seed, 20 + k) - 0.5f) * 1.1f, new float3(0.22f, 0.07f + Hash(seed, k) * 0.05f, 0.22f), concrete * 0.8f);
+                    // Collapse retains the original footprint and a supported service core.
+                    Module(c, Part.Broken, -.22f, -.17f, new float3(.43f, .78f + Hash(seed, 6) * .25f, .46f), new float3(.91f));
+                    Module(c, Part.Collapse, .22f, .23f, new float3(.66f, .46f, .59f), new float3(.90f), .08f);
                     if (type == "city")
-                        for (int k = 0; k < 3; k++) Module(c, Part.Broken, -0.5f + k * 0.5f, 0.45f, new float3(0.28f, 0.25f + Hash(seed, 30 + k) * 0.5f, 0.28f), concrete * (0.9f + Hash(seed, k) * 0.15f));
+                        Module(c, Part.Shell, -.44f, .39f, new float3(.32f, .24f, .31f), new float3(.93f));
                     break;
                 }
                 case "plant":
                     Module(c, Part.Silo, 0.25f, 0, new float3(0.6f, 0.38f, 0.6f), concrete);
-                    Module(c, Part.Broken, -0.35f, 0.2f, new float3(0.4f, 0.22f, 0.3f), concrete * 0.9f);
-                    for (int k = 0; k < 4; k++) Module(c, Part.Cone, (Hash(seed, 40 + k) - 0.5f) * 1f, (Hash(seed, 50 + k) - 0.5f) * 1f, new float3(0.2f, 0.06f, 0.2f), concrete * 0.75f);
+                    Module(c, Part.Shell, -.32f, .15f, new float3(.48f, .33f, .55f), new float3(.85f));
+                    Module(c, Part.Collapse, -.09f, -.35f, new float3(.35f, .17f, .28f), new float3(.81f));
                     break;
                 default:
-                    // a dead neighbourhood: roofless shells of houses, collapsed walls, rubble
-                    for (int k = 0; k < 6; k++)
+                    // Two surviving street-front parcels, with a shared alley.
+                    for (int k = 0; k < 2; k++)
                     {
-                        float a = Hash(seed, 60 + k) * 6.28f, r = 0.2f + Hash(seed, 70 + k) * 0.55f;
-                        float s = 0.14f + Hash(seed, 80 + k) * 0.08f;
-                        Module(c, Part.Broken, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(s, 0.09f + Hash(seed, 90 + k) * 0.08f, s * 0.85f), overgrown ? new float3(0.45f, 0.43f, 0.36f) : new float3(0.55f, 0.47f, 0.4f), Hash(seed, k) * 3f);
+                        Module(c, Part.Shell, -.27f + k * .54f, -.10f, new float3(.39f, .23f + Hash(seed, 90 + k) * .10f, .48f),
+                            overgrown ? new float3(.80f, .85f, .78f) : new float3(.91f, .88f, .82f));
                     }
-                    for (int k = 0; k < 4; k++) Module(c, Part.Cone, (Hash(seed, 100 + k) - 0.5f) * 1.2f, (Hash(seed, 110 + k) - 0.5f) * 1.2f, new float3(0.14f, 0.04f, 0.14f), new float3(0.45f, 0.4f, 0.35f));
+                    Module(c, Part.Collapse, .20f, .33f, new float3(.36f, .13f, .25f), new float3(.84f));
                     break;
             }
         }
@@ -330,10 +379,49 @@ namespace SE.Runtime.Cities
         /// </summary>
         void ComposeStreets(int t)
         {
+            if (ActionRts && ComposeRingApproaches(t)) return;
             int* e = stackalloc int[6];
             int n = RoadCurve.Edges(world, t, e);
             if (n == 0) return;
             var g = world.Grid;
+            if (RoadCurve.Built(t))
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    int d = e[i]; var mid = RoadCurve.Mid(world, t, d); var portal = RoadCurve.Portal(world, t, d);
+                    StreetPiece(t, mid, (mid + portal) * .5f, portal, world.RoadClass(t, d), world.RoadBroken(t, d), g.Nb[t * 6 + d], -1, 4);
+                }
+                int* chain = stackalloc int[6];
+                int count = RoadCurve.Chain(world, t, chain);
+                int firstMain = count, lastMain = -1, mainClass = 1;
+                for (int i = 0; i < count; i++)
+                {
+                    int cls = world.RoadClass(t, chain[i]);
+                    if (cls < 2) continue;
+                    firstMain = Mathf.Min(firstMain, i); lastMain = i; mainClass = Mathf.Max(mainClass, cls);
+                }
+                for (int pair = 0; pair + 1 < count; pair++)
+                {
+                    int d = chain[pair], stop = chain[pair + 1];
+                    int cls = Mathf.Min(world.RoadClass(t, d), world.RoadClass(t, stop));
+                    if (pair >= firstMain && pair < lastMain) cls = mainClass;
+                    bool broken = world.RoadBroken(t, d) || world.RoadBroken(t, stop);
+                    for (int arc = 0; d != stop && arc < 5; arc++)
+                    {
+                        int next = (d + 1) % 6;
+                        StreetPiece(t, RoadCurve.Portal(world, t, d), RoadCurve.ArcControl(world, t, d, next), RoadCurve.Portal(world, t, next), cls, broken, -1, -1, 4);
+                        d = next;
+                    }
+                }
+                if (count == 1)
+                {
+                    var cap = RoadCurve.Portal(world, t, chain[0]);
+                    int cls = world.RoadClass(t, chain[0]); float width = RoadCurve.Width(cls);
+                    Put(Part.Cylinder, new float3(cap.x, RoadCurve.Height(world, RoadCurve.Deck(world, t, -1, -1), cap.x, cap.y) - .001f, cap.y),
+                        0, new float3(width, .001f, width), StreetColor(t, -1, cls, world.RoadBroken(t, chain[0])));
+                }
+                return;
+            }
             float2 node = RoadCurve.Node(world, t);
             int best = 0;
             for (int i = 0; i < n; i++)
@@ -374,6 +462,7 @@ namespace SE.Runtime.Cities
         {
             if (cls == 4) return StreetStyle.Rail;
             if (cls == 3) return StreetStyle.Primary;
+            if (cls == 1) return StreetStyle.Rural;
             var k = Districts.At(t)?.Kind ?? DistrictKind.None;
             if (k == DistrictKind.Industrial || k == DistrictKind.Energy || k == DistrictKind.Extraction || k == DistrictKind.Port || k == DistrictKind.Air) return StreetStyle.Service;
             if (cls == 1 && !world.IsUrban(t)) return StreetStyle.Rural;
@@ -401,12 +490,9 @@ namespace SE.Runtime.Cities
                 : style == StreetStyle.Rail ? new float3(0.36f, 0.33f, 0.3f)
                 : style == StreetStyle.Service ? new float3(0.4f, 0.39f, 0.37f)   // pale concrete service roads
                 : new float3(0.24f, 0.24f, 0.25f);
-            // streets weather differently: patched asphalt, sun-bleached concrete, darker fresh tarmac
-            color *= 0.86f + 0.26f * Hash(t * 3 + 1, salt * 5 + 2);
-            if (cls >= 2 && style != StreetStyle.Service && Hash(salt + 40, t + 9) < 0.25f) color = math.lerp(color, new float3(0.38f, 0.37f, 0.35f), 0.5f);
-            // country lanes vary between dry dust, gravel and damp earth
-            if (style == StreetStyle.Rural) color = math.lerp(color, Hash(t, salt + 3) < 0.5f ? new float3(0.5f, 0.46f, 0.38f) : new float3(0.34f, 0.3f, 0.24f), 0.4f);
-            if (broken) color *= 0.55f;
+            // One material along a route. Age affects condition, not a random patchwork of colours.
+            color = math.lerp(color, new float3(.43f, .44f, .43f), .24f);
+            if (broken) color *= .82f;
             return color;
         }
 
@@ -417,102 +503,13 @@ namespace SE.Runtime.Cities
         /// bridges a deck with railings, piers and abutments.
         /// </summary>
         void StreetPiece(int t, float2 p0, float2 c, float2 p2, int cls, bool broken, int na, int nb, int pieces)
-        {
-            float deck = RoadCurve.Deck(world, t, na, nb);
-            bool bridge = deck > float.NegativeInfinity;
-            var style = StyleOf(t, cls);
-            // street widths vary a little from hex to hex
-            float width = RoadCurve.Width(cls) * (0.9f + 0.2f * Hash(t, 77)) * StreetWidthScale(t);
-            float3 color = StreetColor(t, na, cls, broken);
-            bool walks = Sidewalked(t) && cls >= 2 && style != StreetStyle.Rail;
-            // older neighbourhoods have gaps in their pavements
-            var district = Districts.At(t);
-            int built = district != null && Districts.BuildingAt(district.Anchor) is BuildingRecord ab && ab.Era >= 0 ? ab.Era : Math.Max(0, Age);
-            float pavementGaps = built == 0 ? 0.45f : built == 1 ? 0.15f : 0f;
-            float chord = math.distance(p0, p2) + math.distance(p0, c) * 0.3f;
-            var kerb = new float3(0.52f, 0.5f, 0.47f);
-            var pavement = math.lerp(new float3(0.6f, 0.58f, 0.54f), new float3(0.66f, 0.63f, 0.58f), Hash(district?.Seed ?? t, 5));
-            for (int k = 0; k < pieces; k++)
-            {
-                if (broken && k % 2 == 1) continue;
-                float t0 = (k + 0.5f) / pieces;
-                var p = RoadCurve.Bezier(p0, c, p2, t0, out var tan);
-                float x = p.x, z = p.y;
-                float pieceYaw = math.lengthsq(tan) > 1e-8f ? Mathf.Atan2(tan.x, tan.y) : 0f;
-                // the ground across the road's width, so it never sinks into a slope (or the bridge deck)
-                float y = RoadCurve.Height(world, deck, x, z) - 0.016f;
-                float segLen = math.length(tan) / pieces * 1.12f + 0.01f;
-                if (segLen < 0.02f) segLen = chord / pieces * 1.12f;
-                math.sincos(pieceYaw, out float sn, out float csn);
-                if (style == StreetStyle.Rail)
-                {
-                    // ballast bed, sleepers across it, two rails along it
-                    Put(Part.Box, new float3(x, y + 0.002f, z), pieceYaw, new float3(width * 1.25f, 0.014f, segLen), new float3(0.44f, 0.41f, 0.37f));
-                    for (int s = 0; s < 4; s++)
-                    {
-                        float along = (s - 1.5f) / 4f * segLen;
-                        Put(Part.Box, new float3(x + sn * along, y + 0.01f, z + csn * along), pieceYaw, new float3(width * 0.95f, 0.006f, 0.012f), new float3(0.3f, 0.24f, 0.18f));
-                    }
-                    for (int r = -1; r <= 1; r += 2)
-                        Put(Part.Box, new float3(x + csn * r * width * 0.22f, y + 0.015f, z - sn * r * width * 0.22f), pieceYaw, new float3(0.006f, 0.006f, segLen), new float3(0.38f, 0.36f, 0.35f));
-                }
-                else
-                {
-                    Put(Part.Box, new float3(x, y + 0.004f, z), pieceYaw, new float3(width, 0.012f, segLen), color);
-                    if (style == StreetStyle.Primary && !bridge && k % 2 == 0)
-                        Put(Part.Box, new float3(x, y + 0.0105f, z), pieceYaw, new float3(0.006f, 0.002f, segLen * 0.45f), new float3(0.78f, 0.74f, 0.55f));
-                    if (style == StreetStyle.Service && k % 3 == 0)
-                        for (int r = -1; r <= 1; r += 2)   // painted edge lines on service roads
-                            Put(Part.Box, new float3(x + csn * r * width * 0.42f, y + 0.0105f, z - sn * r * width * 0.42f), pieceYaw, new float3(0.005f, 0.002f, segLen), new float3(0.78f, 0.66f, 0.2f));
-                    if (style == StreetStyle.Rural && !bridge)
-                        for (int r = -1; r <= 1; r += 2)   // worn shoulders
-                            Put(Part.Box, new float3(x + csn * r * width * 0.62f, y + 0.001f, z - sn * r * width * 0.62f), pieceYaw, new float3(width * 0.28f, 0.006f, segLen), color * 0.85f + new float3(0.03f, 0.04f, 0.01f));
-                    if (walks)
-                    {
-                        // kerbs, then a continuous pavement behind them (lifted with the road, never clipping)
-                        float side = width * 0.55f;
-                        for (int r = -1; r <= 1; r += 2)
-                        {
-                            Put(Part.Box, new float3(x + csn * r * side, y + 0.006f, z - sn * r * side), pieceYaw, new float3(0.014f, 0.014f, segLen), kerb);
-                            if (!bridge && Hash(t * 7 + k, r + 50) >= pavementGaps)
-                            {
-                                float pw = style == StreetStyle.Commercial ? 0.05f : 0.035f;
-                                float off = side + 0.007f + pw * 0.5f;
-                                Put(Part.Box, new float3(x + csn * r * off, y + 0.007f, z - sn * r * off), pieceYaw, new float3(pw, 0.012f, segLen), pavement * (0.95f + 0.1f * Hash(t, k + r)));
-                            }
-                        }
-                    }
-                }
-                if (bridge)
-                {
-                    // railings along the deck, piers below it
-                    for (int r = -1; r <= 1; r += 2)
-                        Put(Part.Box, new float3(x + csn * r * width * 0.62f, y + 0.012f, z - sn * r * width * 0.62f), pieceYaw, new float3(0.008f, 0.025f, segLen), new float3(0.45f, 0.44f, 0.42f));
-                    if (k % 2 == 0)
-                    {
-                        float floor = Mathf.Min(Ground(x, z), y) - 0.2f;
-                        Put(Part.Box, new float3(x, floor, z), pieceYaw, new float3(width * 0.4f, y - floor, 0.03f), new float3(0.4f, 0.38f, 0.36f));
-                    }
-                }
-            }
-            if (bridge)
-            {
-                // abutments where the deck meets dry land
-                foreach (var end in new[] { p0, p2 })
-                {
-                    float gy = Ground(end.x, end.y);
-                    if (world.View.Water[world.Grid.TileAt(end.x, end.y) is int te && te >= 0 ? te : t] > gy) continue;
-                    float dy = RoadCurve.Height(world, deck, end.x, end.y) - gy;
-                    if (dy > 0.03f) Put(Part.Box, new float3(end.x, gy - 0.02f, end.y), Mathf.Atan2(c.x - end.x, c.y - end.y), new float3(width * 1.3f, dy + 0.02f, 0.06f), new float3(0.48f, 0.46f, 0.42f));
-                }
-            }
-        }
+            => StreetRibbon(t, p0, c, p2, cls, broken, na, nb);
 
         void ComposeBuilding(in BuildingRecord b)
         {
             var g = world.Grid;
             float cx = g.CenterX(b.Tile), cz = g.CenterZ(b.Tile);
-            int seed = DistrictPlanner.StableHash(Seed, b.Id, b.Tile);
+            int seed = DistrictPlanner.StableHash(Seed, b.Slot > 0 ? b.Slot : b.HasPosition ? b.Tile : b.Id, b.Tile);
             // the parcel: the widest side of the hex free of streets. The building sits there, scaled to the
             // room it has, fronting the streets that pass along the other side (organic city design §6.1–6.2)
             float yaw;
@@ -528,6 +525,8 @@ namespace SE.Runtime.Cities
             // no two parcels sit exactly alike: a small offset and turn, so the hex grid doesn't show through
             yaw += (Hash(seed, 5) - 0.5f) * 0.18f;
             cx += (Hash(seed, 6) - 0.5f) * 0.06f; cz += (Hash(seed, 7) - 0.5f) * 0.06f;
+            if (b.HasPosition) { cx = b.X; cz = b.Z; parcelScale = 1f; }
+            if (b.HasYaw) yaw = b.Yaw;
             var district = Districts.At(b.Tile);
             styleSeed = district?.Seed ?? seed;
             float4 civ = CivColor(b.Owner);
@@ -549,21 +548,25 @@ namespace SE.Runtime.Cities
                 X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = tint, Civ = civ.xyz, Era = era, Level = Math.Max(1, b.Level), Tier = b.Tier,
                 Scale = parcelScale, Style = district?.Seed ?? seed, Kind = district?.Kind ?? DistrictPlanner.KindOf(b.Type),
                 Anchor = district == null || district.Anchor == b.Tile, DistrictSize = district?.Size ?? 1,
+                FixedGround = b.HasPosition, GroundY = b.HasPosition ? BuildingDatum(cx, cz, yaw) : Ground(cx, cz) - .012f,
             };
             Stacks.Remove(b.Id);
             composing = b.Id;
             switch (b.Type)
             {
                 case "house": House(ctx); break;
-                case "town": Centre(ctx); break;
+                case "modern_block": ModernBlock(ctx, false, b.State == "ruin" || b.State == "overgrown", b.State == "overgrown"); break;
+                case "modern_office": ModernBlock(ctx, true, b.State == "ruin" || b.State == "overgrown", b.State == "overgrown"); break;
+                case "town": if (b.HasPosition) Headquarters(ctx); else Centre(ctx); break;
                 case "farm": Farm(ctx); break;
-                case "barracks": case "camp": Base(ctx, false); break;
+                case "barracks": case "camp": if (b.HasPosition) MilitaryBarracks(ctx); else Base(ctx, false); break;
                 case "fort": Fortress(ctx); break;
                 case "steel_mill": SteelMill(ctx); break;
                 case "refinery": Refinery(ctx); break;
                 case "munitions_plant": Munitions(ctx); break;
-                case "motor_works": MotorWorks(ctx); break;
+                case "motor_works": if (b.HasPosition) VehicleWorks(ctx); else MotorWorks(ctx); break;
                 case "heavy_assembly": HeavyAssembly(ctx); break;
+                case "heavy_weapons": HeavyWeaponsFacility(ctx); break;
                 case "electronics_plant": Electronics(ctx); break;
                 case "drone_works": DroneWorks(ctx); break;
                 case "robotics_complex": Robotics(ctx); break;
@@ -573,22 +576,35 @@ namespace SE.Runtime.Cities
                 case "lumber": TimberMill(ctx); break;
                 case "oil_well": PumpJack(ctx); break;
                 case "shield_generator": ShieldGenerator(ctx); break;
-                case "missile_silo": MissileSilo(ctx); break;
+                case "missile_silo": if (b.HasPosition) StrategicFacility(ctx); else MissileSilo(ctx); break;
                 case "academy": case "university": Campus(ctx, b.Type == "university"); break;
-                case "power_plant": Power(ctx, false); break;
+                case "power_plant": if (b.HasPosition) GeneratorStation(ctx); else Power(ctx, false); break;
                 case "fusion_plant": Power(ctx, true); break;
                 case "nuclear_plant": Nuclear(ctx); break;
-                case "airfield": Airfield(ctx); break;
+                case "airfield": if (b.HasPosition) ForwardAirfield(ctx); else Airfield(ctx); break;
                 case "port": Port(ctx); break;
                 case "comms_tower": LatticeMast(ctx); break;
                 case "guard_post": case "bunker": case "aa_battery": Defence(ctx, b.Type); break;
-                case "market": case "depot": Warehouses(ctx, b.Type == "market"); break;
+                case "barricade": FieldBarricades(ctx); break;
+                case "sensor_post": SensorPost(ctx); break;
+                case "artillery_post": ArtilleryPosition(ctx); break;
+                case "armory": if (b.HasPosition) Arsenal(ctx); else SupportFacility(ctx, 0); break;
+                case "defense_works": if (b.HasPosition) FortificationWorks(ctx); else SupportFacility(ctx, 1); break;
+                case "advanced_lab": if (b.HasPosition) SystemsCampus(ctx); else SupportFacility(ctx, 2); break;
+                case "turret": SupportFacility(ctx, 3); break;
+                case "repair_point": SupportFacility(ctx, 4); break;
+                case "market": Warehouses(ctx, true); break;
+                case "depot": if (b.HasPosition) SupplyCenter(ctx); else Warehouses(ctx, false); break;
 
                 case "wonder": Wonder(ctx); break;
                 default: Industry(ctx); break;
             }
+            // Modern skyline blocks provide their own roof plant and damaged shell.
+            // Legacy factory annexes and damage piles do not belong to these parcels.
+            if (b.Type == "modern_block" || b.Type == "modern_office") return;
+            if (b.HasPosition && ctx.Tier >= 2) MilitaryTierEquipment(ctx, b.Type);
             if (ctx.Level >= 2 && b.Type != "house" && b.Type != "town" && b.Type != "wonder") UpgradeExtras(ctx, b.Type);
-            ParcelExtras(ctx, b.Type);
+            if (!Showcase) ParcelExtras(ctx, b.Type);
             DamageOverlay(b, cx, cz, yaw, seed);
         }
 
@@ -605,6 +621,8 @@ namespace SE.Runtime.Cities
             /// <summary>The district's oldest building (the farmstead, the compound's headquarters…).</summary>
             public bool Anchor;
             public int DistrictSize;
+            public bool FixedGround;
+            public float GroundY;
         }
 
         static float S(in Ctx c) => c.Scale > 0 ? c.Scale : 1f;
@@ -615,12 +633,68 @@ namespace SE.Runtime.Cities
         // place a module at local (lx, lz) of the hex in the building's frame, on the ground (sunk a little)
         void Module(in Ctx c, Part part, float lx, float lz, float3 size, float3 color, float yawOffset = 0, float lift = 0, float emission = 0)
         {
+            if (part == Part.Car || part == Part.Truck) return;
+            if (part == Part.Box && size.y > .10f && size.x >= .11f && size.z >= .09f)
+                part = c.Kind switch
+                {
+                    DistrictKind.Residential => c.Era == 1 ? Part.Brick : c.Era == 0 ? Part.Siding : Part.Concrete,
+                    DistrictKind.Industrial or DistrictKind.Extraction or DistrictKind.Energy => c.Era == 1 ? Part.Brick : Part.Siding,
+                    _ => Part.Concrete
+                };
+            if (part == Part.Roof && c.Kind is DistrictKind.Industrial or DistrictKind.Extraction or DistrictKind.Military or DistrictKind.Air)
+                part = Part.MetalRoof;
+            if (c.FixedGround && lift == 0 && size.y > .09f && size.x > .10f && size.z > .10f
+                && part is Part.Concrete or Part.Brick or Part.Siding)
+                Foundation(c, lx, lz, size.x, size.z);
             float k = S(c), kh = 0.65f + 0.35f * k;
             lx *= k; lz *= k; size = new float3(size.x * k, size.y * kh, size.z * k); lift *= kh;
             math.sincos(c.Yaw, out float sn, out float cs);
             float x = c.X + lx * cs + lz * sn, z = c.Z - lx * sn + lz * cs;
-            float y = Mathf.Min(Ground(x, z), Mathf.Min(Ground(x + size.x * 0.4f, z), Ground(x, z + size.z * 0.4f))) - 0.02f;
+            if (lift <= .01f && emission == 0 && size.y <= .016f && size.x >= .22f && size.z >= .14f
+                && part is Part.Asphalt or Part.Box or Part.Concrete)
+            {
+                DrapeParcel(new float2(x, z), c.Yaw + yawOffset, size.x, size.z, color * c.Tint,
+                    part == Part.Asphalt ? SurfaceKind.Asphalt : SurfaceKind.Concrete);
+                return;
+            }
+            float y = part == Part.Tree ? Ground(x, z) : c.FixedGround ? c.GroundY : Mathf.Min(Ground(x, z), Mathf.Min(Ground(x + size.x * 0.4f, z), Ground(x, z + size.z * 0.4f))) - 0.02f;
             Put(part, new float3(x, y + lift, z), c.Yaw + yawOffset, size, color * c.Tint, emission);
+        }
+
+        void Facade(in Ctx c, float lx, float lz, float width, float depth, float height, float turn, int seed, bool storefront = false)
+        {
+            math.sincos(turn, out float sn, out float cs);
+            var site = c;
+            float k = S(c);
+            math.sincos(c.Yaw, out float snSite, out float csSite);
+            float cx = c.X + (lx * csSite + lz * snSite) * k, cz = c.Z + (-lx * snSite + lz * csSite) * k;
+            site.FixedGround = true;
+            site.GroundY = c.FixedGround ? c.GroundY : Mathf.Min(Ground(cx, cz), Mathf.Min(Ground(cx + width * k * .4f, cz), Ground(cx, cz + depth * k * .4f))) - .02f;
+            float3 trim = c.Kind == DistrictKind.Industrial ? new float3(.54f, .53f, .47f) : new float3(.78f, .74f, .67f);
+            int bays = Mathf.Clamp(Mathf.RoundToInt(width / .094f), 2, 7);
+            int floors = Mathf.Clamp(Mathf.FloorToInt(height / .102f), 1, 6);
+            for (int floor = 0; floor < floors; floor++)
+                for (int i = 0; i < bays; i++)
+                {
+                    float across = ((i + .5f) / bays - .5f) * width * .92f;
+                    float front = depth * .50f;
+                    float x = lx + across * cs + front * sn, z = lz - across * sn + front * cs;
+                    float lift = height * (floor + .30f) / floors;
+                    float w = width / bays * (storefront && floor == 0 ? .83f : .61f), h = Mathf.Min(.083f, height / floors * .49f);
+                    if (floor == 0 && i == bays / 2 && !storefront)
+                    {
+                        Module(site, Part.Siding, x, z, new float3(w * .75f, h * 1.56f, .012f), new float3(.29f, .28f, .26f), turn, .012f);
+                        Module(site, Part.Concrete, x + sn * .017f, z + cs * .017f, new float3(w * 1.4f, .012f, .043f), trim * .85f, turn);
+                        continue;
+                    }
+                    Module(site, Part.Concrete, x, z, new float3(w + .010f, h + .010f, .011f), trim, turn, lift - .005f);
+                    float lit = Hash(seed, floor * 13 + i);
+                    var tint = math.lerp(new float3(.24f, .33f, .37f), new float3(.53f, .60f, .61f), lit * .7f);
+                    Module(site, Part.Glass, x + sn * .006f, z + cs * .006f, new float3(w, h, .009f), tint, turn, lift, lit > .85f ? .18f : 0f);
+                    Module(site, Part.Concrete, x + sn * .009f, z + cs * .009f, new float3(.005f, h, .011f), trim * .81f, turn, lift);
+                    if (floor > 0 && Hash(seed, 54 + i) < .22f)
+                        Module(site, Part.Concrete, x + sn * .021f, z + cs * .021f, new float3(w * 1.28f, .012f, .055f), trim * .88f, turn, lift - .012f);
+                }
         }
 
         /// <summary>Record a smoke source at local (lx, lz), height h above the ground, for the building being composed.</summary>
@@ -691,7 +765,10 @@ namespace SE.Runtime.Cities
         void Flag(in Ctx c, float lx, float lz, float h)
         {
             Module(c, Part.Cylinder, lx, lz, new float3(0.012f, h, 0.012f), new float3(0.6f, 0.6f, 0.6f));
-            Module(c, Part.Box, lx + 0.05f, lz, new float3(0.1f, 0.06f, 0.006f), c.Civ, 0, h - 0.07f, 0.15f);
+            float k = S(c), kh = .65f + .35f * k;
+            math.sincos(c.Yaw, out float sn, out float cs);
+            float x = c.X + lx * k * cs + lz * k * sn, z = c.Z - lx * k * sn + lz * k * cs;
+            current.Flags.Add(new AnimatedFlag { Position = new float3(x, Ground(x, z) + (h - .07f) * kh, z), Color = c.Civ * c.Tint, Seed = c.Seed, Scale = k });
         }
 
         void Shack(in Ctx c, float lx, float lz, float rot, int seed)
@@ -699,6 +776,7 @@ namespace SE.Runtime.Cities
             // salvaged walls, a sheet or tarp roof, sometimes a lean-to and a rain barrel
             float w = 0.13f + Hash(seed, 1) * 0.06f, h = 0.08f + Hash(seed, 2) * 0.03f;
             Module(c, Part.Box, lx, lz, new float3(w, h, w * 0.8f), Hash(seed, 3) < 0.5f ? Timber(seed) : Sheet(seed + 7), rot);
+            Facade(c, lx, lz, w, w * .8f, h, rot, seed);
             Module(c, Part.Box, lx, lz, new float3(w * 1.15f, 0.012f, w * 0.95f), Hash(seed, 4) < 0.55f ? Tarp(seed) : Sheet(seed), rot + (Hash(seed, 5) - 0.5f) * 0.2f, h);
             if (Hash(seed, 6) < 0.4f) Module(c, Part.Cylinder, lx + w * 0.6f, lz, new float3(0.035f, 0.05f, 0.035f), new float3(0.3f, 0.36f, 0.42f));
         }
@@ -766,6 +844,7 @@ namespace SE.Runtime.Cities
                     float h = 0.36f + Hash(c.Seed, 30 + k) * 0.22f + c.Era * 0.06f;
                     float3 col = c.Era >= 2 ? Stucco(c.Seed + k) * math.lerp(new float3(1f), new float3(1f, 0.9f, 0.84f), Hash(c.Seed, 50 + k)) : Brick(c.Seed + k);
                     Module(c, Part.Box, Mathf.Cos(a) * 0.48f, Mathf.Sin(a) * 0.48f, new float3(0.62f, h, 0.3f), col, a + Mathf.PI * 0.5f);
+                    Facade(c, Mathf.Cos(a) * .48f, Mathf.Sin(a) * .48f, .62f, .30f, h, a + Mathf.PI * .5f, c.Seed + k);
                     Module(c, Part.Roof, Mathf.Cos(a) * 0.48f, Mathf.Sin(a) * 0.48f, new float3(0.64f, 0.08f, 0.32f), HomeRoof(c.Seed + k), a + Mathf.PI * 0.5f, h);
                 }
                 Module(c, Part.Cone, 0, 0, new float3(0.16f, 0.2f, 0.16f), new float3(0.26f, 0.4f, 0.2f));   // a courtyard tree
@@ -782,6 +861,7 @@ namespace SE.Runtime.Cities
                         float h = 0.18f + Hash(c.Seed, row * 8 + u) * 0.07f;
                         float x = -0.36f + u * 0.24f;
                         Module(c, Part.Box, x, z, new float3(0.23f, h, 0.24f), c.Era >= 2 ? Stucco(c.Seed + row * 8 + u) : Brick(c.Seed + row * 8 + u));
+                        Facade(c, x, z, .23f, .24f, h, 0f, c.Seed + row * 8 + u);
                         Module(c, Part.Roof, x, z, new float3(0.24f, 0.09f, 0.26f), HomeRoof(c.Seed + row * 8 + u), 0, h);
                     }
                 }
@@ -795,6 +875,7 @@ namespace SE.Runtime.Cities
                 float w = 0.16f + Hash(c.Seed, 60 + k) * 0.06f, h = 0.11f + Hash(c.Seed, 70 + k) * 0.04f;
                 float rot = Hash(c.Seed, 80 + k) < 0.5f ? 0 : Mathf.PI * 0.5f;
                 Module(c, Part.Box, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(w, h, w * 0.8f), Hash(c.Seed, 90 + k) < 0.5f ? Brick(c.Seed + k) : Stucco(c.Seed + k), rot);
+                Facade(c, Mathf.Cos(a) * r, Mathf.Sin(a) * r, w, w * .8f, h, rot, c.Seed + k);
                 Module(c, Part.Roof, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(w * 1.08f, 0.08f, w * 0.86f), HomeRoof(c.Seed + k), rot, h);
                 if (Hash(c.Seed, 100 + k) < 0.5f) Module(c, Part.Cone, Mathf.Cos(a) * r + 0.14f, Mathf.Sin(a) * r, new float3(0.09f, 0.12f, 0.09f), new float3(0.26f, 0.4f, 0.2f));
             }
@@ -858,6 +939,7 @@ namespace SE.Runtime.Cities
             // and a skyline that grows with era and tier
             Module(c, Part.Box, 0, 0, new float3(1.3f, 0.03f, 1.3f), new float3(0.66f, 0.63f, 0.58f));
             Module(c, Part.Box, 0, -0.3f, new float3(0.8f, 0.34f, 0.42f), new float3(0.8f, 0.77f, 0.7f));
+            Facade(c, 0, -.3f, .8f, .42f, .34f, 0, c.Seed);
             Module(c, Part.Roof, 0, -0.3f, new float3(0.82f, 0.1f, 0.44f), Copper, 0, 0.34f);
             Module(c, Part.Box, 0, -0.3f, new float3(0.2f, 0.75f, 0.2f), new float3(0.82f, 0.78f, 0.7f));
             Module(c, Part.Cone, 0, -0.3f, new float3(0.22f, 0.2f, 0.22f), Copper, 0, 0.75f);
@@ -985,6 +1067,7 @@ namespace SE.Runtime.Cities
             }
             // civic language: pale stone, copper roofs, a dome or bell tower
             Module(c, Part.Box, 0, -0.3f, new float3(0.9f, 0.26f, 0.32f), new float3(0.8f, 0.76f, 0.68f));
+            Facade(c, 0, -.3f, .9f, .32f, .26f, 0, c.Seed);
             Module(c, Part.Roof, 0, -0.3f, new float3(0.92f, 0.1f, 0.34f), Copper, 0, 0.26f);
             if (university) Module(c, Part.Dome, 0, -0.3f, new float3(0.26f, 0.22f, 0.26f), Copper, 0, 0.32f);
             for (int k = 0; k < 5; k++) Module(c, Part.Cylinder, -0.32f + k * 0.16f, -0.1f, new float3(0.035f, 0.24f, 0.035f), new float3(0.82f, 0.8f, 0.76f));
@@ -1020,6 +1103,7 @@ namespace SE.Runtime.Cities
             {
                 float z = -0.45f + k * 0.42f;
                 Module(c, Part.Box, -0.15f, z, new float3(0.9f, 0.24f + c.Era * 0.03f, 0.34f), wallColor);
+                Facade(c, -.15f, z, .9f, .34f, .24f + c.Era * .03f, 0, c.Seed + k, true);
                 // sawtooth roof
                 for (int t = 0; t < 4; t++) Module(c, Part.Roof, -0.5f + t * 0.24f, z, new float3(0.24f, 0.08f, 0.34f), t % 2 == 0 ? new float3(0.26f, 0.26f, 0.28f) : new float3(0.4f, 0.48f, 0.55f), Mathf.PI * 0.5f, 0.24f + c.Era * 0.03f);
             }
@@ -1179,6 +1263,8 @@ namespace SE.Runtime.Cities
             var g = world.Grid;
             float cx = g.CenterX(tile), cz = g.CenterZ(tile);
             int seed = DistrictPlanner.StableHash(Seed, b.Id, b.Tile);
+            if (b.HasPosition && b.HasYaw)
+            { centre = new float2(b.X, b.Z); yaw = b.Yaw; return true; }
             if (world.Road[tile] != 0)
             {
                 RoadCurve.Parcel(world, tile, out var pdir, out float room);
@@ -1205,6 +1291,7 @@ namespace SE.Runtime.Cities
         /// </summary>
         void DistrictLinks(int t)
         {
+            if (ActionRts) { ActionLandscaping(t); return; }
             var dist = Districts.At(t);
             if (dist == null || dist.Size < 2 || !ParcelOf(t, out var a, out _, out _)) return;
             var g = world.Grid;
@@ -1317,7 +1404,7 @@ namespace SE.Runtime.Cities
             var district = Districts.At(t);
             styleSeed = district?.Seed ?? seed;
             int anchorEra = district != null && Districts.BuildingAt(district.Anchor) is BuildingRecord ab && ab.Era >= 0 ? ab.Era : Age;
-            int era = Math.Max(0, Math.Min(4, Hash(seed, 2) < 0.6f ? anchorEra : Age));
+            int era = ActionRts ? (Hash(seed, 2) < .42f ? 1 : 2) : Math.Max(0, Math.Min(4, Hash(seed, 2) < 0.6f ? anchorEra : Age));
             float centrality = urbanNb / 6f;
             float roll = Hash(seed, 1);
             var kind = district?.Kind ?? DistrictKind.Residential;
@@ -1327,7 +1414,7 @@ namespace SE.Runtime.Cities
             bool nearCivic = false;
             for (int d = 0; d < 6 && !nearCivic; d++) { int n = g.Nb[t * 6 + d]; nearCivic = n >= 0 && Districts.BuildingAt(n) is BuildingRecord nb && DistrictPlanner.KindOf(nb.Type) == DistrictKind.Civic; }
             float parkChance = 0.03f + (roads == 0 ? 0.22f : 0f) + (urbanNb >= 5 ? 0.04f : 0f);
-            if (era >= 1 && nearCivic && roll < 0.3f && kind != DistrictKind.Industrial) { Plaza(c); return; }
+            if (era >= 1 && nearCivic && roll < (ActionRts ? .07f : .3f) && kind != DistrictKind.Industrial) { Plaza(c); return; }
             if (era >= 1 && roll < parkChance && kind != DistrictKind.Industrial && kind != DistrictKind.Energy) { Park(c); return; }
             // where this hex's streets run (they meet off-centre), so blocks keep clear of them
             int streetPts = 0;
@@ -1409,6 +1496,7 @@ namespace SE.Runtime.Cities
                 {
                     float w = 0.2f + h01 * 0.06f, h = 0.16f + centrality * 0.14f + Hash(seed, 3) * 0.06f;
                     Module(c, Part.Box, lx, lz, new float3(w, h, w * 0.75f), Hash(seed, 4) < 0.6f ? Brick(seed) : Stucco(seed), face);
+                    Facade(c, lx, lz, w, w * .75f, h, face, seed);
                     Module(c, Part.Roof, lx, lz, new float3(w * 1.05f, 0.08f, w * 0.8f), HomeRoof(seed), face, h);
                     break;
                 }
@@ -1416,6 +1504,7 @@ namespace SE.Runtime.Cities
                 {
                     float w = 0.24f + h01 * 0.06f, h = 0.22f + centrality * 0.3f + Hash(seed, 3) * 0.1f;
                     Module(c, Part.Box, lx, lz, new float3(w, h, w * 0.7f), Hash(seed, 5) < 0.4f ? Brick(seed) : Concrete(seed), face);
+                    Facade(c, lx, lz, w, w * .7f, h, face, seed);
                     if (streetSide && Hash(seed, 6) < 0.5f) Module(c, Part.Box, lx, lz, new float3(w * 1.02f, 0.035f, w * 0.72f), new float3(0.55f, 0.42f, 0.3f), face, 0, 0.15f);   // lit shopfronts
                     break;
                 }
@@ -1435,6 +1524,13 @@ namespace SE.Runtime.Cities
 
         void Park(in Ctx c)
         {
+            if (ActionRts)
+            {
+                Module(c, Part.Concrete, -.06f, .02f, new float3(.032f, .005f, .43f), new float3(.58f, .57f, .52f), .27f);
+                Module(c, Part.Tree, -.21f, -.11f, new float3(.17f, .23f, .17f), new float3(.45f, .53f, .38f), .7f);
+                if (Hash(c.Seed, 2) < .46f) Module(c, Part.Tree, .16f, .14f, new float3(.13f, .19f, .13f), new float3(.50f, .56f, .42f), 2.4f);
+                return;
+            }
             Module(c, Part.Box, 0, 0, new float3(0.06f, 0.008f, 0.9f), new float3(0.6f, 0.57f, 0.5f), Hash(c.Seed, 3) * 3f);   // a path
             int trees = 6 + (int)(Hash(c.Seed, 4) * 5);
             for (int k = 0; k < trees; k++)
@@ -1450,6 +1546,7 @@ namespace SE.Runtime.Cities
 
         void Plaza(in Ctx c)
         {
+            if (ActionRts) { Park(c); return; }
             Module(c, Part.Box, 0, 0, new float3(0.8f, 0.012f, 0.8f), new float3(0.64f, 0.61f, 0.56f), 0.4f);
             Module(c, Part.Cylinder, 0, 0, new float3(0.1f, 0.25f, 0.1f), new float3(0.7f, 0.68f, 0.62f));
             Module(c, Part.Box, 0, 0, new float3(0.06f, 0.08f, 0.06f), new float3(0.45f, 0.5f, 0.48f), 0, 0, 0.25f);
@@ -1462,7 +1559,7 @@ namespace SE.Runtime.Cities
 
         void Airfield(in Ctx c)
         {
-            Module(c, Part.Box, 0, 0, new float3(0.26f, 0.012f, 1.6f), new float3(0.22f, 0.22f, 0.24f));
+            Module(c, Part.Asphalt, 0, 0, new float3(0.26f, 0.012f, 1.6f), new float3(0.22f, 0.22f, 0.24f));
             for (int k = 0; k < 6; k++) Module(c, Part.Box, 0, -0.65f + k * 0.26f, new float3(0.02f, 0.014f, 0.1f), new float3(0.9f, 0.9f, 0.85f));
             Module(c, Part.Box, 0.55f, -0.3f, new float3(0.36f, 0.2f, 0.4f), new float3(0.5f, 0.52f, 0.5f));
             BarrelRoof(c, 0.55f, -0.3f, 0.4f, 0.36f, 0.2f, new float3(0.46f, 0.48f, 0.46f));
@@ -1716,16 +1813,27 @@ namespace SE.Runtime.Cities
             {
                 if (!cell.Any) continue;
                 foreach (var b in cell.Batches) b.DrawImages(images);
+                cell.StreetBatch?.DrawImages(images);
             }
             DrawGhost(images);
+            activityBoxes?.DrawImages(images);
+            activityRotors?.DrawImages(images); activityDishes?.DrawImages(images);
         }
 
-        void DisposeCell(Cell c) { foreach (var b in c.Batches) b?.Dispose(); }
+        void DisposeCell(Cell c)
+        {
+            foreach (var b in c.Batches) b?.Dispose();
+            c.StreetBatch?.Dispose();
+            if (c.Streets != null) UnityEngine.Object.Destroy(c.Streets);
+        }
 
         public void Dispose()
         {
             foreach (var c in cells.Values) DisposeCell(c);
+            if (ghost != null) DisposeCell(ghost);
             cells.Clear();
+            activityBoxes?.Dispose();
+            activityRotors?.Dispose(); activityDishes?.Dispose();
         }
     }
 }

@@ -26,6 +26,15 @@ float4 SE_Ground(float3 positionWS) { return SAMPLE_TEXTURE2D_LOD(_SE_GroundTex,
 
 // drifting cloud shadows: x = cover (0..1), y = wind x, z = wind z, w = speed
 float4 _SE_Clouds;
+float4 _SE_Wind; // world-space x/z vector, strength
+half4 _SE_AmbientSky, _SE_AmbientEquator, _SE_AmbientGround;
+float4 _SE_Haze;
+half4 _SE_HazeColor;
+half3 SE_Ambient(half3 n)
+{
+    return n.y >= 0 ? lerp(_SE_AmbientEquator.rgb, _SE_AmbientSky.rgb, n.y)
+        : lerp(_SE_AmbientEquator.rgb, _SE_AmbientGround.rgb, -n.y);
+}
 float SE_CloudNoise(float2 p)
 {
     float2 i = floor(p), f = frac(p);
@@ -46,6 +55,7 @@ half SE_CloudShadow(float3 positionWS)
 
 half3 SE_Shade(half3 albedo, float3 positionWS, half3 normalWS, half emission)
 {
+    // The caller supplies linear reflectance, including decoded colour textures.
     float4 shadowCoord = TransformWorldToShadowCoord(positionWS);
     Light mainLight = GetMainLight(shadowCoord);
     half ndl = saturate(dot(normalWS, mainLight.direction));
@@ -59,7 +69,7 @@ half3 SE_Shade(half3 albedo, float3 positionWS, half3 normalWS, half emission)
         light += l.color * saturate(dot(normalWS, l.direction)) * l.distanceAttenuation;
     LIGHT_LOOP_END
     #endif
-    half3 ambient = SampleSH(normalWS);
+    half3 ambient = SE_Ambient(normalWS);
     half3 color = albedo * (light + ambient) + albedo * emission;
     return color;
 }
@@ -71,7 +81,10 @@ half3 SE_ApplyFog(half3 color, float3 positionWS, float fogCoord)
     half grey = dot(color, half3(0.3h, 0.59h, 0.11h));
     half3 dimmed = lerp(color, grey.xxx * 0.8h, 0.55h) * (1.0h - _SE_FogParams.w);
     color = lerp(dimmed, color, vis);
-    return MixFog(color, fogCoord);
+    float range = distance(_WorldSpaceCameraPos, positionWS);
+    half lowMist = exp(-max(0.0, positionWS.y - .5) * .32);
+    half haze = (1.0h - exp(-max(0.0, range - _SE_Haze.y) * _SE_Haze.x)) * lowMist * .16h;
+    return MixFog(lerp(color, _SE_HazeColor.rgb, haze), fogCoord);
 }
 
 // clamp shadow casters to the near plane (URP's shadow caster convention)

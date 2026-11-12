@@ -38,6 +38,7 @@ namespace SE.Runtime.Audio
             OneShots["thunder"] = Variants(2, v => Thunder(v));
             OneShots["bird"] = Variants(4, v => Bird(v));
             OneShots["collapse"] = Variants(2, v => Collapse(v));
+            OneShots["capture"] = Variants(1, v => CommandChord());
             Loops["tank"] = Engine(36f, 0.55f, 9f, 0.35f);
             Loops["truck"] = Engine(52f, 0.45f, 0f, 0f);
             Loops["jet"] = Jet();
@@ -48,6 +49,38 @@ namespace SE.Runtime.Audio
             Loops["river"] = River();
             Loops["city"] = City();
             Loops["battle"] = BattleBed();
+            Loops["music_calm"] = TacticalTheme(false);
+            Loops["music_combat"] = TacticalTheme(true);
+        }
+
+        static float[] CommandChord()
+        {
+            var data = new float[(int)(Rate * 1.4f)];
+            for (int i = 0; i < data.Length; i++)
+            {
+                double t = i / (double)Rate, s = 0;
+                foreach (double hz in new[] { 293.665, 440.0, 587.330 })
+                    s += Math.Sin(t * hz * Math.PI * 2) * Math.Exp(-t * 3.8) * Math.Min(1, t * 60) * .13;
+                data[i] = (float)s;
+            }
+            return data;
+        }
+
+        static AudioClip TacticalTheme(bool combat)
+        {
+            const int seconds = 16;
+            var data = new float[Rate * seconds];
+            double[] roots = { 73.416, 58.270, 65.406, 55.0 };
+            for (int i = 0; i < data.Length; i++)
+            {
+                double t = i / (double)Rate, local = t % 4, root = roots[(int)(t / 4)];
+                double envelope = Math.Sin(local / 4 * Math.PI);
+                double pad = (Math.Sin(root * t * Math.PI * 2) + Math.Sin(root * 1.5 * t * Math.PI * 2) * .4 + Math.Sin(root * 2 * t * Math.PI * 2) * .25) * .10 * envelope;
+                double beat = t % .5, pulse = combat ? Math.Sin(beat * (56 - beat * 28) * Math.PI * 2) * Math.Exp(-beat * 19) * .13 : 0;
+                double high = Math.Sin(root * 4 * t * Math.PI * 2) * Math.Exp(-(t % 1) * 5) * .018;
+                data[i] = (float)(pad + pulse + high);
+            }
+            return Clip(combat ? "Battle theme" : "Reclamation theme", data, true);
         }
 
         static AudioClip[] Variants(int n, Func<int, float[]> make)

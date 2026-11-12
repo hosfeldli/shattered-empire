@@ -21,11 +21,12 @@ namespace SE.Runtime.Cities
     public static unsafe class RoadCurve
     {
         public const float Inradius = 0.8660254f;
+        public const float BlockRadius = .64f;
         /// <summary>Hexes holding a building (kept current by the city renderer).</summary>
         public static bool[] Occupied = Array.Empty<bool>();
         public static bool Built(int t) => t >= 0 && t < Occupied.Length && Occupied[t];
 
-        public static float Width(int cls) => cls == 1 ? 0.075f : cls == 2 ? 0.11f : cls == 3 ? 0.16f : 0.07f;
+        public static float Width(int cls) => cls == 1 ? .115f : cls == 2 ? .235f : cls == 3 ? .34f : .09f;
 
         static float H(int a, int b) => CityRenderer.Hash(a, b);
 
@@ -33,6 +34,9 @@ namespace SE.Runtime.Cities
 
         /// <summary>Where the street on edge d of hex t crosses the edge (in t's coordinates).</summary>
         public static float2 Mid(WorldModel w, int t, int d) => Centre(w, t) + new float2(HexMath.DirX[d], HexMath.DirZ[d]) * Inradius;
+        public static float2 Portal(WorldModel w, int t, int d) => Centre(w, t) + new float2(HexMath.DirX[d], HexMath.DirZ[d]) * BlockRadius;
+        public static float2 ArcControl(WorldModel w, int t, int a, int b) => Centre(w, t)
+            + math.normalizesafe(new float2(HexMath.DirX[a] + HexMath.DirX[b], HexMath.DirZ[a] + HexMath.DirZ[b])) * (BlockRadius / .8660254f);
 
         /// <summary>
         /// Where a hex's streets meet. In an open hex: off-centre by a stable amount, so streets meander.
@@ -41,13 +45,20 @@ namespace SE.Runtime.Cities
         /// </summary>
         public static float2 Node(WorldModel w, int t)
         {
-            float a = H(t, 501) * 6.2832f, r = 0.08f + H(t, 502) * 0.2f;
-            var jitter = new float2(Mathf.Cos(a), Mathf.Sin(a));
-            if (!Built(t)) return Centre(w, t) + jitter * r;
-            // how far depends on how much room the parcel needs: a hex boxed in by streets keeps its
-            // junction near the centre (gentle curves), one with a free side gives the building that side
-            Parcel(w, t, out var d2, out float room2);
-            return Centre(w, t) - d2 * Mathf.Lerp(0.12f, 0.26f, room2) + jitter * 0.05f;
+            int* edges = stackalloc int[6];
+            int count = Edges(w, t, edges);
+            float2 control = JunctionControl(w, t);
+            // De Casteljau midpoint: the two half-streets share exactly one tangent.
+            if (count == 2) return (Mid(w, t, edges[0]) + Mid(w, t, edges[1])) * .25f + control * .5f;
+            return control;
+        }
+
+        static float2 JunctionControl(WorldModel w, int t)
+        {
+            var center = Centre(w, t);
+            if (!Built(t)) return center;
+            Parcel(w, t, out var direction, out float room);
+            return center - direction * Mathf.Lerp(.20f, .49f, room);
         }
 
         /// <summary>
@@ -81,6 +92,8 @@ namespace SE.Runtime.Cities
         public static float2 HalfControl(WorldModel w, int t, int d, float2 node)
         {
             float2 m = Mid(w, t, d);
+            int* edges = stackalloc int[6];
+            if (Edges(w, t, edges) == 2) return (m + JunctionControl(w, t)) * .5f;
             return m - new float2(HexMath.DirX[d], HexMath.DirZ[d]) * (math.distance(m, node) * 0.5f);
         }
 
@@ -135,6 +148,26 @@ namespace SE.Runtime.Cities
         /// </summary>
         public static int Pieces(WorldModel w, int t, int a, int b, float2* p0, float2* p1, float2* p2)
         {
+            if (Built(t))
+            {
+                var pa = Portal(w, t, a); var pb = Portal(w, t, b);
+                p0[0] = Mid(w, t, a); p1[0] = (p0[0] + pa) * .5f; p2[0] = pa;
+                int count = 1;
+                if (a != b)
+                {
+                    int* chain = stackalloc int[6]; int n = Chain(w, t, chain), ia = 0, ib = 0;
+                    for (int j = 0; j < n; j++) { if (chain[j] == a) ia = j; if (chain[j] == b) ib = j; }
+                    int step = ib > ia ? 1 : -1, edge = a;
+                    for (int j = 0; edge != b && j < 5; j++)
+                    {
+                        int next = (edge + step + 6) % 6;
+                        p0[count] = Portal(w, t, edge); p1[count] = ArcControl(w, t, edge, next); p2[count] = Portal(w, t, next);
+                        count++; edge = next;
+                    }
+                }
+                p0[count] = pb; p1[count] = (pb + Mid(w, t, b)) * .5f; p2[count] = Mid(w, t, b);
+                return count + 1;
+            }
             // two half-streets meeting at the junction, each leaving its edge square-on; in a built hex the
             // junction sits on the street side, clear of the building's parcel (b == a: in and back out)
             float2 ma = Mid(w, t, a), mb = Mid(w, t, b);
@@ -154,7 +187,7 @@ namespace SE.Runtime.Cities
         /// <summary>A point at fraction s of the path through hex t from edge a to edge b, and its heading.</summary>
         public static void Route(WorldModel w, int t, int a, int b, float s, out float x, out float z, out float yaw)
         {
-            float2* p0 = stackalloc float2[6]; float2* p1 = stackalloc float2[6]; float2* p2 = stackalloc float2[6];
+            float2* p0 = stackalloc float2[8]; float2* p1 = stackalloc float2[8]; float2* p2 = stackalloc float2[8];
             int n = Pieces(w, t, a, b, p0, p1, p2);
             s = Mathf.Clamp01(s) * n;
             int i = Math.Min(n - 1, (int)s);
@@ -166,7 +199,7 @@ namespace SE.Runtime.Cities
         /// <summary>Approximate length of the path through hex t from edge a to edge b.</summary>
         public static float Length(WorldModel w, int t, int a, int b)
         {
-            float2* p0 = stackalloc float2[6]; float2* p1 = stackalloc float2[6]; float2* p2 = stackalloc float2[6];
+            float2* p0 = stackalloc float2[8]; float2* p1 = stackalloc float2[8]; float2* p2 = stackalloc float2[8];
             int n = Pieces(w, t, a, b, p0, p1, p2);
             float len = 0;
             for (int i = 0; i < n; i++) len += (math.distance(p0[i], p1[i]) + math.distance(p1[i], p2[i]) + math.distance(p0[i], p2[i])) * 0.5f;
@@ -179,19 +212,18 @@ namespace SE.Runtime.Cities
         public static float Deck(WorldModel w, int t, int na, int nb)
         {
             if (!IsWet(w, t) && !IsWet(w, na) && !IsWet(w, nb)) return float.NegativeInfinity;
-            var v = w.View;
-            float top = Mathf.Max(v.Water[t], w.Height[t]);
-            if (na >= 0) top = Mathf.Max(top, Mathf.Max(v.Water[na], w.Height[na]));
-            if (nb >= 0) top = Mathf.Max(top, Mathf.Max(v.Water[nb], w.Height[nb]));
-            return top + 0.06f;
+            return Mathf.Max(DeckAt(w, t), Mathf.Max(DeckAt(w, na), DeckAt(w, nb)));
         }
+
+        static float DeckAt(WorldModel w, int tile) => !IsWet(w, tile) ? float.NegativeInfinity
+            : (w.View.Water[tile] > -1e8f ? w.View.Water[tile] : w.Height[tile] + WorldModel.RiverDepth) + .028f;
 
         /// <summary>Road surface height at (x, z): the ground across the road's width, or the bridge deck.</summary>
         public static float Height(WorldModel w, float deck, float x, float z)
         {
             var v = w.View;
             float y = Mathf.Max(v.GroundHeight(x, z), Mathf.Max(v.GroundHeight(x + 0.06f, z), v.GroundHeight(x - 0.06f, z)));
-            return Mathf.Max(y, deck) + 0.016f;
+            return Mathf.Max(y, deck) + .006f;
         }
     }
 }

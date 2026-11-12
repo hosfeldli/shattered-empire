@@ -9,6 +9,8 @@ namespace SE.Core.Protocol
     {
         public int Tile, Owner, Dir, Progress, Hp, State, Route;
         public bool Reinforced, Upgrading;
+        public bool HasPosition;
+        public float X, Z, Facing;
         public bool Built => Progress >= 100;
     }
 
@@ -20,7 +22,8 @@ namespace SE.Core.Protocol
     }
 
     public struct CraterRecord { public int Tile; public float Depth; }
-    public struct WreckRecord { public int Tile, Owner; public string Type; public bool Burning; }
+    public struct WreckRecord { public int Tile, Owner; public string Type; public bool Burning, HasPosition; public float X, Z, Yaw; }
+    public struct ImpactRecord { public int Tile, Seed; public string Class; public float X, Z, Severity; }
     public struct TileValue { public int Tile; public float Value; }
 
     /// <summary>Battlefield damage (server battlefield.js battlefieldSnapshot).</summary>
@@ -28,6 +31,8 @@ namespace SE.Core.Protocol
     {
         public CraterRecord[] Craters = Array.Empty<CraterRecord>();
         public WreckRecord[] Wrecks = Array.Empty<WreckRecord>();
+        public ImpactRecord[] Impacts = Array.Empty<ImpactRecord>();
+        public TileValue[] Scorch = Array.Empty<TileValue>(), Wear = Array.Empty<TileValue>();
         public TileValue[] Smoke = Array.Empty<TileValue>();
         /// <summary>No-man's-land stage per tile (shelled ground: 1 churned .. 4 wasteland).</summary>
         public TileValue[] Intensity = Array.Empty<TileValue>();
@@ -110,8 +115,13 @@ namespace SE.Core.Protocol
             if (bf["c"] is JArray ca) foreach (var x in ca) if (x is JArray r && r.Count >= 2) c.Add(new CraterRecord { Tile = I(r[0], -1), Depth = ProtocolDecoder.Float(r[1]) });
             s.Craters = c.ToArray();
             var w = new List<WreckRecord>();
-            if (bf["w"] is JArray wa) foreach (var x in wa) if (x is JArray r && r.Count >= 2) w.Add(new WreckRecord { Tile = I(r[0], -1), Type = ProtocolDecoder.Str(r[1], ""), Burning = r.Count > 2 && I(r[2]) == 1, Owner = r.Count > 3 ? I(r[3], -1) : -1 });
+            if (bf["w"] is JArray wa) foreach (var x in wa) if (x is JArray r && r.Count >= 2) w.Add(new WreckRecord { Tile = I(r[0], -1), Type = ProtocolDecoder.Str(r[1], ""), Burning = r.Count > 2 && I(r[2]) == 1, Owner = r.Count > 3 ? I(r[3], -1) : -1, HasPosition = r.Count >= 7, X = r.Count >= 7 ? ProtocolDecoder.Float(r[4]) : 0, Z = r.Count >= 7 ? ProtocolDecoder.Float(r[5]) : 0, Yaw = r.Count >= 7 ? ProtocolDecoder.Float(r[6]) : 0 });
             s.Wrecks = w.ToArray();
+            var impacts = new List<ImpactRecord>();
+            if (bf["m"] is JArray ma) foreach (var x in ma) if (x is JArray r && r.Count >= 6)
+                impacts.Add(new ImpactRecord { Tile = I(r[0], -1), Class = ProtocolDecoder.Str(r[1], "shell"), X = ProtocolDecoder.Float(r[2]), Z = ProtocolDecoder.Float(r[3]), Severity = ProtocolDecoder.Float(r[4]), Seed = I(r[5]) });
+            s.Impacts = impacts.ToArray();
+            s.Scorch = Values(bf["sc"], .1f); s.Wear = Values(bf["wr"], .1f);
             s.Smoke = Values(bf["s"], 0.1f);
             s.Intensity = Values(bf["i"], 1f);
             return s;

@@ -50,6 +50,8 @@ namespace SE.Runtime.Landscape
         int epoch = -1, seed;
 
         NativeArray<VertexAttributeDescriptor> layout;
+        Mesh oceanHorizon;
+        Material horizonMaterial;
 
         public TerrainRenderer(WorldModel model)
         {
@@ -73,6 +75,23 @@ namespace SE.Runtime.Landscape
                 chunks[i] = new Chunk { OriginX = cx * WorldModel.ChunkSize * HexMath.Sqrt3 };
             }
             if (Blocked.Length != world.Grid.N) Blocked = new byte[world.Grid.N];
+            BuildOceanHorizon();
+        }
+
+        void BuildOceanHorizon()
+        {
+            if (oceanHorizon != null) Object.Destroy(oceanHorizon);
+            if (horizonMaterial == null)
+            {
+                horizonMaterial = new Material(RenderResources.Water) { name = "Ocean horizon", renderQueue = RenderResources.Water.renderQueue - 1 };
+                horizonMaterial.SetFloat("_Horizon", 1);
+            }
+            var mesh = new MeshBuilder(); var grid = world.Grid;
+            var color = new Color(0, 1, 1, 1);
+            horizonMaterial.SetVector("_OceanBounds", new Vector4(grid.W, grid.H, grid.Wrap ? 1 : 0, 0));
+            mesh.Quad(new Vector3(-450, 0, 450), new Vector3(grid.Period + 450, 0, 450),
+                new Vector3(grid.Period + 450, 0, -grid.H * 1.5f - 450), new Vector3(-450, 0, -grid.H * 1.5f - 450), color);
+            oceanHorizon = mesh.Build("Ocean beyond playable geography");
         }
 
         public void MarkDirty(IEnumerable<int> chunkIds)
@@ -164,6 +183,8 @@ namespace SE.Runtime.Landscape
             var job = new ChunkMeshJob
             {
                 Height = v.Height, Water = v.Water, Known = v.Known, GeoFlags = v.GeoFlags, Biome = v.Biome, Nb = v.Nb, Geo = world.GeoPtr,
+                Impacts = v.Impacts, ImpactCounts = v.ImpactCounts,
+                Trenches = v.Trenches,
                 W = world.Grid.W, H = world.Grid.H, WrapFlag = world.Grid.Wrap ? 1 : 0, Period = world.Grid.Period,
                 Cx = cx, Cy = cy, Cs = cs, Seed = seed, OriginX = ch.OriginX, TreeDensity = TreeDensity,
                 Meshes = p.Meshes, Layout = layout, Blocked = p.Blocked, TreesA = p.TreesA, TreesB = p.TreesB, Counts = p.Counts, BoundsOut = p.Bounds,
@@ -191,13 +212,16 @@ namespace SE.Runtime.Landscape
                 bounds.SetMinMax(new Vector3(b[0], b[1], b[2]), new Vector3(b[3], b[4], b[5]));
                 ch.Hi.bounds = bounds; ch.Lo.bounds = bounds; ch.Water.bounds = bounds;
                 bounds.center += new Vector3(ch.OriginX, 0, 0);
+                // Tree batches share the terrain chunk's culling bounds. Include the
+                // canopy and wind motion so edge-of-screen forests do not disappear.
+                bounds.Expand(new Vector3(.9f, 1.6f, .9f));
                 ch.Bounds = bounds;
                 ch.HasMesh = ch.Hi.vertexCount > 0;
                 ch.HasWater = ch.Water.vertexCount > 0;
                 if (ch.TreesA == null)
                 {
-                    ch.TreesA = new InstanceBatch(MeshKit.Deciduous, RenderResources.Instanced, 256);
-                    ch.TreesB = new InstanceBatch(MeshKit.Conifer, RenderResources.Instanced, 256);
+                    ch.TreesA = new InstanceBatch(MeshKit.Deciduous, RenderResources.Foliage, 256);
+                    ch.TreesB = new InstanceBatch(MeshKit.Conifer, RenderResources.Foliage, 256);
                 }
                 Fill(ch.TreesA, p.TreesA, p.Counts[0], bounds);
                 Fill(ch.TreesB, p.TreesB, p.Counts[1], bounds);
@@ -223,6 +247,17 @@ namespace SE.Runtime.Landscape
             DrawnChunks = 0;
             var terrainParams = new RenderParams(RenderResources.Terrain) { shadowCastingMode = ShadowCastingMode.On, receiveShadows = true };
             var waterParams = new RenderParams(RenderResources.Water) { shadowCastingMode = ShadowCastingMode.Off, receiveShadows = true };
+            if (oceanHorizon != null)
+            {
+                int count = images.For(oceanHorizon.bounds, out float a, out float b, out float c);
+                for (int i = 0; i < count; i++)
+                {
+                    float offset = i == 0 ? a : i == 1 ? b : c;
+                    var bounds = oceanHorizon.bounds; bounds.center += new Vector3(offset, 0, 0);
+                    Graphics.RenderMesh(new RenderParams(horizonMaterial) { worldBounds = bounds, shadowCastingMode = ShadowCastingMode.Off }, oceanHorizon, 0,
+                        Matrix4x4.Translate(new Vector3(offset, 0, 0)));
+                }
+            }
             foreach (var ch in chunks)
             {
                 if (!ch.HasMesh) continue;
@@ -241,7 +276,8 @@ namespace SE.Runtime.Landscape
                     {
                         var shadows = dist < TreeShadowDistance ? ShadowCastingMode.On : ShadowCastingMode.Off;
                         ch.TreesA.Shadows = shadows; ch.TreesB.Shadows = shadows;
-                        ch.TreesA.Draw(off, k); ch.TreesB.Draw(off, k);
+                        ch.TreesA.Draw(off, k, meshOverride: dist < 24f ? null : MeshKit.DeciduousLo);
+                        ch.TreesB.Draw(off, k, meshOverride: dist < 24f ? null : MeshKit.ConiferLo);
                     }
                     DrawnChunks++;
                 }
@@ -260,6 +296,8 @@ namespace SE.Runtime.Landscape
             CompleteAll();
             foreach (var c in chunks) DisposeChunk(c);
             chunks = new Chunk[0];
+            if (oceanHorizon != null) Object.Destroy(oceanHorizon);
+            if (horizonMaterial != null) Object.Destroy(horizonMaterial);
             if (layout.IsCreated) layout.Dispose();
         }
     }

@@ -51,13 +51,14 @@ namespace SE.Runtime.Cities
             {
                 case "house": return DistrictKind.Residential;
                 case "market": case "depot": return DistrictKind.Commercial;
-                case "town": case "academy": case "university": case "comms_tower": case "wonder": return DistrictKind.Civic;
+                case "town": case "academy": case "university": case "comms_tower": case "wonder": case "advanced_lab": return DistrictKind.Civic;
                 case "steel_mill": case "refinery": case "munitions_plant": case "motor_works": case "heavy_assembly": case "electronics_plant":
                 case "drone_works": case "robotics_complex": case "salvage": return DistrictKind.Industrial;
                 case "power_plant": case "fusion_plant": case "nuclear_plant": case "shield_generator": return DistrictKind.Energy;
                 case "mine": case "quarry": case "lumber": case "oil_well": return DistrictKind.Extraction;
                 case "farm": return DistrictKind.Agricultural;
-                case "barracks": case "fort": case "camp": case "guard_post": case "bunker": case "aa_battery": case "missile_silo": return DistrictKind.Military;
+                case "barracks": case "fort": case "camp": case "guard_post": case "bunker": case "aa_battery": case "missile_silo":
+                case "armory": case "defense_works": case "turret": case "repair_point": return DistrictKind.Military;
                 case "airfield": return DistrictKind.Air;
                 case "port": return DistrictKind.Port;
                 default: return DistrictKind.Industrial;

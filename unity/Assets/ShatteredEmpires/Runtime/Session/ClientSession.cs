@@ -26,6 +26,19 @@ namespace SE.Runtime.Session
         public WelcomeMessage Welcome { get; private set; }
         public int CivId { get; private set; } = -1;
         public bool Spectator => Welcome?.Spectator ?? false;
+        public bool ActionRts => Welcome?.Ruleset == "action-v2";
+        public readonly Dictionary<int, ResourcePickup> Pickups = new Dictionary<int, ResourcePickup>();
+        public readonly Dictionary<int, ObjectiveSite> Objectives = new Dictionary<int, ObjectiveSite>();
+        public JObject ActionPlan;
+        public bool ObserverFog;
+        public bool IsHostile(int owner)
+        {
+            if (owner < 0 || owner == CivId) return false;
+            if (!ActionRts) return true;
+            int a = -1, b = -2;
+            foreach (var civ in Welcome.Civs) { if (civ.Id == CivId) a = civ.Team; if (civ.Id == owner) b = civ.Team; }
+            return a != b;
+        }
         public bool Ready => Welcome != null && World.Ready;
         public float PlayRate = 1;
         public bool Paused;
@@ -117,7 +130,7 @@ namespace SE.Runtime.Session
 
         bool RuinsChanged(RuinRecord[] next)
         {
-            for (int i = 0; i < next.Length; i++) if (next[i].Tile != Ruins[i].Tile || next[i].Flags != Ruins[i].Flags) return true;
+            for (int i = 0; i < next.Length; i++) if (next[i].Tile != Ruins[i].Tile || next[i].Flags != Ruins[i].Flags || next[i].Type != Ruins[i].Type) return true;
             return false;
         }
 
@@ -141,6 +154,7 @@ namespace SE.Runtime.Session
                 return;
             }
             softGeo = false;
+            Objectives.Clear(); Pickups.Clear(); ActionPlan = null; Econ = null; Age = 0;
             Trenches =System.Array.Empty<TrenchRecord>(); Ruins = System.Array.Empty<RuinRecord>(); Battlefield = new BattlefieldState(); Weather = null;
             TrenchRevision++; RuinRevision++; BattlefieldRevision++; WeatherRevision++;
             BeforeGeometryChange?.Invoke();
@@ -151,9 +165,10 @@ namespace SE.Runtime.Session
             civColors.Clear();
             foreach (var c in w.Civs)
             {
-                var col = new Color(((c.Color >> 16) & 255) / 255f, ((c.Color >> 8) & 255) / 255f, (c.Color & 255) / 255f).linear;
+                var col = new Color(((c.Color >> 16) & 255) / 255f, ((c.Color >> 8) & 255) / 255f, (c.Color & 255) / 255f);
                 civColors[c.Id] = new float4(col.r, col.g, col.b, 0);
             }
+            World.ActionLandscape = w.Ruleset == "action-v2";
             World.Reset(w.W, w.H, w.Wrap);
             Units.Reset(World.Grid);
             Structures.Clear();
@@ -186,19 +201,32 @@ namespace SE.Runtime.Session
             {
                 CivId = ProtocolDecoder.Int(s.Observer["follow"], CivId);
                 PlayRate = ProtocolDecoder.Float(s.Observer["speed"], PlayRate);
+                ObserverFog = ProtocolDecoder.Bool(s.Observer["fog"]);
             }
             if (s.Tiles != null) World.ApplyTiles(s.Tiles, null, DirtyCells);
             if (s.Visibility != null) World.ApplyVisibility(s.Visibility);
             if (s.Urban != null) World.ApplyUrban(s.Urban, DirtyCells);
             Units.Apply(s);
+            if (s.Objectives != null)
+            {
+                Objectives.Clear();
+                foreach (var site in s.Objectives) Objectives[site.Id] = site;
+            }
+            if (s.Pickups != null)
+            { Pickups.Clear(); foreach (var pickup in s.Pickups) Pickups[pickup.Id] = pickup; }
             if (s.Events != null) Events.AddRange(s.Events);
             if (s.WeatherState != null) { Weather = s.WeatherState; WeatherRevision++; }
             if (s.HasEcon)
             {
-                if (s.Trenches != null) { Trenches = s.Trenches; TrenchRevision++; }
+                if (s.Trenches != null) { Trenches = s.Trenches; TrenchRevision++; World.ApplyTrenches(Trenches, BeforeGeometryChange, DirtyChunks, DirtyCells); }
                 if (s.Ruins != null && (s.Ruins.Length != Ruins.Length || RuinsChanged(s.Ruins))) { Ruins = s.Ruins; RuinRevision++; }
-                if (s.BattlefieldState != null) { Battlefield = s.BattlefieldState; BattlefieldRevision++; }
+                if (s.BattlefieldState != null)
+                {
+                    Battlefield = s.BattlefieldState; BattlefieldRevision++;
+                    World.ApplyImpacts(Battlefield.Impacts, BeforeGeometryChange, DirtyChunks, DirtyCells);
+                }
                 Econ = s.Econ;
+                ActionPlan = s.ActionPlan;
                 if (Econ != null) Age = ProtocolDecoder.Int(Econ["age"], Age);
                 if (s.Buildings != null) Structures.ApplyBuildings(s.Buildings, World, DirtyCells);
                 if (s.Cities != null) Structures.ApplyCities(s.Cities, World, DirtyCells);

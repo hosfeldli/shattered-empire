@@ -35,8 +35,8 @@ namespace SE.Runtime.CameraControl
         /// <summary>Camera shake amount (set from nearby blasts; decays in the effects system).</summary>
         public float Shake;
 
-        /// <summary>The strategic view keeps one fixed pitch at every zoom (the design's 60°), so the map never tilts as you zoom.</summary>
-        public const float BasePitch = 60f;
+        /// <summary>The strategic view keeps one fixed oblique pitch at every zoom.</summary>
+        public const float BasePitch = 52f;
         public float Pitch => PitchOverride >= 0 ? PitchOverride : BasePitch;
 
         /// <summary>When set, the camera glides after this map point (a followed unit or formation); any manual pan stops following.</summary>
@@ -97,10 +97,10 @@ namespace SE.Runtime.CameraControl
             if (UserControl)
             {
                 float right = 0, forward = 0;
-                if (InputFacade.Held(KeyCode.W) || InputFacade.Held(KeyCode.UpArrow)) forward += 1;
-                if (InputFacade.Held(KeyCode.S) || InputFacade.Held(KeyCode.DownArrow)) forward -= 1;
-                if (InputFacade.Held(KeyCode.A) || InputFacade.Held(KeyCode.LeftArrow)) right -= 1;
-                if (InputFacade.Held(KeyCode.D) || InputFacade.Held(KeyCode.RightArrow)) right += 1;
+                if (InputFacade.ActionHeld("pan_up") || InputFacade.Held(KeyCode.UpArrow)) forward += 1;
+                if (InputFacade.ActionHeld("pan_down") || InputFacade.Held(KeyCode.DownArrow)) forward -= 1;
+                if (InputFacade.ActionHeld("pan_left") || InputFacade.Held(KeyCode.LeftArrow)) right -= 1;
+                if (InputFacade.ActionHeld("pan_right") || InputFacade.Held(KeyCode.RightArrow)) right += 1;
                 var mp = InputFacade.MousePosition;
                 if (EdgePan && Application.isFocused && mp.x >= 0 && mp.y >= 0 && mp.x <= Screen.width && mp.y <= Screen.height)
                 {
@@ -108,8 +108,8 @@ namespace SE.Runtime.CameraControl
                     if (mp.x < edge) right -= 1; else if (mp.x > Screen.width - edge) right += 1;
                     if (mp.y < edge) forward -= 1; else if (mp.y > Screen.height - edge) forward += 1;
                 }
-                if (InputFacade.Held(KeyCode.Q)) Yaw -= 90f * dt;
-                if (InputFacade.Held(KeyCode.E)) Yaw += 90f * dt;
+                if (InputFacade.ActionHeld("rotate_left")) Yaw -= 90f * dt;
+                if (InputFacade.ActionHeld("rotate_right")) Yaw += 90f * dt;
                 if (InputFacade.Action("back")) Back();
                 var dir = ScreenToMap(right, forward);
                 if (dir.sqrMagnitude > 1f) dir.Normalize();
@@ -147,15 +147,18 @@ namespace SE.Runtime.CameraControl
                 }
             }
             Distance = Mathf.Lerp(Distance, TargetDistance, 1f - Mathf.Exp(-dt * 9f));
+            if (Cam.orthographic) Cam.orthographicSize = Distance * .36f;
             Apply();
         }
 
         public void Apply()
         {
+            if (Cam.orthographic) Cam.orthographicSize = Distance * .36f;
             if (world != null && world.Ready)
             {
                 var g = world.Grid;
                 if (g.Wrap) Focus.x = g.BaseX(Focus.x);   // seam: shift by whole periods (invisible)
+                else Focus.x = Mathf.Clamp(Focus.x, 0, g.Period);
                 Focus.z = Mathf.Clamp(Focus.z, 0, g.Depth);
                 float y = world.GroundHeight(Focus.x, Focus.z);
                 Focus.y = Mathf.Lerp(Focus.y, Mathf.Max(0, y), 0.2f);

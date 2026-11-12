@@ -19,7 +19,15 @@ if (!dir || !['native', 'unity-preview'].includes(kind) || !/^[0-9a-f]{7,40}$/.t
   console.error('usage: publish-downloads.mjs --dir=DIR --kind=native|unity-preview --build=HASH [--bucket=B] [--dry-run]');
   process.exit(2);
 }
-const gcloud = (...args) => (dry ? (console.log('[dry-run] gcloud', args.join(' ')), '') : execFileSync('gcloud', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+// Windows installs gcloud as a .cmd wrapper, which execFile cannot start directly.
+// Invoke the SDK's Python entry point with separate arguments; no shell quoting is involved.
+const sdkRoot = process.env.CLOUDSDK_ROOT_DIR || (process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || '', 'Google', 'Cloud SDK', 'google-cloud-sdk') : '');
+const gcloudProgram = process.platform === 'win32'
+  ? process.env.CLOUDSDK_PYTHON || path.join(sdkRoot, 'platform', 'bundledpython', 'python.exe') : 'gcloud';
+const gcloudPrefix = process.platform === 'win32' ? [path.join(sdkRoot, 'lib', 'gcloud.py')] : [];
+const gcloud = (...args) => (dry ? (console.log('[dry-run] gcloud', args.join(' ')), '')
+  : execFileSync(gcloudProgram, [...gcloudPrefix, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
 const platformOf = (n) => (/mac|osx|darwin/i.test(n) ? 'mac' : /win/i.test(n) || /\.exe$/i.test(n) ? 'win' : /linux/i.test(n) ? 'linux' : null);
 const labels = {
   native: { win: 'Download for Windows', mac: 'Download for macOS' },

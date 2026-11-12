@@ -15,7 +15,7 @@ namespace SE.Net
     public sealed class GameConnection : IDisposable
     {
         public const int Protocol = 2;
-        public static readonly string[] WantCaps = { "geo", "udelta" };
+        public static readonly string[] WantCaps = { "geo", "udelta", "action-rts", "ring-cities-v1" };
         public const string ClientName = "unity-native/0.1";
 
         public enum Status { Idle, Connecting, Open, Ready, Closed, Retrying }

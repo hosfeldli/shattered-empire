@@ -27,6 +27,15 @@ Shader "SE/Sky"
             CBUFFER_END
             struct Attributes { float3 positionOS : POSITION; };
             struct Varyings { float4 positionCS : SV_POSITION; float3 dir : TEXCOORD0; };
+            float CloudNoise(float2 p)
+            {
+                float2 i = floor(p), f = frac(p); f = f * f * (3 - 2 * f);
+                float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);
+                float b = frac(sin(dot(i + float2(1, 0), float2(127.1, 311.7))) * 43758.5453);
+                float c = frac(sin(dot(i + float2(0, 1), float2(127.1, 311.7))) * 43758.5453);
+                float d = frac(sin(dot(i + 1, float2(127.1, 311.7))) * 43758.5453);
+                return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+            }
             Varyings vert(Attributes v)
             {
                 Varyings o;
@@ -42,6 +51,10 @@ Shader "SE/Sky"
                 half3 zen = lerp(_Zenith.rgb, grey * 0.85, _Overcast);
                 half3 hor = lerp(_Horizon.rgb, grey, _Overcast);
                 half3 col = h > 0 ? lerp(hor, zen, pow(saturate(h), 0.55)) : lerp(hor, _Ground.rgb, saturate(-h * 4));
+                float2 cloudUV = d.xz / max(.24, d.y + .25) * 1.6 + float2(_Time.y * .002, _Time.y * .001);
+                float clouds = CloudNoise(cloudUV) * .68 + CloudNoise(cloudUV * 2.7 + 4.2) * .32;
+                half cover = smoothstep(.79 - _Overcast * .42, .98 - _Overcast * .28, clouds) * saturate(h * 4 + .08);
+                col = lerp(col, hor * .93h + .035h, cover * .64h);
                 Light sun = GetMainLight();
                 float s = saturate(dot(d, sun.direction));
                 half sunFade = 1 - _Overcast * 0.85;

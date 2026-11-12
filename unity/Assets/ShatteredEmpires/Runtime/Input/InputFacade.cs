@@ -26,6 +26,21 @@ namespace SE.Runtime.Input
         /// <summary>Every remappable shortcut, in the order the settings list shows them.</summary>
         public static readonly ActionDef[] Actions =
         {
+            new ActionDef { Id = "pan_up", Label = "Camera: pan forward", Default = KeyCode.W },
+            new ActionDef { Id = "pan_down", Label = "Camera: pan backward", Default = KeyCode.S },
+            new ActionDef { Id = "pan_left", Label = "Camera: pan left", Default = KeyCode.A },
+            new ActionDef { Id = "pan_right", Label = "Camera: pan right", Default = KeyCode.D },
+            new ActionDef { Id = "rotate_left", Label = "Camera: rotate left", Default = KeyCode.Q },
+            new ActionDef { Id = "rotate_right", Label = "Camera: rotate right", Default = KeyCode.E },
+            new ActionDef { Id = "group_1", Label = "Control group 1 (Ctrl: assign)", Default = KeyCode.Alpha1 },
+            new ActionDef { Id = "group_2", Label = "Control group 2 (Ctrl: assign)", Default = KeyCode.Alpha2 },
+            new ActionDef { Id = "group_3", Label = "Control group 3 (Ctrl: assign)", Default = KeyCode.Alpha3 },
+            new ActionDef { Id = "group_4", Label = "Control group 4 (Ctrl: assign)", Default = KeyCode.Alpha4 },
+            new ActionDef { Id = "group_5", Label = "Control group 5 (Ctrl: assign)", Default = KeyCode.Alpha5 },
+            new ActionDef { Id = "group_6", Label = "Control group 6 (Ctrl: assign)", Default = KeyCode.Alpha6 },
+            new ActionDef { Id = "group_7", Label = "Control group 7 (Ctrl: assign)", Default = KeyCode.Alpha7 },
+            new ActionDef { Id = "group_8", Label = "Control group 8 (Ctrl: assign)", Default = KeyCode.Alpha8 },
+            new ActionDef { Id = "group_9", Label = "Control group 9 (Ctrl: assign)", Default = KeyCode.Alpha9 },
             new ActionDef { Id = "hold", Label = "Hold position", Default = KeyCode.H },
             new ActionDef { Id = "withdraw", Label = "Withdraw", Default = KeyCode.X },
             new ActionDef { Id = "attack", Label = "Attack-move (then click)", Default = KeyCode.T },   // A pans
@@ -68,6 +83,7 @@ namespace SE.Runtime.Input
         }
 
         public static bool Action(string action) => Pressed(KeyFor(action));
+        public static bool ActionHeld(string action) => Held(KeyFor(action));
 
         /// <summary>The first key pressed this frame (for rebinding), or None.</summary>
         public static KeyCode AnyKeyPressed()

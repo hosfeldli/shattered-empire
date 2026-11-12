@@ -144,12 +144,13 @@ Shader "SE/Billboard"
                     // puff: noisy soft sphere, lit from above for smoke
                     float r = length(d);
                     float n = fbm(d * 2.2 + i.shape.z + float2(0, -t * 0.15));
-                    float edge = 1 - smoothstep(0.35 * i.shape.y, 1.0, r + (n - 0.5) * 0.55);
-                    half lit = 0.75 + 0.35 * saturate(-d.y * 0.8 + 0.4) + (n - 0.5) * 0.3;
+                    float edge = 1 - smoothstep(.12, .96, r + (n - .5) * .30);
+                    edge *= .76 + .24 * fbm(d * 5.8 + i.shape.z * 1.3);
+                    half lit = .69 + .30 * saturate(d.y * .8 + .4) + (n - .5) * .14;
                     color = i.color.rgb * (i.shape.w > 0 ? 1 + i.shape.w * (1 - r) : lit);
                     a = i.color.a * edge;
                 }
-                return half4(MixFog(color, i.fogCoord), saturate(a));
+                return half4(MixFog(SRGBToLinear(saturate(color)) * (1 + min(i.shape.w, 2)), i.fogCoord), saturate(a));
             }
             ENDHLSL
         }

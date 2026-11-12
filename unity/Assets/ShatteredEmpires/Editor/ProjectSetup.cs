@@ -71,7 +71,7 @@ namespace SE.EditorTools
             Set(a, "m_MainLightShadowsSupported", true);
             Set(a, "m_SupportsCameraDepthTexture", false);
             Set(a, "m_SupportsCameraOpaqueTexture", false);
-            Set(a, "m_AdditionalLightsRenderingMode", 0);   // the sun only: battle light comes from emissive effects
+            Set(a, "m_AdditionalLightsRenderingMode", 1);   // bounded pooled impact lights, without point-light shadows
             a.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(asset);
             return asset;

@@ -15,14 +15,18 @@ namespace SE.Runtime.Rendering
         readonly List<Vector3> n = new List<Vector3>();
         readonly List<Color32> c = new List<Color32>();
         readonly List<Vector2> uv = new List<Vector2>();
+        readonly List<Vector2> surfaces = new List<Vector2>();
         readonly List<int> t = new List<int>();
+        SurfaceKind surface;
+
+        public MeshBuilder Surface(SurfaceKind kind) { surface = kind; return this; }
 
         public MeshBuilder Quad(Vector3 a, Vector3 b, Vector3 cc, Vector3 d, Color col)
         {
             var normal = Vector3.Cross(b - a, d - a).normalized;
             int i = v.Count;
             v.Add(a); v.Add(b); v.Add(cc); v.Add(d);
-            for (int k = 0; k < 4; k++) { n.Add(normal); c.Add(col); }
+            for (int k = 0; k < 4; k++) { n.Add(normal); c.Add(col); surfaces.Add(new Vector2((int)surface, 0)); }
             uv.Add(new Vector2(0, 0)); uv.Add(new Vector2(1, 0)); uv.Add(new Vector2(1, 1)); uv.Add(new Vector2(0, 1));
             // Unity's front faces wind clockwise, i.e. their normal is Cross(p1 - p0, p2 - p0)
             t.Add(i); t.Add(i + 1); t.Add(i + 2); t.Add(i); t.Add(i + 2); t.Add(i + 3);
@@ -35,7 +39,7 @@ namespace SE.Runtime.Rendering
             var normal = Vector3.Cross(b - a, cc - a).normalized;
             int i = v.Count;
             v.Add(a); v.Add(b); v.Add(cc);
-            for (int k = 0; k < 3; k++) { n.Add(normal); c.Add(col); uv.Add(Vector2.zero); }
+            for (int k = 0; k < 3; k++) { n.Add(normal); c.Add(col); uv.Add(Vector2.zero); surfaces.Add(new Vector2((int)surface, 0)); }
             t.Add(i); t.Add(i + 1); t.Add(i + 2);
             return this;
         }
@@ -101,15 +105,48 @@ namespace SE.Runtime.Rendering
 
         /// <summary>Horizontal cylinder along +z (gun barrels, fuselages).</summary>
         public MeshBuilder Tube(Vector3 start, float length, float radius, int sides, Color col)
+            => Beam(start, start + Vector3.forward * length, radius, radius, sides, col, false);
+
+        public MeshBuilder Beam(Vector3 start, Vector3 end, float baseRadius, float endRadius, int sides, Color col, bool caps = true)
         {
+            Vector3 axis = (end - start).normalized;
+            Vector3 u = Vector3.Cross(Mathf.Abs(axis.y) > 0.95f ? Vector3.right : Vector3.up, axis).normalized;
+            Vector3 w = Vector3.Cross(axis, u);
             for (int k = 0; k < sides; k++)
             {
                 float a0 = k * Mathf.PI * 2 / sides, a1 = (k + 1) * Mathf.PI * 2 / sides;
-                var d0 = new Vector3(Mathf.Cos(a0), Mathf.Sin(a0), 0) * radius; var d1 = new Vector3(Mathf.Cos(a1), Mathf.Sin(a1), 0) * radius;
-                var e = new Vector3(0, 0, length);
-                Quad(start + d0, start + d1, start + d1 + e, start + d0 + e, col);
+                var d0 = u * Mathf.Cos(a0) + w * Mathf.Sin(a0);
+                var d1 = u * Mathf.Cos(a1) + w * Mathf.Sin(a1);
+                Quad(start + d0 * baseRadius, start + d1 * baseRadius, end + d1 * endRadius, end + d0 * endRadius, col);
+                if (caps) { Tri(start, start + d1 * baseRadius, start + d0 * baseRadius, col); Tri(end, end + d0 * endRadius, end + d1 * endRadius, col); }
             }
             return this;
+        }
+
+        /// <summary>Chamfered rectangular shell with independently sized upper and lower profiles.</summary>
+        public MeshBuilder Armor(Vector3 b, Vector3 size, Vector2 top, float chamfer, Color col)
+        {
+            var lower = Profile(size.x, size.z, chamfer);
+            var upper = Profile(top.x, top.y, chamfer * .7f);
+            for (int i = 0; i < lower.Length; i++)
+            {
+                int j = (i + 1) % lower.Length;
+                Vector3 a = b + new Vector3(lower[i].x, 0, lower[i].y);
+                Vector3 d = b + new Vector3(lower[j].x, 0, lower[j].y);
+                Vector3 e = b + new Vector3(upper[i].x, size.y, upper[i].y);
+                Vector3 f = b + new Vector3(upper[j].x, size.y, upper[j].y);
+                Quad(a, d, f, e, col);
+                Tri(b + Vector3.up * size.y, e, f, col);
+                Tri(b, d, a, col);
+            }
+            return this;
+        }
+
+        static Vector2[] Profile(float width, float length, float chamfer)
+        {
+            float x = width * .5f, z = length * .5f, c = Mathf.Min(chamfer, x, z);
+            return new[] { new Vector2(-x + c, z), new Vector2(x - c, z), new Vector2(x, z - c), new Vector2(x, -z + c),
+                new Vector2(x - c, -z), new Vector2(-x + c, -z), new Vector2(-x, -z + c), new Vector2(-x, z - c) };
         }
 
         /// <summary>Low-poly sphere-ish blob (octahedron subdivided once), for canopies and heads.</summary>
@@ -130,7 +167,7 @@ namespace SE.Runtime.Rendering
         public Mesh Build(string name)
         {
             var m = new Mesh { name = name, indexFormat = v.Count > 65000 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
-            m.SetVertices(v); m.SetNormals(n); m.SetColors(c); m.SetUVs(0, uv); m.SetTriangles(t, 0);
+            m.SetVertices(v); m.SetNormals(n); m.SetColors(c); m.SetUVs(0, uv); m.SetUVs(1, surfaces); m.SetTriangles(t, 0);
             m.RecalculateBounds();
             m.UploadMeshData(true);
             return m;
@@ -146,10 +183,10 @@ namespace SE.Runtime.Rendering
         static readonly Color Roofing = new Color(0.62f, 0.58f, 0.55f);
 
         public static Mesh Box, Roof, Cylinder, Cone, Quad, Disc, Marker, Ring;
-        public static Mesh Deciduous, Conifer, Shrub;
+        public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, Shrub;
         public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
         public static Mesh Tower, Skyscraper, Silo, Chimney, Crane, Wreck;
-        public static Mesh ShipHull, Coil, Sandbags, Stump, Rotor4, AutoTankHull, AutoTankTurret, Dome, BrokenTower;
+        public static Mesh ShipHull, Coil, Sandbags, Stump, Rotor4, AutoTankHull, AutoTankTurret, Dome, BrokenTower, RuinShell, CollapsedBlock;
 
         public static void Build()
         {
@@ -367,6 +404,17 @@ namespace SE.Runtime.Rendering
                 broken.Box(side + new Vector3(k < 2 ? 0.25f : 0, h, k < 2 ? 0 : 0.2f), new Vector3(k < 2 ? 0.3f : 0.06f, 0.12f, k < 2 ? 0.06f : 0.3f), new Color(0.5f, 0.48f, 0.45f));
             }
             BrokenTower = broken.Build("broken_tower");
+            MilitaryMeshes.Build();
+            Car = MilitaryMeshes.CivilianCar;
+            DeciduousLo = Deciduous;
+            ConiferLo = Conifer;
+            Deciduous = WorldMeshes.Tree(false);
+            Conifer = WorldMeshes.Tree(true);
+            Skyscraper = WorldMeshes.Tower(false);
+            BrokenTower = WorldMeshes.Tower(true);
+            RuinShell = WorldMeshes.Shell();
+            CollapsedBlock = WorldMeshes.CollapsedBlock();
+            Wreck = WorldMeshes.Wreck();
         }
     }
 }

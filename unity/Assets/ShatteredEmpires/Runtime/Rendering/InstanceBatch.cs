@@ -123,7 +123,7 @@ namespace SE.Runtime.Rendering
         }
 
         /// <summary>Draw once at the given wrap-image offset (instances already in the right image).</summary>
-        public void Draw(float imageOffset = 0f, int block = 0, int layer = 0)
+        public void Draw(float imageOffset = 0f, int block = 0, int layer = 0, Mesh meshOverride = null)
         {
             if (Count == 0) return;
             Upload();
@@ -140,7 +140,7 @@ namespace SE.Runtime.Rendering
                 receiveShadows = ReceiveShadows,
                 layer = layer,
             };
-            Graphics.RenderMeshPrimitives(rp, Mesh, 0, Count);
+            Graphics.RenderMeshPrimitives(rp, meshOverride != null ? meshOverride : Mesh, 0, Count);
         }
 
         /// <summary>Draw at every world-wrap image of this batch that intersects the frustum.</summary>
