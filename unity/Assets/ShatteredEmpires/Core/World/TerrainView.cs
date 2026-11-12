@@ -258,7 +258,13 @@ namespace SE.Core.World
             SectorHeights(t, k, h7, true);
             float ground = SectorPoint(h7, u, v);
             float level = NearWaterLevel(t);
-            if (level > NoWater * .5f)
+            // Shore dressing may reshape the interior of a sector, but its shared
+            // edge and authoritative centre datum must agree with adjacent sectors.
+            // NearWaterLevel is cell-local, so fade its influence to zero at both.
+            float radius = Math.Max(0, Math.Min(1, u + v));
+            float inner = Math.Min(1, radius * 4), outer = Math.Min(1, (1 - radius) * 5);
+            float shoreWeight = inner * inner * (3 - 2 * inner) * outer * outer * (3 - 2 * outer);
+            if (level > NoWater * .5f && shoreWeight > 0)
             {
                 float shoulder = Math.Max(0, 1f - Math.Abs(ground - level) / .16f);
                 if (shoulder > 0)
@@ -266,12 +272,12 @@ namespace SE.Core.World
                     const float reach = .22f;
                     float smooth = (ground * 2f + BaseAt(x + reach, z, ground) + BaseAt(x - reach, z, ground)
                         + BaseAt(x, z + reach, ground) + BaseAt(x, z - reach, ground)) / 6f;
-                    ground += (smooth - ground) * .72f * shoulder * shoulder;
+                    ground += (smooth - ground) * .72f * shoulder * shoulder * shoreWeight;
                 }
                 float band = Math.Max(0, 1f - Math.Abs(ground - level) / .085f);
                 int cells = Math.Max(4, (int)Math.Round(Period * 1.7f));
                 float scale = cells / Period;
-                ground += (PeriodicNoise(x * scale + 19.3f, z * scale + 7.1f, cells) - .5f) * .052f * band * band;
+                ground += (PeriodicNoise(x * scale + 19.3f, z * scale + 7.1f, cells) - .5f) * .052f * band * band * shoreWeight;
             }
             return ground + DamageHeight(t, x, z);
         }
