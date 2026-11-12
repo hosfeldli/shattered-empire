@@ -33,7 +33,8 @@ test('server hosts a match end-to-end and resumes it after a restart', { timeout
     assert.equal(health.ok, true);
     // the deployed site is only a downloader: no game client is served; the API allows the app's origin
     const home = await (await fetch(`http://127.0.0.1:${port}/`)).text();
-    assert.match(home, /Shattered Empires/); assert.match(home, /Windows/); assert.match(home, /macOS/);
+    assert.match(home, /Shattered Empires/); assert.match(home, /Windows/);
+    assert.doesNotMatch(home, /macOS|Godot/);
     assert.doesNotMatch(home, /id="lobby"/);
     for (const p of ['/main.js', '/vendor/pixi.min.js', '/shared/deploy.js', '/style.css']) assert.equal((await fetch(`http://127.0.0.1:${port}${p}`)).status, 404, `${p} is not served`);
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/matches`)).headers.get('access-control-allow-origin'), '*');
