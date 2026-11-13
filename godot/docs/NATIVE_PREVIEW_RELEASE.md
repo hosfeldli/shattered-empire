@@ -1,5 +1,12 @@
 # Native preview published 2026-11-07
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 - Download page: https://game.liamhosfeld.com/download (the old preview's files remain in storage).
 - Windows portable x86-64: `ShatteredEmpires-Native-Preview-5ad0792ce9d8-Windows-x64.exe`,
   SHA-256 `cb80f84f16915002c58f2eb1832c8d632b05fc4fdd76babbe7d7ed6285e7e0ed`.

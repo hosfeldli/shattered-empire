@@ -1,5 +1,12 @@
 # Shattered Empires: native client (Godot 4.7.2)
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../docs/README.md), design, status or release gates.
+
 A native client for the authoritative Node.js server. It draws an orthographic 3D world with a
 2D interface on top. Gameplay is simulated by the server; bounded water, weather and activity
 simulation on the client is cosmetic.

@@ -1,5 +1,12 @@
 # Native edition: status
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 ## Living world, readable icons and direct orders (2026-11-05)
 
 The latest native pass is tracked in [CURRENT_WORK.md](CURRENT_WORK.md), including the quarry,

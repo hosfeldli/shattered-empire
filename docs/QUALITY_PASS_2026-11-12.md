@@ -1,5 +1,10 @@
 # Unity world, cinematic and audio quality pass — 12 November 2026
 
+- **Type:** Historical implementation report
+- **Scope:** Only the build, ruleset and captures recorded below; not current acceptance.
+
+Use [Current status](UNITY_PROGRESS.md) and the [documentation index](README.md) for later work.
+
 Status: **Functional prototype; visually incomplete.** This is a Windows preview update.
 It is not art approved, performance approved or production accepted.
 

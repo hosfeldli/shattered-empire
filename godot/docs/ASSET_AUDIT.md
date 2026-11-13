@@ -1,5 +1,12 @@
 # Building asset audit (2026-11-07)
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 The native client draws all 34 authoritative building definitions from composed geometry and
 reusable authored components. This audit records the source, recognisable features and
 state handling for each one. It is a production checklist, not a claim of final art quality;

@@ -1,5 +1,12 @@
 # Native feature parity matrix (2026-11-07)
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 This table compares each action in the old browser build with the streamlined native client.
 "Path" is the shortest way to do it in the native client. Pending and refusal feedback comes from
 the server's reply in every case. Retired systems are listed at the end.

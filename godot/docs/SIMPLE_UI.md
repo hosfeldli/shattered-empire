@@ -1,5 +1,12 @@
 # Simple native controls and development coverage
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 This is the current native interaction contract. It supersedes the earlier permanent rail and
 large workspace layout. The later user instruction removes the minimap entirely.
 

@@ -1,5 +1,12 @@
 # Native living-world and direct-control checkpoint
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 Baseline: `57c0bb7`. Godot is the only development target; browser/Electron is reference only.
 The consolidated outstanding requirements, including the latest visual and warzone briefs, are
 tracked in [DEVELOPMENT_BACKLOG.md](DEVELOPMENT_BACKLOG.md). The earlier project acceptance

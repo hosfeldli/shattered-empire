@@ -1,5 +1,12 @@
 # Shattered Empires Native — outstanding development and design backlog
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 Updated 2026-11-06. This is the consolidated backlog for the user's Living World Engine, streamlined
 native redesign, simple UI, visual asset bible, persistent warzone brief, reference images and later
 corrections. It records the intended outcomes and remaining work; it is **not** a claim that the

@@ -1,11 +1,18 @@
 # Shattered Empires — Persistent Warzone Evolution Engine
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 ## Complete design brief and implementation handoff
 
-**Target:** Godot Native Edition  
-**Simulation authority:** Existing Node.js Shattered Empires server  
-**Rendering:** Procedural 3D terrain, material blending, persistent deformation and dynamic effects  
-**Art direction:** Modern post-collapse warfare progressing into advanced and autonomous combat  
+**Target:** Godot Native Edition
+**Simulation authority:** Existing Node.js Shattered Empires server
+**Rendering:** Procedural 3D terrain, material blending, persistent deformation and dynamic effects
+**Art direction:** Modern post-collapse warfare progressing into advanced and autonomous combat
 **Objective:** Battles permanently change how the world looks and temporarily change how it plays,
 without excessive micromanagement.
 

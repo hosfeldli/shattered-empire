@@ -1,5 +1,12 @@
 # Native validation evidence
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../../docs/README.md), design, status or release gates.
+
 `validation.json` is the current isolated real-server run. `meta` identifies source hash, timestamp,
 whether a GPU window rendered, and whether the embedded exported pack was used. Tests must not
 overwrite the player's normal session file or connect to an active player match.

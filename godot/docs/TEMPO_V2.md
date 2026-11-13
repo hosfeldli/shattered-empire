@@ -1,5 +1,12 @@
 # Deliberate native match pacing
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 New matches now use `native-v3`; `native-v2` remains available for existing games. V3 changes
 infantry movement to .50, wheeled/tracked movement to .55, ground logistics to .60 and aircraft
 movement to .78. Production and population growth are .60, research and building construction

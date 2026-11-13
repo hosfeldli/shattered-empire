@@ -1,92 +1,61 @@
-# Shattered Empires — Unity client
+# Unity client
 
-Unity 6.3 LTS (6000.3.28f1), URP, C#. A presentation layer for the authoritative Node.js server.
-It renders authorized state, takes input, shows pending orders and sends intents. It never decides
-an outcome. Plan and rules: [docs/UNITY_MIGRATION.md](../docs/UNITY_MIGRATION.md).
+- **Type:** Client entry guide
+- **Updated:** 2026-11-13
+- **Scope:** Unity `6000.3.28f1` / URP / `action-v2`
 
-## Layout
+The Unity client presents authorized state from the Node.js server. It handles rendering,
+input, UI, sound and interpolation; the server owns outcomes. The current military RTS is
+a redesign, not parity with the old civilization simulator.
 
-```
-Assets/ShatteredEmpires/
-  Core/      SE.Core   engine-independent (no UnityEngine): hex grid and wrap, terrain heights
-                       (exact port of WorldState.gd), geo decoding, protocol decoder, unit store with
-                       udelta application and interpolation, command tracker, stats, stress world
-  Net/       SE.Net    WebSocket transport (background receive, off-thread decode, wire-order apply,
-                       priority acks), handshake/capabilities, reconnect and rejoin
-  Runtime/   SE.Runtime  bootstrap and frame loop, camera, terrain chunks (Burst jobs), cities,
-                       units (GPU-instanced, three LODs), effects, diagnostics, benchmarks
-    Resources/Shaders  SE/InstancedLit, SE/Terrain, SE/Water, SE/Billboard (URP HLSL)
-  Steam/     SE.Steam  Steam friends and invites (Steamworks.NET); compiled only when the package is present
-  Editor/    SE.Editor project setup (URP asset, player settings, scene) and command-line builds
-  Tests/     SE.Tests  EditMode tests
-Tests.Standalone/      .NET project compiling Core and Net, checked against server fixtures and a live server
-```
+[Documentation index](../docs/README.md) · [Design](../docs/GAME_DESIGN.md) ·
+[Current status](../docs/UNITY_PROGRESS.md) · [Development](../docs/DEVELOPMENT.md)
 
-Map coordinates are the server's (x east, z south, right-handed). Unity world space is
-(x, y, −z), converted only in `Runtime/Rendering/Space.cs`, so the map is never mirrored.
+## Open and run
 
-## Run
+Open this directory with the pinned Unity Editor. Run **Shattered Empires → Set up project** once,
+then press Play or choose **Shattered Empires → Build Windows x64**.
 
-Open `unity/` in Unity 6000.3.28f1, then run **Shattered Empires → Set up project** once. This
-creates the URP asset, the player settings and `Scenes/Main.unity`. Press Play, or build with
-**Shattered Empires → Build Windows x64**.
+Released players use `wss://game.liamhosfeld.com/ws`. An explicit development connection is:
 
-Command line (same option names as the Godot client where they overlap):
-
-```
-ShatteredEmpires.exe                                   main menu (public server by default)
-ShatteredEmpires.exe -server ws://127.0.0.1:8137/ws -mode ai
-ShatteredEmpires.exe -mode stress -stress-seconds 60 -perf-out stress.json        offline M2 stress scene
-ShatteredEmpires.exe -server ws://127.0.0.1:8139/ws -mode sandbox -battle massive -perf 20 -perf-zooms 14,40 -perf-out live.json
+```text
+ShatteredEmpires.exe -server ws://127.0.0.1:8137/ws -mode ai -seed 41
 ```
 
-In game: WASD or the screen edges pan, the wheel zooms toward the cursor, Q/E rotate, and middle
-drag pans. Left click or drag selects, double-click selects every unit of that type on screen.
-Right click moves; Shift or Ctrl + right click attack-moves. H holds position. Hold Alt to see the
-tile type. F3 shows diagnostics, F10 hides the interface.
+See [Development](../docs/DEVELOPMENT.md) for the isolated local server, batch builds and supported
+switches. Normal boot plays the skippable intro and opens the menu. Normal startup targets borderless
+fullscreen. Developer modes/review flags can deliberately bypass the normal entry flow.
 
-## Checks without the Editor
+## Assemblies
 
-```
-node unity/Tests.Standalone/make-fixtures.mjs
-dotnet run -c Release --project unity/Tests.Standalone
-dotnet run -c Release --project unity/Tests.Standalone -- --live ws://127.0.0.1:8141/ws 45
-```
+| Path | Assembly / purpose |
+| --- | --- |
+| `Assets/ShatteredEmpires/Core/` | `SE.Core`: engine-independent state, terrain, protocol and interpolation |
+| `Assets/ShatteredEmpires/Net/` | `SE.Net`: WebSocket transport, ordered decoding, commands and rejoin |
+| `Assets/ShatteredEmpires/Runtime/` | `SE.Runtime`: app, rendering, input, UI, effects and audio |
+| `Assets/ShatteredEmpires/Steam/` | `SE.Steam`: optional Steam integration |
+| `Assets/ShatteredEmpires/Editor/` | `SE.Editor`: project setup and platform builds |
+| `Tests.Standalone/` | Core/Net parity and explicit live integration checks |
 
-The first command writes fixtures from the server's own hex, terrain-geometry and delta code. The
-second checks the core against them, including terrain continuity across chunk and wrap seams and
-the 1,000-unit stress scenario. The third plays a sandbox match against a running server: handshake,
-geometry, deltas, the 1,000-unit battle, a forced reconnect that must rejoin, and command-ack latency.
+Map coordinates are `x` east and `z` south. [MapSpace.cs](Assets/ShatteredEmpires/Runtime/Rendering/MapSpace.cs)
+converts to Unity `(x, y, -z)`. See [Architecture](../docs/ARCHITECTURE.md).
 
-## Batch mode
+## Controls and interaction direction
 
-```
-Unity -batchmode -quit -projectPath unity -executeMethod SE.EditorTools.ProjectSetup.RunBatch -logFile -
-Unity -batchmode -quit -projectPath unity -runTests -testPlatform EditMode -testResults results.xml
-Unity -batchmode -quit -projectPath unity -executeMethod SE.EditorTools.BuildScript.BuildWindows -buildOutput Build/Windows/ShatteredEmpires.exe
-```
+WASD/edge pan, middle drag and cursor-centered wheel zoom control the camera. Left-click/drag
+selects; right-click issues contextual orders. Controls are remappable. Q/E rotates the camera,
+with defense placement taking precedence for structure rotation.
 
-Batch mode needs an activated license: sign in to Unity Hub and add a Personal license under
-Preferences → Licenses. CI uses the `UNITY_LICENSE`/`UNITY_SERIAL`, `UNITY_EMAIL` and
-`UNITY_PASSWORD` secrets (`.github/workflows/unity.yml`).
+The current design puts city construction on world parcels and upgrades on selected buildings,
+removing redundant Army/Objectives tabs, a global upgrade menu and permanent bottom build bars.
+Some follow-up implementation is still pending; consult [Current status](../docs/UNITY_PROGRESS.md).
 
-## Status
+## Review and release
 
-Unity now defaults to the versioned `action-v2` RTS ruleset: city-ruin capture, fixed 4/6/8
-headquarters rings, Materials/Energy, faction-wide command capacity and technology,
-buildable roads, independent field defenses and continuous authoritative armies.
-Ground units collect Materials caches; capturable abandoned energy plants provide Energy.
-Construction does not require engineer selection. Engineers repair and assist nearby allies
-automatically outside combat. See [the ring-city redesign](../docs/RING_CITY_REDESIGN.md).
-The model, material, animation, city, HUD and effects pass accompanies this rules change.
-See [implementation and acceptance report](../docs/ACTION_RTS_IMPLEMENTATION.md) for the exact
-scope and remaining approval gates. Older matches retain their own rules; use `-ruleset native-v4`
-only when creating an intentional legacy match.
+[Verification](../docs/VERIFICATION.md) owns the check commands, visual-only manual scope, full-camera
+capture requirements and approval vocabulary. [Release](../docs/RELEASE.md) owns packaging and
+publication. Capture/export stalls are not ordinary frame-time measurements.
 
-Use `-review DIRECTORY` in a live sandbox to capture actual gameplay at close, operational and
-strategic scales. Visual review and performance measurement are separate runs.
-
-Builds default to Mono. Pass `-il2cpp` to the build to use IL2CPP, which requires the Visual
-Studio C++ build tools. Use `-shots DIR` with `-mode stress` to capture one screenshot per tour
-segment, for visual checks only: capture causes long frames. Every frame over 50 ms is logged as a
-`STALL` line with a per-phase breakdown.
+The public client is a Windows preview. A macOS build entry point is not macOS runtime acceptance.
+Godot and macOS downloads are retired. No final art, late-game performance or production approval
+is implied by a successful build.

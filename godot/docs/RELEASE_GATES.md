@@ -1,5 +1,12 @@
 # Native production gate
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 The user explicitly requested that the current Windows/macOS builds be published as a native
 preview on game.liamhosfeld.com. This authorizes the preview and its compatible server update;
 it does not mark the UI/gameplay parity and world-generation gates below as passed or authorize

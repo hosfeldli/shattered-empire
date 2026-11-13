@@ -1,5 +1,10 @@
 # Clean world presentation pass
 
+- **Type:** Historical implementation report
+- **Scope:** Only the build, ruleset and captures recorded below; not current acceptance.
+
+Use [Current status](UNITY_PROGRESS.md) and the [documentation index](README.md) for later work.
+
 Status: visually incomplete until the new Unity captures are reviewed. No art or performance approval is implied.
 
 The pass replaces the noisy ground treatment with a photographic grass, compacted earth, limestone and aggregate atlas. Biome colours use a restrained temperate palette; slow material variation replaces high-contrast blotches and repeating cliff stripes. Material colour is converted to linear reflectance once, and neutral daylight, stronger ambient fill and restrained grading retain readable shadows.

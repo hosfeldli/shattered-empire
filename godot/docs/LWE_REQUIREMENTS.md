@@ -1,5 +1,12 @@
 # Living World Engine: implementation contract
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 Updated 2026-11-04. This is the persistent checklist for the user's complete 30-section design,
 including later corrections. The design describes the intended result; this checklist records
 what is actually present and what still needs acceptance. A working first pass is not a passed

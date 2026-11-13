@@ -1,5 +1,12 @@
 # Native edition: guide to the remaining steps
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 **2026-11-04 scope update:** Godot is now the sole development target at the user's direction.
 The browser sources are reference only. This original gate/release guide is retained; the complete
 Living World Engine specification and subsequent corrections are tracked in

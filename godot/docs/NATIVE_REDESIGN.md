@@ -1,5 +1,12 @@
 # Native redesign and current implementation
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 The streamlined native design supersedes the earlier requirement for government/diplomacy UI
 parity and the earlier prohibition on balance changes. The later correction removes **all trading**,
 including neutral imports. The server remains authoritative. Browser/Electron code is reference only.

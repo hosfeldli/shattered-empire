@@ -1,5 +1,10 @@
 # Unity visual and spatial audio quality pass — 11 November 2026
 
+- **Type:** Historical implementation report
+- **Scope:** Only the build, ruleset and captures recorded below; not current acceptance.
+
+Use [Current status](UNITY_PROGRESS.md) and the [documentation index](README.md) for later work.
+
 Status: **visually incomplete / functional prototype**. This is an integrated quality pass;
 it is not art approval, a performance certification, or production acceptance.
 

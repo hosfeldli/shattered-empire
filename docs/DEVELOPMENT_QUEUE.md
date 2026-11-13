@@ -1,181 +1,100 @@
-# Shattered Empires — development queue
+# Development queue
 
-Updated 2026-11-08 (Unity visual pass, research overhaul, road-aware governors). Every item from the 2026-11-08 feedback pass is recorded here. What has been done in detail: [UNITY_PROGRESS.md](UNITY_PROGRESS.md). The full target specification and its gaps: [UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md). The client is
-moving from Godot to Unity ([UNITY_MIGRATION.md](UNITY_MIGRATION.md)), so each item says where
-the work lands:
+- **Type:** Prioritized backlog
+- **Updated:** 2026-11-13
+- **Scope:** Unity edition / `action-v2`
+- **Status source:** [Current status](UNITY_PROGRESS.md)
 
-- **server**: the authoritative Node.js simulation. Engine-independent; can be done at any time
-  and benefits both clients.
-- **unity**: presentation, input, UI or audio. Built in the Unity client during the milestone
-  shown. It is not added to the frozen Godot client.
-- **ci**: build, packaging and publishing.
+## Working rules
 
-Status: `[ ]` queued, `[~]` started (for unity items: a first pass is in the Unity client, still to be checked in play), `[x]` done. Milestones (M0–M8) are defined in the migration
-plan. Per the plan, new gameplay systems wait until the M2 performance gate passes. Server-side
-corrections to existing rules (balance, placement rules, names) are not new systems and may land
-earlier.
+The [current design](GAME_DESIGN.md) is authoritative. This queue covers remaining work;
+source presence or an old checkbox does not establish completion. Use the
+[shared status vocabulary](VERIFICATION.md#status-vocabulary).
 
-Withdrawn: *"Enemy territories are attempting to connect to my settlement with roads"*. The
-reporter retracted it in the same message.
+Complete a substantial development batch before visual review. Manual checks remain visual-only
+during this iteration; required CI/release gates still apply. Preserve the user's sessions and
+unrelated working-tree changes. Keep the documentation review commit separate from implementation.
 
-## 1. Performance and reliability (the reason for the migration)
+## P0 — Rendering and connected terrain
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Moving the camera quickly at any zoom causes frame drops | unity | M1–M2 |
-| [~] | Placing ~10 buildings quickly causes lag and frame spikes | unity + server | M2, M6 |
-| [~] | Lag grows over a 30-minute game and when moving many troops; present earlier too | unity | M2, M5 |
-| [~] | Doing anything quickly (essential in an RTS) creates lag | unity | M2–M6 |
-| [~] | City buildings take a long time to appear when a city is discovered | unity | M4 |
-| [~] | Buildings in cities randomly unrender (**top priority** within cities) | unity | M4 |
-| [~] | The view occasionally resets, unrenders everything and rebuilds it | unity + server | M3 |
-| [~] | Clicking fast under lag says "can't place" and then places the building anyway: show a pending state and only report a refusal the server actually sent | unity | M6 |
+| ID | Work | Acceptance |
+| --- | --- | --- |
+| RENDER-01 | Remove foliage/menu/cinematic glare | No giant white or invalid-HDR orbs through normal full-camera post-processing at all relevant zooms; inspect silo and effects separately |
+| ROAD-01 | Join intercity and city road networks | Entrances share actual route portals, width, material and tangent; city loop/frontages meet at clean junctions without disconnected stubs or cross-road curbs |
+| BRIDGE-01 | Keep roads above river water | Continuous supported deck, graded banks, correct broken state and matching vehicle/infantry support height |
+| CITY-01 | Put cities on plains | Every eight-site footprint fits dry level authoritative ground; apron blends into terrain; existing saves are not silently relocated |
 
-## 2. Multiplayer and publishing
+Latest road and bridge source changes are prototypes awaiting compilation and actual seeded
+visual review. The earlier glare captures do not validate the new road code.
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Steam networking for multiplayer: invite friends. A Steam lobby carries the server's match code; the game traffic stays on the authoritative server (same design as `desktop/steam.cjs`) | unity | M3 |
-| [~] | Remove the Electron build from the published downloads | ci | now |
-| [~] | CI publishes the newest native build to game.liamhosfeld.com automatically as the official build (Godot until the Unity client passes its release gates, then Unity) | ci | now / M8 |
+## P1 — Control and contextual usability
 
-## 3. Cities and architecture
+| ID | Work | Acceptance |
+| --- | --- | --- |
+| MOVE-01 | Remove rubber-band vehicle turning | Accelerate/brake/steer with hull motion; no sideways snapping, constant oscillation or destination overlap |
+| INF-01 | Remove rigid squad pivots | Each soldier walks/turns into position independently, including formation turns, combat spreading, stops and LOD transitions |
+| CAMERA-01 | Stabilize mountain movement/picking | Fixed gameplay pitch, smooth focus height, reliable first terrain intersection on ridges, stable cursor-centered zoom |
+| TRENCH-01 | Enter trenches naturally | Eligible troops reach the actual line, occupy its floor and receive matching directional cover; surrounding ground is darker |
+| UI-01 | Remove redundant global tabs | No player Army/Objectives tabs or separate global upgrade screen; retain necessary spectator tools |
+| UI-02 | Upgrade selected buildings | HQ tier/perimeter actions on selected HQ; research on selected Armory; no hidden fallback to another facility |
+| UI-03 | Replace bottom build/defense shortcuts | Select world lots/buildings for relevant actions; retain discoverable field construction without engineer selection |
+| UI-04 | Explain every control and failure | Real runtime hover/disabled-state tooltips, visible costs/prerequisites/progress, no silent failed placement |
+| UI-05 | Keep menus responsive | All long pages scroll, focus is clear, panels fit small viewports, gameplay feedback stays immediate |
+| DISPLAY-01 | Fullscreen startup | Normal boot is fullscreen/borderless; intentional review/windowed behavior remains explicit |
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Apartment buildings are too small. A house upgraded to an apartment complex should be clearly larger | unity | M4 |
-| [~] | The city centre is too small | unity | M4 |
-| [~] | A late-game city should be full of skyscrapers, not low Eastern-European blocks | unity | M4 |
-| [~] | Every building's design updates to the new era when the civilization enters a new age | unity | M4 |
-| [~] | City development should look natural rather than patterned, and integrate with the buildings | unity + server | M4 |
-| [x] | Buildings are not road-aware and many do not form districts as intended (governor placement scoring for frontage, district and connectivity) | server + unity | M4 |
-| [~] | District membership must not mean each building gets its own little connecting road; streets should vary | unity | M4 |
-| [~] | Sidewalks clip in and out of the ground constantly (one shared height sampler) | unity | M4 |
-| [~] | Sidewalks, small roads and grass look too uniform and silly | unity | M4 |
-| [~] | Remove the grass patches under parks, universities and other buildings; they don't match the ground | unity | M4 |
-| [~] | The army base looks bad: redesign the barracks/fort compound | unity | M4 |
-| [x] | Cities never expand over water, so you can never build a port: allow coastal growth and port sites | server | any |
-| [x] | Housing districts make little sense when only three houses can be placed for most of the game: revisit the house cap or the district design | server | any |
-| [x] | Governors automatically upgrade roads | server | any |
-| [~] | Remove the civilians who walk around in cities | unity | M4 |
-| [~] | Full traffic simulation: cars follow lanes, stop at intersections and take varied routes instead of repeating the same flow | unity | M4 |
+Keep selection, Shift queues, Q/E defense rotation, escape/cancel, typing and camera bindings
+consistent. Preserve production/rally/reinforcement capability as redundant navigation is removed.
 
-## 4. Interface (Halo Wars is the reference for functional design)
+## P1 — World use, groundcover and encounter pacing
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Training UI copies Halo Wars: selecting several production buildings and queueing distributes the configured order across all of them | unity + server | M6 |
-| [~] | The training quantity settings do not work | unity | M6 |
-| [~] | Queueing many troops makes the UI hard to navigate: compact queue and stacked counts | unity | M6 |
-| [~] | Research screen: the Start research button's icon overlaps its label | unity | M6 |
-| [~] | Hard to tell what uses each resource, where it goes, and what to focus on. Am I short of power or of people? Show consumers, sinks and the limiting factor | unity + server | M6 |
-| [~] | Hard to track power demand: dedicated power balance readout | unity | M6 |
-| [~] | Pop-ups for destroyed buildings, discovered resources and first builds are too invasive: route them to a quiet feed | unity | M6 |
-| [~] | Show the tile type only while Alt is held | unity | M6 |
-| [~] | The tutorial is very short and never says where to click: a longer, step-by-step tutorial with on-screen pointers | unity | M6 |
-| [x] | Better civilization and town names that fit the setting | server | any |
+| ID | Work | Acceptance |
+| --- | --- | --- |
+| MAP-01 | Reduce unused generated land | Objective/road region uses the playable island with useful flanks; preserve all routes/sites and coherent hydrology/coasts |
+| GRASS-01 | Make grass very small | Short ankle-height-or-lower groundcover beside soldiers, correctly grounded, visible close-up without spikes or distant noise |
+| AI-01 | Delay premature infantry rushes | Early scouts/neutral contests remain active; base attacks gather coherent forces and allow opening decisions |
+| COMBAT-01 | Natural local positioning | Units find cover/firing space within bounded intent; Hold and explicit formation constraints remain respected |
 
-## 5. Research
+Map compaction needs multi-seed/faction-size checks and actual strategic captures later; no
+fairness or path-connectivity acceptance is implied by a source edit.
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [x] | Research must not need resources to continue: remove the goods wait | server | any |
-| [x] | Overhaul the research tree to suit the current design (native ruleset; retired systems removed) | server + unity | any / M6 |
+## P2 — Art, atmosphere and readable warfare
 
-## 6. Military
+| Area | Remaining work |
+| --- | --- |
+| Buildings and scale | Cohesive HQ/ring recipes, clear entrances, consistent doors/storeys/vehicles/people, distinctive facilities and recognizable damaged states |
+| Trees and ground | Smaller leaves, stronger canopy/fir structure, restrained material scale, natural forest edges and shoreline transitions |
+| Roads and districts | Shared sidewalks, access yards and clean mixed-use transitions; preserve parcels and historical identity |
+| Military | Better soldier equipment and gait; tracks, wheels, suspension, rotors, firing origins, turret/recoil and casualty presentation |
+| Battlefield | Irregular depressed/merged craters, dark disturbed soil, forest damage, typed wrecks, 3D wire/obstacles, readable shockwaves/flames |
+| Intro/menu | Varied city geography and skyline, coherent global missile attack, emotional collapse/recovery, restrained silo warning and stronger direction |
+| Audio | Licensed recordings for guns/tanks/air/explosions/construction; close river/nature ambience, spatial mix, camera zoom and bounded aggregation |
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [x] | Field guns are strong direct-fire weapons, not mortars: effective against hard targets and vehicles | server + unity | any / M5 |
-| [~] | Planes fly natural paths and do strafing runs instead of stopping to fire | server + unity | M5 |
-| [~] | Helicopters keep moving: patrol an area, circle and attack on the move instead of hovering in a group | server + unity | M5 |
-| [~] | Tanks and vehicles turn their turret or hull toward the target | unity | M5 |
-| [~] | AA fires air bursts into the sky | unity | M5 |
-| [~] | Vehicles cross bridges on the deck instead of dropping to the ground beneath | unity | M5 |
-| [x] | Engineers are non-combat: they only repair and build, spread naturally to the cities that need them, and at least one stays in each city when possible | server | any |
-| [x] | Exploring troops don't explore the map well enough and need more randomness | server | any |
-| [x] | A destroyed nuclear power plant explodes at half the size of a nuclear bomb. Nuclear plants produce a great deal of power (no nuclear plant exists yet: add one, or apply this to the fusion plant) | server + unity | any / M7 |
-| [~] | Nuclear bomb effect with a dramatic shockwave after the explosion | unity | M7 |
-| [~] | Icons: special forces (looks bad), engineer, exo infantry ("eco-troop"), autonomous tank, field gun | unity | M5 |
-| [~] | Models: autonomous tank, all drones | unity | M5 |
+Do not reintroduce civilian actors, small ambient vehicles, housing/workforce management or
+resource chains while adding visual richness.
 
-## 7. Trenches and battlefields
+## P2 — Core completion and balance
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Smaller trenches that form real networks: blocky WW1 traverses (zig-zag bays) that prevent enfilade fire | unity | M7 |
-| [~] | Trenches are dug into the ground, not raised above it | unity | M7 |
-| [~] | Trenches integrate with defensive buildings (bunkers, guard posts, forts) | unity | M7 |
-| [x] | A trench order still builds when some segments are invalid: skip those segments only | server | any |
-| [x] | Trenches cannot be built on roads | server | any |
-| [x] | Trenches can be built outside your city and in enemy territory | server | any |
-| [~] | No-man's land is more visceral: mud, wire, shell holes, debris, smoke | unity | M7 |
+Complete and validate capture/rebuild/conquest, all facility/unit costs, local/global tier behavior,
+shared/repeat production, reinforcement, combat counters/abilities, aircraft servicing and strategic
+weapons. Verify free-placement defenses, paid city perimeter, engineer self-defense/automation,
+save history and fog filtering.
 
-## 8. World, weather and effects
+AI still needs reliable openings, expansion, scouting, combined-arms counters, staging, retreat,
+recovery, final assaults, order arbitration and recorded bounded stall recovery. Difficulty should
+change competence; numerical help must be disclosed.
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Mountains and ranges form natural shapes: ridged ranges and massifs rather than blobs | server (worldgen) + unity | any / M4 |
-| [~] | Rivers end in lakes or in mountains as small streams, never cut off | server (worldgen) + unity | any / M4 |
-| [~] | Remnants of the collapsed world: toppled skyscrapers, ruined neighbourhoods, half-sunken cargo ships | server + unity | M4 |
-| [~] | Cloud rendering for full weather systems | unity | M7 |
-| [~] | Better rain visuals | unity | M7 |
-| [~] | Realistic, believable flames | unity | M7 |
+Finish tutorial, campaign/skirmish, multiplayer/lobbies, AI observation and configurable sandbox.
+Replay/challenge expansion, naval warfare and modding are later work and do not displace core stability.
 
-## 9. Audio
+## P3 — Acceptance and distribution
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Sound sounds plinky and not spatial: fuller mix, 3D spatial audio with distance attenuation | unity | M7 |
-| [~] | Most vehicles and aircraft make no sound | unity | M7 |
-| [~] | City ambience near cities; nature ambience when zoomed in on wilderness; water audio near rivers | unity | M7 |
+Obtain human art/audio and fun/balance review. Measure reference-hardware frame pacing,
+100/500/1,000-unit battles, 2,000-unit stress, effects/forest/bridge scenes, memory stability,
+command latency, save/rejoin, extended multiplayer and two-hour sessions when testing scope permits.
 
-## 10. Intro cinematic
+Pass required CI and platform gates. Validate the exact Windows ZIP with native extraction and
+public download hashes. Keep public listings Windows-only until macOS separately qualifies.
+See [verification](VERIFICATION.md) and [release](RELEASE.md).
 
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | The intro is lazy and corny. Make it emotional and impactful: tell the story of the collapse, evoke loss, draw the player in. Super cool and super sad | unity | M7 |
-
-## 11. Visual language pass (2026-11-08, second feedback round)
-
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Buildings readable at a glance: a colour and silhouette language per kind (warm homes, copper civic roofs, olive military, rust industry, hazard-yellow power, colourful commerce) | unity | M4 |
-| [~] | An early-game "recovering" architecture for the Reclamation era: shacks, container homes, tarps, water towers, wind turbines, militia camps, reclaimed old-world shells | unity | M4 |
-| [~] | Vehicle and troop colours: faction camouflage schemes with a team tint and ground ring, not a full-body team colour | unity | M5 |
-| [~] | Water: brighter depth colours, no distant shimmer, soft shorelines that follow the ground instead of the hex | unity | M4 |
-| [~] | Cities less patterned: streets meet at off-centre junctions, wrap round built blocks, no private driveways; varied block layouts | unity | M4 |
-| [~] | Full interface pass: design tokens, era pill, active rail, panel close, minimap with camera footprint and click-to-move | unity | M6 |
-| [ ] | Streets wrapping every built hex in a fully road-covered district read as a lattice of rings: link fewer edges round dense blocks | unity | M4 |
-
-## 12. Target specification (2026-11-08)
-
-The owner's complete Unity-edition specification is condensed in
-[UNITY_GAP_ANALYSIS.md](UNITY_GAP_ANALYSIS.md), which tracks each requirement. Items started against
-it, built and tested locally, not yet deployed (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 8):
-
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | Battle-line drawing: right-drag with a live server preview, F flips facing, Alt advances, Shift queues, release commits | server + unity | M5 |
-| [~] | Control groups (Ctrl+1–9 set, 1–9 select, double press jumps), follow selection, attack-move key | unity | M5 |
-| [~] | Camera: fixed 60° pitch, Shift fast pan, smooth jumps, Backspace returns to the previous view | unity | M5 |
-| [~] | Input: every key registers under the Input System, no game keys while typing, remappable shortcuts | unity | M6 |
-| [~] | Minimap becomes an optional Map Lens (the spec has no permanent minimap) | unity | M6 |
-| [~] | Historical continuity: buildings keep the era they were built in | server + unity | M4 |
-| [~] | Five-stage construction, damage bands, upgrade-level extensions for every building kind | unity | M4 |
-| [~] | Alerts by severity with Go buttons, battle result cards, research and build search, accessibility settings, observer controls | unity | M6 |
-
-## 13. Organic cities and the visual design bible (2026-11-09)
-
-Built and tested locally, not deployed (see [UNITY_PROGRESS.md](UNITY_PROGRESS.md), section 9).
-
-| | Item | Where | Milestone |
-| --- | --- | --- | --- |
-| [~] | District planner: affinity-based districts, stable seeds, parcels, local recomposition | unity | M4 |
-| [~] | Street hierarchy, sidewalks, crossings, railways, bridge railings and abutments | unity | M4 |
-| [~] | Shared district spaces, parking by district, estates, compounds, campuses, pocket parks | unity | M4 |
-| [~] | Distinct models for every building type that shared a generic look | unity | M4 |
-| [~] | Eight-beat intro, main menu, New Campaign, Field Guide, loading stages, opening descent | unity | M6–M7 |
-| [~] | Speed strip, pause menu, placement ghost, strategic badges, city card summary | unity | M5–M6 |
-| [ ] | Vegetation and crop sway, irregular craters, forest damage and recovery | unity | M7 |
-| [ ] | Missile launch and targeting workflow, multiplayer lobby screen, construction crews | unity | M6–M7 |
+The [earlier queue](archive/DEVELOPMENT_QUEUE_BEFORE_2026-11-13.md) is historical; its civilian,
+five-era, traffic, minimap and automatic visual-era replacement items are superseded.

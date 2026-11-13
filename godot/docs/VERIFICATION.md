@@ -1,5 +1,12 @@
 # Local native verification
 
+- **Type:** Legacy reference
+- **Archived:** 2026-11-13
+- **Scope:** Frozen Godot-era source/pipeline or evidence; not current Unity instructions.
+
+The text below describes its historical implementation. It does not override the current
+[Unity documentation](../../docs/README.md), design, status or release gates.
+
 ## Reference-image interface and river-placement pass
 
 The server suite passed 149 tests, including authoritative river-placement and resettlement
