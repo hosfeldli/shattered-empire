@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using SE.Core.World;
 using Unity.Mathematics;
 using UnityEngine;
@@ -184,6 +185,100 @@ namespace SE.Runtime.Cities
             return u * u * a + 2f * u * s * c + s * s * b;
         }
 
+        // ------------------------------------------------------------------ what is drawn where (road queries)
+
+        /// <summary>Hexes whose streets are not drawn from the hex graph (a base compound draws them; set by the city renderer).</summary>
+        public static Func<int, bool> SkipHex = _ => false;
+        /// <summary>Road edges of a hex that are not drawn (a redundant second entrance into a base compound).</summary>
+        public static Func<int, int, bool> HiddenEdge = (_, _) => false;
+
+        /// <summary>A drawn compound road (base ring, spurs, entrances): a polyline and its carriageway half-width.</summary>
+        public struct Lane { public float2[] Points; public float Half; }
+
+        /// <summary>Compound roads per base site, as last composed (set by the city renderer).</summary>
+        public static readonly Dictionary<int, Lane[]> CompoundLanes = new Dictionary<int, Lane[]>();
+        public static int LaneRevision;
+
+        static void Nearest(float2 p, float2 a, float2 b, float half, ref float best, ref float2 axis, ref float bestHalf)
+        {
+            var d = b - a; float len2 = math.lengthsq(d);
+            float t = len2 > 1e-10f ? math.saturate(math.dot(p - a, d) / len2) : 0;
+            // measured against the carriageway's edge, so wide and narrow roads compare fairly
+            float dist = math.distance(p, a + d * t) - half;
+            if (dist < best) { best = dist; axis = len2 > 1e-10f ? d * math.rsqrt(len2) : axis; bestHalf = half; }
+        }
+
+        static void NearestCurve(float2 p, float2 a, float2 c, float2 b, float half, ref float best, ref float2 axis, ref float bestHalf)
+        {
+            // cheap reject: the curve lies inside the hull of its control points
+            var lo = math.min(math.min(a, b), c) - half - .3f; var hi = math.max(math.max(a, b), c) + half + .3f;
+            if (math.any(p < lo) || math.any(p > hi)) return;
+            var prev = a;
+            for (int k = 1; k <= 12; k++) { var q = Bezier(a, c, b, k / 12f, out _); Nearest(p, prev, q, half, ref best, ref axis, ref bestHalf); prev = q; }
+        }
+
+        /// <summary>
+        /// How far point p is outside the nearest drawn carriageway (negative: on the asphalt), the road's
+        /// direction there and its half-width. Follows exactly the curves the street meshes are drawn on
+        /// (hex half-streets, the streets wrapping built blocks, and base compound roads). +inf when no road is near.
+        /// </summary>
+        public static float RoadDistance(WorldModel w, float2 p, out float2 axis, out float half)
+        {
+            float best = float.PositiveInfinity; axis = new float2(1, 0); half = 0;
+            int home = w.Grid.TileAt(p.x, p.y);
+            if (home >= 0)
+            {
+                int* e = stackalloc int[12];   // [0..5] edges, [6..11] the block chain
+                for (int k = -1; k < 6; k++)
+                {
+                    int t = k < 0 ? home : w.Grid.Nb[home * 6 + k];
+                    if (t < 0 || w.Road[t] == 0 || SkipHex(t)) continue;
+                    int n = Edges(w, t, e);
+                    if (n == 0) continue;
+                    if (Built(t))
+                    {
+                        for (int i = 0; i < n; i++)
+                        {
+                            if (HiddenEdge(t, e[i])) continue;
+                            var mid = Mid(w, t, e[i]); var portal = Portal(w, t, e[i]);
+                            Nearest(p, mid, portal, Width(w.RoadClass(t, e[i])) * .5f, ref best, ref axis, ref half);
+                        }
+                        int* chain = e + 6;
+                        int count = Chain(w, t, chain);
+                        for (int pair = 0; pair + 1 < count; pair++)
+                        {
+                            int d = chain[pair], stop = chain[pair + 1];
+                            float h = Mathf.Max(Width(w.RoadClass(t, d)), Width(w.RoadClass(t, stop))) * .5f;
+                            for (int arc = 0; d != stop && arc < 5; arc++)
+                            {
+                                int next = (d + 1) % 6;
+                                NearestCurve(p, Portal(w, t, d), ArcControl(w, t, d, next), Portal(w, t, next), h, ref best, ref axis, ref half);
+                                d = next;
+                            }
+                        }
+                        continue;
+                    }
+                    var node = Node(w, t);
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (HiddenEdge(t, e[i])) continue;
+                        var m = Mid(w, t, e[i]);
+                        NearestCurve(p, m, HalfControl(w, t, e[i], node), node, Width(w.RoadClass(t, e[i])) * .5f, ref best, ref axis, ref half);
+                    }
+                }
+            }
+            foreach (var lanes in CompoundLanes.Values)
+                foreach (var lane in lanes)
+                {
+                    var pts = lane.Points;
+                    if (pts == null || pts.Length < 2) continue;
+                    // compound roads are local to their base: skip whole lanes far away
+                    if (math.distancesq(p, pts[0]) > 25f && math.distancesq(p, pts[pts.Length - 1]) > 25f && math.distancesq(p, pts[pts.Length / 2]) > 25f) continue;
+                    for (int k = 0; k + 1 < pts.Length; k++) Nearest(p, pts[k], pts[k + 1], lane.Half, ref best, ref axis, ref half);
+                }
+            return best;
+        }
+
         /// <summary>A point at fraction s of the path through hex t from edge a to edge b, and its heading.</summary>
         public static void Route(WorldModel w, int t, int a, int b, float s, out float x, out float z, out float yaw)
         {
@@ -208,6 +303,38 @@ namespace SE.Runtime.Cities
 
         public static bool IsWet(WorldModel w, int t) => t >= 0 && (w.IsRiver(t) || w.View.Water[t] > -1e8f);
 
+        static WorldModel bridgeWorld;
+        static int bridgeGeometry = -1, bridgeRoads = -1;
+        static readonly Dictionary<int, float> bridgeLevels = new Dictionary<int, float>();
+
+        static float SpanLevel(WorldModel w, int start)
+        {
+            if (bridgeWorld != w || bridgeGeometry != w.GeometryRevision || bridgeRoads != w.RoadRevision)
+            { bridgeWorld = w; bridgeGeometry = w.GeometryRevision; bridgeRoads = w.RoadRevision; bridgeLevels.Clear(); }
+            if (bridgeLevels.TryGetValue(start, out float cached)) return cached;
+            var queue = new List<int> { start }; var visited = new HashSet<int> { start };
+            float level = float.NegativeInfinity;
+            for (int k = 0; k < queue.Count && k < 96; k++)
+            {
+                int tile = queue[k];
+                float water = w.View.Water[tile] > -1e8f ? w.View.Water[tile] : w.Height[tile] + WorldModel.RiverDepth;
+                level = Mathf.Max(level, water + .055f);
+                for (int d = 0; d < 6; d++)
+                {
+                    int n = w.Grid.Nb[tile * 6 + d];
+                    if (n < 0 || w.RoadClass(tile, d) == 0 || w.RoadBroken(tile, d)) continue;
+                    if (IsWet(w, n)) { if (visited.Add(n) && queue.Count < 96) queue.Add(n); }
+                    else
+                    {
+                        var bank = Centre(w, n);
+                        level = Mathf.Max(level, w.GroundHeight(bank.x, bank.y) + .008f);
+                    }
+                }
+            }
+            foreach (int tile in queue) bridgeLevels[tile] = level;
+            return level;
+        }
+
         /// <summary>Bridge deck height for a street piece in hex t that leaves by the edges toward na and nb, or -inf.</summary>
         public static float Deck(WorldModel w, int t, int na, int nb)
         {
@@ -216,14 +343,36 @@ namespace SE.Runtime.Cities
         }
 
         static float DeckAt(WorldModel w, int tile) => !IsWet(w, tile) ? float.NegativeInfinity
-            : (w.View.Water[tile] > -1e8f ? w.View.Water[tile] : w.Height[tile] + WorldModel.RiverDepth) + .028f;
+            : w.Road[tile] != 0 ? SpanLevel(w, tile)
+            : (w.View.Water[tile] > -1e8f ? w.View.Water[tile] : w.Height[tile] + WorldModel.RiverDepth) + .055f;
+
+        public static float SupportHeight(WorldModel w, float x, float z)
+        {
+            float ground = w.GroundHeight(x, z);
+            int tile = w.Grid.TileAt(x, z);
+            if (tile < 0 || w.Road[tile] == 0) return ground;
+            if (IsWet(w, tile)) return Mathf.Max(ground, SpanLevel(w, tile) + .006f);
+            for (int d = 0; d < 6; d++)
+            {
+                int n = w.Grid.Nb[tile * 6 + d];
+                if (n < 0 || !IsWet(w, n) || w.RoadClass(tile, d) == 0 || w.RoadBroken(tile, d)) continue;
+                var edge = Mid(w, tile, d); var away = math.normalizesafe(Centre(w, tile) - edge);
+                float along = math.dot(new float2(x, z) - edge, away);
+                float ramp = math.smoothstep(0, 1, math.saturate(along / 1.65f));
+                ground = Mathf.Max(ground, math.lerp(SpanLevel(w, n) + .006f, ground, ramp));
+            }
+            return ground;
+        }
 
         /// <summary>Road surface height at (x, z): the ground across the road's width, or the bridge deck.</summary>
         public static float Height(WorldModel w, float deck, float x, float z)
         {
             var v = w.View;
             float y = Mathf.Max(v.GroundHeight(x, z), Mathf.Max(v.GroundHeight(x + 0.06f, z), v.GroundHeight(x - 0.06f, z)));
-            return Mathf.Max(y, deck) + .006f;
+            if (float.IsNegativeInfinity(deck)) return Mathf.Max(y + .006f, SupportHeight(w, x, z));
+            int tile = w.Grid.TileAt(x, z);
+            // The span is level; its dry bank tiles grade back into the terrain.
+            return tile >= 0 && !IsWet(w, tile) ? Mathf.Max(y + .006f, SupportHeight(w, x, z)) : Mathf.Max(y, deck) + .006f;
         }
     }
 }

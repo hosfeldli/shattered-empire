@@ -107,9 +107,9 @@ namespace SE.Runtime.Rendering
             for (int i = 0; i < 34; i++)
             {
                 float a = i * 2.39996f, r = Mathf.Sqrt(H(i + 8)) * .20f;
-                var p = V(a, r, 0); float height = .035f + H(i + 4) * .065f;
-                var side = V(a + 1.57f, .003f + H(i) * .003f, 0);
-                var bend = p + V(a, .020f, height * .58f); var tip = p + V(a, .065f, height);
+                var p = V(a, r, 0); float height = .003f + H(i + 4) * .006f;
+                var side = V(a + 1.57f, .00035f + H(i) * .00030f, 0);
+                var bend = p + V(a, .002f, height * .58f); var tip = p + V(a, .006f, height);
                 var col = Color.Lerp(new Color(.83f, .87f, .65f), Color.white, H(i + 11));
                 m.Quad(p - side, p + side, bend + side * .55f, bend - side * .55f, col * .87f);
                 m.Tri(bend - side * .55f, bend + side * .55f, tip, col);
@@ -141,6 +141,18 @@ namespace SE.Runtime.Rendering
                 m.Blob(new Vector3(-.12f, .66f, .12f), new Vector3(.22f, .20f, .22f), new Color(.83f, .89f, .77f));
             }
             return m.Build(pine ? "Distant fir silhouette" : "Distant broadleaf silhouette");
+        }
+
+        /// <summary>
+        /// The farthest LOD (strategic zoom): one crown shape and no trunk, a few triangles per tree. It keeps
+        /// the DistantCanopy envelope so forests do not change shape when they switch.
+        /// </summary>
+        public static Mesh Speck(bool pine)
+        {
+            var m = new MeshBuilder();
+            if (pine) m.Cylinder(Vector3.up * .14f, .32f, 0, .86f, 5, Color.white);
+            else m.Ellipsoid(new Vector3(.02f, .71f, .02f), new Vector3(.36f, .33f, .34f), Color.white, 3, 5);
+            return m.Build(pine ? "Far fir speck" : "Far broadleaf speck");
         }
     }
 }

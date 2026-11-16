@@ -1,6 +1,26 @@
 import { H, N, T, W, isWater } from './constants.js';
 import { NB, WRAP, center, dist, disk } from './hex.js';
 import { MinHeap } from './world.js';
+import { readFileSync } from 'node:fs';
+
+// Building walls as drawn by the client (exported from CityRenderer.ExportJson):
+// { type: [[x, z, halfWidth, halfDepth, yaw], …] } in the building frame. Types without an entry
+// keep their circular radius.
+let FOOTPRINTS = {};
+try { FOOTPRINTS = JSON.parse(readFileSync(new URL('./actionFootprints.json', import.meta.url), 'utf8')); } catch { FOOTPRINTS = {}; }
+export const footprintOf = (type) => FOOTPRINTS[type] || null;
+
+/** True if a disc of radius r at (x, z) touches any recorded wall of building b. */
+export function insideFootprint(b, rects, x, z, r) {
+  const dx = dxBetween(b.x, x), dz = z - b.z, sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
+  const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+  for (const [rx, rz, hw, hd, yaw] of rects) {
+    const s = Math.sin(yaw), c = Math.cos(yaw), ox = lx - rx, oz = lz - rz;
+    const u = Math.abs(ox * c - oz * s) - hw, v = Math.abs(ox * s + oz * c) - hd;
+    if (Math.max(0, u) ** 2 + Math.max(0, v) ** 2 < r * r) return true;
+  }
+  return false;
+}
 
 const SQRT3 = Math.sqrt(3), PERIOD = W * SQRT3;
 const DIAG = Math.SQRT1_2;
@@ -12,6 +32,25 @@ export const centerOf = (t) => ({ x: X[t], z: Z[t] });
 export const wrapX = (x) => WRAP ? ((x % PERIOD) + PERIOD) % PERIOD : x;
 export const dxBetween = (a, b) => { const d = b - a; return WRAP ? d - Math.round(d / PERIOD) * PERIOD : d; };
 export const distance = (a, b) => Math.hypot(dxBetween(a.x, b.x), b.z - a.z);
+
+// Continuous positions along a completed trench. Shared by orders and cover evaluation;
+// entering a trench is an actual movement destination, not a cosmetic tile-wide bonus.
+export function trenchPosition(game, point, owner, reach = .55) {
+  const tile = tileAt(point.x, point.z);
+  if (tile < 0) return null;
+  let best = null, nearest = reach;
+  for (let i = -1; i < 6; i++) {
+    const t = i < 0 ? tile : NB[tile * 6 + i], trench = game.fieldworks.get(t);
+    if (!trench || trench.progress < 1 || trench.owner !== owner && !game.civs[owner]?.visible[t]) continue;
+    const sn = Math.sin(trench.facing), cs = Math.cos(trench.facing);
+    const dx = dxBetween(trench.x, point.x), dz = point.z - trench.z;
+    const along = Math.max(-.60, Math.min(.60, -dx * cs + dz * sn));
+    const p = { x: wrapX(trench.x - cs * along), z: trench.z + sn * along, facing: trench.facing };
+    const d = distance(point, p);
+    if (d < nearest) { nearest = d; best = p; }
+  }
+  return best;
+}
 
 export function tileAt(x, z) {
   const q = x / SQRT3 - z / 3, r = z * 2 / 3, s = -q - r;
@@ -71,6 +110,19 @@ const TERRAIN_COST = {
   wheeled: [Infinity, Infinity, 1.14, 1.07, 1.73, 1.39, 1.26, Infinity, 1.63, Infinity, Infinity, Infinity, 1.20],
   tracked: [Infinity, Infinity, 1, 1, 1.40, 1.15, 1.21, 1.89, 1.38, Infinity, Infinity, Infinity, 1.11],
 };
+// Steepest climbable gradient (rise over run, in world units) per movement class. Infantry can scramble
+// up a ~33° hillside; tracks ~24°; wheels ~17°. Steeper ground is a wall: troops route around ridges and
+// through passes instead of walking up mountain faces.
+const MAX_GRADIENT = { infantry: .65, tracked: .45, wheeled: .31 };
+const HEX_SPACING = Math.sqrt(3);
+// The client's visual terrain height for a tile (WorldModel.TileHeightFromGeo, land only), so the
+// gradient the server enforces is the one players see.
+function visualHeight(e) {
+  const relief = Math.max(e - .32, 0);
+  return Math.max(e, 0) * 3.2 + relief * relief * 6 + .05;
+}
+// Interactive route searches scale gently with the world so cross-map orders on large maps still resolve.
+const STRATEGIC_LIMIT = Math.max(4300, Math.round(N / 7));
 export const LIGHT_GROUND = { move: 'infantry', radius: .13 };
 export const HEAVY_GROUND = { move: 'tracked', radius: .22 };
 
@@ -84,7 +136,26 @@ export class ActionNavigation {
     this.crossings = new Map(); this.crossingVersion = -1;
     this.terrainVersion = 0;
   }
-  invalidate() { this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; }
+  invalidate() { this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.gradient = null; }
+
+  /** Steepest visual gradient from each tile to a land neighbour (lazily rebuilt after terrain changes). */
+  gradientOf(t) {
+    if (!this.gradient) {
+      const elev = this.world.elev, g = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        const hi = visualHeight(elev[i]);
+        let worst = 0;
+        for (let d = 0; d < 6; d++) {
+          const n = NB[i * 6 + d];
+          if (n < 0 || isWater(this.world.terr[n])) continue;
+          worst = Math.max(worst, Math.abs(visualHeight(elev[n]) - hi) / HEX_SPACING);
+        }
+        g[i] = worst;
+      }
+      this.gradient = g;
+    }
+    return this.gradient[t];
+  }
 
   primeGroup(group, point) {
     this.activeFlows.clear();
@@ -197,6 +268,11 @@ export class ActionNavigation {
     let base = TERRAIN_COST[def.move][terrain];
     const river = this.riverAt(t, x, z);
     const road = this.roadAt(t, x, z, def, river);
+    // Mountain faces: impassable beyond the class's climb limit unless a road cuts the slope;
+    // below it, climbing costs grow with the gradient so routes prefer valleys and passes.
+    const gradient = this.gradientOf(t), limit = MAX_GRADIENT[def.move] ?? .5;
+    if (!road && gradient > limit) return Infinity;
+    if (!road) base *= 1 + Math.max(0, gradient - limit * .45) * 1.6;
     if (river && !road) {
       if (w.flow[t] >= 94 && def.move !== 'infantry') return Infinity;
       base *= def.move === 'infantry' ? 1.34 : 2.35;
@@ -204,9 +280,20 @@ export class ActionNavigation {
     return road ? Math.min(base, road === 1 ? .84 : .66) : base;
   }
 
-  obstacleAt(t, x, z, radius, ignore = 0, ignoreTarget = 0) {
-    for (const b of this.game.obstaclesAtTile(t))
-      if (b.id !== ignore && b.id !== ignoreTarget && dxBetween(x, b.x) ** 2 + (b.z - z) ** 2 < (b.radius + radius) ** 2) return true;
+  obstacleAt(t, x, z, radius, ignore = 0, ignoreTarget = 0, sight = false) {
+    for (const b of this.game.obstaclesAtTile(t)) {
+      if (b.id === ignore || b.id === ignoreTarget) continue;
+      const def = this.game.defs.BUILDINGS[b.type];
+      if (sight && def?.lowCover) continue;
+      const rects = b.done !== false && b.state !== 'ruin' ? footprintOf(b.type) : null;
+      if (rects) {
+        if (insideFootprint(b, rects, x, z, radius + .015)) return true;
+      } else if (def?.width) {
+        const dx = dxBetween(b.x, x), dz = z - b.z, sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
+        const lx = Math.abs(dx * cs - dz * sn) - def.width * .5, lz = Math.abs(dx * sn + dz * cs) - def.depth * .5;
+        if (Math.max(0,lx) ** 2 + Math.max(0,lz) ** 2 < (radius + .015) ** 2) return true;
+      } else if (dxBetween(x, b.x) ** 2 + (b.z - z) ** 2 < (b.radius + radius) ** 2) return true;
+    }
     const wrecks = this.game.wrecks.get(t);
     if (wrecks) for (const w of wrecks) if (w.x != null && !w.air && dxBetween(x, w.x) ** 2 + (w.z - z) ** 2 < (.115 + radius) ** 2) return true;
     return false;
@@ -271,7 +358,9 @@ export class ActionNavigation {
     return null;
   }
 
-  strategic(from, to, def, buildingRoads = false, skipFlow = false) {
+  // `limit` bounds the A* expansion. Unit orders keep the interactive default; one-off planners
+  // (road layout between distant bases) pass a larger bound so long routes on big worlds resolve.
+  strategic(from, to, def, buildingRoads = false, skipFlow = false, limit = STRATEGIC_LIMIT) {
     if (from === to) return [to];
     const flow = !buildingRoads && !skipFlow && this.activeFlows.get(def.move);
     if (flow && dist(to, flow.goal) <= 4 && flow.next[from] >= 0) {
@@ -287,7 +376,7 @@ export class ActionNavigation {
     const heap = new MinHeap(), best = new Map([[from, 0]]), parents = new Map(), closed = new Set();
     heap.push(from, 0);
     let result = null;
-    while (heap.size && closed.size < 4300) {
+    while (heap.size && closed.size < limit) {
       const t = heap.pop();
       if (closed.has(t)) continue;
       if (t === to) {
@@ -303,7 +392,18 @@ export class ActionNavigation {
         let weight = this.cost(n, X[n], Z[n], def);
         if (!Number.isFinite(weight) && buildingRoads && this.world.river[n] && !this.world.lake[n] && !isWater(this.world.terr[n])) weight = 2.6;
         if (!Number.isFinite(weight)) continue;
-        if (this.roads.usable(t, n)) weight *= .94;
+        if (buildingRoads) {
+          // A new road joins the existing network instead of shadowing it: following a built edge is
+          // cheap, a chord between two tiles that already carry roads (a triangle or a doubled lane at
+          // a junction) is dear, and so is a fresh edge running right beside an existing road.
+          const w = this.world;
+          if (this.roads.usable(t, n)) weight *= .6;
+          else if (w.road[t] && w.road[n]) weight *= 2.4;
+          else if (!w.road[n] && !w.river[n]) for (let k = 0; k < 6; k++) {
+            const m = NB[n * 6 + k];
+            if (m >= 0 && m !== t && w.road[m] && !(t >= 0 && w.road[t] && this.roads.usable(t, m))) { weight *= 1.3; break; }
+          }
+        } else if (this.roads.usable(t, n)) weight *= .94;
         const cost = best.get(t) + weight;
         if (cost >= (best.get(n) ?? Infinity)) continue;
         best.set(n, cost);
@@ -392,7 +492,7 @@ export class ActionNavigation {
     for (let i = 1; i < steps; i++) {
       const f = i / steps, x = wrapX(a.x + dx * f), z = a.z + dz * f, t = tileAt(x, z);
       if (t < 0) continue;
-      if (t !== start && t !== end && elev[t] > lo + (hi - lo) * f + .18 || this.obstacleAt(t, x, z, 0, a.id, b.id)) return false;
+      if (t !== start && t !== end && elev[t] > lo + (hi - lo) * f + .18 || this.obstacleAt(t, x, z, 0, a.id, b.id, true)) return false;
     }
     return true;
   }

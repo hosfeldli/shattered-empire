@@ -47,7 +47,7 @@ export function serializeGame(g) {
   for (let a = 0; a < g.civs.length; a++) for (let b = a + 1; b < g.civs.length; b++) diplo.push([a, b, g.diplomacy.m[a][b]]);
   return {
     v: actionRules(g) ? 5 : 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
-    ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, tutorial: g.tutorial,
+    ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, map: g.mapId, tutorial: g.tutorial,
       tutorialSite: g.tutorialSite, teamHold: g.teamHold, engagements: mapOut(g.engagements), reports: g.reports,
       materialCaches: mapOut(g.materialCaches), roadProjects: g.roadProjects, armyLimit: g.armyLimit } } : {}),
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),

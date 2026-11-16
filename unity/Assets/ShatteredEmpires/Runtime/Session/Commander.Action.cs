@@ -84,6 +84,36 @@ namespace SE.Runtime.Session
             return true;
         }
 
+        /// <summary>True while the interface owns the digit keys (wheel hot, picker open, defense bar armed).</summary>
+        public bool SuppressGroupKeys { get; set; }
+
+        /// <summary>Drop the whole selection (Escape chain step 7). True when anything was selected.</summary>
+        public bool ClearSelection()
+        {
+            bool any = units.Selected.Count > 0 || SelectedBuildings.Count > 0 || SelectedObjective != 0 || SelectedPickup != 0 || SelectedRingSlot != 0 || SelectedCity >= 0;
+            if (!any) return false;
+            units.Selected.Clear(); SelectedBuildings.Clear(); SelectedCity = -1;
+            SelectedObjective = SelectedPickup = SelectedRingSlot = 0; HoverRingSlot = 0; ClearRingPreview();
+            SelectionChanged?.Invoke();
+            return true;
+        }
+
+        /// <summary>Right-click on the minimap: move the selected units to that map point (Shift queues).</summary>
+        public void MinimapOrder(float x, float z, bool queue)
+        {
+            if (session.Spectator || units.Selected.Count == 0 || session.Net == null || !session.World.Ready) return;
+            var g = session.World.Grid;
+            int tile = g.TileAt(x, z);
+            if (tile < 0) return;
+            var point = new Vector3(x, session.World.GroundHeight(x, z), z);
+            var cmd = new JObject { ["c"] = "move", ["units"] = new JArray(units.Selected.ToArray()), ["tile"] = tile };
+            if (session.ActionRts) { cmd["point"] = Point(point); cmd["queue"] = queue; }
+            var order = new Order { MapPoint = point, Time = Time.unscaledTime };
+            Orders.Add(order);
+            UI.Hud.NoteOrder(units.Selected, point, "move", order.Time);
+            order.Rid = session.Net.Command(cmd, r => { Resolve(order, r); if (r.Error == null) ActionMoveOrders++; });
+        }
+
         public void SelectObjective(int id)
         {
             SelectedPickup = SelectedRingSlot = 0; ClearRingPreview();
@@ -205,6 +235,7 @@ namespace SE.Runtime.Session
             }
             var order = new Order { MapPoint = point, Time = time };
             Orders.Add(order);
+            UI.Hud.NoteOrder(units.Selected, point, (string)cmd["c"], time);
             order.Rid = session.Net?.Command(cmd, r =>
             {
                 Resolve(order, r);
@@ -269,14 +300,47 @@ namespace SE.Runtime.Session
                     Line(PointAt(a, b), PointAt(a, b - j * .15f), color, .0045f);
                 }
             }
+            // the instanced material is opaque (colour alpha drives emission), so the hovered parcel is shown
+            // as a full glowing outline plus an inset outline rather than a translucent plate
+            void Fill(float x, float z, float yaw, float width, float depth, float4 color)
+            {
+                math.sincos(yaw, out float sn, out float cs);
+                float3 PointAt(float a, float b) => At(x + a * cs + b * sn, z - a * sn + b * cs);
+                for (int ring = 0; ring < 2; ring++)
+                {
+                    float w2 = width * (ring == 0 ? .5f : .42f), d2 = depth * (ring == 0 ? .5f : .42f);
+                    var c0 = PointAt(-w2, -d2); var c1 = PointAt(w2, -d2); var c2 = PointAt(w2, d2); var c3 = PointAt(-w2, d2);
+                    Line(c0, c1, color, .006f); Line(c1, c2, color, .006f); Line(c2, c3, color, .006f); Line(c3, c0, color, .006f);
+                }
+            }
             if (session.Objectives.TryGetValue(SelectedObjective, out var headquarters) && headquarters.IsBase && headquarters.Owner == session.CivId && headquarters.Parcels != null)
+            {
+                // the wider selection ring around the whole base (spec B5)
+                float baseRadius = headquarters.Radius * 1.15f;
+                var ringColor = new float4(.29f, .59f, 1f, .55f);
+                for (int segment = 0; segment < 96; segment++)
+                {
+                    float a = segment * math.PI * 2 / 96, b = (segment + 1) * math.PI * 2 / 96;
+                    Line(At(headquarters.X + math.sin(a) * baseRadius, headquarters.Z + math.cos(a) * baseRadius),
+                        At(headquarters.X + math.sin(b) * baseRadius, headquarters.Z + math.cos(b) * baseRadius), ringColor, .02f);
+                }
+                float glow = .5f + .5f * Mathf.Sin(time * Mathf.PI * 2f / 1.6f);
                 foreach (var lot in headquarters.Parcels)
                 {
                     if (lot.Id == 0) continue;
-                    var color = lot.Tier > headquarters.Tier ? new float4(.61f, .56f, .44f, .45f) : new float4(.46f, .71f, .64f, .55f);
+                    bool locked = lot.Tier > headquarters.Tier;
+                    bool empty = !locked && headquarters.Slots != null && Array.IndexOf(headquarters.Slots, lot.Id) >= 0;
+                    var color = locked ? new float4(.61f, .56f, .44f, .45f) : empty ? new float4(.89f, .71f, .38f, .35f + .35f * glow) : new float4(.46f, .71f, .64f, .55f);
+                    bool hovered = lot.Id == HoverRingSlot || lot.Id == HoverRingSlotFromWorld;
+                    if (hovered)
+                    {
+                        color = new float4(.55f, .78f, 1f, 1f);
+                        Fill(lot.X, lot.Z, lot.Yaw, lot.Width, lot.Depth, new float4(.35f, .65f, 1f, 1f));
+                    }
                     if (lot.Id == SelectedRingSlot) color = Amber;
                     Corners(lot.X, lot.Z, lot.Yaw, lot.Width, lot.Depth, color);
                 }
+            }
             foreach (int id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var selected))
                 Corners(selected.X, selected.Z, selected.Yaw, 1.02f, 1.02f, new float4(.43f, .77f, .65f, .5f));
             foreach (var s in session.Objectives.Values)
@@ -335,22 +399,15 @@ namespace SE.Runtime.Session
             routeLines.DrawImages(images);
         }
 
+        /// <summary>
+        /// No persistent mode hints in the action ruleset (spec B3/E17): tools are explained by the tool chip.
+        /// Only a battle line being drawn reports how many positions it found.
+        /// </summary>
         string ActionModeHint()
         {
-            if (lineDrag)
-            {
-                int count = ProtocolDecoder.Int(linePreview?["placed"]);
-                return (count > 0 ? $"{count} positions · " : "") + $"Release to deploy · {InputFacade.KeyFor("flip")} facing · Alt advance · Shift queue";
-            }
-            return Current switch
-            {
-                Mode.Place => "Choose a highlighted parcel · Enter confirms · Esc cancels",
-                Mode.Trench => "Draw on visible, clear ground · Release to dig",
-                Mode.Road => "Draw a route between visible locations · Release to build",
-                Mode.Rally => "Choose a reinforcement rally point",
-                Mode.Target => "Choose a target · Enter confirms · Esc cancels",
-                _ => ""
-            };
+            if (!lineDrag) return "";
+            int count = ProtocolDecoder.Int(linePreview?["placed"]);
+            return count > 0 ? $"{count} positions" : "";
         }
     }
 }

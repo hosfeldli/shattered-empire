@@ -61,6 +61,23 @@ namespace SE.Runtime.Rendering
                 .Box(P(0, -.009f, .016f), P(.015f, .008f, .025f), Dark)
                 .Box(P(0, .027f, .054f), P(.007f, .009f, .008f), Steel)
                 .Build("Engineer defensive pistol");
+            UseAuthoredModels();
+        }
+
+        /// <summary>Swap in the Blender-built models (Resources/Models) wherever one exists.</summary>
+        static void UseAuthoredModels()
+        {
+            Tank = ModelLibrary.Or("Tank", Tank); Autonomous = ModelLibrary.Or("Autonomous", Autonomous); Howitzer = ModelLibrary.Or("Howitzer", Howitzer);
+            Turret = ModelLibrary.Or("Turret", Turret); RemoteTurret = ModelLibrary.Or("RemoteTurret", RemoteTurret);
+            HowitzerTurret = ModelLibrary.Or("HowitzerTurret", HowitzerTurret);
+            GunBarrel = ModelLibrary.Or("GunBarrel", GunBarrel); HowitzerBarrel = ModelLibrary.Or("HowitzerBarrel", HowitzerBarrel);
+            RoadWheel = ModelLibrary.Or("RoadWheel", RoadWheel); Wheel = ModelLibrary.Or("Wheel", Wheel);
+            Carrier = ModelLibrary.Or("Carrier", Carrier); ArmoredCar = ModelLibrary.Or("ArmoredCar", ArmoredCar);
+            CargoTruck = ModelLibrary.Or("CargoTruck", CargoTruck); RocketTruck = ModelLibrary.Or("RocketTruck", RocketTruck);
+            AirDefense = ModelLibrary.Or("AirDefense", AirDefense);
+            Fighter = ModelLibrary.Or("Fighter", Fighter); Bomber = ModelLibrary.Or("Bomber", Bomber);
+            Helicopter = ModelLibrary.Or("Helicopter", Helicopter); Rotor = ModelLibrary.Or("Rotor", Rotor);
+            Rifle = ModelLibrary.Or("Rifle", Rifle);
         }
 
         static MeshBuilder InfantryWeapon(bool launcher)

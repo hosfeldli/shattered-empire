@@ -19,7 +19,8 @@ namespace SE.Runtime.Cities
     public sealed unsafe partial class CityRenderer : IDisposable
     {
         enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Car, Truck,
-            Concrete, Brick, Siding, Glass, Asphalt, MetalRoof, Shell, Collapse, Tree, Dish, Wire, TankObstacle, StrategicHatch, Count }
+            Concrete, Brick, Siding, Glass, Asphalt, MetalRoof, Shell, Collapse, Tree, Dish, Wire, TankObstacle, StrategicHatch, Sandbag,
+            BaseTown, BaseBarracks, BaseDepot, BaseMotorWorks, BasePower, Count }
 
         sealed class Cell
         {
@@ -44,7 +45,20 @@ namespace SE.Runtime.Cities
         public readonly Dictionary<int, List<SmokeStack>> Stacks = new Dictionary<int, List<SmokeStack>>();
         public struct SmokeStack { public float3 Pos; public bool Steam; public float Size; }
         int composing = -1;
-        public Func<int, float4> CivColor = _ => new float4(0.6f, 0.6f, 0.6f, 0);
+        /// <summary>
+        /// Owner colours. Assigning sets the session's raw palette; reading returns the team palette
+        /// (the session's relation palette: you blue, rivals red/orange/magenta..., re-encoded as sRGB-style
+        /// albedo, see <see cref="TeamPalette"/>).
+        /// </summary>
+        public Func<int, float4> CivColor
+        {
+            get => teamColor ??= Teams.Color;
+            set => Teams.Raw = value ?? (_ => new float4(0.6f, 0.6f, 0.6f, 0));
+        }
+        Func<int, float4> teamColor;
+        public readonly TeamPalette Teams = new TeamPalette();
+        /// <summary>Territory borders and base aprons for the terrain shader.</summary>
+        public readonly TerritoryField Territory = new TerritoryField();
         public int Recomposed { get; private set; }
         public int CellCount => cells.Count;
         public int MaxCellsPerFrame = 6;
@@ -76,8 +90,15 @@ namespace SE.Runtime.Cities
                 hasBuilding = new bool[world.Grid.N];
                 streetParcels = new bool[world.Grid.N];
                 RoadCurve.Occupied = streetParcels;
+                RoadCurve.SkipHex = t => ActionRts && ComposeRingApproaches(t);
+                RoadCurve.HiddenEdge = RedundantEntrance;
+                RoadCurve.CompoundLanes.Clear(); RoadCurve.LaneRevision++;
                 roadRevision = -1;
             }
+            // A change of who "we" are (or of the civ roster) recolours every team accent.
+            Teams.LinearSource = ActionRts;
+            if (Teams.Refresh()) for (int c = 0; c < world.ChunksW * world.ChunksH; c++) dirty.Add(c);
+            Territory.Update(world, objectiveByTile.Values, structures, Teams, ActionRts);
             if (roadRevision != world.LayoutRevision)
             {
                 roadRevision = world.LayoutRevision;
@@ -146,7 +167,9 @@ namespace SE.Runtime.Cities
             var cell = new Cell();
             Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo,
                 MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MilitaryMeshes.CargoTruck,
-                MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish, MeshKit.Coil, MeshKit.TankObstacle, MeshKit.StrategicHatch };
+                MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish, MeshKit.Coil, MeshKit.TankObstacle, MeshKit.StrategicHatch, MeshKit.Sandbag,
+                AuthoredMesh(Part.BaseTown, MeshKit.Box), AuthoredMesh(Part.BaseBarracks, MeshKit.Box), AuthoredMesh(Part.BaseDepot, MeshKit.Box),
+                AuthoredMesh(Part.BaseMotorWorks, MeshKit.Box), AuthoredMesh(Part.BasePower, MeshKit.Box) };
             for (int i = 0; i < cell.Batches.Length; i++)
             {
                 SurfaceKind material = (Part)i switch
@@ -155,11 +178,12 @@ namespace SE.Runtime.Cities
                     Part.Brick => SurfaceKind.Brick,
                     Part.Siding or Part.MetalRoof or Part.Silo => SurfaceKind.SheetMetal,
                     Part.Glass => SurfaceKind.Glass,
+                    Part.Sandbag => SurfaceKind.Fabric,
                     Part.Asphalt => SurfaceKind.Asphalt,
                     Part.Roof => SurfaceKind.RoofTile,
                     _ => SurfaceKind.Plain
                 };
-                var batch = new InstanceBatch(meshes[i], (Part)i == Part.Tree ? RenderResources.Foliage : RenderResources.Surface(material), i >= (int)Part.Concrete ? 24 : 64);
+                var batch = new InstanceBatch(meshes[i], (Part)i == Part.Tree ? RenderResources.TreeFoliage : RenderResources.Surface(material), i >= (int)Part.Concrete ? 24 : 64);
                 if (preview) batch.Shadows = UnityEngine.Rendering.ShadowCastingMode.Off;
                 cell.Batches[i] = batch;
             }
@@ -381,11 +405,18 @@ namespace SE.Runtime.Cities
         {
             if (ActionRts && ComposeRingApproaches(t)) return;
             int* e = stackalloc int[6];
-            int n = RoadCurve.Edges(world, t, e);
+            int all = RoadCurve.Edges(world, t, e);
+            // a second link from this hex into a base compound is not drawn (see RedundantEntrance)
+            int n = 0;
+            for (int i = 0; i < all; i++) if (!RedundantEntrance(t, e[i])) e[n++] = e[i];
             if (n == 0) return;
             var g = world.Grid;
+            streetClear.Clear();
             if (RoadCurve.Built(t))
             {
+                // every portal where a road edge's stub meets the street wrapping the block is a junction
+                for (int i = 0; i < n; i++)
+                    streetClear.Add(new float3(RoadCurve.Portal(world, t, e[i]), RoadCurve.Width(world.RoadClass(t, e[i])) * .5f + .012f));
                 for (int i = 0; i < n; i++)
                 {
                     int d = e[i]; var mid = RoadCurve.Mid(world, t, d); var portal = RoadCurve.Portal(world, t, d);
@@ -413,31 +444,37 @@ namespace SE.Runtime.Cities
                         d = next;
                     }
                 }
-                if (count == 1)
+                // the stub/arc corners (and a lone stub's end) are rounded off in the street's own layers
+                for (int i = 0; i < n; i++)
                 {
-                    var cap = RoadCurve.Portal(world, t, chain[0]);
-                    int cls = world.RoadClass(t, chain[0]); float width = RoadCurve.Width(cls);
-                    Put(Part.Cylinder, new float3(cap.x, RoadCurve.Height(world, RoadCurve.Deck(world, t, -1, -1), cap.x, cap.y) - .001f, cap.y),
-                        0, new float3(width, .001f, width), StreetColor(t, -1, cls, world.RoadBroken(t, chain[0])));
+                    int cls = world.RoadClass(t, e[i]);
+                    if (cls != 4) JunctionPatch(t, RoadCurve.Portal(world, t, e[i]), cls, RoadCurve.Width(cls) * .5f, false);
                 }
+                streetClear.Clear();
                 return;
             }
             float2 node = RoadCurve.Node(world, t);
             int best = 0;
+            for (int i = 0; i < n; i++) best = Math.Max(best, world.RoadClass(t, e[i]));
+            // (n != all: the node was placed for every edge, so the drawn streets may meet there at an angle)
+            bool junction = (n >= 3 || n == 1 || n != all) && best != 4;
+            float junctionRadius = RoadCurve.Width(best) * .5f * (n == 1 ? 1.3f : 1.05f);
+            // kerbs, pavements and painted lines stop at the junction mouth instead of crossing the side streets
+            if (junction) streetClear.Add(new float3(node, junctionRadius + .012f));
             for (int i = 0; i < n; i++)
             {
                 int d = e[i], cls = world.RoadClass(t, d);
-                best = Math.Max(best, cls);
                 float2 m = RoadCurve.Mid(world, t, d);
                 StreetPiece(t, m, RoadCurve.HalfControl(world, t, d, node), node, cls, world.RoadBroken(t, d), g.Nb[t * 6 + d], -1, 4);
             }
+            streetClear.Clear();
             // a junction (or turning circle) where streets meet: rounded, never a square plaza; railways
-            // don't get one
-            if ((n >= 3 || n == 1) && best != 4)
+            // don't get one. Drawn in the streets' own ground layers (verge, shoulder, pavement, carriageway),
+            // so the half-streets' square ends and the notches between them are filled without z-fighting.
+            if (junction)
             {
-                float w = RoadCurve.Width(best) * (n == 1 ? 1.3f : 1.05f) * StreetWidthScale(t);
+                JunctionPatch(t, node, best, junctionRadius, Sidewalked(t) && best >= 2);
                 float y = RoadCurve.Height(world, RoadCurve.Deck(world, t, -1, -1), node.x, node.y) - 0.012f;
-                Put(Part.Cylinder, new float3(node.x, y, node.y), 0, new float3(w, 0.012f, w), StreetColor(t, -1, best, false));
                 // pedestrian crossings on the busier town junctions
                 if (n >= 3 && best >= 2 && Sidewalked(t) && Hash(t, 91) < 0.6f)
                     for (int i = 0; i < Math.Min(2, n); i++)
@@ -552,6 +589,11 @@ namespace SE.Runtime.Cities
             };
             Stacks.Remove(b.Id);
             composing = b.Id;
+            BeginFootprint(b, cx, cz, yaw);
+            // Authored Blender facilities replace the module recipe for positioned base buildings.
+            int siteTier = b.City > 0 ? SiteTier(b.City) : Math.Max(1, ctx.Tier);
+            bool authored = b.HasPosition && AuthoredBase(ctx, b.Type, b.Type == "town" ? 1f + .10f * (siteTier - 1) : 1f);
+            if (!authored)
             switch (b.Type)
             {
                 case "house": House(ctx); break;
@@ -587,6 +629,7 @@ namespace SE.Runtime.Cities
                 case "port": Port(ctx); break;
                 case "comms_tower": LatticeMast(ctx); break;
                 case "guard_post": case "bunker": case "aa_battery": Defence(ctx, b.Type); break;
+                case "city_turret": PerimeterTurret(ctx); break;
                 case "barricade": FieldBarricades(ctx); break;
                 case "sensor_post": SensorPost(ctx); break;
                 case "artillery_post": ArtilleryPosition(ctx); break;
@@ -601,6 +644,11 @@ namespace SE.Runtime.Cities
                 case "wonder": Wonder(ctx); break;
                 default: Industry(ctx); break;
             }
+            EndFootprint();
+            // The authored HQ model gains its tier silhouette here (the recipe HQ grows by itself).
+            if (authored && b.Type == "town") HeadquartersTierDressing(ctx, siteTier);
+            // Positioned structures outside a base stand on their own pad with a team ring.
+            if (b.HasPosition && b.City <= 0 && ActionRts && !Showcase && b.Id >= 0) FieldStructurePad(b, cx, cz);
             // Modern skyline blocks provide their own roof plant and damaged shell.
             // Legacy factory annexes and damage piles do not belong to these parcels.
             if (b.Type == "modern_block" || b.Type == "modern_office" || b.Type.StartsWith("cinematic_", StringComparison.Ordinal)) return;
@@ -660,6 +708,7 @@ namespace SE.Runtime.Cities
                 return;
             }
             float y = part == Part.Tree ? Ground(x, z) : c.FixedGround ? c.GroundY : Mathf.Min(Ground(x, z), Mathf.Min(Ground(x + size.x * 0.4f, z), Ground(x, z + size.z * 0.4f))) - 0.02f;
+            RecordFootprint(part, x, z, size, c.Yaw + yawOffset, lift);
             Put(part, new float3(x, y + lift, z), c.Yaw + yawOffset, size, color * c.Tint, emission);
         }
 
@@ -674,7 +723,7 @@ namespace SE.Runtime.Cities
             site.GroundY = c.FixedGround ? c.GroundY : Mathf.Min(Ground(cx, cz), Mathf.Min(Ground(cx + width * k * .4f, cz), Ground(cx, cz + depth * k * .4f))) - .02f;
             float3 trim = c.Kind == DistrictKind.Industrial ? new float3(.54f, .53f, .47f) : new float3(.78f, .74f, .67f);
             int bays = Mathf.Clamp(Mathf.RoundToInt(width / .094f), 2, 7);
-            int floors = Mathf.Clamp(Mathf.FloorToInt(height / .102f), 1, 6);
+            int floors = Mathf.Clamp(Mathf.RoundToInt(height / WorldScale.Storey), 1, 16);
             for (int floor = 0; floor < floors; floor++)
                 for (int i = 0; i < bays; i++)
                 {
@@ -685,7 +734,7 @@ namespace SE.Runtime.Cities
                     float w = width / bays * (storefront && floor == 0 ? .83f : .61f), h = Mathf.Min(.083f, height / floors * .49f);
                     if (floor == 0 && i == bays / 2 && !storefront)
                     {
-                        Module(site, Part.Siding, x, z, new float3(w * .75f, h * 1.56f, .012f), new float3(.29f, .28f, .26f), turn, .012f);
+                        Module(site, Part.Siding, x, z, new float3(WorldScale.DoorWidth, Mathf.Min(WorldScale.DoorHeight, height * .82f), .012f), new float3(.29f, .28f, .26f), turn, .006f);
                         Module(site, Part.Concrete, x + sn * .017f, z + cs * .017f, new float3(w * 1.4f, .012f, .043f), trim * .85f, turn);
                         continue;
                     }
@@ -1814,7 +1863,12 @@ namespace SE.Runtime.Cities
             foreach (var cell in cells.Values)
             {
                 if (!cell.Any) continue;
-                foreach (var b in cell.Batches) b.DrawImages(images);
+                // One frustum test for the whole cell (its bounds hold every batch and the street mesh)
+                // before the per-batch tests; most cells are off screen while panning.
+                var cull = cell.Bounds;
+                cull.Expand(InstanceBatch.CullMargin * 2f + cull.size.y * .1f);
+                if (images.For(cull, out _, out _, out _) == 0) continue;
+                foreach (var b in cell.Batches) if (b.Count > 0) b.DrawImages(images);
                 cell.StreetBatch?.DrawImages(images);
             }
             DrawGhost(images);
@@ -1836,6 +1890,7 @@ namespace SE.Runtime.Cities
             cells.Clear();
             activityBoxes?.Dispose();
             activityRotors?.Dispose(); activityDishes?.Dispose();
+            Territory.Dispose();
         }
     }
 }

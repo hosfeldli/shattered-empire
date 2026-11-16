@@ -40,9 +40,15 @@ namespace SE.Runtime.Landscape
         Chunk[] chunks = new Chunk[0];
         readonly List<Pending> pending = new List<Pending>();
         readonly List<int> order = new List<int>();
+        readonly Mesh[] applyTargets = new Mesh[3];
+        System.Comparison<int> sortByDistance;
+        Vector3 sortCamera;
+        float sortPeriod;
         public byte[] Blocked = new byte[0];   // per tile: towns, buildings and roads keep trees away
         public int MaxJobs = 6;
         public float LodDistance = 70f, TreeDistance = 110f, TreeShadowDistance = 45f;
+        /// <summary>Tree LOD bands (distance from the camera to the chunk): authored mesh, Blender low LOD, distant silhouette, single-crown speck.</summary>
+        public float TreeLoDistance = 18f, TreeFarDistance = 55f, TreeSpeckDistance = 150f;
         public float TreeDensity = 1f;
         public int ChunksBuilt { get; private set; }
         public int DrawnChunks { get; private set; }
@@ -146,7 +152,9 @@ namespace SE.Runtime.Landscape
             DirtyCount = dirty;
             if (order.Count == 0 || pending.Count >= MaxJobs) return;
             float period = world.Grid.Period;
-            order.Sort((a, b) => ChunkDistance(a, cameraPos, period).CompareTo(ChunkDistance(b, cameraPos, period)));
+            sortCamera = cameraPos; sortPeriod = period;
+            sortByDistance ??= (a, b) => ChunkDistance(a, sortCamera, sortPeriod).CompareTo(ChunkDistance(b, sortCamera, sortPeriod));
+            order.Sort(sortByDistance);
             for (int k = 0; k < order.Count && pending.Count < MaxJobs; k++) Schedule(order[k]);
             JobHandle.ScheduleBatchedJobs();
         }
@@ -211,7 +219,9 @@ namespace SE.Runtime.Landscape
                     ch.Water = new Mesh { name = "water-" + p.Chunk };
                     ch.Hi.MarkDynamic(); ch.Lo.MarkDynamic(); ch.Water.MarkDynamic();
                 }
-                Mesh.ApplyAndDisposeWritableMeshData(p.Meshes, new[] { ch.Hi, ch.Lo, ch.Water }, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+                applyTargets[0] = ch.Hi; applyTargets[1] = ch.Lo; applyTargets[2] = ch.Water;
+                Mesh.ApplyAndDisposeWritableMeshData(p.Meshes, applyTargets, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+                applyTargets[0] = applyTargets[1] = applyTargets[2] = null;
                 var b = p.Bounds;
                 var bounds = new Bounds();
                 bounds.SetMinMax(new Vector3(b[0], b[1], b[2]), new Vector3(b[3], b[4], b[5]));
@@ -225,8 +235,8 @@ namespace SE.Runtime.Landscape
                 ch.HasWater = ch.Water.vertexCount > 0;
                 if (ch.TreesA == null)
                 {
-                    ch.TreesA = new InstanceBatch(MeshKit.Deciduous, RenderResources.Foliage, 256);
-                    ch.TreesB = new InstanceBatch(MeshKit.Conifer, RenderResources.Foliage, 256);
+                    ch.TreesA = new InstanceBatch(MeshKit.Deciduous, RenderResources.TreeFoliage, 256);
+                    ch.TreesB = new InstanceBatch(MeshKit.Conifer, RenderResources.TreeFoliage, 256);
                     ch.Grass = new InstanceBatch(MeshKit.Grass, RenderResources.GroundCover, 512);
                     ch.Understory = new InstanceBatch(MeshKit.Understory, RenderResources.Foliage, 128);
                 }
@@ -285,8 +295,8 @@ namespace SE.Runtime.Landscape
                     {
                         var shadows = dist < TreeShadowDistance ? ShadowCastingMode.On : ShadowCastingMode.Off;
                         ch.TreesA.Shadows = shadows; ch.TreesB.Shadows = shadows;
-                        ch.TreesA.Draw(off, k, meshOverride: dist < 18f ? null : dist < 55f ? MeshKit.DeciduousLo : MeshKit.DeciduousFar);
-                        ch.TreesB.Draw(off, k, meshOverride: dist < 18f ? null : dist < 55f ? MeshKit.ConiferLo : MeshKit.ConiferFar);
+                        ch.TreesA.Draw(off, k, meshOverride: dist < TreeLoDistance ? null : dist < TreeFarDistance ? MeshKit.DeciduousLo : dist < TreeSpeckDistance ? MeshKit.DeciduousFar : MeshKit.DeciduousSpeck);
+                        ch.TreesB.Draw(off, k, meshOverride: dist < TreeLoDistance ? null : dist < TreeFarDistance ? MeshKit.ConiferLo : dist < TreeSpeckDistance ? MeshKit.ConiferFar : MeshKit.ConiferSpeck);
                     }
                     if (dist < 28f * Mathf.Clamp(TreeDensity, .55f, 1.1f))
                     { ch.Grass.Shadows = ShadowCastingMode.Off; ch.Grass.Draw(off, k); }

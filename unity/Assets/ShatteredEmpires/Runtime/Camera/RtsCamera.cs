@@ -18,12 +18,13 @@ namespace SE.Runtime.CameraControl
         public Vector3 Focus;
         public float Distance = 40f, TargetDistance = 40f;
         public float Yaw;
-        public float MinDistance = .9f, MaxDistance = 260f;
+        public float MinDistance = .16f, MaxDistance = 260f;
         public bool EdgePan = true;
         /// <summary>Pan speed multiplier (a player setting).</summary>
         public float PanSpeed = 1f;
         public bool UserControl = true;
         public bool PointerOverUi;
+        public bool PlacementRotation;
         WorldModel world;
         Vector3 velocity;   // map units per second
 
@@ -38,7 +39,8 @@ namespace SE.Runtime.CameraControl
 
         /// <summary>The strategic view keeps one fixed oblique pitch at every zoom.</summary>
         public const float BasePitch = 52f;
-        public float Pitch => PitchOverride >= 0 ? PitchOverride : BasePitch;
+        // Close in, the view flattens from the command angle toward a low, over-the-shoulder battlefield view.
+        public float Pitch => PitchOverride >= 0 ? PitchOverride : Mathf.Lerp(BasePitch, 16f, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(2.6f, .2f, Distance)));
 
         /// <summary>When set, the camera glides after this map point (a followed unit or formation); any manual pan stops following.</summary>
         public System.Func<Vector3?> FollowTarget;
@@ -109,8 +111,8 @@ namespace SE.Runtime.CameraControl
                     if (mp.x < edge) right -= 1; else if (mp.x > Screen.width - edge) right += 1;
                     if (mp.y < edge) forward -= 1; else if (mp.y > Screen.height - edge) forward += 1;
                 }
-                if (InputFacade.ActionHeld("rotate_left")) Yaw -= 90f * dt;
-                if (InputFacade.ActionHeld("rotate_right")) Yaw += 90f * dt;
+                if (!PlacementRotation && InputFacade.ActionHeld("rotate_left")) Yaw -= 90f * dt;
+                if (!PlacementRotation && InputFacade.ActionHeld("rotate_right")) Yaw += 90f * dt;
                 if (InputFacade.Action("back")) Back();
                 var dir = ScreenToMap(right, forward);
                 if (dir.sqrMagnitude > 1f) dir.Normalize();
@@ -168,9 +170,16 @@ namespace SE.Runtime.CameraControl
             var look = Quaternion.Euler(Pitch, Yaw, 0);
             var focusUnity = MapSpace.ToUnity(Focus);
             var shake = Shake > 0.001f ? new Vector3(Mathf.PerlinNoise(Time.unscaledTime * 23f, 0.3f) - 0.5f, Mathf.PerlinNoise(0.7f, Time.unscaledTime * 21f) - 0.5f, 0) * Shake * Mathf.Min(1.5f, Distance * 0.03f) : Vector3.zero;
-            Cam.transform.SetPositionAndRotation(focusUnity - look * Vector3.forward * Distance + look * shake, look);
+            var eye = focusUnity - look * Vector3.forward * Distance + look * shake;
+            // a low battlefield camera must never sink into the hillside behind it
+            if (world != null && world.Ready && Distance < 6f)
+            {
+                float floor = world.GroundHeight(eye.x, -eye.z) + Mathf.Max(.025f, Distance * .08f);
+                if (eye.y < floor) eye.y = floor;
+            }
+            Cam.transform.SetPositionAndRotation(eye, look);
             Cam.farClipPlane = Mathf.Max(600f, Distance * 6f);
-            Cam.nearClipPlane = Mathf.Clamp(Distance * 0.02f, 0.05f, 2f);
+            Cam.nearClipPlane = Mathf.Clamp(Distance * 0.02f, 0.006f, 2f);
         }
 
         /// <summary>The ground point (map coordinates) under a screen position, ray-marched against the terrain.</summary>

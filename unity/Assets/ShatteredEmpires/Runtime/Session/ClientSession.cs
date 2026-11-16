@@ -74,15 +74,89 @@ namespace SE.Runtime.Session
         public int LastAlertTile = -1;
         /// <summary>Notes received in all (keeps counting after old ones are trimmed from the list).</summary>
         public long NotesTotal;
-        readonly Dictionary<int, float4> civColors = new Dictionary<int, float4>();
+        Dictionary<int, float4> civColors = new Dictionary<int, float4>();
         readonly System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
 
+        /// <summary>
+        /// The colour of a civilization (linear rgb, w = 0). The action ruleset colours by relation to the
+        /// viewer so units, building tints, markers, health bars and the minimap all agree: you are always
+        /// blue, team-mates teal, each enemy a distinct warm hue (by order in the welcome's civ list),
+        /// neutral / unowned sand. The legacy ruleset keeps the server's civ colours.
+        /// UI code converts with <c>new Color(c.x, c.y, c.z).gamma</c>, which returns the sRGB palette exactly.
+        /// </summary>
         public float4 CivColor(int id)
         {
-            if (civColors.TryGetValue(id, out var c)) return c;
+            var colors = civColors;   // swapped whole, never mutated after publication
+            if (colors.TryGetValue(id, out var c)) return c;
+            if (ActionRts) return id < 0 ? RelationNeutral : RelationEnemy(id);
             // unknown owners (rebels, unexplored civs) in muted greys
             return id < 0 ? new float4(0.55f, 0.55f, 0.52f, 0) : new float4(0.5f, 0.45f, 0.4f, 0);
         }
+
+        /// <summary>Relation palette (sRGB bytes, see docs/UI_DESIGN_SPEC.md B0/B5).</summary>
+        public static readonly Color32 PaletteFriendly = new Color32(74, 150, 255, 255);
+        public static readonly Color32 PaletteAlly = new Color32(64, 200, 190, 255);
+        public static readonly Color32 PaletteNeutral = new Color32(200, 170, 110, 255);
+        public static readonly Color32[] PaletteEnemies =
+        {
+            new Color32(232, 72, 60, 255), new Color32(240, 140, 40, 255), new Color32(210, 70, 180, 255),
+            new Color32(230, 200, 50, 255), new Color32(150, 90, 230, 255),
+        };
+        static readonly float4 RelationNeutral = Linear(PaletteNeutral);
+
+        static float4 Linear(Color32 c)
+        {
+            var l = ((Color)c).linear;
+            return new float4(l.r, l.g, l.b, 0);
+        }
+
+        /// <summary>The n-th enemy's hue; beyond five the list repeats lightened so neighbours stay distinct.</summary>
+        static float4 RelationEnemy(int n)
+        {
+            var c = (Color)PaletteEnemies[n % PaletteEnemies.Length];
+            int round = n / PaletteEnemies.Length;
+            if (round > 0) c = Color.Lerp(c, Color.white, Mathf.Min(0.6f, 0.28f * round));
+            var l = c.linear;
+            return new float4(l.r, l.g, l.b, 0);
+        }
+
+        /// <summary>
+        /// Rebuild the civ colour table for the current viewer (welcome, rejoin, observer follow change).
+        /// The table is built aside and swapped in whole so readers never see it half-written.
+        /// </summary>
+        void RebuildCivColors()
+        {
+            var next = new Dictionary<int, float4>();
+            var w = Welcome;
+            if (w != null)
+            {
+                if (w.Ruleset != "action-v2")
+                {
+                    foreach (var c in w.Civs)
+                    {
+                        var col = new Color(((c.Color >> 16) & 255) / 255f, ((c.Color >> 8) & 255) / 255f, (c.Color & 255) / 255f);
+                        next[c.Id] = new float4(col.r, col.g, col.b, 0);
+                    }
+                }
+                else
+                {
+                    int myTeam = int.MinValue;
+                    bool haveMe = false;
+                    foreach (var c in w.Civs) if (c.Id == CivId && CivId >= 0) { myTeam = c.Team; haveMe = true; }
+                    int enemies = 0;
+                    foreach (var c in w.Civs)
+                    {
+                        if (CivId >= 0 && c.Id == CivId) next[c.Id] = Linear(PaletteFriendly);
+                        else if (haveMe && c.Team == myTeam && !c.Rebel) next[c.Id] = Linear(PaletteAlly);
+                        else if (c.Rebel) next[c.Id] = RelationNeutral;
+                        else next[c.Id] = RelationEnemy(enemies++);
+                    }
+                }
+            }
+            civColors = next;
+            colorsFor = CivId;
+        }
+        int colorsFor = int.MinValue;
 
         public void Attach(GameConnection connection)
         {
@@ -149,6 +223,7 @@ namespace SE.Runtime.Session
             {
                 Welcome = w;
                 PlayRate = w.Speed; Paused = w.Paused;
+                RebuildCivColors();
                 softGeo = true;
                 Welcomed?.Invoke();
                 return;
@@ -162,12 +237,7 @@ namespace SE.Runtime.Session
             CivId = w.CivId;
             PlayRate = w.Speed;
             Paused = w.Paused;
-            civColors.Clear();
-            foreach (var c in w.Civs)
-            {
-                var col = new Color(((c.Color >> 16) & 255) / 255f, ((c.Color >> 8) & 255) / 255f, (c.Color & 255) / 255f);
-                civColors[c.Id] = new float4(col.r, col.g, col.b, 0);
-            }
+            RebuildCivColors();
             World.ActionLandscape = w.Ruleset == "action-v2";
             World.Reset(w.W, w.H, w.Wrap);
             Units.Reset(World.Grid);
@@ -200,6 +270,7 @@ namespace SE.Runtime.Session
             if (s.Observer != null)
             {
                 CivId = ProtocolDecoder.Int(s.Observer["follow"], CivId);
+                if (CivId != colorsFor) RebuildCivColors();   // relation colours follow the watched nation
                 PlayRate = ProtocolDecoder.Float(s.Observer["speed"], PlayRate);
                 ObserverFog = ProtocolDecoder.Bool(s.Observer["fog"]);
             }

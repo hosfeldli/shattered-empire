@@ -17,3 +17,7 @@ dist/native-publish/
 # service account keys never go into the repository
 stem-*.json
 *service-account*.json
+
+# Asset Store media converted by tools/ingest-workshop-assets.cjs (EULA: ship in builds, not in public source)
+unity/Assets/ShatteredEmpires/Runtime/Resources/Workshop/
+unity/Assets/ShatteredEmpires/Runtime/Resources/Workshop.meta

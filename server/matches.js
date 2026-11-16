@@ -9,19 +9,21 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
+import { MAPS_BY_ID, mapList } from './sim/mapCatalog.js';
 
 const PARKED_TTL_MS = +(process.env.PARKED_TTL_HOURS || 168) * 3600 * 1000;
 const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 4));
 const MAX_CIVS = 12;
 const IDLE_MS = 10 * 60 * 1000;
 const SIZES = { small: 128, medium: 192, large: 256 };
-const ACTION_SIZES = { small: 64, medium: 80, large: 112 };
+// Action RTS worlds: wide enough that bases stand well apart (site spacing scales with the size in actionMap.js).
+const ACTION_SIZES = { small: 104, medium: 152, large: 208, huge: 232 };
 const autoSize = (n) => (n <= 4 ? 128 : n <= 8 ? 192 : 256);
 // Admission control (inside this process: no change to how many instances run). A new match is
 // refused, with a clear message, when the running matches already use most of the CPU time the
 // tick loops have, or when free memory would not hold another worker of that map size.
 const ADMIT_CPU = +(process.env.ADMIT_CPU_SHARE || 0.85);
-const WORKER_MB = { 64: 90, 80: 105, 112: 130, 128: 140, 192: 260, 256: 420 };
+const WORKER_MB = { 64: 90, 76: 100, 80: 105, 96: 115, 104: 122, 108: 125, 112: 130, 128: 140, 136: 150, 140: 160, 152: 180, 160: 200, 192: 260, 208: 290, 224: 330, 232: 350, 256: 420 };
 
 // the three systems with the highest p95 in a match (for /api/health and the logs)
 const slowest = (sys = {}) => Object.entries(sys).filter(([k]) => k !== 'tick').sort((a, b) => b[1].p95 - a[1].p95).slice(0, 3).map(([k, v]) => ({ system: k, p50: v.p50, p95: v.p95, p99: v.p99 }));
@@ -37,7 +39,7 @@ export class MatchManager {
 
   list() {
     return [...this.matches.values()].map((m) => ({
-      id: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, created: m.created, mapSize: m.mapSize, watchers: (m.watchers || []).filter((w) => w.ws).length,
+      id: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, created: m.created, mapSize: m.mapSize, map: m.map || 'random', watchers: (m.watchers || []).filter((w) => w.ws).length,
       slots: m.slots.map((s) => ({ name: s.name, human: s.human, taken: !!s.token, connected: !!s.ws })),
       time: m.stats?.time || 0,
     }));
@@ -52,10 +54,14 @@ export class MatchManager {
     const pvp = opts.mode === 'pvp';
     const observe = opts.mode === 'observe';   // AI-only match watched by spectators (no fog, speed control)
     const sandbox = opts.mode === 'sandbox';   // developer combat sandbox: one player, one passive opponent
-    const humans = observe ? 0 : Math.max(1, Math.min(MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
-    const teamSize = action && !sandbox ? Math.min(4, Math.max(1, opts.teamSize | 0)) : 1;
+    // a hand-authored map (mapCatalog.js) fixes its size and teams; 'random' (the default) is procedural
+    const mapId = action && !sandbox && opts.map && opts.map !== 'random' ? String(opts.map) : 'random';
+    const authored = mapId !== 'random' ? (Object.hasOwn(MAPS_BY_ID, mapId) ? MAPS_BY_ID[mapId] : null) : null;
+    if (mapId !== 'random' && !authored) throw new Error(`Unknown map "${mapId}"`);
+    const teamSize = authored ? authored.teamSize : action && !sandbox ? Math.min(4, Math.max(1, opts.teamSize | 0)) : 1;
+    const humans = observe ? 0 : Math.max(1, Math.min(authored ? authored.players : MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
     const desired = Math.min(MAX_CIVS, teamSize * 2);
-    const ais = sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) :
+    const ais = authored ? authored.players - humans : sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) :
       Math.max(pvp ? 0 : 1, action ? desired - humans : 0, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
@@ -69,14 +75,14 @@ export class MatchManager {
       const diff = DIFFS.includes(r.difficulty) ? r.difficulty : DIFFS.includes(opts.difficulty) ? opts.difficulty : 'normal';
       slots.push({ human: false, name: 'AI', personality: pers, difficulty: diff, fairPlay });
     }
-    const mapSize = action ? (sandbox ? 64 : ACTION_SIZES[opts.mapSize] || (slots.length <= 2 ? 64 : slots.length <= 4 ? 80 : 112))
+    const mapSize = authored ? authored.size : action ? (sandbox ? 64 : ACTION_SIZES[opts.mapSize] || (slots.length <= 2 ? ACTION_SIZES.small : slots.length <= 4 ? ACTION_SIZES.medium : ACTION_SIZES.large))
       : (sandbox ? 128 : SIZES[opts.mapSize] || autoSize(slots.length));
     const why = this.admit(mapSize);
     if (why) throw new Error(why);
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
       seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: !action && !sandbox && opts.rebels !== false, worker: null, stats: null,
       ruleset, wrap: !action, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
-      teamSize, tutorial: action && !pvp && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination' };
+      teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination' };
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
@@ -99,7 +105,7 @@ export class MatchManager {
   }
 
   meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style,
-    teamSize: m.teamSize, tutorial: m.tutorial, objective: m.objective,
+    teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective,
     slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
@@ -109,7 +115,7 @@ export class MatchManager {
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
-        teamSize: m.teamSize, tutorial: m.tutorial, objective: m.objective,
+        teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective,
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
@@ -200,7 +206,38 @@ export class MatchManager {
   toWorker(m, msg) { if (!m.worker) return; if (m.ready) m.worker.postMessage(msg); else m.pending.push(msg); }
   welcome(m, slot) { const caps = slot.ws?.ctx?.caps || []; this.toWorker(m, slot.spectator ? { t: 'obsWelcome', caps } : { t: 'welcome', civId: slot.civId, caps }); }
   send(ws, msg) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(msg)); } catch { /* closing */ } } }
-  roomUpdate(m) { for (const s of m.slots) if (s.ws) this.send(s.ws, { t: 'room', match: m.id, name: m.name, status: m.status, mapSize: m.mapSize, slots: m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token, difficulty: x.human ? undefined : x.difficulty, personality: x.human ? undefined : x.personality, fairPlay: x.human ? undefined : x.fairPlay !== false })) }); }
+  // The pre-game lobby as each seated player sees it: the match code to share, who holds which seat,
+  // who is connected and ready, which seat is yours, and whether you (the host, seat 0) may start.
+  // Open human seats become AI when the host starts early; the match starts by itself once every
+  // human seat is taken.
+  roomUpdate(m) {
+    const slots = m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token, connected: !!x.ws, ready: x.human ? !!x.ready : undefined,
+      difficulty: x.human ? undefined : x.difficulty, personality: x.human ? undefined : x.personality, fairPlay: x.human ? undefined : x.fairPlay !== false }));
+    const open = m.slots.filter((x) => x.human && !x.token).length;
+    m.slots.forEach((s, i) => {
+      if (s.ws) this.send(s.ws, { t: 'room', match: m.id, code: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, mapSize: m.mapSize, teamSize: m.teamSize, map: m.map || 'random', mapName: MAPS_BY_ID[m.map]?.name || 'Random',
+        host: m.slots[0]?.name, you: i, isHost: i === 0, canStart: i === 0 && m.status === 'lobby', open, slots });
+    });
+  }
+
+  // a seated player leaves a match that has not started: a guest frees the seat for someone else;
+  // the host closes the lobby and everyone else is told
+  leaveLobby(ws) {
+    const { match: m, slot } = ws.ctx;
+    if (!m || !slot || m.status !== 'lobby') return false;
+    ws.ctx = { ...ws.ctx, match: null, slot: null };
+    if (slot === m.slots[0]) {
+      this.matches.delete(m.id);
+      for (const s of m.slots) if (s.ws && s.ws !== ws) { this.send(s.ws, { t: 'lobbyClosed', match: m.id, error: 'The host closed the lobby' }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; }
+      this.log.info?.(`match ${m.id} lobby closed by the host`);
+    } else {
+      Object.assign(slot, { token: null, ws: null, name: 'Open seat', ready: false });
+      m.lastActive = Date.now();
+      this.roomUpdate(m);
+    }
+    this.send(ws, { t: 'left', match: m.id });
+    return true;
+  }
 
   attach(ws) {
     ws.ctx = { match: null, slot: null, proto: 1, caps: [] };
@@ -229,8 +266,9 @@ export class MatchManager {
         const r = negotiate(msg);
         if (r.error) return this.send(ws, { t: 'hello', ok: false, error: r.error, proto: PROTOCOL_VERSION });
         ctx.proto = r.proto; ctx.caps = r.caps;
-        return this.send(ws, { t: 'hello', ok: true, proto: r.proto, server: PROTOCOL_VERSION, caps: r.caps, offered: CAPABILITIES, version: process.env.APP_VERSION || 'dev' });
+        return this.send(ws, { t: 'hello', ok: true, proto: r.proto, server: PROTOCOL_VERSION, caps: r.caps, offered: CAPABILITIES, version: process.env.APP_VERSION || 'dev', maps: mapList() });
       }
+      case 'maps': return this.send(ws, { t: 'maps', maps: mapList(), rid: msg.rid });
       case 'list': return this.send(ws, { t: 'lobby', matches: this.list().filter((m) => m.ruleset !== ACTION_RULESET || ctx.caps?.includes('ring-cities-v1')) });
       case 'create': {
         if (msg.ruleset === ACTION_RULESET && (!ctx.caps?.includes('action-rts') || !ctx.caps?.includes('ring-cities-v1'))) throw new Error('This match requires the updated Unity client with ring-city RTS support.');
@@ -251,7 +289,12 @@ export class MatchManager {
         return;
       }
       case 'join': {
-        const m = this.matches.get(String(msg.match || '').toLowerCase()); if (!m) throw new Error('No such match');
+        // codes are shared by voice and chat: tolerate case, spaces and a leading '#'
+        const code = String(msg.match || '').trim().replace(/^#/, '').toLowerCase();
+        const m = this.matches.get(code); if (!m) throw new Error(`No match with the code "${code}"`);
+        // the same player asking twice (a second invite click) keeps the seat they have
+        if (ctx.match === m && ctx.slot && !ctx.slot.spectator && m.status === 'lobby') { this.bind(ws, m, ctx.slot); this.roomUpdate(m); return; }
+        if (ctx.match && ctx.slot && ctx.match !== m) this.leaveLobby(ws);
         this.requireClient(ctx, m);
         if (m.status !== 'lobby') throw new Error('Match already started');
         const slot = this.seat(m, msg.name);
@@ -269,7 +312,24 @@ export class MatchManager {
         if (m.status === 'lobby') this.roomUpdate(m); else { this.wake(m); this.welcome(m, slot); }
         return;
       }
-      case 'start': { if (ctx.match && ctx.match.status === 'lobby' && ctx.match.slots[0] === ctx.slot) this.start(ctx.match); return; }
+      case 'start': {
+        if (!ctx.match || ctx.match.status !== 'lobby') throw new Error('Not in a match lobby');
+        if (ctx.match.slots[0] !== ctx.slot) throw new Error('Only the host can start the match');
+        this.start(ctx.match);
+        return;
+      }
+      case 'ready': {
+        if (!ctx.match || ctx.match.status !== 'lobby' || !ctx.slot || ctx.slot.spectator) throw new Error('Not in a match lobby');
+        ctx.slot.ready = msg.on !== false;
+        this.roomUpdate(ctx.match);
+        return;
+      }
+      case 'room': {
+        if (!ctx.match || ctx.match.status !== 'lobby') throw new Error('Not in a match lobby');
+        this.roomUpdate(ctx.match);
+        return;
+      }
+      case 'leave': { if (!this.leaveLobby(ws)) throw new Error('Not in a match lobby'); return; }
       case 'cmd': {
         const m = ctx.match; if (!m || !m.worker || !ctx.slot || (ctx.slot.civId == null && !ctx.slot.spectator)) throw new Error('Not in a running match');
         m.lastActive = Date.now();

@@ -50,7 +50,7 @@ float SE_CloudNoise(float2 p)
 half SE_CloudShadow(float3 positionWS)
 {
     if (_SE_Clouds.x <= 0.01) return 0;
-    float2 p = positionWS.xz * 0.045 - _SE_Clouds.yz * _Time.y * _SE_Clouds.w * 0.02;
+    float2 p = positionWS.xz * 0.045 - _SE_Clouds.yz;   // yz: integrated wind drift (Atmosphere)
     float n = SE_CloudNoise(p) * 0.6 + SE_CloudNoise(p * 2.3 + 7.1) * 0.4;
     return smoothstep(1.0 - _SE_Clouds.x * 0.85, 1.05 - _SE_Clouds.x * 0.6, n) * 0.5;
 }
@@ -76,12 +76,20 @@ half3 SE_Shade(half3 albedo, float3 positionWS, half3 normalWS, half emission)
     return color;
 }
 
+float4 _SE_ShroudLit;   // the shroud's sunlit colour (Shroud.cs); w unused
+float _SE_ShroudOn;     // 1 while unexplored ground is shrouded
+
 half3 SE_ApplyFog(half3 color, float3 positionWS, float fogCoord)
 {
-    float vis = SE_Visibility(positionWS);
-    // explored-but-unseen land is desaturated and darker; never fully black so the map stays readable
+    // organic edges: the per-hex fog texture is read through a noise warp, so no hexagon outlines show
+    float2 warp = float2(SE_CloudNoise(positionWS.xz * .55), SE_CloudNoise(positionWS.xz * .55 + 17.3)) - .5;
+    float3 warped = positionWS + float3(warp.x, 0, warp.y) * .75;
+    float vis = SE_Visibility(warped);
+    // Explored-but-unseen land is desaturated and darker; never fully black so the map stays readable.
+    // It carries no cloud: the volumetric shroud (SE/Shroud) covers only never-explored ground and the
+    // boundary hexes beside it, which also hides the cut edge of known terrain.
     half grey = dot(color, half3(0.3h, 0.59h, 0.11h));
-    half3 dimmed = lerp(color, grey.xxx * 0.8h, 0.55h) * (1.0h - _SE_FogParams.w);
+    half3 dimmed = lerp(color, grey.xxx * 0.85h, 0.4h) * (1.0h - _SE_FogParams.w * .7h);
     color = lerp(dimmed, color, vis);
     float range = distance(_WorldSpaceCameraPos, positionWS);
     half lowMist = exp(-max(0.0, positionWS.y - .5) * .32);

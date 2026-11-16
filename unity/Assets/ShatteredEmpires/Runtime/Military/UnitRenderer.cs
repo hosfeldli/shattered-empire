@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using SE.Core.Units;
 using SE.Core.World;
 using SE.Runtime.Rendering;
+using SE.Runtime.Cities;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -38,12 +39,35 @@ namespace SE.Runtime.Military
         float[] yaw = new float[0], turret = new float[0], px = new float[0], pz = new float[0], seen = new float[0];
         float[] speed = new float[0], wheelPhase = new float[0], spread = new float[0];
         float[] gaitPhase = new float[0], turnRate = new float[0], suspensionPitch = new float[0], suspensionRoll = new float[0], treadTravel = new float[0];
+        // Vehicle weight: a spring-damper body on its suspension (pitch, roll and their rates), the speed last frame
+        // (acceleration squat and braking dive) and the shot that last rocked the hull.
+        float[] pitchRate = new float[0], rollRate = new float[0], lastSpeed = new float[0], kickedAt = new float[0];
+        float frameDt = 1f / 60f;
         // flight state per slot: aircraft fly continuously toward where the server says they are
         float[] airX = new float[0], airZ = new float[0], airH = new float[0], airBank = new float[0];
+        // smoothed altitude, and the server track last frame with its measured speed (fast aircraft are chased at that speed)
+        float[] airAlt = new float[0], srvX = new float[0], srvZ = new float[0], srvSpeed = new float[0];
         bool[] airLive = new bool[0];
         int[] ids = new int[0];
+        // Squad behaviour (per slot): how long it has stood still, how far its men have gone to cover, how far they
+        // have dropped into a trench, how far a mortar is set up, and the friendly vehicle they shelter behind.
+        float[] stillFor = new float[0], coverBlend = new float[0], trenchIn = new float[0], deployState = new float[0];
+        int[] coverArmor = new int[0];
+        // per soldier (slot * MaxFigures + figure): the fold of ground each man picked when the squad went to ground
+        float[] coverDx = new float[0], coverDz = new float[0];
+        const int MaxFigures = 6;
+        // armoured vehicles this frame (slots), for infantry sheltering behind them
+        int[] armorSlots = new int[32];
+        int armorCount;
         readonly Dictionary<int, (int target, float time, Vector2? point)> lastShot = new Dictionary<int, (int, float, Vector2?)>();
         readonly Dictionary<int, int> shotCounts = new Dictionary<int, int>();
+        // the last shot aimed at each unit (time, shooter): squads under fire go to ground, facing the shooter
+        readonly Dictionary<int, (float time, int shooter)> incoming = new Dictionary<int, (float, int)>();
+        /// <summary>
+        /// Server unit flag bits for crew weapons (mortar team, field gun): 512 deployed / ready to fire, 1024 setting
+        /// up (2.5-3 s). When a server sends neither, deployment is derived from standing still and firing.
+        /// </summary>
+        public int DeployedFlag = 512, SettingUpFlag = 1024;
         public readonly HashSet<int> Selected = new HashSet<int>();
         /// <summary>Whether a tile holds a finished trench (troops there are drawn down in it).</summary>
         public Func<int, bool> InTrench;
@@ -56,13 +80,19 @@ namespace SE.Runtime.Military
         /// <summary>This frame's strategic badges (empty at closer zoom), for the count labels.</summary>
         public readonly List<Badge> Badges = new List<Badge>();
         readonly Dictionary<long, int> badgeIndex = new Dictionary<long, int>();
-        readonly Dictionary<int, SE.Core.Protocol.BuildingRecord> footprints = new Dictionary<int, SE.Core.Protocol.BuildingRecord>();
+        // Positioned buildings by every tile their walls can reach (a hex may hold several buildings).
+        readonly Dictionary<int, List<SE.Core.Protocol.BuildingRecord>> footprints = new Dictionary<int, List<SE.Core.Protocol.BuildingRecord>>();
         int footprintRevision = -1, footprintEpoch = -1;
         public int Instances { get; private set; }
         /// <summary>Last frame's cost by phase (diagnostics and stall attribution).</summary>
         public double PositionsMs, BuildMs, UploadMs;
         public float OperationalDistance = 26f, StrategicDistance = 75f;
         static readonly Vector3 Up = Vector3.up;
+
+        // Rigged, animated infantry (Blender, tools/blender/build_soldiers.py), one batch per role:
+        // Rifle, Engineer, Militia, Special, Exo, AntiArmor, MortarCrew (the Detail torso order).
+        readonly SoldierRig[] rigs = new SoldierRig[7];
+        readonly InstanceBatch[] soldiers = new InstanceBatch[7];
 
         public UnitRenderer()
         {
@@ -102,6 +132,12 @@ namespace SE.Runtime.Military
                     Buffering = 3,
                     Shadows = i >= (int)Detail.Wheel ? ShadowCastingMode.Off : ShadowCastingMode.On
                 };
+            for (int r = 0; r < rigs.Length; r++)
+            {
+                rigs[r] = SoldierRig.Load(r);
+                if (rigs[r] != null)
+                    soldiers[r] = new InstanceBatch(rigs[r].Mesh, rigs[r].Material, 128) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Buffering = 3 };
+            }
         }
 
         static Kind Classify(string type)
@@ -141,6 +177,7 @@ namespace SE.Runtime.Military
         public void NoteShot(int shooter, int target, float time, Vector2? point = null)
         {
             if (shooter > 0) { lastShot[shooter] = (target, time, point); shotCounts.TryGetValue(shooter, out int shots); shotCounts[shooter] = shots + 1; }
+            if (target > 0) incoming[target] = (time, shooter);
         }
 
         void Ensure(int n)
@@ -153,8 +190,13 @@ namespace SE.Runtime.Military
             Array.Resize(ref speed, s); Array.Resize(ref wheelPhase, s); Array.Resize(ref spread, s);
             Array.Resize(ref gaitPhase, s); Array.Resize(ref turnRate, s);
             Array.Resize(ref suspensionPitch, s); Array.Resize(ref suspensionRoll, s);
+            Array.Resize(ref pitchRate, s); Array.Resize(ref rollRate, s); Array.Resize(ref lastSpeed, s); Array.Resize(ref kickedAt, s);
             Array.Resize(ref treadTravel, s);
             Array.Resize(ref airX, s); Array.Resize(ref airZ, s); Array.Resize(ref airH, s); Array.Resize(ref airBank, s); Array.Resize(ref airLive, s);
+            Array.Resize(ref airAlt, s); Array.Resize(ref srvX, s); Array.Resize(ref srvZ, s); Array.Resize(ref srvSpeed, s);
+            Array.Resize(ref stillFor, s); Array.Resize(ref coverBlend, s); Array.Resize(ref trenchIn, s); Array.Resize(ref deployState, s);
+            Array.Resize(ref coverArmor, s);
+            Array.Resize(ref coverDx, s * MaxFigures); Array.Resize(ref coverDz, s * MaxFigures);
             int old = ids.Length;
             Array.Resize(ref ids, s);
             for (int i = old; i < s; i++) ids[i] = -1;
@@ -192,20 +234,30 @@ namespace SE.Runtime.Military
         public unsafe void Update(UnitStore store, WorldModel world, Func<int, float4> civColor, float camX, Vector3 focus, float camDist, float time, float dt, StructureStore structures = null)
         {
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            frameDt = Mathf.Clamp(dt, 0f, .1f);
             foreach (var b in batches) b.Clear();
             foreach (var b in details) b.Clear();
+            foreach (var b in soldiers) b?.Clear();
             Badges.Clear(); badgeIndex.Clear();
+            armorCount = 0;
             if (!world.Ready) return;
             var grid = world.Grid;
             var view = world.View;
             if (structures != null && (footprintRevision != structures.Revision || footprintEpoch != world.Epoch))
             {
                 footprintRevision = structures.Revision; footprintEpoch = world.Epoch; footprints.Clear();
-                foreach (var b in structures.Buildings.Values) if (b.HasPosition) footprints[b.Tile] = b;
+                foreach (var b in structures.Buildings.Values)
+                {
+                    if (!b.HasPosition || b.Memory) continue;
+                    int tile = HexMath.TileAt(b.X, b.Z, view.W, view.H, view.Wrap != 0);
+                    if (tile < 0) continue;
+                    if (!footprints.TryGetValue(tile, out var list)) footprints[tile] = list = new List<SE.Core.Protocol.BuildingRecord>();
+                    list.Add(b);
+                }
             }
             Ensure(store.SlotCount);
             int level = camDist > StrategicDistance ? 0 : camDist > OperationalDistance ? 1 : 2;
-            float vehicleScale = 0.235f;
+            float vehicleScale = WorldScale.Vehicle;
             float markerScale = Mathf.Clamp(camDist * 0.0065f, 0.3f, 2.4f);
             int drawn = 0;
             // pass 1: positions (base image) for every live slot, so turrets can aim at other units
@@ -227,8 +279,10 @@ namespace SE.Runtime.Military
                     airLive[s] = false;
                     speed[s] = spread[s] = wheelPhase[s] = 0f;
                     gaitPhase[s] = (u.Id * .618f % 1f) * math.PI * 2;
-                    turnRate[s] = suspensionPitch[s] = suspensionRoll[s] = 0;
+                    turnRate[s] = suspensionPitch[s] = suspensionRoll[s] = pitchRate[s] = rollRate[s] = lastSpeed[s] = 0; kickedAt[s] = -100;
                     treadTravel[s] = 0;
+                    stillFor[s] = coverBlend[s] = trenchIn[s] = deployState[s] = 0; coverArmor[s] = -1;
+                    srvSpeed[s] = 0; airAlt[s] = u.Motion.Present ? u.Motion.Altitude : 0;
                 }
                 store.Position(s, out px[s], out pz[s]);
                 if (!fresh && dt > 0f)
@@ -241,14 +295,18 @@ namespace SE.Runtime.Military
                 }
                 if (IsAir(kindOf[s]))
                 {
-                    if (u.Motion.Present)
-                    {
-                        float facing = store.Facing(s);
-                        float turn = fresh ? 0 : Mathf.DeltaAngle(airH[s] * Mathf.Rad2Deg, facing * Mathf.Rad2Deg) * Mathf.Deg2Rad / Mathf.Max(.001f, dt);
-                        airBank[s] = Mathf.Lerp(airBank[s], Mathf.Clamp(turn * .25f, -.72f, .72f), 1f - Mathf.Exp(-dt * 5f));
-                        airH[s] = facing;
-                    }
+                    if (u.Motion.Present) FlySnapshot(s, kindOf[s], u.Motion, store, grid, fresh, dt);
                     else Fly(s, u.Id, kindOf[s], store, grid, time, dt);
+                }
+                else
+                {
+                    stillFor[s] = speed[s] > .012f ? 0 : stillFor[s] + dt;
+                    var k0 = kindOf[s];
+                    if (k0 == Kind.Tank || k0 == Kind.AutoTank || k0 == Kind.Apc || k0 == Kind.ArmoredCar || k0 == Kind.SpGun)
+                    {
+                        if (armorCount >= armorSlots.Length) Array.Resize(ref armorSlots, armorSlots.Length * 2);
+                        armorSlots[armorCount++] = s;
+                    }
                 }
             }
             long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -264,7 +322,9 @@ namespace SE.Runtime.Military
                 int tile = u.Tile;
                 // vehicles and troops cross bridges on the deck, not the river bed
                 if (tile >= 0 && tile < grid.N && world.Road[tile] != 0 && (world.IsRiver(tile) || view.Water[tile] > -1e8f))
-                    ground = Mathf.Max(ground, Mathf.Max(view.Water[tile], world.Height[tile]) + 0.06f);
+                    ground = Mathf.Max(ground, RoadCurve.SupportHeight(world, x, z));
+                else if (tile >= 0 && tile < grid.N && world.Road[tile] != 0)
+                    ground = Mathf.Max(ground, RoadCurve.SupportHeight(world, x, z));
                 else if (tile >= 0 && tile < grid.N && view.Water[tile] > ground) ground = view.Water[tile];   // embarked
                 // troops in a finished trench stand down in it, below the parapet
                 if (!world.ActionLandscape && InTrench != null && tile >= 0 && InTrench(tile) && (kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo || kind == Kind.FieldGun)) ground -= 0.035f;
@@ -292,9 +352,14 @@ namespace SE.Runtime.Military
                     if (!moving && !HasTurret(kind)) wantHull = wantTurret;
                 }
                 float previousFacing = yaw[s];
-                yaw[s] = Approach(yaw[s], wantHull, dt * 2.2f);
+                // Continuous snapshots already interpolate authoritative steering. A second,
+                // slower hull filter made fast vehicles visibly slide sideways through turns.
+                yaw[s] = u.Motion.Present ? wantHull : Approach(yaw[s], wantHull, dt * 2.2f);
                 turnRate[s] = Mathf.Lerp(turnRate[s], Mathf.DeltaAngle(previousFacing * Mathf.Rad2Deg, yaw[s] * Mathf.Rad2Deg) * Mathf.Deg2Rad / Mathf.Max(.001f, dt), 1 - Mathf.Exp(-dt * 8));
-                turret[s] = Approach(turret[s], wantTurret, dt * 3.5f);
+                // Turrets traverse at a believable rate (a main-gun turret ~45°/s, light mounts faster),
+                // independently of the hull: a tank keeps its gun on the target while it drives past.
+                float traverse = kind == Kind.Tank || kind == Kind.AutoTank ? .8f : kind == Kind.SpGun ? .45f : HasTurret(kind) ? 1.6f : 3.5f;
+                turret[s] = Approach(turret[s], wantTurret, dt * traverse);
                 float4 team = civColor(u.Owner);
                 float hp = Mathf.Clamp01(u.Hp / 100f);
                 float4 body = new float4(Paint(u.Owner, kind, team.xyz) * (0.7f + 0.3f * hp), 0);
@@ -351,8 +416,25 @@ namespace SE.Runtime.Military
                     case Kind.Infantry:
                     case Kind.Mortar:
                     case Kind.Exo:
-                        AddSquad(s, u.Id, kind, p, yaw[s], close ? 2 : 1, moving, target > 0 || shotAge < 2.4f, time, dt, shotAge, body, ground, view, x, z, u.Motion.Equipment, (u.Flags & 256) != 0);
+                    {
+                        // Under fire: the squad goes to ground facing whoever is shooting at it, behind a friendly
+                        // vehicle when one stands close by.
+                        var threat = new float2(Mathf.Sin(yaw[s]), Mathf.Cos(yaw[s]));
+                        bool underFire = incoming.TryGetValue(u.Id, out var inc) && time - inc.time < 5f && time >= inc.time;
+                        if (underFire && inc.shooter > 0 && store.SlotOf.TryGetValue(inc.shooter, out int shooterSlot) && shooterSlot < px.Length)
+                        {
+                            var toShooter = new float2(grid.DxWrap(px[s], px[shooterSlot]), pz[shooterSlot] - pz[s]);
+                            if (math.lengthsq(toShooter) > 1e-6f) threat = math.normalize(toShooter);
+                        }
+                        // while the men are still coming back out from behind a vehicle, keep that vehicle as their reference
+                        int keptArmor = coverArmor[s];
+                        bool keepValid = keptArmor >= 0 && keptArmor < store.SlotCount && store.Records[keptArmor].InUse && coverBlend[s] > 0f && !moving;
+                        coverArmor[s] = underFire && !moving && kind != Kind.Mortar ? FindCoverArmor(s, u.Owner, store, grid) : keepValid ? keptArmor : -1;
+                        int deployHint = (u.Flags & DeployedFlag) != 0 ? 2 : (u.Flags & SettingUpFlag) != 0 ? 1 : 0;
+                        AddSquad(s, u.Id, kind, p, yaw[s], close ? 2 : 1, moving, target > 0 || shotAge < 2.4f, time, dt, shotAge, body, ground, view, x, z, u.Motion.Equipment,
+                            (u.Flags & 256) != 0, underFire, threat, deployHint);
                         break;
+                    }
                     case Kind.Tank:
                     case Kind.AutoTank:
                     case Kind.SpGun:
@@ -360,8 +442,8 @@ namespace SE.Runtime.Military
                         float k = kind == Kind.AutoTank ? 1.18f : 1f;
                         var tint = kind == Kind.AutoTank ? new float4(body.xyz, 0.05f) : body;
                         bool auto = kind == Kind.AutoTank;
-                        batches[(int)(auto ? Model.AutoHull : Model.Hull)].Add(T(p, yaw[s], new float3(sc * k), tint));
-                        batches[(int)(auto ? Model.AutoTurret : Model.Turret)].Add(T(p, turret[s], new float3(sc * k, sc * k, sc * k * (kind == Kind.SpGun ? 1.5f : 1f)), tint));
+                        batches[(int)(auto ? Model.AutoHull : Model.Hull)].Add(T(p, yaw[s], new float3(sc * k * .64f, sc * k, sc * k * 1.12f), tint));   // true proportions (see AddVehicle)
+                        batches[(int)(auto ? Model.AutoTurret : Model.Turret)].Add(T(p, turret[s], new float3(sc * k * .8f, sc * k, sc * k * (kind == Kind.SpGun ? 1.5f : 1f)), tint));
                         break;
                     }
                     case Kind.Apc:
@@ -389,7 +471,7 @@ namespace SE.Runtime.Military
                         batches[(int)Model.Turret].Add(T(p + new float3(0, sc * 0.05f, 0), turret[s], new float3(sc * 0.6f, sc * 0.6f, sc * 0.4f), body));
                         break;
                     default:
-                        AddAircraft(kind, s, u.Id, p, level, close, time, body, u.Motion.Present ? u.Motion.Altitude : -1f);
+                        AddAircraft(kind, s, u.Id, p, level, close, time, body, u.Motion.Present ? Mathf.Max(0f, airAlt[s]) : -1f);
                         break;
                 }
             }
@@ -397,6 +479,7 @@ namespace SE.Runtime.Military
             long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (var b in batches) b.Upload();
             foreach (var b in details) b.Upload();
+            foreach (var b in soldiers) b?.Upload();
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
             double f = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             PositionsMs = (t1 - t0) * f; BuildMs = (t2 - t1) * f; UploadMs = (t3 - t2) * f;
@@ -404,19 +487,98 @@ namespace SE.Runtime.Military
             int inst = 0;
             foreach (var b in batches) inst += b.Count;
             foreach (var b in details) inst += b.Count;
+            foreach (var b in soldiers) if (b != null) inst += b.Count;
             Instances = inst;
             // forget shots nobody remembers any more
             if (lastShot.Count > 4096) { lastShot.Clear(); shotCounts.Clear(); }
+            if (incoming.Count > 4096) incoming.Clear();
         }
 
+        // Rigged figure poses. Auto picks walk / run / aim / fire / idle from motion and combat.
+        const int PoseAuto = 0, PoseKneel = 1, PoseDeploy = 2, PoseHop = 3, PoseDash = 4;
+
+        /// <summary>The friendly armoured vehicle (slot) close to this squad and still enough to shelter behind, or -1.</summary>
+        int FindCoverArmor(int s, int owner, UnitStore store, HexGrid grid)
+        {
+            int keep = coverArmor[s], found = -1;
+            float best = .45f * .45f;
+            for (int i = 0; i < armorCount; i++)
+            {
+                int a = armorSlots[i];
+                if (a == s || a >= store.SlotCount) continue;
+                ref var r = ref store.Records[a];
+                if (!r.InUse || r.Owner != owner || speed[a] > .08f) continue;
+                float dx = grid.DxWrap(px[s], px[a]), dz = pz[a] - pz[s];
+                float d2 = dx * dx + dz * dz;
+                if (a == keep) d2 *= .6f;   // stay with the vehicle already chosen
+                if (d2 < best) { best = d2; found = a; }
+            }
+            return found;
+        }
+
+        /// <summary>Where each man of a set-up mortar team works (lateral, forward of the tube, map units).</summary>
+        static float2 CrewSpot(int f) => f switch
+        {
+            0 => new float2(-.03f, -.012f),    // loader, at the muzzle
+            1 => new float2(.032f, -.02f),     // gunner, at the sight
+            2 => new float2(-.006f, -.062f),   // ammunition bearer, behind
+            3 => new float2(-.085f, .045f),    // the rest kneel out to the flanks and front, watching
+            4 => new float2(.085f, .05f),
+            _ => new float2(0f, .095f),
+        };
+
+        /// <summary>
+        /// A squad as individual soldiers. On the move: a column or line, each man on his own gait phase. Halted:
+        /// calm idle, or engaged (some kneel). Under fire: each man in turn dashes to cover (behind a friendly
+        /// vehicle on the far side from the shooter, else the lowest fold of ground near his place: a shell hole,
+        /// a ditch) and kneels facing the threat. A trench is entered with a short hop down, one man after another.
+        /// A mortar team halts, kneels round the tube while it is laid down and raised on its baseplate, then
+        /// works it. Every choice is seeded by unit id and figure, and nothing here allocates.
+        /// </summary>
         unsafe void AddSquad(int slot, int id, Kind kind, float3 p, float facing, int level, bool moving, bool fighting, float time,
-            float dt, float shotAge, float4 body, float ground, SE.Core.World.TerrainView view, float x, float z, int equipment, bool assisting = false)
+            float dt, float shotAge, float4 body, float ground, SE.Core.World.TerrainView view, float x, float z, int equipment, bool assisting,
+            bool underFire, float2 threat, int deployHint)
         {
             int figures = kind == Kind.Exo ? (level == 2 ? 3 : 2) : level == 2 ? 6 : 3;
-            float scale = kind == Kind.Exo ? 0.084f : 0.069f;
+            float scale = kind == Kind.Exo ? WorldScale.Soldier * 1.20f : WorldScale.Soldier;
             spread[slot] = Mathf.Lerp(spread[slot], fighting ? 1f : 0f, 1f - Mathf.Exp(-dt * 3.5f));
             math.sincos(facing, out float sn, out float cs);
+            bool trench = TryTrenchFrame(view, x, z, out float trenchX, out float trenchZ, out float trenchFacing, out float trenchBlend);
             var model = kind == Kind.Exo ? Model.Exo : Model.Soldier;
+            bool still = !moving && stillFor[slot] > .3f;
+            // into a trench: the men drop into the cut one after another (and climb out the same way)
+            float trenchGoal = trench && !moving && trenchBlend > .5f ? 1f : 0f;
+            float trenchBefore = trenchIn[slot];
+            trenchIn[slot] = Mathf.MoveTowards(trenchBefore, trenchGoal, dt * (trenchGoal > trenchBefore ? 1.1f : 2.2f));
+            bool trenchShift = trenchIn[slot] != trenchBefore, climbingIn = trenchIn[slot] > trenchBefore;
+            // a mortar team sets up when it halts to fire (or the server reports it emplaced) and packs up to move
+            bool mortar = kind == Kind.Mortar;
+            if (mortar)
+            {
+                // server flags when present (1 setting up: ~2.8 s to ready, 2 deployed: finish quickly); otherwise derived
+                bool wantDeploy = !moving && (deployHint > 0 || stillFor[slot] > .5f && (deployState[slot] > 0f || fighting || shotAge < 20f));
+                float rate = !wantDeploy ? 1.6f : deployHint == 2 ? 1.5f : deployHint == 1 ? 1f / 2.8f : 1f / 3.2f;
+                deployState[slot] = Mathf.MoveTowards(deployState[slot], wantDeploy ? 1f : 0f, dt * rate);
+            }
+            float deploy = mortar ? deployState[slot] : 0f;
+            float setup = Mathf.SmoothStep(0f, 1f, deploy);
+            // going to ground under fire (not in a trench, not a mortar crew at its tube)
+            bool canCover = still && underFire && trenchGoal < .5f && !(mortar && deploy > .05f);
+            float coverBefore = coverBlend[slot];
+            bool chooseCover = canCover && coverBefore <= 0f;   // each man picks his spot once, as the squad reacts
+            coverBlend[slot] = Mathf.MoveTowards(coverBefore, canCover ? 1f : 0f, dt * (canCover ? 1.1f : 1.8f));
+            float cover = coverBlend[slot];
+            bool coverShift = cover != coverBefore, takingCover = cover > coverBefore;
+            int armor = coverArmor[slot];
+            float tankX = 0f, tankZ = 0f;
+            if (armor >= 0)
+            {
+                tankX = x + HexMath.DxWrap(px[slot], px[armor], view.Period, view.Wrap != 0);
+                tankZ = pz[armor];
+            }
+            var across = new float2(threat.y, -threat.x);
+            float threatYaw = Mathf.Atan2(threat.x, threat.y);
+            bool reloadCycle = shotCounts.TryGetValue(id, out int shots) && shots > 0 && shots % 8 == 0;
             for (int f = 0; f < figures; f++)
             {
                 float2 column = new float2(f % 2 == 0 ? -.057f : .057f, .08f - f / 2 * .122f);
@@ -425,22 +587,135 @@ namespace SE.Runtime.Military
                 // jitter so squads never look stamped
                 float j = (id * 7 + f * 13) % 17 / 17f - 0.5f;
                 o += new float2(j * 0.04f, -j * 0.03f);
+                if (mortar && setup > 0f) o = math.lerp(o, CrewSpot(f), setup);
                 float ox = o.x * cs + o.y * sn, oz = -o.x * sn + o.y * cs;
                 float fx = x + ox, fz = z + oz;
+                int seed = id * 31 + f * 7;
+                float order = Trait(seed, 12);   // who reacts first
+                if (trench)
+                {
+                    float along = (f - (figures - 1) * .5f) * .071f;
+                    fx = Mathf.Lerp(fx, trenchX - Mathf.Cos(trenchFacing) * along, trenchBlend);
+                    fz = Mathf.Lerp(fz, trenchZ + Mathf.Sin(trenchFacing) * along, trenchBlend);
+                }
+                int coverIndex = slot * MaxFigures + Mathf.Min(f, MaxFigures - 1);
+                if (chooseCover)
+                {
+                    // the lowest spot a few metres around him, preferring ground away from the shooter
+                    float bestScore = view.GroundHeight(fx, fz) - .003f, bestX = 0f, bestZ = 0f;
+                    float turn = Trait(seed, 15) * 1.5708f;
+                    for (int c = 0; c < 4; c++)
+                    {
+                        float a = turn + c * 1.5708f;
+                        float cdx = Mathf.Sin(a) * .065f, cdz = Mathf.Cos(a) * .065f;
+                        float score = view.GroundHeight(fx + cdx, fz + cdz) + (cdx * threat.x + cdz * threat.y) * .03f;
+                        if (score < bestScore) { bestScore = score; bestX = cdx; bestZ = cdz; }
+                    }
+                    coverDx[coverIndex] = bestX; coverDz[coverIndex] = bestZ;
+                }
+                float myCover = cover > 0f ? math.saturate(cover * 1.45f - order * .45f) : 0f;
+                float dashYaw = facing;
+                if (myCover > 0f)
+                {
+                    float gx, gz;
+                    if (armor >= 0)
+                    {
+                        // tucked in behind the hull, spread along it, on the side away from the shooter
+                        float lateral = (f - (figures - 1) * .5f) * .04f + j * .015f;
+                        float back = .17f + Trait(seed, 13) * .05f;
+                        gx = tankX - threat.x * back + across.x * lateral;
+                        gz = tankZ - threat.y * back + across.y * lateral;
+                    }
+                    else { gx = fx + coverDx[coverIndex]; gz = fz + coverDz[coverIndex]; }
+                    if ((gx - fx) * (gx - fx) + (gz - fz) * (gz - fz) > 1e-6f) dashYaw = Mathf.Atan2(gx - fx, gz - fz);
+                    float blend = Mathf.SmoothStep(0f, 1f, myCover);
+                    fx = Mathf.Lerp(fx, gx, blend); fz = Mathf.Lerp(fz, gz, blend);
+                }
                 if (level == 2 && footprints.Count > 0)
-                    for (int attempt = 0; attempt < 5 && FigureBlocked(world: view, x: fx, z: fz); attempt++)
-                    { fx = math.lerp(fx, x, .45f); fz = math.lerp(fz, z, .45f); }
+                    for (int attempt = 0; attempt < 6 && FigureBlocked(world: view, x: fx, z: fz); attempt++)
+                    {
+                        // Slide toward the squad's own (server-legal) position first; then fan sideways.
+                        if (attempt < 4) { fx = math.lerp(fx, x, .45f); fz = math.lerp(fz, z, .45f); }
+                        else { float side = (f % 2 == 0 ? 1 : -1) * .05f; fx += Mathf.Cos(facing) * side; fz -= Mathf.Sin(facing) * side; }
+                    }
                 float fy = level == 2 ? view.GroundHeight(fx, fz) : ground;
-                var foot = new float3(fx, Mathf.Max(fy, ground - 0.05f), fz);
-                float phase = gaitPhase[slot] + f * .71f;
+                // manning a trench: stood down in the cut (~1.1 m) behind the parapet, facing the enemy side.
+                // Each man drops in on his own beat with a little hop.
+                float drop = trench ? math.saturate(trenchIn[slot] * 1.5f - order * .5f) : 0f;
+                float stand = trench ? Mathf.SmoothStep(0f, 1f, drop) * trenchBlend : 0f;
+                bool hopping = trenchShift && drop > .02f && drop < .98f;
+                float hopLift = hopping ? Mathf.Sin(drop * Mathf.PI) * .012f : 0f;
+                var foot = new float3(fx, trench ? fy - .045f * stand + hopLift : Mathf.Max(fy, ground - 0.05f), fz);
+                float figureFacing = stand > .5f ? trenchFacing + j * .25f : facing + j * .20f;
+                int pose = PoseAuto;
+                float poseTime = 0f;
+                if (!moving)
+                {
+                    if (hopping) { pose = PoseHop; poseTime = climbingIn ? drop : 1f - drop; }
+                    else if (mortar && setup > .05f)
+                    {
+                        // loader and ammunition bearer work the tube, the gunner lays it (then kneels at the
+                        // sight), the rest kneel out to the front and flanks
+                        bool atTube = f == 0 || f == 2 || f == 1 && deploy < .98f;
+                        pose = atTube ? PoseDeploy : PoseKneel;
+                        if (atTube && (x - fx) * (x - fx) + (z - fz) * (z - fz) > 1e-6f) figureFacing = Mathf.Atan2(x - fx, z - fz);
+                    }
+                    else if (coverShift && myCover > .02f && myCover < .98f)
+                    {
+                        // a crouching dash to his spot (or back up to the line)
+                        pose = PoseDash; poseTime = time * 1.45f + order;
+                        figureFacing = takingCover ? dashYaw : dashYaw + Mathf.PI;
+                    }
+                    else if (myCover >= .98f) { pose = PoseKneel; figureFacing = threatYaw + j * .15f; }
+                    else if (fighting && stand < .5f && Trait(seed, 14) < .35f) pose = PoseKneel;
+                }
                 if (level == 2)
-                    AddFigure(torsoOf[slot], foot, facing + j * .20f, scale, body, moving ? math.saturate(speed[slot] / .11f) : 0f, spread[slot], phase, shotAge, equipment, view, assisting,
-                        shotCounts.TryGetValue(id, out int shots) && shots > 0 && shots % 8 == 0);
+                {
+                    AddFigure(torsoOf[slot], foot, figureFacing, scale, body, moving ? math.saturate(speed[slot] / .11f) : 0f, Mathf.Max(spread[slot], stand * .6f),
+                        gaitPhase[slot] + f * .71f + j * 1.3f, shotAge, equipment, view, assisting, reloadCycle, seed, pose, poseTime);
+                    if (mortar && f == 0 && setup < .15f)
+                    {
+                        // packed: the tube rides on the loader's back
+                        var carry = quaternion.RotateY(MapSpace.Yaw(figureFacing));
+                        var slung = MapSpace.W(foot) + math.rotate(carry, new float3(.045f, .6f, -.14f) * scale);
+                        batches[(int)Model.Plate].Add(InstanceData.TRS(slung, math.mul(carry, quaternion.RotateX(-.32f)), new float3(.075f, .76f, .075f) * scale, new float4(.18f, .19f, .17f, 0)));
+                    }
+                }
                 else
-                    batches[(int)model].Add(T(foot, facing + j * 0.3f, new float3(scale), body));
+                    batches[(int)model].Add(T(foot, figureFacing + j * 0.1f, new float3(scale), body));
             }
-            if (kind == Kind.Mortar && level == 2)
-                details[(int)Detail.Mortar].Add(T(p, facing, new float3(0.09f), body));
+            if (mortar && level == 2 && setup > .15f)
+            {
+                // the tube is laid on the ground, then raised on its baseplate and bipod; each round kicks it down
+                float raise = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(.35f, .9f, deploy));
+                float kick = deploy > .98f && shotAge >= 0f && shotAge < .4f ? Mathf.Exp(-shotAge * 12f) * (1f - Mathf.Exp(-shotAge * 90f)) * .006f : 0f;
+                var tube = quaternion.EulerZXY((1f - raise) * 1.3f, MapSpace.Yaw(facing), (1f - raise) * .25f);
+                float baseY = view.GroundHeight(x, z);
+                details[(int)Detail.Mortar].Add(InstanceData.TRS(MapSpace.W(new float3(x, baseY - kick, z)), tube, new float3(.09f * Mathf.Lerp(.9f, 1f, raise)), body));
+            }
+        }
+
+        static unsafe bool TryTrenchFrame(TerrainView view, float x, float z, out float tx, out float tz, out float facing, out float blend)
+        {
+            tx = x; tz = z; facing = blend = 0;
+            int tile = HexMath.TileAt(x, z, view.W, view.H, view.Wrap != 0);
+            if (tile < 0 || view.Trenches == null) return false;
+            float nearest = .27f;
+            for (int i = -1; i < 6; i++)
+            {
+                int n = i < 0 ? tile : view.Nb[tile * 6 + i];
+                if (n < 0 || view.Trenches[n * 4 + 3] < .05f) continue;
+                int tr = n * 4; float a = view.Trenches[tr + 2], sa = Mathf.Sin(a), ca = Mathf.Cos(a);
+                float cx = HexMath.CenterX(n, view.W) + view.Trenches[tr], cz = HexMath.CenterZ(n, view.W) + view.Trenches[tr + 1];
+                float dx = HexMath.DxWrap(cx, x, view.Period, view.Wrap != 0), dz = z - cz;
+                float along = Mathf.Clamp(-dx * ca + dz * sa, -.56f, .56f);
+                float px = cx - ca * along, pz = cz + sa * along;
+                float distance = Mathf.Sqrt((x - px) * (x - px) + (z - pz) * (z - pz));
+                if (distance >= nearest) continue;
+                nearest = distance; tx = px; tz = pz; facing = a;
+                blend = 1 - Mathf.SmoothStep(0, 1, Mathf.InverseLerp(.06f, .27f, distance));
+            }
+            return blend > 0;
         }
 
         unsafe bool FigureBlocked(TerrainView world, float x, float z)
@@ -450,16 +725,116 @@ namespace SE.Runtime.Military
             for (int d = -1; d < 6; d++)
             {
                 int n = d < 0 ? tile : world.Nb[tile * 6 + d];
-                if (!footprints.TryGetValue(n, out var b)) continue;
-                float dx = HexMath.DxWrap(x, b.X, world.Period, world.Wrap != 0), dz = b.Z - z;
-                float radius = b.Type == "motor_works" ? .58f : b.Type == "town" ? .53f : .46f;
-                if (dx * dx + dz * dz < radius * radius) return true;
+                if (!footprints.TryGetValue(n, out var list)) continue;
+                foreach (var b in list)
+                {
+                    // Recorded walls when this type has been drawn; the old circle until then.
+                    if (Cities.CityRenderer.Footprints.ContainsKey(b.Type))
+                    {
+                        if (Cities.CityRenderer.InsideFootprint(b, x, z, .018f, world.Period, world.Wrap != 0)) return true;
+                        continue;
+                    }
+                    float dx = HexMath.DxWrap(x, b.X, world.Period, world.Wrap != 0), dz = b.Z - z;
+                    float radius = b.Type == "motor_works" ? .58f : b.Type == "town" ? .53f : .46f;
+                    if (dx * dx + dz * dz < radius * radius) return true;
+                }
             }
             return false;
         }
 
-        unsafe void AddFigure(Detail torso, float3 foot, float facing, float scale, float4 color, float stride, float aim, float phase, float shotAge, int equipment, TerrainView groundView = default, bool assisting = false, bool reloadCycle = false)
+        /// <summary>The rigged soldier for a torso role, if it was built and baked.</summary>
+        SoldierRig RigFor(Detail torso, out int role)
         {
+            role = (int)torso - (int)Detail.Rifle;
+            return role >= 0 && role < rigs.Length ? rigs[role] : null;
+        }
+
+        /// <summary>
+        /// One animated soldier: run or walk locked to the distance-driven gait phase (no foot sliding as
+        /// speed changes), the firing clip on a fresh shot, aiming while engaged, otherwise idle breathing
+        /// and scanning. Per-figure offsets keep a squad from moving in lockstep.
+        /// </summary>
+        static float Trait(int seed, int k) => math.frac(math.sin(seed * 12.9898f + k * 78.233f) * 43758.5453f);
+
+        /// <summary>
+        /// One soldier, as an individual. Stable per-man traits (seeded by squad and position): height
+        /// (1.66-1.86 m), build, stride length and cadence, how often he shifts his weight, scans the horizon or
+        /// brings his rifle up when nothing is happening, and how quickly he reacts to a volley (so a squad's
+        /// shots ripple instead of firing as one). Kit from the barracks upgrades is worn on the body.
+        /// </summary>
+        void AddRigged(int role, float3 foot, float facing, float scale, float4 color, float stride, float aim, float phase, float shotAge, int seed = 0, int equipment = 0,
+            int pose = PoseAuto, float poseTime = 0f)
+        {
+            var rig = rigs[role];
+            float height = .95f + Trait(seed, 1) * .11f, build = .96f + Trait(seed, 2) * .09f;
+            float cadence = .92f + Trait(seed, 3) * .16f, reaction = Trait(seed, 4) * .22f;
+            float cycle = phase / (2 * Mathf.PI) * cadence;
+            float now = Time.time + Trait(seed, 5) * 40f;
+            float frame;
+            float look = 0;
+            // kit offsets follow the torso down when he kneels or leans over the tube
+            float kitDrop = 0f, kitForward = 0f, kitLean = 0f;
+            switch (pose)
+            {
+                case PoseDash:
+                    frame = rig.Cycle(SoldierRig.Clip.Run, poseTime);
+                    break;
+                case PoseHop:
+                    frame = rig.Has(SoldierRig.Clip.Hop) ? rig.Frame(SoldierRig.Clip.Hop, poseTime * rig.Duration(SoldierRig.Clip.Hop)) : rig.Cycle(SoldierRig.Clip.Walk, poseTime);
+                    break;
+                case PoseKneel:
+                    frame = rig.Has(SoldierRig.Clip.Kneel) ? rig.Frame(SoldierRig.Clip.Kneel, now * (.8f + Trait(seed, 6) * .4f)) : rig.Frame(SoldierRig.Clip.Aim, now);
+                    if (rig.Has(SoldierRig.Clip.Kneel)) { kitDrop = .19f; kitLean = .1f; }
+                    look = Mathf.Sin(now * .3f) * .04f;
+                    break;
+                case PoseDeploy:
+                    frame = rig.Has(SoldierRig.Clip.Deploy) ? rig.Frame(SoldierRig.Clip.Deploy, now * (.9f + Trait(seed, 6) * .2f)) : rig.Frame(SoldierRig.Clip.Aim, now);
+                    if (rig.Has(SoldierRig.Clip.Deploy)) { kitDrop = .21f; kitForward = .04f; kitLean = .5f; }
+                    break;
+                default:
+                    if (stride > .08f) frame = rig.Cycle(stride > .72f ? SoldierRig.Clip.Run : SoldierRig.Clip.Walk, cycle);
+                    else if (shotAge >= reaction && shotAge < reaction + .2f && aim > .25f) frame = rig.Frame(SoldierRig.Clip.Fire, shotAge - reaction);
+                    else if (aim > .25f) { frame = rig.Frame(SoldierRig.Clip.Aim, now * (.8f + Trait(seed, 6) * .4f)); look = Mathf.Sin(now * .35f) * .05f; }
+                    else
+                    {
+                        // at ease: calm idle; the head and shoulders only drift a little, slowly (no scanning, no rifle raising)
+                        frame = rig.Frame(SoldierRig.Clip.Idle, now * (.85f + Trait(seed, 8) * .3f));
+                        look = Mathf.Sin(now * (.05f + Trait(seed, 9) * .04f)) * .07f;
+                    }
+                    break;
+            }
+            facing += look;
+            var rot = quaternion.RotateY(MapSpace.Yaw(facing));
+            var at = MapSpace.W(foot);
+            soldiers[role].Add(InstanceData.TRS(at, rot, new float3(scale * build, scale * height, scale * build), new float4(color.xyz, 2 + frame)));
+            if ((equipment & (32 | 64 | 128 | 256)) == 0) return;
+            // barracks kit, worn on the torso (offsets in model units, ~1.02 tall)
+            float s = scale * height;
+            var kit = new float4(.20f, .22f, .17f, 0);
+            var torsoRot = kitLean != 0f ? math.mul(rot, quaternion.RotateX(kitLean)) : rot;
+            float3 P(float x, float y, float z) => at + math.rotate(rot, new float3(x * build, y - kitDrop, z * build + kitForward) * s);
+            if ((equipment & 128) != 0)   // body armour: plate carrier front and back
+            {
+                batches[(int)Model.Plate].Add(InstanceData.TRS(P(0, .66f, .085f), torsoRot, new float3(.20f, .21f, .045f) * s, kit));
+                batches[(int)Model.Plate].Add(InstanceData.TRS(P(0, .67f, -.09f), torsoRot, new float3(.19f, .20f, .04f) * s, kit));
+            }
+            if ((equipment & 32) != 0)    // grenades on the belt
+                for (int g = -1; g <= 1; g += 2)
+                    batches[(int)Model.Plate].Add(InstanceData.TRS(P(g * .075f, .52f, .095f), torsoRot, new float3(.045f, .055f, .045f) * s, new float4(.26f, .30f, .20f, 0)));
+            if ((equipment & 64) != 0 && (role == 0 || role == 2 || role == 3) && Trait(seed, 10) < .5f)   // a disposable rocket slung across the back
+                batches[(int)Model.Plate].Add(InstanceData.TRS(P(.03f, .70f, -.15f), math.mul(torsoRot, quaternion.RotateZ(.55f)), new float3(.055f, .62f, .055f) * s, new float4(.30f, .33f, .24f, 0)));
+            if ((equipment & 256) != 0 && Trait(seed, 11) < .2f && pose != PoseDeploy)   // the squad's marksman: a long scope on his rifle
+                batches[(int)Model.Plate].Add(InstanceData.TRS(P(.06f, .83f, .30f), rot, new float3(.022f, .024f, .16f) * s, new float4(.12f, .12f, .12f, 0)));
+        }
+
+        unsafe void AddFigure(Detail torso, float3 foot, float facing, float scale, float4 color, float stride, float aim, float phase, float shotAge, int equipment, TerrainView groundView = default, bool assisting = false, bool reloadCycle = false, int seed = 0,
+            int pose = PoseAuto, float poseTime = 0f)
+        {
+            if (RigFor(torso, out int rigRole) != null) { AddRigged(rigRole, foot, facing, scale, color, stride, aim, phase, shotAge, seed, equipment, pose, poseTime); return; }
+            // the procedural figure approximates the poses: crouched aim for kneeling work, a run for a dash
+            if (pose == PoseKneel || pose == PoseDeploy) { stride = 0f; aim = 1f; }
+            else if (pose == PoseDash) { stride = 1f; phase = poseTime * 2f * Mathf.PI; }
+            else if (pose == PoseHop) { stride = .5f; phase = poseTime * Mathf.PI; }
             float step = Mathf.Sin(phase) * stride, crouch = aim * (1f - stride) * .115f;
             float recoil = shotAge >= 0f && shotAge < .25f ? Mathf.Exp(-shotAge * 19) * (1 - Mathf.Exp(-shotAge * 180)) * .065f : 0f;
             float reload = reloadCycle && shotAge > .50f && shotAge < 1.45f ? Mathf.Sin((shotAge - .50f) / .95f * Mathf.PI) : 0;
@@ -560,12 +935,35 @@ namespace SE.Runtime.Military
             float r = view.GroundHeight(p.x + cs * h, p.z - sn * h) - view.GroundHeight(p.x - cs * h, p.z + sn * h);
             float pitch = Mathf.Clamp(-f / (h * 2), -.25f, .25f);
             float roll = Mathf.Clamp(r / (h * 2), -.24f, .24f);
-            float kick = shotAge >= 0f && shotAge < .28f ? Mathf.Sin(shotAge * 11.22f) : 0;
-            suspensionPitch[slot] = Mathf.Lerp(suspensionPitch[slot], pitch, .18f);
-            suspensionRoll[slot] = Mathf.Lerp(suspensionRoll[slot], roll, .18f);
-            var rot = quaternion.EulerZXY(suspensionPitch[slot] + kick * .018f, MapSpace.Yaw(facing), suspensionRoll[slot]);
-            var at = MapSpace.W(p);
             bool tracked = kind == Kind.Tank || kind == Kind.AutoTank || kind == Kind.SpGun;
+            // Weight: the hull rides a spring-damper suspension instead of snapping to the ground. Heavy tracked
+            // hulls are stiff and slow to settle; wheeled vehicles are softer and bounce. Acceleration squats the
+            // tail, braking dips the nose, turning leans the body outward, and the main gun rocks the hull back.
+            float dt = frameDt;
+            if (dt > 0f)
+            {
+                float accel = (speed[slot] - lastSpeed[slot]) / dt;
+                lastSpeed[slot] = speed[slot];
+                float targetPitch = pitch - Mathf.Clamp(accel * (tracked ? .010f : .016f), -.06f, .06f);
+                float targetRoll = roll + Mathf.Clamp(turnRate[slot] * speed[slot] * (tracked ? .05f : .09f), -.07f, .07f);
+                if (!moving) targetPitch += Mathf.Sin(Time.time * 31f + slot) * .0015f;   // idling engine shudder
+                float stiffness = tracked ? 55f : 75f, damping = tracked ? 11f : 7.5f;
+                if (shotAge >= 0f && shotAge < .1f && Time.time - kickedAt[slot] > .4f && kind != Kind.Buggy && kind != Kind.Truck)
+                {
+                    kickedAt[slot] = Time.time;
+                    // recoil: the hull pitches away from the gun's line of fire
+                    float rel = Mathf.DeltaAngle(facing * Mathf.Rad2Deg, turret[slot] * Mathf.Rad2Deg) * Mathf.Deg2Rad;
+                    float power = kind == Kind.SpGun ? 1.6f : tracked ? 1.1f : .45f;
+                    pitchRate[slot] -= Mathf.Cos(rel) * power;
+                    rollRate[slot] -= Mathf.Sin(rel) * power;
+                }
+                pitchRate[slot] += (stiffness * (targetPitch - suspensionPitch[slot]) - damping * pitchRate[slot]) * dt;
+                rollRate[slot] += (stiffness * (targetRoll - suspensionRoll[slot]) - damping * rollRate[slot]) * dt;
+                suspensionPitch[slot] = Mathf.Clamp(suspensionPitch[slot] + pitchRate[slot] * dt, -.32f, .32f);
+                suspensionRoll[slot] = Mathf.Clamp(suspensionRoll[slot] + rollRate[slot] * dt, -.3f, .3f);
+            }
+            var rot = quaternion.EulerZXY(suspensionPitch[slot], MapSpace.Yaw(facing), suspensionRoll[slot]);
+            var at = MapSpace.W(p);
             Detail model = kind switch
             {
                 Kind.Tank => Detail.Tank, Kind.AutoTank => Detail.Autonomous, Kind.SpGun => Detail.Howitzer,
@@ -575,7 +973,10 @@ namespace SE.Runtime.Military
             if (kind == Kind.AutoTank) scale *= 1.12f;
             if (kind == Kind.Buggy || kind == Kind.FieldGun) scale *= .84f;
             var paint = new float4(body.xyz * 1.28f + .09f, 0);
-            DetailPart(model, at, rot, scale, paint);
+            // True proportions: the tracked hull models are drawn 64% as wide and 12% longer than built, so a
+            // main battle tank is ~4 m wide, ~7.7 m long and ~2.4 m tall beside 1.75 m soldiers.
+            float3 prop = tracked ? new float3(.64f, 1f, 1.12f) : new float3(1f);
+            details[(int)model].Add(InstanceData.TRS(at, rot, prop * scale, paint));
             if (kind == Kind.FieldGun) return;
             if (tracked)
             {
@@ -583,13 +984,13 @@ namespace SE.Runtime.Military
                 {
                     float travel = treadTravel[slot] / math.max(.01f, scale);
                     TrackPoint(link / 26f + travel / (1.48f + math.PI * .218f), out float ty, out float tz, out float tangentAngle);
-                    var center = at + math.rotate(rot, new float3(side * .434f, ty, tz) * scale);
+                    var center = at + math.rotate(rot, new float3(side * .434f, ty, tz) * prop * scale);
                     var tangent = math.mul(rot, quaternion.RotateX(tangentAngle));
-                    batches[(int)Model.Plate].Add(InstanceData.TRS(center, tangent, new float3(.143f, .018f, .078f) * scale, new float4(.25f, .26f, .23f, 0)));
+                    batches[(int)Model.Plate].Add(InstanceData.TRS(center, tangent, new float3(.143f * prop.x, .018f, .078f * prop.z) * scale, new float4(.25f, .26f, .23f, 0)));
                 }
                 if ((equipment & 2) != 0) for (int side = -1; side <= 1; side += 2) for (int tile = 0; tile < 4; tile++)
                 {
-                    var center = at + math.rotate(rot, new float3(side * .367f, .25f, -.31f + tile * .20f) * scale);
+                    var center = at + math.rotate(rot, new float3(side * .367f, .25f, -.31f + tile * .20f) * prop * scale);
                     batches[(int)Model.Plate].Add(InstanceData.TRS(center, rot, new float3(.052f, .113f, .16f) * scale, new float4(body.xyz * .82f, 0)));
                 }
             }
@@ -599,11 +1000,11 @@ namespace SE.Runtime.Military
                 for (int a = 0; a < axles; a++)
                 {
                     float z = Mathf.Lerp(-.38f, .36f, (float)a / (axles - 1));
-                    float sx = p.x + (side * axleWidth * cs + z * sn) * scale;
-                    float sz = p.z + (-side * axleWidth * sn + z * cs) * scale;
+                    float sx = p.x + (side * axleWidth * prop.x * cs + z * prop.z * sn) * scale;
+                    float sz = p.z + (-side * axleWidth * prop.x * sn + z * prop.z * cs) * scale;
                     float response = Mathf.Clamp((view.GroundHeight(sx, sz) - p.y) / scale, -.027f, .027f);
                     float y = (tracked ? .106f : .104f) + response;
-                    var pivot = at + math.rotate(rot, new float3(side * axleWidth, y, z) * scale);
+                    var pivot = at + math.rotate(rot, new float3(side * axleWidth, y, z) * prop * scale);
                     float steer = !tracked && a >= axles - 1 ? Mathf.Clamp(-turnRate[slot] * .34f, -.49f, .49f) : 0;
                     var wheel = math.mul(rot, math.mul(quaternion.RotateY(steer), quaternion.RotateX(wheelPhase[slot])));
                     DetailPart(tracked ? Detail.RoadWheel : Detail.Wheel, pivot, wheel, scale, new float4(.71f, .73f, .70f, 0));
@@ -614,8 +1015,10 @@ namespace SE.Runtime.Military
                 float y = kind == Kind.AutoTank ? .362f : kind == Kind.SpGun ? .455f : .420f;
                 float k = kind == Kind.ArmoredCar ? .59f : 1f;
                 var ring = kind == Kind.ArmoredCar ? at + math.rotate(rot, new float3(0, .167f, -.10f) * scale) : at;
-                DetailPart(kind == Kind.AutoTank ? Detail.RemoteTurret : kind == Kind.SpGun ? Detail.HowitzerTurret : Detail.Turret, ring, swivel, scale * k, paint);
-                var pivot = ring + math.rotate(swivel, new float3(0, y, .17f - kick * .09f) * (scale * k));
+                details[(int)(kind == Kind.AutoTank ? Detail.RemoteTurret : kind == Kind.SpGun ? Detail.HowitzerTurret : Detail.Turret)].Add(InstanceData.TRS(ring, swivel, new float3(tracked ? .8f : 1f, 1f, 1f) * (scale * k), paint));
+                // barrel recoil: a sharp run-back, then a slower return to battery
+                float recoil = shotAge >= 0f && shotAge < .6f ? Mathf.Exp(-shotAge * 7f) * (1 - Mathf.Exp(-shotAge * 120f)) * .16f : 0f;
+                var pivot = ring + math.rotate(swivel, new float3(0, y, .17f - recoil) * (scale * k));
                 DetailPart(kind == Kind.SpGun ? Detail.HowitzerBarrel : Detail.Barrel, pivot,
                     math.mul(swivel, quaternion.RotateX(kind == Kind.SpGun ? -.25f : -.02f)), scale * k, paint);
             }
@@ -630,8 +1033,9 @@ namespace SE.Runtime.Military
             {
                 float ox = (f - 1) * 0.06f, oz = -0.09f;
                 float fx = x + ox * cs + oz * sn, fz = z - ox * sn + oz * cs;
+                // the loader works the breech; the layer and the third man kneel by the trail
                 AddFigure(Detail.MortarCrew, new float3(fx, view.GroundHeight(fx, fz), fz), facing + (f - 1) * .5f,
-                    .062f, body, 0, .7f, time * .8f + id + f, 10, 0, view);
+                    .062f, body, 0, .7f, time * .8f + id + f, 10, 0, view, false, false, id * 31 + f * 7, f == 0 ? PoseDeploy : PoseKneel);
             }
         }
 
@@ -666,7 +1070,20 @@ namespace SE.Runtime.Military
             float sx = px[s], sz = pz[s];
             store.Heading(s, out float hx, out float hz);
             bool moving = hx != 0 || hz != 0;
-            if (!airLive[s] || Mathf.Abs(grid.DxWrap(airX[s], sx)) + Mathf.Abs(sz - airZ[s]) > 8f)
+            // however fast the server now moves this aircraft, chase it at least that fast (no lagging or snapping)
+            if (airLive[s] && dt > 0f)
+            {
+                float mdx = grid.DxWrap(srvX[s], sx), mdz = sz - srvZ[s];
+                float measured = Mathf.Sqrt(mdx * mdx + mdz * mdz) / dt;
+                if (measured < 30f) srvSpeed[s] = Mathf.Lerp(srvSpeed[s], measured, 1f - Mathf.Exp(-dt * 2f));
+            }
+            srvX[s] = sx; srvZ[s] = sz;
+            float server = srvSpeed[s];
+            top = Mathf.Max(top, server * 1.35f);
+            if (kind == Kind.Fighter || kind == Kind.Bomber) cruise = Mathf.Max(cruise, server * .85f);
+            lead = Mathf.Max(lead, server * .35f);
+            turn *= Mathf.Max(1f, Mathf.Sqrt(server / Mathf.Max(.1f, cruise)));
+            if (!airLive[s] || Mathf.Abs(grid.DxWrap(airX[s], sx)) + Mathf.Abs(sz - airZ[s]) > Mathf.Max(8f, server * 3f))
             {
                 airLive[s] = true;
                 airX[s] = sx; airZ[s] = sz; airH[s] = yaw[s]; airBank[s] = 0;
@@ -693,6 +1110,63 @@ namespace SE.Runtime.Military
             float bankWant = Mathf.Clamp(turnRate * (kind == Kind.Heli ? 0.12f : 0.45f), -1.0f, 1.0f);
             airBank[s] = Mathf.Lerp(airBank[s], bankWant, 1f - Mathf.Exp(-dt * 4f));
             // aircraft are drawn (and shoot from) where they fly, not where the server hex is
+            px[s] = airX[s]; pz[s] = airZ[s];
+        }
+
+        /// <summary>
+        /// Aircraft with continuous server motion. Snapshot interpolation is piecewise linear, so a fast jet showed
+        /// kinks at every snapshot and froze then jumped whenever playback reached the newest one. Instead the
+        /// drawn aircraft dead-reckons along the server velocity and bleeds off its error toward the interpolated
+        /// track; heading follows the smoothed velocity at a turn-rate limit, and the bank is the coordinated-turn
+        /// angle for that speed and turn rate. Altitude is eased the same way.
+        /// </summary>
+        void FlySnapshot(int s, Kind kind, in SE.Core.Protocol.WorldMotion m, UnitStore store, HexGrid grid, bool fresh, float dt)
+        {
+            float tx = px[s], tz = pz[s];
+            float vx = m.Vx, vz = m.Vz;
+            if (!fresh && airLive[s] && dt > 0f)
+            {
+                // the interpolated track's own velocity, for when the server sends none
+                float mdx = grid.DxWrap(srvX[s], tx), mdz = tz - srvZ[s];
+                float measured = Mathf.Sqrt(mdx * mdx + mdz * mdz) / dt;
+                if (measured < 30f) srvSpeed[s] = Mathf.Lerp(srvSpeed[s], measured, 1f - Mathf.Exp(-dt * 3f));
+                if (vx * vx + vz * vz < 1e-6f && measured > 1e-4f && measured < 30f)
+                { float k = srvSpeed[s] / measured; vx = mdx / dt * k; vz = mdz / dt * k; }
+            }
+            srvX[s] = tx; srvZ[s] = tz;
+            float v = Mathf.Sqrt(vx * vx + vz * vz);
+            if (fresh || !airLive[s])
+            {
+                airLive[s] = true;
+                airX[s] = tx; airZ[s] = tz; airH[s] = store.Facing(s); airBank[s] = 0; airAlt[s] = m.Altitude;
+                px[s] = airX[s]; pz[s] = airZ[s];
+                return;
+            }
+            if (dt <= 0f) { px[s] = airX[s]; pz[s] = airZ[s]; return; }
+            float px1 = airX[s] + vx * dt, pz1 = airZ[s] + vz * dt;
+            float ex = grid.DxWrap(px1, tx), ez = tz - pz1;
+            if (ex * ex + ez * ez > Mathf.Max(1.5f, v * 1.2f) * Mathf.Max(1.5f, v * 1.2f)) { airX[s] = tx; airZ[s] = tz; }   // teleported (respawn, long gap)
+            else
+            {
+                float pull = 1f - Mathf.Exp(-dt * 4.5f);
+                airX[s] = px1 + ex * pull; airZ[s] = pz1 + ez * pull;
+            }
+            airAlt[s] = Mathf.Lerp(airAlt[s], m.Altitude, 1f - Mathf.Exp(-dt * 3f));
+            float limit, bankMax;
+            switch (kind)
+            {
+                case Kind.Fighter: limit = 3.2f; bankMax = 1.15f; break;
+                case Kind.Bomber: limit = 1.6f; bankMax = .6f; break;
+                case Kind.Heli: limit = 3.5f; bankMax = .32f; break;
+                default: limit = 4f; bankMax = .55f; break;
+            }
+            float want = v > .05f ? Mathf.Atan2(vx, vz) : store.Facing(s);
+            float before = airH[s];
+            airH[s] = Approach(airH[s], want, dt * limit);
+            float rate = Mathf.DeltaAngle(before * Mathf.Rad2Deg, airH[s] * Mathf.Rad2Deg) * Mathf.Deg2Rad / dt;
+            float bankWant = Mathf.Clamp(Mathf.Atan(rate * Mathf.Max(.3f, v) * .6f), -bankMax, bankMax);
+            airBank[s] = Mathf.Lerp(airBank[s], bankWant, 1f - Mathf.Exp(-dt * 5f));
+            speed[s] = Mathf.Lerp(speed[s], v, 1f - Mathf.Exp(-dt * 6f));
             px[s] = airX[s]; pz[s] = airZ[s];
         }
 
@@ -760,6 +1234,7 @@ namespace SE.Runtime.Military
         {
             foreach (var b in batches) b.Draw();
             foreach (var b in details) b.Draw();
+            foreach (var b in soldiers) b?.Draw();
         }
 
         /// <summary>Current drawn position of a unit (camera image), for selection and effects.</summary>
@@ -775,6 +1250,8 @@ namespace SE.Runtime.Military
         {
             foreach (var b in batches) b.Dispose();
             foreach (var b in details) b.Dispose();
+            foreach (var b in soldiers) b?.Dispose();
+            foreach (var r in rigs) r?.Dispose();
         }
     }
 }

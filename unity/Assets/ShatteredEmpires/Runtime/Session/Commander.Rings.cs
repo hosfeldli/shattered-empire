@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using SE.Core.Protocol;
@@ -17,6 +18,9 @@ namespace SE.Runtime.Session
         public BaseParcel? RingPreviewParcel { get; private set; }
         public BaseParcel? FieldPreviewParcel { get; private set; }
         public bool FieldPreviewValid { get; private set; }
+        public float FieldYaw { get; private set; }
+        public string FieldPreviewReason { get; private set; } = "Choose visible, clear terrain.";
+        float fieldPreviewYaw;
         string fieldPreviewType;
         float fieldPreviewAt;
         Vector3 fieldPreviewPoint;
@@ -24,19 +28,24 @@ namespace SE.Runtime.Session
 
         void UpdateFieldPreview(float time, bool overUi)
         {
+            cam.PlacementRotation = Current == Mode.Target && ProtocolDecoder.Str(TargetCommand?["c"]) == "fieldBuild";
             if (Current != Mode.Target || ProtocolDecoder.Str(TargetCommand?["c"]) != "fieldBuild" || overUi || !cam.TryGround(InputFacade.MousePosition, out var point))
             { FieldPreviewParcel = null; fieldPreviewType = null; return; }
+            if (InputFacade.Action("rotate_left")) FieldYaw -= Mathf.PI / 12;
+            if (InputFacade.Action("rotate_right")) FieldYaw += Mathf.PI / 12;
+            FieldYaw = Mathf.Atan2(Mathf.Sin(FieldYaw), Mathf.Cos(FieldYaw));
             int tile = session.World.Grid.TileAt(point.x, point.z);
-            FieldPreviewParcel = new BaseParcel { Tile = tile, X = point.x, Z = point.z, Width = .9f, Depth = .9f };
-            bool changed = fieldPreviewType != Option || (point - fieldPreviewPoint).sqrMagnitude > .035f;
+            FieldPreviewParcel = new BaseParcel { Tile = tile, X = point.x, Z = point.z, Yaw = FieldYaw, Width = .9f, Depth = .9f };
+            bool changed = fieldPreviewType != Option || (point - fieldPreviewPoint).sqrMagnitude > .035f || Mathf.Abs(FieldYaw - fieldPreviewYaw) > .001f;
+            if (changed) { fieldPreviewToken++; FieldPreviewValid = false; FieldPreviewReason = "Checking the footprint…"; }
             if (!changed || time < fieldPreviewAt) return;
-            fieldPreviewAt = time + .25f; fieldPreviewType = Option; fieldPreviewPoint = point; FieldPreviewValid = false;
+            fieldPreviewAt = time + .15f; fieldPreviewType = Option; fieldPreviewPoint = point; fieldPreviewYaw = FieldYaw; FieldPreviewValid = false;
             int token = ++fieldPreviewToken;
-            session.Net?.Command(new JObject { ["c"] = "fieldPreview", ["type"] = Option, ["point"] = Point(point) }, r =>
+            session.Net?.Command(new JObject { ["c"] = "fieldPreview", ["type"] = Option, ["point"] = Point(point), ["yaw"] = FieldYaw }, r =>
             {
                 if (token != fieldPreviewToken || Current != Mode.Target) return;
                 FieldPreviewValid = r.Error == null && ProtocolDecoder.Bool(r.Raw?["placement"]?["valid"]);
-                Say(r.Error ?? "Valid site · Click to begin construction", r.Error == null, Time.unscaledTime);
+                FieldPreviewReason = r.Error ?? "Valid footprint · Click to begin construction";
             });
         }
 
@@ -78,19 +87,35 @@ namespace SE.Runtime.Session
             SelectedPickup = p.Id; SelectionChanged?.Invoke(); return true;
         }
 
-        bool SelectActionRing(Vector2 mouse)
+        bool SelectActionRing(Vector2 mouse, bool doubleClick = false)
         {
             if (SpatialBuildingAt(mouse) is BuildingRecord b)
             {
                 SelectedPickup = SelectedRingSlot = 0;
                 if (b.Type == "town") { SelectObjective(b.City); return true; }
-                SelectProduction(new[] { b.Id }); return true;
+                if (!doubleClick || b.Owner != session.CivId) { SelectProduction(new[] { b.Id }); return true; }
+                // double-click: every own building of that type on screen (the wheel shows the shared roster)
+                var same = new List<int> { b.Id };
+                foreach (var o in session.Structures.Buildings.Values)
+                {
+                    if (o.Id == b.Id || o.Owner != b.Owner || o.Type != b.Type || !o.HasPosition) continue;
+                    var sp = WorldToScreen(o.X, o.Z, .18f);
+                    if (sp.z > 0 && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) same.Add(o.Id);
+                }
+                SelectProduction(same); return true;
             }
             if (!cam.TryGround(mouse, out var point)) return false;
-            float best = .57f * .57f; ObjectiveSite choice = default; BaseParcel parcel = default;
+            if (!NearestOwnParcel(point, out var choice, out var parcel)) return false;
+            SelectRingSlot(choice.Id, parcel.Id); return true;
+        }
+
+        bool NearestOwnParcel(Vector3 point, out ObjectiveSite choice, out BaseParcel parcel, int onlySite = 0)
+        {
+            float best = .57f * .57f; choice = default; parcel = default;
             foreach (var s in session.Objectives.Values)
             {
                 if (!s.IsBase || s.Owner != session.CivId || s.Parcels == null) continue;
+                if (onlySite != 0 && s.Id != onlySite) continue;
                 foreach (var p in s.Parcels)
                 {
                     if (p.Id == 0) continue;
@@ -98,8 +123,27 @@ namespace SE.Runtime.Session
                     if (d >= best) continue; best = d; choice = s; parcel = p;
                 }
             }
-            if (choice.Id == 0) return false;
-            SelectRingSlot(choice.Id, parcel.Id); return true;
+            return choice.Id != 0;
+        }
+
+        // ------------------------------------------------------------------ socket glow (spec B7)
+        /// <summary>Set by the base wheel while a socket wedge is hovered: that parcel glows in the world.</summary>
+        public int HoverRingSlot { get; set; }
+        /// <summary>The parcel of the selected own base under the cursor (computed each frame), so its wedge lights up.</summary>
+        public int HoverRingSlotFromWorld { get; private set; }
+
+        int WorldParcelUnderCursor()
+        {
+            if (SelectedObjective == 0 || units.Selected.Count > 0) return 0;
+            if (!cam.TryGround(InputFacade.MousePosition, out var point)) return 0;
+            return NearestOwnParcel(point, out _, out var parcel, SelectedObjective) ? parcel.Id : 0;
+        }
+
+        /// <summary>Screen position (pixels, z = depth; z &lt;= 0 behind the camera) of a map point, wrap-aware.</summary>
+        public Vector3 WorldToScreen(float x, float z, float raise = 0f)
+        {
+            float nx = session.World.Grid.NearX(x, cam.Focus.x);
+            return cam.ToScreen(new Vector3(nx, session.World.GroundHeight(nx, z) + raise, z));
         }
 
         public void SelectRingSlot(int siteId, int slotId)
@@ -129,5 +173,10 @@ namespace SE.Runtime.Session
         {
             Begin(Mode.Target, type, new JObject { ["c"] = "fieldBuild", ["type"] = type, ["tile"] = "@map" });
         }
+
+        /// <summary>Draw a trench (defense bar).</summary>
+        public void BeginTrench() => Begin(Mode.Trench);
+        /// <summary>Draw a road (defense bar).</summary>
+        public void BeginRoad() => Begin(Mode.Road);
     }
 }

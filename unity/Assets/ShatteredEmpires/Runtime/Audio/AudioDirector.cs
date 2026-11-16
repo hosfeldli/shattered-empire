@@ -39,6 +39,10 @@ namespace SE.Runtime.Audio
         readonly System.Random rng = new System.Random(3);
         public float Master = 1f, Effects = 1f, Ambience = .65f, MusicVolume = .4f;
         float time, battleHeat, voiceGain = 1, environmentAt;
+        float urbanEcho, casualtyAt, uiAt, dread;
+        readonly Dictionary<string, AudioSource> scores = new Dictionary<string, AudioSource>();
+        readonly Dictionary<string, AudioClip> lastTrack = new Dictionary<string, AudioClip>();
+        AudioSource ui;
 
         public AudioDirector(Camera cam)
         {
@@ -72,11 +76,18 @@ namespace SE.Runtime.Audio
                 if (RecordedAudio.Loops.TryGetValue("tracks", out var trackClip)) tracks.clip = trackClip;
                 engines.Add(new Engine { Src = s, Tracks = tracks, Lp = go.AddComponent<AudioLowPassFilter>() });
             }
-            foreach (var name in new[] { "wind", "rain", "river", "industry", "nature", "music_calm", "music_combat", "music_menu", "river_close", "construction", "city", "fire" })
+            foreach (var name in new[] { "wind", "rain", "river", "industry", "nature", "river_close", "construction", "city", "fire", "dread", "storm", "rain_heavy", "coast", "fire_large" })
                 beds[name] = Bed(RecordedAudio.Loops.TryGetValue(name, out var clip) ? clip : null,
-                    name == "river" || name == "river_close" || name == "industry" || name == "construction" || name == "city" || name == "fire");
+                    name == "river" || name == "river_close" || name == "industry" || name == "construction" || name == "city" || name == "fire" || name == "coast" || name == "fire_large");
+            ui = root.AddComponent<AudioSource>(); ui.playOnAwake = false; ui.spatialBlend = 0f; ui.priority = 0;
             music = root.AddComponent<AudioSource>();
             music.playOnAwake = false; music.spatialBlend = 0f; music.loop = false;
+            foreach (var mood in new[] { "calm", "combat", "menu", "dread" })
+            {
+                var src = root.AddComponent<AudioSource>();
+                src.playOnAwake = false; src.spatialBlend = 0f; src.loop = false; src.volume = 0f; src.priority = 0;
+                scores[mood] = src;
+            }
             Load();
         }
 
@@ -103,8 +114,64 @@ namespace SE.Runtime.Audio
             PlayerPrefs.Save();
         }
 
-        /// <summary>Play a one-shot at a map position. Priority decides voice stealing when all are busy.</summary>
+        /// <summary>
+        /// Play a one-shot at a map position, with the layers that make gunfire read as real space:
+        /// distant shots use far-field recordings (cracks lose their top, the report becomes a thump),
+        /// guns and blasts throw an echo tail off the valley or the street canyon after the sound's
+        /// travel time, close automatic fire drops spent casings, and big blasts carry a ground rumble.
+        /// Priority decides voice stealing when all are busy; layers use priority 0 so they never steal.
+        /// </summary>
         public void Play(string name, float3 mapPos, float volume = 1f, float minDistance = 2f, int priority = 1, float camDistance = 40f, float delay = 0)
+        {
+            float d = Vector3.Distance(listener.position, MapSpace.W(mapPos));
+            bool gun = name == "rifle" || name == "mg" || name == "pistol" || name == "autocannon" || name == "cannon";
+            string key = name;
+            if (gun && d > 22f + camDistance * .12f)
+            {
+                string far = (name == "pistol" ? "rifle" : name) + "_far";
+                if (RecordedAudio.Shots.ContainsKey(far)) key = far;
+            }
+            PlayVoice(key, mapPos, volume, minDistance, priority, camDistance, delay);
+            float travel = delay + d * .0045f;
+            if (gun || name == "explosion" || name == "explosion_big")
+            {
+                bool heavy = name == "cannon" || name == "autocannon" || name.StartsWith("explosion");
+                if (heavy || rng.NextDouble() < .22)
+                    PlayVoice(urbanEcho > .35f ? "tail_street" : "tail_valley", mapPos, volume * (heavy ? .42f : .26f), minDistance * 2.5f, 0, camDistance, travel + .10f + (float)rng.NextDouble() * .08f);
+                if (d < 9f && (name == "rifle" || name == "mg" || name == "autocannon") && rng.NextDouble() < .2)
+                    PlayVoice("shell", mapPos, .32f, 1f, 0, camDistance, delay + .22f + (float)rng.NextDouble() * .35f);
+            }
+            if (name == "explosion_big" || name == "strategic" || name == "collapse")
+                PlayVoice("rumble", mapPos, volume * .65f, minDistance * 3f, 0, camDistance, travel + .04f);
+        }
+
+        /// <summary>Close bullet strikes: a ricochet off armour or a thud into earth or masonry.</summary>
+        public void Strike(float3 mapPos, bool armour, bool masonry, float camDistance)
+        {
+            if (Vector3.Distance(listener.position, MapSpace.W(mapPos)) > 16f + camDistance * .1f) return;
+            PlayVoice(armour ? "ricochet" : masonry ? "impact_stone" : "impact_dirt", mapPos, armour ? .38f : .3f, 1.2f, 0, camDistance);
+        }
+
+        /// <summary>A soldier falls nearby. Rare and close-range only, so it lands instead of repeating.</summary>
+        public void Casualty(float3 mapPos, float camDistance)
+        {
+            if (camDistance > 30f || time < casualtyAt || rng.NextDouble() > .3) return;
+            if (Vector3.Distance(listener.position, MapSpace.W(mapPos)) > 14f) return;
+            casualtyAt = time + 6f + (float)rng.NextDouble() * 6f;
+            PlayVoice(rng.NextDouble() < .7 ? "casualty" : "shout", mapPos, .34f, 1.5f, 1, camDistance, .05f);
+        }
+
+        /// <summary>Interface feedback (2D): click, confirm, denied, notify, hover.</summary>
+        public void Ui(string cue, float volume = 1f)
+        {
+            if (ui == null || !RecordedAudio.Shots.TryGetValue("ui_" + cue, out var clips)) return;
+            if (Time.unscaledTime - uiAt < .035f) return;
+            uiAt = Time.unscaledTime;
+            ui.pitch = .98f + (float)rng.NextDouble() * .04f;
+            ui.PlayOneShot(clips[rng.Next(clips.Length)], volume * .55f * Effects * Master);
+        }
+
+        void PlayVoice(string name, float3 mapPos, float volume = 1f, float minDistance = 2f, int priority = 1, float camDistance = 40f, float delay = 0)
         {
             if (!RecordedAudio.Shots.TryGetValue(name, out var clips)) return;
             var u = MapSpace.W(mapPos);
@@ -127,15 +194,20 @@ namespace SE.Runtime.Audio
             // keep battles audible at operational zoom: the sound "reaches" further when zoomed out
             v.Src.minDistance = Mathf.Clamp(minDistance * .45f, .7f, 12f) * Mathf.Max(1f, camDistance / 65f);
             v.Src.maxDistance = reach;
-            v.Gain = volume * (name == "rifle" || name == "mg" ? .42f : .60f);
+            v.Gain = volume * (name.StartsWith("rifle") || name.StartsWith("mg") ? .42f : name.StartsWith("ui_") ? .3f : .60f);
             v.Src.volume = v.Gain * Effects * Master * voiceGain;
-            v.Src.pitch = name == "strategic" ? .64f : name == "autocannon" ? 1.28f : name == "flak" ? 1.25f : .97f + (float)rng.NextDouble() * .06f;
+            // The committed autocannon clip is a slowed cannon take; the recorded bursts play at their own pitch.
+            v.Src.pitch = name == "strategic" ? .64f : v.Src.clip.name == "cannon_01" && name == "autocannon" ? 1.28f : name == "flak" ? 1.25f : .97f + (float)rng.NextDouble() * .06f;
             v.Src.priority = Mathf.Clamp(180 - priority * 24, 16, 220);
             float dist = Vector3.Distance(listener.position, v.Src.transform.position);
             v.Lp.cutoffFrequency = Mathf.Lerp(18000f, 1100f, Mathf.Clamp01((dist - v.Src.minDistance) / 70f));
             v.Priority = priority; v.Key = name;
-            v.Until = time + delay + v.Src.clip.length / v.Src.pitch;
-            if (delay > 0) v.Src.PlayDelayed(delay); else v.Src.Play();
+            // Align the take's transient with the event: start early, or skip the lead-in when there is no time.
+            float lead = RecordedAudio.Onset(v.Src.clip) / v.Src.pitch, start = delay - lead, skip = 0;
+            if (start < 0) { skip = Mathf.Min(-start * v.Src.pitch, v.Src.clip.length * .5f); start = 0; }
+            v.Until = time + start + (v.Src.clip.length - skip) / v.Src.pitch;
+            v.Src.time = skip;
+            if (start > 0) v.Src.PlayDelayed(start); else v.Src.Play();
             if (priority >= 2) battleHeat = Mathf.Min(1f, battleHeat + 0.08f);
         }
 
@@ -147,13 +219,15 @@ namespace SE.Runtime.Audio
         }
 
         public float MusicTime => music.isPlaying ? music.time : 0f;
+        public bool MusicPlaying => music.isPlaying && music.clip != null;
+        /// <summary>Move the score's playhead (the intro re-locks in the score's silent bar before the title hit).</summary>
+        public void SeekMusic(float seconds) { if (music.clip != null) music.time = Mathf.Clamp(seconds, 0, music.clip.length - .05f); }
         public void CinematicCity(float level, float3 position) { cinematicCityGain = Mathf.Clamp01(level); cinematicCityPoint = position; }
         public void CinematicDynamics(float intensity) { cinematicGain = Mathf.Clamp01(intensity); }
         public void StopCue(string key) { foreach (var voice in voices) if (voice.Key == key) { voice.Src.Stop(); voice.Until = 0; } }
         public void MenuScore(bool on)
         {
-            if (on && !menuMusic && beds.TryGetValue("music_menu", out var score) && score.clip != null)
-            { score.time = 0; score.Play(); }
+            if (on && !menuMusic && scores.TryGetValue("menu", out var score)) { score.Stop(); score.clip = null; NextTrack("menu", score); }
             menuMusic = on;
         }
 
@@ -177,9 +251,18 @@ namespace SE.Runtime.Audio
             Fade("river_close", localRiver ? riverDetail * riverNear * .52f * a : 0, dt);
             Fade("rain", rain * (.10f + close * .24f) * a, dt);
             float score = cinematicMusic || menuMusic ? 0 : MusicVolume * Master * .30f;
-            Fade("music_calm", score * (1 - battleHeat), dt * .25f);
-            Fade("music_combat", score * battleHeat, dt * .25f);
-            Fade("music_menu", menuMusic && !cinematicMusic ? MusicVolume * Master * .58f : 0, dt * .4f);
+            // The battle score rises with the fighting and falls back to the calm score after it.
+            Score("calm", score * (1 - battleHeat), dt * .25f);
+            Score("combat", score * Mathf.SmoothStep(0, 1, battleHeat * 1.3f), dt * .3f);
+            Score("menu", menuMusic && !cinematicMusic ? MusicVolume * Master * .58f : 0, dt * .4f);
+            Score("dread", cinematicMusic ? MusicVolume * Master * .55f * dread : 0, dt * .5f);
+            urbanEcho = urbanNear;
+            // Weather and war beds: heavy rain and storm wind take over from the light beds; at operational
+            // and strategic zoom an active front is heard as a low, continuous rumble.
+            Fade("storm", Mathf.Clamp01((wind - .55f) * 2.2f + (rain - .6f) * 1.5f) * .30f * a, dt);
+            Fade("rain_heavy", Mathf.Clamp01((rain - .45f) * 2f) * (.12f + close * .2f) * a, dt);
+            Fade("dread", Mathf.Max(cinematicMusic ? dread * .55f : 0, battleHeat * strategic * .4f) * a, dt * .5f);
+            Fade("coast", localCoast ? close * .30f * a : 0, dt);
             music.volume = MusicVolume * Master * .70f * cinematicGain;
             beds["city"].transform.position = MapSpace.W(cinematicCityPoint);
             Fade("city", cinematicMusic ? cinematicCityGain * .42f * a : 0, dt);
@@ -192,11 +275,36 @@ namespace SE.Runtime.Audio
             Fade("industry", localIndustry ? close * .34f * a : 0, dt);
             Fade("construction", localConstruction ? close * .34f * a : 0, dt);
             Fade("fire", localFire ? close * .33f * a : 0, dt);
+            Fade("fire_large", localFire ? close * close * .26f * a : 0, dt);
+            beds["fire_large"].transform.position = beds["fire"].transform.position;
+        }
+
+        /// <summary>Cinematic dread layer (0-1): sub-bass rumble and an ominous score under the intro.</summary>
+        public void Dread(float level) { dread = Mathf.Clamp01(level); }
+
+        void Score(string mood, float target, float dt)
+        {
+            if (!scores.TryGetValue(mood, out var src)) return;
+            src.volume = Mathf.MoveTowards(src.volume, target, dt * .6f);
+            if (target > .001f && !src.isPlaying) NextTrack(mood, src);
+            else if (target <= .001f && src.volume <= .001f && src.isPlaying) src.Pause();
+        }
+
+        /// <summary>Resume a paused track, otherwise start a different track from the mood's playlist.</summary>
+        void NextTrack(string mood, AudioSource src)
+        {
+            if (src.clip != null && src.time > 0 && src.time < src.clip.length - .05f) { src.UnPause(); if (src.isPlaying) return; }
+            if (!RecordedAudio.Playlists.TryGetValue(mood, out var list) || list.Length == 0) return;
+            lastTrack.TryGetValue(mood, out var last);
+            var clip = list[rng.Next(list.Length)];
+            if (list.Length > 1 && clip == last) clip = list[(Array.IndexOf(list, clip) + 1) % list.Length];
+            lastTrack[mood] = clip;
+            src.clip = clip; src.time = 0; src.Play();
         }
 
         void Fade(string bed, float target, float dt)
         {
-            var s = beds[bed];
+            if (!beds.TryGetValue(bed, out var s)) return;
             s.volume = Mathf.MoveTowards(s.volume, target, dt * 0.6f);
         }
 
@@ -260,14 +368,20 @@ namespace SE.Runtime.Audio
             }
         }
 
-        bool localIndustry, localRiver, localConstruction, localFire;
+        bool localIndustry, localRiver, localConstruction, localFire, localCoast;
         void UpdateLocalAmbience(WorldModel world, StructureStore structures, float3 focus, IReadOnlyList<float3> burningWrecks)
         {
             var g = world.Grid; int center = g.TileAt(focus.x, focus.z); float best = float.MaxValue;
-            localRiver = false;
+            localRiver = false; localCoast = false;
             if (center >= 0) for (int d = -1; d < 6; d++)
             {
                 int tile = d < 0 ? center : g.Nb[center * 6 + d];
+                if (tile >= 0 && world.Known[tile] != 0 && world.IsSea(tile) && !localCoast)
+                {
+                    localCoast = true;
+                    float sx = g.NearX(g.CenterX(tile), focus.x), sz = g.CenterZ(tile);
+                    beds["coast"].transform.position = MapSpace.W(new float3(sx, world.GroundHeight(sx, sz), sz));
+                }
                 if (tile < 0 || world.Known[tile] == 0 || !world.IsRiver(tile)) continue;
                 float x = g.NearX(g.CenterX(tile), focus.x), z = g.CenterZ(tile);
                 float dist = math.distancesq(new float2(focus.x, focus.z), new float2(x, z));

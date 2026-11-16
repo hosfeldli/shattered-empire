@@ -151,7 +151,7 @@ namespace SE.Core.Protocol
                     if (site is JObject st) records.Add(new ObjectiveSite
                     {
                         Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
-                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]),
+                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]),
                         X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
                         IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Operational = Bool(st["operational"]),
                         Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
@@ -224,6 +224,7 @@ namespace SE.Core.Protocol
                         {
                             s.Trenches[index].HasPosition = true;
                             s.Trenches[index].X = Float(p[1]); s.Trenches[index].Z = Float(p[2]); s.Trenches[index].Facing = Float(p[3]);
+                            s.Trenches[index].RoadMask = p.Count > 4 ? Int(p[4]) : 0;
                         }
                 }
                 s.BattlefieldState = WorldRecordDecoder.Battlefield(s.Battlefield);

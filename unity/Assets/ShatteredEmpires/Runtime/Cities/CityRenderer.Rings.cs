@@ -13,7 +13,26 @@ namespace SE.Runtime.Cities
         int ringBuildingRevision = -1;
         void InvalidateRingDistricts()
         {
-            if (!ActionRts || ringBuildingRevision == structures.Revision) return;
+            if (!ActionRts) return;
+            // The compound's entrance roads are composed with the headquarters chunk but end on the edge
+            // portals of the hexes around it, which can sit in neighbouring chunks: when one of those is
+            // recomposed (explored, roads changed) the base is too, or its approach would stop short of
+            // the half-street outside (or a stale approach would lead nowhere).
+            if (dirty.Count > 0)
+                foreach (var site in objectiveByTile.Values)
+                {
+                    if (!site.IsBase || site.Parcels == null) continue;
+                    int home = world.ChunkOf(site.Tile);
+                    if (dirty.Contains(home)) continue;
+                    for (int ring = 0; ring < 3 && !dirty.Contains(home); ring++)
+                        for (int k = 0; k < 12; k++)
+                        {
+                            float a = k * math.PI / 6, r = 1.6f + ring * .9f;
+                            int tile = world.Grid.TileAt(site.X + math.sin(a) * r, site.Z + math.cos(a) * r);
+                            if (tile >= 0 && dirty.Contains(world.ChunkOf(tile))) { dirty.Add(home); break; }
+                        }
+                }
+            if (ringBuildingRevision == structures.Revision) return;
             ringBuildingRevision = structures.Revision;
             foreach (var site in objectiveByTile.Values)
                 if (site.Parcels != null && site.Parcels.Any(p => dirty.Contains(world.ChunkOf(p.Tile))))
@@ -103,85 +122,38 @@ namespace SE.Runtime.Cities
             var origin = new float2(site.X, site.Z);
             var nodes = lots.Select(p => origin + (new float2(p.X, p.Z) - origin) * .57f).ToArray();
             bool restored = site.Headquarters != 0;
+            var network = BuildCompoundRoadNetwork(site, lots, nodes);
+            // published for the road queries (trench crossings follow the roads actually drawn)
+            RoadCurve.CompoundLanes[site.Id] = network.Select(r => new RoadCurve.Lane { Points = r.Points, Half = Mathf.Max(r.Width, r.EndWidth) * .5f }).ToArray();
+            RoadCurve.LaneRevision++;
+            DrawCompoundRoadNetwork(network, restored);
+            ComposeBasePresentation(site, lots, nodes);
             for (int i = 0; i < 8; i++)
             {
-                var p0 = nodes[(i + 7) % 8]; var p1 = nodes[i]; var p2 = nodes[(i + 1) % 8]; var p3 = nodes[(i + 2) % 8];
-                var a = p1;
-                for (int k = 1; k <= 8; k++)
-                {
-                    var b = Catmull(p0, p1, p2, p3, k / 8f);
-                    CompoundStreet(a, b, CatmullSide(p0, p1, p2, p3, (k - 1) / 8f), CatmullSide(p0, p1, p2, p3, k / 8f), .235f, restored, k > 1 && k < 8); a = b;
-                }
                 var parcel = lots[i];
                 bool occupied = structures.Buildings.Values.Any(b => b.City == site.Id && b.Slot == parcel.Id);
                 if (!occupied) HistoricalBlock(parcel, site.Kind);
-                // Service access from the inner loop stops at the facility frontage.
-                var toward = math.normalizesafe(new float2(parcel.X, parcel.Z) - origin);
-                var entrance = new float2(parcel.X, parcel.Z) - toward * .45f;
-                CompoundStreet(p1, entrance, .155f, restored && parcel.Tier <= site.Tier);
             }
             // The command entrance is a pedestrian connection into the shared pavement.
             float2 front = new float2(math.sin(site.Parcels[0].Yaw), math.cos(site.Parcels[0].Yaw));
-            var end = origin + front * .88f;
+            var end = network[0].Points.OrderBy(p => math.distancesq(p, origin + front * 1.05f)).First() - front * .07f;
             var right = new float2(-front.y, front.x);
             RoadStrip(origin + front * .30f, end, right, right, -.035f, .035f, float.NegativeInfinity, .002f, new float3(.59f, .59f, .55f), SurfaceKind.Concrete);
             ComposeCityAccessories(site, lots);
         }
 
-        // Replace the old hex-shaped streets near the compound. Every approach enters
-        // through a gap between adjacent facilities, leaving their original parcels intact.
+        // The complete compound graph is owned by its headquarters chunk. Outside
+        // half-streets retain their original shared edge/tangent/width, so adjacent
+        // chunks and bridges meet the compound at exactly the same portal.
         bool ComposeRingApproaches(int tile)
         {
             var center = new float2(world.Grid.CenterX(tile), world.Grid.CenterZ(tile));
-            ObjectiveSite site = default; float nearest = 3.7f * 3.7f;
             foreach (var s in objectiveByTile.Values)
             {
                 if (!s.IsBase || s.Parcels == null || s.Parcels.Length < 9) continue;
-                float d = math.distancesq(center, new float2(s.X, s.Z));
-                if (d < nearest) { site = s; nearest = d; }
+                if (math.distancesq(center, new float2(s.X, s.Z)) < 2.6f * 2.6f) return true;
             }
-            if (site.Id == 0) return false;
-            var origin = new float2(site.X, site.Z);
-            for (int d = 0; d < 6; d++)
-            {
-                int neighbor = world.Grid.Nb[tile * 6 + d];
-                if (neighbor < 0 || world.RoadClass(tile, d) == 0 || world.RoadBroken(tile, d)) continue;
-                var other = new float2(world.Grid.CenterX(neighbor), world.Grid.CenterZ(neighbor));
-                float r0 = math.distance(center, origin), r1 = math.distance(other, origin);
-                if (r0 < 2.6f && r1 < 2.6f) continue;
-                if (r0 >= 2.6f && r1 >= 2.6f)
-                {
-                    var mid = RoadCurve.Mid(world, tile, d); var node = RoadCurve.Node(world, tile);
-                    StreetRibbon(tile, mid, (mid + node) * .5f, node, world.RoadClass(tile, d), false, neighbor, -1);
-                    continue;
-                }
-                if (r0 < r1) continue; // The outside tile owns the complete entrance.
-                var bearing = math.normalizesafe(center - origin);
-                var lots = site.Parcels.Where(p => p.Id > 0).OrderBy(p => p.Id).ToArray();
-                float2 gap = origin; float best = -2;
-                for (int k = 0; k < 8; k++)
-                {
-                    var a = new float2(lots[k].X, lots[k].Z);
-                    var b = new float2(lots[(k + 1) % 8].X, lots[(k + 1) % 8].Z);
-                    var dir = math.normalizesafe((a + b) * .5f - origin);
-                    float score = math.dot(dir, bearing);
-                    if (score > best) { best = score; gap = dir; }
-                }
-                var start = origin + gap * .97f;
-                var control = origin + gap * 2.45f;
-                var finish = RoadCurve.Node(world, tile);
-                var from = start;
-                for (int k = 1; k <= 20; k++)
-                {
-                    float t = k / 20f;
-                    var to = (1 - t) * (1 - t) * start + 2 * (1 - t) * t * control + t * t * finish;
-                    float t0 = (k - 1) / 20f;
-                    var ta = math.normalizesafe(2 * (1 - t0) * (control - start) + 2 * t0 * (finish - control));
-                    var tb = math.normalizesafe(2 * (1 - t) * (control - start) + 2 * t * (finish - control));
-                    CompoundStreet(from, to, new float2(-ta.y, ta.x), new float2(-tb.y, tb.x), .235f, site.Headquarters != 0); from = to;
-                }
-            }
-            return true;
+            return false;
         }
 
         void ComposeCityAccessories(ObjectiveSite site, BaseParcel[] lots)
@@ -201,6 +173,8 @@ namespace SE.Runtime.Cities
                 if (tile < 0 || world.Known[tile] == 0 || world.IsSea(tile) || world.IsLake(tile) || world.IsRiver(tile) || world.Biome[tile] >= 9) continue;
                 bool overlaps = structures.Buildings.Values.Any(b => b.HasPosition && math.distance(point, new float2(b.X, b.Z)) < .84f);
                 if (overlaps) continue;
+                // nor on a road: the hex streets and compound entrances around the base keep a clear carriageway
+                if (RoadCurve.RoadDistance(world, point, out _, out _) < .26f) continue;
                 int threshold = i < 2 ? 1 : i < 4 ? 2 : 3;
                 float progress = established < threshold ? 0 : established > threshold ? 1 : math.saturate((development - i * .045f) * 1.55f);
                 var c = new Ctx { X = point.x, Z = point.y, Yaw = lot.Yaw, Seed = seed + i * 71, Tint = new float3(1), Civ = CivColor(site.Owner).xyz,
@@ -228,7 +202,7 @@ namespace SE.Runtime.Cities
                 }
                 // Small connected service frontage, with no independent economic or collision record.
                 var curb = point + radial * -.35f;
-                CompoundStreet(curb - side * .37f, curb + side * .37f, .13f, true);
+                DrapeParcel(curb, lot.Yaw, .57f, .11f, new float3(.51f, .52f, .49f), SurfaceKind.Concrete);
             }
         }
 
@@ -249,13 +223,24 @@ namespace SE.Runtime.Cities
             for (int k = 0; k < 3; k++) Module(c, Part.Cylinder, -.43f + k * .065f, -.28f, new float3(.041f, .17f, .041f), Olive, 0, .18f);
         }
 
+        void PerimeterTurret(in Ctx original)
+        {
+            var c = original; c.Scale = S(original) * .5f;
+            Module(c, Part.Concrete, 0, 0, new float3(.28f, .022f, .28f), new float3(.58f, .57f, .51f));
+            Module(c, Part.Cylinder, 0, 0, new float3(.12f, .10f, .12f), new float3(.35f, .38f, .33f), 0, .022f);
+            Module(c, Part.Siding, 0, 0, new float3(.15f, .075f, .16f), Olive, 0, .11f);
+            Module(c, Part.Box, -.027f, .105f, new float3(.014f, .014f, .12f), new float3(.22f, .23f, .22f), 0, .14f);
+            Module(c, Part.Box, .055f, .015f, new float3(.055f, .038f, .07f), new float3(.40f, .41f, .34f), 0, .13f);
+            Module(c, Part.Glass, .025f, .088f, new float3(.035f, .025f, .012f), new float3(.24f, .32f, .34f), 0, .145f);
+        }
+
         void FieldBarricades(in Ctx c)
         {
-            for (int k = 0; k < 7; k++)
-                Module(c, Part.Concrete, (k - 3) * .065f, .018f * math.sin(k), new float3(.060f, .065f + (k % 2) * .01f, .12f), new float3(.53f, .49f, .39f), (k % 2 == 0 ? .04f : -.04f));
-            Module(c, Part.Wire, 0, -.11f, new float3(.42f, .12f, .12f), new float3(.84f, .82f, .77f));
+            for (int row = 0; row < 4; row++) for (int k = 0; k < 16; k++)
+                Module(c, Part.Sandbag, (k - 7.5f) * .027f + (row % 2) * .0135f, .005f * math.sin(k), new float3(.030f, .010f, .019f), new float3(.52f, .47f, .36f), (k % 2 == 0 ? .04f : -.04f), row * .0085f);
+            Module(c, Part.Wire, 0, -.11f, new float3(.42f, .07f, .09f), new float3(.84f, .82f, .77f));
             for (int side = -1; side <= 1; side += 2)
-                Module(c, Part.TankObstacle, side * .19f, .15f, new float3(.14f), new float3(.90f, .88f, .80f), side * .24f);
+                Module(c, Part.TankObstacle, side * .19f, .15f, new float3(.07f), new float3(.90f, .88f, .80f), side * .24f);
         }
 
         void SensorPost(in Ctx c)

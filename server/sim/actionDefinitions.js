@@ -8,8 +8,8 @@ const building = (key, name, tier, materials, energy, time, extra = {}) => ({
 });
 
 export const ACTION_BUILDINGS = {
-  town: building('town', 'Headquarters', 1, 400, 120, 30, { hp: 1450, radius: .51, materials: 50 / 60, energy: 8 / 60, vision: 8, attack: 8, range: 2.6, desc: 'The city command center. Local upgrades unlock 4, 6, then 8 ring sites.' }),
-  depot: building('depot', 'Materials Processor', 1, 150, 0, 15, { materials: 115 / 60, desc: 'Generates Materials. Competes for a headquarters ring site.' }),
+  town: building('town', 'Headquarters', 1, 400, 120, 30, { hp: 1450, radius: .51, materials: 80 / 60, energy: 8 / 60, vision: 8, attack: 8, range: 2.6, desc: 'The city command center. Local upgrades unlock 4, 6, then 8 ring sites.' }),
+  depot: building('depot', 'Materials Processor', 1, 150, 0, 15, { materials: 170 / 60, desc: 'Generates Materials. Competes for a headquarters ring site.' }),
   power_plant: building('power_plant', 'Energy Generator', 1, 160, 30, 18, { energy: 65 / 60, desc: 'Generates Energy for technology and advanced forces.' }),
   barracks: building('barracks', 'Barracks', 1, 170, 0, 17, { desc: 'Trains infantry, engineers and scout buggies.' }),
   motor_works: building('motor_works', 'Vehicle Works', 2, 300, 110, 30, { radius: .57, desc: 'Produces armored cars, infantry carriers and main battle tanks.' }),
@@ -18,7 +18,8 @@ export const ACTION_BUILDINGS = {
   armory: building('armory', 'Armory', 1, 240, 90, 24, { desc: 'Faction-wide military and economic upgrades.' }),
   advanced_lab: building('advanced_lab', 'Advanced Systems Lab', 3, 450, 300, 42, { desc: 'Produces autonomous systems and advanced specialist units.' }),
   missile_silo: building('missile_silo', 'Strategic Missile Facility', 3, 750, 500, 60, { hp: 1250, radius: .5, needs: 'advanced_lab', desc: 'Produces limited strategic missiles in a headquarters ring site.' }),
-  barricade: building('bunker', 'Sandbag Barricade', 1, 20, 0, 4, { field: true, radius: .22, hp: 240, cover: .25 }),
+  barricade: building('bunker', 'Sandbag Barricade', 1, 20, 0, 4, { field: true, radius: .38, width: .62, depth: .45, lowCover: true, hp: 240, cover: .25, desc: 'Rotatable sandbags, wire and tank obstacles. Infantry can shelter and fire over the low wall. Q / E rotates before placement.' }),
+  city_turret: building('guard_post', 'Perimeter Turret', 1, 85, 20, 20, { field: true, radius: .14, hp: 360, vision: 6, attack: 13, range: 2.6, weapon: 'mg', desc: 'A short-range machine-gun turret. Effective against exposed infantry; vulnerable to armor and artillery.' }),
   guard_post: building('guard_post', 'Guard Post', 1, 100, 15, 16, { field: true, radius: .26, vision: 6, attack: 10, range: 2.3 }),
   bunker: building('bunker', 'Bunker', 1, 165, 45, 23, { field: true, radius: .32, attack: 14, range: 2.7 }),
   turret: building('bunker', 'Anti-Armor Emplacement', 2, 195, 85, 26, { field: true, radius: .30, attack: 26, range: 3.3, weapon: 'cannon' }),
@@ -32,6 +33,8 @@ export const ACTION_BUILDINGS = {
 for (const [key, def] of Object.entries(ACTION_BUILDINGS)) if (!def.weapon) def.weapon = BUILDING_WEAPON[key];
 export const BASE_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => key !== 'town' && !ACTION_BUILDINGS[key].field);
 export const FIELD_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => ACTION_BUILDINGS[key].field);
+export const CITY_DEFENSES = { name: 'City perimeter', cost: cost(240, 60), time: 25, pieces: 6,
+  desc: 'Constructs four sandbag positions and two machine-gun turrets outside the building ring. Uses no development sites. Missing positions can be rebuilt at proportional cost.' };
 
 function unit(key, facility, tier, materials, energy, capacity, extra = {}) {
   const old = UNITS[key] || UNITS.rifle_squad;
@@ -69,6 +72,14 @@ export const ACTION_UNITS = {
   autonomous_tank: unit('autonomous_tank', 'advanced_lab', 3, 500, 240, 8, { ability: 'focused_fire', radius: .255, time: 42 }),
   strike_swarm: unit('strike_swarm', 'advanced_lab', 3, 420, 265, 7, { ability: 'strike', time: 40 }),
 };
+// Aircraft cross the (larger) battlefield noticeably faster than any ground force, scaled by role:
+// fighters fastest, then one-way drones and bombers, with helicopters and swarms as the slow low-level
+// attackers. Resulting speeds (hexes/s): fighter 6.5, oneway 5.5, swarm 4.5, recon 4.3, bomber 4.2, helicopter 3.4.
+const AIR_PACE = { fighter: 1.6, oneway_drone: 1.55, bomber: 1.5, recon_drone: 1.4, strike_swarm: 1.35, helicopter: 1.35 };
+for (const [key, pace] of Object.entries(AIR_PACE)) ACTION_UNITS[key].speed *= pace;
+// Crew-served indirect weapons must stop and set up before their first shot (seconds).
+ACTION_UNITS.mortar_team.setup = 2.5;
+ACTION_UNITS.field_gun.setup = 3;
 for (const [key, def] of Object.entries(ACTION_UNITS)) {
   const factory = ACTION_BUILDINGS[def.facility];
   (factory.trains ??= []).push(key);
@@ -82,11 +93,16 @@ export const TIERS = [
 
 export const ACTION_UPGRADES = {
   infantry_training: { name: 'Infantry Training', desc: 'Infantry deal 15% more damage.', tier: 1, time: 25, cost: cost(170, 42) },
-  improved_logistics: { name: 'Industrial Efficiency', desc: 'Processors produce 175 Materials/min and generators 100 Energy/min.', tier: 2, time: 30, cost: cost(240, 130) },
+  improved_logistics: { name: 'Industrial Efficiency', desc: 'Processors produce 250 Materials/min and generators 100 Energy/min.', tier: 2, time: 30, cost: cost(240, 130) },
   field_engineering: { name: 'Field Engineering', desc: 'Repair and construction progress increases by 25%.', tier: 2, time: 36, cost: cost(255, 90) },
   heavy_armor: { name: 'Heavy Armor', desc: 'Tracked vehicles take 16% less damage.', tier: 2, time: 40, cost: cost(285, 120) },
   aircraft_systems: { name: 'Aircraft Systems', desc: 'Aircraft fly 18% faster.', tier: 2, time: 38, cost: cost(225, 135) },
   networked_command: { name: 'Networked Command', desc: 'Adds 20 command capacity.', tier: 3, time: 52, cost: cost(340, 180) },
+  // Barracks upgrades: kit the infantry carry, each shown on the soldiers (equipment bits 32, 64, 128, 256)
+  grenades: { name: 'Hand Grenades', at: 'barracks', desc: 'Infantry throw grenades at enemies within 1.2 hexes: +20% damage at close range, splashing troops in cover.', tier: 1, time: 22, cost: cost(60, 110) },
+  rocket_teams: { name: 'Rocket Teams', at: 'barracks', desc: 'Each rifle squad carries a disposable anti-tank rocket: +45% damage against vehicles and fortifications.', tier: 1, time: 30, cost: cost(80, 150) },
+  body_armor: { name: 'Body Armour', at: 'barracks', desc: 'Plate carriers and helmets: infantry take 12% less damage.', tier: 2, time: 34, cost: cost(110, 190) },
+  marksmen: { name: 'Designated Marksmen', at: 'barracks', desc: 'A scoped marksman per squad: infantry reach 10% further.', tier: 2, time: 32, cost: cost(100, 160) },
 };
 
 export const ABILITIES = {
@@ -110,7 +126,7 @@ export const RUIN_TYPES = [
   { key: 'research', name: 'Research Complex', ruin: 'academy', slots: 4, expansion: 4, bonus: 'Military upgrades finish 12% faster' },
 ];
 export const OUTPOST_TYPES = {
-  supply: { name: 'Materials Relay', benefit: '+30 Materials/min', materials: .5, ruin: 'depot' },
+  supply: { name: 'Materials Relay', benefit: '+45 Materials/min', materials: .75, ruin: 'depot' },
   energy: { name: 'Abandoned Energy Plant', benefit: '+18 Energy/min', energy: .3, ruin: 'power_plant' },
   radar: { name: 'Radar Station', benefit: 'Reveals nearby terrain and units', vision: 10, ruin: 'comms_tower' },
   repair: { name: 'Repair Station', benefit: 'Repairs nearby units', repair: 3, ruin: 'motor_works' },
@@ -124,7 +140,7 @@ export function actionDefinitions(base) {
   return {
     W: base.W, H: base.H, TERRAIN: base.TERRAIN, ROAD_TYPES: base.ROAD_TYPES, DIFFICULTY: base.DIFFICULTY,
     CIV_COLORS: base.CIV_COLORS, STANCES: base.STANCES, FORMATIONS: base.FORMATIONS, WEAPON_KEYS: base.WEAPON_KEYS,
-    AGES: TIERS, TECHS: ACTION_UPGRADES, GOODS: ACTION_RESOURCES, GOOD_NAMES: { materials: 'Materials', energy: 'Energy' },
+    AGES: TIERS, TECHS: ACTION_UPGRADES, CITY_DEFENSES, GOODS: ACTION_RESOURCES, GOOD_NAMES: { materials: 'Materials', energy: 'Energy' },
     RULESET: { id: 'action-v2', ringVersion: 1, slots: [4, 6, 8], commandCapacity: [80, 120, 160], fieldConstruction: 'independent', engineerRequired: false },
     BUILDINGS: ACTION_BUILDINGS, UNITS: ACTION_UNITS, ABILITIES, RUIN_TYPES, OUTPOST_TYPES, MISSILE: MISSILE_PROJECT,
   };

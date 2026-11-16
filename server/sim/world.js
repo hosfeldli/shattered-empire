@@ -2,6 +2,7 @@
 import { W, H, N, T, RES, TERRAIN, isWater } from './constants.js';
 import { NB, idx, qOf, rOf, dist, disk, WRAP, dqWrap } from './hex.js';
 import { mulberry32, fbm, hash2 } from './rng.js';
+import { authoredMap, generateAuthored } from './authoredMaps.js';
 
 export const RIVER_FLOW = 42;
 export const WORLD_STYLES = { continents: { plates: 11, land: 0.42, cont: 0.45 }, pangaea: { plates: 8, land: 0.55, cont: 0.7 }, archipelago: { plates: 18, land: 0.34, cont: 0.4 }, inlandSea: { plates: 10, land: 0.56, cont: 0.75 } };
@@ -49,6 +50,9 @@ export class World {
   touch(i) { this.ver[i] = (this.ver[i] + 1) & 0xffff || 1; this.dirty.add(i); }
 
   generate(nCivs) {
+    // a hand-authored map (mapCatalog.js) replaces the whole procedural pipeline
+    const authored = authoredMap(this.opts.map);
+    if (authored) return generateAuthored(this, authored);
     const rng = this.rng, seed = this.seed;
     // --- Tectonic plates (warped Voronoi)
     const styleKeys = Object.keys(WORLD_STYLES);

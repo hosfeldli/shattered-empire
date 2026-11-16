@@ -76,12 +76,28 @@ namespace SE.Runtime.Session
             routeLines = new InstanceBatch(MeshKit.Box, RenderResources.Instanced, 256) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, Buffering = 3 };
         }
 
-        public void Say(string text, bool good, float time) { Feedback = text; FeedbackGood = good; FeedbackUntil = time + 3.5f; }
+        /// <summary>Raised with the text of every refusal (the interface flashes the short resource).</summary>
+        public event Action<string> Refused;
+
+        /// <summary>Positive messages worth a toast (spec B3); every other success is silent.</summary>
+        static bool ToastWorthy(string text) =>
+            text == "Construction started" || text == "Upgrade started" || text == "Rally point set" ||
+            text.Length > 7 && char.IsDigit(text[0]) && text.EndsWith(" queued");
+
+        /// <summary>Refusals and failures show for 3 s; only allow-listed successes show (1.5 s).</summary>
+        public void Say(string text, bool good, float time)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            if (!good) Refused?.Invoke(text);
+            if (good && !ToastWorthy(text)) return;
+            Feedback = text; FeedbackGood = good; FeedbackUntil = time + (good ? 1.5f : 3f);
+        }
 
         // ------------------------------------------------------------------ modes
         public void Begin(Mode mode, string option = "", JObject target = null)
         {
             Current = mode; Option = option ?? ""; TargetCommand = target;
+            FieldYaw = 0; cam.PlacementRotation = mode == Mode.Target && ProtocolDecoder.Str(target?["c"]) == "fieldBuild";
             dragging = false; ClearRingPreview(); FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++;
             path.Clear(); preview = null; legal.Clear(); legalReady = false;
             worldStroke.Clear(); actionTrenchPreview = null;
@@ -100,7 +116,7 @@ namespace SE.Runtime.Session
             else if (mode == Mode.Place) legalReady = false;
         }
 
-        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; worldStroke.Clear(); actionTrenchPreview = null; }
+        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; worldStroke.Clear(); actionTrenchPreview = null; cam.PlacementRotation = false; FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++; }
 
         public bool Dragging(out Rect rect)
         {
@@ -154,6 +170,7 @@ namespace SE.Runtime.Session
             var mouse = InputFacade.MousePosition;
             hoverTile = pointerOverUi ? -1 : TileUnderCursor();
             if (session.ActionRts) UpdateFieldPreview(time, pointerOverUi);
+            HoverRingSlotFromWorld = session.ActionRts && Current == Mode.Select && !pointerOverUi ? WorldParcelUnderCursor() : 0;
             if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { EscapeFrame = Time.frameCount; rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
             if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { EscapeFrame = Time.frameCount; Cancel(); return; }
             switch (Current)
@@ -208,7 +225,7 @@ namespace SE.Runtime.Session
                             if (u.InUse && u.Owner == session.CivId && u.TypeIndex == bestType && ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) units.Selected.Add(u.Id);
                         }
                 }
-                else if (!box && session.ActionRts && (SelectActionPickup(mouse) || SelectActionRing(mouse) || SelectActionObjective(mouse, tile)))
+                else if (!box && session.ActionRts && (SelectActionPickup(mouse) || SelectActionRing(mouse, doubleClick) || SelectActionObjective(mouse, tile)))
                 {
                     // Objective cards cover both secured and undeveloped sites.
                 }
@@ -328,17 +345,11 @@ namespace SE.Runtime.Session
 
         void ControlGroups(float time)
         {
+            if (SuppressGroupKeys) return;   // the command wheel, a picker or the armed defense bar owns the digits
             for (int k = 1; k <= 9; k++)
             {
                 if (!InputFacade.Action("group_" + k)) continue;
-                if (InputFacade.Ctrl)
-                {
-                    groups[k] = new HashSet<int>(units.Selected);
-                    if (session.ActionRts && !session.Spectator)
-                        session.Net?.Command(new JObject { ["c"] = "group", ["group"] = k, ["units"] = new JArray(new List<int>(units.Selected).ToArray()) });
-                    Say(units.Selected.Count > 0 ? $"Group {k}: {units.Selected.Count} units" : $"Group {k} cleared", true, time);
-                    continue;
-                }
+                if (InputFacade.Ctrl) { AssignGroup(k); continue; }
                 if (session.ActionRts && session.Econ?["groups"] is JArray savedGroups)
                 {
                     foreach (var group in savedGroups) if (ProtocolDecoder.Int(group["id"]) == k && group["units"] is JArray roster)
@@ -357,6 +368,16 @@ namespace SE.Runtime.Session
                 if (lastGroup == k && time - lastGroupAt < 0.4f && SelectionCentre() is Vector3 c) cam.JumpTo(c);
                 lastGroup = k; lastGroupAt = time;
             }
+        }
+
+        /// <summary>Ctrl+number: store the current unit selection as control group k (1-9) and tell the server.</summary>
+        public void AssignGroup(int k)
+        {
+            if (k < 1 || k > 9) return;
+            groups[k] = new HashSet<int>(units.Selected);
+            if (session.ActionRts && !session.Spectator)
+                session.Net?.Command(new JObject { ["c"] = "group", ["group"] = k, ["units"] = new JArray(new List<int>(units.Selected).ToArray()) });
+            Say(units.Selected.Count > 0 ? $"Group {k}: {units.Selected.Count} units" : $"Group {k} cleared", true, Time.unscaledTime);
         }
 
         /// <summary>The middle of the current selection (map coordinates), wrap-aware.</summary>
@@ -514,6 +535,11 @@ namespace SE.Runtime.Session
             else if (Current == Mode.Target && TargetCommand != null)
             {
                 var cmd = (JObject)TargetCommand.DeepClone();
+                if (ProtocolDecoder.Str(cmd["c"]) == "fieldBuild")
+                {
+                    if (!FieldPreviewValid) { Say(FieldPreviewReason, false, time); return; }
+                    cmd["yaw"] = FieldYaw;
+                }
                 Bind(cmd, tile);
                 if (session.ActionRts && cam.TryGround(InputFacade.MousePosition, out var p))
                 {

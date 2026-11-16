@@ -8,10 +8,14 @@ namespace SE.Runtime.App
     /// </summary>
     public static class GameSettings
     {
-        static float F(string k, float d) => PlayerPrefs.GetFloat("se.set." + k, d);
-        static void SetF(string k, float v) { PlayerPrefs.SetFloat("se.set." + k, v); PlayerPrefs.Save(); }
-        static bool B(string k, bool d) => PlayerPrefs.GetInt("se.set." + k, d ? 1 : 0) == 1;
-        static void SetB(string k, bool v) { PlayerPrefs.SetInt("se.set." + k, v ? 1 : 0); PlayerPrefs.Save(); }
+        // Settings are read every frame by the HUD and camera: PlayerPrefs is read once per key, then cached
+        // (a string concat plus a registry/plist lookup per read was a measurable per-frame cost).
+        static readonly System.Collections.Generic.Dictionary<string, float> floats = new System.Collections.Generic.Dictionary<string, float>();
+        static readonly System.Collections.Generic.Dictionary<string, bool> bools = new System.Collections.Generic.Dictionary<string, bool>();
+        static float F(string k, float d) { if (!floats.TryGetValue(k, out var v)) floats[k] = v = PlayerPrefs.GetFloat("se.set." + k, d); return v; }
+        static void SetF(string k, float v) { floats[k] = v; PlayerPrefs.SetFloat("se.set." + k, v); PlayerPrefs.Save(); }
+        static bool B(string k, bool d) { if (!bools.TryGetValue(k, out var v)) bools[k] = v = PlayerPrefs.GetInt("se.set." + k, d ? 1 : 0) == 1; return v; }
+        static void SetB(string k, bool v) { bools[k] = v; PlayerPrefs.SetInt("se.set." + k, v ? 1 : 0); PlayerPrefs.Save(); }
 
         /// <summary>Interface scale (0.75–1.6).</summary>
         public static float UiScale { get => F("uiScale", 1f); set => SetF("uiScale", Mathf.Clamp(value, 0.75f, 1.6f)); }
@@ -27,6 +31,22 @@ namespace SE.Runtime.App
         public static float CameraSpeed { get => F("camSpeed", 1f); set => SetF("camSpeed", Mathf.Clamp(value, 0.5f, 2f)); }
         /// <summary>Unit and ownership markers in high contrast, with shapes as well as colour.</summary>
         public static bool HighContrastMarkers { get => B("contrast", false); set => SetB("contrast", value); }
+        /// <summary>Open the unit command wheel automatically whenever units are selected (off: press C).</summary>
+        public static bool OpenUnitWheelOnSelection { get => B("unitWheel", false); set => SetB("unitWheel", value); }
+        /// <summary>Always show the digit labels on the defensive build bar (off: only while B arms it).</summary>
+        public static bool DefenseBarHotkeyLabels { get => B("defenseKeys", false); set => SetB("defenseKeys", value); }
+
+        /// <summary>Restore the Interface tab defaults (the interface scale is applied by the caller).</summary>
+        public static void ResetInterface()
+        {
+            UiScale = 1f; HighContrastMarkers = false; OpenUnitWheelOnSelection = false; DefenseBarHotkeyLabels = false;
+        }
+
+        /// <summary>Restore the Camera tab defaults.</summary>
+        public static void ResetCamera()
+        {
+            EdgePan = true; CameraSpeed = 1f; ScreenShake = true; ReducedMotion = false; WeatherIntensity = 1f;
+        }
 
         public static float ShakeScale => ReducedMotion || !ScreenShake ? 0f : 1f;
         public static float FlashScale => ReducedMotion ? 0.15f : 1f;

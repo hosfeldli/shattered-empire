@@ -4,6 +4,22 @@
 TEXTURE2D_ARRAY(_SE_SurfaceMaps); SAMPLER(sampler_SE_SurfaceMaps);
 TEXTURE2D(_SE_ArchitectureAtlas); SAMPLER(sampler_SE_ArchitectureAtlas);
 float4 _SE_ArchitectureAtlas_TexelSize;
+TEXTURE2D(_SE_UnitFabric); SAMPLER(sampler_SE_UnitFabric);
+TEXTURE2D(_SE_UnitFabricRoughness); SAMPLER(sampler_SE_UnitFabricRoughness);
+TEXTURE2D(_SE_UnitArmor); SAMPLER(sampler_SE_UnitArmor);
+TEXTURE2D(_SE_UnitArmorRoughness); SAMPLER(sampler_SE_UnitArmorRoughness);
+
+half2 SE_UnitMaterial(float3 p, half3 normal, uint kind)
+{
+    float3 n = abs(normal);
+    float2 uv = n.y >= max(n.x,n.z) ? p.xz : n.x > n.z ? p.zy : p.xy;
+    uv *= kind == 8u ? 62.5 : 18.0;
+    half3 photo = kind == 8u ? SAMPLE_TEXTURE2D(_SE_UnitFabric,sampler_SE_UnitFabric,uv).rgb
+        : SAMPLE_TEXTURE2D(_SE_UnitArmor,sampler_SE_UnitArmor,uv).rgb;
+    half rough = kind == 8u ? SAMPLE_TEXTURE2D(_SE_UnitFabricRoughness,sampler_SE_UnitFabricRoughness,uv).r
+        : SAMPLE_TEXTURE2D(_SE_UnitArmorRoughness,sampler_SE_UnitArmorRoughness,uv).r;
+    return half2(dot(photo,half3(.25h,.60h,.15h)),rough);
+}
 
 bool SE_HasPhoto(uint kind) { return kind == 1u || kind == 2u || kind == 3u || kind == 5u; }
 
@@ -47,7 +63,8 @@ half3 SE_Relief(float3 p, half3 n, half height, half strength)
     float3 a = cross(v, n), b = cross(n, u);
     float det = dot(u, a);
     float3 g = (ddx(height) * a + ddy(height) * b) * (det < 0 ? -1.0 : 1.0);
-    return normalize(n * max(abs(det), 1e-8) - g * strength);
+    float3 perturbed = n * max(abs(det), 1e-6) - g * strength;
+    return perturbed * rsqrt(max(dot(perturbed, perturbed), 1e-12));
 }
 
 #endif

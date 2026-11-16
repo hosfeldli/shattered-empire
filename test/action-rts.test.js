@@ -148,7 +148,7 @@ test('base upgrades and saves preserve the actual parcel position and facing', (
   assert.equal(s.tier, 2);
   assert.equal(openSlots(g, s).length, 6);
   assert.equal(c.age, 1);
-  assert.equal(armyCapacity(g, c).limit, 120);
+  assert.equal(armyCapacity(g, c).limit, 220);
   assert.deepEqual(s.parcels, parcels);
   assert.deepEqual({ x: b.x, z: b.z, yaw: b.yaw }, before);
   const restored = restoreGame(JSON.parse(JSON.stringify(serializeGame(g))));
@@ -178,4 +178,118 @@ test('queued attacks retain preceding movement and a full queue never replaces t
   const response = g.command(0, { c: 'attack', target: target.id, units: [u.id], queue: true });
   assert.ok(response.error);
   assert.deepEqual(u.goal, goal); assert.equal(u.orders[0].kind, 'attack');
+});
+
+test('demolish removes an owned finished facility, refunds part of its cost and frees the ring parcel', () => {
+  const g = create(), s = g.sites[0], c = g.civs[0];
+  c.res = { materials: 5000, energy: 5000 };
+  const built = g.command(0, { c: 'baseBuild', site: s.id, type: 'barracks' });
+  assert.ok(!built.error, built.error);
+  assert.ok(g.command(0, { c: 'demolish', id: built.building }).error, 'unfinished structures cannot be demolished');
+  productionStep(g, 18);
+  const b = g.buildings.get(built.building);
+  assert.equal(b.done, true); assert.equal(openSlots(g, s).length, 3);
+  assert.ok(g.command(1, { c: 'demolish', id: b.id }).error, 'only the owner may demolish');
+  assert.ok(g.command(0, { c: 'demolish', id: s.hq }).error, 'headquarters cannot be demolished');
+  const before = c.res.materials, seq = g.eventSeq;
+  const result = g.command(0, { c: 'demolish', id: b.id });
+  assert.ok(!result.error, result.error);
+  assert.equal(c.res.materials - before, Math.floor(170 * .35));
+  assert.ok(!g.buildings.has(b.id)); assert.equal(openSlots(g, s).length, 4);
+  assert.ok(g.events.some((e) => e.i > seq && e.k === 'demolish' && e.t === b.id && e.ty === 'barracks'));
+});
+
+test('a re-established headquarters is linked to the nearest friendly base by an automatic road', () => {
+  const g = create(), home = g.sites[0];
+  const s = g.sites.filter((v) => v.slots && v.owner < 0).sort((a, b) => distance(a, home) - distance(b, home))[0];
+  for (const e of g.roads.edges.values()) e.cond = 0;
+  g.civs[0].res = { materials: 5000, energy: 5000 };
+  s.owner = 0;
+  assert.ok(!g.command(0, { c: 'establish', site: s.id }).error);
+  productionStep(g, 40);
+  const project = g.roadProjects.find((p) => p.auto && p.owner === 0);
+  assert.ok(project && project.edges.length > 2, 'an automatic road project is queued');
+  for (let i = 0; i < 40; i++) g.tick();
+  assert.ok(!g.roadProjects.includes(project));
+  assert.ok(project.edges.every((e) => g.roads.usable(e.a, e.b)?.type >= 2), 'the road is laid along the planned route');
+  assert.ok(project.edges.every((e) => !g.world.lake[e.a] && !g.world.lake[e.b]), 'roads avoid open water');
+});
+
+test('mortar teams set up before their first shot', () => {
+  const g = create(), s = neutral(g); g.units.clear(); reindex(g);
+  const spot = g.nav.nearest({ x: s.x - 1.7, z: s.z }, ACTION_UNITS.mortar_team, 1);
+  const mortar = place(g, 0, 'mortar_team', spot);
+  const enemySpot = g.nav.nearest({ x: spot.x + 3.4, z: spot.z }, ACTION_UNITS.rifle_squad, 1);
+  place(g, 1, 'militia', enemySpot);
+  const fired = () => g.events.some((e) => e.k === 'launch' && e.s === mortar.id);
+  for (let i = 0; i < 15; i++) g.tick();
+  assert.ok(!fired(), 'no shot during set-up');
+  assert.ok(mortar.setupUntil > 0);
+  for (let i = 0; i < 30; i++) g.tick();
+  assert.ok(fired(), 'fires once deployed'); assert.equal(mortar.deployed, true);
+});
+
+test('infantry sheltering behind friendly armor take less direct fire', () => {
+  const g = create(), s = neutral(g); g.units.clear(); reindex(g);
+  const p = { x: s.x, z: s.z };
+  const shooter = place(g, 1, 'rifle_squad', { x: p.x + 2.4, z: p.z });
+  const a = place(g, 0, 'rifle_squad', p);
+  damageActionTarget(g, a, shooter, 40, 'rifle');
+  const exposed = a.maxHp - a.hp; a.hp = a.maxHp;
+  const tank = place(g, 0, 'tank', { x: p.x + .4, z: p.z });
+  damageActionTarget(g, a, shooter, 40, 'rifle');
+  assert.ok(a.maxHp - a.hp < exposed, `${a.maxHp - a.hp} < ${exposed}`);
+  assert.ok(tank.hp === tank.maxHp);
+});
+
+test('trench lines leave roads open and mark the sections that meet them', async () => {
+  const { trenchRoadMask } = await import('../server/sim/actionBases.js');
+  const { fieldEconomyStep } = await import('../server/sim/actionEconomy.js');
+  const { NB } = await import('../server/sim/hex.js');
+  const g = create(), civ = g.civs[0];
+  civ.res.materials = 5000; civ.visible.fill(1); g.units.clear(); reindex(g);
+  const clear = (t) => g.sites.every((s) => distance(s, centerOf(t)) > 4.5);
+  const edge = [...g.roads.edges.values()].find((e) => e.cond > 0 && clear(e.a) && clear(e.b) && !g.world.river[e.a] && !g.world.river[e.b]);
+  assert.ok(edge, 'a country road away from the bases');
+  const a = centerOf(edge.a), b = centerOf(edge.b), len = Math.hypot(b.x - a.x, b.z - a.z);
+  // a line drawn straight across the road at edge.a
+  const nx = -(b.z - a.z) / len, nz = (b.x - a.x) / len;
+  const points = [{ x: a.x - nx * 2.6, z: a.z - nz * 2.6 }, { x: a.x + nx * 2.6, z: a.z + nz * 2.6 }];
+  const preview = g.command(0, { c: 'trenchWorld', points, preview: true });
+  assert.ok(preview.reply?.trench, preview.error);
+  assert.ok(preview.reply.trench.crossings >= 1, 'the preview reports the road crossing');
+  assert.ok(preview.reply.trench.positions.every((p) => !g.world.road[p.tile] && Number.isInteger(p.road)), 'no section on a road tile; each carries its road mask');
+  const result = g.command(0, { c: 'trenchWorld', points });
+  assert.ok(!result.error, result.error);
+  assert.ok(!g.fieldworks.has(edge.a), 'the road tile stays open');
+  const dug = [...g.fieldworks.keys()];
+  assert.ok(dug.length >= 2, 'trench sections either side of the road');
+  assert.ok(dug.some((t) => trenchRoadMask(g, t) > 0), 'sections beside the road are marked for a clean crossing');
+  for (const t of dug) for (let d = 0; d < 6; d++) assert.equal(!!(trenchRoadMask(g, t) & (1 << d)), NB[t * 6 + d] >= 0 && !!g.world.road[NB[t * 6 + d]]);
+  // a road finished later through a trench fills that section in
+  const t = dug[0], n = NB[t * 6 + [0, 1, 2, 3, 4, 5].find((d) => NB[t * 6 + d] >= 0)];
+  g.roadProjects.push({ owner: 0, edges: [{ a: t, b: n }], left: 0 });
+  fieldEconomyStep(g, .2);
+  assert.ok(g.roads.usable(t, n) && !g.fieldworks.has(t));
+});
+
+test('new roads join the network at base hubs instead of shadowing existing roads', async () => {
+  const { connect, hubTiles } = await import('../server/sim/actionMap.js');
+  const { NB: nb } = await import('../server/sim/hex.js');
+  const NB = (t, d) => nb[t * 6 + d];
+  const g = create();
+  const hubs = hubTiles(g);
+  assert.ok(hubs.length >= 3 && hubs.every((h) => g.roads.edgesOf(h).length > 0), 'every base hub carries a road');
+  const [a, b] = g.sites.filter((s) => s.slots).slice(0, 2);
+  const before = g.roads.edges.size;
+  const route = connect(g, a.tile, b.tile);
+  assert.ok(route.length > 1);
+  assert.ok(route[0] === a.tile && route[route.length - 1] === b.tile, 'roads run hub to hub');
+  // re-planning an existing connection reuses the built road rather than laying a parallel one
+  assert.ok(g.roads.edges.size - before <= Math.ceil(route.length * .25), `${g.roads.edges.size - before} new edges for a ${route.length}-tile route`);
+  let triangles = 0;
+  for (const e of g.roads.edges.values()) for (let d = 0; d < 6; d++) {
+    const c = NB(e.a, d); if (c >= 0 && c !== e.b && g.roads.usable(e.a, c) && g.roads.usable(e.b, c)) triangles++;
+  }
+  assert.equal(triangles, 0, 'no road triangles (chords) at junctions');
 });

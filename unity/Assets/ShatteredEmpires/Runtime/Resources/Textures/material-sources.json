@@ -1,0 +1,62 @@
+[
+  {
+    "file": "GroundEarth.jpg",
+    "asset": "Ground037",
+    "source": "Ground037_1K-JPG_Color.jpg",
+    "url": "https://ambientcg.com/view?id=Ground037",
+    "download": "https://ambientcg.com/get?file=Ground037_1K-JPG.zip",
+    "license": "CC0-1.0",
+    "processing": "Original unmodified JPEG; mipmaps and compression are applied by Unity during import.",
+    "sha256": "d92bec8a35b9cb16ec79b421ca0f572a7400286eae109beafa266629ef49a6cf"
+  },
+  {
+    "file": "GroundEarthNormal.jpg",
+    "asset": "Ground037",
+    "source": "Ground037_1K-JPG_NormalGL.jpg",
+    "url": "https://ambientcg.com/view?id=Ground037",
+    "download": "https://ambientcg.com/get?file=Ground037_1K-JPG.zip",
+    "license": "CC0-1.0",
+    "processing": "Original unmodified JPEG; mipmaps and compression are applied by Unity during import.",
+    "sha256": "ea59dbdcfa5bf2f28bdd4aa896d4e5f96c4cce5939100dcc6db4bbbcdebfe38d"
+  },
+  {
+    "file": "UnitFabric.jpg",
+    "asset": "Fabric061",
+    "source": "Fabric061_1K-JPG_Color.jpg",
+    "url": "https://ambientcg.com/view?id=Fabric061",
+    "download": "https://ambientcg.com/get?file=Fabric061_1K-JPG.zip",
+    "license": "CC0-1.0",
+    "processing": "Original unmodified JPEG; mipmaps and compression are applied by Unity during import.",
+    "sha256": "de7321c185f7dfe83e71b84ad1f813364107f85f5ed2e605c820b8f7f4fe498b"
+  },
+  {
+    "file": "UnitFabricRoughness.jpg",
+    "asset": "Fabric061",
+    "source": "Fabric061_1K-JPG_Roughness.jpg",
+    "url": "https://ambientcg.com/view?id=Fabric061",
+    "download": "https://ambientcg.com/get?file=Fabric061_1K-JPG.zip",
+    "license": "CC0-1.0",
+    "processing": "Original unmodified JPEG; mipmaps and compression are applied by Unity during import.",
+    "sha256": "dd486d17cea570bf971b3f09b6bcf888b5926894c9ce65e136498690bc098680"
+  },
+  {
+    "file": "UnitArmor.jpg",
+    "asset": "Metal032",
+    "source": "Metal032_1K-JPG_Color.jpg",
+    "url": "https://ambientcg.com/view?id=Metal032",
+    "download": "https://ambientcg.com/get?file=Metal032_1K-JPG.zip",
+    "license": "CC0-1.0",
+    "processing": "Original unmodified JPEG; mipmaps and compression are applied by Unity during import.",
+    "sha256": "49493d6ade78ccbbbd270c6a15e4b4c9b1a097e66ddf28a1073de3e85712d9af"
+  },
+  {
+    "file": "UnitArmorRoughness.jpg",
+    "asset": "Metal032",
+    "source": "Metal032_1K-JPG_Roughness.jpg",
+    "url": "https://ambientcg.com/view?id=Metal032",
+    "download": "https://ambientcg.com/get?file=Metal032_1K-JPG.zip",
+    "license": "CC0-1.0",
+    "processing": "Original unmodified JPEG; mipmaps and compression are applied by Unity during import.",
+    "sha256": "55d3eee2b69008ad3701b18977495531d0e3515105102e56f40a4d1098d10bce"
+  }
+]

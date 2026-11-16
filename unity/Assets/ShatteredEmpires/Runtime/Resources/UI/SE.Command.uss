@@ -1,0 +1,155 @@
+/* SE.Command.uss — command UI (Impl-2): radial wheels, pickers, defensive build bar, tool chip,
+   selection card and world markers. Tokens come from SE.uss :root. Geometry that must never shift is
+   also set inline in code; this sheet supplies the look. */
+
+/* ---------------------------------------------------------------- radial wheel (B6) */
+/* The wedges are translucent dark glass drawn in code (RadialMenu.Paint); everything on top of them —
+   icons, badges, captions, the readout — stays fully opaque so it reads over any terrain. The open/close
+   animation is driven in code through translate/scale/opacity (no transitions: no per-frame style work). */
+.se-radial { position: absolute; }
+.se-radial-icon, .se-radial-hub-icon, .se-radial-arc-icon, .se-radial-lock { position: absolute; }
+.se-radial-badge {
+    position: absolute; width: 20px; height: 20px;
+    border-top-left-radius: 10px; border-top-right-radius: 10px; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px;
+    border-width: 1px; border-color: rgba(10, 14, 16, 0.85);
+    background-color: var(--se-accent); color: rgb(22, 20, 14);
+    font-size: 11px; -unity-font-style: bold; -unity-text-align: middle-center;
+    padding: 0; margin: 0;
+}
+.se-radial-caption {
+    position: absolute; font-size: 11px; -unity-font-style: bold; color: var(--se-warn); -unity-text-align: middle-center; padding: 0; margin: 0;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+/* readout: a semi-transparent card with a solid-enough dark backing (no blur) so the text stays legible */
+.se-radial-readout {
+    position: absolute; width: 280px; min-height: 64px;
+    background-color: rgba(9, 13, 15, 0.86);
+    border-width: 1px; border-color: rgba(255, 255, 255, 0.14);
+    border-top-color: rgba(226, 182, 96, 0.45);
+    border-top-left-radius: 6px; border-top-right-radius: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+    padding: 8px 10px;
+}
+.se-radial-readout-head { height: 22px; }
+.se-radial-readout-name { font-size: 16px; color: rgb(234, 204, 140); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); padding: 0; margin: 0; }
+.se-radial-readout-key { font-size: 13px; color: var(--se-text-dim); padding: 0 0 0 8px; margin: 0; }
+.se-radial-readout-cost { height: 20px; margin-top: 2px; }
+.se-radial-cost-icon { width: 14px; height: 14px; margin-right: 3px; }
+.se-radial-cost-value { font-size: 13px; color: var(--se-text); margin-right: 10px; padding: 0; }
+.se-radial-cost-time { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0; }
+.se-radial-readout-detail { font-size: 13px; color: var(--se-text-dim); margin-top: 2px; padding: 0; max-height: 36px; overflow: hidden; }
+.se-radial-readout-reason { font-size: 13px; color: var(--se-warn); margin-top: 2px; padding: 0; }
+
+/* ---------------------------------------------------------------- pop-out pickers (B7) */
+.se-cmd-picker {
+    position: absolute; width: 352px;
+    background-color: var(--se-surface-1);
+    border-width: 1px; border-color: var(--se-accent-dim);
+    border-top-left-radius: 6px; border-top-right-radius: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+    padding: 0 12px 4px 12px;
+}
+.se-cmd-picker-head { height: 36px; margin-bottom: 4px; }
+.se-cmd-picker-title { font-size: 16px; color: rgb(234, 204, 140); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); padding: 0; margin: 0; }
+.se-cmd-tile {
+    background-color: var(--se-surface-2);
+    border-width: 1px; border-color: var(--se-line);
+    border-top-left-radius: 4px; border-top-right-radius: 4px; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;
+    transition-duration: 0.12s; transition-property: background-color, border-color;
+}
+.se-cmd-tile:hover { background-color: var(--se-surface-hover); border-color: rgba(226, 182, 96, 0.7); }
+.se-cmd-tile:active { background-color: rgb(92, 78, 44); translate: 0 1px; }
+.se-cmd-tile--disabled:hover { border-color: rgba(240, 188, 86, 0.5); }
+.se-cmd-tile-digit { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0; }
+.se-cmd-tile-name { font-size: 12px; color: var(--se-text); padding: 0; margin: 2px 0 0 0; }
+.se-cmd-tile-cost { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0; }
+.se-cmd-tile-reason { font-size: 11px; color: var(--se-warn); padding: 0; margin: 0; }
+.se-cmd-short { color: var(--se-bad); }
+
+/* ---------------------------------------------------------------- defensive build bar (B11) */
+.se-defensebar {
+    position: absolute; height: 60px;
+    background-color: var(--se-surface-0);
+    border-width: 1px; border-color: var(--se-line);
+    border-top-left-radius: 8px; border-top-right-radius: 8px; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+    transition-duration: 0.12s; transition-property: border-color, opacity;
+}
+.se-defensebar--armed { border-color: var(--se-accent); }
+.se-defensebar-btn {
+    background-color: var(--se-surface-2);
+    border-width: 1px; border-color: var(--se-line);
+    border-top-left-radius: 4px; border-top-right-radius: 4px; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;
+    transition-duration: 0.12s; transition-property: background-color, border-color;
+}
+.se-defensebar-btn:hover { background-color: var(--se-surface-hover); border-color: rgba(226, 182, 96, 0.7); }
+.se-defensebar-btn:active { background-color: rgb(92, 78, 44); translate: 0 1px; }
+.se-defensebar-btn.selected { border-color: var(--se-accent); background-color: rgba(98, 82, 44, 0.96); }
+.se-defensebar-digit { font-size: 11px; color: var(--se-accent); padding: 0; margin: 0; }
+.se-defensebar-cost { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0; }
+.se-defensebar-cost.se-cmd-short { color: var(--se-bad); }
+.se-defensebar-tier { font-size: 11px; color: var(--se-warn); padding: 0; margin: 0; }
+.se-defensebar-divider { background-color: var(--se-line); }
+
+/* ---------------------------------------------------------------- tool chip + cursor reason */
+.se-cmd-toolchip {
+    position: absolute; height: 40px; min-width: 280px; max-width: 560px;
+    background-color: var(--se-surface-1);
+    border-width: 1px; border-color: var(--se-accent-dim);
+    border-top-left-radius: 6px; border-top-right-radius: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+    padding: 0 6px 0 10px;
+}
+.se-cmd-toolchip-icon { margin-right: 8px; }
+.se-cmd-toolchip-name { font-size: 15px; color: var(--se-text); padding: 0; margin: 0; }
+.se-cmd-toolchip-cost { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0 8px 0 0; -unity-text-align: middle-left; }
+.se-cmd-toolchip-keys { align-items: center; }
+.se-cmd-keycap {
+    font-size: 11px; color: var(--se-text); min-width: 18px; height: 18px; -unity-text-align: middle-center;
+    border-width: 1px; border-color: rgba(255, 255, 255, 0.25);
+    border-top-left-radius: 3px; border-top-right-radius: 3px; border-bottom-left-radius: 3px; border-bottom-right-radius: 3px;
+    padding: 0 3px; margin: 0 3px 0 0;
+}
+.se-cmd-cursor-reason {
+    position: absolute; font-size: 13px; color: var(--se-bad);
+    background-color: var(--se-surface-1);
+    border-top-left-radius: 4px; border-top-right-radius: 4px; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;
+    padding: 3px 8px;
+}
+
+/* ---------------------------------------------------------------- selection card (B10) */
+.se-cmd-card {
+    position: absolute; width: 600px; max-height: 220px;
+    background-color: var(--se-surface-1);
+    border-width: 1px; border-color: var(--se-line);
+    border-top-left-radius: 6px; border-top-right-radius: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+    padding: 10px 12px;
+    overflow: hidden;
+}
+.se-cmd-card-head { height: 32px; }
+.se-cmd-card-icon { margin-right: 8px; }
+.se-cmd-card-name { font-size: 16px; color: rgb(234, 204, 140); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); padding: 0; margin: 0; }
+.se-cmd-card-meta { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0 8px; }
+.se-cmd-card-line { font-size: 13px; color: var(--se-text); height: 20px; padding: 0; margin: 0; -unity-text-align: middle-left; }
+.se-cmd-card-warn { color: var(--se-warn); }
+.se-cmd-owner-dot {
+    border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-left-radius: 5px; border-bottom-right-radius: 5px;
+    margin: 0 8px;
+}
+.se-cmd-bar { background-color: rgba(255, 255, 255, 0.10); margin-right: 10px; }
+.se-cmd-bar-fill { background-color: var(--se-good); }
+.se-cmd-bar-caption { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0; }
+.se-cmd-pip { background-color: var(--se-friendly); }
+.se-cmd-unit-chip-count { font-size: 13px; color: var(--se-text); padding: 0 0 0 2px; margin: 0; }
+.se-cmd-queue-item { align-items: center; }
+.se-cmd-queue-progress { background-color: var(--se-good); align-self: flex-start; }
+.se-cmd-tag {
+    font-size: 11px; color: var(--se-good); padding: 1px 6px; margin: 0;
+    border-width: 1px; border-color: var(--se-good);
+    border-top-left-radius: 3px; border-top-right-radius: 3px; border-bottom-left-radius: 3px; border-bottom-right-radius: 3px;
+}
+
+/* ---------------------------------------------------------------- world markers (B5) */
+.se-cmd-markers { position: absolute; }
+.se-cmd-marker { position: absolute; width: 150px; height: 40px; }
+.se-cmd-marker-name {
+    font-size: 13px; color: var(--se-text); padding: 1px 6px; margin: 0;
+    background-color: rgba(8, 12, 14, 0.70);
+    border-top-left-radius: 3px; border-top-right-radius: 3px; border-bottom-left-radius: 3px; border-bottom-right-radius: 3px;
+}

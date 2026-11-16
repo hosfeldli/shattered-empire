@@ -59,6 +59,13 @@ namespace SE.Runtime.Rendering
         public NativeArray<InstanceData> Data;
         public int Count;
         public Bounds Bounds;
+        /// <summary>
+        /// Culling margin (world units) added around <see cref="Bounds"/>: composed bounds are built from module
+        /// footprints, and authored models, wind sway and roof overhangs can reach a little past them, which made
+        /// buildings and trees pop out at the screen edges.
+        /// </summary>
+        public static float CullMargin = .6f;
+        Bounds CullBounds { get { var b = Bounds; b.Expand(CullMargin * 2f + b.size.y * .1f); return b; } }
         public ShadowCastingMode Shadows = ShadowCastingMode.On;
         public bool ReceiveShadows = true;
         /// <summary>
@@ -130,7 +137,7 @@ namespace SE.Runtime.Rendering
             if (buffer == null) return;
             var mpb = blocks[block];
             mpb.SetVector(ImageOffsetId, new Vector4(imageOffset, 0, 0, 0));
-            var b = Bounds;
+            var b = CullBounds;
             b.center += new Vector3(imageOffset, 0, 0);
             var rp = new RenderParams(Material)
             {
@@ -147,7 +154,7 @@ namespace SE.Runtime.Rendering
         public void DrawImages(WrapImages images)
         {
             if (Count == 0) return;
-            int n = images.For(Bounds, out float a, out float b, out float c);
+            int n = images.For(CullBounds, out float a, out float b, out float c);
             if (n > 0) Draw(a, 0);
             if (n > 1) Draw(b, 1);
             if (n > 2) Draw(c, 2);

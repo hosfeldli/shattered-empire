@@ -259,15 +259,115 @@ namespace SE.Runtime.Landscape
         {
             float x = cx + uv.x * ax + uv.y * bx, z = cz + uv.x * az + uv.y * bz;
             float y = view.GroundHeight(x, z), depression = view.DamageHeight(tile, x, z);
+            // Shell damage is not a smooth bowl: a jagged floor, a broken raised lip and thrown clods on top
+            // of the shared crater datum (render-only relief, a few decimetres, so actors still stand true).
+            float relief = CraterRelief(view, tile, x, z, out float scorch, out float spoil);
+            y += relief;
             color = GroundColor(tile, x - cx, z - cz);
             var pos = new float3(x - OriginX, y, -z);
             min = math.min(min, pos); max = math.max(max, pos);
             var soil = Biome[tile] >= 9 ? new float3(.30f, .28f, .25f) : new float3(.27f, .23f, .16f);
+            if (view.Trenches != null)
+                for (int edge = -1; edge < 6; edge++)
+                {
+                    int n = edge < 0 ? tile : view.Nb[tile * 6 + edge];
+                    if (n < 0 || view.Trenches[n * 4 + 3] <= 0) continue;
+                    int tr = n * 4; float a = view.Trenches[tr + 2];
+                    float dx = HexMath.DxWrap(HexMath.CenterX(n, W), x, Period, WrapFlag != 0) - view.Trenches[tr];
+                    float dz = z - HexMath.CenterZ(n, W) - view.Trenches[tr + 1];
+                    float across = math.abs(dx * math.sin(a) + dz * math.cos(a)), along = math.abs(-dx * math.cos(a) + dz * math.sin(a));
+                    float stain = math.saturate((.32f - across) / .14f) * math.saturate((1.02f - along) / .20f);
+                    color = math.lerp(color, soil * .67f, stain * .87f);
+                }
             float level = view.NearWaterLevel(tile);
             if (level > TerrainView.NoWater * .5f)
                 color = math.lerp(color, new float3(.48f, .46f, .39f), math.saturate(1f - math.abs(y - level) / .034f) * .58f);
-            vertices[vi] = new TerrainVertex { Position = pos, Normal = Normal(view, x, z), Color = ShadeAt(math.lerp(color, soil, math.saturate(math.abs(depression) * 28)), y, sea) };
+            var shaded = math.lerp(color, soil, math.saturate(math.abs(depression) * 28));
+            if (scorch > 0 || spoil > 0)
+            {
+                // blackened, blast-burnt floor; turned subsoil (paler, redder) thrown over the lip in uneven sprays
+                float grain = Hash((int)math.floor(x * 41f), (int)math.floor(z * 41f) + 977);
+                shaded = math.lerp(shaded, soil * new float3(1.18f, 1.08f, .98f) * (.86f + grain * .3f), spoil * .7f);
+                shaded = math.lerp(shaded, new float3(.075f, .068f, .06f) * (.8f + grain * .5f), scorch * .78f);
+            }
+            float3 normal = Normal(view, x, z);
+            if (scorch > 0 || spoil > 0)
+            {
+                // the relief is finer than the ground normal's footprint: tilt the normal by its own slope
+                const float e = .035f;
+                float rx = CraterRelief(view, tile, x + e, z, out _, out _) - CraterRelief(view, tile, x - e, z, out _, out _);
+                float rz = CraterRelief(view, tile, x, z + e, out _, out _) - CraterRelief(view, tile, x, z - e, out _, out _);
+                normal = math.normalize(normal + new float3(-rx, 0, rz) * (1f / (2f * e)));
+            }
+            vertices[vi] = new TerrainVertex { Position = pos, Normal = normal, Color = ShadeAt(shaded, y, sea) };
             indices[ii++] = (uint)vi++;
+        }
+
+        /// <summary>Lattice value noise in [0, 1) (deterministic, Burst-safe).</summary>
+        static float ValueNoise(float x, float z, int seed)
+        {
+            int ix = (int)math.floor(x), iz = (int)math.floor(z);
+            float fx = x - ix, fz = z - iz;
+            fx = fx * fx * (3 - 2 * fx); fz = fz * fz * (3 - 2 * fz);
+            float a = Hash(ix + seed * 7919, iz), b = Hash(ix + 1 + seed * 7919, iz);
+            float c = Hash(ix + seed * 7919, iz + 1), d = Hash(ix + 1 + seed * 7919, iz + 1);
+            return math.lerp(math.lerp(a, b, fx), math.lerp(c, d, fx), fz);
+        }
+
+        /// <summary>A hex (or its neighbour) holds a shell crater: its ground is tessellated finer.</summary>
+        bool CraterHex(int tile)
+        {
+            if (ImpactCounts == null) return false;
+            if (ImpactCounts[tile] != 0) return true;
+            for (int d = 0; d < 6; d++) { int n = Nb[tile * 6 + d]; if (n >= 0 && ImpactCounts[n] != 0) return true; }
+            return false;
+        }
+
+        /// <summary>
+        /// Render relief added to the shared crater bowls (TerrainView.DamageHeight): a jagged, uneven floor, a
+        /// raised lip broken into lobes and gaps, and lumps of thrown earth scattered beyond it. Also returns
+        /// how scorched (floor) and how covered in thrown subsoil (lip and ejecta) the point is, for colour.
+        /// </summary>
+        internal static float CraterRelief(in TerrainView view, int tile, float x, float z, out float scorch, out float spoil)
+        {
+            scorch = 0; spoil = 0;
+            if (view.ImpactCounts == null || view.Impacts == null) return 0;
+            float relief = 0;
+            for (int cell = -1; cell < 6; cell++)
+            {
+                int n = cell < 0 ? tile : view.Nb[tile * 6 + cell];
+                if (n < 0 || view.ImpactCounts[n] == 0) continue;
+                float dx = HexMath.DxWrap(HexMath.CenterX(n, view.W), x, view.Period, view.Wrap != 0), dz = z - HexMath.CenterZ(n, view.W);
+                for (int k = 0; k < view.ImpactCounts[n]; k++)
+                {
+                    int index = (n * 6 + k) * 4;
+                    float ox = dx - view.Impacts[index], oz = dz - view.Impacts[index + 1];
+                    float radius = math.max(.05f, view.Impacts[index + 2]), depth = view.Impacts[index + 3];
+                    float d = math.sqrt(ox * ox + oz * oz) / radius;
+                    if (d >= 1.9f) continue;
+                    float theta = math.atan2(oz, ox);
+                    int seed = n * 6 + k;
+                    float wx = x / radius, wz = z / radius;
+                    // jagged floor: broken lumps and smaller pits across the bowl
+                    float floorNoise = ValueNoise(wx * 4.2f, wz * 4.2f, seed) * .65f + ValueNoise(wx * 9.5f, wz * 9.5f, seed + 31) * .35f - .5f;
+                    float inside = math.saturate(1f - d * d);
+                    relief += depth * .42f * floorNoise * inside;
+                    // the lip: raised in lobes, torn open in places
+                    float lobes = .55f + .45f * math.sin(theta * 5f + seed * 1.7f) * math.cos(theta * 3f - seed);
+                    float torn = ValueNoise(theta * 2.4f + seed * 3.1f, d * 3f, seed + 7);
+                    float band = math.saturate(1f - math.abs(d - 1.05f) / .32f);
+                    float lip = band * band * math.saturate(lobes * (.35f + torn * 1.1f));
+                    relief += depth * .30f * lip;
+                    // thrown clods: isolated bumps on a jittered lattice beyond the lip, thinning outward
+                    float clodField = ValueNoise(wx * 7.5f, wz * 7.5f, seed + 53);
+                    float reach = math.saturate((1.75f - d) / .6f) * math.saturate((d - .9f) / .15f);
+                    float clod = math.saturate((clodField - .62f) / .2f) * reach;
+                    relief += depth * .22f * clod;
+                    scorch = math.max(scorch, math.saturate((1.02f - d) / .35f) * (.7f + .3f * torn));
+                    spoil = math.max(spoil, math.max(lip, clod * .8f + reach * .25f));
+                }
+            }
+            return relief;
         }
 
         public void Execute()
@@ -276,7 +376,7 @@ namespace SE.Runtime.Landscape
             v.RidgeCache = null;   // the ridge cache belongs to the main thread; jobs compute the noise directly
             v.RidgeFilled = null;
             int n0 = Cy * Cs, q0 = Cx * Cs;
-            int hexes = 0, damaged = 0, water = 0, shoreWater = 0, rivers = 0;
+            int hexes = 0, damaged = 0, cratered = 0, water = 0, shoreWater = 0, rivers = 0;
             for (int lr = 0; lr < Cs; lr++)
                 for (int lq = 0; lq < Cs; lq++)
                 {
@@ -285,7 +385,7 @@ namespace SE.Runtime.Landscape
                     int i = r * W + q;
                     if (Known[i] == 0) continue;
                     hexes++;
-                    if (v.HasDamage(i) || v.HasShore(i)) damaged++;
+                    if (v.HasDamage(i) || v.HasShore(i)) { damaged++; if (CraterHex(i)) cratered++; }
                     if (WaterLevelFor(i) > TerrainView.NoWater * 0.5f) { water++; if (v.HasShore(i)) shoreWater++; }
                     if (IsChannel(i)) rivers++;
                 }
@@ -293,8 +393,9 @@ namespace SE.Runtime.Landscape
 
             // ---------------- detailed ground: 6 sectors × 7 points × 6 triangles per hex
             var hi = Meshes[0];
-            hi.SetVertexBufferParams((hexes - damaged) * 42 + damaged * 972 + rivers * 52, Layout);
-            hi.SetIndexBufferParams((hexes - damaged) * 108 + damaged * 972 + rivers * 144, IndexFormat.UInt32);
+            // refined hexes: 36 sector triangles split 3x3 (972 vertices), or 4x4 around craters (1728)
+            hi.SetVertexBufferParams((hexes - damaged) * 42 + (damaged - cratered) * 972 + cratered * 1728 + rivers * 52, Layout);
+            hi.SetIndexBufferParams((hexes - damaged) * 108 + (damaged - cratered) * 972 + cratered * 1728 + rivers * 144, IndexFormat.UInt32);
             var hv = hi.GetVertexData<TerrainVertex>();
             var hix = hi.GetIndexData<uint>();
             var lo = Meshes[1];
@@ -316,6 +417,8 @@ namespace SE.Runtime.Landscape
                     bool seaFloor = v.IsSea(i);
                     float3 own = HexColor(i);
                     bool refine = v.HasDamage(i) || v.HasShore(i);
+                    int div = refine && CraterHex(i) ? 4 : 3;
+                    float step = 1f / div;
                     for (int k = 0; k < 6; k++)
                     {
                         int k2 = (k + 1) % 6;
@@ -332,15 +435,15 @@ namespace SE.Runtime.Landscape
                                 float2 pa = new float2(TerrainView.SectorU[a], TerrainView.SectorV[a]);
                                 float2 pb = new float2(TerrainView.SectorU[middle], TerrainView.SectorV[middle]);
                                 float2 pc = new float2(TerrainView.SectorU[c], TerrainView.SectorV[c]);
-                                for (int row = 0; row < 3; row++) for (int column = 0; column < 3 - row; column++)
+                                for (int row = 0; row < div; row++) for (int column = 0; column < div - row; column++)
                                 {
-                                    float2 p0 = pa + (pb - pa) * (row / 3f) + (pc - pa) * (column / 3f);
-                                    float2 p1 = p0 + (pb - pa) / 3f, p2 = p0 + (pc - pa) / 3f;
+                                    float2 p0 = pa + (pb - pa) * (row * step) + (pc - pa) * (column * step);
+                                    float2 p1 = p0 + (pb - pa) * step, p2 = p0 + (pc - pa) * step;
                                     DamageVertex(ref hv, ref hix, ref vh, ref ih, v, i, cx, cz, ax, az, bx, bz, p0, own, seaFloor, ref bmin, ref bmax);
                                     DamageVertex(ref hv, ref hix, ref vh, ref ih, v, i, cx, cz, ax, az, bx, bz, p1, own, seaFloor, ref bmin, ref bmax);
                                     DamageVertex(ref hv, ref hix, ref vh, ref ih, v, i, cx, cz, ax, az, bx, bz, p2, own, seaFloor, ref bmin, ref bmax);
-                                    if (row + column >= 2) continue;
-                                    float2 p3 = p1 + (pc - pa) / 3f;
+                                    if (row + column >= div - 1) continue;
+                                    float2 p3 = p1 + (pc - pa) * step;
                                     DamageVertex(ref hv, ref hix, ref vh, ref ih, v, i, cx, cz, ax, az, bx, bz, p1, own, seaFloor, ref bmin, ref bmax);
                                     DamageVertex(ref hv, ref hix, ref vh, ref ih, v, i, cx, cz, ax, az, bx, bz, p3, own, seaFloor, ref bmin, ref bmax);
                                     DamageVertex(ref hv, ref hix, ref vh, ref ih, v, i, cx, cz, ax, az, bx, bz, p2, own, seaFloor, ref bmin, ref bmax);
@@ -432,7 +535,7 @@ namespace SE.Runtime.Landscape
                         float y = v.GroundHeight(x, z), variation = Hash(i * 61 + t, Seed + 34);
                         float scale = .68f + variation * .47f;
                         var color = new float4(.47f + variation * .10f, .53f + variation * .07f, .31f + variation * .065f, 0);
-                        var plant = InstanceData.TRS(MapSpace.W(x, y - .007f, z), MapSpace.Yaw(variation * 6.283f), new float3(scale), color);
+                        var plant = InstanceData.TRS(MapSpace.W(x, y - .0007f, z), MapSpace.Yaw(variation * 6.283f), new float3(scale), color);
                         if (grass < Grass.Length) Grass[grass++] = plant;
                         if (t < 3 && (b == 4 || b == 7 || groveNoise > .63f) && variation > .38f && understory < Understory.Length)
                             Understory[understory++] = InstanceData.TRS(MapSpace.W(x, y, z), MapSpace.Yaw(variation * 6.283f), new float3(.55f + variation * .40f), color);

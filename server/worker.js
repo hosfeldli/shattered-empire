@@ -109,9 +109,11 @@ parentPort.on('message', (m) => {
       congested = next; return;
     }
     if (m.t === 'cmd' && m.cmd && m.cmd.c === 'speed') {
-      const eligible = game.civs.filter((c) => c.human).length === 1 || !!game.sandbox;
+      // campaigns, skirmishes and multiplayer run at the match's own pace; only the combat sandbox (and AI
+      // exhibitions, through the observer channel) can change speed
+      const eligible = !!game.sandbox;
       const requested = Number(m.cmd.speed);
-      if (!eligible) send(m.civId, { t: 'ack', rid: m.rid, error: 'Only single-player matches can change speed' });
+      if (!eligible) send(m.civId, { t: 'ack', rid: m.rid, error: 'Game speed is fixed in campaigns and multiplayer' });
       else if (![1, 2, 4].includes(requested)) send(m.civId, { t: 'ack', rid: m.rid, error: 'Choose 1×, 2× or 4× speed' });
       else { game.resumeSpeed = requested; game.speed = requested; send(m.civId, { t: 'ack', rid: m.rid, speed: requested }); send(m.civId, { t: 'paused', on: false, speed: requested }); }
       flush();
@@ -138,7 +140,7 @@ parentPort.on('message', (m) => {
     } else if (m.t === 'welcome') {
       const civ = game.civs[m.civId];
       civ.connected = true;
-      send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
+      send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random' }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
         civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
       if (m.caps?.includes('udelta')) deltas.set(m.civId, deltaEncoder()); else deltas.delete(m.civId);
       for (const [, msg] of game.snapshots(m.civId)) sendSnap(m.civId, msg);
@@ -150,7 +152,7 @@ parentPort.on('message', (m) => {
       if (!m.on) geoViewers.delete(-2);
     } else if (m.t === 'obsWelcome') {
       const o = game.setObserver({ connected: true });
-      send(-2, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style },
+      send(-2, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random' },
         civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
       send(-2, game.observerSnapshot(true));
       // spectators share one channel: a full sync for a newcomer is harmless to the others

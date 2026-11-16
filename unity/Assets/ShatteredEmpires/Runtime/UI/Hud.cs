@@ -9,33 +9,6 @@ using UnityEngine.UIElements;
 
 namespace SE.Runtime.UI
 {
-    /// <summary>What the interface asks the game to do (implemented by the bootstrap).</summary>
-    /// <summary>What the New Campaign screen chose (server match options: world style, size, rivals, difficulty, seed).</summary>
-    public sealed class CampaignOptions
-    {
-        public string Style = "pangaea", MapSize = "small", Difficulty = "normal", Seed = "", Objective = "domination";
-        public int Rivals = 1;
-        public bool Tutorial, Wrap;
-    }
-
-    public interface IGameActions
-    {
-        void StartMatch(string mode, string match);
-        void StartStress();
-        void PlayIntro();
-        void Quit();
-        void FocusTile(int tile, float distance);
-        void ApplyQuality(string preset);
-        void ApplyUiScale(float scale);
-        void StartCampaign(CampaignOptions options);
-        void HostMultiplayer(int teamSize);
-        void InviteFriends();
-        bool CanInvite { get; }
-        string Server { get; set; }
-        string PlayerName { get; set; }
-        Audio.AudioDirector Audio { get; }
-    }
-
     /// <summary>
     /// The interface, built with UI Toolkit. The world stays the focus: a compact top bar, a rail of
     /// tools, one contextual card for the selection, panels that open beside the world, and a quiet
@@ -52,22 +25,36 @@ namespace SE.Runtime.UI
         readonly IGameActions game;
         readonly JArray catalogue;
 
-        VisualElement topbar, resRow, rail, panel, card, feed, banner, tooltip, coach, highlight, pointer, menu, hint;
-        Label bannerText, coachText, hintText, focusPill, pointerLabel;
+        VisualElement topbar, resRow, rail, panel, card, feed, banner, tooltip, coach, highlight, pointer;
+        Label bannerText, coachText, focusPill;
+        MainMenuView mainMenu;
         string openPanel = "";
         string panelTab = "";
         float refreshAt, bannerUntil;
         int quantity = 1;
         string cardSignature = "", panelSignature = "";
         long noteCount;
-        public bool MenuVisible => menu.style.display == DisplayStyle.Flex;
+        public bool MenuVisible => mainMenu != null && mainMenu.Visible;
 
         public Hud(VisualElement rootElement, ClientSession s, Commander c, Military.UnitRenderer u, IGameActions actions)
         {
             root = rootElement; session = s; commander = c; units = u; game = actions;
-            var sheet = Resources.Load<StyleSheet>("UI/SE");
-            if (sheet != null) root.styleSheets.Add(sheet);
+            // one shared sheet (tokens and shell) then each owner's sheet; a missing sheet is skipped
+            foreach (var path in new[] { "UI/SE", "UI/SE.Command", "UI/SE.Minimap", "UI/SE.Menu" })
+            {
+                var sheet = Resources.Load<StyleSheet>(path);
+                if (sheet != null && !root.styleSheets.Contains(sheet)) root.styleSheets.Add(sheet);
+            }
             root.pickingMode = PickingMode.Ignore;
+            // Interface feedback for every button, wherever it was built: a click on press and a very
+            // quiet tick when the pointer moves onto a different enabled button.
+            root.RegisterCallback<ClickEvent>(e => { if (FindButton(e.target) != null) game?.Audio?.Ui("click"); }, TrickleDown.TrickleDown);
+            root.RegisterCallback<PointerOverEvent>(e =>
+            {
+                var b = FindButton(e.target);
+                if (b == null || b == hovered || !b.enabledInHierarchy) return;
+                hovered = b; game?.Audio?.Ui("hover", .5f);
+            }, TrickleDown.TrickleDown);
             var text = Resources.Load<TextAsset>("Data/ui_actions");
             catalogue = text != null ? JArray.Parse(text.text) : new JArray();
             Build();
@@ -91,10 +78,18 @@ namespace SE.Runtime.UI
             return l;
         }
 
+        Button hovered;
+        static Button FindButton(IEventHandler target)
+        {
+            for (var e = target as VisualElement; e != null; e = e.parent) if (e is Button b) return b;
+            return null;
+        }
+
         /// <summary>A button with an optional icon beside its label (laid out in a row, never overlapping).</summary>
         static Button B(string label, Action click, VisualElement parent = null, string icon = null, string cls = null)
         {
             var b = new Button(click) { text = "" };
+            b.tooltip = DefaultActionTip(label);
             b.AddToClassList("btn");
             if (cls != null) foreach (var c in cls.Split(' ')) b.AddToClassList(c);
             if (icon != null) b.Add(new IconElement(icon));
@@ -102,6 +97,9 @@ namespace SE.Runtime.UI
             parent?.Add(b);
             return b;
         }
+
+        /// <summary>A bounded vertical scroll view (kept for existing callers; same as <see cref="UiKit.BoundedScroll"/>).</summary>
+        static ScrollView Scroll(VisualElement into) => UiKit.BoundedScroll(into);
 
         JObject Defs => session.Defs;
         JObject Econ => session.Econ;
@@ -134,8 +132,23 @@ namespace SE.Runtime.UI
         {
             if (root.panel == null) return false;
             var p = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(screen.x, Screen.height - screen.y));
-            var picked = root.panel.Pick(p);
+            var picked = PickCached(p);
             return picked != null && picked != root;
+        }
+
+        // One panel pick per frame and point: the bootstrap, the tooltip, the wheel hover and the tool chip all
+        // ask where the pointer is; a pick walks the tree (and can force a layout pass), so it is shared.
+        int pickFrame = -1;
+        Vector2 pickPoint;
+        VisualElement pickResult;
+
+        VisualElement PickCached(Vector2 panelPoint)
+        {
+            if (root.panel == null) return null;
+            if (pickFrame == Time.frameCount && pickPoint == panelPoint) return pickResult;
+            pickFrame = Time.frameCount; pickPoint = panelPoint;
+            pickResult = root.panel.Pick(panelPoint);
+            return pickResult;
         }
 
         Vector2 ToPanel(Vector3 screen) => root.panel == null ? Vector2.zero : RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(screen.x, Screen.height - screen.y));
@@ -143,12 +156,9 @@ namespace SE.Runtime.UI
         // ------------------------------------------------------------------ layout
         void Build()
         {
-            topbar = El("topbar", root);
-            resRow = El("row grow", topbar);
-            focusPill = L("", "focus-pill", topbar);
-            focusPill.style.display = DisplayStyle.None;
-            B("Invite", () => game.InviteFriends(), topbar, "army").name = "invite";
+            BuildTopBar();   // Hud.Shell.cs: top bar (resource chips, status pill, speed, pause, menu)
 
+            // the legacy ruleset's tool rail (hidden in the action ruleset)
             rail = El("rail", root);
             B("Build", () => Toggle("build"), rail, "build").name = "rail-build";
             B("Army", () => Toggle("army"), rail, "army").name = "rail-army";
@@ -161,11 +171,7 @@ namespace SE.Runtime.UI
             feed = El("feed", root); feed.pickingMode = PickingMode.Ignore;
             banner = El("banner glass", root); banner.style.display = DisplayStyle.None;
             bannerText = L("", "heading", banner);
-            hint = El("glass", root);
-            hint.style.position = Position.Absolute; hint.style.bottom = 140; hint.style.left = new Length(30, LengthUnit.Percent); hint.style.right = new Length(30, LengthUnit.Percent);
-            hint.style.paddingLeft = 10; hint.style.paddingRight = 10; hint.style.paddingTop = 6; hint.style.paddingBottom = 6;
-            hintText = L("", "small", hint); hintText.style.unityTextAlign = TextAnchor.MiddleCenter;
-            hint.style.display = DisplayStyle.None; hint.pickingMode = PickingMode.Ignore;
+            BuildToast();   // Hud.Shell.cs
             tooltip = El("tooltip", root); tooltip.style.display = DisplayStyle.None; tooltip.pickingMode = PickingMode.Ignore;
             coach = El("coach glass", root); coach.style.display = DisplayStyle.None;
             L("Getting started", "heading", coach);
@@ -173,43 +179,46 @@ namespace SE.Runtime.UI
             var coachRow = El("row", coach);
             B("Skip tutorial", () => { tutorialStep = -1; coach.style.display = DisplayStyle.None; PlayerPrefs.SetInt("se.tutorial.done", 1); }, coachRow);
             highlight = El("highlight", root); highlight.pickingMode = PickingMode.Ignore; highlight.style.display = DisplayStyle.None;
+            // the tutorial pointer: a drawn triangle (no font glyph)
             pointer = El(null, root); pointer.style.position = Position.Absolute; pointer.pickingMode = PickingMode.Ignore; pointer.style.display = DisplayStyle.None;
-            pointerLabel = L("▼", "title", pointer); pointerLabel.style.color = new Color(0.96f, 0.77f, 0.35f);
+            pointer.style.left = 0; pointer.style.top = 0;   // placed with translate (MovePointer)
+            pointer.Add(new IconElement("pointer", "se-pointer") { Tint = new Color(0.96f, 0.77f, 0.35f) });
+            // the minimap: always shown with the game (both rulesets); it styles itself (SE.Minimap.uss)
             Map = new Minimap(session); Map.style.display = DisplayStyle.None;
+            Map.OrderAt = (x, z, queue) => { if (units.Selected.Count > 0) commander.MinimapOrder(x, z, queue); };
             root.Add(Map);
-            menu = El("menu", root); menu.style.display = DisplayStyle.None;
-            BuildMenu();
+            BuildCommandUi();   // Hud.Base.cs (Impl-2): wheels, defense bar, tool chip
+            BuildCommandGroups();   // Hud.Command.cs
+            // the main menu (MainMenu.cs) with the shared settings view
+            mainMenu = new MainMenuView(game, () =>
+            {
+                var view = new SettingsView(game);
+                view.Back = () => mainMenu?.HandleEscape();
+                return view;
+            });
+            mainMenu.style.display = DisplayStyle.None;
+            root.Add(mainMenu);
         }
 
-        /// <summary>The minimap (the bootstrap wires its camera hooks). A map lens, off unless chosen (the design keeps the main view map-first).</summary>
+        /// <summary>The minimap (the bootstrap wires its camera hooks); shown whenever the game interface is.</summary>
         public Minimap Map;
-        static bool MinimapLens
-        {
-            get => PlayerPrefs.GetInt("se.lens.minimap", 0) == 1;
-            set { PlayerPrefs.SetInt("se.lens.minimap", value ? 1 : 0); PlayerPrefs.Save(); }
-        }
 
-        void SetMinimapLens(bool on)
-        {
-            MinimapLens = on;
-            Map.style.display = on && topbar.resolvedStyle.display != DisplayStyle.None ? DisplayStyle.Flex : DisplayStyle.None;
-        }
-
-        /// <summary>Global shortcuts (remappable): panels, the minimap lens, jump to the latest alert.</summary>
+        /// <summary>Global shortcuts (remappable): legacy panels and the jump to the latest alert.</summary>
         void Shortcuts()
         {
-            if (Input.InputFacade.Action("build")) Toggle("build");
-            if (Input.InputFacade.Action("research")) Toggle("research");
-            if (Input.InputFacade.Action("overview")) Toggle("overview");
-            if (!session.ActionRts && Input.InputFacade.Pressed(KeyCode.M)) SetMinimapLens(!MinimapLens);
+            if (!session.ActionRts)
+            {
+                if (Input.InputFacade.Action("build")) Toggle("build");
+                if (Input.InputFacade.Action("research")) Toggle("research");
+                if (Input.InputFacade.Action("overview")) Toggle("overview");
+            }
             if (Input.InputFacade.Action("alert") && session.LastAlertTile >= 0) game.FocusTile(session.LastAlertTile, 22f);
         }
 
+        /// <summary>Opens or closes a legacy side panel (the action ruleset has no side panels).</summary>
         void Toggle(string name)
         {
-            if (session.ActionRts && name == "build" && openPanel != "build" &&
-                (!session.Objectives.TryGetValue(commander.SelectedObjective, out var site) || !site.IsBase || site.Owner != session.CivId))
-            { OpenFieldMenu(); return; }
+            if (session.ActionRts) return;
             openPanel = openPanel == name ? "" : name;
             panelTab = "";
             panelSignature = "";
@@ -220,312 +229,67 @@ namespace SE.Runtime.UI
         public void ShowGame(bool on)
         {
             var d = on ? DisplayStyle.Flex : DisplayStyle.None;
-            topbar.style.display = d; rail.style.display = d; feed.style.display = d;
-            EnsureSpeedStrip(); speedStrip.style.display = d;
-            if (!on) { pauseMenu?.RemoveFromHierarchy(); pauseMenu = null; }
+            bool legacy = session.Welcome != null && !session.ActionRts;
+            topbar.style.display = d; feed.style.display = d;
+            rail.style.display = on && legacy ? DisplayStyle.Flex : DisplayStyle.None;
+            Map.style.display = d;
+            if (groupsBar != null && !on) groupsBar.style.display = DisplayStyle.None;
+            if (!on) { ClosePauseMenu(false); ClosePopover(); toast.style.display = DisplayStyle.None; }
+            ShowCommandUi(on);   // Hud.Base.cs (Impl-2)
             if (on)
-                foreach (var el in new[] { topbar, rail, speedStrip })
+                foreach (var el in new VisualElement[] { topbar, rail, Map })
                 {
                     // the interface enters gradually instead of snapping over the world
                     el.style.opacity = 0;
                     var e2 = el; e2.schedule.Execute(() => e2.style.opacity = 1).StartingIn(60);
                 }
-            Map.style.display = on && MinimapLens && !session.ActionRts ? DisplayStyle.Flex : DisplayStyle.None;
             if (objectiveLayer != null) objectiveLayer.style.display = on && session.ActionRts ? DisplayStyle.Flex : DisplayStyle.None;
             if (on) ApplyRulesetLayout();
             if (!on) { panel.style.display = DisplayStyle.None; card.style.display = DisplayStyle.None; coach.style.display = DisplayStyle.None; }
             else if (!session.Spectator && (session.ActionRts ? ProtocolDecoder.Int(Econ?["tutorialSite"]) > 0 : PlayerPrefs.GetInt("se.tutorial.done", 0) == 0))
             {
-                tutorialStep = 0; stepAt = 0; coach.style.display = DisplayStyle.Flex;
+                tutorialStep = 0; stepAt = 0; coachShownStep = -1; coach.style.display = DisplayStyle.Flex;
             }
             else tutorialStep = -1;
         }
 
-        // ------------------------------------------------------------------ menu
-        TextField serverField, nameField, codeField;
-        Label menuStatus;
-
-        /// <summary>
-        /// The main menu (visual design bible §6): the title upper left over the living world, a compact
-        /// translucent list beneath it, a one-line explanation for the item under the mouse, version and
-        /// build information in the corner. New Campaign, Multiplayer and the Field Guide open their own
-        /// pages in the same panel; the world stays visible behind everything.
-        /// </summary>
-        void BuildMenu()
-        {
-            menuFrame = El("menu-box glass", menu);
-            menuScroll = Scroll(menuFrame);
-            menuScroll.AddToClassList("menu-scroll");
-            menuBox = menuScroll.contentContainer;
-            var foot = L($"Version {Application.version} · Unity {Application.unityVersion} · Windows preview", "menu-version", menu);
-            foot.pickingMode = PickingMode.Ignore;
-            MenuPage("main");
-        }
-
-        VisualElement menuBox, menuFrame;
-        ScrollView menuScroll;
-
-        static ScrollView Scroll(VisualElement into)
-        {
-            var scroll = new ScrollView(ScrollViewMode.Vertical) { horizontalScrollerVisibility = ScrollerVisibility.Hidden,
-                verticalScrollerVisibility = ScrollerVisibility.Auto, mouseWheelScrollSize = 38 };
-            scroll.AddToClassList("bounded-scroll");
-            scroll.style.minHeight = 0;
-            scroll.style.flexShrink = 1;
-            scroll.contentContainer.style.flexShrink = 0;
-            into.Add(scroll);
-            return scroll;
-        }
-        Label menuHelp;
-        string menuPage = "main";
-
-        static readonly (string id, string label, string help)[] MenuItems =
-        {
-            ("continue", "Continue", "Return to your last match where you left it."),
-            ("campaign", "New Campaign", "Generate a new world and build a nation against AI rivals."),
-            ("tutorial", "Tutorial", "A quiet small match with one forgiving rival, guided step by step."),
-            ("multiplayer", "Multiplayer", "Host a match for friends or join one with its code."),
-            ("observe", "Watch AI Match", "Watch AI nations develop and fight; follow any of them."),
-            ("sandbox", "Combat Sandbox", "Stage a large battle at once and try tactics."),
-            ("guide", "Field Guide", "How the game works: concepts, controls, units and buildings."),
-            ("settings", "Settings", "Graphics, sound, accessibility and controls."),
-            ("intro", "Watch Intro", "The story of the world before, and after."),
-            ("quit", "Quit", "Close the game."),
-        };
-
-        void MenuPage(string page)
-        {
-            menuPage = page;
-            menuFrame.EnableInClassList("menu-wide", page != "main");
-            menuBox.Clear();
-            menuScroll.scrollOffset = Vector2.zero;
-            L("RECLAMATION COMMAND", "menu-eyebrow", menuBox);
-            var title = L(page == "main" ? "SHATTERED EMPIRES" : page == "campaign" ? "NEW CAMPAIGN" : page == "multiplayer" ? "MULTIPLAYER" : page == "settings" ? "SETTINGS" : "FIELD GUIDE", "menu-title", menuBox);
-            title.style.unityTextAlign = TextAnchor.MiddleLeft;
-            var sub = L(page == "main" ? "Reclaim the ruins. Command an empire." : page == "settings" ? "Tune the battlefield to your command." : page == "guide" ? "Orders, objectives and battlefield roles." : "Choose your next operation.", "menu-sub", menuBox);
-            sub.style.unityTextAlign = TextAnchor.MiddleLeft;
-            switch (page)
-            {
-                case "campaign": CampaignPage(); break;
-                case "multiplayer": MultiplayerPage(); break;
-                case "guide": GuidePage(menuBox, true); break;
-                case "settings": var holder = El(null, menuBox); var keep = panel; panel = holder; SettingsPanel(); panel = keep; B("Back", () => MenuPage("main"), menuBox); break;
-                default: MainPage(); break;
-            }
-            menuStatus = L(menuStatus?.text ?? "", "muted small", menuBox); menuStatus.style.whiteSpace = WhiteSpace.Normal;
-        }
-
-        // Used only by the explicitly requested seeded visual-capture launch mode.
-        public void ReviewMenuPage(string page) => MenuPage(page);
-        public void ReviewMenuScrollEnd()
-        {
-            menuFrame.Query<ScrollView>().ForEach(s => s.verticalScroller.value = s.verticalScroller.highValue);
-        }
-
-        void MainPage()
-        {
-            string match = PlayerPrefs.GetString("se.match", "");
-            foreach (var (id, label, help) in MenuItems)
-            {
-                string action = id;
-                string text = label;
-                bool enabled = true;
-                if (id == "continue")
-                {
-                    enabled = match != "";
-                    text = enabled ? "Continue operation" : "Continue";
-                }
-                var b = B(text, () => MenuAction(action), menuBox, null, (id == "campaign" && match == "") || (id == "continue" && enabled) ? "primary menu-item" : "menu-item");
-                b.SetEnabled(enabled);
-                string why = id == "continue" && !enabled ? "No saved match yet: start a New Campaign." : help;
-                b.RegisterCallback<PointerEnterEvent>(e => { if (menuHelp != null) menuHelp.text = why; });
-            }
-            menuHelp = L("Scout. Capture. Rebuild. Deploy. Conquer.", "menu-help", menuBox);
-        }
-
-        void MenuAction(string id)
-        {
-            switch (id)
-            {
-                case "continue": game.StartMatch("rejoin", ""); break;
-                case "campaign": MenuPage("campaign"); break;
-                case "tutorial":
-                    PlayerPrefs.SetInt("se.tutorial.done", 0);
-                    game.StartCampaign(new CampaignOptions { MapSize = "small", Rivals = 1, Difficulty = "easy", Tutorial = true });
-                    break;
-                case "multiplayer": MenuPage("multiplayer"); break;
-                case "observe": game.StartMatch("observe", ""); break;
-                case "sandbox": game.StartMatch("sandbox", ""); break;
-                case "guide": MenuPage("guide"); break;
-                case "settings": MenuPage("settings"); break;
-                case "intro": game.PlayIntro(); break;
-                case "quit": game.Quit(); break;
-            }
-        }
-
-        // ------------------------------------------------------------------ new campaign (bible §7)
-        readonly CampaignOptions campaign = new CampaignOptions();
-
-        void CampaignPage()
-        {
-            L("New Campaign", "heading", menuBox);
-            // world type: the four established generators
-            L("World", "muted small", menuBox);
-            var types = El("row wrap", menuBox);
-            foreach (var (id, label) in new[] { ("continents", "Continents"), ("pangaea", "Pangaea"), ("archipelago", "Archipelago"), ("inlandSea", "Inland Sea") })
-            {
-                string v = id;
-                B(label, () => { campaign.Style = v; MenuPage("campaign"); }, types).EnableInClassList("selected", campaign.Style == id);
-            }
-            L("Map size", "muted small", menuBox);
-            var sizes = El("row", menuBox);
-            foreach (var (id, label) in new[] { ("small", "Skirmish"), ("medium", "Standard"), ("large", "Epic") })
-            {
-                string v = id;
-                B(label, () => { campaign.MapSize = v; MenuPage("campaign"); }, sizes).EnableInClassList("selected", campaign.MapSize == id);
-            }
-            L("Rival nations", "muted small", menuBox);
-            var rivals = El("row", menuBox);
-            for (int n = 1; n <= 5; n++) { int v = n; B(n.ToString(), () => { campaign.Rivals = v; MenuPage("campaign"); }, rivals).EnableInClassList("selected", campaign.Rivals == n); }
-            L("Difficulty", "muted small", menuBox);
-            var diffs = El("row wrap", menuBox);
-            foreach (var (id, label, help) in new[] { ("easy", "Relaxed", "Forgiving reactions, simpler strategy."), ("normal", "Standard", "Coherent economic and military play."), ("hard", "Hard", "Better preparation and counter-composition."),
-                                                      ("expert", "Expert", "Stronger planning, reconnaissance, combined arms."), ("brutal", "Brutal", "Highly optimised strategy (fair rules unless you allow bonuses).") })
-            {
-                string v = id, h = help;
-                var b = B(label, () => { campaign.Difficulty = v; MenuPage("campaign"); }, diffs);
-                b.EnableInClassList("selected", campaign.Difficulty == id);
-                b.tooltip = h;
-            }
-            L(DifficultyHelp(campaign.Difficulty), "muted small", menuBox);
-            var victory = El("row wrap", menuBox);
-            foreach (var (id, label) in new[] { ("domination", "Military Domination"), ("control", "Territorial Control"), ("operation", "Operation") })
-            {
-                string rule = id;
-                B(label, () => { campaign.Objective = rule; MenuPage("campaign"); }, victory).EnableInClassList("selected", campaign.Objective == id);
-            }
-            campaign.Wrap = false;
-            L("Nation", "muted small", menuBox);
-            var nation = new TextField { value = game.PlayerName }; nation.AddToClassList("field"); menuBox.Add(nation);
-            nation.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
-            L("Seed (blank for a new world each time)", "muted small", menuBox);
-            var seedRow = El("row", menuBox);
-            var seed = new TextField { value = campaign.Seed }; seed.AddToClassList("field"); seed.AddToClassList("grow"); seedRow.Add(seed);
-            seed.RegisterValueChangedCallback(e => campaign.Seed = e.newValue);
-            B("New seed", () => { campaign.Seed = UnityEngine.Random.Range(1, 999999).ToString(); MenuPage("campaign"); }, seedRow);
-            var go = El("row", menuBox);
-            B("Back", () => MenuPage("main"), go);
-            var start = B("Begin", () => game.StartCampaign(campaign), go, null, "primary grow");
-        }
-
-        static string DifficultyHelp(string d) => d switch
-        {
-            "easy" => "Relaxed: forgiving reactions and simpler strategy.",
-            "hard" => "Hard: better preparation, defence and counter-composition.",
-            "expert" => "Expert: stronger planning, reconnaissance and combined arms.",
-            "brutal" => "Brutal: highly optimised strategy; any numerical bonuses are disclosed.",
-            _ => "Standard: coherent economic and military play.",
-        };
-
-        // ------------------------------------------------------------------ multiplayer
-        void MultiplayerPage()
-        {
-            L("Multiplayer", "heading", menuBox);
-            L("Your name", "muted small", menuBox);
-            nameField = new TextField { value = game.PlayerName }; nameField.AddToClassList("field"); menuBox.Add(nameField);
-            nameField.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
-            var formats = El("row wrap", menuBox);
-            for (int n = 1; n <= 4; n++)
-            {
-                int size = n;
-                B($"Host {size}v{size}", () => game.HostMultiplayer(size), formats, null, n == 1 ? "primary" : null);
-            }
-            L("Join with a match code", "muted small", menuBox);
-            var join = El("row", menuBox);
-            codeField = new TextField { value = "" }; codeField.AddToClassList("field"); codeField.AddToClassList("grow"); join.Add(codeField);
-            B("Join", () => game.StartMatch("join", codeField.value.Trim().ToLowerInvariant()), join);
-            B("Spectate with a code", () => game.StartMatch("spectate", codeField.value.Trim().ToLowerInvariant()), menuBox);
-            L("Server", "muted small", menuBox);
-            var srv = El("row", menuBox);
-            serverField = new TextField { value = game.Server }; serverField.AddToClassList("field"); serverField.AddToClassList("grow"); srv.Add(serverField);
-            serverField.RegisterValueChangedCallback(e => game.Server = e.newValue);
-            B("Public", () => { serverField.value = App.LaunchOptions.PublicServer; }, srv);
-            if (Application.isEditor || Debug.isDebugBuild) B("Local", () => { serverField.value = App.LaunchOptions.LocalServer; }, srv);
-            var row = El("row", menuBox);
-            B("Back", () => MenuPage("main"), row);
-            if (Application.isEditor || Debug.isDebugBuild) B("Performance stress scene", () => game.StartStress(), row);
-        }
-
-        // ------------------------------------------------------------------ field guide (bible §33)
-        static readonly (string topic, string text)[] Guide =
-        {
-            ("Camera", "W A S D or the arrow keys pan (Shift is faster); the mouse wheel zooms toward the cursor; middle-drag drags the map; Q and E turn. Double-click open ground to centre there; Backspace returns to the previous view; Space jumps to the latest alert."),
-            ("Selecting", "Click a unit, or drag a box. Shift adds to the selection; double-click selects every unit of that type on screen. Ctrl+1–9 stores a group, 1–9 recalls it, and pressing it twice brings the camera there."),
-            ("Orders", "Right-click moves. T then a click attack-moves. H holds, X withdraws. F follows the selection with the camera."),
-            ("Battle lines", "Right-drag across the map to draw a line: you see where every unit will stand before you let go. F flips the facing, Alt makes it an advancing line, Shift queues it after current orders, Esc cancels."),
-            ("Building", "Open Build (B), pick a building and click a highlighted site; drag to place several. Roads, bridges and trenches are drawn as routes. Sites wait for materials if you can't afford them yet."),
-            ("Cities and mayors", "Select a town to see its people, homes and jobs. Guide Growth tells the mayor what to build next and where; the mayor never spends what you reserved for your own projects."),
-            ("Resources", "Hover any resource at the top to see what produces it, what uses it, and what to do when it runs short. Power, people and the next era are always in view."),
-            ("Research", "Open Research (R). Click an available technology to start it, Shift+click to queue it with everything it needs. Search finds technologies by what they unlock; hover one to see where it leads."),
-            ("Eras", "Five eras: Reclamation, Industrial Recovery, Mechanization, Networked Warfare and Advanced Systems. Buildings keep the style of the era they were built in; upgrading brings them up to date."),
-            ("Units", "Infantry (militia, rifle squads, engineers, mortars, special forces, exo infantry), vehicles (scout buggies, armoured cars, tanks, autonomous tanks, field guns, self-propelled artillery, air defence, missile batteries) and aircraft (fighters, bombers, helicopters, drones, strike swarms)."),
-            ("Battlefields", "Fighting leaves its mark: craters, mud, wrecks and ruins stay. Trenches dug into the ground protect infantry; they join the bunkers and forts beside them."),
-            ("Alerts", "Critical alerts interrupt with a banner; important ones appear as small notices with a Go button; everything else is written in the Chronicle (Overview). Concluded battles get a result card."),
-            ("Settings", "Interface scale, reduced motion, screen shake, weather intensity, high-contrast markers, camera speed and every shortcut can be changed in Settings."),
-        };
-
-        void GuidePage(VisualElement into, bool inMenu)
-        {
-            L("Field Guide", "heading", into);
-            var search = new TextField(); search.AddToClassList("field"); search.AddToClassList("search");
-            search.textEdition.placeholder = "Search the guide…";
-            into.Add(search);
-            var scroll = El("menu-list", into);
-            var entries = new List<(VisualElement el, string text)>();
-            foreach (var (topic, text) in inMenu || session.ActionRts ? ActionGuide : Guide)
-            {
-                var item = El("list-item", scroll);
-                L(topic, "heading", item);
-                L(text, "small", item).style.whiteSpace = WhiteSpace.Normal;
-                entries.Add((item, (topic + " " + text).ToLowerInvariant()));
-            }
-            search.RegisterValueChangedCallback(e =>
-            {
-                string q = (e.newValue ?? "").Trim().ToLowerInvariant();
-                foreach (var (el, text) in entries) el.style.display = q.Length == 0 || text.Contains(q) ? DisplayStyle.Flex : DisplayStyle.None;
-            });
-            var credits = Resources.Load<TextAsset>("Audio/Credits");
-            if (credits != null)
-            {
-                var fold = new Foldout { text = "Sound and music credits", value = false }; scroll.Add(fold);
-                L(credits.text, "small muted", fold).style.whiteSpace = WhiteSpace.Normal;
-            }
-            if (inMenu) B("Back", () => MenuPage("main"), into);
-        }
-
         // ------------------------------------------------------------------ strategic badge counts (bible §29)
         readonly List<Label> badgeLabels = new List<Label>();
+        readonly List<int> badgeLabelCount = new List<int>();
+        readonly List<Vector2> badgeLabelAt = new List<Vector2>();
         VisualElement badgeLayer;
 
-        /// <summary>Counts beside the strategic badges that stand for several units; pooled, never more than 160.</summary>
+        /// <summary>
+        /// Counts beside the strategic badges that stand for several units; pooled, never more than 160. Moved with
+        /// translate (no layout pass), text set only when the count changes.
+        /// </summary>
         public void BadgeCounts(IList<Military.UnitRenderer.Badge> badges, Func<Unity.Mathematics.float3, Vector3> toScreen)
         {
             if (badgeLayer == null) { badgeLayer = El("se-root", root); badgeLayer.pickingMode = PickingMode.Ignore; badgeLayer.SendToBack(); }
             int used = 0;
             if (!MenuVisible && root.panel != null)
-                foreach (var b in badges)
+                for (int k = 0; k < badges.Count; k++)
                 {
+                    var b = badges[k];
                     if (b.Count < 2 || used >= 160) continue;
                     var s = toScreen(b.MapPos);
                     if (s.z <= 0 || s.x < 0 || s.y < 0 || s.x > Screen.width || s.y > Screen.height) continue;
-                    if (used >= badgeLabels.Count) { var nl = L("", "badge-count", badgeLayer); nl.pickingMode = PickingMode.Ignore; badgeLabels.Add(nl); }
-                    var l = badgeLabels[used++];
+                    if (used >= badgeLabels.Count)
+                    {
+                        var nl = L("", "badge-count"); nl.pickingMode = PickingMode.Ignore;
+                        nl.style.left = 0; nl.style.top = 0; nl.usageHints = UsageHints.DynamicTransform;   // hints before attaching
+                        badgeLayer.Add(nl);
+                        badgeLabels.Add(nl); badgeLabelCount.Add(-1); badgeLabelAt.Add(new Vector2(float.NaN, float.NaN));
+                    }
+                    int i = used++;
+                    var l = badgeLabels[i];
                     var p = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(s.x, Screen.height - s.y));
-                    l.text = b.Count.ToString();
-                    l.style.left = p.x + 8; l.style.top = p.y - 18;
-                    l.style.display = DisplayStyle.Flex;
+                    if (badgeLabelCount[i] != b.Count) { badgeLabelCount[i] = b.Count; l.text = b.Count.ToString(); }
+                    var at = new Vector2(p.x + 8, p.y - 18);
+                    if (!((at - badgeLabelAt[i]).sqrMagnitude <= .0025f)) { badgeLabelAt[i] = at; l.style.translate = new Translate(at.x, at.y); }
+                    if (l.style.display != DisplayStyle.Flex) l.style.display = DisplayStyle.Flex;
                 }
-            for (int i = used; i < badgeLabels.Count; i++) badgeLabels[i].style.display = DisplayStyle.None;
+            for (int i = used; i < badgeLabels.Count; i++) if (badgeLabels[i].style.display != DisplayStyle.None) badgeLabels[i].style.display = DisplayStyle.None;
         }
 
         // ------------------------------------------------------------------ placement card (bible §28)
@@ -541,6 +305,7 @@ namespace SE.Runtime.UI
             if (placeCard == null)
             {
                 placeCard = El("place-card glass", root); placeCard.pickingMode = PickingMode.Ignore;
+                placeCard.style.left = 0; placeCard.style.top = 0;   // follows the cursor by translate (no layout pass)
                 placeName = L("", "heading", placeCard); placeCost = L("", "small", placeCard); placeWhy = L("", "small", placeCard);
                 placeWhy.style.whiteSpace = WhiteSpace.Normal;
             }
@@ -565,60 +330,7 @@ namespace SE.Runtime.UI
             var mouse = Input.InputFacade.MousePosition;
             var p = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(mouse.x, Screen.height - mouse.y));
             // offset so the card never covers the site itself
-            placeCard.style.left = Mathf.Min(p.x + 28, root.layout.width - 280); placeCard.style.top = p.y + 24;
-        }
-
-        // ------------------------------------------------------------------ speed strip and pause menu (bible §26, §33)
-        VisualElement speedStrip, pauseMenu;
-        readonly List<Button> speedButtons = new List<Button>();
-
-        void EnsureSpeedStrip()
-        {
-            if (speedStrip != null) return;
-            speedStrip = El("speed-strip glass", root);
-            foreach (var s in new[] { 0, 1, 2, 4 })
-            {
-                int sp = s;
-                var b = B(s == 0 ? "❚❚" : s + "×", () => SetSpeed(sp), speedStrip);
-                b.tooltip = s == 0 ? "Pause (" + Input.InputFacade.KeyFor("pause") + ")" : $"Play at {s}× speed";
-                speedButtons.Add(b);
-            }
-            B("☰", () => TogglePauseMenu(), speedStrip).tooltip = "Menu (Esc)";
-        }
-
-        void SetSpeed(int s)
-        {
-            if (session.Spectator) { session.Net?.ObserverCommand(new JObject { ["c"] = "speed", ["speed"] = s }); return; }
-            if (s == 0) Cmd(new JObject { ["c"] = "pause", ["on"] = true }, "Paused");
-            else
-            {
-                if (session.Paused) Cmd(new JObject { ["c"] = "pause", ["on"] = false }, "Resumed");
-                Cmd(new JObject { ["c"] = "speed", ["speed"] = s }, $"Speed {s}×");
-            }
-        }
-
-        void UpdateSpeedStrip()
-        {
-            if (speedStrip == null) return;
-            int[] values = { 0, 1, 2, 4 };
-            for (int i = 0; i < speedButtons.Count; i++)
-                speedButtons[i].EnableInClassList("selected", values[i] == 0 ? session.Paused : !session.Paused && Mathf.Approximately(session.PlayRate, values[i]));
-        }
-
-        /// <summary>The pause menu: Resume, Save, Settings, Controls, Return to the main menu, Quit.</summary>
-        void TogglePauseMenu()
-        {
-            if (pauseMenu != null) { pauseMenu.RemoveFromHierarchy(); pauseMenu = null; return; }
-            pauseMenu = El("pause-menu", root);
-            var frame = El("menu-box glass", pauseMenu);
-            var box = Scroll(frame).contentContainer;
-            L("Paused", "title", box);
-            B("Resume", () => TogglePauseMenu(), box, null, "primary menu-item");
-            B("Save", () => commander.Say("Your match is saved on the server continuously; Continue returns to it.", true, Time.unscaledTime), box, null, "menu-item");
-            B("Settings", () => { TogglePauseMenu(); openPanel = "settings"; Refresh(true); }, box, null, "menu-item");
-            B("Controls and field guide", () => { TogglePauseMenu(); openPanel = "guide"; Refresh(true); }, box, null, "menu-item");
-            B("Return to main menu", () => { TogglePauseMenu(); game.StartMatch("", ""); }, box, null, "menu-item");
-            B("Quit", () => game.Quit(), box, null, "menu-item");
+            placeCard.style.translate = new Translate(Mathf.Min(p.x + 28, root.layout.width - 280), p.y + 24);
         }
 
         // ------------------------------------------------------------------ loading and the title card
@@ -669,44 +381,39 @@ namespace SE.Runtime.UI
         public void ShowMenu(bool on, string status = "")
         {
             if (on) ShowLoading(-1);
-            menu.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
-            if (status != null) menuStatus.text = status;
+            mainMenu.Show(on, status);
+            if (on) mainMenu.BringToFront();
             if (on) ShowGame(false);
         }
+
+        /// <summary>A server 'room' message (match lobby) for the main menu's lobby page.</summary>
+        public void ShowLobby(JObject room) => mainMenu.ShowLobby(room);
+
+        /// <summary>Review captures: open one main-menu page ("root", "skirmish", "multiplayer", "lobby", "training", "settings", "guide").</summary>
+        public void ReviewMenuPage(string page) => mainMenu.ReviewPage(page);
 
         // ------------------------------------------------------------------ per frame
         public void Update(float time)
         {
-            if (rebinding != null && MenuVisible) { RebindStep(); return; }
-            if (MenuVisible || !session.Ready) return;
-            // mode hint and command feedback
-            string modeHint = commander.ModeHint();
-            bool feedback = time < commander.FeedbackUntil;
-            hint.style.display = modeHint.Length > 0 || feedback ? DisplayStyle.Flex : DisplayStyle.None;
-            hintText.text = feedback ? commander.Feedback : modeHint;
-            hintText.style.color = feedback ? (commander.FeedbackGood ? new Color(0.65f, 0.9f, 0.6f) : new Color(1f, 0.55f, 0.45f)) : new Color(0.9f, 0.88f, 0.8f);
-            if (session.ActionRts)
+            UpdateRuntimeHelp(time);
+            // no game keys while a text field (search, chat, code) has focus or a shortcut is being rebound
+            Input.InputFacade.Typing = root.panel?.focusController?.focusedElement is TextField || SettingsView.Capturing;
+            if (MenuVisible)
             {
-                hint.style.bottom = StyleKeyword.Auto; hint.style.top = 58;
-                hint.style.display = feedback && commander.Feedback != "Order accepted" ? DisplayStyle.Flex : DisplayStyle.None;
+                if (Input.InputFacade.Pressed(KeyCode.Escape) && !SettingsView.Capturing) mainMenu.HandleEscape();
+                return;
             }
+            if (!session.Ready) return;
+            UpdateShell(time);   // Hud.Shell.cs: clock, chip hover, popover
+            UpdateToast(time);
             if (time > bannerUntil) banner.style.display = DisplayStyle.None;
             if (Map.resolvedStyle.display != DisplayStyle.None) Map.Tick(time);
             PlacementCard();
-            // no game keys while a text field (search, chat, settings) has focus
-            Input.InputFacade.Typing = root.panel?.focusController?.focusedElement is TextField;
-            if (rebinding != null) { RebindStep(); return; }   // the next key belongs to the shortcut being set
-            // Escape closes the innermost thing: a tool or line (the commander takes those), then the pause
-            // menu, then an open panel; with nothing open it brings up the pause menu
-            if (Input.InputFacade.Pressed(KeyCode.Escape) && commander.EscapeFrame != Time.frameCount)
-            {
-                if (session.ActionRts && CloseActionContext()) return;
-                if (pauseMenu != null) TogglePauseMenu();
-                else if (openPanel != "") { openPanel = ""; Refresh(true); }
-                else TogglePauseMenu();
-            }
-            if (Input.InputFacade.Action("pause")) SetSpeed(session.Paused ? Mathf.Max(1, Mathf.RoundToInt(session.PlayRate)) : 0);
-            UpdateSpeedStrip();
+            if (Input.InputFacade.Pressed(KeyCode.Escape)) HandleEscape();
+            if (session.ActionRts) UpdateCommandUi(time);   // Hud.Base.cs (Impl-2)
+            if (Input.InputFacade.Action("pause")) TogglePause();
+            SpeedHotkeys();
+            UpdateCommandGroups(time);
             Shortcuts();
             TileReadout();
             if (session.ActionRts) ActionTutorial(time); else Tutorial(time);
@@ -725,6 +432,7 @@ namespace SE.Runtime.UI
             {
                 tileInfo = new Label(""); tileInfo.AddToClassList("tooltip"); tileInfo.AddToClassList("small");
                 tileInfo.pickingMode = PickingMode.Ignore; tileInfo.style.position = Position.Absolute; tileInfo.style.display = DisplayStyle.None;
+                tileInfo.style.left = 0; tileInfo.style.top = 0;
                 root.Add(tileInfo);
             }
             var mouse = Input.InputFacade.MousePosition;
@@ -751,7 +459,7 @@ namespace SE.Runtime.UI
             }
             tileInfo.style.display = DisplayStyle.Flex;
             var panelPos = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(mouse.x, Screen.height - mouse.y));
-            tileInfo.style.left = panelPos.x + 18; tileInfo.style.top = panelPos.y + 12;
+            tileInfo.style.translate = new Translate(panelPos.x + 18, panelPos.y + 12);   // follows the cursor: no layout pass
         }
 
         // server constants.js T / TERRAIN and RES / RESOURCE (the definitions win when the server sends them)
@@ -775,14 +483,28 @@ namespace SE.Runtime.UI
             return "Foreign";
         }
 
+        static readonly string[] RailNames = { "build", "army", "research", "overview", "settings" };
+        Button[] railButtons;
+
         void Refresh(bool force)
         {
-            // the rail shows which panel is open
-            foreach (var name in new[] { "build", "army", "research", "overview", "settings" })
-                rail.Q<Button>("rail-" + name)?.EnableInClassList("selected", openPanel == name || (name == "army" && openPanel == "overview" && panelTab == "Armies"));
-            if (session.ActionRts) ActionTopBar(); else TopBar();
+            // the rail shows which panel is open (legacy ruleset only: the rail is hidden in action matches)
+            if (!session.ActionRts || force)
+            {
+                if (railButtons == null)
+                {
+                    railButtons = new Button[RailNames.Length];
+                    for (int i = 0; i < RailNames.Length; i++) railButtons[i] = rail.Q<Button>("rail-" + RailNames[i]);
+                }
+                for (int i = 0; i < RailNames.Length; i++)
+                {
+                    string name = RailNames[i];
+                    railButtons[i]?.EnableInClassList("selected", openPanel == name || (name == "army" && openPanel == "overview" && panelTab == "Armies"));
+                }
+            }
+            UpdateTopBar();   // Hud.Shell.cs: action chips or the legacy goods, status pill, right group
             Notes();
-            if (session.ActionRts) { ActionCard(force); ActionPanel(force); }
+            if (session.ActionRts) ActionCard(force);
             else { Card(force); Panel(force); }
         }
 
@@ -804,8 +526,10 @@ namespace SE.Runtime.UI
                 var eraBox = new VisualElement(); eraBox.AddToClassList("era-pill");
                 eraLabel = L("", "era-name", eraBox);
                 eraNext = L("", "era-next", eraBox);
-                topbar.Insert(0, eraBox);
+                topLeft.Insert(0, eraBox);
             }
+            // action matches show tier on the base itself (markers, wheel hub pips, base dressing), not in the top bar
+            eraLabel.parent.style.display = session.ActionRts ? DisplayStyle.None : DisplayStyle.Flex;
             var ages = Defs?["AGES"] as JArray;
             eraLabel.text = ProtocolDecoder.Str(ages?[Age]?["name"], "Era " + (Age + 1)).ToUpperInvariant();
             if (ages != null && Age + 1 < ages.Count)
@@ -875,7 +599,7 @@ namespace SE.Runtime.UI
         void PlaceTip(VisualElement anchor)
         {
             var wb = anchor.worldBound;
-            tooltip.style.left = Mathf.Min(wb.xMin, root.layout.width - 380);
+            tooltip.style.left = Mathf.Max(8, Mathf.Min(wb.xMin, root.layout.width - TooltipWidth() - 8));
             tooltip.style.top = wb.yMax + 6;
             tooltip.style.display = DisplayStyle.Flex;
         }
@@ -972,15 +696,28 @@ namespace SE.Runtime.UI
                 bool outcome = meta.Kind == "result" || !string.IsNullOrEmpty(meta.Title);
                 if (outcome && !session.ActionRts) ResultCard(meta.Title ?? "Outcome", text, meta.Tile);
                 if (level != "critical" && level != "major" && !(outcome && session.ActionRts)) continue;
-                var n = El("note row" + (level == "critical" ? " critical" : ""), feed);
-                var label = L(text, "grow", n); label.style.whiteSpace = WhiteSpace.Normal;
                 int tile = meta.Tile;
-                if (outcome && session.ActionRts)
-                    B("Report", () => ResultCard(meta.Title ?? "Outcome", text, tile), n, null, "note-go");
-                if (tile >= 0) B("Go", () => game.FocusTile(tile, 22f), n, null, "note-go");
-                n.schedule.Execute(() => n.RemoveFromHierarchy()).StartingIn(level == "critical" ? 14000 : 8000);
-                if (level == "critical") { bannerText.text = text; banner.style.display = DisplayStyle.Flex; bannerUntil = Time.unscaledTime + 4f; }
-                while (feed.childCount > (session.ActionRts ? 2 : 5)) feed.RemoveAt(0);
+                string title = meta.Title ?? "Outcome", body = text;
+                bool critical = level == "critical";
+                // one row: severity bar · text (two lines at most) · Go; clicking the text also acts
+                var n = El("se-note" + (critical ? " se-note--critical" : ""), feed);
+                El("se-note-bar", n).pickingMode = PickingMode.Ignore;
+                var label = L(text, "se-note-text", n);
+                label.pickingMode = PickingMode.Ignore;
+                n.RegisterCallback<ClickEvent>(e =>
+                {
+                    if (outcome && session.ActionRts) ResultCard(title, body, tile);
+                    else if (tile >= 0) game.FocusTile(tile, 22f);
+                });
+                if (tile >= 0)
+                {
+                    var go = UiKit.IconButton("target", () => game.FocusTile(tile, 22f), "Go there (Space)", n, 28);
+                    go.RegisterCallback<ClickEvent>(e => e.StopPropagation());
+                    if (critical || level == "major") Map.Ping(tile);
+                }
+                n.schedule.Execute(() => n.RemoveFromHierarchy()).StartingIn(8000);
+                if (critical) { bannerText.text = text; banner.style.display = DisplayStyle.Flex; bannerUntil = now + 4f; }
+                while (feed.childCount > 3) feed.RemoveAt(0);
             }
             noteCount = total;
         }
@@ -1231,9 +968,19 @@ namespace SE.Runtime.UI
             if (!force && (sig == panelSignature || typingHere)) return;
             panelSignature = sig;
             panel.Clear();
-            panel.EnableInClassList("wide", openPanel == "research" || openPanel == "overview");
-            var close = B("✕", () => { openPanel = ""; Refresh(true); }, panel, null, "close");
-            close.tooltip = "Close (Esc)";
+            panel.EnableInClassList("wide", openPanel == "research" || openPanel == "overview" || openPanel == "settings" || openPanel == "guide");
+            var close = UiKit.IconButton("close", () => { openPanel = ""; Refresh(true); }, "Close (Esc)", panel, 28);
+            close.AddToClassList("panel-close");
+            if (openPanel == "settings" || openPanel == "guide")
+            {
+                // these fill a fixed-height frame and scroll inside themselves
+                var page = openPanel == "settings" ? new SettingsView(game) { OpenCredits = () => { openPanel = "guide"; Refresh(true); } } : FieldGuide.Build(false, false);
+                page.style.height = 640;
+                page.style.marginTop = 30;
+                panel.Add(page);
+                close.BringToFront();
+                return;
+            }
             var frame = panel;
             panel = Scroll(frame).contentContainer;
             switch (openPanel)
@@ -1241,8 +988,6 @@ namespace SE.Runtime.UI
                 case "build": BuildPanel(); break;
                 case "research": ResearchPanel(); break;
                 case "overview": OverviewPanel(); break;
-                case "settings": SettingsPanel(); break;
-                case "guide": GuidePage(panel, false); break;
             }
             panel = frame;
         }
@@ -1465,7 +1210,7 @@ namespace SE.Runtime.UI
         void OverviewPanel()
         {
             var tabs = El("tabs", panel);
-            var tabNames = new List<string> { "Economy", "Cities", "Armies", "Rivals", "Chronicle", "Map Lenses", "Actions" };
+            var tabNames = new List<string> { "Economy", "Cities", "Armies", "Rivals", "Chronicle", "Actions" };
             if (session.Spectator) tabNames.Insert(0, "Observe");
             foreach (var t in tabNames)
             {
@@ -1539,13 +1284,6 @@ namespace SE.Runtime.UI
                         int tile = i < session.NoteMeta.Count ? session.NoteMeta[i].Tile : -1;
                         if (tile >= 0) B("Go", () => game.FocusTile(tile, 22f), row);
                     }
-                    break;
-                case "Map Lenses":
-                    L("Lenses add information over the map without covering it. They stay as you leave them.", "muted small", scroll).style.whiteSpace = WhiteSpace.Normal;
-                    var lensRow = El("row", scroll);
-                    var mini = B(MinimapLens ? "Minimap: on" : "Minimap: off", () => { SetMinimapLens(!MinimapLens); Refresh(true); }, lensRow);
-                    mini.EnableInClassList("selected", MinimapLens);
-                    L("(M toggles)", "muted small", lensRow);
                     break;
                 case "Observe":
                     ObservePanel(scroll);
@@ -1682,91 +1420,6 @@ namespace SE.Runtime.UI
             Cmd(cmd, ProtocolDecoder.Str(spec["title"], "Done"));
         }
 
-        void SettingsPanel()
-        {
-            L("Settings", "title", panel);
-            L("Graphics", "heading", panel);
-            var q = El("row wrap", panel);
-            foreach (var p in new[] { "low", "medium", "high", "ultra" }) { string pp = p; B(char.ToUpper(p[0]) + p.Substring(1), () => { game.ApplyQuality(pp); PlayerPrefs.SetString("se.quality", pp); RefreshSettings(); }, q).EnableInClassList("selected", PlayerPrefs.GetString("se.quality", "high") == p); }
-            L("Sound", "heading", panel);
-            var a = game.Audio;
-            if (a != null)
-            {
-                Volume("Master", a.Master, v => a.Master = v);
-                Volume("Effects", a.Effects, v => a.Effects = v);
-                Volume("Ambience", a.Ambience, v => a.Ambience = v);
-                Volume("Music", a.MusicVolume, v => a.MusicVolume = v);
-                B("Sound and music credits", () => { openPanel = "guide"; panelSignature = ""; Refresh(true); }, panel);
-            }
-            var scroll = El("menu-list", panel);
-            L("Accessibility and comfort", "heading section", scroll);
-            Setting(scroll, "Interface scale", App.GameSettings.UiScale, 0.75f, 1.6f, v => { App.GameSettings.UiScale = v; game.ApplyUiScale(v); });
-            Toggle(scroll, "Screen shake", App.GameSettings.ScreenShake, v => App.GameSettings.ScreenShake = v);
-            Toggle(scroll, "Reduced motion (no shake or flashes, gentler camera)", App.GameSettings.ReducedMotion, v => App.GameSettings.ReducedMotion = v);
-            Toggle(scroll, "High-contrast unit and ownership markers", App.GameSettings.HighContrastMarkers, v => App.GameSettings.HighContrastMarkers = v);
-            Setting(scroll, "Weather effects", App.GameSettings.WeatherIntensity, 0f, 1f, v => App.GameSettings.WeatherIntensity = v);
-            L("Camera", "heading section", scroll);
-            Toggle(scroll, "Pan at the screen edge", App.GameSettings.EdgePan, v => App.GameSettings.EdgePan = v);
-            Setting(scroll, "Pan speed", App.GameSettings.CameraSpeed, 0.5f, 2f, v => App.GameSettings.CameraSpeed = v);
-            L("Controls", "heading section", scroll);
-            L("Click a shortcut, then press the new key (Esc keeps the old one).", "muted small", scroll);
-            foreach (var act in Input.InputFacade.Actions)
-            {
-                var row = El("row", scroll);
-                L(act.Label, "grow small", row);
-                string id = act.Id;
-                var key = B(rebinding == id ? "press a key…" : Input.InputFacade.KeyFor(id).ToString(), () => { rebinding = id; RefreshSettings(); }, row);
-                key.style.minWidth = 110;
-                key.EnableInClassList("selected", rebinding == id);
-            }
-            B("Restore default keys", () => { Input.InputFacade.ResetBindings(); RefreshSettings(); }, scroll);
-            L("Interface", "heading section", scroll);
-            var r = El("row wrap", scroll);
-            if (!MenuVisible) B("Restart the tutorial", () => { PlayerPrefs.SetInt("se.tutorial.done", 0); tutorialStep = 0; coach.style.display = DisplayStyle.Flex; }, r);
-            B("Play the intro", () => game.PlayIntro(), r);
-            if (!MenuVisible) B("Leave match", () => game.StartMatch("", ""), r);
-        }
-
-        string rebinding;
-
-        /// <summary>Redraw the settings wherever they are open (the in-game panel or the menu page).</summary>
-        void RefreshSettings()
-        {
-            if (MenuVisible) MenuPage(menuPage);
-            else { panelSignature = ""; Refresh(true); }
-        }
-
-        /// <summary>While a shortcut is being rebound, the next key press becomes its key.</summary>
-        void RebindStep()
-        {
-            if (rebinding == null) return;
-            var k = Input.InputFacade.AnyKeyPressed();
-            if (k == KeyCode.None) return;
-            if (k != KeyCode.Escape) Input.InputFacade.Rebind(rebinding, k);
-            rebinding = null; RefreshSettings();
-        }
-
-        void Setting(VisualElement parent, string label, float value, float min, float max, Action<float> set)
-        {
-            var s = new Slider(label, min, max) { value = value };
-            s.RegisterValueChangedCallback(e => set(e.newValue));
-            parent.Add(s);
-        }
-
-        void Toggle(VisualElement parent, string label, bool value, Action<bool> set)
-        {
-            var t = new UnityEngine.UIElements.Toggle(label) { value = value };
-            t.RegisterValueChangedCallback(e => set(e.newValue));
-            parent.Add(t);
-        }
-
-        void Volume(string label, float value, Action<float> set)
-        {
-            var s = new Slider(label, 0f, 1f) { value = value };
-            s.RegisterValueChangedCallback(e => { set(e.newValue); game.Audio?.Save(); });
-            panel.Add(s);
-        }
-
         // ------------------------------------------------------------------ tutorial with on-screen pointers
         int tutorialStep = -1;
         float stepAt;
@@ -1852,7 +1505,7 @@ namespace SE.Runtime.UI
             if (worldTile >= 0 && TileScreen?.Invoke(worldTile) is Vector3 sp && sp.z > 0)
             {
                 var p = ToPanel(sp);
-                pointer.style.left = p.x - 12; pointer.style.top = p.y - 70 - 8 * Mathf.Abs(Mathf.Sin(time * 4f));
+                MovePointer(p.x - 12, p.y - 70 - 8 * Mathf.Abs(Mathf.Sin(time * 4f)));
                 pointer.style.display = DisplayStyle.Flex;
             }
             else pointer.style.display = DisplayStyle.None;

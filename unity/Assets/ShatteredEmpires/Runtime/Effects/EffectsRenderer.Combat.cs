@@ -10,6 +10,7 @@ namespace SE.Runtime.Effects
         {
             public float3 From, To, Last;
             public float Age, Duration, Arc, Trail;
+            public bool Grenade;   // a thrown grenade: a lob, then a small blast where it lands
             public bool Rocket, Strategic, Warhead;
         }
         readonly Flight[] flights = new Flight[512];
@@ -58,7 +59,8 @@ namespace SE.Runtime.Effects
             float distance = math.distance(from, to);
             flights[flightCount++] = new Flight {
                 From = from, To = to, Last = from, Duration = math.max(.05f, duration),
-                Arc = strategic ? math.min(13, distance * .48f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
+                Grenade = weapon == "grenade",
+                Arc = weapon == "grenade" ? .06f + distance * .22f : strategic ? math.min(13, distance * .48f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
                 Rocket = weapon == "warhead" || weapon == "missile" || weapon == "rockets" || weapon == "aam" || weapon == "drone_strike",
                 Strategic = strategic,
                 Warhead = weapon == "warhead",
@@ -75,7 +77,7 @@ namespace SE.Runtime.Effects
             {
                 ref var f = ref flights[i];
                 f.Age += dt;
-                if (f.Age > f.Duration + .05f) { flights[i--] = flights[--flightCount]; continue; }
+                if (f.Age > f.Duration + .05f) { if (f.Grenade) Explosion(f.To, .22f); flights[i--] = flights[--flightCount]; continue; }
                 float t = math.saturate(f.Age / f.Duration);
                 float3 p = math.lerp(f.From, f.To, t) + new float3(0, 4 * f.Arc * t * (1 - t), 0);
                 var step = p - f.Last;

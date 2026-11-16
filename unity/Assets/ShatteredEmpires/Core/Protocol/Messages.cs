@@ -52,7 +52,7 @@ namespace SE.Core.Protocol
 
     public struct ObjectiveSite
     {
-        public int Id, Tile, Owner, Capturing, Headquarters, Tier, Capacity, RingVersion, VisualTier;
+        public int Id, Tile, Owner, Capturing, Headquarters, Tier, Capacity, RingVersion, VisualTier, DefenseCount;
         public float X, Z, Radius, Capture, Build, DevelopedAt, Tenure, Maturity;
         public bool IsBase, Contested, Operational, Memory, Starting;
         public string Name, Kind;

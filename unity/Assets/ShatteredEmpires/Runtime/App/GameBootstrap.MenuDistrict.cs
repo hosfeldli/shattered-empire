@@ -11,6 +11,31 @@ namespace SE.Runtime.App
         float menuSnapshotAt, menuStarted;
         Vector2 menuHeadquarters;
 
+        void LevelMenuTerrain(int center)
+        {
+            var w = session.World; var g = w.Grid;
+            float cx = g.CenterX(center), cz = g.CenterZ(center);
+            byte datum = (byte)Mathf.Clamp(w.Geo[center * 6], 134, 151);
+            var delta = new GeoMessage();
+            for (int cy = 0; cy < w.ChunksH; cy++) for (int chunkX = 0; chunkX < w.ChunksW; chunkX++)
+            {
+                var mask = new byte[32]; var data = new List<byte>();
+                for (int i = 0; i < 256; i++)
+                {
+                    int q = chunkX * 16 + i % 16, r = cy * 16 + i / 16;
+                    if (q >= g.W || r >= g.H) continue;
+                    int tile = r * g.W + q; float distance = Vector2.Distance(new Vector2(g.CenterX(tile),g.CenterZ(tile)),new Vector2(cx,cz));
+                    if (distance > 5.6f || w.IsSea(tile) || w.IsRiver(tile) || w.IsLake(tile)) continue;
+                    float blend = Mathf.SmoothStep(0,1,Mathf.Clamp01((5.6f-distance)/1.9f));
+                    mask[i >> 3] |= (byte)(1 << (i & 7));
+                    for (int b = 0; b < 6; b++) data.Add(b == 0 ? (byte)Mathf.RoundToInt(Mathf.Lerp(w.Geo[tile*6],datum,blend))
+                        : b == 1 && distance < 3.7f ? (byte)3 : w.Geo[tile*6+b]);
+                }
+                if (data.Count > 0) delta.Chunks.Add(new GeoChunk { Cx=chunkX,Cy=cy,Mask=mask,Data=data.ToArray() });
+            }
+            session.ApplyGeo(delta);
+        }
+
         void StageMenuWorld()
         {
             var w = session.World; var g = w.Grid;
@@ -37,6 +62,7 @@ namespace SE.Runtime.App
             }
             if (center < 0) center = g.N / 2;
             menuHeadquarters = new Vector2(g.CenterX(center), g.CenterZ(center));
+            LevelMenuTerrain(center);
             var parcels = new BaseParcel[9];
             parcels[0] = new BaseParcel { Tile = center, Id = 0, Tier = 1, X = menuHeadquarters.x, Z = menuHeadquarters.y, Yaw = .44f, Width = 1.12f, Depth = 1.12f };
             var buildings = new List<BuildingRecord>();

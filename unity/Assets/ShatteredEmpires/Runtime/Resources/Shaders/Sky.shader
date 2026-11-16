@@ -9,6 +9,11 @@ Shader "SE/Sky"
         _Ground ("Below horizon", Color) = (0.42, 0.42, 0.4, 1)
         _Overcast ("Overcast", Range(0, 1)) = 0
         _Flash ("Flash", Range(0, 1)) = 0
+        _Pano ("Photographic panorama (equirectangular)", 2D) = "black" {}
+        _PanoAmount ("Panorama amount", Range(0, 1)) = 0
+        _PanoSunU ("Sun position u in the panorama", Float) = 0.5
+        _PanoExposure ("Panorama exposure", Float) = 1
+        _PanoTint ("Panorama grade", Color) = (1, 1, 1, 1)
     }
     SubShader
     {
@@ -23,9 +28,11 @@ Shader "SE/Sky"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
             CBUFFER_START(UnityPerMaterial)
                 half4 _Zenith, _Horizon, _Ground;
-                float _Overcast, _Flash;
+                float _Overcast, _Flash, _PanoAmount, _PanoSunU, _PanoExposure;
+                half4 _PanoTint;
             CBUFFER_END
             float _SE_Glare;
+            TEXTURE2D(_Pano); SAMPLER(sampler_Pano);
             struct Attributes { float3 positionOS : POSITION; };
             struct Varyings { float4 positionCS : SV_POSITION; float3 dir : TEXCOORD0; };
             float CloudNoise(float2 p)
@@ -60,6 +67,22 @@ Shader "SE/Sky"
                 float s = saturate(dot(d, sun.direction));
                 half sunFade = 1 - _Overcast * 0.85;
                 col += sun.color * (pow(s, 1600) * 2.0 + pow(s, 70) * .08 + pow(s, 10) * .025) * sunFade * _SE_Glare;
+                // Photographed sky: rotated so its sun sits behind the scene's light, faded into the fog
+                // colour at the horizon (the photo's own ground is never shown) and greyed by overcast.
+                if (_PanoAmount > 0.001)
+                {
+                    const float TAU = 6.28318531;
+                    float sunU = atan2(sun.direction.x, sun.direction.z) / TAU + 0.5;
+                    float u = atan2(d.x, d.z) / TAU + 0.5 + (_PanoSunU - sunU);
+                    float v = asin(clamp(h, -1, 1)) / 3.14159265 + 0.5;
+                    half3 photo = SAMPLE_TEXTURE2D_LOD(_Pano, sampler_Pano, float2(u, max(v, 0.502)), 0).rgb;
+                    photo *= _PanoExposure * _PanoTint.rgb;   // sRGB texture: already linear when sampled
+                    half luma = dot(photo, half3(0.25, 0.6, 0.15));
+                    photo = lerp(photo, luma * grey * 1.6, _Overcast * 0.55);
+                    half horizonFade = smoothstep(-0.015, 0.16, h);
+                    half3 blended = lerp(hor, photo, horizonFade);
+                    col = lerp(col, blended, _PanoAmount);
+                }
                 col += _Flash * half3(1, 0.95, 0.85) * 2;
                 return half4(col, 1);
             }

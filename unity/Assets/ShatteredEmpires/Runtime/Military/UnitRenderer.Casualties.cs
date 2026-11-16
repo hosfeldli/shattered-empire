@@ -24,10 +24,19 @@ namespace SE.Runtime.Military
             foreach (var c in casualties)
             {
                 float age = time - c.At;
-                if (c.Epoch != world.Epoch || age < 0 || age > 6) continue;
+                if (c.Epoch != world.Epoch || age < 0 || age > (RigFor(c.Torso, out _) != null ? 22 : 6)) continue;
                 float dx = world.Grid.DxWrap(focus.x, c.Point.x), dz = c.Point.z - focus.z;
                 if (dx * dx + dz * dz > 900) continue;
                 float fall = Mathf.SmoothStep(0, 1, age / .72f), scale = .069f;
+                var rig = RigFor(c.Torso, out int role);
+                if (rig != null)
+                {
+                    // The death clip, then the body lies where it fell and finally settles into the ground.
+                    float sink = Mathf.SmoothStep(0, 1, (age - 19f) / 3f) * .05f;
+                    var at = MapSpace.W(new float3(c.Point.x, world.GroundHeight(c.Point.x, c.Point.z) - sink, c.Point.z));
+                    soldiers[role].Add(InstanceData.TRS(at, quaternion.RotateY(MapSpace.Yaw(c.Facing)), new float3(scale), new float4(c.Color.xyz, 2 + rig.Frame(SoldierRig.Clip.Die, age))));
+                    continue;
+                }
                 var rot = quaternion.EulerZXY(fall * 1.51f, MapSpace.Yaw(c.Facing), fall * .17f);
                 var root = MapSpace.W(new float3(c.Point.x, world.GroundHeight(c.Point.x, c.Point.z) + fall * .015f, c.Point.z));
                 DetailPart(c.Torso, root, rot, scale, c.Color);

@@ -1,9 +1,11 @@
 import { N, T, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
-import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, MISSILE_PROJECT, OUTPOST_TYPES, TIERS } from './actionDefinitions.js';
-import { centerOf, distance, LIGHT_GROUND, tileAt } from './actionNavigation.js';
+import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, MISSILE_PROJECT, OUTPOST_TYPES, TIERS } from './actionDefinitions.js';
+import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, tileAt } from './actionNavigation.js';
+import { hubRoute, hubTiles, ROAD_SEARCH } from './actionMap.js';
 import { launchStrategic } from './actionCombat.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
+import { emit } from './combat.js';
 
 const ERA = [0, 1, 2, 4];
 export const canPay = (civ, cost) => ACTION_RESOURCES.every((key) => civ.res[key] >= (cost[key] || 0));
@@ -28,7 +30,7 @@ export function addFacility(game, civ, site, type, tile, { instant = false, poin
   const hp = def.hp * (type === 'town' && site.kind === 'metro' ? 1.15 : 1);
   const b = { id: game.id_(), owner: civ.id, site: site?.id || 0, slot, type, tile, x: pos.x, z: pos.z, radius: def.radius,
     hp: instant ? hp : hp * .34, maxHp: hp, done: instant, progress: instant ? 1 : 0, buildTime: duration || def.time,
-    yaw: point ? 0 : parcel?.yaw || 0, queue: [], rally: null, readyAt: 0, level: 1, era: ERA[site?.tier || civ.age + 1], fire: 0, lastCombat: -999, missiles: 0, project: null,
+    yaw: point ? point.yaw || 0 : parcel?.yaw || 0, queue: [], rally: null, readyAt: 0, level: 1, era: ERA[site?.tier || civ.age + 1], fire: 0, lastCombat: -999, missiles: 0, project: null,
     state: instant ? 'operational' : 'construction' };
   game.buildings.set(b.id, b);
   game.registerBuilding(b);
@@ -87,9 +89,11 @@ export function construct(game, civ, site, type, tile) {
   return { building: b.id };
 }
 
-export function constructDefense(game, civ, type, point, preview = false) {
+export function constructDefense(game, civ, type, point, preview = false, yaw = 0) {
   const def = Object.hasOwn(ACTION_BUILDINGS, type) ? ACTION_BUILDINGS[type] : null;
   if (!def?.field || !point) return { error: 'Choose a tactical defense and a location.' };
+  if (typeof yaw !== 'number' || !Number.isFinite(yaw)) return { error: 'Choose a valid structure rotation.' };
+  yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
   const tile = tileAt(point.x, point.z);
   if (civ.age + 1 < def.tier) return { error: 'This defense requires more advanced global technology.' };
   if (tile < 0 || !civ.visible[tile]) return { error: 'Scout the construction site so it is currently visible.' };
@@ -97,11 +101,17 @@ export function constructDefense(game, civ, type, point, preview = false) {
     s.slots && (s.parcels.some((p) => distance(p, point) < def.radius + .62) || s.owner >= 0 && game.hostile(civ.id, s.owner) && s.hq && distance(s, point) < 2.65 + def.radius));
   if (protectedZone || game.fieldworks.has(tile) ||
     !game.nav.canStand(point.x, point.z, { ...LIGHT_GROUND, radius: def.radius })) return { error: 'Choose clear ground outside a base parcel or road.' };
+  if (def.width) for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1],[0,-1],[0,1],[-1,0],[1,0]]) {
+    const x = point.x + sx * def.width * .5 * Math.cos(yaw) + sz * def.depth * .5 * Math.sin(yaw);
+    const z = point.z - sx * def.width * .5 * Math.sin(yaw) + sz * def.depth * .5 * Math.cos(yaw), t = tileAt(x, z);
+    if (t < 0 || !civ.visible[t] || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
+      return { error: 'The rotated footprint needs visible, level and unobstructed ground.' };
+  }
   if (game.hasEnemyAt({ ...point, radius: .75 }, civ.id)) return { error: 'The position is contested.' };
   const error = affordable(civ, def.cost);
   if (error) return error;
   if (preview) return { reply: { t: 'ack', placement: { valid: true, cost: def.cost, seconds: def.time } } };
-  const b = addFacility(game, civ, null, type, tile, { point });
+  const b = addFacility(game, civ, null, type, tile, { point: { ...point, yaw } });
   pay(civ, def.cost);
   return { building: b.id };
 }
@@ -117,13 +127,48 @@ export function advanceBase(game, civ, site) {
   return {};
 }
 
-export function startUpgrade(game, civ, key) {
+export function fortifyBase(game, civ, site) {
+  const hq = headquarters(game, site);
+  if (!site?.slots || site.owner !== civ.id || !hq?.done) return { error: 'Select an operational headquarters.' };
+  if (hq.project) return { error: 'Finish the current headquarters project first.' };
+  const existing = [...game.buildings.values()].filter((b) => b.owner === civ.id && b.site === site.id && b.perimeterSlot);
+  const missing = Array.from({ length: 6 }, (_, i) => i + 1).filter((i) => !existing.some((b) => b.perimeterSlot === i));
+  if (!missing.length) return { error: 'All six perimeter positions already exist. Repair damaged defenses from their controls.' };
+  const cost = Object.fromEntries(Object.entries(CITY_DEFENSES.cost).map(([key, value]) => [key, Math.ceil(value * missing.length / 6)]));
+  const error = affordable(civ, cost); if (error) return error;
+  const plans = [];
+  for (const slot of missing) {
+    const type = slot <= 4 ? 'barricade' : 'city_turret', def = ACTION_BUILDINGS[type];
+    const angle = hq.yaw + Math.PI / 8 + (slot <= 4 ? (slot - 1) * Math.PI / 2 : Math.PI / 4 + (slot - 5) * Math.PI);
+    let point;
+    for (const offset of [0, .16, -.16]) for (const radius of [3.0, 3.35, 3.7]) {
+      const a = angle + offset, p = { x: site.x + Math.sin(a) * radius, z: site.z + Math.cos(a) * radius, yaw: a };
+      const tile = tileAt(p.x, p.z);
+      if (point || tile < 0 || !civ.visible[tile] || game.hasEnemyAt({ ...p, radius: .7 }, civ.id) ||
+        plans.some((q) => distance(q.point, p) < def.radius + ACTION_BUILDINGS[q.type].radius + .15) ||
+        !game.nav.canStand(p.x, p.z, { ...LIGHT_GROUND, radius: def.radius })) continue;
+      point = p;
+    }
+    if (!point) return { error: 'Clear and scout the outer perimeter lots before purchasing defenses.' };
+    plans.push({ type, point, slot });
+  }
+  pay(civ, cost);
+  for (const plan of plans) {
+    const b = addFacility(game, civ, site, plan.type, tileAt(plan.point.x, plan.point.z), { point: plan.point, duration: CITY_DEFENSES.time });
+    b.perimeterSlot = plan.slot;
+  }
+  hq.project = { kind: 'perimeter', total: CITY_DEFENSES.time, left: CITY_DEFENSES.time };
+  return {};
+}
+
+export function startUpgrade(game, civ, key, buildingId = 0) {
   const def = Object.hasOwn(ACTION_UPGRADES, key) ? ACTION_UPGRADES[key] : null;
   if (!def || civ.techs.has(key)) return { error: 'That upgrade is unavailable.' };
-  const armories = [...game.buildings.values()].filter((b) => b.type === 'armory' && b.done && b.owner === civ.id);
+  const facility = def?.at || 'armory';
+  const armories = [...game.buildings.values()].filter((b) => b.type === facility && b.done && b.owner === civ.id);
   if (armories.some((b) => b.project?.key === key)) return { error: 'This upgrade is already in progress.' };
-  const b = civ.age + 1 >= def.tier ? armories.find((b) => !b.project) : null;
-  if (!b) return { error: `An idle Tier ${TIERS[def.tier - 1].label} Armory is required.` };
+  const b = civ.age + 1 >= def.tier ? armories.find((b) => !b.project && (!buildingId || b.id === buildingId)) : null;
+  if (!b) return { error: `An idle Tier ${TIERS[def.tier - 1].label} ${facility === 'barracks' ? 'Barracks' : 'Armory'} is required.` };
   const error = affordable(civ, def.cost);
   if (error) return error;
   const duration = def.time * (game.siteById.get(b.site).kind === 'research' ? .88 : 1);
@@ -139,8 +184,9 @@ export function armyCapacity(game, civ) {
     if (b.owner !== civ.id || !b.done) continue;
     for (const q of b.queue) queued += ACTION_UNITS[q.unit].capacity;
   }
-  const limit = [80, 120, 160][Math.max(0, Math.min(2, civ.age))];
-  return { used, queued, limit: Math.min(game.armyLimit, limit + (civ.techs.has('networked_command') ? 20 : 0)) };
+  // Era capacities sized for large combined-arms battles.
+  const limit = [140, 220, 300][Math.max(0, Math.min(2, civ.age))];
+  return { used, queued, limit: Math.min(game.armyLimit, limit + (civ.techs.has('networked_command') ? 40 : 0)) };
 }
 
 export function train(game, civ, ids, type, count, perBuilding = false) {
@@ -231,6 +277,37 @@ function growBase(game, site) {
   }
 }
 
+// Re-settled positions are tied back into the owner's road network. When a headquarters becomes
+// operational (or an outpost is captured) the nearest friendly operational bases are linked by a
+// terrain-following route (the same heavy-vehicle planner as the map's original roads: valleys and
+// passes, never open water; rivers are crossed by bridges, which the client derives from road edges
+// over rivers). Missing or ruined segments are laid by a free automatic road project; existing
+// healthy roads are reused. The new edges reach clients in the per-tile road field (tile record [4]).
+export function connectSiteRoads(game, site, links = site.slots ? 2 : 1) {
+  if (site.owner < 0) return 0;
+  const hostileCompound = (t) => { const c = centerOf(t); return game.sites.some((s) => s.hq && s.owner >= 0 && game.hostile(site.owner, s.owner) && distance(s, c) < 2.7); };
+  const pending = new Set(game.roadProjects.flatMap((p) => p.edges.map((e) => Math.min(e.a, e.b) + ':' + Math.max(e.a, e.b))));
+  const limit = site.slots ? 46 : 18;
+  const others = game.sites.filter((s) => s !== site && s.slots && s.owner >= 0 && game.allied(s.owner, site.owner) &&
+    headquarters(game, s)?.done && distance(s, site) <= limit).sort((a, b) => distance(site, a) - distance(site, b) || a.id - b.id).slice(0, links);
+  let laid = 0;
+  for (const other of others) {
+    const route = hubRoute(game.world, game.nav.strategic(site.tile, other.tile, HEAVY_GROUND, true, false, ROAD_SEARCH), hubTiles(game));
+    if (!route || route.some(hostileCompound)) continue;
+    const edges = [];
+    for (let i = 1; i < route.length; i++) {
+      const a = route[i - 1], b = route[i], key = Math.min(a, b) + ':' + Math.max(a, b), e = game.roads.get(a, b);
+      if (pending.has(key) || e && e.cond >= 60 && e.type >= 2) continue;
+      pending.add(key); edges.push({ a, b });
+    }
+    if (!edges.length) continue;
+    game.roadProjects.push({ owner: site.owner, edges, left: Math.max(4, Math.min(30, edges.length * .5)), auto: true,
+      label: `Road from ${site.name} to ${other.name} complete.` });
+    laid += edges.length;
+  }
+  return laid;
+}
+
 function completeProject(game, civ, b, p) {
   const site = game.siteById.get(b.site);
   if (p.kind === 'tier') {
@@ -243,7 +320,10 @@ function completeProject(game, civ, b, p) {
     b.hp = Math.min(b.maxHp, b.hp + 240);
     civ.age = Math.max(civ.age, p.tier - 1);
     growBase(game, site);
+    game.refreshTerritory();
     game.notify(civ.id, `${site.name} advanced to Tier ${TIERS[p.tier - 1].label}.`, { kind: 'age', tile: site.tile });
+  } else if (p.kind === 'perimeter') {
+    game.notify(civ.id, `${site.name} perimeter defenses constructed.`, { kind: 'building', tile: site.tile });
   } else if (p.kind === 'upgrade') {
     civ.techs.add(p.key);
     game.notify(civ.id, `${ACTION_UPGRADES[p.key].name} complete.`, { kind: 'tech', tile: b.tile });
@@ -278,12 +358,13 @@ export function productionStep(game, dt) {
           site.maturityElapsed = null;
           civ.recoveryUntil = null;
           game.refreshTerritory();
+          connectSiteRoads(game, site);
           game.notify(civ.id, `${site.name} headquarters operational.`, { kind: 'city', tile: b.tile });
         }
       }
       continue;
     }
-    if (def.materials) rates[b.owner].materials += b.type === 'depot' && civ.techs.has('improved_logistics') ? 175 / 60 : def.materials;
+    if (def.materials) rates[b.owner].materials += b.type === 'depot' && civ.techs.has('improved_logistics') ? 250 / 60 : def.materials;
     if (def.energy) rates[b.owner].energy += b.type === 'power_plant' && civ.techs.has('improved_logistics') ? 100 / 60 : def.energy;
     if (def.repair) game.repairAround(civ, b, 2.4, def.repair * dt);
     const p = b.project;
@@ -340,12 +421,15 @@ export function trenchLine(game, civ, points, reverse, preview) {
       }
     }
   }
-  const valid = [...byTile.values()].filter((p) => p.tile >= 0 && p.tile < N && civ.visible[p.tile] && !game.fieldworks.has(p.tile) &&
+  // A trench line never cuts a road: tiles carrying a road (or a bridge) are left open as a crossing,
+  // and the trench sections either side end square at it (see trenchRoadMask).
+  const crossings = [...byTile.values()].filter((p) => p.tile >= 0 && game.world.road[p.tile]).length;
+  const valid = [...byTile.values()].filter((p) => p.tile >= 0 && p.tile < N && !game.world.road[p.tile] && civ.visible[p.tile] && !game.fieldworks.has(p.tile) &&
     game.nav.canStand(p.x, p.z, LIGHT_GROUND) && !game.sites.some((s) => distance(s, p) < s.radius + .25 ||
       s.slots && s.parcels.some((lot) => distance(lot, p) < .75)) && !game.hasEnemyAt({ ...p, radius: .75 }, civ.id));
   const cost = { materials: valid.length * 35 };
-  if (preview) return { reply: { t: 'ack', trench: { positions: valid, cost } } };
-  if (!valid.length) return { error: 'Choose visible, clear ground outside protected city sites.' };
+  if (preview) return { reply: { t: 'ack', trench: { positions: valid.map((p) => ({ ...p, road: trenchRoadMask(game, p.tile) })), cost, crossings } } };
+  if (!valid.length) return { error: crossings ? 'Trenches leave roads open: draw the line across open ground beside the road.' : 'Choose visible, clear ground outside protected city sites.' };
   const error = affordable(civ, cost);
   if (error) return error;
   pay(civ, cost);
@@ -356,7 +440,18 @@ export function trenchLine(game, civ, points, reverse, preview) {
       route, progress: 0, hp: 100, state: 'building' });
   }
   game.fwVer++;
-  return {};
+  return crossings ? { crossings } : {};
+}
+
+/**
+ * Road crossing mask of a trench tile: bit d (0-5, the server's NB direction order) is set when the
+ * neighbour in direction d carries a road. Clients end the trench square on that side and keep the
+ * road surface clear (the trench line itself is never dug on a road tile).
+ */
+export function trenchRoadMask(game, tile) {
+  let mask = 0;
+  for (let d = 0; d < 6; d++) { const n = NB[tile * 6 + d]; if (n >= 0 && game.world.road[n]) mask |= 1 << d; }
+  return mask;
 }
 
 function repairInfrastructure(game, civ, engineer) {
@@ -384,6 +479,24 @@ function repairInfrastructure(game, civ, engineer) {
     }
   }
   if (changed) game.nav.invalidate();
+}
+
+// Demolition: the owner tears down a finished facility or field work (never a headquarters), recovering
+// part of its materials. The ring parcel it stood on becomes an open construction site again.
+export const DEMOLISH_REFUND = .35;
+export function demolish(game, civ, id) {
+  const b = game.buildings.get(id);
+  if (!b || b.owner !== civ.id) return { error: 'Select one of your structures to demolish.' };
+  if (b.type === 'town') return { error: 'Headquarters cannot be demolished.' };
+  if (!b.done) return { error: 'Only completed structures can be demolished.' };
+  if (b.queue.length || b.project) return { error: 'Cancel production or projects in this structure first.' };
+  const refund = Math.floor((ACTION_BUILDINGS[b.type].cost.materials || 0) * DEMOLISH_REFUND);
+  civ.res.materials += refund;
+  const site = game.siteById.get(b.site);
+  emit(game, { k: 'demolish', a: b.tile, b: b.tile, bx: b.x, bz: b.z, t: b.id, ow: b.owner, ty: b.type });
+  game.removeBuilding(b);
+  game.notify(civ.id, `${ACTION_BUILDINGS[b.type].name} demolished (+${refund} Materials).`, { kind: 'building', tile: b.tile });
+  return { refund, slot: b.slot || 0, site: site?.id || 0 };
 }
 
 export function useAbility(game, civ, group, kind, point) {

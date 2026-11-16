@@ -29,6 +29,8 @@ namespace SE.EditorTools
         static void Build(BuildTarget target, string output)
         {
             ProjectSetup.Run();
+            PlayerSettings.fullScreenMode = FullScreenMode.FullScreenWindow;
+            PlayerSettings.resizableWindow = true;
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output)));
             var options = new BuildPlayerOptions
             {
@@ -42,9 +44,14 @@ namespace SE.EditorTools
             Debug.Log($"Shattered Empires build {s.result}: {s.totalSize / 1048576} MB, {s.totalErrors} errors, {s.totalTime.TotalSeconds:F0} s -> {output}");
             if (s.result == BuildResult.Succeeded)
             {
-                // Steam's development app id (Spacewar) until the game has its own
-                var dir = target == BuildTarget.StandaloneOSX ? Path.GetDirectoryName(Path.GetFullPath(output)) : Path.GetDirectoryName(Path.GetFullPath(output));
-                File.WriteAllText(Path.Combine(dir, "steam_appid.txt"), "480");
+                // Steam app id next to the player (SteamInvites also reads it when started from a shortcut):
+                // -steamAppId <id> or SE_STEAM_APP_ID, else Steam's development app (Spacewar, 480) until the
+                // game has its own. A Steam-launched game gets its id from Steam and ignores this file.
+                var dir = Path.GetDirectoryName(Path.GetFullPath(output));
+                string appId = Arg("-steamAppId", Environment.GetEnvironmentVariable("SE_STEAM_APP_ID") ?? "480").Trim();
+                if (!uint.TryParse(appId, out uint parsedAppId) || parsedAppId == 0) appId = "480";
+                File.WriteAllText(Path.Combine(dir, "steam_appid.txt"), appId);
+                Debug.Log("steam_appid.txt = " + appId);
             }
             if (Application.isBatchMode) EditorApplication.Exit(s.result == BuildResult.Succeeded ? 0 : 1);
         }

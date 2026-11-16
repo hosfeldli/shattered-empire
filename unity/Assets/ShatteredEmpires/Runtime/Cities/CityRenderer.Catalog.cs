@@ -30,8 +30,9 @@ namespace SE.Runtime.Cities
         /// </summary>
         public void SetGhost(string type, int tile, int owner, bool valid, SE.Core.Protocol.BaseParcel? parcel = null)
         {
+            if (owner >= 0) Teams.GhostOwner = owner;   // the bootstrap always places as the local civ
             if (string.IsNullOrEmpty(type) || tile < 0 || !world.Ready) { ClearGhost(); return; }
-            string key = type + "|" + tile + "|" + valid + "|" + Age + "|" + parcel?.X.ToString("F2") + "|" + parcel?.Z.ToString("F2");
+            string key = type + "|" + tile + "|" + valid + "|" + Age + "|" + parcel?.X.ToString("F2") + "|" + parcel?.Z.ToString("F2") + "|" + parcel?.Yaw.ToString("F3");
             if (key == ghostKey) return;
             ghostKey = key;
             if (ghost == null) ghost = CreateCell(true);

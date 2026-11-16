@@ -1,0 +1,37 @@
+/* Circular minimap (docs/UI_DESIGN_SPEC.md B4, owned by Impl-3). The bezel, dots, bases, footprint and
+   pings are drawn in code (Painter2D / meshes); this sheet only places the disc and clips its layers. */
+.se-minimap {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    width: 240px;
+    height: 240px;
+    border-radius: 120px;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.se-minimap__clip {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    width: 224px;
+    height: 224px;
+    border-radius: 112px;
+    overflow: hidden;
+    background-color: rgb(10, 14, 16);
+}
+
+.se-minimap__terrain {
+    position: absolute;
+    -unity-background-scale-mode: stretch-to-fill;
+}
+
+.se-minimap__dots,
+.se-minimap__marks,
+.se-minimap__bezel {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+}

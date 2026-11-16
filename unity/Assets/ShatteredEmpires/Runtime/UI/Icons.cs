@@ -23,7 +23,8 @@ namespace SE.Runtime.UI
         }
 
         public string Kind { get => kind; set { if (kind != value) { kind = value; MarkDirtyRepaint(); } } }
-        public Color Tint { get => tint; set { tint = value; MarkDirtyRepaint(); } }
+        /// <summary>Repaints only when the colour actually changes (callers set it every frame).</summary>
+        public Color Tint { get => tint; set { if (tint != value) { tint = value; MarkDirtyRepaint(); } } }
 
         void Paint(MeshGenerationContext ctx)
         {
@@ -81,6 +82,112 @@ namespace SE.Runtime.UI
             Line(c, 0.035f * s, x - 0.03f * s, 0.62f, x - 0.06f * s, 0.88f);
             Line(c, 0.035f * s, x + 0.03f * s, 0.62f, x + 0.07f * s, 0.88f);
             if (rifle) Line(c, 0.025f * s, x - 0.05f * s, 0.5f, x + 0.2f * s, 0.4f);
+        }
+
+        /// <summary>A stroked circle.</summary>
+        static void Ring(Color c, float w, float x, float y, float rad)
+        {
+            P.strokeColor = c;
+            P.lineWidth = S(w);
+            P.BeginPath();
+            P.Arc(V(x, y), S(rad), 0f, 360f);
+            P.ClosePath();
+            P.Stroke();
+        }
+
+        /// <summary>A stroked arc; angles in degrees, 0 = right, increasing clockwise (y down).</summary>
+        static void ArcLine(Color c, float w, float x, float y, float rad, float a0, float a1)
+        {
+            P.strokeColor = c;
+            P.lineWidth = S(w);
+            P.lineCap = LineCap.Butt;
+            P.BeginPath();
+            P.Arc(V(x, y), S(rad), a0, a1);
+            P.Stroke();
+        }
+
+        /// <summary>A filled arc segment (the chord closes it): 180→360 is the upper half disc.</summary>
+        static void ArcFill(Color c, float x, float y, float rad, float a0, float a1)
+        {
+            P.fillColor = c;
+            P.BeginPath();
+            P.Arc(V(x, y), S(rad), a0, a1);
+            P.ClosePath();
+            P.Fill();
+        }
+
+        /// <summary>A filled pie wedge from the centre.</summary>
+        static void Wedge(Color c, float x, float y, float rad, float a0, float a1)
+        {
+            P.fillColor = c;
+            P.BeginPath();
+            P.MoveTo(V(x, y));
+            P.Arc(V(x, y), S(rad), a0, a1);
+            P.ClosePath();
+            P.Fill();
+        }
+
+        /// <summary>Points transformed about (.5,.5): scaled, rotated (degrees, clockwise) and moved.</summary>
+        static float[] Xf(float scale, float degrees, float dx, float dy, params float[] xy)
+        {
+            float a = degrees * Mathf.Deg2Rad, cs = Mathf.Cos(a), sn = Mathf.Sin(a);
+            var o = new float[xy.Length];
+            for (int i = 0; i + 1 < xy.Length; i += 2)
+            {
+                float x = (xy[i] - 0.5f) * scale, y = (xy[i + 1] - 0.5f) * scale;
+                o[i] = 0.5f + x * cs - y * sn + dx;
+                o[i + 1] = 0.5f + x * sn + y * cs + dy;
+            }
+            return o;
+        }
+
+        /// <summary>A stroked ellipse (24 segments) centred at (x,y), radii rx/ry, rotated by degrees.</summary>
+        static void Ellipse(Color c, float w, float x, float y, float rx, float ry, float degrees)
+        {
+            const int n = 24;
+            var pts = new float[(n + 1) * 2];
+            float a = degrees * Mathf.Deg2Rad, cs = Mathf.Cos(a), sn = Mathf.Sin(a);
+            for (int i = 0; i <= n; i++)
+            {
+                float t = i * Mathf.PI * 2f / n, ex = Mathf.Cos(t) * rx, ey = Mathf.Sin(t) * ry;
+                pts[i * 2] = x + ex * cs - ey * sn;
+                pts[i * 2 + 1] = y + ex * sn + ey * cs;
+            }
+            Line(c, w, pts);
+        }
+
+        /// <summary>A regular polygon (filled), circumradius rad, first vertex at startDeg.</summary>
+        static void Regular(Color c, float x, float y, float rad, int sides, float startDeg)
+        {
+            var pts = new float[sides * 2];
+            for (int i = 0; i < sides; i++)
+            {
+                float a = (startDeg + i * 360f / sides) * Mathf.Deg2Rad;
+                pts[i * 2] = x + Mathf.Cos(a) * rad;
+                pts[i * 2 + 1] = y + Mathf.Sin(a) * rad;
+            }
+            Poly(c, pts);
+        }
+
+        /// <summary>A five-pointed star (filled).</summary>
+        static void Star(Color c, float x, float y, float rad)
+        {
+            var pts = new float[20];
+            for (int i = 0; i < 10; i++)
+            {
+                float a = (-90f + i * 36f) * Mathf.Deg2Rad, r = i % 2 == 0 ? rad : rad * 0.42f;
+                pts[i * 2] = x + Mathf.Cos(a) * r;
+                pts[i * 2 + 1] = y + Mathf.Sin(a) * r;
+            }
+            Poly(c, pts);
+        }
+
+        static void Almond(Color c) => Poly(c, 0.08f, 0.5f, 0.28f, 0.32f, 0.5f, 0.26f, 0.72f, 0.32f, 0.92f, 0.5f, 0.72f, 0.68f, 0.5f, 0.74f, 0.28f, 0.68f);
+
+        static void Person(Color c, float dx, float dy, float s)
+        {
+            Circle(c, 0.38f * s + dx, 0.3f * s + dy, 0.14f * s);
+            Poly(c, 0.12f * s + dx, 0.86f * s + dy, 0.18f * s + dx, 0.58f * s + dy, 0.58f * s + dx, 0.58f * s + dy, 0.64f * s + dx, 0.86f * s + dy);
         }
 
         static void Wheels(Color c, params float[] xs) { foreach (var x in xs) Circle(c, x, 0.78f, 0.09f); }
@@ -238,6 +345,239 @@ namespace SE.Runtime.UI
                 case "overview": Box(c, 0.12f, 0.15f, 0.88f, 0.3f); Box(c, 0.12f, 0.42f, 0.88f, 0.57f); Box(c, 0.12f, 0.69f, 0.88f, 0.84f); break;
                 case "settings": Circle(c, 0.5f, 0.5f, 0.3f); Circle(dark, 0.5f, 0.5f, 0.12f); for (int k = 0; k < 8; k++) { float a = k * Mathf.PI / 4; Line(c, 0.1f, 0.5f + Mathf.Cos(a) * 0.3f, 0.5f + Mathf.Sin(a) * 0.3f, 0.5f + Mathf.Cos(a) * 0.42f, 0.5f + Mathf.Sin(a) * 0.42f); } break;
                 case "city": Box(c, 0.1f, 0.5f, 0.32f, 0.9f); Box(c, 0.36f, 0.18f, 0.62f, 0.9f); Box(c, 0.66f, 0.38f, 0.9f, 0.9f); break;
+                default: DrawShell(kind, c, dark); break;
+            }
+        }
+
+        /// <summary>Alias of <see cref="Draw"/> for painters (radial menu, minimap) that draw glyphs into a rect.</summary>
+        public static void DrawAt(Painter2D p, string kind, Rect r, Color c) => Draw(p, kind, r, c);
+
+        static readonly Color MaterialsColor = new Color(199 / 255f, 158 / 255f, 102 / 255f);
+        static readonly Color EnergyColor = new Color(122 / 255f, 196 / 255f, 224 / 255f);
+        static readonly Color CommandColor = new Color(150 / 255f, 196 / 255f, 146 / 255f);
+
+        /// <summary>The interface glyphs of docs/UI_DESIGN_SPEC.md § D (resources, commands, buildings, menus).</summary>
+        static void DrawShell(string kind, Color c, Color dark)
+        {
+            switch (kind)
+            {
+                // ---------------------------------------------------- resources
+                case "materials":
+                {
+                    var m = new Color(MaterialsColor.r, MaterialsColor.g, MaterialsColor.b, c.a);
+                    var md = new Color(m.r * 0.45f, m.g * 0.45f, m.b * 0.45f, c.a);
+                    Box(m, 0.12f, 0.62f, 0.88f, 0.78f); Box(m, 0.18f, 0.44f, 0.82f, 0.60f); Box(m, 0.24f, 0.26f, 0.76f, 0.42f);
+                    foreach (var (y0, y1) in new[] { (0.64f, 0.76f), (0.46f, 0.58f), (0.28f, 0.40f) })
+                    {
+                        Box(md, 0.28f, y0, 0.32f, y1);
+                        Box(md, 0.68f, y0, 0.72f, y1);
+                    }
+                    break;
+                }
+                case "energy":
+                    Poly(new Color(EnergyColor.r, EnergyColor.g, EnergyColor.b, c.a), 0.58f, 0.06f, 0.22f, 0.56f, 0.46f, 0.56f, 0.38f, 0.94f, 0.78f, 0.40f, 0.54f, 0.40f, 0.66f, 0.06f);
+                    break;
+                case "command":
+                {
+                    var k = new Color(CommandColor.r, CommandColor.g, CommandColor.b, c.a);
+                    Line(k, 0.1f, 0.2f, 0.38f, 0.5f, 0.18f, 0.8f, 0.38f);
+                    Line(k, 0.1f, 0.2f, 0.6f, 0.5f, 0.4f, 0.8f, 0.6f);
+                    Line(k, 0.1f, 0.2f, 0.82f, 0.5f, 0.62f, 0.8f, 0.82f);
+                    break;
+                }
+                case "queued": Poly(c, 0.25f, 0.15f, 0.75f, 0.15f, 0.5f, 0.5f); Poly(c, 0.5f, 0.5f, 0.75f, 0.85f, 0.25f, 0.85f); break;
+                case "tier_pip": Box(c, 0.2f, 0.2f, 0.8f, 0.8f); break;
+                case "pointer": Poly(c, 0.18f, 0.2f, 0.82f, 0.2f, 0.5f, 0.86f); break;   // tutorial pointer (down)
+                // ---------------------------------------------------- shell controls
+                case "pause": Box(c, 0.26f, 0.18f, 0.42f, 0.82f); Box(c, 0.58f, 0.18f, 0.74f, 0.82f); break;
+                case "play": case "continue": Poly(c, 0.3f, 0.16f, 0.84f, 0.5f, 0.3f, 0.84f); break;
+                case "menu": Box(c, 0.16f, 0.22f, 0.84f, 0.32f); Box(c, 0.16f, 0.45f, 0.84f, 0.55f); Box(c, 0.16f, 0.68f, 0.84f, 0.78f); break;
+                case "close": Line(c, 0.1f, 0.24f, 0.24f, 0.76f, 0.76f); Line(c, 0.1f, 0.76f, 0.24f, 0.24f, 0.76f); break;
+                case "back": Line(c, 0.1f, 0.78f, 0.5f, 0.24f, 0.5f); Line(c, 0.1f, 0.48f, 0.24f, 0.22f, 0.5f, 0.48f, 0.76f); break;
+                case "more": Circle(c, 0.24f, 0.5f, 0.08f); Circle(c, 0.5f, 0.5f, 0.08f); Circle(c, 0.76f, 0.5f, 0.08f); break;
+                case "plus": Line(c, 0.12f, 0.5f, 0.18f, 0.5f, 0.82f); Line(c, 0.12f, 0.18f, 0.5f, 0.82f, 0.5f); break;
+                case "lock":
+                    ArcLine(c, 0.09f, 0.5f, 0.46f, 0.2f, 180f, 360f);
+                    Box(c, 0.22f, 0.46f, 0.78f, 0.88f);
+                    Circle(dark, 0.5f, 0.64f, 0.06f);
+                    break;
+                case "check": Line(c, 0.12f, 0.18f, 0.52f, 0.42f, 0.76f, 0.84f, 0.26f); break;
+                case "invite":
+                    Person(c, 0f, 0f, 1f);
+                    Line(c, 0.07f, 0.67f, 0.36f, 0.93f, 0.36f); Line(c, 0.07f, 0.8f, 0.23f, 0.8f, 0.49f);
+                    break;
+                case "friends": case "steam_overlay":
+                    Person(new Color(c.r * 0.75f, c.g * 0.75f, c.b * 0.75f, c.a), 0.36f, 0.2f, 0.7f);
+                    Person(c, 0f, 0f, 1f);
+                    break;
+                case "copy":
+                    Line(c, 0.07f, 0.18f, 0.3f, 0.62f, 0.3f, 0.62f, 0.82f, 0.18f, 0.82f, 0.18f, 0.3f);
+                    Line(c, 0.07f, 0.38f, 0.12f, 0.82f, 0.12f, 0.82f, 0.64f, 0.66f, 0.64f);
+                    Line(c, 0.07f, 0.38f, 0.12f, 0.38f, 0.26f);
+                    break;
+                case "code":
+                    Line(c, 0.08f, 0.38f, 0.14f, 0.3f, 0.86f); Line(c, 0.08f, 0.7f, 0.14f, 0.62f, 0.86f);
+                    Line(c, 0.08f, 0.16f, 0.38f, 0.86f, 0.38f); Line(c, 0.08f, 0.14f, 0.64f, 0.84f, 0.64f);
+                    break;
+                case "skirmish":
+                    Line(c, 0.08f, 0.18f, 0.82f, 0.82f, 0.18f); Line(c, 0.08f, 0.82f, 0.82f, 0.18f, 0.18f);
+                    Line(c, 0.08f, 0.24f, 0.64f, 0.36f, 0.76f); Line(c, 0.08f, 0.64f, 0.76f, 0.76f, 0.64f);
+                    break;
+                case "multiplayer":
+                    Ring(c, 0.07f, 0.5f, 0.5f, 0.36f);
+                    Ellipse(c, 0.06f, 0.5f, 0.5f, 0.15f, 0.36f, 0f);
+                    Line(c, 0.06f, 0.15f, 0.5f, 0.85f, 0.5f);
+                    break;
+                case "training": Ring(c, 0.07f, 0.5f, 0.5f, 0.36f); Ring(c, 0.07f, 0.5f, 0.5f, 0.2f); Circle(c, 0.5f, 0.5f, 0.07f); break;
+                case "quit": ArcLine(c, 0.1f, 0.5f, 0.54f, 0.3f, -60f, 240f); Line(c, 0.1f, 0.5f, 0.14f, 0.5f, 0.5f); break;
+                case "guide":
+                    Poly(c, 0.1f, 0.24f, 0.48f, 0.3f, 0.48f, 0.84f, 0.1f, 0.78f);
+                    Poly(c, 0.9f, 0.24f, 0.52f, 0.3f, 0.52f, 0.84f, 0.9f, 0.78f);
+                    Line(dark, 0.03f, 0.5f, 0.3f, 0.5f, 0.84f);
+                    break;
+                // ---------------------------------------------------- base facilities (spec C3 mapping)
+                case "hq": Box(c, 0.14f, 0.5f, 0.86f, 0.88f); Box(c, 0.38f, 0.18f, 0.62f, 0.5f); Star(dark, 0.5f, 0.32f, 0.1f); break;
+                case "processor":
+                    Box(c, 0.14f, 0.4f, 0.86f, 0.86f);
+                    Box(c, 0.3f, 0.28f, 0.7f, 0.36f); Box(c, 0.34f, 0.18f, 0.66f, 0.26f);
+                    Line(dark, 0.05f, 0.22f, 0.47f, 0.78f, 0.79f); Line(dark, 0.05f, 0.78f, 0.47f, 0.22f, 0.79f);
+                    break;
+                case "generator":
+                    Poly(c, 0.2f, 0.88f, 0.3f, 0.2f, 0.7f, 0.2f, 0.8f, 0.88f);
+                    Poly(dark, Xf(0.5f, 0f, 0f, 0.08f, 0.58f, 0.06f, 0.22f, 0.56f, 0.46f, 0.56f, 0.38f, 0.94f, 0.78f, 0.40f, 0.54f, 0.40f, 0.66f, 0.06f));
+                    break;
+                case "barracks": ArcFill(c, 0.5f, 0.58f, 0.34f, 180f, 360f); Box(c, 0.1f, 0.56f, 0.9f, 0.64f); break;
+                case "armory":
+                    Poly(c, 0.5f, 0.1f, 0.86f, 0.24f, 0.8f, 0.62f, 0.5f, 0.9f, 0.2f, 0.62f, 0.14f, 0.24f);
+                    Line(dark, 0.08f, 0.32f, 0.58f, 0.5f, 0.4f, 0.68f, 0.58f);
+                    break;
+                case "vehicle_works":
+                    for (int k = 0; k < 8; k++)
+                    {
+                        float a = k * Mathf.PI / 4f;
+                        Line(c, 0.12f, 0.5f + Mathf.Cos(a) * 0.28f, 0.5f + Mathf.Sin(a) * 0.28f, 0.5f + Mathf.Cos(a) * 0.4f, 0.5f + Mathf.Sin(a) * 0.4f);
+                    }
+                    Circle(c, 0.5f, 0.5f, 0.3f); Circle(dark, 0.5f, 0.5f, 0.12f);
+                    break;
+                case "heavy_weapons": Poly(c, 0.4f, 0.88f, 0.4f, 0.38f, 0.5f, 0.12f, 0.6f, 0.38f, 0.6f, 0.88f); Box(dark, 0.4f, 0.66f, 0.6f, 0.72f); break;
+                case "airfield":
+                    Poly(c, Xf(0.8f, -90f, 0f, -0.06f, 0.02f, 0.5f, 0.82f, 0.44f, 0.98f, 0.5f, 0.82f, 0.56f));
+                    Poly(c, Xf(0.8f, -90f, 0f, -0.06f, 0.38f, 0.48f, 0.62f, 0.48f, 0.42f, 0.16f, 0.34f, 0.16f));
+                    Poly(c, Xf(0.8f, -90f, 0f, -0.06f, 0.38f, 0.52f, 0.62f, 0.52f, 0.42f, 0.84f, 0.34f, 0.84f));
+                    Poly(c, Xf(0.8f, -90f, 0f, -0.06f, 0.04f, 0.5f, 0.16f, 0.48f, 0.12f, 0.3f, 0.06f, 0.3f));
+                    Line(c, 0.06f, 0.1f, 0.9f, 0.9f, 0.9f);
+                    break;
+                case "lab":
+                    Ellipse(c, 0.05f, 0.5f, 0.5f, 0.38f, 0.14f, 0f);
+                    Ellipse(c, 0.05f, 0.5f, 0.5f, 0.38f, 0.14f, 60f);
+                    Ellipse(c, 0.05f, 0.5f, 0.5f, 0.38f, 0.14f, 120f);
+                    Circle(c, 0.5f, 0.5f, 0.07f);
+                    break;
+                case "silo": Poly(c, 0.5f, 0.06f, 0.62f, 0.24f, 0.62f, 0.72f, 0.74f, 0.88f, 0.26f, 0.88f, 0.38f, 0.72f, 0.38f, 0.24f); Circle(dark, 0.5f, 0.36f, 0.05f); break;
+                // ---------------------------------------------------- field defenses
+                case "sandbags":
+                    foreach (var (x, y) in new[] { (0.2f, 0.72f), (0.44f, 0.72f), (0.68f, 0.72f), (0.32f, 0.5f), (0.56f, 0.5f) }) Circle(c, x, y, 0.13f);
+                    Box(c, 0.07f, 0.72f, 0.81f, 0.85f); Box(c, 0.19f, 0.5f, 0.69f, 0.6f);
+                    break;
+                case "guard_post":
+                    Line(c, 0.06f, 0.3f, 0.9f, 0.38f, 0.42f); Line(c, 0.06f, 0.7f, 0.9f, 0.62f, 0.42f);
+                    Box(c, 0.28f, 0.22f, 0.72f, 0.42f); Poly(c, 0.22f, 0.22f, 0.5f, 0.08f, 0.78f, 0.22f);
+                    break;
+                case "bunker": ArcFill(c, 0.5f, 0.8f, 0.38f, 180f, 360f); Box(c, 0.08f, 0.8f, 0.92f, 0.88f); Box(dark, 0.32f, 0.6f, 0.68f, 0.66f); break;
+                case "at_gun":
+                    Poly(c, 0.3f, 0.34f, 0.48f, 0.3f, 0.5f, 0.7f, 0.3f, 0.7f);
+                    Line(c, 0.07f, 0.42f, 0.48f, 0.94f, 0.42f);
+                    Circle(c, 0.4f, 0.76f, 0.12f);
+                    break;
+                case "aa": Line(c, 0.07f, 0.4f, 0.62f, 0.6f, 0.12f); Line(c, 0.07f, 0.52f, 0.62f, 0.72f, 0.16f); Box(c, 0.2f, 0.62f, 0.8f, 0.86f); break;
+                case "sensor":
+                    ArcLine(c, 0.08f, 0.42f, 0.46f, 0.3f, 170f, 310f);
+                    Line(c, 0.06f, 0.5f, 0.6f, 0.5f, 0.9f);
+                    Line(c, 0.05f, 0.42f, 0.46f, 0.5f, 0.6f);
+                    Circle(c, 0.62f, 0.3f, 0.05f);
+                    break;
+                case "repair":
+                    Line(c, 0.12f, 0.24f, 0.78f, 0.62f, 0.4f);
+                    Circle(c, 0.7f, 0.3f, 0.17f); Circle(dark, 0.7f, 0.3f, 0.08f);
+                    Poly(dark, 0.72f, 0.28f, 0.84f, 0.08f, 0.94f, 0.18f);
+                    break;
+                case "artillery":
+                    Poly(c, 0.4f, 0.32f, 0.56f, 0.3f, 0.58f, 0.62f, 0.4f, 0.62f);
+                    Line(c, 0.06f, 0.5f, 0.48f, 0.92f, 0.12f);
+                    Line(c, 0.05f, 0.45f, 0.62f, 0.08f, 0.86f);
+                    Circle(c, 0.5f, 0.72f, 0.13f); Circle(dark, 0.5f, 0.72f, 0.05f);
+                    break;
+                case "fortress":
+                    Box(c, 0.2f, 0.34f, 0.8f, 0.9f);
+                    Box(c, 0.2f, 0.2f, 0.32f, 0.34f); Box(c, 0.44f, 0.2f, 0.56f, 0.34f); Box(c, 0.68f, 0.2f, 0.8f, 0.34f);
+                    ArcFill(dark, 0.5f, 0.9f, 0.13f, 180f, 360f);
+                    break;
+                // ---------------------------------------------------- orders and abilities
+                case "rally": Line(c, 0.06f, 0.3f, 0.1f, 0.3f, 0.9f); Poly(c, 0.3f, 0.12f, 0.8f, 0.26f, 0.3f, 0.42f); break;
+                case "move": Line(c, 0.1f, 0.18f, 0.82f, 0.74f, 0.26f); Poly(c, 0.82f, 0.18f, 0.5f, 0.22f, 0.78f, 0.5f); break;
+                case "attack_move":
+                    Line(c, 0.1f, 0.3f, 0.7f, 0.74f, 0.26f); Poly(c, 0.82f, 0.18f, 0.5f, 0.22f, 0.78f, 0.5f);
+                    Ring(c, 0.06f, 0.26f, 0.74f, 0.12f);
+                    Line(c, 0.05f, 0.26f, 0.54f, 0.26f, 0.6f); Line(c, 0.05f, 0.26f, 0.88f, 0.26f, 0.94f);
+                    Line(c, 0.05f, 0.06f, 0.74f, 0.12f, 0.74f); Line(c, 0.05f, 0.4f, 0.74f, 0.46f, 0.74f);
+                    break;
+                case "hold": Regular(c, 0.5f, 0.5f, 0.38f, 8, 22.5f); Box(dark, 0.28f, 0.46f, 0.72f, 0.54f); break;
+                case "withdraw": Line(c, 0.1f, 0.6f, 0.2f, 0.3f, 0.5f, 0.6f, 0.8f); Line(c, 0.1f, 0.84f, 0.2f, 0.54f, 0.5f, 0.84f, 0.8f); break;
+                case "fortify":
+                    Poly(c, 0.36f, 0.5f, 0.64f, 0.5f, 0.64f, 0.74f, 0.5f, 0.9f, 0.36f, 0.74f);
+                    Line(c, 0.07f, 0.5f, 0.1f, 0.5f, 0.5f);
+                    Box(c, 0.4f, 0.08f, 0.6f, 0.14f);
+                    break;
+                case "detach":
+                    Ring(c, 0.07f, 0.3f, 0.5f, 0.14f); Ring(c, 0.07f, 0.7f, 0.5f, 0.14f);
+                    Line(c, 0.06f, 0.42f, 0.5f, 0.47f, 0.5f); Line(c, 0.06f, 0.53f, 0.5f, 0.58f, 0.5f);
+                    break;
+                case "upgrade": Line(c, 0.1f, 0.2f, 0.56f, 0.5f, 0.26f, 0.8f, 0.56f); Line(c, 0.1f, 0.2f, 0.84f, 0.5f, 0.54f, 0.8f, 0.84f); break;
+                case "demolish": Box(c, 0.2f, 0.16f, 0.62f, 0.36f); Line(c, 0.09f, 0.42f, 0.36f, 0.74f, 0.88f); break;
+                case "cover": ArcFill(c, 0.5f, 0.7f, 0.3f, 180f, 360f); Box(c, 0.14f, 0.68f, 0.86f, 0.74f); Line(c, 0.05f, 0.08f, 0.88f, 0.92f, 0.88f); break;
+                case "scan":
+                    Ring(c, 0.06f, 0.5f, 0.5f, 0.36f);
+                    Wedge(c, 0.5f, 0.5f, 0.36f, -50f, 0f);
+                    Circle(c, 0.32f, 0.62f, 0.04f); Circle(c, 0.62f, 0.7f, 0.04f);
+                    break;
+                case "bombard":
+                    Circle(c, 0.5f, 0.5f, 0.14f);
+                    for (int k = 0; k < 8; k++)
+                    {
+                        float a = k * 45f * Mathf.Deg2Rad, b0 = a - 0.22f, b1 = a + 0.22f;
+                        Poly(c, 0.5f + Mathf.Cos(a) * 0.44f, 0.5f + Mathf.Sin(a) * 0.44f,
+                                0.5f + Mathf.Cos(b0) * 0.13f, 0.5f + Mathf.Sin(b0) * 0.13f,
+                                0.5f + Mathf.Cos(b1) * 0.13f, 0.5f + Mathf.Sin(b1) * 0.13f);
+                    }
+                    break;
+                case "focus_fire": case "target":
+                    Ring(c, 0.07f, 0.5f, 0.5f, 0.3f);
+                    Line(c, 0.07f, 0.5f, 0.06f, 0.5f, 0.32f); Line(c, 0.07f, 0.5f, 0.68f, 0.5f, 0.94f);
+                    Line(c, 0.07f, 0.06f, 0.5f, 0.32f, 0.5f); Line(c, 0.07f, 0.68f, 0.5f, 0.94f, 0.5f);
+                    break;
+                case "intercept":
+                    Line(c, 0.07f, 0.3f, 0.66f, 0.48f, 0.24f); Line(c, 0.07f, 0.42f, 0.66f, 0.6f, 0.28f); Box(c, 0.14f, 0.66f, 0.66f, 0.88f);
+                    Poly(c, 0.94f, 0.18f, 0.66f, 0.12f, 0.72f, 0.18f, 0.66f, 0.24f);
+                    break;
+                case "patrol":
+                {
+                    ArcLine(c, 0.08f, 0.5f, 0.5f, 0.32f, 30f, 330f);
+                    float a = 330f * Mathf.Deg2Rad, ex = 0.5f + Mathf.Cos(a) * 0.32f, ey = 0.5f + Mathf.Sin(a) * 0.32f;
+                    float tx = -Mathf.Sin(a), ty = Mathf.Cos(a);
+                    Poly(c, ex + tx * 0.12f, ey + ty * 0.12f, ex - ty * 0.1f, ey + tx * 0.1f, ex + ty * 0.1f, ey - tx * 0.1f);
+                    break;
+                }
+                case "strike": Line(c, 0.1f, 0.5f, 0.1f, 0.5f, 0.6f); Poly(c, 0.3f, 0.5f, 0.5f, 0.8f, 0.7f, 0.5f); Line(c, 0.06f, 0.2f, 0.9f, 0.8f, 0.9f); break;
+                case "infiltrate": Almond(c); Circle(dark, 0.5f, 0.5f, 0.11f); Line(c, 0.07f, 0.18f, 0.82f, 0.82f, 0.18f); break;
+                case "observer": Almond(c); Circle(dark, 0.5f, 0.5f, 0.12f); Circle(c, 0.5f, 0.5f, 0.05f); break;
+                case "missile_launch":
+                    Poly(c, Xf(0.85f, 30f, 0f, 0f, 0.5f, 0.06f, 0.62f, 0.24f, 0.62f, 0.72f, 0.74f, 0.88f, 0.26f, 0.88f, 0.38f, 0.72f, 0.38f, 0.24f));
+                    Poly(new Color(0.95f, 0.62f, 0.25f, c.a), Xf(0.85f, 30f, 0f, 0f, 0.38f, 0.88f, 0.62f, 0.88f, 0.5f, 1.0f));
+                    break;
+                case "wheel":
+                    foreach (var a0 in new[] { -30f, 60f, 150f, 240f }) ArcLine(c, 0.1f, 0.5f, 0.5f, 0.34f, a0, a0 + 60f);
+                    Circle(c, 0.5f, 0.5f, 0.08f);
+                    break;
                 default: Circle(c, 0.5f, 0.5f, 0.3f); break;
             }
         }
@@ -247,10 +587,32 @@ namespace SE.Runtime.UI
         {
             switch (type)
             {
-                case "house": case "town": case "market": case "academy": case "university": return "house";
+                // action-v2 facilities and field defenses: one glyph per type (spec C3)
+                case "depot": return "processor";
+                case "power_plant": return "generator";
+                case "barracks": return "barracks";
+                case "armory": return "armory";
+                case "motor_works": return "vehicle_works";
+                case "heavy_weapons": return "heavy_weapons";
+                case "airfield": return "airfield";
+                case "advanced_lab": return "lab";
+                case "missile_silo": return "silo";
+                case "town": return "hq";
+                case "barricade": return "sandbags";
+                case "guard_post": return "guard_post";
+                case "bunker": return "bunker";
+                case "turret": return "at_gun";
+                case "aa_battery": return "aa";
+                case "sensor_post": return "sensor";
+                case "repair_point": return "repair";
+                case "artillery_post": return "artillery";
+                case "fort": return "fortress";
+                case "city_turret": return "guard_post";
+                // legacy types keep their role glyphs
+                case "house": case "market": case "academy": case "university": return "house";
                 case "farm": case "lumber": return "farm";
-                case "barracks": case "fort": case "airfield": case "heavy_assembly": case "motor_works": case "drone_works": case "robotics_complex": case "missile_silo": return "military";
-                case "bunker": case "guard_post": case "aa_battery": case "shield_generator": return "defense";
+                case "heavy_assembly": case "drone_works": case "robotics_complex": return "military";
+                case "shield_generator": return "defense";
                 default: return "industry";
             }
         }

@@ -10,6 +10,7 @@ Shader "SE/InstancedLit"
         _Wind ("Wind", Float) = 0
         _Cull ("Cull", Float) = 2
         _LeavesTex ("Leafy branch cutout", 2D) = "white" {}
+        _Skinned ("Skinned (bone animation texture)", Float) = 0
     }
     SubShader
     {
@@ -33,9 +34,34 @@ Shader "SE/InstancedLit"
         float _Wind;
         TEXTURE2D(_LeavesTex); SAMPLER(sampler_LeavesTex);
 
-        void SE_InstanceTransform(uint id, float3 positionOS, float3 normalOS, out float3 positionWS, out float3 normalWS, out float4 color)
+        // Skinned soldiers (tools/blender/build_soldiers.py): every vertex is rigid to one bone (uv0.x);
+        // _SE_AnimTex row f holds, per bone, the 3x4 skinning matrix of baked frame f in three texels.
+        // The instance colour's alpha carries 2 + frame (fractional frames interpolate).
+        Texture2D<float4> _SE_AnimTex;
+        float _Skinned;
+        float3x4 SE_BoneMatrix(int bone, int frame)
+        {
+            int x = bone * 3;
+            return float3x4(_SE_AnimTex.Load(int3(x, frame, 0)), _SE_AnimTex.Load(int3(x + 1, frame, 0)), _SE_AnimTex.Load(int3(x + 2, frame, 0)));
+        }
+        void SE_Skin(float frame, float bone, inout float3 p, inout float3 n)
+        {
+            int f0 = (int)floor(frame); float t = frame - f0;
+            int b = (int)(bone + .5);
+            float3x4 m = SE_BoneMatrix(b, f0) * (1 - t) + SE_BoneMatrix(b, f0 + 1) * t;
+            p = mul(m, float4(p, 1));
+            n = mul((float3x3)m, n);
+        }
+
+        void SE_InstanceTransform(uint id, float3 positionOS, float3 normalOS, float2 uv, out float3 positionWS, out float3 normalWS, out float4 color)
         {
             SEInstance inst = _Instances[id];
+            float4 instanceColor = inst.color;
+            if (_Skinned > .5 && instanceColor.a >= 1.5)
+            {
+                SE_Skin(instanceColor.a - 2, uv.x, positionOS, normalOS);
+                instanceColor.a = 0;
+            }
             float3x4 m = float3x4(inst.row0, inst.row1, inst.row2);
             positionWS = mul(m, float4(positionOS, 1.0)) + float3(_SE_ImageOffset.x, 0, 0);
             if (_Wind > 0.5)
@@ -53,9 +79,10 @@ Shader "SE/InstancedLit"
             // cofactor matrix (rows r1×r2, r2×r0, r0×r1) up to the determinant's scale
             float3x3 m3 = (float3x3)m;
             float3x3 cof = float3x3(cross(m3[1], m3[2]), cross(m3[2], m3[0]), cross(m3[0], m3[1]));
-            normalWS = normalize(mul(cof, normalOS));
+            float3 transformedNormal = mul(cof, normalOS);
+            normalWS = transformedNormal * rsqrt(max(dot(transformedNormal, transformedNormal), 1e-12));
             if (_Wind > 1.5) normalWS = normalize(lerp(normalWS, float3(0, 1, 0), .65));
-            color = inst.color;
+            color = instanceColor;
         }
         ENDHLSL
 
@@ -91,7 +118,7 @@ Shader "SE/InstancedLit"
             {
                 Varyings o;
                 float3 p, n; float4 c;
-                SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, p, n, c);
+                SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, v.uv, p, n, c);
                 o.positionWS = p;
                 o.normalWS = n;
                 // vertex colour tints parts of a mesh (windows, tracks, roofs); white keeps the instance colour
@@ -112,7 +139,8 @@ Shader "SE/InstancedLit"
 
             half4 frag(Varyings i) : SV_Target
             {
-                half3 n = normalize(i.normalWS);
+                float3 suppliedNormal = i.normalWS;
+                half3 n = suppliedNormal * rsqrt(max(dot(suppliedNormal, suppliedNormal), 1e-8));
                 half3 albedo = i.color.rgb;
                 half photoVariation = 1.0h;
                 half smoothness = _Gloss;
@@ -122,9 +150,16 @@ Shader "SE/InstancedLit"
                     half4 leaf = SAMPLE_TEXTURE2D(_LeavesTex, sampler_LeavesTex, i.uv);
                     clip(leaf.a - .35h);
                     coverage = leaf.a;
-                    albedo *= .65h + leaf.rgb * 2.5h;
+                    albedo *= .72h + saturate(leaf.rgb) * 1.15h;
                 }
                 else if (i.surface == 13u) smoothness = .14h;
+                else if (i.surface == 6u || i.surface == 8u)
+                {
+                    half2 material = SE_UnitMaterial(i.materialPos,i.materialNormal,i.surface);
+                    albedo *= clamp(.88h + material.x * .65h,.88h,1.15h);
+                    smoothness = lerp(.025h,.24h,1.0h - material.y);
+                    n = SE_Relief(i.positionWS,n,material.x,i.surface == 8u ? .000035h : .00012h);
+                }
                 else if (i.surface != 0u)
                 {
                     half4 surface = SE_Surface(i.materialPos, i.materialNormal, i.surface);
@@ -143,11 +178,13 @@ Shader "SE/InstancedLit"
                         n = SE_Relief(i.positionWS, n, surface.g, i.surface == 8u ? .00035h : .0015h);
                     }
                 }
-                half3 color = SE_Shade(SRGBToLinear(saturate(albedo)) * photoVariation, i.positionWS, n, i.color.a * _SE_CityPower);
+                bool vegetation = _Wind > .5;
+                if (vegetation) smoothness = 0;
+                half3 color = SE_Shade(SRGBToLinear(saturate(albedo)) * photoVariation, i.positionWS, n, vegetation ? 0 : i.color.a * _SE_CityPower);
                 half3 viewDir = normalize(GetWorldSpaceViewDir(i.positionWS));
                 Light sun = GetMainLight(TransformWorldToShadowCoord(i.positionWS));
                 if (_Wind > .5)
-                    color += SRGBToLinear(albedo) * sun.color * .12h * saturate(dot(-n, sun.direction)) * sun.shadowAttenuation;
+                    color += SRGBToLinear(saturate(albedo)) * sun.color * .08h * saturate(dot(-n, sun.direction)) * sun.shadowAttenuation;
                 half spec = pow(saturate(dot(n, normalize(sun.direction + viewDir))), lerp(12.0h, 78.0h, smoothness))
                     * smoothness * smoothness * sun.shadowAttenuation;
                 if (i.surface == 9u)
@@ -156,6 +193,10 @@ Shader "SE/InstancedLit"
                     color += lerp(half3(0.05h, 0.07h, 0.09h), SE_Ambient(reflect(-viewDir, n)), fresnel) * 0.23h;
                 }
                 color += sun.color * spec * _SE_Glare;
+                // Tiny cutout geometry must never introduce invalid HDR values into the
+                // bloom pyramid. Vegetation is diffuse and cannot become an emissive flare.
+                if (any(isnan(color)) || any(isinf(color))) color = SRGBToLinear(saturate(albedo)) * .35h;
+                color = clamp(color, 0, vegetation ? 1.0h : 12.0h);
                 return half4(SE_ApplyFog(color, i.positionWS, i.fogCoord), coverage);
             }
             ENDHLSL
@@ -176,7 +217,7 @@ Shader "SE/InstancedLit"
             DepthVaryings vert(Attributes v, uint instanceID : SV_InstanceID)
             {
                 float3 p, n; float4 c;
-                SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, p, n, c);
+                SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, v.uv, p, n, c);
                 DepthVaryings o; o.positionCS = SE_ShadowPositionCS(p, n); o.uv = v.uv; o.surface = (uint)v.surface.x; return o;
             }
             half4 frag(DepthVaryings i) : SV_Target { if (i.surface == 12u) clip(SAMPLE_TEXTURE2D(_LeavesTex, sampler_LeavesTex, i.uv).a - .35h); return 0; }
@@ -197,7 +238,7 @@ Shader "SE/InstancedLit"
             DepthVaryings vert(Attributes v, uint instanceID : SV_InstanceID)
             {
                 float3 p, n; float4 c;
-                SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, p, n, c);
+                SE_InstanceTransform(instanceID, v.positionOS, v.normalOS, v.uv, p, n, c);
                 DepthVaryings o; o.positionCS = TransformWorldToHClip(p); o.uv = v.uv; o.surface = (uint)v.surface.x; return o;
             }
             half4 frag(DepthVaryings i) : SV_Target { if (i.surface == 12u) clip(SAMPLE_TEXTURE2D(_LeavesTex, sampler_LeavesTex, i.uv).a - .35h); return 0; }

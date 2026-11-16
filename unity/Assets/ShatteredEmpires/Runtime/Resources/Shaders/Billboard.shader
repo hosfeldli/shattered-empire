@@ -25,6 +25,7 @@ Shader "SE/Billboard"
             #pragma fragment frag
             #pragma multi_compile_fog
             #include "SECommon.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
             struct SEParticle
             {
                 float4 position;   // xyz centre, w size
@@ -34,6 +35,7 @@ Shader "SE/Billboard"
             };
             StructuredBuffer<SEParticle> _Particles;
             float4 _SE_ImageOffset;
+            float _SE_SoftParticles;    // 1 while the camera depth texture is available (Shroud.Active)
 
             struct Attributes { float3 positionOS : POSITION; float2 uv : TEXCOORD0; };
             struct Varyings
@@ -145,14 +147,38 @@ Shader "SE/Billboard"
                 }
                 else
                 {
-                    // puff: noisy soft sphere, lit from above for smoke
+                    // puff: a lit volume rather than a flat disc. The noise is domain-warped and drifts, so the
+                    // billows roll and churn; a sphere normal perturbed by that noise is lit by the real sun
+                    // (wrapped diffuse, a shadowed far side, ambient from the sky) with a bright silver rim when
+                    // the sun is behind the smoke. Puffs fade where they meet the ground (soft particles).
                     float r = length(d);
-                    float n = fbm(d * 2.2 + i.shape.z + float2(0, -t * 0.15));
-                    float edge = 1 - smoothstep(.12, .96, r + (n - .5) * .30);
-                    edge *= .76 + .24 * fbm(d * 5.8 + i.shape.z * 1.3);
-                    half lit = .69 + .30 * saturate(d.y * .8 + .4) + (n - .5) * .14;
-                    color = i.color.rgb * (i.shape.w > 0 ? 1 + i.shape.w * (1 - r) : lit);
+                    float2 warp = float2(fbm(d * 1.6 + i.shape.z + t * .07), fbm(d * 1.6 - i.shape.z + 3.1 - t * .05)) - .5;
+                    float n = fbm(d * 2.2 + warp * 1.4 + i.shape.z + float2(0, -t * 0.15));
+                    float edge = 1 - smoothstep(.10, .98, r + (n - .5) * .42);
+                    float fine = fbm(d * 5.8 + warp * 2.0 + i.shape.z * 1.3);
+                    edge *= .70 + .30 * fine;
+                    if (i.shape.w > 0)
+                        color = i.color.rgb * (1 + i.shape.w * (1 - r));
+                    else
+                    {
+                        float bulge = sqrt(saturate(1 - r * r));
+                        float3 nv = normalize(float3(d.x + (n - .5) * .9, d.y + (fine - .5) * .7, bulge * 1.2 + .15));
+                        float3 nw = normalize(UNITY_MATRIX_V[0].xyz * nv.x + UNITY_MATRIX_V[1].xyz * nv.y + UNITY_MATRIX_V[2].xyz * nv.z);
+                        float3 sun = normalize(_MainLightPosition.xyz);
+                        float wrapped = pow(saturate(dot(nw, sun) * .5 + .5), 1.6);
+                        float3 view = normalize(_WorldSpaceCameraPos - i.positionWS);
+                        float behind = pow(saturate(dot(-view, sun)), 6) * (1 - edge) * 2.2;     // forward scattering at thin edges
+                        half3 light = SE_Ambient(nw) * .85 + _MainLightColor.rgb * (wrapped * .85 + behind) * (1 - SE_CloudShadow(i.positionWS));
+                        color = i.color.rgb * clamp(light, .18, 1.6) * (.86 + (n - .5) * .28);
+                    }
                     a = i.color.a * edge;
+                    if (_SE_SoftParticles > .5)
+                    {
+                        float2 suv = GetNormalizedScreenSpaceUV(i.positionCS);
+                        float scene = LinearEyeDepth(SampleSceneDepth(suv), _ZBufferParams);
+                        float here = LinearEyeDepth(i.positionCS.z, _ZBufferParams);
+                        a *= saturate((scene - here) / .07);
+                    }
                 }
                 return half4(MixFog(SRGBToLinear(saturate(color)) * (1 + min(i.shape.w, 2)), i.fogCoord), saturate(a));
             }

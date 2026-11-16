@@ -1,0 +1,151 @@
+/* Main menu and multiplayer lobby (UI spec B15/B16, owner Impl-4).
+   The frame is anchored top/bottom (viewport − 128, min 560) and has a fixed width: 460 on root pages,
+   880 on wide pages. Nothing inside changes its size with text: labels that hold changing text are
+   single-line with an ellipsis and a fixed height; long content scrolls inside the page. */
+
+.se-menu { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background-color: rgba(4, 7, 8, 0.12); }
+
+.se-menu-frame {
+    position: absolute; left: 64px; top: 64px; bottom: 64px; width: 460px; min-height: 560px;
+    flex-direction: column; padding: 24px 24px 10px 24px;
+    background-color: var(--se-surface-1, rgba(14, 21, 24, 0.92));
+    border-width: 1px; border-color: var(--se-line, rgba(255, 255, 255, 0.08));
+    border-left-width: 2px; border-left-color: var(--se-accent-dim, rgba(226, 182, 96, 0.35));
+    border-radius: 6px;
+}
+/* two classes beat SE.uss's .se-frame--wide (the pause frame's fixed 880×720): this frame keeps its anchoring */
+.se-menu-frame.se-frame--wide, .se-menu-frame.se-menu-frame--wide { width: 880px; height: auto; max-height: none; }
+
+.se-menu-page-host { flex-grow: 1; flex-shrink: 1; min-height: 0; }
+.se-menu-page { flex-grow: 1; flex-shrink: 1; min-height: 0; flex-direction: column; }
+
+/* footer of the whole frame: status line (28) and version (20) */
+.se-menu-foot { flex-shrink: 0; height: 48px; margin-top: 8px; border-top-width: 1px; border-top-color: var(--se-line, rgba(255, 255, 255, 0.08)); }
+.se-menu-status {
+    height: 28px; min-height: 28px; max-height: 28px; font-size: 13px; color: var(--se-text, rgb(232, 226, 210));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; padding: 0; margin: 0;
+}
+.se-menu-version { height: 20px; font-size: 11px; color: var(--se-text-dim, rgb(150, 164, 160)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; padding: 0; margin: 0; }
+
+/* root: fixed title block */
+.se-menu-title-block { height: 150px; min-height: 150px; flex-shrink: 0; justify-content: center; }
+.se-menu-title {
+    -unity-font: resource("Fonts/CormorantGaramond"); font-size: 56px; height: 62px; letter-spacing: 6px;
+    color: rgb(244, 232, 202); white-space: nowrap; overflow: hidden; -unity-text-align: middle-left; margin: 0; padding: 0;
+}
+.se-menu-list { flex-shrink: 0; margin-top: 8px; }
+
+/* menu items: 56 tall, icon 24, label 20 SemiBold */
+.se-menu-item {
+    height: 56px; min-height: 56px; margin: 0 0 6px 0; padding: 0 16px; flex-direction: row; align-items: center;
+    -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 20px; letter-spacing: 1px; -unity-text-align: middle-left;
+    flex-shrink: 0;
+}
+.se-menu-item IconElement { width: 24px; height: 24px; min-width: 24px; margin: 0 14px 0 0; }
+.se-menu-item Label { font-size: 20px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; }
+.se-menu-item--primary { background-color: rgb(167, 136, 80); border-color: rgb(214, 178, 108); }
+.se-menu-item--primary Label { color: rgb(24, 20, 12); }
+.se-menu-item--primary:hover { background-color: rgb(196, 158, 88); }
+
+.se-menu-quit-slot { height: 56px; min-height: 56px; flex-shrink: 0; }
+.se-menu-quit-confirm { height: 56px; flex-direction: row; align-items: center; padding: 0 0 0 16px; background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); border-radius: 4px; border-width: 1px; border-color: var(--se-warn, rgb(240, 188, 86)); }
+.se-menu-quit-label { font-size: 20px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); }
+.se-menu-quit-confirm .se-menu-action { width: 72px; margin-right: 8px; }
+
+/* sub pages: header 56 · content (scrolls) · footer 64 */
+.se-menu-header { height: 56px; min-height: 56px; flex-shrink: 0; flex-direction: row; align-items: center; margin-bottom: 8px; }
+.se-menu-page-title {
+    font-size: 28px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: rgb(244, 232, 202); margin-left: 12px;
+    flex-grow: 1; flex-shrink: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left;
+}
+.se-menu-content { flex-grow: 1; flex-shrink: 1; min-height: 0; }
+.se-menu-content--fill { flex-direction: column; }
+.se-menu-footer { height: 64px; min-height: 64px; flex-shrink: 0; flex-direction: row; align-items: center; border-top-width: 1px; border-top-color: var(--se-line, rgba(255, 255, 255, 0.08)); margin-top: 8px; }
+.se-menu-spacer { flex-grow: 1; }
+.se-menu-grow { flex-grow: 1; flex-shrink: 1; }
+.se-menu-row { flex-direction: row; align-items: center; }
+
+.se-menu-action { height: 36px; min-height: 36px; padding: 0 14px; margin: 0 0 0 8px; flex-direction: row; align-items: center; flex-shrink: 0; }
+.se-menu-footer .se-menu-action:first-child { margin-left: 0; }
+.se-menu-action--primary { min-width: 140px; justify-content: center; }
+.se-menu-action IconElement { width: 18px; height: 18px; margin-right: 6px; }
+
+.se-menu-label { font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin: 12px 0 4px 0; height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-menu-help-line { height: 20px; min-height: 20px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-menu-note { min-height: 20px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin: 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-menu-note--wrap { white-space: normal; }
+.se-menu-field { height: 36px; min-height: 36px; margin: 0; font-size: 15px; }
+.se-menu-row .se-menu-field { margin-right: 8px; }
+
+/* skirmish: two columns of 400 */
+.se-menu-columns { flex-direction: row; justify-content: space-between; }
+.se-menu-column { width: 400px; flex-shrink: 0; }
+
+/* multiplayer */
+.se-menu-host-row { flex-direction: row; align-items: center; margin-bottom: 6px; flex-shrink: 0; }
+.se-menu-host-row .se-menu-item { margin: 0 8px 0 0; }
+.se-menu-team-size { flex-shrink: 0; }
+.se-menu-disclosure { align-self: flex-start; margin: 4px 0 0 0; background-color: rgba(0, 0, 0, 0); border-width: 0; }
+.se-menu-advanced { padding: 0 0 8px 0; }
+.se-menu-advanced .se-menu-action { margin-left: 0; margin-right: 8px; }
+
+/* join a friend */
+.se-menu-empty { font-size: 17px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); margin: 16px 0 4px 0; }
+.se-menu-friend { flex-direction: row; align-items: center; height: 48px; padding: 0 8px; margin-bottom: 4px; background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); border-radius: 4px; }
+.se-menu-avatar { width: 32px; height: 32px; border-radius: 16px; background-color: rgba(0, 0, 0, 0.35); align-items: center; justify-content: center; flex-shrink: 0; }
+.se-menu-avatar IconElement { width: 20px; height: 20px; }
+.se-menu-friend-names { flex-grow: 1; flex-shrink: 1; margin-left: 10px; min-width: 0; }
+.se-menu-friend-name { font-size: 15px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-menu-friend-lobby { font-size: 12px; color: var(--se-text-dim, rgb(150, 164, 160)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-menu-friend-slots { width: 44px; font-size: 13px; -unity-text-align: middle-right; flex-shrink: 0; }
+.se-menu-friend-join { width: 96px; min-width: 96px; }
+
+/* join by code */
+.se-menu-code-field { height: 48px; min-height: 48px; font-size: 26px; letter-spacing: 4px; }
+
+/* lobby */
+.se-lobby-code-row { flex-direction: row; align-items: center; height: 48px; min-height: 48px; flex-shrink: 0; }
+.se-lobby-code-caption { margin: 0 12px 0 0; }
+.se-lobby-code {
+    width: 150px; height: 36px; font-size: 24px; letter-spacing: 4px; -unity-text-align: middle-center; margin-right: 8px;
+    color: var(--se-accent, rgb(226, 182, 96)); background-color: rgba(0, 0, 0, 0.35); border-radius: 4px; white-space: nowrap; overflow: hidden;
+}
+.se-lobby-teams { flex-direction: row; flex-wrap: wrap; margin-top: 12px; }
+.se-lobby-team { width: 400px; margin: 0 16px 12px 0; padding: 8px; background-color: rgba(0, 0, 0, 0.22); border-radius: 6px; border-width: 1px; border-color: var(--se-line, rgba(255, 255, 255, 0.08)); }
+.se-lobby-team-title { font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); height: 20px; margin-bottom: 4px; }
+.se-lobby-seat { flex-direction: row; align-items: center; height: 44px; min-height: 44px; padding: 0 8px; }
+.se-lobby-dot { width: 12px; height: 12px; border-radius: 6px; margin-right: 10px; flex-shrink: 0; border-width: 2px; border-color: var(--se-text-dim, rgb(150, 164, 160)); }
+.se-lobby-dot--taken { background-color: var(--se-text, rgb(232, 226, 210)); border-color: var(--se-text, rgb(232, 226, 210)); }
+.se-lobby-dot--you { background-color: var(--se-friendly, rgb(74, 150, 255)); border-color: var(--se-friendly, rgb(74, 150, 255)); }
+.se-lobby-dot--open { background-color: rgba(0, 0, 0, 0); }
+.se-lobby-seat-name { flex-grow: 1; flex-shrink: 1; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-lobby-seat-name--open { color: var(--se-text-dim, rgb(150, 164, 160)); -unity-font-style: italic; }
+.se-lobby-seat-tags { width: 90px; font-size: 12px; color: var(--se-text-dim, rgb(150, 164, 160)); -unity-text-align: middle-right; margin-right: 8px; white-space: nowrap; overflow: hidden; flex-shrink: 0; }
+.se-lobby-chip { height: 22px; padding: 0 8px; font-size: 12px; border-radius: 4px; background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); -unity-text-align: middle-center; flex-shrink: 0; }
+.se-lobby-ready { width: 20px; height: 20px; flex-shrink: 0; opacity: 0.45; }
+.se-lobby-ready--on { opacity: 1; }
+.se-lobby-map { height: 22px; font-size: 14px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-lobby-waiting { font-size: 14px; color: var(--se-text-dim, rgb(150, 164, 160)); margin-left: 12px; width: 140px; -unity-text-align: middle-right; white-space: nowrap; }
+
+/* field guide (also shown in the pause menu) */
+.se-guide { flex-direction: column; }
+.se-guide-search { margin-bottom: 8px; flex-shrink: 0; }
+.se-guide-scroll { flex-grow: 1; }
+.se-guide-entry { padding: 8px 4px 10px 0; border-bottom-width: 1px; border-bottom-color: var(--se-line, rgba(255, 255, 255, 0.08)); }
+.se-guide-topic { font-size: 16px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: rgb(234, 204, 140); margin-bottom: 4px; }
+.se-guide-text { font-size: 14px; white-space: normal; }
+.se-guide-credits { margin-top: 12px; }
+
+/* map picker (New Skirmish and Host lobby): one 36-high row per map, name left and team size right */
+.se-map-list { flex-direction: column; flex-shrink: 0; }
+.se-map-list--host { margin: 2px 0 8px 0; }
+.se-map-option {
+    height: 36px; min-height: 36px; margin: 0 0 4px 0; padding: 0 12px; flex-direction: row; align-items: center; flex-shrink: 0;
+    background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); border-width: 1px; border-color: var(--se-line, rgba(255, 255, 255, 0.08)); border-radius: 4px;
+}
+.se-map-option:hover { border-color: var(--se-accent-dim, rgba(226, 182, 96, 0.35)); }
+.se-map-option.selected { border-color: var(--se-accent, rgb(226, 182, 96)); background-color: rgba(226, 182, 96, 0.14); }
+.se-map-name { flex-grow: 1; flex-shrink: 1; font-size: 15px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; margin: 0; padding: 0; }
+.se-map-mode { width: 48px; flex-shrink: 0; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); -unity-text-align: middle-right; margin: 0; padding: 0; }
+.se-map-option.selected .se-map-mode { color: var(--se-accent, rgb(226, 182, 96)); }
+.se-map-help { height: 54px; min-height: 54px; max-height: 54px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin-top: 2px; white-space: normal; overflow: hidden; }

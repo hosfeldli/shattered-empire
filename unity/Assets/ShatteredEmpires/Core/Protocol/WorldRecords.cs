@@ -8,6 +8,8 @@ namespace SE.Core.Protocol
     public struct TrenchRecord
     {
         public int Tile, Owner, Dir, Progress, Hp, State, Route;
+        /// <summary>trenchWorld element 4: bit d set when the neighbour in hex direction d carries a road (the line stops at its verge).</summary>
+        public int RoadMask;
         public bool Reinforced, Upgrading;
         public bool HasPosition;
         public float X, Z, Facing;

@@ -112,6 +112,15 @@ namespace SE.Runtime.Rendering
                     height = .28f + clouds * .25f + grit * .18f - fissure * .21f;
                     cavity = fissure;
                     smooth = .19f;
+                    if (kind == SurfaceKind.Soil)
+                    {
+                        // compacted gravel: rounded pebbles proud of a finer grit bed (yards, verges, tracks)
+                        float pebble = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(.60f, .80f, Noise(x, y, 40, seed + 51)));
+                        float stone = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(.58f, .85f, Noise(x, y, 92, seed + 77)));
+                        shade += pebble * .09f + stone * .05f;
+                        height += pebble * .20f + stone * .08f;
+                        cavity = Mathf.Max(cavity * .6f, (1f - Mathf.Max(pebble, stone)) * .18f);
+                    }
                     break;
                 }
                 default:

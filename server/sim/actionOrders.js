@@ -1,6 +1,6 @@
 import { DT } from './constants.js';
 import { ACTION_UNITS } from './actionDefinitions.js';
-import { distance, dxBetween, SpatialIndex, tileAt, wrapX } from './actionNavigation.js';
+import { distance, dxBetween, SpatialIndex, tileAt, wrapX, trenchPosition } from './actionNavigation.js';
 import { addWear } from './battlefield.js';
 
 const SIDESTEPS = [.34, -.34, .66, -.66, 1.04, -1.04, 1.48, -1.48];
@@ -32,6 +32,10 @@ function assign(game, u, goal, opts, path) {
   u.formation = opts.formation || 0;
   u.braced = opts.facing != null;
   u.coverAnchor = null;
+  u.manned = false;
+  u.tacticalResume = null;
+  u.tacticalUntil = 0;
+  u.alignFacing = null;
   if (u.grounded) u.grounded = false;
   startOrder(game, u, order);
   return true;
@@ -56,9 +60,19 @@ export function stopUnit(game, u, advance = false) {
   u.goal = null;
   u.path = [];
   u.vx = u.vz = u.speed = 0;
-  if (u.destinationFacing != null) u.yaw = u.destinationFacing;
+  if (advance && u.destinationFacing != null) {
+    if (ACTION_UNITS[u.type].move === 'infantry') u.yaw = u.destinationFacing;
+    else u.alignFacing = u.destinationFacing;
+  }
   u.destinationFacing = null;
   u.mode = u.mode === 'move' ? 'guard' : u.mode;
+  if (!advance) { u.tacticalResume = null; u.tacticalUntil = 0; u.alignFacing = null; }
+  if (advance && u.tacticalResume) {
+    const resume = u.tacticalResume;
+    u.tacticalResume = null; u.tacticalUntil = 0;
+    if (resume.goal) { u.goal = resume.goal; u.path = game.nav.route(u, resume.goal, ACTION_UNITS[u.type]) || []; }
+    return;
+  }
   if (advance && u.orders.length) {
     const next = u.orders.shift();
     next.path = null;
@@ -68,6 +82,7 @@ export function stopUnit(game, u, advance = false) {
 
 function candidate(game, u, point, reserved, max, start = u, preview = false) {
   const d = ACTION_UNITS[u.type], near = [];
+  if (d.move === 'infantry') point = trenchPosition(game, point, u.owner, .55) || point;
   const slot = game.nav.nearest(point, d, max, (x, z) => {
     if (d.air) return true;
     return reserved.query(x, z, .65, near).every((o) => distance(o, { x, z }) >= o.radius + d.radius + .06);
@@ -192,29 +207,54 @@ export function unitMotion(game) {
   for (const u of game.units.values()) {
     u.waitingCrossing = false;
     const def = ACTION_UNITS[u.type];
+    if (u.tacticalResume && game.time >= u.tacticalUntil) stopUnit(game, u, true);
     if (def.air) {
       const target = u.grounded ? .045 : def.alt === 'high' ? u.type === 'bomber' ? 2.6 : 2 : u.type === 'helicopter' ? .75 : 1.05;
       u.altitude = Math.max(.045, u.altitude + Math.max(-.12, Math.min(.082, (target - u.altitude) * .15)));
     }
-    if (!u.goal) { u.vx = u.vz = 0; continue; }
-    if (!def.air && u.mode === 'assault' && u.target && game.time - u.lastCombat < 2.1) {
+    if (!u.goal) {
+      if (u.alignFacing != null) { u.yaw = turn(u.yaw, u.alignFacing, DT * 1.25); if (Math.abs(angleDelta(u.yaw,u.alignFacing)) < .015) u.alignFacing = null; }
+      u.vx = u.vz = u.speed = 0; continue;
+    }
+    if (!def.air && !u.tacticalResume && u.mode === 'assault' && u.target && (game.time - u.lastCombat < 2.1 || def.setup && (u.setupUntil || u.deployed))) {
       const target = game.units.get(u.target) || game.buildings.get(u.target);
       if (target && distance(u, target) < def.range && game.sees(game.civs[u.owner], target)) { u.vx = u.vz = u.speed = 0; continue; }
     }
     let p = u.path[0];
     if (!p) { stopUnit(game, u, true); continue; }
-    if (distance(u, p) <= .045) {
+    if (distance(u, p) <= (u.path.length > 1 ? Math.max(.045, Math.min(.12, u.speed * .36)) : .045)) {
       u.path.shift();
       p = u.path[0];
       if (!p) { stopUnit(game, u, true); continue; }
     }
     const dx = dxBetween(u.x, p.x), dz = p.z - u.z;
-    const desired = Math.atan2(dx, dz), length = Math.hypot(dx, dz);
+    let desired = Math.atan2(dx, dz);
+    const length = Math.hypot(dx, dz), vehicle = !def.air && def.move !== 'infantry';
+    let followingSpeed = Infinity;
+    if (vehicle) {
+      index.query(u.x,u.z,def.radius + .85,near);
+      const sn = Math.sin(desired), cs = Math.cos(desired);
+      const front = near.find((v) => {
+        if (v === u || v.hp <= 0) return false;
+        const x = dxBetween(u.x,v.x), z = v.z-u.z, gap = x*sn+z*cs;
+        return gap > 0 && gap < def.radius+ACTION_UNITS[v.type].radius+.23 && Math.abs(x*cs-z*sn) < def.radius+ACTION_UNITS[v.type].radius+.03;
+      });
+      if (front) {
+        const sameDirection = (front.vx*sn+front.vz*cs) > .035;
+        if (sameDirection && game.allied(u.owner,front.owner) && ACTION_UNITS[front.type].move !== 'infantry')
+          followingSpeed = Math.max(.015,Math.hypot(front.vx,front.vz)*.88);
+        else { u.avoidSide ||= 1; u.avoidUntil = game.time+.60; desired += .70*u.avoidSide; }
+      } else if (u.avoidUntil > game.time) desired += .40*u.avoidSide*(u.avoidUntil-game.time)/.60;
+    }
     const c = game.nav.cost(u.tile, u.x, u.z, def);
     const pace = def.speed * (def.air && game.civs[u.owner].techs.has('aircraft_systems') ? 1.18 : 1) / Math.max(.65, Number.isFinite(c) ? c : 1);
-    const targetSpeed = u.target && u.mode === 'assault' && !def.air ? pace * .45 : pace;
-    u.speed += Math.max(-pace * DT * 4, Math.min(pace * DT * 3.5, targetSpeed - u.speed));
-    const yaw = turn(u.yaw, desired, DT * (def.air ? 3.0 : def.move === 'infantry' ? 7 : 3.8));
+    const turnRate = def.air ? 3 : !vehicle ? 7 : def.move === 'wheeled' ? 1.65 : 1.25;
+    const headingError = Math.abs(angleDelta(u.yaw, desired));
+    const corner = vehicle ? Math.max(0, Math.cos(headingError)) ** 2 : 1;
+    const braking = vehicle && u.path.length === 1 ? Math.min(1, Math.sqrt(Math.max(.015, length) / .35)) : 1;
+    const targetSpeed = Math.min(followingSpeed,(u.target && u.mode === 'assault' && !def.air ? pace * .45 : pace) * corner * braking);
+    u.speed += Math.max(-pace * DT * 3.0, Math.min(pace * DT * 1.7, targetSpeed - u.speed));
+    const yaw = turn(u.yaw, desired, DT * turnRate);
     const diff = Math.abs(angleDelta(yaw, desired));
     const step = Math.min(length, u.speed * DT * (def.move === 'infantry' || def.air ? 1 : Math.max(.08, Math.cos(diff))));
     const ox = u.x, oz = u.z;
@@ -226,17 +266,17 @@ export function unitMotion(game) {
       const after = dxBetween(x, v.x) ** 2 + (v.z - z) ** 2;
       return after >= r * r || after > dxBetween(ox, v.x) ** 2 + (v.z - oz) ** 2 + .000001;
     }));
-    const dir = def.air || def.move === 'infantry' || length < .12 ? desired : yaw;
+    const dir = vehicle ? yaw : desired;
     let nx = wrapX(ox + Math.sin(dir) * step), nz = oz + Math.cos(dir) * step;
     if (!game.nav.trafficAllows(u, nx, nz, def)) { u.waitingCrossing = true; u.vx = u.vz = 0; continue; }
     let ok = allowed(nx, nz);
     if (!ok && !def.air) {
       const bias = u.id % 2 ? 1 : -1;
       for (const a of SIDESTEPS) {
-        const angle = desired + a * bias;
+        const angle = vehicle ? yaw + Math.sign(a) * turnRate * DT * bias : desired + a * bias;
         nx = wrapX(ox + Math.sin(angle) * step * .83);
         nz = oz + Math.cos(angle) * step * .83;
-        if (allowed(nx, nz)) { ok = true; u.yaw = turn(yaw, angle, DT * 3.7); break; }
+        if (allowed(nx, nz)) { ok = true; u.yaw = vehicle ? angle : turn(yaw, angle, DT * 3.7); break; }
       }
     }
     if (ok && step > .0001) {
@@ -249,11 +289,14 @@ export function unitMotion(game) {
       u.blocked = 0;
     } else {
       u.vx = u.vz = 0;
+      if (vehicle) u.speed = Math.max(0, u.speed - pace * DT * 3);
       u.blocked++;
+      if (vehicle && u.blocked % 9 === 0) { u.avoidSide = -(u.avoidSide || 1); u.avoidUntil = game.time + .8; }
       if (!def.air && u.blocked > 8 && (phase + u.id) % 7 === 0) {
         for (const v of near) {
           if (v === u || v.goal || v.formation || v.braced || !game.allied(u.owner, v.owner) || distance(u, v) > .8) continue;
           const vd = ACTION_UNITS[v.type], side = (u.id + v.id) % 2 ? 1 : -1;
+          if (vd.move !== 'infantry') continue;
           for (const sign of [side, -side]) {
             const vx = wrapX(v.x + Math.cos(desired) * .06 * sign), vz = v.z - Math.sin(desired) * .06 * sign;
             if (!game.nav.canMove(v, vx, vz, vd) || index.query(vx, vz, .65, []).some((q) => q !== v && q !== u && distance(q, { x: vx, z: vz }) < q.radius + vd.radius + .015)) continue;

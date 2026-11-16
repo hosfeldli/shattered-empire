@@ -64,3 +64,22 @@ Filtered and limited designed distant impact layer.
 Fireplace Sound loop — PagDev. CC0 1.0.
 https://opengameart.org/content/fireplace-sound-loop
 Filtered and faded 20-second excerpt for positional burning sounds.
+
+Ground and military materials — ambientCG / Lennart Demes. CC0 1.0.
+Ground 037: https://ambientcg.com/view?id=Ground037
+Fabric 061: https://ambientcg.com/view?id=Fabric061
+Metal 032: https://ambientcg.com/view?id=Metal032
+Original 1K Color, NormalGL and Roughness maps; Unity mipmaps and compression.
+Detailed file names, source links and checksums are in Textures/material-sources.json.
+
+Unity Asset Store content, used under the Unity Asset Store EULA (in the built game only;
+converted locally by tools/ingest-workshop-assets.cjs):
+Post Apocalypse Guns Demo — Sound Earth Game Audio. Weapons of Choice FREE — Komposite Sound.
+Grenade Sound FX — MGWSoundDesign. Nature Sound FX — lumino. Free SFX Package — Bleep Blop Audio.
+Dynamic Music — John Leonard French. Fantasy Battle Music Free Pack — Tyler Cunningham.
+Outdoor Ground Textures — A dog's life software. Free architectural textures — CrazyTextures.
+Yughues Free Metal Materials — Nobiax / Yughues. 8K Skybox Pack Free — BG Studio.
+Blood splatter decal package — NorSat Entertainment. Grass Flowers Pack Free — Objective Environment.
+
+Vehicle, aircraft and weapon models — modelled for Shattered Empires in Blender
+(tools/blender/build_military.py).

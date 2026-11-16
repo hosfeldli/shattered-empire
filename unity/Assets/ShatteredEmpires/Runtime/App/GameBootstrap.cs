@@ -35,7 +35,7 @@ namespace SE.Runtime.App
     /// </summary>
     public sealed partial class GameBootstrap : MonoBehaviour, IGameActions
     {
-        enum Phase { Menu, Connecting, Playing, Stress, Intro }
+        enum Phase { Menu, Connecting, Playing, Stress }
 
         LaunchOptions opts;
         Phase phase = Phase.Menu;
@@ -43,18 +43,19 @@ namespace SE.Runtime.App
         GameConnection net;
         TerrainRenderer terrain;
         FogField fog;
+        Shroud shroud;
         GroundField ground;
         CityRenderer city;
         WarzoneRenderer warzone;
         UnitRenderer units;
         EffectsRenderer fx;
+        Wildlife wildlife;
         Atmosphere atmosphere;
         AudioDirector audioDirector;
         RtsCamera rts;
         Commander commander;
         Hud hud;
         UIDocument uiDocument;
-        IntroDirector intro;
         readonly WrapImages images = new WrapImages();
         readonly PerfRecorder perf = new PerfRecorder();
         readonly FrameStats recent = new FrameStats();
@@ -90,8 +91,49 @@ namespace SE.Runtime.App
         public string Server { get => serverUrl; set => serverUrl = value; }
         public string PlayerName { get => playerName; set => playerName = value; }
         public AudioDirector Audio => audioDirector;
-        public bool CanInvite => phase == Phase.Playing && net?.SessionMatch != null && SocialPlatform.Current.Available;
-        public void InviteFriends() => SocialPlatform.Current.InviteFriends(net?.SessionMatch, "");
+        public bool CanInvite => (phase == Phase.Playing || phase == Phase.Connecting) && !string.IsNullOrEmpty(net?.SessionMatch) && SocialPlatform.Current.Available;
+        public void InviteFriends()
+        {
+            var sp = SocialPlatform.Current;
+            if (sp.Lobby != null) sp.InviteFriends();
+            else sp.InviteFriends(net?.SessionMatch, "");
+        }
+        public ISocialPlatform Social => SocialPlatform.Current;
+        public bool CanPause => phase == Phase.Playing && session.Welcome != null && session.Welcome.CanPause && !session.Spectator;
+        public void SetPaused(bool on)
+        {
+            if (net == null || on && !CanPause) return;
+            net.Command(new JObject { ["c"] = "pause", ["on"] = on });
+        }
+        /// <summary>Host in the match lobby: start now (open human seats become AI).</summary>
+        public void StartLobbyMatch() => net?.Send(LobbyMessages.Start());
+        public void SetLobbyReady(bool ready)
+        {
+            net?.Send(LobbyMessages.Ready(ready));
+            SocialPlatform.Current.SetReady(ready);
+        }
+        /// <summary>Leave the match lobby: tell the server (a guest frees the seat, the host closes it), drop the connection, leave the Steam lobby.</summary>
+        public void LeaveLobby()
+        {
+            var old = net;
+            net = null;
+            if (old != null)
+            {
+                old.Send(LobbyMessages.Leave());
+                StartCoroutine(DisposeLater(old));   // let the 'leave' reach the server first
+            }
+            SocialPlatform.Current.LeaveLobby();
+            ShowMenu("", false);
+        }
+
+        static System.Collections.IEnumerator DisposeLater(GameConnection connection)
+        {
+            yield return new WaitForSecondsRealtime(0.6f);
+            connection.Dispose();
+        }
+
+        /// <summary>The main menu view (built by the Hud); null without an interface.</summary>
+        MainMenuView MenuView => uiDocument != null ? uiDocument.rootVisualElement?.Q<MainMenuView>() : null;
         public void Quit() => Application.Quit();
         public void FocusTile(int tile, float distance) => rts.FocusTile(tile, distance);
 
@@ -99,6 +141,10 @@ namespace SE.Runtime.App
         void Awake()
         {
             opts = LaunchOptions.FromCommandLine();
+            // Review/benchmark launches can explicitly choose a small window. Ordinary
+            // desktop startup always fills the current display without an exclusive mode switch.
+            if (!Application.isEditor && !opts.Has("screen-fullscreen") && !opts.Has("review") && !opts.Has("perf"))
+                Screen.SetResolution(Display.main.systemWidth, Display.main.systemHeight, FullScreenMode.FullScreenWindow);
             Application.runInBackground = true;
             bool bench = opts.Has("perf") || opts.Get("mode") == "stress";
             QualitySettings.vSyncCount = opts.Int("vsync", bench ? 0 : 1);
@@ -121,8 +167,9 @@ namespace SE.Runtime.App
             session = new ClientSession();
             terrain = new TerrainRenderer(session.World);
             fog = new FogField();
+            shroud = new Shroud();
             ground = new GroundField();
-            city = new CityRenderer(session.World, session.Structures) { CivColor = id => session.CivColor(id) };
+            city = new CityRenderer(session.World, session.Structures) { CivColor = session.CivColor };   // a method group, so TeamPalette can find the session
             warzone = new WarzoneRenderer(session.World)
             {
                 DefenceAt = t => buildingByTile.TryGetValue(t, out var b) && IsDefence(b.type) ? b.type : null,
@@ -131,6 +178,8 @@ namespace SE.Runtime.App
             units = new UnitRenderer();
             units.InTrench = t => warzone.HasTrench(t);
             fx = new EffectsRenderer();
+            wildlife = new Wildlife();
+            fx.Blast += wildlife.Disturb;
             atmosphere = new Atmosphere(cam, sun);
             rts = new RtsCamera(cam);
             rts.Bind(session.World);
@@ -139,7 +188,7 @@ namespace SE.Runtime.App
             session.Welcomed += OnWelcomed;
             session.Other += OnOther;
             if (!bench) audioDirector = new AudioDirector(cam);
-            if (audioDirector != null) atmosphere.Thunder += delay => audioDirector.Play("thunder", new float3(rts.Focus.x, 4, rts.Focus.z), 0.8f, 30f, 3, rts.Distance);
+            if (audioDirector != null) atmosphere.Thunder += delay => audioDirector.Play("thunder", new float3(rts.Focus.x, 4, rts.Focus.z), 0.8f, 30f, 3, rts.Distance, delay);
             if (!opts.Has("no-ui")) BuildInterface();
             ApplyQuality(opts.Get("quality", PlayerPrefs.GetString("se.quality", "high")));
             serverUrl = LaunchOptions.ResolveServer(opts.Has("server") ? opts.Get("server") : PlayerPrefs.GetString("se.server", LaunchOptions.PublicServer),
@@ -168,11 +217,14 @@ namespace SE.Runtime.App
             };
             hud.CameraFocus = () => rts.Focus;
             hud.Map.FocusMap = (x, z) => { int t = session.World.Grid.TileAt(x, z); if (t >= 0) rts.FocusTile(t, rts.Distance); };
+            // both arrays are reused: the minimap asks every frame
             var corners = new Vector2[4];
+            var screen = new Vector2[4];
             hud.Map.ViewCorners = () =>
             {
                 // where the screen's corners meet the ground (a little inside the top edge, which may see sky)
-                Vector2[] screen = { new Vector2(0, 0), new Vector2(Screen.width, 0), new Vector2(Screen.width, Screen.height * 0.92f), new Vector2(0, Screen.height * 0.92f) };
+                screen[0] = new Vector2(0, 0); screen[1] = new Vector2(Screen.width, 0);
+                screen[2] = new Vector2(Screen.width, Screen.height * 0.92f); screen[3] = new Vector2(0, Screen.height * 0.92f);
                 for (int k = 0; k < 4; k++)
                 {
                     if (!rts.TryGround(screen[k], out var gp)) return null;
@@ -187,9 +239,25 @@ namespace SE.Runtime.App
             var mode = opts.Get("mode");
             if (mode == "stress") StartStress();
             else if (mode != "") StartMatch(mode, opts.Get("match"));
-            else if (hud != null) PlayIntro();
             else ShowMenu("");
-            SocialPlatform.Current.JoinRequested += code => StartMatch("join", code);
+            // a Steam invite accepted, "Join Game" in the friends list, or +connect_lobby: join that match
+            SocialPlatform.Current.JoinRequested += code =>
+            {
+                if (string.IsNullOrEmpty(code) || phase == Phase.Stress) return;
+                if (net != null && net.SessionMatch == code && phase != Phase.Menu) return;   // already there
+                var j = SocialPlatform.Current.LastJoin;
+                if (j != null && !string.IsNullOrEmpty(j.Server))
+                    serverUrl = LaunchOptions.ResolveServer(j.Server, opts.Has("server") || Application.isEditor || Debug.isDebugBuild);
+                if (phase == Phase.Connecting && net != null)
+                {
+                    // waiting in another match lobby: free that seat first
+                    var old = net;
+                    net = null;
+                    old.Send(LobbyMessages.Leave());
+                    StartCoroutine(DisposeLater(old));
+                }
+                StartMatch("join", code);
+            };
         }
 
         public void ApplyUiScale(float scale)
@@ -227,9 +295,13 @@ namespace SE.Runtime.App
         }
 
         // ------------------------------------------------------------------ menu with a living world behind it
-        void ShowMenu(string status)
+        void ShowMenu(string status, bool rootPage = true)
         {
             audioDirector?.MenuScore(true);
+            // back from a match or a lobby: leave the Steam lobby too (never on the first menu, where an
+            // accepted invite may be joining one right now)
+            if (net != null || phase == Phase.Playing || phase == Phase.Connecting) SocialPlatform.Current.LeaveLobby();
+            if (rootPage) MenuView?.ResetToRoot();
             phase = Phase.Menu;
             rts.Cam.orthographic = false;
             net?.Dispose(); net = null;
@@ -249,29 +321,13 @@ namespace SE.Runtime.App
             hud?.ShowMenu(true, status);
         }
 
-        public void PlayIntro()
-        {
-            if (uiDocument == null) return;
-            audioDirector?.MenuScore(false);
-            hud.ShowMenu(false, null);
-            hud.ShowGame(false);
-            phase = Phase.Intro;
-            atmosphere.GameplayMood();
-            city.ActionRts = false; city.SetObjectives(Array.Empty<ObjectiveSite>()); city.SetShowcaseRoads(null);
-            fog.Enabled = false;
-            rts.PitchOverride = -1f;
-            intro = new IntroDirector(session, rts, atmosphere, fx, audioDirector, city, uiDocument.rootVisualElement);
-            intro.Finished += () => { intro = null; ShowMenu(""); };
-            intro.Start();
-        }
-
         // ------------------------------------------------------------------ matches
         public void StartMatch(string mode, string match)
         {
             if (string.IsNullOrEmpty(mode)) { ShowMenu(""); return; }
             audioDirector?.MenuScore(false);
             serverUrl = LaunchOptions.ResolveServer(serverUrl, opts.Has("server") || Application.isEditor || Debug.isDebugBuild);
-            if (!opts.Has("review") && !opts.Has("review-intro"))
+            if (!opts.Has("review"))
             { PlayerPrefs.SetString("se.server", serverUrl); PlayerPrefs.SetString("se.name", playerName); PlayerPrefs.Save(); }
             net?.Dispose();
             net = new GameConnection(() => Now);
@@ -303,7 +359,8 @@ namespace SE.Runtime.App
                 {
                     msg["teamSize"] = pendingTeamSize;
                     msg["humans"] = pendingTeamSize * 2;
-                    pendingTeamSize = 1;
+                    if (pendingMap != "random") msg["map"] = pendingMap;
+                    pendingTeamSize = 1; pendingMap = "random";
                 }
                 if (opts.Has("seed")) msg["seed"] = opts.Int("seed", 0);
                 if (opts.Has("map")) msg["mapSize"] = opts.Get("map");
@@ -315,6 +372,7 @@ namespace SE.Runtime.App
                     var c = pendingCampaign;
                     msg["style"] = c.Style; msg["mapSize"] = c.MapSize; msg["ais"] = c.Rivals; msg["difficulty"] = c.Difficulty;
                     msg["objective"] = c.Objective; msg["wrap"] = c.Wrap; msg["tutorial"] = c.Tutorial;
+                    if (!string.IsNullOrEmpty(c.Map) && c.Map != "random") msg["map"] = c.Map;
                     if (int.TryParse(c.Seed, out int s)) msg["seed"] = s;
                     msg["title"] = c.Tutorial ? "Tutorial" : $"{playerName} · {c.Style}";
                 }
@@ -349,20 +407,23 @@ namespace SE.Runtime.App
             city.Seed = session.Welcome.Seed;
             city.ActionRts = session.ActionRts;
             city.SetShowcaseRoads(null);
-            if (phase != Phase.Intro && phase != Phase.Menu) atmosphere.GameplayMood();
+            if (phase != Phase.Menu) atmosphere.GameplayMood();
             rts.Cam.orthographic = session.ActionRts;
             fx.ClearPersistent();
             units.Selected.Clear();
             commander.Cancel();
             commander.ResetAction();
             if (phase != Phase.Playing) return;
+            // the lobby became a match: no more joins from the Steam friends list (no-op without a lobby)
+            SocialPlatform.Current.SetLobbyStatus("running");
+            MenuView?.ResetToRoot();
             hud?.ShowMenu(false, null);
             // a new match opens with the descent onto the capital (visual design bible §9); a sandbox,
             // a benchmark or a spectator starts straight away
             bool descend = pendingMode != "rejoin-same" && session.Welcome.Start >= 0 && !session.Welcome.Sandbox && !session.Spectator && !perfRunning && !opts.Has("perf");
             if (descend) BeginDescent();
             else { rts.UserControl = true; hud?.ShowGame(true); hud?.ShowLoading(-1); }
-            if (net != null && !opts.Has("review") && !opts.Has("review-intro"))
+            if (net != null && !opts.Has("review"))
             {
                 PlayerPrefs.SetString("se.match", net.SessionMatch ?? "");
                 PlayerPrefs.SetString("se.token", net.SessionToken ?? "");
@@ -377,17 +438,19 @@ namespace SE.Runtime.App
         // ------------------------------------------------------------------ campaign start, loading and the descent
         CampaignOptions pendingCampaign;
         int pendingTeamSize = 1;
+        string pendingMap = "random";
 
-        public void HostMultiplayer(int teamSize)
+        public void HostMultiplayer(int teamSize, string map = "random")
         {
             pendingTeamSize = Mathf.Clamp(teamSize, 1, 4);
+            pendingMap = string.IsNullOrEmpty(map) ? "random" : map;
             StartMatch("pvp", "");
         }
 
         public void StartCampaign(CampaignOptions options)
         {
             pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty,
-                Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective };
+                Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective, Map = options.Map };
             StartMatch("ai", "");
         }
 
@@ -455,8 +518,49 @@ namespace SE.Runtime.App
         void OnOther(ServerMessage m)
         {
             if (m.T == "error" && phase == Phase.Connecting) hud?.ShowMenu(true, m.Error);
-            if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby") hud?.ShowMenu(true, "Waiting in the match lobby (code " + ProtocolDecoder.Str(m.Raw["match"], "") + "). Share the code, or invite friends on Steam.");
+            if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby")
+            {
+                string code = ProtocolDecoder.Str(m.Raw["match"], "");
+                hud?.ShowMenu(true, "Waiting in the match lobby: share the code " + code + ", or invite friends on Steam");
+                MenuView?.ShowLobbyJoining(code);
+            }
+            if (m.T == "room") OnRoom(m.Raw);
+            // handled after this frame's messages (the connection is dropped)
+            if (m.T == "lobbyClosed") lobbyClosed = ProtocolDecoder.Str(m.Raw["error"], "The host closed the lobby");
             if (m.T == "over" && phase == Phase.Playing) hud?.MatchEnded(m.Raw?["winner"] as JObject);
+        }
+
+        string lobbyClosed;
+
+        /// <summary>
+        /// The server's pre-game lobby changed (a 'room' message): the host opens the friends-only Steam lobby
+        /// for this match code as soon as it exists, and the menu shows the lobby page.
+        /// </summary>
+        void OnRoom(JObject raw)
+        {
+            var room = MatchRoom.Parse(raw);
+            if (room == null || room.Status != "lobby" || phase != Phase.Connecting) return;
+            var sp = SocialPlatform.Current;
+            if (room.IsHost && room.Mode == "pvp" && sp.Available && !sp.Busy && sp.Lobby?.MatchCode != room.Code)
+                sp.HostLobby(new LobbyRequest
+                {
+                    MatchCode = room.Code, Server = serverUrl, Name = room.Name, Ruleset = room.Ruleset,
+                    MapSize = room.MapSize > 0 ? room.MapSize.ToString() : "", TeamSize = room.TeamSize,
+                    MaxMembers = Mathf.Max(2, room.Seats.Count),
+                });
+            if (hud != null && !hud.MenuVisible) hud.ShowMenu(true, null);
+            MenuView?.ShowLobby(raw);
+        }
+
+        void StepLobbyClosed()
+        {
+            if (lobbyClosed == null) return;
+            string why = lobbyClosed;
+            lobbyClosed = null;
+            if (phase != Phase.Connecting) return;
+            net?.ForgetSession();
+            ShowMenu(why, false);   // drops the connection and leaves the Steam lobby
+            MenuView?.ShowMultiplayer();
         }
 
         void StageBattle()
@@ -586,9 +690,8 @@ namespace SE.Runtime.App
             if (phase == Phase.Connecting && net != null && net.State == GameConnection.Status.Retrying) hud?.ShowMenu(true, "Cannot reach " + serverUrl + "; retrying…");
             else if (phase == Phase.Connecting && !(hud?.MenuVisible ?? true)) hud?.ShowLoading(LoadingStage());
             StepDescent(dt);
-            if (phase == Phase.Playing) SocialPlatform.Current.Tick();
+            StepLobbyClosed();
             if (stress != null) StepStress(dt);
-            intro?.Update(dt);
             if (phase == Phase.Menu) { AnimateMenuWorld(); rts.Yaw += dt * .4f; rts.Apply(); }
             if (InputFacade.Pressed(KeyCode.F3)) showDiag = !showDiag;
             if (InputFacade.Pressed(KeyCode.F10)) hideUi = !hideUi;
@@ -596,8 +699,6 @@ namespace SE.Runtime.App
             if (session.Ready) Present(dt);
             if (!reviewStarted && opts.Has("review") && time > 5 && (phase == Phase.Menu || phase == Phase.Playing && session.Snapshots >= 8))
             { reviewStarted = true; StartCoroutine(ReviewScenes()); }
-            if (!reviewStarted && opts.Has("review-intro") && phase == Phase.Intro)
-            { reviewStarted = true; StartCoroutine(ReviewIntroScenes()); }
             stallPresent = Ms(tp);
             hud?.Update(time);
             if (perfRunning && net != null && net.State == GameConnection.Status.Ready && time > probeAt)
@@ -672,6 +773,12 @@ namespace SE.Runtime.App
                 return rts.ToScreen(new Vector3(x, world.GroundHeight(x, s.Z) + .55f, s.Z));
             }, rts.Distance);
             hud?.DrawPickupRewards(p => rts.ToScreen(p), time);
+            hud?.DrawBattleOverlay(p => rts.ToScreen(new Vector3(world.Grid.NearX(p.x, rts.Focus.x), p.y, p.z)), id =>
+            {
+                if (!units.TryGetPosition(session.Units, id, out var up)) return null;
+                float ux = world.Grid.NearX(up.x, rts.Focus.x);
+                return new Vector3(ux, world.GroundHeight(ux, up.y), up.y);
+            }, time, rts.Distance);
             stallUnits = Ms(ts);
             Mark(6, ref tq);
             atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);
@@ -679,14 +786,19 @@ namespace SE.Runtime.App
             fx.Wind = atmosphere.WindMap;
             if (fx.GroundAt == null) fx.GroundAt = world.GroundHeight;
             fx.Update(dt, camX, world.Grid.Period, world.Grid.Wrap, phase == Phase.Playing ? session.Paused ? 0 : session.PlayRate : 1);
+            if (world.Ready) wildlife?.Update(dt, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, world.GroundHeight);
             Mark(8, ref tq);
             if (audioDirector != null) UpdateAudio(dt);
             images.Begin(cam, world.Grid.Period, world.Grid.Wrap);
             terrain.Draw(images, cam.transform.position);
+            shroud?.Draw(cam, phase == Phase.Playing && world.Ready, fog.Enabled, world.Grid.Wrap, new Vector2(atmosphere.WindMap.x, atmosphere.WindMap.z), dt, atmosphere.Dim);
+            atmosphere.NeedsDepth = shroud != null && shroud.Active;
+            Shader.SetGlobalFloat("_SE_SoftParticles", atmosphere.NeedsDepth ? 1 : 0);
             city.Draw(images);
             warzone.Draw(images);
             units.Draw();
             fx.Draw(images);
+            wildlife?.Draw(images);
             if (phase == Phase.Playing) commander.DrawOverlay(images, time);
             Mark(9, ref tq);
             phaseFrames++;
@@ -807,12 +919,16 @@ namespace SE.Runtime.App
                             aa = emplacement.Type == "aa_battery";
                             sound = aa ? "flak" : heavy ? "cannon" : "mg";
                         }
-                        fx.Muzzle(p, heavy);
                         var target = EventPoint(e, false, .05f);
                         p = WeaponMuzzle(e.Shooter, p, target);
+                        fx.Muzzle(p, heavy, target-p);
                         fx.Tracer(p, target, heavy);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(sound, p, heavy ? 0.9f : 0.5f, heavy ? 4f : 1.5f, heavy ? 2 : 1, rts.Distance);
+                        // Hand Grenades (barracks): at close quarters, riflemen now and then lob one (the server's +20%)
+                        if (store.TryGet(e.Shooter, out var thrower) && (thrower.Motion.Equipment & 32) != 0 && sound == "rifle"
+                            && math.distance(p.xz, target.xz) < 1.2f && UnityEngine.Random.value < .14f)
+                            fx.Projectile(p + new float3(0, .02f, 0), target, "grenade", .9f);
                         if (aa || IsAirTarget(e.Target))
                         {
                             // anti-aircraft fire bursts in the sky around the target
@@ -828,7 +944,7 @@ namespace SE.Runtime.App
                         var target = EventPoint(e, false, .05f);
                         p = WeaponMuzzle(e.Shooter, p, target);
                         string weapon = ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "cannon");
-                        fx.Muzzle(p, true);
+                        fx.Muzzle(p, true, target-p);
                         fx.Projectile(p, target, weapon, e.Flight);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(weapon == "cannon" || weapon == "howitzer" || weapon == "atgun" || weapon == "fortgun" ? "cannon" : "launch", p, 0.9f, 5f, 2, rts.Distance);
@@ -849,17 +965,31 @@ namespace SE.Runtime.App
                         break;
                     }
                     case "hit":
+                        if (store.TryGet(e.Target, out var victim) && victim.Owner == session.CivId)
+                        { var vp = EventPoint(e, false, 0); hud?.NoteUnderFire(e.Target, new Vector3(vp.x, vp.y, vp.z), false, time); }
                         if (e.Damage >= 8 && UnityEngine.Random.value < 0.5f)
                         {
                             var p = EventPoint(e, false, .035f);
                             if (Near(p, reach)) fx.Impact(p, .3f, 2, true);
                         }
+                        if (UnityEngine.Random.value < .35f)
+                        {
+                            // Rounds striking home: ricochets off armour, thuds into earth or masonry.
+                            var p = EventPoint(e, false, .03f);
+                            string struckType = store.TryGet(e.Target, out var struck) ? store.Types.Name(struck.TypeIndex) : "";
+                            bool armour = struckType.Contains("tank") || struckType.Contains("car") || struckType.Contains("truck") || struckType.Contains("artillery")
+                                || struckType == "mech_infantry" || struckType == "air_defense" || struckType == "missile_battery" || struckType == "exo_infantry";
+                            bool masonry = e.To >= 0 && e.To < world.Grid.N && (e.To >> 3) < world.Urban.Length && world.IsUrban(e.To);
+                            audioDirector?.Strike(p, armour, masonry, rts.Distance);
+                        }
                         break;
                     case "bhit":
                     {
+                        if (session.Structures.Buildings.TryGetValue(e.Target, out var struckBuilding) && struckBuilding.Owner == session.CivId)
+                        { var bp = EventPoint(e, false, 0); hud?.NoteUnderFire(e.Target, new Vector3(bp.x, bp.y, bp.z), true, time); }
                         var p = EventPoint(e, false, .1f);
                         if (!Near(p, reach)) break;
-                        fx.Explosion(p, 0.7f);
+                        if (e.Outcome == "destroyed") fx.BuildingCollapse(p, .35f); else fx.Explosion(p, 0.7f);
                         audioDirector?.Play(e.Outcome == "destroyed" ? "collapse" : "explosion", p, 1f, 6f, 3, rts.Distance);
                         break;
                     }
@@ -872,8 +1002,24 @@ namespace SE.Runtime.App
                         if (t.Contains("tank") || t.Contains("car") || t.Contains("truck") || t.Contains("buggy") || t.Contains("artillery") || t == "mech_infantry" || t == "air_defense" || t == "missile_battery")
                         {
                             if (!session.ActionRts) fx.Wreck(p, UnityEngine.Random.value * 6.28f, 0.16f);
-                            if (Near(p, reach)) { fx.Explosion(p, 0.9f); audioDirector?.Play("explosion_big", p, 1f, 6f, 3, rts.Distance); }
+                            if (Near(p, reach))
+                            {
+                                float size = t.Contains("tank") || t.Contains("artillery") || t == "missile_battery" ? .22f : t.Contains("buggy") ? .12f : .17f;
+                                fx.VehicleDestroyed(p, UnityEngine.Random.value * 6.28f, size);
+                                audioDirector?.Play("explosion_big", p, 1f, 6f, 3, rts.Distance);
+                            }
                         }
+                        else if (!t.Contains("drone") && t != "fighter" && t != "bomber" && t != "helicopter" && Near(p, reach))
+                        {
+                            fx.Blood(p, .075f);
+                            audioDirector?.Casualty(p, rts.Distance);
+                        }
+                        break;
+                    }
+                    case "demolish":
+                    {
+                        var p = EventPoint(e, false, 0);
+                        if (Near(p, reach)) { fx.BuildingCollapse(p, .3f); audioDirector?.Play("collapse", p, 1f, 6f, 3, rts.Distance); }
                         break;
                     }
                     case "mimpact":
@@ -967,7 +1113,7 @@ namespace SE.Runtime.App
 
         void OnDestroy()
         {
-            terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); units?.Dispose(); fx?.Dispose(); fog?.Dispose(); ground?.Dispose();
+            terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); units?.Dispose(); fx?.Dispose(); wildlife?.Dispose(); fog?.Dispose(); shroud?.Dispose(); ground?.Dispose();
             atmosphere?.Dispose(); audioDirector?.Dispose(); commander?.Dispose();
             net?.Dispose();
             session?.World.Dispose();

@@ -48,10 +48,14 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "flip", Label = "Flip battle-line facing (while drawing)", Default = KeyCode.F },
             new ActionDef { Id = "back", Label = "Camera: back to previous view", Default = KeyCode.Backspace },
             new ActionDef { Id = "alert", Label = "Camera: jump to latest alert", Default = KeyCode.Space },
-            new ActionDef { Id = "build", Label = "Open Build", Default = KeyCode.B },
-            new ActionDef { Id = "research", Label = "Open Research", Default = KeyCode.R },
-            new ActionDef { Id = "overview", Label = "Open Overview", Default = KeyCode.O },
+            new ActionDef { Id = "commands", Label = "Open command wheel", Default = KeyCode.C },
+            new ActionDef { Id = "upgrade_base", Label = "Upgrade base tier (base wheel open)", Default = KeyCode.U },
+            new ActionDef { Id = "build", Label = "Arm defense bar", Default = KeyCode.B },
+            new ActionDef { Id = "research", Label = "Open Research (legacy)", Default = KeyCode.R },
+            new ActionDef { Id = "overview", Label = "Open Overview (legacy)", Default = KeyCode.O },
             new ActionDef { Id = "pause", Label = "Pause (when allowed)", Default = KeyCode.P },
+            new ActionDef { Id = "faster", Label = "Game speed: faster", Default = KeyCode.Equals },
+            new ActionDef { Id = "slower", Label = "Game speed: slower", Default = KeyCode.Minus },
         };
 
         static readonly Dictionary<string, KeyCode> bound = new Dictionary<string, KeyCode>();
@@ -100,7 +104,9 @@ namespace SE.Runtime.Input
         static Keyboard K => Keyboard.current;
         static Mouse M => Mouse.current;
         public static Vector2 MousePosition => M != null ? M.position.ReadValue() : Vector2.zero;
-        public static float Scroll => M != null ? M.scroll.ReadValue().y / 120f : 0f;
+        // Input System 1.8+ reports one wheel notch as 1 (UniformAcrossAllPlatforms); older versions and raw
+        // Windows deltas report 120. Either way one notch is 1 here.
+        public static float Scroll { get { if (M == null) return 0f; float y = M.scroll.ReadValue().y; return Mathf.Abs(y) > 10f ? y / 120f : y; } }
         public static bool LeftDown => M != null && M.leftButton.wasPressedThisFrame;
         public static bool LeftHeld => M != null && M.leftButton.isPressed;
         public static bool LeftUp => M != null && M.leftButton.wasReleasedThisFrame;

@@ -5,6 +5,10 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.UIElements;
+#if SE_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
 namespace SE.Runtime.App
 {
@@ -66,6 +70,18 @@ namespace SE.Runtime.App
                 foreach (var id in session.Units.SlotOf.Keys) if (session.Units.TryGet(id, out var unit) && session.Units.Types.Name(unit.TypeIndex) == "rifle_squad" && units.TryGetPosition(session.Units, id, out var infantry))
                 { frames.Insert(4, ("03c_infantry_detail", new Vector3(infantry.x, 0, infantry.y), .95f)); break; }
             }
+            // every main-menu page, with the interface (the lobby page shows a sample room)
+            var menuView = MenuView;
+            if (phase == Phase.Menu && menuView != null)
+            {
+                foreach (var page in new[] { "root", "skirmish", "multiplayer", "code", "friends", "lobby", "training", "settings", "guide" })
+                {
+                    menuView.ReviewPage(page);
+                    yield return new WaitForSecondsRealtime(.3f);
+                    yield return CaptureReviewHud(Path.Combine(directory, "menu_" + page + "_hud.png"));
+                }
+                menuView.ReviewPage("root");
+            }
             foreach (var frame in frames)
             {
                 if (frame.name.Contains("armor_detail") || frame.name.Contains("infantry_detail"))
@@ -81,6 +97,8 @@ namespace SE.Runtime.App
                 yield return new WaitForSecondsRealtime(frame.name.Contains("aftermath") ? 12 : 3);
                 yield return new WaitForEndOfFrame();
                 CaptureReviewFrame(Path.Combine(directory, frame.name + ".png"));
+                if (frame.name == "02_base_operational" || frame.name == "03c_infantry_detail")
+                    yield return CapturePresentedFrame(Path.Combine(directory, frame.name + "_presented.png"));
                 if (frame.name == "02_base_operational" || frame.name == "03_city_ruins")
                 {
                     var site = session.Objectives.Values.Where(s => s.IsBase).OrderBy(s => (s.X - frame.focus.x) * (s.X - frame.focus.x) + (s.Z - frame.focus.z) * (s.Z - frame.focus.z)).FirstOrDefault();
@@ -119,78 +137,60 @@ namespace SE.Runtime.App
                 CaptureReviewFrame(Path.Combine(directory, "10_facility_" + b.Type + ".png"));
                 yield return CaptureReviewHud(Path.Combine(directory, "10_facility_" + b.Type + "_hud.png"));
             }
+            foreach (var trench in session.Trenches)
+                if (trench.HasPosition && trench.Built)
+                {
+                    rts.Focus = new Vector3(trench.X,0,trench.Z); rts.Distance = rts.TargetDistance = 1.8f; rts.Apply();
+                    yield return new WaitForSecondsRealtime(2);
+                    CaptureReviewFrame(Path.Combine(directory,"11_trench_infantry.png"));
+                    yield return CapturePresentedFrame(Path.Combine(directory,"11_trench_presented.png"));
+                    break;
+                }
             Debug.Log("Unity visual review captured to " + Path.GetFullPath(directory));
             reviewCapturing = false; rts.UserControl = true;
             if (opts.Get("review-quit", "1") != "0") Application.Quit();
             else rts.UserControl = true;
         }
 
-        IEnumerator ReviewIntroScenes()
+
+        IEnumerator CapturePresentedFrame(string path)
         {
-            string directory = opts.Get("review-intro"); Directory.CreateDirectory(directory);
-            if (opts.Has("review-environment")) intro?.Skip();
-            for (int beat = 0; beat < 8 && phase == Phase.Intro; beat++)
+            // A hidden window has no readable swap chain. StandardRequest invokes URP's
+            // full Render(camera stack) path, including volume updates; SingleCameraRequest
+            // renders one camera directly and missed the player's bloom/volume state.
+            var target = RenderTexture.GetTemporary(1920,1080,24,RenderTextureFormat.ARGB32,RenderTextureReadWrite.sRGB);
+            var cameraTarget = rts.Cam.targetTexture; float aspect = rts.Cam.aspect;
+            rts.Cam.targetTexture = target; rts.Cam.aspect = 1920f/1080;
+            yield return null; yield return new WaitForEndOfFrame();
+            yield return null; yield return new WaitForEndOfFrame();
+            RenderPipeline.SubmitRenderRequest(rts.Cam,new RenderPipeline.StandardRequest { destination=target });
+            var previous = RenderTexture.active;
+            var pixels = new Texture2D(1920,1080,TextureFormat.RGB24,false);
+            RenderTexture.active = target; pixels.ReadPixels(new Rect(0,0,1920,1080),0,0); pixels.Apply();
+            File.WriteAllBytes(path,pixels.EncodeToPNG()); Destroy(pixels);
+            RenderTexture.active = previous; rts.Cam.targetTexture = cameraTarget; rts.Cam.aspect = aspect;
+            RenderTexture.ReleaseTemporary(target);
+        }
+
+        IEnumerator CaptureReviewHover(string label, string path)
+        {
+#if SE_INPUT_SYSTEM && ENABLE_INPUT_SYSTEM
+            // Inject only into this review player's input device. Do not move the
+            // system cursor or disturb another running game while reviewing UI.
+            var root = uiDocument?.rootVisualElement;
+            var button = root?.Query<Button>().ToList().FirstOrDefault(b => b.Query<Label>().ToList().Any(l => l.text.StartsWith(label)));
+            if (button != null && Mouse.current != null && root.panel != null)
             {
-                if (beat == 1)
-                {
-                    foreach (float sample in new[] { .18f, .32f, .43f, .64f, .84f, .94f })
-                    {
-                        while (phase == Phase.Intro && intro != null && (intro.Beat < beat || intro.BeatProgress < sample)) yield return null;
-                        if (phase != Phase.Intro || intro == null || intro.Beat != beat) break;
-                        string name = "attack_" + Mathf.RoundToInt(sample * 100);
-                        yield return new WaitForEndOfFrame();
-                        CaptureReviewFrame(Path.Combine(directory, name + ".png"));
-                        yield return CaptureReviewHud(Path.Combine(directory, name + "_captions.png"));
-                        if (sample == .64f)
-                        {
-                            CaptureReviewFrame(Path.Combine(directory, "intro_2.png"));
-                            yield return CaptureReviewHud(Path.Combine(directory, "intro_2_captions.png"));
-                        }
-                    }
-                    while (phase == Phase.Intro && intro != null && intro.Beat == beat) yield return null;
-                    continue;
-                }
-                while (phase == Phase.Intro && intro != null && (intro.Beat < beat || intro.BeatProgress < .64f)) yield return null;
-                if (phase != Phase.Intro || intro == null) break;
-                yield return new WaitForEndOfFrame();
-                CaptureReviewFrame(Path.Combine(directory, "intro_" + (beat + 1) + ".png"));
-                yield return CaptureReviewHud(Path.Combine(directory, "intro_" + (beat + 1) + "_captions.png"));
-                while (phase == Phase.Intro && intro != null && intro.Beat == beat) yield return null;
+                Vector2 corner = RuntimePanelUtils.ScreenToPanel(root.panel, Vector2.zero);
+                Vector2 extent = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(Screen.width, Screen.height)) - corner;
+                Vector2 point = button.worldBound.center - corner;
+                var screen = new Vector2(point.x * Screen.width / extent.x, Screen.height - point.y * Screen.height / extent.y);
+                InputSystem.QueueDeltaStateEvent(Mouse.current.position, screen);
+                yield return new WaitForSecondsRealtime(.75f);
+                yield return CaptureReviewHud(path);
             }
-            yield return new WaitForSecondsRealtime(4);
-            CaptureReviewFrame(Path.Combine(directory, "menu_world.png"));
-            yield return CaptureReviewHud(Path.Combine(directory, "menu_interface.png"));
-            foreach (string page in new[] { "campaign", "multiplayer", "guide", "settings" })
-            {
-                hud.ReviewMenuPage(page);
-                yield return null; yield return new WaitForEndOfFrame();
-                yield return CaptureReviewHud(Path.Combine(directory, "menu_" + page + "_top.png"));
-                hud.ReviewMenuScrollEnd();
-                yield return null; yield return new WaitForEndOfFrame();
-                yield return CaptureReviewHud(Path.Combine(directory, "menu_" + page + "_bottom.png"));
-            }
-            hud.ReviewMenuPage("main");
-            var savedFocus = rts.Focus; float savedDistance = rts.Distance, savedYaw = rts.Yaw, savedPitch = rts.PitchOverride;
-            int forest = -1; float bestForest = float.MaxValue; var world = session.World; var grid = world.Grid;
-            for (int tile = 0; tile < grid.N; tile++)
-            {
-                if (world.Known[tile] == 0 || world.Biome[tile] != 4 || world.IsLake(tile) || world.IsRiver(tile)) continue;
-                float score = (new Vector2(grid.CenterX(tile), grid.CenterZ(tile)) - new Vector2(savedFocus.x, savedFocus.z)).sqrMagnitude;
-                if (score < bestForest) { bestForest = score; forest = tile; }
-            }
-            if (forest >= 0)
-            {
-                rts.Focus = new Vector3(grid.CenterX(forest), 0, grid.CenterZ(forest));
-                rts.Distance = rts.TargetDistance = 3.2f; rts.Yaw = -24; rts.PitchOverride = 39; rts.Apply();
-                yield return new WaitForSecondsRealtime(1);
-                CaptureReviewFrame(Path.Combine(directory, "environment_foliage.png"));
-            }
-            rts.Focus = new Vector3(0, 0, grid.Depth * .42f); rts.Distance = rts.TargetDistance = 36; rts.Yaw = 0; rts.PitchOverride = 43; rts.Apply();
-            yield return new WaitForSecondsRealtime(1);
-            CaptureReviewFrame(Path.Combine(directory, "environment_ocean.png"));
-            rts.Focus = savedFocus; rts.Distance = rts.TargetDistance = savedDistance; rts.Yaw = savedYaw; rts.PitchOverride = savedPitch; rts.Apply();
-            Debug.Log("Unity cinematic review captured to " + Path.GetFullPath(directory));
-            if (opts.Get("review-quit", "1") != "0") Application.Quit();
+#endif
+            yield break;
         }
 
         IEnumerator CaptureReviewHud(string path)
@@ -217,7 +217,7 @@ namespace SE.Runtime.App
             try
             {
                 rts.Cam.aspect = 1920f / 1080f;
-                RenderPipeline.SubmitRenderRequest(rts.Cam, new UniversalRenderPipeline.SingleCameraRequest { destination = target });
+                RenderPipeline.SubmitRenderRequest(rts.Cam, new RenderPipeline.StandardRequest { destination = target });
                 if (ui != null)
                 {
                     var composite = new Material(Resources.Load<Shader>("Shaders/ReviewComposite"));

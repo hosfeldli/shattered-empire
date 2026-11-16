@@ -207,7 +207,7 @@ namespace SE.Runtime.Rendering
         static readonly Color Roofing = new Color(0.62f, 0.58f, 0.55f);
 
         public static Mesh Box, Roof, Cylinder, Cone, Quad, Disc, Marker, Ring;
-        public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, DeciduousFar, ConiferFar, Shrub, Grass, Understory, TankObstacle, StrategicHatch, StrategicMissile;
+        public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, DeciduousFar, ConiferFar, DeciduousSpeck, ConiferSpeck, Shrub, Grass, Understory, TankObstacle, StrategicHatch, StrategicMissile, Sandbag;
         public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
         public static Mesh Tower, Skyscraper, Silo, Chimney, Crane, Wreck;
         public static Mesh ShipHull, Coil, Sandbags, Stump, Rotor4, AutoTankHull, AutoTankTurret, Dome, BrokenTower, RuinShell, CollapsedBlock;
@@ -430,16 +430,20 @@ namespace SE.Runtime.Rendering
             BrokenTower = broken.Build("broken_tower");
             MilitaryMeshes.Build();
             Car = MilitaryMeshes.CivilianCar;
-            DeciduousLo = VegetationMeshes.Tree(false, true);
-            ConiferLo = VegetationMeshes.Tree(true, true);
+            // Blender trees (tools/blender/build_trees.py) with their painted leaf atlas; code-built ones as fallback.
+            DeciduousLo = ModelLibrary.Get("TreeBroadleafLo") ?? VegetationMeshes.Tree(false, true);
+            ConiferLo = ModelLibrary.Get("TreeFirLo") ?? VegetationMeshes.Tree(true, true);
             DeciduousFar = VegetationMeshes.DistantCanopy(false);
             ConiferFar = VegetationMeshes.DistantCanopy(true);
-            Deciduous = VegetationMeshes.Tree(false);
-            Conifer = VegetationMeshes.Tree(true);
+            DeciduousSpeck = VegetationMeshes.Speck(false);
+            ConiferSpeck = VegetationMeshes.Speck(true);
+            Deciduous = ModelLibrary.Get("TreeBroadleaf") ?? VegetationMeshes.Tree(false);
+            Conifer = ModelLibrary.Get("TreeFir") ?? VegetationMeshes.Tree(true);
             Grass = VegetationMeshes.Grass();
             Understory = VegetationMeshes.Understory();
             Coil = WorldMeshes.WireBelt();
             TankObstacle = WorldMeshes.TankObstacle();
+            Sandbag = new MeshBuilder().Surface(SurfaceKind.Fabric).Ellipsoid(new Vector3(0, .5f, 0), new Vector3(.5f, .5f, .5f), Color.white, 5, 10).Build("Soft filled sandbag");
             StrategicHatch = WorldMeshes.StrategicHatch();
             StrategicMissile = WorldMeshes.StrategicMissile();
             Skyscraper = WorldMeshes.Tower(false);

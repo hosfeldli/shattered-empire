@@ -118,7 +118,7 @@ export function roadBuild(game, civ, points, preview = false) {
   if (preview) return { reply: { t: 'ack', road: { positions, cost: { materials: cost }, seconds: Math.max(3, Math.min(14, edges.size * 1.1)) } } };
   if (!edges.size) return { error: 'That route already has an operational paved road or construction in progress.' };
   if (civ.res.materials < cost) return { error: `Road construction requires ${cost} Materials.` };
-  if (game.roadProjects.length >= 24) return { error: 'Finish an existing road project first.' };
+  if (game.roadProjects.filter((p) => !p.auto).length >= 24) return { error: 'Finish an existing road project first.' };
   civ.res.materials -= cost;
   game.roadProjects.push({ owner: civ.id, edges: [...edges.values()], left: Math.max(3, Math.min(14, edges.size * 1.1)) });
   return {};
@@ -130,7 +130,11 @@ export function fieldEconomyStep(game, dt) {
     const p = game.roadProjects[i]; p.left -= dt;
     if (p.left > 0) continue;
     for (const e of p.edges) game.roads.set(e.a, e.b, 2);
+    // a finished road crosses any trench in its way: the works on its tiles are filled in, leaving a gap
+    let filled = 0;
+    for (const e of p.edges) for (const t of [e.a, e.b]) if (game.fieldworks?.delete(t)) filled++;
+    if (filled) game.fwVer++;
     game.nav.invalidate(); game.roadProjects.splice(i, 1);
-    game.notify(p.owner, 'Road connection complete.', { kind: 'build', tile: p.edges[0].a });
+    game.notify(p.owner, p.label || 'Road connection complete.', { kind: 'build', tile: p.edges[0].a });
   }
 }

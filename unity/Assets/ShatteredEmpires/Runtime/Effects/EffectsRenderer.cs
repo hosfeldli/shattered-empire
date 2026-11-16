@@ -38,6 +38,9 @@ namespace SE.Runtime.Effects
             public float3 Color0, Color1;
             public float Alpha;
             public bool Additive, StretchWithVelocity;
+            // debris: the ground height (Unity y) it lands on, bouncing once or twice and coming to rest
+            public float Floor;
+            public bool Bounce;
         }
 
         static readonly int ParticlesId = Shader.PropertyToID("_Particles");
@@ -62,6 +65,8 @@ namespace SE.Runtime.Effects
         public float Shake;
         /// <summary>A brief full-scene flash (strategic blasts, lightning); the atmosphere reads it.</summary>
         public float Flash;
+        /// <summary>Raised for every blast (map point, relative strength): ambient life reacts to it.</summary>
+        public event Action<float3, float> Blast;
 
         public EffectsRenderer()
         {
@@ -70,6 +75,7 @@ namespace SE.Runtime.Effects
             alphaData = new NativeArray<ParticleGpu>(Budget, Allocator.Persistent);
             craters = new InstanceBatch(MeshKit.Disc, RenderResources.Instanced, MaxCraters) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off };
             wrecks = new InstanceBatch(MeshKit.Wreck, RenderResources.Instanced, MaxWrecks) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
+            rubble = new InstanceBatch(MeshKit.Box, RenderResources.Instanced, MaxRubble) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
         }
 
         float R() => (float)rng.NextDouble();
@@ -84,15 +90,25 @@ namespace SE.Runtime.Effects
                 Pos = MapSpace.W(mapPos), Vel = MapSpace.W(mapVel), Stretch = MapSpace.W(mapStretch), Size = size, Grow = grow, Life = 0, Max = life,
                 Rot = R() * 6.28f, Spin = (R() - 0.5f) * 1.2f, Seed = R() * 100f, Heat = heat, Drag = drag, Rise = rise, Kind = kind,
                 Color0 = c0, Color1 = c1, Alpha = alpha, Additive = additive, StretchWithVelocity = stretchWithVelocity,
+                Floor = -1e9f, Bounce = false,
             };
+        }
+
+        /// <summary>A chunk of debris on a ballistic arc (full gravity) that lands on the ground at floorY, bounces and rests.</summary>
+        void EmitDebris(float3 mapPos, float3 mapVel, float size, float life, float3 color, float floorY, float gravity = -3.2f)
+        {
+            int before = count;
+            Emit(mapPos, mapVel, size, 0, life, color, color * .8f, 1f, false, 0, .12f, gravity);
+            if (count > before) { pool[count - 1].Floor = floorY + size * .4f; pool[count - 1].Bounce = true; }
         }
 
         // ------------------------------------------------------------------ combat
         public void Explosion(float3 p, float scale)
         {
+            Blast?.Invoke(p, scale);
             FlashLight(p, scale);
             int n = Mathf.Max(2, (int)(7 * Intensity));
-            Emit(p + new float3(0, 0.05f * scale, 0), float3.zero, 0.4f * scale, 1.4f * scale, 0.16f, new float3(1f, 0.88f, 0.6f), new float3(1f, 0.5f, 0.2f), 1f, true, 2.5f);
+            Emit(p + new float3(0, 0.05f * scale, 0), float3.zero, .18f * scale, .72f * scale, .085f, new float3(1f, .77f, .38f), new float3(.86f, .26f, .05f), .92f, true, 1.2f);
             for (int k = 0; k < n; k++)
             {
                 var v = new float3(R() - 0.5f, R() * 0.8f + 0.2f, R() - 0.5f) * 0.9f * scale;
@@ -114,7 +130,32 @@ namespace SE.Runtime.Effects
                 var v = RandDir() * (1.2f + R()) * scale; v.y = math.abs(v.y) + 0.4f;
                 Emit(p + new float3(0, 0.05f, 0), v, 0.008f, 0, 0.4f + R() * 0.3f, new float3(1f, 0.8f, 0.4f), new float3(1f, 0.35f, 0.1f), 1f, true, 2f, 0.8f, -1.8f, Streak, default, true);
             }
+            // Thrown earth: dark clods that arc up and fall back, so blasts read as tearing up ground.
+            float floor = GroundAt != null ? GroundAt(p.x, p.z) : p.y - .01f;
+            for (int k = 0; k < n + 2; k++)
+            {
+                var v = new float3(R() - 0.5f, R() * 1.1f + 0.9f, R() - 0.5f) * 1.05f * scale;
+                float g = .08f + R() * .07f;
+                EmitDebris(p + new float3(0, 0.03f, 0), v, (0.012f + R() * .014f) * scale, 1.3f + R() * .9f, new float3(g, g * .85f, g * .7f), floor, -3.4f);
+            }
+            if (scale > .6f)
+            {
+                // A lingering smoke column that drifts with the wind, and a low dust skirt rolling outward.
+                for (int k = 0; k < 4; k++)
+                {
+                    float g = .07f + R() * .06f;
+                    Emit(p + new float3((R() - .5f) * .08f * scale, .1f * scale + k * .07f * scale, (R() - .5f) * .08f * scale), new float3(0, .12f + R() * .08f, 0) * scale,
+                        .22f * scale, .30f * scale, 7f + R() * 5f, new float3(g, g, g * 1.05f), new float3(.36f, .35f, .34f), .55f, false, 0, .35f, .05f);
+                }
+                for (int k = 0; k < 8; k++)
+                {
+                    float a = k / 8f * 6.283f + R() * .4f;
+                    Emit(p + new float3(0, .02f, 0), new float3(math.cos(a), .03f, math.sin(a)) * .55f * scale, .10f * scale, .32f * scale, 1.8f + R(),
+                        new float3(.42f, .38f, .32f), new float3(.52f, .49f, .45f), .45f, false, 0, 1.6f, .01f);
+                }
+            }
             if (scale > .48f) GroundShock(p, scale * 1.65f, .65f + scale * .24f);
+            if (scale > .8f) Distortion(p, 1.6f * scale, .55f, .55f);
             Shake = Mathf.Max(Shake, 0.12f * scale);
         }
 
@@ -127,9 +168,11 @@ namespace SE.Runtime.Effects
                 Emit(p + RandDir() * 0.04f, RandDir() * 0.05f, 0.1f, 0.22f, 4f + R() * 2f, new float3(0.14f, 0.14f, 0.15f), new float3(0.3f, 0.3f, 0.32f), 0.7f, false, 0, 0.8f, 0.01f);
         }
 
-        public void Muzzle(float3 p, bool heavy)
+        public void Muzzle(float3 p, bool heavy, float3 direction = default)
         {
-            Emit(p, float3.zero, heavy ? 0.13f : 0.05f, heavy ? 0.6f : 0.3f, heavy ? 0.09f : 0.05f, new float3(1f, 0.92f, 0.65f), new float3(1f, 0.6f, 0.2f), 1f, true, 3f);
+            var forward = math.normalizesafe(direction,new float3(0,0,1));
+            Emit(p + forward * (heavy ? .025f : .008f),float3.zero,heavy ? .022f : .008f,0,heavy ? .07f : .045f,
+                new float3(1,.79f,.37f),new float3(.85f,.24f,.035f),.95f,true,1.0f,0,0,Streak,forward * (heavy ? .15f : .055f));
             if (heavy) Emit(p, new float3(0, 0.1f, 0), 0.09f, 0.4f, 1.6f, new float3(0.5f, 0.5f, 0.48f), new float3(0.62f, 0.62f, 0.6f), 0.35f, false, 0, 1f, 0.05f);
         }
 
@@ -145,8 +188,12 @@ namespace SE.Runtime.Effects
         }
 
         /// <summary>Continuous fire on a burning building: flames, embers and a smoke column.</summary>
-        public void Fire(float3 p, float size)
+        public void Fire(float3 p, float size) => Fire(p, size, size < .2f);
+
+        void Fire(float3 p, float size, bool vehicle)
         {
+            // a burning vehicle (the game's wreck fires are the small ones) now and then cooks off rounds or fuel
+            if (vehicle && R() < .006f) SecondaryExplosion(p);
             for (int k = 0; k < 3; k++)
             {
                 var o = new float3(R() - 0.5f, 0, R() - 0.5f) * size;
@@ -169,6 +216,7 @@ namespace SE.Runtime.Effects
         /// </summary>
         public void Strategic(float3 p, float scale)
         {
+            Blast?.Invoke(p, scale * 6f);
             Flash = Mathf.Max(Flash, scale);
             Shake = Mathf.Max(Shake, 1.2f * scale);
             Emit(p + new float3(0, 0.5f * scale, 0), float3.zero, 3f * scale, 9f * scale, 0.5f, new float3(1f, 0.97f, 0.9f), new float3(1f, 0.7f, 0.4f), 1f, true, 4f);
@@ -177,33 +225,9 @@ namespace SE.Runtime.Effects
                 var v = new float3(R() - 0.5f, 0.6f + R() * 0.5f, R() - 0.5f) * 1.6f * scale;
                 Emit(p + new float3(0, 0.3f, 0), v, 0.9f * scale, 1.4f * scale, 1.6f + R(), new float3(1f, 0.7f, 0.3f), new float3(0.6f, 0.15f, 0.05f), 0.95f, true, 2.5f, 1.5f, 0.6f);
             }
-            for (int k = 0; k < 28; k++)
-            {
-                float h = R();
-                var v = new float3((R() - 0.5f) * 0.12f, .72f + h * .65f, (R() - 0.5f) * 0.12f) * scale;
-                float g = 0.12f + R() * 0.1f;
-                Emit(p + new float3((R() - 0.5f) * .32f, .4f + h * 1.65f, (R() - 0.5f) * .32f) * scale, v,
-                    .36f * scale, .12f * scale, 12f + R() * 4f, new float3(.40f + g, .36f + g, .30f + g),
-                    new float3(.44f, .44f, .43f), .65f, false, 0, .26f, .015f);
-            }
-            for (int k = 0; k < 28; k++)
-            {
-                float angle = k * 2.39996f;
-                var o = new float3(math.cos(angle), .12f + R() * .2f, math.sin(angle));
-                float radius = .8f + R() * .9f;
-                Emit(p + new float3(0, 2.6f * scale, 0) + o * radius * scale,
-                    new float3(o.x * .25f, .75f, o.z * .25f) * scale, .53f * scale, .15f * scale,
-                    14f + R() * 4f, new float3(.57f, .52f, .45f), new float3(.52f, .52f, .51f), .64f, false, 0, .20f, .025f);
-            }
+            // The stem, cap and roll are simulated over half a minute (EffectsRenderer.Mushroom).
+            MushroomCloud(p, scale);
             GroundShock(p, 22 * scale, 2.4f);
-            // A filled cap above the stem: the outer billows alone make a hollow ring.
-            for (int k = 0; k < 20; k++)
-            {
-                float a = k * 2.39996f, r = math.sqrt(R()) * 1.1f;
-                var offset = new float3(math.cos(a) * r, 3.1f + R() * .45f, math.sin(a) * r) * scale;
-                Emit(p + offset, new float3(0, .70f, 0) * scale, .72f * scale, .15f * scale, 13f + R() * 3f,
-                    new float3(.52f, .48f, .42f), new float3(.48f, .49f, .49f), .60f, false, 0, .18f, .02f);
-            }
             for (int k = 0; k < 48; k++)
             {
                 float a = k * 6.283f / 48;
@@ -257,18 +281,25 @@ namespace SE.Runtime.Effects
             if (wrecks.Count < MaxWrecks) wrecks.Add(d);
             else { wrecks.Data[wreckHead] = d; wreckHead = (wreckHead + 1) % MaxWrecks; wrecks.MarkDirty(); }
             for (int k = 0; k < 3; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 6f, new float3(0.1f, 0.1f, 0.1f), new float3(0.3f, 0.3f, 0.3f), 0.5f, false, 0, 0.4f, 0.06f);
+            Scorch(p, scale * 1.3f);
+            AddEmitter(p + new float3(0, .04f, 0), .15f, 30f + R() * 20f, EmitterWreck);
         }
 
         public void ClearPersistent()
         {
-            craters.Clear(); wrecks.Clear(); missileBodies?.Clear(); missileBodies?.MarkDirty();
+            craters.Clear(); wrecks.Clear(); ClearDecals(); missileBodies?.Clear(); missileBodies?.MarkDirty();
+            ClearDestruction();
             craterHead = wreckHead = 0; count = flightCount = waveCount = waveVertexCount = 0;
+            mushroomCount = distortionCount = 0;
             Flash = Shake = 0;
+            addCount = alphaCount = 0;
+            for (int i = 0; i < flashLights.Length; i++) { flashLife[i] = 0; if (flashLights[i] != null) flashLights[i].enabled = false; }
         }
 
         public void Update(float dt, float camX, float period, bool wrap, float simulationRate = 1f)
         {
             UpdateFlights(dt * simulationRate);
+            UpdateDestruction(dt * simulationRate);
             UpdateGroundWaves(dt * simulationRate);
             for (int i = 0; i < flashLights.Length; i++) if (flashLights[i] != null && flashLife[i] > 0)
             { flashLife[i] -= dt; flashLights[i].intensity *= math.exp(-dt * 22); if (flashLife[i] <= 0) flashLights[i].enabled = false; }
@@ -282,11 +313,25 @@ namespace SE.Runtime.Effects
                 if (p.Life >= p.Max) { pool[i] = pool[--count]; i--; continue; }
                 float t = p.Life / p.Max;
                 p.Vel *= Mathf.Max(0, 1 - p.Drag * dt);
-                if (p.Kind == Puff && !p.Additive && p.Rise >= 0) p.Vel += MapSpace.W(Wind) * (dt * .045f);
-                p.Vel.y += p.Rise * dt;
+                if (p.Kind == Puff && !p.Additive && p.Rise >= 0)
+                {
+                    // smoke behaves like a plume: wind shear carries the higher, older smoke faster, and slow
+                    // eddies (a cheap curl of the particle seed and age) make neighbouring puffs roll apart
+                    p.Vel += MapSpace.W(Wind) * (dt * (.035f + math.saturate(p.Life * .12f) * .06f));
+                    float e = p.Seed + p.Life * .9f;
+                    p.Vel += new float3(math.sin(e * 1.7f), math.sin(e * 1.3f + 1) * .4f, math.cos(e * 1.1f)) * (dt * p.Size * .35f);
+                }
+                p.Vel.y += p.Rise * dt * (p.Kind == Puff && !p.Additive && p.Rise > 0 ? 1 - t : 1);   // buoyancy fades as the smoke cools; gravity does not
                 p.Pos += p.Vel * dt;
-                p.Size = Mathf.Max(0.002f, p.Size + p.Grow * dt);
-                if (p.Kind == Puff) p.Rot += p.Spin * dt;
+                if (p.Bounce && p.Pos.y < p.Floor)
+                {
+                    // debris strikes the ground: a dull bounce, skids, then lies still until it fades
+                    p.Pos.y = p.Floor;
+                    if (p.Vel.y < -.12f) { p.Vel.y *= -.22f; p.Vel.x *= .4f; p.Vel.z *= .4f; p.Spin *= .4f; }
+                    else { p.Vel = float3.zero; p.Rise = 0; p.Spin = 0; p.Bounce = false; }
+                }
+                p.Size = Mathf.Max(0.002f, p.Size + p.Grow * dt * (p.Kind == Puff ? 1.7f - 1.4f * t : 1));   // billows spread fast, then slowly
+                if (p.Kind == Puff) p.Rot += p.Spin * dt * (1 - t * .8f);
                 float fade = p.Kind == Ring ? 1f - t : t < .1f ? t / .1f : 1f - Mathf.SmoothStep(0, 1, Mathf.InverseLerp(.4f, 1f, t));
                 float x = wrap ? HexMath.NearX(p.Pos.x, camX, period, true) : p.Pos.x;
                 float3 stretch = p.StretchWithVelocity ? p.Vel * 0.04f : p.Stretch;
@@ -299,6 +344,8 @@ namespace SE.Runtime.Effects
                 };
                 if (p.Additive) addData[addCount++] = g; else alphaData[alphaCount++] = g;
             }
+            UpdateMushrooms(dt * simulationRate, camX, period, wrap);
+            UpdateDistortions(dt);
         }
 
         void Upload(GraphicsBuffer[] ring, NativeArray<ParticleGpu> data, int n, MaterialPropertyBlock block)
@@ -313,8 +360,11 @@ namespace SE.Runtime.Effects
         public void Draw(WrapImages images)
         {
             craters.DrawImages(images);
+            DrawDecals(images);
             wrecks.DrawImages(images);
+            rubble.DrawImages(images);
             DrawGroundWaves(images);
+            DrawDistortions(images);
             missileBodies?.DrawImages(images);
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
             frameSlot = (frameSlot + 1) % 3;
@@ -336,7 +386,7 @@ namespace SE.Runtime.Effects
             foreach (var b in alphaBuffers) b?.Release();
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
-            craters.Dispose(); wrecks.Dispose();
+            craters.Dispose(); wrecks.Dispose(); rubble.Dispose(); DisposeDecals(); DisposeDistortions();
             missileBodies?.Dispose();
             if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
             if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);
