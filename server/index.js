@@ -45,6 +45,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/health' || url.pathname === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, version: VERSION, ...manager.stats() })); }
   if (url.pathname === '/api/metrics') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(manager.metrics())); }
   if (url.pathname === '/api/maps') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=300' }); return res.end(JSON.stringify(mapList())); }
+  if (url.pathname === '/api/lobbies') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(manager.lobbies())); }
   if (url.pathname === '/api/matches') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(manager.list())); }
   // the public site: a downloader for the desktop app (same host, same service)
   if ((url.pathname === '/' && !SERVE_CLIENT) || url.pathname === '/index.html' && !SERVE_CLIENT || url.pathname === '/download' || url.pathname === '/download/') { downloads.page(res, req.headers['user-agent'] || '').catch((e) => { log.error('download page', e); res.writeHead(500); res.end(); }); return; }

@@ -21,6 +21,12 @@ namespace SE.Steam
     {
         public const uint DefaultAppId = 480;
         const string GameKey = "shattered-empires";
+        /// <summary>
+        /// Lobby data 'se_version': on Spacewar (480) every Steamworks sample shares one lobby namespace, so our
+        /// lobbies carry the game key and this build's version, and lists, invites and friend joins only accept
+        /// lobbies with both (AddRequestLobbyListStringFilter for the public search).
+        /// </summary>
+        static string GameVersion => string.IsNullOrEmpty(Application.version) ? "dev" : Application.version;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         static void RegisterPlatform() => SocialPlatform.Register(() => new SteamInvites());
@@ -47,6 +53,8 @@ namespace SE.Steam
         Callback<AvatarImageLoaded_t> avatarLoaded;
         CallResult<LobbyCreated_t> created;
         CallResult<LobbyEnter_t> entered;
+        CallResult<LobbyMatchList_t> listed;
+        bool hostPublic;
 
         Action<string> joinRequested;
         public event Action<string> JoinRequested
@@ -94,6 +102,7 @@ namespace SE.Steam
                 avatarLoaded = Callback<AvatarImageLoaded_t>.Create(OnAvatarLoaded);
                 created = CallResult<LobbyCreated_t>.Create(OnLobbyCreated);
                 entered = CallResult<LobbyEnter_t>.Create(OnLobbyEntered);
+                listed = CallResult<LobbyMatchList_t>.Create(OnLobbyList);
                 SteamFriends.ClearRichPresence();
                 // launched by Steam from an invite or "Join Game": +connect_lobby <id> [+se_match <code>]
                 if (!ParseConnect(string.Join(" ", Environment.GetCommandLineArgs()), "launch"))
@@ -158,7 +167,8 @@ namespace SE.Steam
             LeaveSteamLobby();
             creating = true;
             int max = Mathf.Clamp(request.MaxMembers, 2, 250);
-            created.Set(SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, max));
+            hostPublic = request.Public;
+            created.Set(SteamMatchmaking.CreateLobby(request.Public ? ELobbyType.k_ELobbyTypePublic : ELobbyType.k_ELobbyTypeFriendsOnly, max));
             status = "Opening a Steam lobby…";
             Changed();
         }
@@ -187,7 +197,17 @@ namespace SE.Steam
             lobbyMatch = r.MatchCode;
             string name = string.IsNullOrEmpty(r.Name) ? SteamFriends.GetPersonaName() + "'s match" : r.Name;
             SteamMatchmaking.SetLobbyData(lobby, "se_game", GameKey);
+            SteamMatchmaking.SetLobbyData(lobby, "se_version", GameVersion);
+            SteamMatchmaking.SetLobbyData(lobby, "se_format", r.Format ?? "");
+            SteamMatchmaking.SetLobbyData(lobby, "se_mapname", r.MapName ?? "");
             SteamMatchmaking.SetLobbyData(lobby, "se_match", r.MatchCode);
+            // the room's seat count can change (format, map): followers beyond it would find no seat
+            SteamMatchmaking.SetLobbyMemberLimit(lobby, Mathf.Clamp(r.MaxMembers, 2, 250));
+            if (r.Public != hostPublic)
+            {
+                hostPublic = r.Public;
+                SteamMatchmaking.SetLobbyType(lobby, r.Public ? ELobbyType.k_ELobbyTypePublic : ELobbyType.k_ELobbyTypeFriendsOnly);
+            }
             SteamMatchmaking.SetLobbyData(lobby, "se_server", r.Server ?? "");
             SteamMatchmaking.SetLobbyData(lobby, "se_host", SteamFriends.GetPersonaName());
             SteamMatchmaking.SetLobbyData(lobby, "se_ruleset", r.Ruleset ?? "");
@@ -338,6 +358,17 @@ namespace SE.Steam
                 Changed();
                 return;
             }
+            string hostVersion = SteamMatchmaking.GetLobbyData(lobby, "se_version");
+            if (hostVersion != GameVersion)
+            {
+                // a different build: the server would refuse it or the rules would differ; say which to update
+                status = string.IsNullOrEmpty(hostVersion)
+                    ? "That lobby is from an older Shattered Empires build; both players need the same version (you have v" + GameVersion + ")"
+                    : "Version mismatch: the host runs v" + hostVersion + ", you have v" + GameVersion + "; update so both match";
+                LeaveSteamLobby();
+                Changed();
+                return;
+            }
             string code = LobbyMessages.NormalizeCode(SteamMatchmaking.GetLobbyData(lobby, "se_match"));
             if (code == "") code = fallback;
             if (code == "")
@@ -448,6 +479,9 @@ namespace SE.Steam
                 MapSize = SteamMatchmaking.GetLobbyData(lobby, "se_map"),
                 TeamSize = Mathf.Max(1, team),
                 Status = string.IsNullOrEmpty(st) ? "lobby" : st,
+                Version = SteamMatchmaking.GetLobbyData(lobby, "se_version"),
+                Format = SteamMatchmaking.GetLobbyData(lobby, "se_format"),
+                MapName = SteamMatchmaking.GetLobbyData(lobby, "se_mapname"),
                 Members = members,
             };
         }
@@ -489,10 +523,7 @@ namespace SE.Steam
             foreach (var kv in friendLobbies)
             {
                 var id = new CSteamID(kv.Key);
-                if (id == lobby) continue;                                              // the lobby we are in
-                if (SteamMatchmaking.GetLobbyData(id, "se_game") != GameKey) continue;  // not ours, or no data yet
-                string st = SteamMatchmaking.GetLobbyData(id, "se_status");
-                if (!string.IsNullOrEmpty(st) && st != "lobby") continue;               // already playing: no seats
+                if (!Listable(id)) continue;
                 string name = SteamMatchmaking.GetLobbyData(id, "name");
                 friendSessions.Add(new FriendLobby
                 {
@@ -501,9 +532,79 @@ namespace SE.Steam
                     LobbyName = string.IsNullOrEmpty(name) ? SteamFriends.GetFriendPersonaName(kv.Value) + "'s match" : name,
                     Members = Mathf.Max(1, SteamMatchmaking.GetNumLobbyMembers(id)),
                     MaxMembers = SteamMatchmaking.GetLobbyMemberLimit(id),
+                    Detail = Detail(id),
+                });
+            }
+            // public lobbies of this game and version (the search is already filtered on both)
+            foreach (var key in publicLobbies)
+            {
+                if (friendLobbies.ContainsKey(key)) continue;
+                var id = new CSteamID(key);
+                if (!Listable(id)) continue;
+                string host = SteamMatchmaking.GetLobbyData(id, "se_host");
+                string name = SteamMatchmaking.GetLobbyData(id, "name");
+                friendSessions.Add(new FriendLobby
+                {
+                    LobbyId = key,
+                    FriendName = string.IsNullOrEmpty(host) ? "Public lobby" : host,
+                    LobbyName = string.IsNullOrEmpty(name) ? "Public match" : name,
+                    Members = Mathf.Max(1, SteamMatchmaking.GetNumLobbyMembers(id)),
+                    MaxMembers = SteamMatchmaking.GetLobbyMemberLimit(id),
+                    Public = true,
+                    Detail = Detail(id),
                 });
             }
             return friendSessions;
+        }
+
+        /// <summary>A lobby to offer: ours (game key and version), open, and not the one we are in.</summary>
+        bool Listable(CSteamID id)
+        {
+            if (id == lobby) return false;
+            if (SteamMatchmaking.GetLobbyData(id, "se_game") != GameKey) return false;       // not ours, or no data yet
+            if (SteamMatchmaking.GetLobbyData(id, "se_version") != GameVersion) return false; // another build
+            string st = SteamMatchmaking.GetLobbyData(id, "se_status");
+            return string.IsNullOrEmpty(st) || st == "lobby";                                // already playing: no seats
+        }
+
+        static string Detail(CSteamID id)
+        {
+            string format = SteamMatchmaking.GetLobbyData(id, "se_format"), map = SteamMatchmaking.GetLobbyData(id, "se_mapname");
+            if (format.StartsWith("ffa", StringComparison.Ordinal)) format = "FFA " + format.Substring(3);
+            return string.IsNullOrEmpty(map) ? format : string.IsNullOrEmpty(format) ? map : format + " · " + map;
+        }
+
+        // ------------------------------------------------------------------ public lobby search (Spacewar subset)
+        readonly List<ulong> publicLobbies = new List<ulong>();
+        bool searching;
+
+        /// <summary>
+        /// Ask Steam for public lobbies carrying this game's key and version (a Spacewar lobby search returns
+        /// every Steamworks sample's lobbies otherwise). Results arrive by LobbyMatchList_t.
+        /// </summary>
+        void SearchPublicLobbies()
+        {
+            if (!ready || searching) return;
+            searching = true;
+            SteamMatchmaking.AddRequestLobbyListStringFilter("se_game", GameKey, ELobbyComparison.k_ELobbyComparisonEqual);
+            SteamMatchmaking.AddRequestLobbyListStringFilter("se_version", GameVersion, ELobbyComparison.k_ELobbyComparisonEqual);
+            SteamMatchmaking.AddRequestLobbyListStringFilter("se_status", "lobby", ELobbyComparison.k_ELobbyComparisonEqual);
+            SteamMatchmaking.AddRequestLobbyListDistanceFilter(ELobbyDistanceFilter.k_ELobbyDistanceFilterWorldwide);
+            SteamMatchmaking.AddRequestLobbyListResultCountFilter(50);
+            listed.Set(SteamMatchmaking.RequestLobbyList());
+        }
+
+        void OnLobbyList(LobbyMatchList_t r, bool failure)
+        {
+            searching = false;
+            publicLobbies.Clear();
+            if (failure) { Changed(); return; }
+            for (int i = 0; i < (int)r.m_nLobbiesMatching; i++)
+            {
+                var id = SteamMatchmaking.GetLobbyByIndex(i);
+                if (id.IsValid() && id.IsLobby()) publicLobbies.Add(id.m_SteamID);
+            }
+            Changed();
         }
 
         /// <summary>Scan friends for ones in a lobby of this game and ask Steam for those lobbies' data.</summary>
@@ -523,6 +624,7 @@ namespace SE.Steam
                 friendLobbies[id.m_SteamID] = friend;
                 SteamMatchmaking.RequestLobbyData(id);    // the data (se_game, name, members) arrives by LobbyDataUpdate_t
             }
+            SearchPublicLobbies();
         }
 
         public void OpenFriendsOverlay()

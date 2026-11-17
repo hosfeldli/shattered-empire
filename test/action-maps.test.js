@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
-import { MAP_CATALOG, MAPS_BY_ID, mapList } from '../server/sim/mapCatalog.js';
+import { MAP_CATALOG, MAPS_BY_ID, mapList, mapMode } from '../server/sim/mapCatalog.js';
+import { MAP_PREVIEWS } from '../server/sim/mapPreviews.js';
 
 // Each authored map has its own size, and the map size is fixed per process (constants.js), so every
 // map is built in its own worker thread, as a live match would be.
@@ -12,6 +13,7 @@ globalThis.SE_MAP_SIZE = workerData.size; globalThis.SE_WRAP = false;
 const { ActionGame } = await import(workerData.sim + 'actionGame.js');
 const { mirrorTile } = await import(workerData.sim + 'authoredMaps.js');
 const { HEAVY_GROUND } = await import(workerData.sim + 'actionNavigation.js');
+const { mapPreview } = await import(workerData.sim + 'actionMap.js');
 const slots = Array.from({ length: workerData.players }, () => ({ human: false, difficulty: 'normal' }));
 const make = (seed) => new ActionGame({ id: 'map-' + seed, seed, map: workerData.id, slots });
 const t0 = performance.now();
@@ -31,12 +33,17 @@ const starts = g.sites.filter((s) => s.start !== undefined);
 const unreachable = g.sites.filter((s) => !g.nav.strategic(starts[0].tile, s.tile, HEAVY_GROUND, false, true, 1e9)).map((s) => s.name);
 let fords = 0, bridges = 0, rivers = 0;
 for (let i = 0; i < N; i++) if (w.river[i]) { rivers++; if (w.flow[i] < 94) fords++; if (w.road[i]) bridges++; }
+// fairness: every seat's heavy-vehicle route lengths to the other seats and to the main sites
+const route = (a, b) => g.nav.strategic(a, b, HEAVY_GROUND, false, true, 1e9)?.length ?? Infinity;
+const seats = [...starts].sort((a, b) => a.start - b.start);
+const rivals = seats.map((s) => seats.filter((o) => o !== s).map((o) => route(s.tile, o.tile)).sort((a, b) => a - b));
+const preview = mapPreview(g);
 let error = null;
 try { for (let i = 0; i < 600; i++) g.tick(); } catch (e) { error = String(e.stack || e); }
 parentPort.postMessage({ genMs, asym, same, unreachable, rivers, fords, bridges, error, mapId: g.mapId, teamSize: g.teamSize,
   starts: starts.map((s) => ({ start: s.start, owner: s.owner, hq: !!g.buildings.get(s.hq) })), main: g.sites.filter((s) => s.slots).length,
   outposts: g.sites.filter((s) => !s.slots).length, rings: g.sites.filter((s) => s.slots).every((s) => s.parcels.length === 9),
-  wstarts: w.starts.length, teams: g.civs.map((c) => c.team), units: g.units.size });
+  wstarts: w.starts.length, teams: g.civs.map((c) => c.team), units: g.units.size, rivals, preview });
 `;
 
 function build(def) {
@@ -53,9 +60,25 @@ test('the lobby lists the authored maps with their team sizes, after the procedu
   assert.ok(MAP_CATALOG.length >= 3);
   for (const size of [1, 2, 3]) assert.ok(MAP_CATALOG.some((m) => m.teamSize === size), `a ${size}v${size} map`);
   for (const m of MAP_CATALOG) {
-    assert.equal(m.players, m.teamSize * 2);
+    const ffa = (m.symmetry ?? 2) !== 2;
+    if (ffa) assert.ok(m.teamSize === 1 && m.players === m.symmetry, `${m.id}: a free-for-all map seats one player per turned sector`);
+    else assert.equal(m.players, m.teamSize * 2);
     assert.equal(m.size % 2, 0, 'an even number of rows keeps the half-turn exact');
-    assert.ok(list.some((x) => x.id === m.id && x.name && x.description && x.mode === `${m.teamSize}v${m.teamSize}`));
+    const entry = list.find((x) => x.id === m.id);
+    assert.ok(entry && entry.name && entry.description && entry.mode === mapMode(m) && entry.ffa === ffa);
+    assert.ok(entry.mode === (ffa ? `ffa${m.players}` : `${m.teamSize}v${m.teamSize}`));
+    // every map has a lobby preview: a 64 x 64 class grid with the seats, bases and outposts
+    const p = entry.preview;
+    assert.ok(p && p.w === 64 && p.h === 64 && Buffer.from(p.cells, 'base64').length === 64 * 64, `${m.id} has a preview grid`);
+    assert.equal(p.starts.length, m.players);
+    assert.ok(Buffer.from(p.cells, 'base64').every((c) => c < p.classes.length));
+  }
+  // not too big (plan 2026-11-16), and at least two maps for every format
+  const range = { '1v1': [72, 88], '2v2': [96, 110], '3v3': [120, 136], ffa3: [88, 112], ffa4: [96, 120] };
+  for (const [mode, [lo, hi]] of Object.entries(range)) {
+    const maps = MAP_CATALOG.filter((m) => mapMode(m) === mode);
+    assert.ok(maps.length >= 2, `at least two ${mode} maps`);
+    for (const m of maps) assert.ok(m.size >= lo && m.size <= hi, `${m.id} is ${m.size}, ${mode} maps are ${lo}-${hi}`);
   }
 });
 
@@ -67,8 +90,24 @@ for (const def of MAP_CATALOG) {
     assert.equal(r.teamSize, def.teamSize);
     assert.deepEqual(r.teams, Array.from({ length: def.players }, (_, i) => Math.floor(i / def.teamSize)));
     assert.ok(r.same, 'the same map is the same ground, sites and roads whatever the match seed');
-    // only the single central objective (not mirrored onto itself) may differ from its half-turn
-    assert.ok(r.asym <= 40, `${r.asym} tiles break the symmetry`);
+    if ((def.symmetry ?? 2) === 2) {
+      // only the single central objective (not mirrored onto itself) may differ from its half-turn
+      assert.ok(r.asym <= 40, `${r.asym} tiles break the symmetry`);
+    } else {
+      // turned sectors are sampled per hex: each seat's routes to its rivals match within a few hexes
+      for (let k = 0; k < r.rivals[0].length; k++) {
+        const lengths = r.rivals.map((list) => list[k]);
+        assert.ok(Math.max(...lengths) - Math.min(...lengths) <= Math.max(4, Math.min(...lengths) * .08), `unequal routes between rivals: ${JSON.stringify(r.rivals)}`);
+      }
+    }
+    for (const list of r.rivals) assert.ok(list.every(Number.isFinite), 'every seat can drive to every rival');
+    // the stored lobby preview is up to date (regenerate with node tools/map-previews.mjs)
+    const stored = MAP_PREVIEWS[def.id], fresh = r.preview;
+    assert.ok(stored, `${def.id} has a stored preview`);
+    const a = Buffer.from(stored.cells, 'base64'), b = Buffer.from(fresh.cells, 'base64');
+    let differ = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differ++;
+    assert.ok(differ <= a.length * .03, `${differ} preview cells are stale: run node tools/map-previews.mjs`);
+    assert.deepEqual(stored.starts.map((s) => [s.u, s.v]), fresh.starts.map((s) => [s.u, s.v]));
     assert.deepEqual(r.unreachable, [], 'every ruin and outpost can be reached by heavy vehicles');
     assert.equal(r.starts.length, def.players);
     assert.ok(r.starts.every((s, i) => s.start === i && s.owner === i && s.hq), 'each seat starts at its own operational base');
@@ -96,6 +135,12 @@ test('matches on an authored map take its size and teams; unknown maps are refus
     assert.equal(pvp.slots.length, 2);
     assert.equal(mm.meta(pvp).map, 'twin_rivers');
     assert.throws(() => mm.create({ ruleset: 'action-v2', mode: 'ai', map: 'atlantis' }), /Unknown map/);
+    for (const ffa of MAP_CATALOG.filter((m) => (m.symmetry ?? 2) !== 2)) {
+      const free = mm.create({ ruleset: 'action-v2', mode: 'ai', map: ffa.id, name: 'P' });
+      assert.equal(free.teamSize, 1);
+      assert.equal(free.slots.length, ffa.players, `${ffa.id} seats every player`);
+      assert.equal(free.mapSize, ffa.size);
+    }
     const random = mm.create({ ruleset: 'action-v2', mode: 'ai' });
     assert.equal(random.map, 'random');
   } finally { clearInterval(mm.janitor); }

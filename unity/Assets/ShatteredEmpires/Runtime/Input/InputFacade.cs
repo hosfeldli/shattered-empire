@@ -26,12 +26,13 @@ namespace SE.Runtime.Input
         /// <summary>Every remappable shortcut, in the order the settings list shows them.</summary>
         public static readonly ActionDef[] Actions =
         {
-            new ActionDef { Id = "pan_up", Label = "Camera: pan forward", Default = KeyCode.W },
-            new ActionDef { Id = "pan_down", Label = "Camera: pan backward", Default = KeyCode.S },
-            new ActionDef { Id = "pan_left", Label = "Camera: pan left", Default = KeyCode.A },
-            new ActionDef { Id = "pan_right", Label = "Camera: pan right", Default = KeyCode.D },
-            new ActionDef { Id = "rotate_left", Label = "Camera: rotate left", Default = KeyCode.Q },
-            new ActionDef { Id = "rotate_right", Label = "Camera: rotate right", Default = KeyCode.E },
+            // camera: arrows and screen edges pan, Alt + drag turns (WASD and Q/E are free for commands)
+            new ActionDef { Id = "pan_up", Label = "Camera: pan forward", Default = KeyCode.UpArrow },
+            new ActionDef { Id = "pan_down", Label = "Camera: pan backward", Default = KeyCode.DownArrow },
+            new ActionDef { Id = "pan_left", Label = "Camera: pan left", Default = KeyCode.LeftArrow },
+            new ActionDef { Id = "pan_right", Label = "Camera: pan right", Default = KeyCode.RightArrow },
+            new ActionDef { Id = "rotate_left", Label = "Camera: rotate left (or Alt + drag)", Default = KeyCode.Comma },
+            new ActionDef { Id = "rotate_right", Label = "Camera: rotate right (or Alt + drag)", Default = KeyCode.Period },
             new ActionDef { Id = "group_1", Label = "Control group 1 (Ctrl: assign)", Default = KeyCode.Alpha1 },
             new ActionDef { Id = "group_2", Label = "Control group 2 (Ctrl: assign)", Default = KeyCode.Alpha2 },
             new ActionDef { Id = "group_3", Label = "Control group 3 (Ctrl: assign)", Default = KeyCode.Alpha3 },
@@ -41,16 +42,20 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "group_7", Label = "Control group 7 (Ctrl: assign)", Default = KeyCode.Alpha7 },
             new ActionDef { Id = "group_8", Label = "Control group 8 (Ctrl: assign)", Default = KeyCode.Alpha8 },
             new ActionDef { Id = "group_9", Label = "Control group 9 (Ctrl: assign)", Default = KeyCode.Alpha9 },
+            new ActionDef { Id = "attack", Label = "Attack move, then click (twice: units on screen; Ctrl: whole army)", Default = KeyCode.F },
+            new ActionDef { Id = "stance", Label = "Cycle stance: aggressive, defensive, hold fire", Default = KeyCode.V },
             new ActionDef { Id = "hold", Label = "Hold position", Default = KeyCode.H },
             new ActionDef { Id = "withdraw", Label = "Withdraw", Default = KeyCode.X },
-            new ActionDef { Id = "attack", Label = "Attack-move (then click)", Default = KeyCode.T },   // A pans
-            new ActionDef { Id = "follow", Label = "Follow selection", Default = KeyCode.F },
+            new ActionDef { Id = "air_patrol", Label = "Aircraft: patrol route, then click waypoints (Shift-click adds more; pauses when no aircraft selected)", Default = KeyCode.P },
+            new ActionDef { Id = "follow", Label = "Follow selection with the camera", Default = KeyCode.G },
             new ActionDef { Id = "flip", Label = "Flip battle-line facing (while drawing)", Default = KeyCode.F },
             new ActionDef { Id = "back", Label = "Camera: back to previous view", Default = KeyCode.Backspace },
             new ActionDef { Id = "alert", Label = "Camera: jump to latest alert", Default = KeyCode.Space },
-            new ActionDef { Id = "commands", Label = "Open command wheel", Default = KeyCode.C },
+            new ActionDef { Id = "commands", Label = "Unit command wheel (optional)", Default = KeyCode.C },
             new ActionDef { Id = "upgrade_base", Label = "Upgrade base tier (base wheel open)", Default = KeyCode.U },
-            new ActionDef { Id = "build", Label = "Arm defense bar", Default = KeyCode.B },
+            new ActionDef { Id = "build", Label = "Build wheel", Default = KeyCode.B },
+            new ActionDef { Id = "terrain", Label = "Terrain wheel", Default = KeyCode.T },
+            new ActionDef { Id = "minimap_zoom", Label = "Minimap: local zoom", Default = KeyCode.Z },
             new ActionDef { Id = "research", Label = "Open Research (legacy)", Default = KeyCode.R },
             new ActionDef { Id = "overview", Label = "Open Overview (legacy)", Default = KeyCode.O },
             new ActionDef { Id = "pause", Label = "Pause (when allowed)", Default = KeyCode.P },
@@ -60,9 +65,24 @@ namespace SE.Runtime.Input
 
         static readonly Dictionary<string, KeyCode> bound = new Dictionary<string, KeyCode>();
 
+        // 2026-11-16: pan moved from WASD to the arrows, rotate off Q/E, attack move to F, follow to G.
+        // Saved bindings for those actions came from the old layout, so they are dropped once.
+        const int BindingVersion = 2;
+        static bool migrated;
+        static void Migrate()
+        {
+            migrated = true;
+            if (PlayerPrefs.GetInt("se.keys.version", 1) >= BindingVersion) return;
+            foreach (var id in new[] { "pan_up", "pan_down", "pan_left", "pan_right", "rotate_left", "rotate_right", "attack", "follow", "build" })
+                PlayerPrefs.DeleteKey("se.key." + id);
+            PlayerPrefs.SetInt("se.keys.version", BindingVersion);
+            PlayerPrefs.Save();
+        }
+
         public static KeyCode KeyFor(string action)
         {
             if (bound.TryGetValue(action, out var k)) return k;
+            if (!migrated) Migrate();
             foreach (var a in Actions)
                 if (a.Id == action)
                 {
@@ -114,6 +134,7 @@ namespace SE.Runtime.Input
         public static bool RightHeld => M != null && M.rightButton.isPressed;
         public static bool RightUp => M != null && M.rightButton.wasReleasedThisFrame;
         public static bool MiddleHeld => M != null && M.middleButton.isPressed;
+        public static bool MiddleDown => M != null && M.middleButton.wasPressedThisFrame;
         public static Vector2 MouseDelta => M != null ? M.delta.ReadValue() : Vector2.zero;
         public static bool Shift => !Typing && K != null && (K.leftShiftKey.isPressed || K.rightShiftKey.isPressed);
         public static bool Ctrl => !Typing && K != null && (K.leftCtrlKey.isPressed || K.rightCtrlKey.isPressed);
@@ -156,6 +177,7 @@ namespace SE.Runtime.Input
         public static bool RightHeld => UnityEngine.Input.GetMouseButton(1);
         public static bool RightUp => UnityEngine.Input.GetMouseButtonUp(1);
         public static bool MiddleHeld => UnityEngine.Input.GetMouseButton(2);
+        public static bool MiddleDown => UnityEngine.Input.GetMouseButtonDown(2);
         public static Vector2 MouseDelta => new Vector2(UnityEngine.Input.GetAxis("Mouse X"), UnityEngine.Input.GetAxis("Mouse Y")) * 10f;
         public static bool Shift => !Typing && (UnityEngine.Input.GetKey(KeyCode.LeftShift) || UnityEngine.Input.GetKey(KeyCode.RightShift));
         public static bool Ctrl => !Typing && (UnityEngine.Input.GetKey(KeyCode.LeftControl) || UnityEngine.Input.GetKey(KeyCode.RightControl));

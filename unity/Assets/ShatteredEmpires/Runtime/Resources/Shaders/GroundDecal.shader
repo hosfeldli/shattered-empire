@@ -45,7 +45,7 @@ Shader "SE/GroundDecal"
                 // too small for the long orthographic match camera, and decals must also clear the draped road
                 // and pad overlays (SE/GroundOverlay) that sit a few millimetres above the terrain.
                 // (kept small: decals draw after units, so a large pull would paint over the feet of troops standing on them)
-                float bias = .012 + (unity_OrthoParams.w > .5 ? unity_OrthoParams.y * .0006 : 0);
+                float bias = .012 + (unity_OrthoParams.w > .5 ? unity_OrthoParams.y * .0006 : _SE_EyeOffset * .36 * .0006);   // telephoto: as orthographic at that zoom
                 o.positionCS = TransformWorldToHClip(o.positionWS + GetWorldSpaceNormalizeViewDir(o.positionWS) * bias);
                 o.uv = v.uv;
                 o.color = inst.color;

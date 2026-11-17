@@ -16,7 +16,7 @@ namespace SE.Runtime.UI
         VisualElement groupsBar;
         string groupSignature = "";
         readonly List<(int key, int count)> groupList = new List<(int, int)>(9), groupShown = new List<(int, int)>(9);
-        float groupsAt;
+        float groupsAt, groupsBottom = -1f;
         static readonly int[] Speeds = { 1, 2, 4 };
         static readonly int[] SpectatorSpeeds = { 1, 2, 4, 8 };
 
@@ -36,6 +36,10 @@ namespace SE.Runtime.UI
             list.Clear();
             foreach (var entry in commander.GroupSummary()) list.Add(entry);
             groupsBar.style.display = list.Count > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            // the chips sit just above the bottom-right selection panel (or in its place when nothing is selected)
+            float cardH = card != null && card.resolvedStyle.display == DisplayStyle.Flex ? card.resolvedStyle.height : 0f;
+            float bottom = float.IsNaN(cardH) || cardH <= 0 ? 16f : 16f + cardH + 8f;
+            if (Mathf.Abs(bottom - groupsBottom) > .5f) { groupsBottom = bottom; groupsBar.style.bottom = bottom; }
             // rebuild the chips only when a group or its strength changed (compared in place, no signature string)
             bool same = groupSignature == "built" && list.Count == groupShown.Count;
             for (int i = 0; same && i < list.Count; i++) same = list[i] == groupShown[i];

@@ -7,6 +7,7 @@
 import sys, os, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from se_meshkit import Asset
+from mathutils import Vector
 
 out = sys.argv[sys.argv.index('--') + 1] if '--' in sys.argv else os.path.join(os.getcwd(), 'out')
 os.makedirs(out, exist_ok=True)
@@ -247,23 +248,135 @@ def carrier(name):
     a.beam((-.24, -.40, .41), (-.245, -.405, .66), .0025, 'dark')
     save(a, ground_ao=.09)
 
+# Light 4x4 gun truck ("armored car"). The wheels are drawn by the client (the shared 'Wheel' model at 1.15x,
+# centred at x +-CAR_TRACK, y +-CAR_AXLE, z CAR_WHEEL_Z); the roof-ring gun mount 'ArmoredCarMount' turns
+# about the vertical axis through its origin, which the client places on the roof ring at (0, CAR_RING_Y, CAR_ROOF).
+# Keep these in step with UnitRenderer.AddVehicle (Kind.ArmoredCar).
+CAR_TRACK, CAR_AXLE, CAR_WHEEL_R, CAR_WHEEL_Z = .27, .31, .122, .12
+CAR_ROOF, CAR_RING_Y, CAR_GUN_Z, CAR_MUZZLE_Y = .447, -.06, .145, .33
+
+def _arch(cy, cz, r, z_cut, n=9):
+    """Wheel-arch points (y, z) from the front cut through the top to the rear cut of a circle at (cy, cz)."""
+    a0 = math.asin(max(-1., min(1., (z_cut - cz) / r)))
+    return [(cy + math.cos(a0 + (math.pi - 2 * a0) * k / (n - 1)) * r, cz + math.sin(a0 + (math.pi - 2 * a0) * k / (n - 1)) * r)
+            for k in range(n)]
+
+def _gun_truck_body(a, lo=False):
+    """lo: the operational-zoom version (no chamfers, no small fittings)."""
+    R, ax, wz = CAR_WHEEL_R + .028, CAR_AXLE, CAR_WHEEL_Z
+    low, b = .165, 0 if lo else 1
+    # Wide, low tub with a long sloped hood and big wheel arches cut through it (the fender gaps).
+    side = [(-.505, low), (-.515, .30), (.10, .305), (.44, .287), (.50, .252), (.508, .195), (.49, low)]
+    side += _arch(ax, wz, R, low, 7 if lo else 9) + _arch(-ax, wz, R, low, 7 if lo else 9)
+    a.prism(side, 'x', -.30, .30, 'paint', bevel=.008 * b)
+    # Chassis, axles and diff housings under the tub: the ground clearance reads as a dark gap.
+    a.box((0, 0, .148), (.36, .80, .045), 'dark', bevel=.004 * b)
+    if not lo:
+        for y in (ax, -ax):
+            a.cyl((-.23, y, wz), 'x', .022, .022, .46, 'dark', segs=8, bevel=0)
+            a.cyl((0, y, wz), 'y', .05, .05, .07, 'dark', segs=10)
+    for s in (-1, 1):
+        # Fender flares proud of the body over each wheel, and the rocker step between the arches.
+        for y in (ax, -ax):
+            outer = _arch(y, wz, R + .03, low - .02, 7 if lo else 9)
+            inner = list(reversed(_arch(y, wz, R, low - .02, 7 if lo else 9)))
+            a.prism(outer + inner, 'x', min(s * .295, s * .33), max(s * .295, s * .33), 'edge', bevel=.003 * b)
+        a.box((s * .305, 0, .18), (.04, ax * 2 - R * 2 - .02, .03), 'dark', bevel=.003 * b)
+        # Headlights in the grille corners, tail lights.
+        a.box((s * .215, .503, .235), (.075, .02, .04), 'dark', bevel=.004 * b)
+        a.box((s * .215, .514, .235), (.055, .004, .026), 'lamp', bevel=0)
+        a.box((s * .25, -.517, .265), (.05, .008, .025), 'tail', bevel=0)
+        # Four doors with armoured windows.
+        xw = lambda z: .28 - .028 * (z - .295) / (CAR_ROOF - .295)      # the cab's sloped flank
+        for y0, y1 in ((-.03, .07), (-.19, -.07)):
+            a.prism([(s * (xw(.37) + .001), .37), (s * (xw(.425) + .001), .425), (s * (xw(.425) + .006), .425), (s * (xw(.37) + .006), .37)],
+                    'y', y0, y1, 'glass', bevel=0)
+            if lo: continue
+            a.box((s * (xw(.33) + .003), (y0 + y1) / 2 - .01, .33), (.008, (y1 - y0) * .9, .045), 'edge', bevel=.002)
+            a.box((s * (xw(.355) + .004), y1 - .025, .355), (.006, .025, .008), 'dark', bevel=0)
+        if lo: continue
+        for y in (.095, -.05):
+            a.box((s * (xw(.37) + .002), y, .37), (.006, .006, .14), 'dark', bevel=0)
+        # Mirror on an arm off the windscreen pillar; rear-corner whip antennas.
+        a.beam((s * .27, .12, .33), (s * .345, .135, .345), .005, 'dark')
+        a.box((s * .35, .135, .355), (.01, .035, .05), 'dark', bevel=.002)
+        a.cyl((s * .25, -.47, .30), 'z', .012, .012, .025, 'dark', segs=8)
+        a.beam((s * .25, -.47, .325), (s * .255, -.475, .66), .0028, 'dark')
+    # Armoured cab: flanks leaning in, raked windscreen and back, flat roof with the gunner's ring.
+    a.prism([(-.28, -.245), (.28, -.245), (.28, .152), (-.28, .152)], 'z', .295, CAR_ROOF, 'paint', bevel=.01 * b, inset=(.9, .8))
+    d = Vector((-.0397, CAR_ROOF - .295)).normalized(); nrm = Vector((d.y, -d.x)) * .005
+    for x0, x1 in ((-.235, -.014), (.014, .235)):
+        p0 = Vector((.152, .295)) + d * .03; p1 = Vector((.152, .295)) + d * .145
+        a.prism([tuple(p0), tuple(p1), tuple(p1 + nrm), tuple(p0 + nrm)], 'x', x0, x1, 'glass', bevel=0)
+    a.cyl((0, CAR_RING_Y, CAR_ROOF - .004), 'z', .112, .112, .012, 'dark', segs=12 if lo else 20, bevel=.003 * b)
+    # Hood: louvred engine vents; grille, bumper and brush guard.
+    for k in range(5):
+        a.box((0, .22 + k * .035, .298 - k * .002), (.20, .014, .012), 'grille', bevel=0)
+    if lo:
+        a.box((0, .507, .215), (.24, .012, .07), 'grille', bevel=0)
+    else:
+        for k in range(7):
+            a.box(((k - 3) * .036, .507, .215), (.014, .012, .07), 'grille', bevel=0)
+    a.box((0, .525, .17), (.60, .04, .05), 'dark', bevel=.005 * b)
+    if not lo:
+        for x in (-.11, .11):
+            a.beam((x, .535, .19), (x, .53, .275), .007, 'dark')
+        a.beam((-.11, .53, .27), (.11, .53, .27), .007, 'dark')
+    # Rear deck: spare tyre laid flat, stowage boxes, jerry cans on the tailgate.
+    a.cyl((0, -.385, .30), 'z', .095, .095, .045, 'rubber', segs=10 if lo else 16, bevel=.003 * b)
+    a.cyl((0, -.385, .343), 'z', .055, .05, .006, 'steel', segs=8 if lo else 12, bevel=0)
+    for s in (-1, 1):
+        a.box((s * .2, -.36, .33), (.12, .2, .06), 'edge', bevel=.006 * b)
+        a.box((s * .12, -.525, .22), (.08, .03, .11), 'paint', bevel=.006 * b)
+    return a
+
 def armored_car(name):
     a = Asset(name)
-    a.prism([(-.48, .15), (-.50, .24), (.30, .27), (.50, .20), (.46, .11), (-.44, .11)], 'x', -.24, .24, 'paint', bevel=.008)
-    a.prism([(-.47, .24), (-.47, .33), (.20, .335), (.40, .27), (.40, .24)], 'x', -.30, .30, 'paint', bevel=.01, )
-    for s in (-1, 1):
-        a.box((s * .31, -.05, .29), (.03, .42, .07), 'edge', bevel=.006, taper=(1, .96))
-        a.box((s * .33, -.33, .23), (.04, .14, .09), 'edge', bevel=.006)              # side stowage
-        a.box((s * .24, .45, .245), (.05, .02, .025), 'dark', bevel=.003)
-        a.box((s * .24, .461, .245), (.035, .004, .015), 'lamp', bevel=0)
-        a.box((s * .25, -.48, .25), (.04, .006, .02), 'tail', bevel=0)
-        a.box((s * .27, .17, .30), (.09, .006, .04), 'glass', bevel=0)
-    # Armoured windscreen with louvred covers, driver vision block.
-    a.box((0, .29, .30), (.36, .01, .045), 'glass', bevel=0)
-    a.box((0, .30, .328), (.38, .02, .012), 'edge', bevel=.003)
-    a.beam((-.20, -.42, .33), (-.205, -.425, .58), .0025, 'dark')
-    a.beam((.20, -.42, .33), (.21, -.425, .52), .0025, 'dark')
+    _gun_truck_body(a)
     save(a, ground_ao=.09)
+
+def armored_car_lo(name):
+    """The whole gun truck in one mesh, wheels included, for the operational zoom (no per-wheel instances there)."""
+    a = Asset(name)
+    _gun_truck_body(a, lo=True)
+    w, R = .045, CAR_WHEEL_R
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            c = (sx * CAR_TRACK, sy * CAR_AXLE, CAR_WHEEL_Z)
+            a.lathe([(R * .6, -w), (R, -w * .7), (R, w * .7), (R * .6, w)], 'x', 'rubber', segs=10, center=c)
+            a.lathe([(0, -w * .8), (R * .6, -w * .8), (R * .6, w * .8), (0, w * .8)], 'x', 'steel', segs=8, center=c)
+    save(a, ground_ao=.09)
+
+def armored_car_mount(name):
+    """Roof-ring weapon station: turntable, three-panel gunner's shield, heavy machine gun on a pintle and its gunner.
+    Origin = ring centre on the roof; the gun points along +Y with its muzzle at (0, CAR_MUZZLE_Y, CAR_GUN_Z)."""
+    a = Asset(name)
+    g = CAR_GUN_Z
+    a.cyl((0, 0, 0), 'z', .108, .10, .022, 'dark', segs=20)
+    a.cyl((0, 0, .022), 'z', .09, .09, .01, 'edge', segs=20, bevel=0)
+    # Shield: a broad front plate with a slot for the gun and two raked wings, all team-painted so the
+    # weapon station reads (and turns) from the RTS camera.
+    a.prism([(-.12, .02), (.12, .02), (.12, .195), (.026, .195), (.026, g - .022), (-.026, g - .022), (-.026, .195), (-.12, .195)],
+            'y', .07, .088, 'paint', bevel=.003)
+    for s in (-1, 1):
+        a.prism([(s * .118, .088), (s * .185, .0), (s * .172, -.01), (s * .105, .074)], 'z', .02, .18, 'paint', bevel=.003)
+    a.box((0, .072, .178), (.05, .004, .026), 'glass', bevel=0)
+    # Pintle, cradle and the gun: receiver, barrel jacket, barrel, flash hider, ammo can, spade grips.
+    a.beam((0, .03, .02), (0, .03, g - .02), .013, 'dark')
+    a.box((0, .03, g), (.048, .16, .052), 'dark', bevel=.005)
+    a.box((-.045, .04, g - .008), (.038, .075, .048), 'edge', bevel=.004)
+    a.cyl((0, .11, g), 'y', .017, .017, .13, 'dark', segs=8)
+    a.cyl((0, .24, g), 'y', .009, .009, .07, 'dark', segs=8, bevel=0)
+    a.cyl((0, .305, g), 'y', .013, .012, CAR_MUZZLE_Y - .305, 'dark', segs=8)
+    for x in (-.016, .016):
+        a.beam((x, -.05, g), (x, -.075, g), .006, 'dark')
+    # The gunner, standing in the ring behind his gun.
+    a.ellipsoid((0, -.07, .10), (.052, .04, .07), 'cloth', segs=10, rings=6)
+    a.ellipsoid((0, -.068, .185), (.026, .026, .03), 'skin', segs=8, rings=5)
+    a.ellipsoid((0, -.07, .203), (.035, .037, .023), 'cloth2', segs=10, rings=5)
+    for s in (-1, 1):
+        a.limb((s * .047, -.065, .14), (s * .02, -.08, g), .014, .012, 'cloth', segs=6)
+    save(a)
 
 def cargo_truck(name, kind='cargo'):
     a = Asset(name)
@@ -444,7 +557,7 @@ tank_hull('Tank'); tank_hull('Autonomous', autonomous=True); tank_hull('Howitzer
 turret('Turret', 0); turret('RemoteTurret', 1); turret('HowitzerTurret', 2)
 barrel('GunBarrel'); barrel('HowitzerBarrel', artillery=True)
 road_wheel('RoadWheel'); truck_wheel('Wheel')
-carrier('Carrier'); armored_car('ArmoredCar')
+carrier('Carrier'); armored_car('ArmoredCar'); armored_car_lo('ArmoredCarLo'); armored_car_mount('ArmoredCarMount')
 cargo_truck('CargoTruck', 'cargo'); cargo_truck('RocketTruck', 'rocket'); cargo_truck('AirDefense', 'radar')
 fighter('Fighter'); fighter('Bomber', bomber=True)
 helicopter('Helicopter'); rotor('Rotor')

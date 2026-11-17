@@ -268,17 +268,12 @@ namespace SE.Runtime.Landscape
             min = math.min(min, pos); max = math.max(max, pos);
             var soil = Biome[tile] >= 9 ? new float3(.30f, .28f, .25f) : new float3(.27f, .23f, .16f);
             if (view.Trenches != null)
-                for (int edge = -1; edge < 6; edge++)
-                {
-                    int n = edge < 0 ? tile : view.Nb[tile * 6 + edge];
-                    if (n < 0 || view.Trenches[n * 4 + 3] <= 0) continue;
-                    int tr = n * 4; float a = view.Trenches[tr + 2];
-                    float dx = HexMath.DxWrap(HexMath.CenterX(n, W), x, Period, WrapFlag != 0) - view.Trenches[tr];
-                    float dz = z - HexMath.CenterZ(n, W) - view.Trenches[tr + 1];
-                    float across = math.abs(dx * math.sin(a) + dz * math.cos(a)), along = math.abs(-dx * math.cos(a) + dz * math.sin(a));
-                    float stain = math.saturate((.32f - across) / .14f) * math.saturate((1.02f - along) / .20f);
-                    color = math.lerp(color, soil * .67f, stain * .87f);
-                }
+            {
+                // the turned-earth scar of a trench line: only along the line actually dug (its links and ends,
+                // TerrainView.TrenchNearest), a little wider than the works, never running on past the last node
+                float across = view.TrenchNearest(tile, x, z, out _, out _, out _, out _, out _, out _);
+                if (across < .24f) color = math.lerp(color, soil * .72f, math.saturate((.24f - across) / .09f) * .82f);
+            }
             float level = view.NearWaterLevel(tile);
             if (level > TerrainView.NoWater * .5f)
                 color = math.lerp(color, new float3(.48f, .46f, .39f), math.saturate(1f - math.abs(y - level) / .034f) * .58f);
@@ -288,7 +283,8 @@ namespace SE.Runtime.Landscape
                 // blackened, blast-burnt floor; turned subsoil (paler, redder) thrown over the lip in uneven sprays
                 float grain = Hash((int)math.floor(x * 41f), (int)math.floor(z * 41f) + 977);
                 shaded = math.lerp(shaded, soil * new float3(1.18f, 1.08f, .98f) * (.86f + grain * .3f), spoil * .7f);
-                shaded = math.lerp(shaded, new float3(.075f, .068f, .06f) * (.8f + grain * .5f), scorch * .78f);
+                // burnt earth, not a black hole: a dark brown-grey that still reads as soil under any light
+                shaded = math.lerp(shaded, soil * new float3(.62f, .58f, .56f) * (.85f + grain * .4f), scorch * .62f);
             }
             float3 normal = Normal(view, x, z);
             if (scorch > 0 || spoil > 0)

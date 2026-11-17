@@ -18,7 +18,7 @@ import bpy, sys, os, math, struct, importlib
 HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else r"D:/Projects/shattered_empires/tools/blender"
 sys.path.insert(0, HERE)
 import se_meshkit; importlib.reload(se_meshkit)
-from se_meshkit import Asset
+from se_meshkit import Asset, PAL, FABRIC, PLAIN
 from mathutils import Vector, Matrix
 
 if 'SE_OUT' in globals(): OUT = SE_OUT
@@ -86,7 +86,130 @@ def weapon_parts(a, kind):
     if kind == 'carbine':
         C((0, .19, .022), 'y', .014, .014, .09, 'dark', 10)        # suppressor
 
-def soldier_mesh(role):
+# ---------------------------------------------------------------- stylised, low-poly figure (2026-11-16)
+# The game's art direction: slightly exaggerated proportions (a larger head and helmet, broad shoulders,
+# chunky hands, boots and weapon), a low polygon count (~600 triangles) and a silhouette that reads at RTS
+# distance. The helmet (or cap / hard hat) and the shoulder pads are a separate overlay mesh
+# (SoldierTeam<r>.bytes, same bones) drawn in the owner's strong team colour; the body keeps the faction's
+# field uniform, lighter than before so troops never read as dark blobs.
+PAL['uniform'] = ((.93, .93, .88), FABRIC)    # takes the faction uniform tint (instance colour)
+PAL['uniform2'] = ((.80, .81, .74), FABRIC)
+PAL['kit'] = ((.58, .58, .51), FABRIC)        # webbing, pouches, pack
+PAL['gun'] = ((.30, .30, .29), PLAIN)
+PAL['team'] = ((.97, .97, .97), PLAIN)        # overlay: multiplied by the team colour only
+PAL['teamdark'] = ((.62, .62, .62), PLAIN)    # overlay trim (helmet rim, pad edge)
+HEAD = 1.22                                   # head and helmet exaggeration
+
+def low_limb(a, p0, p1, r0, r1, key, segs=6):
+    d = Vector(p1) - Vector(p0)
+    a.cyl(p0, d, r0, r1, d.length, key, segs=segs, bevel=0)
+    a.ellipsoid(p0, (r0, r0, r0), key, segs, 3)
+
+def low_weapon(a, kind):
+    o = Vector(WEAPON_AT)
+    B = lambda c, s, k='gun': a.box(tuple(o + Vector(c)), s, k, bevel=0)
+    C = lambda c, ax, r1, r2, L, k='gun', segs=6: a.cyl(tuple(o + Vector(c)), ax, r1, r2, L, k, segs=segs, bevel=0)
+    if kind == 'pistol':
+        B((0, .03, 0), (.028, .11, .034)); B((0, -.005, -.04), (.026, .034, .068))
+        return
+    if kind == 'launcher':
+        C((0, -.24, .03), 'y', .05, .05, .54, 'uniform2', 8); C((0, .28, .03), 'y', .058, .052, .07, 'gun', 8)
+        B((0, .03, -.04), (.026, .036, .08)); B((.035, .02, .075), (.03, .07, .045))
+        return
+    short = kind == 'carbine'
+    L = .8 if short else 1.0
+    B((0, -.005, 0), (.042, .15, .056))                                   # receiver
+    B((0, .1 * L, .014), (.044, .12 * L, .044), 'wood' if kind == 'ak' else 'gun')
+    C((0, .15 * L, .02), 'y', .009, .009, .13 * L, 'gun', 5)              # barrel
+    B((0, -.125, -.006), (.036, .1, .054), 'wood' if kind == 'ak' else 'gun')   # stock
+    B((0, .02, -.045), (.026, .036, .07))                                 # magazine
+    B((0, -.05, -.04), (.024, .026, .056))                                # grip
+    if kind != 'ak': B((0, -.005, .048), (.026, .06, .03))                # optic
+
+def soldier_parts(role, team):
+    """The body (team=False) or its team-coloured overlay (team=True: helmet / cap / hard hat, shoulder pads)."""
+    a = Asset(('SoldierTeam%d' if team else 'Soldier%d') % role)
+    exo, militia, special, engineer = role == 4, role == 2, role == 3, role == 1
+    bulk = 1.2 if exo else 1.06
+    bi = {n: i for i, n in enumerate(DEFORM)}
+    if team:
+        # --- head gear in the team colour, oversized for the stylised read from above
+        a.bone = bi['head']
+        h = HEAD
+        z0 = .852
+        if engineer:
+            a.lathe([(0, z0 + .115 * h), (.075 * h, z0 + .108 * h), (.1 * h, z0 + .072 * h), (.106 * h, z0 + .03 * h),
+                     (.135 * h, z0 + .02 * h), (.135 * h, z0 + .012 * h), (0, z0 + .012 * h)], 'z', 'team', segs=10)
+        elif militia:
+            a.lathe([(0, z0 + .09 * h), (.078 * h, z0 + .085 * h), (.09 * h, z0 + .05 * h), (.092 * h, z0 + .022 * h), (0, z0 + .022 * h)], 'z', 'team', segs=10)
+            a.box((0, .088 * h, z0 + .028 * h), (.11 * h, .065 * h, .012), 'teamdark', bevel=0)     # peak
+        else:
+            a.lathe([(0, z0 + .118 * h), (.064 * h, z0 + .112 * h), (.097 * h, z0 + .084 * h), (.112 * h, z0 + .04 * h),
+                     (.118 * h, z0 + .004 * h), (.11 * h, z0 - .002 * h), (0, z0 - .002 * h)], 'z', 'team', segs=10)
+            a.lathe([(.119 * h, z0 + .002 * h), (.122 * h, z0 + .016 * h), (.12 * h, z0 + .02 * h), (.116 * h, z0 + .006 * h)], 'z', 'teamdark', segs=10)
+        # --- shoulder pads (both sides), the second team-colour read
+        a.bone = bi['chest']
+        for s in (-1, 1):
+            a.ellipsoid((s * .162 * bulk, -.004, .73), ((.078 if exo else .066) * bulk, .078 if exo else .068, .05), 'team', 7, 4)
+        return a
+    # --- hips: pelvis and belt
+    a.bone = bi['hips']
+    a.ellipsoid((0, 0, .475), (.13 * bulk, .09, .09), 'uniform', 8, 5)
+    a.box((0, 0, .51), (.28 * bulk, .19, .04), 'kit', bevel=0)
+    for s in (-1, 1): a.box((s * .14 * bulk, .025, .485), (.035, .075, .085), 'kit', bevel=0)
+    if engineer: a.box((.16, .03, .46), (.035, .065, .1), 'gun', bevel=0)
+    # --- chest: a broad, slightly heroic torso with a carrier and pack
+    a.bone = bi['chest']
+    a.ellipsoid((0, 0, .59), (.13 * bulk, .09, .1), 'uniform', 8, 5)
+    a.ellipsoid((0, -.004, .668), (.165 * bulk, .108, .108), 'uniform', 8, 5)
+    a.cyl((0, 0, .74), 'z', .046, .044, .05, 'skin' if not special else 'kit', segs=6, bevel=0)
+    if militia:
+        a.box((0, .072, .615), (.23, .055, .12), 'kit', bevel=0)
+        a.ellipsoid((0, .012, .755), (.08, .074, .036), 'uniform2', 7, 3)
+    else:
+        a.box((0, .045, .65), (.27 * bulk, .115, .215), 'uniform2', bevel=.012)
+        a.box((0, -.052, .65), (.265 * bulk, .055, .205), 'uniform2', bevel=0)
+        a.box((0, .112, .6), (.18, .036, .072), 'kit', bevel=0)              # pouch row
+    pack = (.23, .11, .27) if engineer else (.2, .09, .22)
+    a.box((0, -.13, .64), pack, 'kit', bevel=.02)
+    if engineer: a.beam((-.07, -.17, .52), (-.06, -.16, .88), .011, 'wood', segs=4)
+    if role == 5:
+        for x in (-.05, .05): a.cyl((x, -.2, .5), 'z', .04, .04, .36, 'uniform2', segs=6, bevel=0)
+    if role == 6: a.cyl((.05, -.2, .5), (0, -.2, 1), .034, .034, .42, 'gun', segs=6, bevel=0)
+    if exo:
+        a.box((0, -.18, .66), (.17, .075, .21), 'steel', bevel=.015)
+        a.box((0, -.218, .66), (.022, .004, .15), 'optic', bevel=0)
+    # --- head (larger than life; the team overlay carries the helmet)
+    a.bone = bi['head']
+    face = 'kit' if special else 'skin'
+    h = HEAD
+    a.ellipsoid((0, .006, .852 + .01 * (h - 1)), (.068 * h, .078 * h, .084 * h), face, 8, 6)
+    if special: a.box((0, .09 * h, .9), (.06 * h, .035, .035), 'gun', bevel=0)               # night-vision
+    elif exo: a.box((0, .085 * h, .862), (.11 * h, .022, .05), 'optic', bevel=0)
+    elif not militia and not engineer: a.box((0, .086 * h, .905), (.1 * h, .024, .026), 'glass', bevel=0)   # goggles on the brow
+    # --- arms: chunky, with big gloved hands
+    for name, s in SIDES:
+        a.bone = bi['upperarm.' + name]
+        low_limb(a, SHOULDER(s), ELBOW(s), .048 * bulk, .041 * bulk, 'uniform')
+        a.bone = bi['forearm.' + name]
+        low_limb(a, ELBOW(s), WRIST(s), .04 * bulk, .034 * bulk, 'uniform')
+        d = (Vector(WRIST(s)) - Vector(ELBOW(s))).normalized()
+        a.ellipsoid(tuple(Vector(WRIST(s)) + d * .032), (.034, .036, .042), 'glove', 6, 4)
+    # --- legs: sturdy, with oversized boots for a firm stance
+    for name, s in SIDES:
+        a.bone = bi['thigh.' + name]
+        low_limb(a, HIP(s), KNEE(s), .072 * bulk, .056 * bulk, 'uniform')
+        a.bone = bi['shin.' + name]
+        low_limb(a, KNEE(s), ANKLE(s), .054 * bulk, .044 * bulk, 'uniform')
+        a.bone = bi['foot.' + name]
+        a.box((ANKLE(s)[0], .045, .04), (.092, .2, .082), 'boot', bevel=.012)
+    # --- weapon, a size up so it reads
+    a.bone = bi['weapon']
+    low_weapon(a, WEAPON[role])
+    return a
+
+def soldier_mesh_detailed(role):
+    """The previous high-detail figure (kept for reference; no longer exported)."""
     a = Asset('Soldier%d' % role)
     exo, militia, special, engineer = role == 4, role == 2, role == 3, role == 1
     bulk = 1.18 if exo else 1.0
@@ -347,15 +470,18 @@ built = []
 for role in range(len(ROLES)):
     arm = make_rig(coll, 'Rig_' + ROLES[role], WEAPON[role], (role * .55 - 1.65, 0, 0))
     animate(arm)
-    mesh = soldier_mesh(role)
-    v, t = mesh.export(os.path.join(OUT, 'Soldier%d.bytes' % role), ao_radius=.05, ao_rays=14, ao_strength=.55)
+    mesh = soldier_parts(role, False)
+    v, t = mesh.export(os.path.join(OUT, 'Soldier%d.bytes' % role), ao_radius=.05, ao_rays=12, ao_strength=.35)
     body = mesh.preview_object(coll, arm, DEFORM)
     body.data.shade_smooth()
     if hasattr(body.data, 'set_sharp_from_angle'): body.data.set_sharp_from_angle(angle=math.radians(38))
     body.name = 'Soldier_' + ROLES[role]
+    gear = soldier_parts(role, True)
+    tv, tt = gear.export(os.path.join(OUT, 'SoldierTeam%d.bytes' % role), ao_radius=.03, ao_rays=8, ao_strength=.25)
+    gear.preview_object(coll, arm, DEFORM).name = 'SoldierTeam_' + ROLES[role]
     frames = bake(arm, os.path.join(OUT, 'SoldierAnim%d.bytes' % role))
     built.append((ROLES[role], v, t, frames))
-    print('[se] %-14s %5d verts %5d tris %d frames' % (ROLES[role], v, t, frames))
+    print('[se] %-14s %5d verts %5d tris (+ team %d tris) %d frames' % (ROLES[role], v, t, tt, frames))
 scene.frame_start, scene.frame_end = 0, BAKED - 1
 scene.frame_set(70)
 print('[se] wrote %d soldiers to %s' % (len(built), OUT))

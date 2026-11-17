@@ -9,9 +9,11 @@ using UnityEngine.UIElements;
 namespace SE.Runtime.UI
 {
     /// <summary>
-    /// The shell (docs/UI_DESIGN_SPEC.md § B2, B3, B13, C6): the 56-px top bar (Materials, Energy and
-    /// Command chips with a 10-second average income rate and a pinnable breakdown; the centred status
-    /// pill; speed control, observer, invite, pause and menu on the right), the toast, the pause menu with
+    /// The shell (docs/UI_DESIGN_SPEC.md § B2, B3, B13, C6; 2026-11-16 mockup): in the action ruleset the top bar
+    /// floats (the match clock top centre, pause / menu and the observer controls top right) and the slim resource
+    /// bars live on the minimap console (Hud.Console.cs); the legacy ruleset keeps the 56-px top bar. Resource
+    /// bars show a 10-second average income rate and a pinnable breakdown; the status pill sits under the clock.
+    /// Also the toast, the pause menu with
     /// its page stack, and the Escape back-chain.
     /// </summary>
     public sealed partial class Hud
@@ -29,6 +31,7 @@ namespace SE.Runtime.UI
         {
             public string Kind;
             public Button Chip;
+            public SlantBack Back;      // the slim slanted bar drawn behind the labels (minimap console)
             public Label Amount, Rate;
             public VisualElement BarFill;
             public float Shown, SampledAt = -1f, FlashUntil;
@@ -47,15 +50,29 @@ namespace SE.Runtime.UI
             topbar = El("se-topbar", root);
             topLeft = El("se-topbar-left", topbar);
             resRow = El("row", topLeft);     // legacy ruleset goods
-            chipRow = El("row", topLeft);    // action ruleset chips
+            chipRow = El("row", topLeft);    // (empty: the action ruleset's resource bars sit on the minimap console, Hud.Console.cs)
             chipRow.style.display = DisplayStyle.None;
-            AddResourceChip("materials", "se-res-chip");
-            AddResourceChip("energy", "se-res-chip");
-            AddResourceChip("command", "se-res-chip se-res-chip--command");
+
+            // the match clock, top centre (action ruleset; the top bar itself floats there, mockup 2026-11-16)
+            clock = El("se-clock", topbar);
+            clock.pickingMode = PickingMode.Ignore;
+            clock.Add(new Glyph("clock", "se-clock-glyph"));
+            clockText = L("0:00", "se-clock-text", clock);
+            clockText.pickingMode = PickingMode.Ignore;
+            clock.style.display = DisplayStyle.None;
 
             focusPill = L("", "se-status-pill", topbar);
             focusPill.pickingMode = PickingMode.Ignore;
             focusPill.style.display = DisplayStyle.None;
+
+            // the decisive-domination countdown under the clock (action ruleset; econ dominance:[team, secondsLeft])
+            dominanceBanner = El("se-dominance", topbar);
+            dominanceBanner.pickingMode = PickingMode.Ignore;
+            dominanceTitle = L("", "se-dominance-title", dominanceBanner);
+            dominanceTitle.pickingMode = PickingMode.Ignore;
+            dominanceText = L("", "se-dominance-text", dominanceBanner);
+            dominanceText.pickingMode = PickingMode.Ignore;
+            dominanceBanner.style.display = DisplayStyle.None;
 
             topRight = El("se-topbar-right", topbar);
             // the speed control is built once the ruleset is known (spectators get 8×)
@@ -93,36 +110,92 @@ namespace SE.Runtime.UI
             return popoverKind != null && resChips.TryGetValue(popoverKind, out var rc) && rc.Chip.Contains(t);
         }
 
-        void AddResourceChip(string kind, string cls)
+        /// <summary>
+        /// A slim resource bar for the minimap console (mockup 2026-11-16): a dark slanted strip with the resource
+        /// glyph, the amount and its rate (Command: used/cap, "+queued" and a thin load line). Hover for 0.35 s or
+        /// click to pin the breakdown popover, as the old top-bar chips did.
+        /// </summary>
+        void AddResourceChip(string kind, VisualElement parent)
         {
-            var chip = UiKit.Chip(kind, chipRow);
-            foreach (var c in cls.Split(' ')) chip.AddToClassList(c);
-            var rc = new ResChip { Kind = kind, Chip = chip };
+            var chip = new Button { text = "", focusable = false };
+            chip.AddToClassList("se-resbar");
+            chip.AddToClassList("se-resbar--" + kind);
+            var back = new SlantBack();
+            chip.Add(back);
+            var rc = new ResChip { Kind = kind, Chip = chip, Back = back };
+            var icon = new IconElement(kind, "se-resbar-icon")
+            {
+                Tint = kind == "materials" ? new Color(.95f, .67f, .30f) : kind == "energy" ? new Color(.47f, .70f, 1f) : UiKit.Token("good"),
+            };
+            chip.Add(icon);
+            rc.Amount = L("", "se-resbar-amount", chip);
+            rc.Rate = L(kind == "command" ? "" : "+0.0/s", "se-resbar-rate se-res-rate--zero", chip);
             if (kind == "command")
             {
-                rc.Amount = L("", "se-res-amount se-res-cap", chip);
-                rc.Rate = L("", "se-res-queued", chip);
-                var hourglass = new IconElement("queued", "se-res-queued-icon") { Tint = UiKit.Token("text-dim") };
-                chip.Add(hourglass);
-                var bar = El("se-res-bar", chip);
+                var bar = El("se-resbar-load", chip);
                 bar.pickingMode = PickingMode.Ignore;
-                rc.BarFill = El("se-res-bar-fill", bar);
-            }
-            else
-            {
-                rc.Amount = L("", "se-res-amount", chip);
-                rc.Rate = L("+0.0/s", "se-res-rate se-res-rate--zero", chip);
+                rc.BarFill = El("se-resbar-load-fill", bar);
+                rc.BarFill.pickingMode = PickingMode.Ignore;
             }
             rc.Amount.pickingMode = PickingMode.Ignore;
             rc.Rate.pickingMode = PickingMode.Ignore;
+            chip.tooltip = null;
             chip.clicked += () => TogglePopover(kind, chip);
-            chip.RegisterCallback<PointerEnterEvent>(e => { hoverChip = kind; hoverSince = now; });
+            chip.RegisterCallback<PointerEnterEvent>(e => { hoverChip = kind; hoverSince = now; back.Hover = true; });
             chip.RegisterCallback<PointerLeaveEvent>(e =>
             {
+                back.Hover = false;
                 if (hoverChip == kind) hoverChip = null;
                 if (!popoverPinned && popoverKind == kind) ClosePopover();
             });
+            parent.Add(chip);
             resChips[kind] = rc;
+        }
+
+        /// <summary>
+        /// The slanted strip behind a resource bar: straight left edge (it docks against the minimap), the right
+        /// edge cut at an angle. Repaints only when its state changes.
+        /// </summary>
+        sealed class SlantBack : VisualElement
+        {
+            bool hover, selected;
+            int alert;   // 0 none, 1 warn, 2 bad
+
+            public SlantBack()
+            {
+                pickingMode = PickingMode.Ignore;
+                style.position = Position.Absolute;
+                style.left = 0; style.top = 0; style.right = 0; style.bottom = 0;
+                generateVisualContent += Paint;
+            }
+
+            public bool Hover { get => hover; set { if (hover != value) { hover = value; MarkDirtyRepaint(); } } }
+
+            public void SetState(bool isSelected, int alertLevel)
+            {
+                if (isSelected == selected && alertLevel == alert) return;
+                selected = isSelected; alert = alertLevel;
+                MarkDirtyRepaint();
+            }
+
+            static readonly Color Fill = new Color(.05f, .075f, .085f, .86f), FillHover = new Color(.16f, .20f, .21f, .94f);
+            static readonly Color Edge = new Color(1f, 1f, 1f, .10f);
+
+            void Paint(MeshGenerationContext ctx)
+            {
+                var r = contentRect;
+                if (r.width < 4 || r.height < 4) return;
+                var p = ctx.painter2D;
+                float slant = r.height * .45f;
+                p.BeginPath();
+                p.MoveTo(new Vector2(0, 0)); p.LineTo(new Vector2(r.width, 0));
+                p.LineTo(new Vector2(r.width - slant, r.height)); p.LineTo(new Vector2(0, r.height)); p.ClosePath();
+                p.fillColor = hover || selected ? FillHover : Fill;
+                p.Fill();
+                p.strokeColor = alert == 2 ? UiKit.Token("bad") : alert == 1 ? UiKit.Token("warn") : selected || hover ? UiKit.Token("accent") : Edge;
+                p.lineWidth = alert > 0 || selected ? 1.5f : 1f;
+                p.Stroke();
+            }
         }
 
         /// <summary>Flash a resource chip red for 1.2 s ("materials", "energy" or "command"): a command failed for lack of it.</summary>
@@ -137,7 +210,17 @@ namespace SE.Runtime.UI
         void UpdateTopBar()
         {
             bool action = session.ActionRts;
-            chipRow.style.display = action ? DisplayStyle.Flex : DisplayStyle.None;
+            if (floatingShown != action)
+            {
+                // action ruleset (mockup 2026-11-16): no bar — only the clock (top centre) and the floating pause /
+                // menu group (top right) remain; the strip itself lets clicks through to the world
+                floatingShown = action;
+                topbar.EnableInClassList("se-topbar--floating", action);
+                topbar.pickingMode = action ? PickingMode.Ignore : PickingMode.Position;
+                topLeft.style.display = action ? DisplayStyle.None : DisplayStyle.Flex;
+                clock.style.display = action ? DisplayStyle.Flex : DisplayStyle.None;
+            }
+            chipRow.style.display = DisplayStyle.None;
             resRow.style.display = action ? DisplayStyle.None : DisplayStyle.Flex;
             if (action) TopBarAction(); else TopBar();
             UpdateRightGroup();
@@ -145,6 +228,20 @@ namespace SE.Runtime.UI
         }
 
         long popoverFilledFor = long.MinValue;
+        bool? floatingShown;
+        VisualElement clock;
+        Label clockText;
+        int clockShown = int.MinValue;
+
+        /// <summary>Per frame: the match clock (server match time of the newest snapshot); text set only when the second changes.</summary>
+        void UpdateClock()
+        {
+            if (clock == null || floatingShown != true) return;
+            int s = Mathf.Max(0, Mathf.FloorToInt(session.Units.NewestTime));
+            if (s == clockShown) return;
+            clockShown = s;
+            clockText.text = s >= 3600 ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}" : $"{s / 60}:{s % 60:00}";
+        }
 
         /// <summary>
         /// What the open popover shows depends on: rebuild its rows only when this changes (they used to be rebuilt
@@ -165,7 +262,7 @@ namespace SE.Runtime.UI
         }
 
         static readonly string[] ChipKinds = { "materials", "energy" };
-        IconElement commandHourglass;
+        int shownLoadPct = -1, shownLoadLevel = -1;
         int shownUsed = int.MinValue, shownCap = int.MinValue, shownQueued = int.MinValue, shownRecovery = int.MinValue, shownHeld = int.MinValue;
 
         /// <summary>Materials Processors, relays and pickups: Materials income per second over the last minute of pickups.</summary>
@@ -188,7 +285,7 @@ namespace SE.Runtime.UI
                 int tenths = (int)Math.Round(shown * 10.0, MidpointRounding.AwayFromZero);
                 if (tenths != rc.ShownTenths) { rc.ShownTenths = tenths; rc.Rate.text = "+" + shown.ToString("0.0") + "/s"; }
                 rc.Rate.EnableInClassList("se-res-rate--zero", shown < 0.05f);
-                rc.Chip.EnableInClassList("se-alert-bad", now < rc.FlashUntil);
+                rc.Back?.SetState(popoverPinned && popoverKind == kind, now < rc.FlashUntil ? 2 : 0);
             }
             var capacity = Econ?["capacity"];
             int used = ProtocolDecoder.Int(capacity?["used"]), queued = ProtocolDecoder.Int(capacity?["queued"]), cap = ProtocolDecoder.Int(capacity?["limit"]);
@@ -198,15 +295,19 @@ namespace SE.Runtime.UI
             {
                 shownQueued = queued;
                 cmd.Rate.text = queued > 0 ? "+" + queued : "";
-                if (commandHourglass == null) commandHourglass = cmd.Chip.Q<IconElement>(className: "se-res-queued-icon");
-                if (commandHourglass != null) commandHourglass.style.visibility = queued > 0 ? Visibility.Visible : Visibility.Hidden;
+                cmd.Rate.EnableInClassList("se-res-rate--zero", queued <= 0);
             }
             float load = cap > 0 ? (used + queued) / (float)cap : 0f;
-            cmd.BarFill.style.width = new Length(cap > 0 ? Mathf.Clamp01(used / (float)cap) * 100f : 0f, LengthUnit.Percent);
-            cmd.BarFill.style.backgroundColor = load >= 1f ? UiKit.Token("bad") : load >= .85f ? UiKit.Token("warn") : UiKit.Token("good");
+            int loadPct = cap > 0 ? Mathf.RoundToInt(Mathf.Clamp01(used / (float)cap) * 100f) : 0;
+            int loadLevel = load >= 1f ? 2 : load >= .85f ? 1 : 0;
+            if (loadPct != shownLoadPct || loadLevel != shownLoadLevel)
+            {
+                shownLoadPct = loadPct; shownLoadLevel = loadLevel;
+                cmd.BarFill.style.width = new Length(loadPct, LengthUnit.Percent);
+                cmd.BarFill.style.backgroundColor = loadLevel == 2 ? UiKit.Token("bad") : loadLevel == 1 ? UiKit.Token("warn") : UiKit.Token("good");
+            }
             bool flash = now < cmd.FlashUntil;
-            cmd.Chip.EnableInClassList("se-alert-bad", flash);
-            cmd.Chip.EnableInClassList("se-alert-warn", !flash && cap > 0 && used + queued >= cap);
+            cmd.Back?.SetState(popoverPinned && popoverKind == "command", flash ? 2 : cap > 0 && used + queued >= cap ? 1 : 0);
 
             // the centred status pill: fixed width, hidden when empty (it is absolute: nothing shifts)
             int recovery = ProtocolDecoder.Int(Econ?["recovery"]), held = ProtocolDecoder.Int(Econ?["hold"]);
@@ -214,6 +315,60 @@ namespace SE.Runtime.UI
             focusPill.text = status;
             focusPill.EnableInClassList("se-status--bad", recovery > 0);
             focusPill.style.display = status.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            UpdateDominance();
+        }
+
+        // ------------------------------------------------------------------ decisive domination (W2-S server rule)
+        VisualElement dominanceBanner;
+        Label dominanceTitle, dominanceText;
+        int shownDomTeam = int.MinValue, shownDomSeconds = int.MinValue;
+
+        /// <summary>
+        /// The decisive-domination countdown: econ <c>dominance:[team, secondsLeft]</c> while a team holds
+        /// RULESET.dominance.hqShare of the operational headquarters with armyRatio× its rivals' army. Ours reads as
+        /// a victory countdown, a rival's as a defeat warning with what breaks it. Text changes once a second.
+        /// </summary>
+        void UpdateDominance()
+        {
+            var dom = Econ?["dominance"] as JArray;
+            int team = dom != null && dom.Count >= 2 ? ProtocolDecoder.Int(dom[0], -1) : -1;
+            int left = team >= 0 ? Mathf.Max(0, ProtocolDecoder.Int(dom[1])) : -1;
+            if (team == shownDomTeam && left == shownDomSeconds) return;
+            shownDomTeam = team; shownDomSeconds = left;
+            if (team < 0)
+            {
+                dominanceBanner.style.display = DisplayStyle.None;
+                root.EnableInClassList("se-hud--dominance", false);
+                focusPill.style.top = StyleKeyword.Null;
+                return;
+            }
+            int mine = -1;
+            foreach (var c in session.Welcome?.Civs ?? Array.Empty<CivInfo>()) if (c.Id == session.CivId) mine = c.Team;
+            bool spectator = session.Spectator || mine < 0;
+            bool ours = !spectator && mine == team;
+            var rule = Defs?["RULESET"]?["dominance"];
+            int hq = Mathf.RoundToInt(ProtocolDecoder.Float(rule?["hqShare"], .65f) * 100f);
+            float army = ProtocolDecoder.Float(rule?["armyRatio"], 2.5f);
+            string clockText = $"{left / 60}:{left % 60:00}";
+            string who = TeamCivNames(team);
+            dominanceTitle.text = ours ? $"DECISIVE DOMINATION · VICTORY IN {clockText}"
+                : spectator ? $"DECISIVE DOMINATION · {who.ToUpperInvariant()} WINS IN {clockText}"
+                : $"ENEMY DECISIVE DOMINATION · DEFEAT IN {clockText}";
+            dominanceText.text = ours ? $"Keep {hq}% of the headquarters and {army:0.#}× the enemy army until the timer runs out"
+                : spectator ? $"{who} holds {hq}% of the headquarters with {army:0.#}× the army"
+                : $"{who} holds {hq}% of the headquarters with {army:0.#}× your army · retake a headquarters or rebuild to stop it";
+            dominanceBanner.EnableInClassList("se-dominance--ours", ours);
+            dominanceBanner.EnableInClassList("se-dominance--enemy", !ours && !spectator);
+            dominanceBanner.style.display = DisplayStyle.Flex;
+            focusPill.style.top = 116;   // the status pill steps below the banner
+            root.EnableInClassList("se-hud--dominance", true);   // the toast and the critical banner too (SE.uss)
+        }
+
+        string TeamCivNames(int team)
+        {
+            var names = new List<string>();
+            foreach (var c in session.Welcome?.Civs ?? Array.Empty<CivInfo>()) if (c.Team == team && !c.Rebel) names.Add(c.Name);
+            return names.Count == 0 ? "Team " + (char)('A' + Mathf.Clamp(team, 0, 25)) : string.Join(" and ", names);
         }
 
         void UpdateRightGroup()
@@ -302,8 +457,20 @@ namespace SE.Runtime.UI
             observerChip.EnableInClassList("selected", popoverKind == "observer" && popoverPinned);
             FillPopover();
             var wb = anchor.worldBound;
-            popover.style.left = Mathf.Max(8, Mathf.Min(wb.xMin, root.layout.width - 272));
-            popover.style.top = wb.yMax + 6;
+            float rootH = root.layout.height;
+            if (!float.IsNaN(rootH) && wb.center.y > rootH * .5f)
+            {
+                // a bar on the minimap console: open beside it, growing upward from its bottom edge
+                popover.style.top = StyleKeyword.Auto;
+                popover.style.bottom = Mathf.Max(8, rootH - wb.yMax);
+                popover.style.left = Mathf.Max(8, Mathf.Min(wb.xMax + 10, root.layout.width - 272));
+            }
+            else
+            {
+                popover.style.bottom = StyleKeyword.Auto;
+                popover.style.left = Mathf.Max(8, Mathf.Min(wb.xMin, root.layout.width - 272));
+                popover.style.top = wb.yMax + 6;
+            }
             popover.style.display = DisplayStyle.Flex;
             popover.BringToFront();
             tooltip.style.display = DisplayStyle.None;
@@ -600,6 +767,7 @@ namespace SE.Runtime.UI
         void UpdateShell(float time)
         {
             now = time;
+            UpdateClock();
             UpdateChipHover();
             // clicking the world closes a pinned popover
             if (popoverPinned && Input.InputFacade.LeftDown && !IsPointerOverUi(Input.InputFacade.MousePosition)) ClosePopover();

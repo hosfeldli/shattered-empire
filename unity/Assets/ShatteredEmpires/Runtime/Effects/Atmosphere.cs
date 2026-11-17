@@ -213,9 +213,12 @@ namespace SE.Runtime.Effects
             RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear;
             RenderSettings.fogColor = horizon;
             float fogScale = 1f - Mathf.Clamp01(Fog * 0.7f + Rain * 0.35f);
-            RenderSettings.fogStartDistance = camDistance * 1.65f * fogScale;
-            RenderSettings.fogEndDistance = (camDistance * 3.8f + 125f) * Mathf.Max(.42f, fogScale);
-            Shader.SetGlobalVector(HazeId, new Vector4((Haze + Fog * .6f) * .035f, camDistance * .9f, 0, 0));
+            // ranges are measured from the logical eye: the telephoto camera stands EyeOffset further back
+            float eyeOffset = ViewLod.Telephoto ? ViewLod.EyeOffset : 0f;
+            RenderSettings.fogStartDistance = camDistance * 1.65f * fogScale + eyeOffset;
+            RenderSettings.fogEndDistance = (camDistance * 3.8f + 125f) * Mathf.Max(.42f, fogScale) + eyeOffset;
+            Shader.SetGlobalVector(HazeId, new Vector4((Haze + Fog * .6f) * .035f, camDistance * .9f + eyeOffset, 0, 0));
+            FollowShadowDistance(eyeOffset);
             Shader.SetGlobalColor(HazeColorId, horizon.linear);
             sky.SetColor(HorizonId, horizon);
             sky.SetFloat(OvercastId, overcast);
@@ -238,8 +241,33 @@ namespace SE.Runtime.Effects
                 fx.Rain(focusMap, Rain * VisualIntensity * Mathf.Lerp(1f, 0.3f, camDistance / 140f), WindMap, groundAt, Mathf.Clamp(camDistance * 0.55f, 4f, 30f));
         }
 
+        // URP measures the shadow distance from the real eye. The quality preset's distance is kept as the
+        // base (re-read whenever something else sets it) and pushed back by the telephoto offset, so the
+        // shadowed band still covers what the player sees; the base is restored on exit (the asset is shared).
+        float shadowBase = -1f, shadowSet = -1f;
+        void FollowShadowDistance(float eyeOffset)
+        {
+            var urp = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            if (urp == null) return;
+            if (shadowBase < 0 || Mathf.Abs(urp.shadowDistance - shadowSet) > .01f)
+            {
+                if (shadowBase < 0) Application.quitting += RestoreShadowDistance;
+                shadowBase = urp.shadowDistance;
+            }
+            shadowSet = shadowBase + eyeOffset;
+            if (Mathf.Abs(urp.shadowDistance - shadowSet) > .5f) urp.shadowDistance = shadowSet;
+            else shadowSet = urp.shadowDistance;
+        }
+
+        void RestoreShadowDistance()
+        {
+            var urp = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            if (urp != null && shadowBase > 0) urp.shadowDistance = shadowBase;
+        }
+
         public void Dispose()
         {
+            RestoreShadowDistance();
             if (volume != null) UnityEngine.Object.Destroy(volume.gameObject);
             if (profile != null) UnityEngine.Object.Destroy(profile);
         }

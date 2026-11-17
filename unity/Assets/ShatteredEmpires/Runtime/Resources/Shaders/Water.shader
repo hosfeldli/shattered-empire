@@ -71,7 +71,7 @@ Shader "SE/Water"
                 depth = lerp(depth, max(depth, i.color.a * .5h), river);
 
                 float2 p = i.positionWS.xz;
-                float nearDetail = 1.0 - smoothstep(12.0, 65.0, distance(_WorldSpaceCameraPos, i.positionWS));
+                float nearDetail = 1.0 - smoothstep(12.0, 65.0, SE_ViewDistance(i.positionWS));
                 float t = _Time.y;
                 float2 wind = normalize(_SE_Wind.xy + float2(.001, .001));
                 float2 gradient = float2(.8, .3) * cos(dot(p, float2(1.9, .8)) - t * .43)

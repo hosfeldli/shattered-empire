@@ -59,6 +59,8 @@ namespace SE.Runtime.UI
             catalogue = text != null ? JArray.Parse(text.text) : new JArray();
             Build();
             commander.SelectionChanged += () => { cardSignature = ""; };
+            // one ground marker per order (Commander.Markers.cs): green move, red attack move / attack, fading in 1.5 s
+            commander.OrderIssued += (kind, point) => Session.Commander.AddOrderMarker(kind, point);
         }
 
         // ------------------------------------------------------------------ helpers
@@ -88,7 +90,8 @@ namespace SE.Runtime.UI
         /// <summary>A button with an optional icon beside its label (laid out in a row, never overlapping).</summary>
         static Button B(string label, Action click, VisualElement parent = null, string icon = null, string cls = null)
         {
-            var b = new Button(click) { text = "" };
+            // in-game buttons never take keyboard focus: Space (jump to alert) and Enter would click them again
+            var b = new Button(click) { text = "", focusable = false };
             b.tooltip = DefaultActionTip(label);
             b.AddToClassList("btn");
             if (cls != null) foreach (var c in cls.Split(' ')) b.AddToClassList(c);
@@ -187,6 +190,7 @@ namespace SE.Runtime.UI
             Map = new Minimap(session); Map.style.display = DisplayStyle.None;
             Map.OrderAt = (x, z, queue) => { if (units.Selected.Count > 0) commander.MinimapOrder(x, z, queue); };
             root.Add(Map);
+            BuildConsole();   // Hud.Console.cs: the docked minimap console (era, resources, idle, attack banner) and the Build/Terrain dock
             BuildCommandUi();   // Hud.Base.cs (Impl-2): wheels, defense bar, tool chip
             BuildCommandGroups();   // Hud.Command.cs
             // the main menu (MainMenu.cs) with the shared settings view
@@ -236,6 +240,7 @@ namespace SE.Runtime.UI
             if (groupsBar != null && !on) groupsBar.style.display = DisplayStyle.None;
             if (!on) { ClosePauseMenu(false); ClosePopover(); toast.style.display = DisplayStyle.None; }
             ShowCommandUi(on);   // Hud.Base.cs (Impl-2)
+            ShowConsole(on);   // Hud.Console.cs
             if (on)
                 foreach (var el in new VisualElement[] { topbar, rail, Map })
                 {
@@ -405,13 +410,14 @@ namespace SE.Runtime.UI
             }
             if (!session.Ready) return;
             UpdateShell(time);   // Hud.Shell.cs: clock, chip hover, popover
+            if (session.ActionRts) UpdateConsole(time);   // Hud.Console.cs: minimap console and dock
             UpdateToast(time);
             if (time > bannerUntil) banner.style.display = DisplayStyle.None;
             if (Map.resolvedStyle.display != DisplayStyle.None) Map.Tick(time);
             PlacementCard();
             if (Input.InputFacade.Pressed(KeyCode.Escape)) HandleEscape();
             if (session.ActionRts) UpdateCommandUi(time);   // Hud.Base.cs (Impl-2)
-            if (Input.InputFacade.Action("pause")) TogglePause();
+            if (Input.InputFacade.Action("pause") && !commander.PatrolKeyClaimed) TogglePause();   // P patrols when aircraft are selected (D)
             SpeedHotkeys();
             UpdateCommandGroups(time);
             Shortcuts();
@@ -1439,7 +1445,7 @@ namespace SE.Runtime.UI
             switch (tutorialStep)
             {
                 case 0:
-                    text = "Welcome, commander. Move the camera with W A S D or by pushing the mouse to the screen edge, and zoom with the mouse wheel.";
+                    text = "Welcome, commander. Move the camera with the arrow keys or by pushing the mouse to the screen edge (Alt + drag turns it), and zoom with the mouse wheel.";
                     if (stepAt == 0) { stepAt = time; startFocus = CameraFocus?.Invoke() ?? Vector3.zero; }
                     advance = time - stepAt > 3f && Vector3.Distance(CameraFocus?.Invoke() ?? Vector3.zero, startFocus) > 3f;
                     break;

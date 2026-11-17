@@ -65,3 +65,21 @@ headers. Needs an in-editor visual pass.
   clod normal relief.
 - **Perf.** `CityRenderer.Draw` now tests each cell's bounds once before drawing its batches, and skips
   empty batches.
+
+## Round compound, docked sockets and defenses (2026-11-16)
+
+Replaces the 2026-11-15 socket presentation above (details in
+[CHANGELOG_2026-11-16.md](CHANGELOG_2026-11-16.md), section I). Unverified in Unity until Wave 2.
+
+- **Layout per the mockup.** A held base stands on one round concrete foundation. The round HQ hub
+  (`Base_town`) is in the middle, ringed by the dark ring road. Rounded-square socket pads sit around it.
+- **Docking.** Each socket is docked to the hub: a lit arm runs from a gate in the HQ drum to the ring road,
+  and a concrete causeway runs on to the pad threshold. A painted glyph on the causeway names the building.
+- **Slot counts.** Sockets open in the server's `openSlots` order, by `capacity` (3 / 5 / 7). Later ones show
+  as faint pads with tier dots.
+- **Roads.** The client compound covers two hex rings (`CompoundSkipRadius` 3.6). Entrances leave
+  between sockets and bend only past the foundation, so no street crosses a pad.
+- **Defenses.** Field defenses are Blender models (`build_defenses.py`) with team-tinted turret heads
+  that track their targets and show their upgrade level.
+- **Damage.** Damage shows in three stages on the building itself.
+- **Territory.** The territory border follows the hex sides.

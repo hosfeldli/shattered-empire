@@ -3,7 +3,7 @@ import { NB, disk, dist, hexLine, rOf, qOf, WRAP } from './hex.js';
 import { hash2 } from './rng.js';
 import { OUTPOST_TYPES, RUIN_TYPES } from './actionDefinitions.js';
 import { centerOf, distance, dxBetween, HEAVY_GROUND, tileAt } from './actionNavigation.js';
-import { MAP_SEED, mirrorTile, siteTiles, tileOf } from './authoredMaps.js';
+import { MAP_SEED, mapPoint, mirrorTile, rotatePoint, rotateTile, siteTiles, symmetryOf, tileOf } from './authoredMaps.js';
 
 const NAMES = ['Ironford', 'Ashby Crossing', 'Gantry', 'Saltreach', 'Signal Point', 'Northlight', 'Hollowgate',
   'Cinderhold', 'Pylon Ridge', 'Dry Dock', 'Ember Station', 'Scrapton', 'Clearwater', 'Terminal', 'Quarry Nine',
@@ -11,7 +11,7 @@ const NAMES = ['Ironford', 'Ashby Crossing', 'Gantry', 'Saltreach', 'Signal Poin
 const land = (w, t) => t >= 0 && !isWater(w.terr[t]) && !w.lake[t] && w.terr[t] < T.MOUNTAIN;
 const parcel = (w, t) => land(w, t) && !w.river[t] && w.terr[t] !== T.MARSH;
 
-function planRing(w, tile, seed, siteId = 0) {
+export function planRing(w, tile, seed, siteId = 0) {
   const origin = centerOf(tile), phase = hash2(qOf(tile), rOf(tile), seed + 319) * Math.PI * 2;
   const parcels = [];
   let low = w.elev[tile], high = low;
@@ -132,7 +132,18 @@ export function buildActionMap(game) {
         - Math.max(0, goalRadius * .63 - range) * 5 + p.noise + p.score * .22;
       return { p, score };
     }).sort((a, b) => b.score - a.score || a.p.tile - b.p.tile);
-    const start = ranked.find(({ p }) => reach[p.tile])?.p || ranked[0].p;
+    // Starts keep a hard minimum distance (the ring's chord, a little relaxed): the separation term above is
+    // only a penalty, and on a world whose road-reachable land is one compact island (archipelago seeds) the
+    // best-scored reachable candidates could stack three capitals on neighbouring hexes. Relax the gap step
+    // step by step down to the base gap; below that a start apart from the others beats a reachable one.
+    let start = null;
+    const apart = (p, min) => Math.min(...locations.map((o) => distance(o, p))) >= min;
+    if (locations.length) {
+      for (let minSep = goalRadius * Math.min(1, 2 * Math.sin(Math.PI / starts)) * .9; !start && minSep >= gap; minSep *= .85)
+        start = ranked.find(({ p }) => reach[p.tile] && apart(p, minSep))?.p || null;
+      start ||= ranked.find(({ p }) => apart(p, gap * 1.6))?.p || ranked.find(({ p }) => apart(p, gap))?.p || null;
+    }
+    start ||= ranked.find(({ p }) => reach[p.tile])?.p || ranked[0].p;
     locations.push({ ...start, start: i });
     occupied.add(start.tile);
   }
@@ -384,6 +395,7 @@ function mainSite(id, tile, x, z, name, kindKey, start, ring) {
 }
 
 function buildAuthoredMap(game, def) {
+  if (symmetryOf(def) !== 2) return buildRotatedMap(game, def);
   const w = game.world, players = def.players, team = def.teamSize;
   if (game.civs.length !== players) throw new Error(`${def.name} is a ${team}v${team} map for ${players} players (this match has ${game.civs.length}).`);
   const { half, center } = siteTiles(def);
@@ -454,4 +466,152 @@ function buildAuthoredMap(game, def) {
   for (const site of sites) game.addRuin(site.tile, site.ruin, -1, site.name);
   game.nav.invalidate();
   return sites;
+}
+
+// A ring turned k steps about the map centre (free-for-all maps).
+function turnedRing(ring, k, n, id) {
+  return ring.map((p) => {
+    const q = rotatePoint(p, k, n);
+    return { ...p, id: id * 16 + p.index + 1, tile: tileAt(q.x, q.z), x: +q.x.toFixed(4), z: +q.z.toFixed(4) };
+  });
+}
+
+// Free-for-all maps (symmetry 3 or 4): the authored sector is placed once per seat, turned about the
+// centre, and each turned road is routed on its own ground. Centre sites and outposts are shared.
+function buildRotatedMap(game, def) {
+  const w = game.world, players = def.players, n = symmetryOf(def);
+  if (game.civs.length !== players) throw new Error(`${def.name} is a free-for-all map for ${players} players (this match has ${game.civs.length}).`);
+  if (players % n) throw new Error(`${def.name}: ${players} players do not divide into ${n} turned sectors`);
+  const perSector = players / n;
+  const { half, center } = siteTiles(def);
+  const ringFits = (t) => parcel(w, t) && planRing(w, t, MAP_SEED) != null;
+  const placed = [];
+  const place = (s, k) => {
+    const tile = nearestLand(w, k ? rotateTile(s.tile, k, n) : s.tile, ringFits);
+    if (tile < 0) throw new Error(`${def.name}: no room for a city ring at ${s.key} (turn ${k})`);
+    placed.push({ s, k, tile });
+  };
+  const starts = half.filter((s) => s.start !== undefined).sort((a, b) => a.start - b.start);
+  if (starts.length !== perSector) throw new Error(`${def.name}: expected ${perSector} starts per sector`);
+  for (let k = 0; k < n; k++) for (const s of starts) place(s, k);
+  for (const s of half.filter((x) => x.start === undefined)) for (let k = 0; k < n; k++) place(s, k);
+  for (const s of center) {
+    const tile = nearestLand(w, s.tile, ringFits);
+    if (tile < 0) throw new Error(`${def.name}: no room for the central city ring at ${s.key}`);
+    placed.push({ s, k: -1, tile });
+  }
+  const sites = placed.map((p, i) => {
+    const id = i + 1, c = centerOf(p.tile);
+    let ring = null;
+    if (p.k > 0) {
+      // the turned ring of the sector-0 twin, so every seat builds on the same layout where it fits
+      const twin = placed.find((q) => q.s === p.s && q.k === 0);
+      const base = planRing(w, twin.tile, MAP_SEED, placed.indexOf(twin) + 1);
+      if (base) {
+        // re-centred on the placed tile (the turned centre can sit a fraction of a hex away)
+        const tc = rotatePoint(centerOf(twin.tile), p.k, n), dx = c.x - tc.x, dz = c.z - tc.z;
+        ring = turnedRing(base, p.k, n, id).map((lot) => {
+          const x = lot.x + dx, z = lot.z + dz;
+          return { ...lot, tile: tileAt(x, z), x: +x.toFixed(4), z: +z.toFixed(4), yaw: +Math.atan2(c.x - x, c.z - z).toFixed(4) };
+        });
+        if (!ring.every((lot) => parcel(w, lot.tile))) ring = null;
+      }
+    }
+    ring ??= planRing(w, p.tile, MAP_SEED, id);
+    if (!ring || ring.length !== 8 || ring.some((lot) => !parcel(w, lot.tile))) throw new Error(`${def.name}: the ring at ${p.s.key} does not fit`);
+    const name = p.k > 0 ? def.names?.[p.s.key]?.[p.k - 1] || `${p.s.name} ${p.k + 1}` : p.s.name;
+    const start = p.s.start !== undefined ? p.s.start + p.k * perSector : undefined;
+    return mainSite(id, p.tile, c.x, c.z, name, p.s.kind, start, ring);
+  });
+  gradeSites(w, sites);
+  game.nav.invalidate();
+  const occupied = new Set(sites.flatMap((s) => s.parcels.map((p) => p.tile)));
+  const drivable = (t) => land(w, t) && !w.river[t] && Number.isFinite(game.nav.cost(t, centerOf(t).x, centerOf(t).z, HEAVY_GROUND));
+  const addOutpost = (tile, kind, name) => {
+    const key = OUTPOST_TYPES[kind] ? kind : 'supply', info = OUTPOST_TYPES[key], c = centerOf(tile);
+    occupied.add(tile);
+    sites.push({ id: sites.length + 1, tile, x: c.x, z: c.z, name: name || info.name, kind: key, ruin: info.ruin,
+      radius: .91, captureTime: 10, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
+  };
+  const turnUV = (uv, k) => { const p = rotatePoint(mapPoint(uv), k, n); return tileAt(p.x, p.z); };
+  for (const o of def.outposts || []) for (let k = 0; k < (o.center ? 1 : n); k++) {
+    const tile = nearestLand(w, turnUV(o.at, k), (t) => drivable(t) && !occupied.has(t));
+    if (tile < 0) throw new Error(`${def.name}: no ground for the outpost at ${o.at} (turn ${k})`);
+    addOutpost(tile, o.kind, o.name);
+  }
+  // Roads: 'key' is the site in the same sector, '~key' the one in the next sector clockwise; centre
+  // sites are shared by every sector.
+  const keyTile = new Map();
+  placed.forEach((p, i) => keyTile.set(p.k < 0 ? p.s.key : `${p.s.key}@${p.k}`, sites[i].tile));
+  const hubs = sites.filter((s) => s.slots).map((s) => s.tile);
+  for (const road of def.roads || []) for (let k = 0; k < n; k++) {
+    const waypoint = (wp) => {
+      if (typeof wp !== 'string') return nearestLand(w, turnUV(wp, k), drivable);
+      const next = wp.startsWith('~'), key = next ? wp.slice(1) : wp;
+      const t = keyTile.get(key) ?? keyTile.get(`${key}@${(k + (next ? 1 : 0)) % n}`);
+      if (t === undefined) throw new Error(`${def.name}: road waypoint ${wp} is not a site`);
+      return t;
+    };
+    const tiles = road.map(waypoint);
+    for (let i = 1; i < tiles.length; i++) {
+      const path = hubRoute(w, game.nav.strategic(tiles[i - 1], tiles[i], HEAVY_GROUND, true, false, ROAD_SEARCH), hubs);
+      if (!path) throw new Error(`${def.name}: no road route between ${JSON.stringify(road[i - 1])} and ${JSON.stringify(road[i])} (turn ${k})`);
+      for (let j = 1; j < path.length; j++) game.roads.set(path[j - 1], path[j], 2);
+      game.nav.invalidate();
+    }
+  }
+  w.starts = sites.slice(0, players).map((s) => s.tile);
+  for (const site of sites) game.addRuin(site.tile, site.ruin, -1, site.name);
+  game.nav.invalidate();
+  return sites;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Map preview for the lobby (mapCatalog.mapList → `preview`, stored in mapPreviews.js by
+// tools/map-previews.mjs). A PREVIEW_SIZE × PREVIEW_SIZE grid over the whole world rectangle:
+// cell (col, row) covers u ∈ [col/64, (col+1)/64) west → east and v ∈ [row/64, (row+1)/64) north → south.
+// `cells` is base64 of one byte per cell, row-major from the north-west corner, holding a class index
+// into PREVIEW_CLASSES. A cell shows a bridge, road or river when any of its hexes has one, otherwise
+// its most common terrain. The world is √3 : 1.5 (`aspect` 1.1547) wider than tall, so draw the grid
+// that much wider than high. Sites are listed with normalised [u, v] (multiply by 64 for grid cells).
+export const PREVIEW_SIZE = 64;
+export const PREVIEW_CLASSES = ['deep', 'shallow', 'open', 'forest', 'marsh', 'hills', 'mountains', 'peaks', 'river', 'ford', 'road', 'bridge'];
+const previewClass = (w, t) => {
+  if (w.road[t]) return w.river[t] ? 11 : 10;
+  if (w.river[t]) return w.flow[t] < 94 ? 9 : 8;
+  const c = w.terr[t];
+  return c === T.DEEP ? 0 : c === T.SHALLOW || w.lake[t] ? 1 : c === T.FOREST ? 3 : c === T.MARSH ? 4 : c === T.HILLS ? 5
+    : c === T.MOUNTAIN ? 6 : c === T.PEAK || c === T.LAVA ? 7 : 2;
+};
+export function mapPreview(game, size = PREVIEW_SIZE) {
+  const w = game.world, n = size * size, votes = new Uint16Array(n * PREVIEW_CLASSES.length);
+  const XS = Math.sqrt(3) * W, ZS = 1.5 * H, CX = Math.sqrt(3) * (W - .5) / 2, CZ = 1.5 * (H - 1) / 2;
+  const uv = (p) => [(p.x - CX) / XS + .5, (p.z - CZ) / ZS + .5];
+  const cellOf = (p) => { const [u, v] = uv(p); return Math.min(size - 1, Math.max(0, Math.floor(v * size))) * size + Math.min(size - 1, Math.max(0, Math.floor(u * size))); };
+  for (let t = 0; t < N; t++) votes[cellOf(centerOf(t)) * PREVIEW_CLASSES.length + previewClass(w, t)]++;
+  const cells = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = votes.subarray(i * PREVIEW_CLASSES.length, (i + 1) * PREVIEW_CLASSES.length);
+    let best = -1;
+    for (const line of [11, 10, 8, 9]) if (v[line]) { best = line; break; }
+    if (best < 0) {
+      let top = 0;
+      for (let k = 0; k < 8; k++) if (v[k] > top) { top = v[k]; best = k; }
+    }
+    if (best < 0) {
+      // no hex centre fell in this cell: sample the hex under its middle
+      const col = i % size, row = (i / size) | 0;
+      const t = tileAt(CX + ((col + .5) / size - .5) * XS, CZ + ((row + .5) / size - .5) * ZS);
+      best = t >= 0 ? previewClass(w, t) : 0;
+    }
+    cells[i] = best;
+  }
+  const at = (s) => uv(s).map((x) => +x.toFixed(4));
+  return {
+    w: size, h: size, aspect: +(Math.sqrt(3) / 1.5).toFixed(4), classes: PREVIEW_CLASSES,
+    cells: Buffer.from(cells).toString('base64'),
+    starts: game.sites.filter((s) => s.start !== undefined).sort((a, b) => a.start - b.start).map((s) => { const [u, v] = at(s); return { seat: s.start, u, v, name: s.name }; }),
+    bases: game.sites.filter((s) => s.slots && s.start === undefined).map((s) => { const [u, v] = at(s); return { u, v, name: s.name, kind: s.kind }; }),
+    outposts: game.sites.filter((s) => !s.slots).map((s) => { const [u, v] = at(s); return { u, v, kind: s.kind }; }),
+  };
 }

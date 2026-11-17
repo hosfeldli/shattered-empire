@@ -2,9 +2,10 @@ import { DT, N } from './constants.js';
 import { NB } from './hex.js';
 import { hash2 } from './rng.js';
 import { ACTION_UNITS, ACTION_BUILDINGS } from './actionDefinitions.js';
-import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, tileAt } from './actionNavigation.js';
+import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, tileAt } from './actionNavigation.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
+import { applyTerrain, engineerStep as baseEngineers } from './actionEngineers.js';
 
 export function seedMaterialCaches(game) {
   const add = (site, index, amount, radius, replenishes = false) => {
@@ -59,9 +60,11 @@ function cacheStep(game) {
   }
 }
 
+// Player-controlled engineers from older saves keep their former support behaviour; base engineers
+// (u.auto) are driven by actionEngineers.js.
 function engineerStep(game, dt) {
   for (const u of game.units.values()) {
-    if (u.type !== 'engineer') continue;
+    if (u.type !== 'engineer' || u.auto) continue;
     u.assisting = false;
     if (game.time - u.lastCombat < 4 || u.attack || u.orders.length || u.mode === 'assault') {
       if (u.supportTask && u.goal && !u.attack && !u.orders.length) { stopUnit(game, u); u.mode = 'guard'; }
@@ -94,6 +97,16 @@ function engineerStep(game, dt) {
   }
 }
 
+// W2: player roads stay out of base foundations. An edge whose segment passes within ROAD_FOUNDATION of any base
+// site's centre would cross the building ring's pads; the automatic hub spokes (connectSiteRoads) already run
+// straight to the centre, and the client hides street geometry within 3.6 of a base.
+export const ROAD_FOUNDATION = 2.7;
+function crossesFoundation(game, a, b) {
+  const p = centerOf(a), q = centerOf(b);
+  return game.sites.find((s) => s.slots && [0, .25, .5, .75, 1].some((t) =>
+    distance(s, { x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t }) < ROAD_FOUNDATION)) || null;
+}
+
 export function roadBuild(game, civ, points, preview = false) {
   if (points.length < 2) return { error: 'Draw a road between two known locations.' };
   const edges = new Map(); let seenTiles = 0;
@@ -105,9 +118,18 @@ export function roadBuild(game, civ, points, preview = false) {
     for (let k = 1; k < route.length; k++) {
       const from = route[k - 1], to = route[k];
       if (!civ.visible[from] || !civ.visible[to]) return { error: 'Scout the road route so its construction sites are currently visible.' };
+      if (game.world.owner[from] !== civ.id || game.world.owner[to] !== civ.id) return { error: 'Roads can only be built inside your own territory.', code: 'territory' };
       if (game.sites.some((s) => s.hq && game.hostile(civ.id, s.owner) && (distance(s, centerOf(from)) < 2.7 || distance(s, centerOf(to)) < 2.7)))
         return { error: 'Road construction cannot enter an active hostile headquarters compound.' };
       const existing = game.roads.usable(from, to); if (existing?.type >= 2 && existing.cond >= 95) continue;
+      const foundation = crossesFoundation(game, from, to);
+      if (foundation) {
+        if (existing) continue;   // a hub spoke already serves the base: the route joins it, nothing is laid inside
+        return { error: `Roads cannot be built through the ${foundation.name || 'base'} foundation; the base links its own roads to the hub.`, code: 'foundation' };
+      }
+      // nor through a building's walls (any owner, ruins too)
+      const wall = structureOnSegment(game, centerOf(from), centerOf(to), .16, { outposts: false });
+      if (wall) return { error: `The road route runs through ${wall.label}: draw it around the structure.`, code: 'blocked' };
       if (game.roadProjects.some((p) => p.edges.some((e) => e.a === from && e.b === to || e.a === to && e.b === from))) continue;
       edges.set(Math.min(from, to) + ':' + Math.max(from, to), { a: from, b: to });
       if (++seenTiles > 120) return { error: 'Draw the road in shorter sections.' };
@@ -118,17 +140,25 @@ export function roadBuild(game, civ, points, preview = false) {
   if (preview) return { reply: { t: 'ack', road: { positions, cost: { materials: cost }, seconds: Math.max(3, Math.min(14, edges.size * 1.1)) } } };
   if (!edges.size) return { error: 'That route already has an operational paved road or construction in progress.' };
   if (civ.res.materials < cost) return { error: `Road construction requires ${cost} Materials.` };
-  if (game.roadProjects.filter((p) => !p.auto).length >= 24) return { error: 'Finish an existing road project first.' };
+  if (game.roadProjects.filter((p) => !p.auto && p.owner === civ.id && p.kind !== 'terrain').length >= 24)   // review S: per player, not shared by every player return { error: 'Finish an existing road project first.' };
   civ.res.materials -= cost;
-  game.roadProjects.push({ owner: civ.id, edges: [...edges.values()], left: Math.max(3, Math.min(14, edges.size * 1.1)) });
+  // built by the base engineers, edge by edge (actionEngineers.js)
+  const seconds = Math.max(3, Math.min(14, edges.size * 1.1));
+  game.roadProjects.push({ id: game.id_(), owner: civ.id, edges: [...edges.values()], left: seconds, total: seconds });
   return {};
 }
 
 export function fieldEconomyStep(game, dt) {
-  cacheStep(game); engineerStep(game, dt);
+  cacheStep(game); engineerStep(game, dt); baseEngineers(game, dt);
   for (let i = game.roadProjects.length - 1; i >= 0; i--) {
-    const p = game.roadProjects[i]; p.left -= dt;
+    // automatic links lay themselves; player roads and terrain works advance only while engineers work them
+    const p = game.roadProjects[i]; if (p.auto) p.left -= dt;
     if (p.left > 0) continue;
+    if (p.kind === 'terrain') {
+      applyTerrain(game, p); game.roadProjects.splice(i, 1);
+      game.notify(p.owner, p.label || 'Terrain works complete.', { kind: 'build', tile: p.tile });
+      continue;
+    }
     for (const e of p.edges) game.roads.set(e.a, e.b, 2);
     // a finished road crosses any trench in its way: the works on its tiles are filled in, leaving a gap
     let filled = 0;

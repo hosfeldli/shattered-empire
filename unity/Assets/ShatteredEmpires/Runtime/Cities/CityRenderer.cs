@@ -20,7 +20,8 @@ namespace SE.Runtime.Cities
     {
         enum Part { Box, Roof, Cylinder, Cone, Skyscraper, Silo, Chimney, Crane, Ship, Broken, Dome, Car, Truck,
             Concrete, Brick, Siding, Glass, Asphalt, MetalRoof, Shell, Collapse, Tree, Dish, Wire, TankObstacle, StrategicHatch, Sandbag,
-            BaseTown, BaseBarracks, BaseDepot, BaseMotorWorks, BasePower, Count }
+            BaseTown, BaseBarracks, BaseDepot, BaseMotorWorks, BasePower,
+            DefBarricade, DefGuardPost, DefBunker, DefAtBase, DefAaBase, DefMgBase, DefFort, DefSensor, DefArtilleryBase, DefRepair, DefWall, Count }
 
         sealed class Cell
         {
@@ -37,6 +38,15 @@ namespace SE.Runtime.Cities
         readonly Dictionary<int, Cell> cells = new Dictionary<int, Cell>();
         readonly HashSet<int> dirty = new HashSet<int>();
         readonly List<int> scratch = new List<int>();
+        readonly HashSet<int> baseCells = new HashSet<int>();
+        float lastBaseCompose = -100f, baseHold;
+        /// <summary>Base cells composed at least once (a recompose, not a first appearance, may wait longer when it is expensive).</summary>
+        readonly HashSet<int> baseComposedOnce = new HashSet<int>();
+        public float BaseRecomposeSeconds = 1.25f;
+        /// <summary>Diagnostics: base-cell composes, their total and worst time (ms), since the last reset.</summary>
+        /// <summary>Diagnostics: compose time (ms) in streets+old world, base compounds, buildings, street mesh.</summary>
+        public readonly double[] ComposeMs = new double[4];
+        public int BaseCellComposes; public float BaseCellComposeMsTotal, BaseCellComposeMsMax;
         public int Age = 1;
         /// <summary>Old-world ruin sites reported by the server, by tile.</summary>
         public readonly Dictionary<int, RuinRecord> Ruins = new Dictionary<int, RuinRecord>();
@@ -93,6 +103,7 @@ namespace SE.Runtime.Cities
                 RoadCurve.SkipHex = t => ActionRts && ComposeRingApproaches(t);
                 RoadCurve.HiddenEdge = RedundantEntrance;
                 RoadCurve.CompoundLanes.Clear(); RoadCurve.LaneRevision++;
+                baseCache.Clear(); baseComposedOnce.Clear(); baseHold = 0;
                 roadRevision = -1;
             }
             // A change of who "we" are (or of the civ roster) recolours every team accent.
@@ -119,7 +130,21 @@ namespace SE.Runtime.Cities
             scratch.Clear();
             scratch.AddRange(dirty);
             float period = world.Grid.Period;
-            scratch.Sort((a, b) => CellDistance(a, cameraPos, period).CompareTo(CellDistance(b, cameraPos, period)));
+            // (perf, workstream A) cells holding a base compound go after the plain cells: the ring
+            // invalidation re-dirties a base while any neighbouring cell is still dirty, so composing the
+            // (expensive) base first re-queued it every frame and starved its neighbours: a ~50 ms livelock.
+            baseCells.Clear();
+            if (ActionRts) foreach (var site in objectiveByTile.Values) if (site.IsBase) baseCells.Add(world.ChunkOf(site.Tile));
+            scratch.Sort((a, b) =>
+            {
+                int ba = baseCells.Contains(a) ? 1 : 0, bb = baseCells.Contains(b) ? 1 : 0;
+                return ba != bb ? ba.CompareTo(bb) : CellDistance(a, cameraPos, period).CompareTo(CellDistance(b, cameraPos, period));
+            });
+            // A base compound costs 15-170 ms to compose (road network and presentation), and every shell
+            // landing in its cell re-dirties it: base cells recompose at most once per BaseRecomposeSeconds
+            // (they stay dirty meanwhile), so a battle at a base is not a stream of long frames.
+            float clock = Time.realtimeSinceStartup;
+            if (clock - lastBaseCompose < Math.Max(BaseRecomposeSeconds, baseHold)) scratch.RemoveAll(c => baseCells.Contains(c) && baseComposedOnce.Contains(c));
             int n = Math.Min(MaxCellsPerFrame, scratch.Count);
             Array.Clear(hasBuilding, 0, hasBuilding.Length);
             foreach (var b in structures.Buildings.Values) if (b.Tile >= 0 && b.Tile < hasBuilding.Length) hasBuilding[b.Tile] = true;
@@ -137,8 +162,27 @@ namespace SE.Runtime.Cities
             {
                 int c = scratch[k];
                 dirty.Remove(c);
+                long composeStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 Compose(c, terrain);
-                if (System.Diagnostics.Stopwatch.GetTimestamp() - start > budget) break;
+                if (baseCells.Contains(c))
+                {
+                    float ms = (float)((System.Diagnostics.Stopwatch.GetTimestamp() - composeStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+                    BaseCellComposes++; BaseCellComposeMsTotal += ms; BaseCellComposeMsMax = Math.Max(BaseCellComposeMsMax, ms);
+                }
+                // base cells re-dirty each other through the ring invalidation: once the first is composed,
+                // the rest go in the same frame, or two neighbouring bases recompose each other forever
+                if (baseCells.Contains(c))
+                {
+                    // final pass: a recompose costing ms holds the next one back ms x 0.05 s (60 ms -> 3 s, at most 4 s), so a
+                    // battle in a large base cell spends at most ~2 % of the time recomposing it instead of a 60 ms hitch
+                    // every 1.25 s; a base appearing for the first time is never held back by another
+                    float spent = (float)((System.Diagnostics.Stopwatch.GetTimestamp() - composeStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+                    if (baseComposedOnce.Contains(c)) baseHold = Mathf.Clamp(spent * .05f, 0f, 4f);
+                    baseComposedOnce.Add(c);
+                    lastBaseCompose = clock;
+                }
+                bool coupled = baseCells.Contains(c) && k + 1 < n && baseCells.Contains(scratch[k + 1]);
+                if (!coupled && System.Diagnostics.Stopwatch.GetTimestamp() - start > budget) break;
             }
         }
 
@@ -169,7 +213,11 @@ namespace SE.Runtime.Cities
                 MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MilitaryMeshes.CargoTruck,
                 MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish, MeshKit.Coil, MeshKit.TankObstacle, MeshKit.StrategicHatch, MeshKit.Sandbag,
                 AuthoredMesh(Part.BaseTown, MeshKit.Box), AuthoredMesh(Part.BaseBarracks, MeshKit.Box), AuthoredMesh(Part.BaseDepot, MeshKit.Box),
-                AuthoredMesh(Part.BaseMotorWorks, MeshKit.Box), AuthoredMesh(Part.BasePower, MeshKit.Box) };
+                AuthoredMesh(Part.BaseMotorWorks, MeshKit.Box), AuthoredMesh(Part.BasePower, MeshKit.Box),
+                AuthoredMesh(Part.DefBarricade, MeshKit.Box), AuthoredMesh(Part.DefGuardPost, MeshKit.Box), AuthoredMesh(Part.DefBunker, MeshKit.Box),
+                AuthoredMesh(Part.DefAtBase, MeshKit.Box), AuthoredMesh(Part.DefAaBase, MeshKit.Box), AuthoredMesh(Part.DefMgBase, MeshKit.Box),
+                AuthoredMesh(Part.DefFort, MeshKit.Box), AuthoredMesh(Part.DefSensor, MeshKit.Box), AuthoredMesh(Part.DefArtilleryBase, MeshKit.Box),
+                AuthoredMesh(Part.DefRepair, MeshKit.Box), AuthoredMesh(Part.DefWall, MeshKit.Box) };
             for (int i = 0; i < cell.Batches.Length; i++)
             {
                 SurfaceKind material = (Part)i switch
@@ -199,7 +247,9 @@ namespace SE.Runtime.Cities
         {
             if (part == Part.Car || part == Part.Truck) return;
             var p = MapSpace.W(mapPos);
-            current.Batches[(int)part].Add(InstanceData.TRS(p, MapSpace.Yaw(mapYaw), size, new float4(color, emission)));
+            var data = InstanceData.TRS(p, MapSpace.Yaw(mapYaw), size, new float4(color, emission));
+            current.Batches[(int)part].Add(data);
+            instanceTap?.Add(((int)part, data));
             float r = math.max(size.x, size.z);
             bmin = math.min(bmin, p - new float3(r, 0, r)); bmax = math.max(bmax, p + new float3(r, size.y, r));
         }
@@ -222,6 +272,7 @@ namespace SE.Runtime.Cities
             BeginStreetMesh();
             bmin = new float3(1e9f); bmax = new float3(-1e9f);
             var g = world.Grid;
+            long tp0 = System.Diagnostics.Stopwatch.GetTimestamp();
             int cs = WorldModel.ChunkSize, cx = cellId % world.ChunksW, cy = cellId / world.ChunksW;
             // streets and bridges of the cell's hexes (each edge drawn by its lower-index end)
             for (int lr = 0; lr < cs; lr++)
@@ -238,8 +289,10 @@ namespace SE.Runtime.Cities
                     ComposeOldWorld(t);
                     terrain.SetBlocked(t, IsBlocked(t));
                 }
+            long tp1 = System.Diagnostics.Stopwatch.GetTimestamp();
             if (ActionRts) foreach (var site in objectiveByTile.Values)
                 if (site.IsBase && world.ChunkOf(site.Tile) == cellId) ComposeCityDistrict(site);
+            long tp2 = System.Diagnostics.Stopwatch.GetTimestamp();
             if (ActionRts) foreach (var pickup in pickups.Values)
                 if (world.ChunkOf(pickup.Tile) == cellId) MaterialsPickup(pickup);
             if (Showcase) ComposeShowcaseStreets(cellId);
@@ -249,9 +302,13 @@ namespace SE.Runtime.Cities
                 ComposeBuilding(b);
                 if (b.Done && !ActionRts && !Showcase) DistrictLinks(b.Tile);
             }
+            long tp3 = System.Diagnostics.Stopwatch.GetTimestamp();
             cell.Any = false;
             foreach (var batch in cell.Batches) if (batch.Count > 0) cell.Any = true;
             FinishStreetMesh(cell);
+            long tp4 = System.Diagnostics.Stopwatch.GetTimestamp();
+            double k = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            ComposeMs[0] += (tp1 - tp0) * k; ComposeMs[1] += (tp2 - tp1) * k; ComposeMs[2] += (tp3 - tp2) * k; ComposeMs[3] += (tp4 - tp3) * k;
             var bounds = new Bounds();
             if (cell.Any) bounds.SetMinMax(new Vector3(bmin.x, bmin.y - 0.2f, bmin.z), new Vector3(bmax.x, bmax.y + 0.2f, bmax.z));
             cell.Bounds = bounds;
@@ -267,7 +324,9 @@ namespace SE.Runtime.Cities
         {
             if (part == Part.Car || part == Part.Truck) return;
             var p = MapSpace.W(mapPos);
-            current.Batches[(int)part].Add(InstanceData.TRS(p, unityRotation, size, new float4(color, 0)));
+            var data = InstanceData.TRS(p, unityRotation, size, new float4(color, 0));
+            current.Batches[(int)part].Add(data);
+            instanceTap?.Add(((int)part, data));
             float r = math.cmax(size);
             bmin = math.min(bmin, p - r); bmax = math.max(bmax, p + r);
         }
@@ -567,9 +626,10 @@ namespace SE.Runtime.Cities
             var district = Districts.At(b.Tile);
             styleSeed = district?.Seed ?? seed;
             float4 civ = CivColor(b.Owner);
-            // damage darkens by band, not by every point of health
+            // damage darkens a little by band; the damage stages themselves are drawn (DamageOverlay)
             int band = StructureStore.DamageBand(b.Hp);
-            float dmg = band == 0 ? 1f : band == 1 ? 0.88f : band == 2 ? 0.74f : 0.6f;
+            float dmg = band == 0 ? 1f : band == 1 ? 0.96f : band == 2 ? 0.9f : 0.82f;
+            if (b.Id >= 0) DamageEmitters.Remove(b.Id);
             float memory = b.Memory ? 0.6f : 1f;
             float3 tint = new float3(dmg * memory);
             // historical continuity: a building keeps the architecture of the era it was built (or last
@@ -577,7 +637,7 @@ namespace SE.Runtime.Cities
             int era = Math.Max(0, Math.Min(4, b.Era >= 0 ? b.Era : Age));
             if (!b.Done)
             {
-                ComposeSite(b, cx, cz, yaw, seed);
+                if (!DefenseSite(b, cx, cz, yaw)) ComposeSite(b, cx, cz, yaw, seed);
                 return;
             }
             var ctx = new Ctx
@@ -593,6 +653,14 @@ namespace SE.Runtime.Cities
             // Authored Blender facilities replace the module recipe for positioned base buildings.
             int siteTier = b.City > 0 ? SiteTier(b.City) : Math.Max(1, ctx.Tier);
             bool authored = b.HasPosition && AuthoredBase(ctx, b.Type, b.Type == "town" ? 1f + .10f * (siteTier - 1) : 1f);
+            // Authored field defenses (CityRenderer.Defenses.cs): own body, level dressing and tracking head.
+            if (!authored && b.HasPosition && AuthoredDefense(ctx, b))
+            {
+                EndFootprint();
+                if (b.City <= 0 && ActionRts && !Showcase && b.Id >= 0) FieldStructurePad(b, cx, cz);
+                DamageOverlay(b, cx, cz, yaw, seed);
+                return;
+            }
             if (!authored)
             switch (b.Type)
             {
@@ -693,6 +761,10 @@ namespace SE.Runtime.Cities
                 };
             if (part == Part.Roof && c.Kind is DistrictKind.Industrial or DistrictKind.Extraction or DistrictKind.Military or DistrictKind.Air)
                 part = Part.MetalRoof;
+            // Roofs (and thin roof slabs) never go near-black: lift dark roof colours to a readable floor.
+            if (part is Part.Roof or Part.MetalRoof
+                || part is Part.Siding or Part.Concrete or Part.Box && size.y <= .05f && lift >= .08f && size.x * size.z >= .02f && emission == 0)
+                color = RoofFloor(color);
             if (c.FixedGround && lift == 0 && size.y > .09f && size.x > .10f && size.z > .10f
                 && part is Part.Concrete or Part.Brick or Part.Siding)
                 Foundation(c, lx, lz, size.x, size.z);
@@ -1828,35 +1900,7 @@ namespace SE.Runtime.Cities
             }
         }
 
-        /// <summary>
-        /// Visible damage by band (target spec §8.3): light damage scorches and scatters debris; heavy
-        /// damage tears out sections and heaps rubble; critical damage leaves broken walls standing in
-        /// the wreckage. Deterministic per building, so it looks the same after a reload.
-        /// </summary>
-        void DamageOverlay(in BuildingRecord b, float cx, float cz, float yaw, int seed)
-        {
-            int band = StructureStore.DamageBand(b.Hp);
-            if (band == 0 || !b.Done) return;
-            var c = new Ctx { X = cx, Z = cz, Yaw = yaw, Seed = seed, Tint = new float3(1), Civ = new float3(0.5f), Era = 1, Level = 1, Scale = parcelScale };
-            var soot = new float3(0.12f, 0.11f, 0.1f);
-            var rubble = new float3(0.46f, 0.43f, 0.39f);
-            int scorch = band * 2;
-            for (int k = 0; k < scorch; k++)
-            {
-                float a = Hash(seed, 200 + k) * 6.28f, r = 0.15f + Hash(seed, 210 + k) * 0.45f;
-                Module(c, Part.Box, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(0.12f + Hash(seed, 220 + k) * 0.1f, 0.006f, 0.1f), soot, a, 0.01f);
-            }
-            int heaps = band == 1 ? 2 : band == 2 ? 4 : 7;
-            for (int k = 0; k < heaps; k++)
-            {
-                float a = Hash(seed, 230 + k) * 6.28f, r = 0.3f + Hash(seed, 240 + k) * 0.35f;
-                float s = (0.08f + Hash(seed, 250 + k) * 0.06f) * (0.7f + band * 0.25f);
-                Module(c, Part.Cone, Mathf.Cos(a) * r, Mathf.Sin(a) * r, new float3(s * 1.6f, s * 0.6f, s * 1.6f), rubble * (0.85f + 0.2f * Hash(seed, 260 + k)));
-            }
-            if (band >= 2)
-                for (int k = 0; k < band - 1; k++)
-                    Module(c, Part.Broken, (Hash(seed, 270 + k) - 0.5f) * 0.6f, (Hash(seed, 280 + k) - 0.5f) * 0.5f, new float3(0.18f, 0.12f + band * 0.06f, 0.14f), rubble * 0.9f, Hash(seed, 290 + k) * 3f);
-        }
+        // DamageOverlay (visible damage stages) lives in CityRenderer.Damage.cs.
 
         public void Draw(WrapImages images)
         {
@@ -1874,6 +1918,7 @@ namespace SE.Runtime.Cities
             DrawGhost(images);
             activityBoxes?.DrawImages(images);
             activityRotors?.DrawImages(images); activityDishes?.DrawImages(images);
+            DrawTurrets(images);
         }
 
         void DisposeCell(Cell c)
@@ -1890,6 +1935,7 @@ namespace SE.Runtime.Cities
             cells.Clear();
             activityBoxes?.Dispose();
             activityRotors?.Dispose(); activityDishes?.Dispose();
+            DisposeTurrets();
             Territory.Dispose();
         }
     }

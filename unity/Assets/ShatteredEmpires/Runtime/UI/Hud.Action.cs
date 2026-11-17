@@ -57,18 +57,31 @@ namespace SE.Runtime.UI
             return "a rival";
         }
 
+        /// <summary>The selection panel's place (panel units): bottom-right, beside nothing else that is docked.</summary>
+        public const float SelectionPanelWidth = 560f, SelectionPanelRight = 16f, SelectionPanelBottom = 16f, SelectionPanelMaxHeight = 300f;
+
+        /// <summary>One line: what the unit is for, then what it is weak against (hover card, selection tooltips).</summary>
         static string UnitRole(string type) => type switch
         {
-            "engineer" => "Captures ruins. Repairs vehicles, buildings and defenses, and assists construction outside combat.",
-            "anti_armor" or "field_gun" => "Counters vehicles. Protect it from infantry and indirect fire.",
-            "rifle_squad" or "militia" or "special_forces" or "exo_infantry" => "Captures ruins and holds covered ground. Vulnerable in the open.",
-            "tank" or "autonomous_tank" => "Armored frontline unit. Screen against anti-armor infantry and aircraft.",
-            "mortar_team" or "sp_artillery" or "missile_battery" => "Indirect fire against fortifications and clustered forces.",
-            "fighter" or "air_defense" => "Intercepts aircraft. Pair with ground forces.",
-            "scout_buggy" or "recon_drone" or "armored_car" => "Reconnaissance and detection. Keep clear of heavy fire.",
-            "bomber" or "helicopter" or "oneway_drone" or "strike_swarm" => "Mobile ground strikes. Vulnerable to interceptors and air defenses.",
-            "supply_truck" => "Mobile field repair.",
-            _ => "Mobile ground support."
+            "engineer" => "Automatic base engineer: builds what you place and repairs · weak to everything armed",
+            "anti_armor" => "Kills vehicles · weak to infantry and artillery",
+            "field_gun" => "Long-range anti-vehicle gun · weak to infantry and artillery",
+            "rifle_squad" or "militia" => "Holds and captures ground · weak to artillery and armor in the open",
+            "special_forces" => "Elite raiders and capture team · weak to armor and artillery",
+            "exo_infantry" => "Heavy assault infantry · weak to anti-armor and artillery",
+            "mech_infantry" => "Fast armored infantry · weak to anti-armor",
+            "tank" or "autonomous_tank" => "Armored front line · weak to anti-armor teams and aircraft",
+            "mortar_team" => "Indirect fire on dug-in troops · weak to fast raiders",
+            "sp_artillery" or "missile_battery" => "Long-range bombardment · weak to aircraft and raids",
+            "fighter" => "Intercepts aircraft · weak to air defense",
+            "air_defense" => "Shoots down aircraft · weak to tanks and infantry",
+            "scout_buggy" or "armored_car" => "Fast scout and raider · weak to anti-armor and tanks",
+            "recon_drone" => "Spots and detects from the air · weak to air defense",
+            "bomber" => "Heavy strikes on ground targets · weak to fighters and air defense",
+            "helicopter" => "Hunts armor from the air · weak to air defense and fighters",
+            "oneway_drone" or "strike_swarm" => "One-shot precision strike · weak to air defense",
+            "supply_truck" => "Repairs and resupplies in the field · unarmed",
+            _ => "Ground support"
         };
 
         // ------------------------------------------------------------------ selection card (B10)
@@ -87,12 +100,12 @@ namespace SE.Runtime.UI
                 card.style.maxHeight = StyleKeyword.Null;
                 return;
             }
-            // fixed width, centred, above the defense bar — never percentage-based (defect 21)
+            // the selection panel, docked bottom-right (mockup 2026-11-16); fixed width, never percentage-based (defect 21)
             card.style.position = Position.Absolute;
-            card.style.left = Length.Percent(50); card.style.right = StyleKeyword.Auto;
-            card.style.top = StyleKeyword.Auto; card.style.bottom = 88;
-            card.style.width = 600; card.style.marginLeft = -300;
-            card.style.maxHeight = 220;
+            card.style.left = StyleKeyword.Auto; card.style.right = SelectionPanelRight;
+            card.style.top = StyleKeyword.Auto; card.style.bottom = SelectionPanelBottom;
+            card.style.width = SelectionPanelWidth; card.style.marginLeft = 0;
+            card.style.maxHeight = SelectionPanelMaxHeight;
         }
 
         void ActionCard(bool force)
@@ -100,7 +113,8 @@ namespace SE.Runtime.UI
             if (card == null) return;
             if (!cardStyled) StyleSelectionCard(true);
             // a running tool replaces the card with the tool chip (Hud.DefenseBar.cs)
-            if (commander.Current != Commander.Mode.Select) { card.style.display = DisplayStyle.None; cmdCardSignature = "tool"; return; }
+            // (an armed attack move keeps the panel: its button shows the armed state)
+            if (commander.Current != Commander.Mode.Select && !commander.AttackMoveArmed) { card.style.display = DisplayStyle.None; cmdCardSignature = "tool"; return; }
             session.Objectives.TryGetValue(commander.SelectedObjective, out var site);
             int unitHash = 0;
             foreach (int id in units.Selected) unitHash = unitHash * 31 + id;
@@ -115,6 +129,7 @@ namespace SE.Runtime.UI
             cmdCardSignature = sig;
             card.Clear();
             cmdCardLive.Clear();
+            card.RemoveFromClassList("se-sel-panel");
             if (commander.SelectedPickup != 0) PickupCard();
             else if (site.Id > 0) SiteCard(site);
             else if (commander.SelectedBuildings.Count > 0) BuildingStatusCard();
@@ -341,28 +356,64 @@ namespace SE.Runtime.UI
             var selected = units.Selected.Where(id => session.Units.TryGet(id, out _)).Select(id => { session.Units.TryGet(id, out var u); return u; }).ToArray();
             if (selected.Length == 0) return;
             var groups = selected.GroupBy(u => session.Units.Types.Name(u.TypeIndex)).OrderByDescending(g => g.Count()).ToArray();
-            string main = groups[0].Key;
-            var head = CardHeader(main, groups.Length == 1 ? $"{selected.Length} × {NameOf("UNITS", main)}" : $"{selected.Length} units", out _);
-            if (!session.Spectator)
+            card.AddToClassList("se-sel-panel");
+            // head: "N units selected" · Attack move · F · Stance: X (mockup 2026-11-16)
+            var head = UiKit.El("se-sel-head", card);
+            UiKit.Text(selected.Length == 1 ? NameOf("UNITS", groups[0].Key) : $"{selected.Length} units selected", "se-sel-title", head);
+            if (!session.Spectator && selected.Any(u => u.Owner == session.CivId))
             {
-                var wheelButton = UiKit.IconButton("wheel", () => OpenUnitWheel(false), "Command wheel (C)", head, 28);
-                wheelButton.style.flexShrink = 0;
+                var attack = UiKit.Button("Attack move · " + HudKey("attack", "F"), () => commander.ArmAttackMove(), head, "attack_move", "se-sel-order se-sel-attack");
+                attack.tooltip = "Attack move (" + HudKey("attack", "F") + ")\nClick a destination: the units advance and engage every enemy on the way. Shift keeps it armed. Double-tap for every combat unit on screen.";
+                var stance = UiKit.Button("Stance: —", () => commander.CycleStance(), head, "hold", "se-sel-order se-sel-stance");
+                attack.focusable = false; stance.focusable = false;   // Space / Enter must not re-click them
+                stance.tooltip = "Stance (" + HudKey("stance", "V") + ")\nAggressive chases enemies near its post, then returns; Defensive fires at anything in range but never chases; Hold fire never shoots first (orders still fire).";
+                string shownStance = null;
+                bool shownArmed = false;
+                cmdCardLive.Add(() =>
+                {
+                    string s = commander.SelectionHolding ? "hold" : commander.SelectionStance;
+                    if (s != shownStance) { shownStance = s; UiKit.SetText(stance, "Stance: " + Session.Commander.StanceLabel(s)); }
+                    bool armed = commander.AttackMoveArmed;
+                    if (armed != shownArmed) { shownArmed = armed; attack.EnableInClassList("selected", armed); }
+                });
             }
-            // composition chips
-            var chips = UiKit.El("se-cmd-chips", card);
-            chips.style.flexDirection = FlexDirection.Row; chips.style.flexWrap = Wrap.NoWrap; chips.style.height = 28; chips.style.overflow = Overflow.Hidden;
-            foreach (var g in groups.Take(9))
+            // a box per unit type (icon, name, ×count); below six units, one box per unit with its condition
+            var grid = UiKit.El("se-sel-grid", card);
+            const int MaxBoxes = 6;
+            if (selected.Length < 6)
             {
-                var chip = UiKit.El("se-cmd-unit-chip", chips);
-                chip.style.flexDirection = FlexDirection.Row; chip.style.alignItems = Align.Center; chip.style.marginRight = 6; chip.style.flexShrink = 0;
-                var icon = new IconElement(g.Key, "se-cmd-unit-chip-icon");
-                icon.style.width = 20; icon.style.height = 20;
-                chip.Add(icon);
-                UiKit.Text(g.Count().ToString(), "se-cmd-unit-chip-count", chip);
-                chip.tooltip = NameOf("UNITS", g.Key) + "\n" + UnitRole(g.Key);
+                foreach (var u in selected)
+                {
+                    int id = u.Id;
+                    string type = session.Units.Types.Name(u.TypeIndex);
+                    var count = SelectionBox(grid, type, NameOf("UNITS", type), "", new[] { id });
+                    int shownHp = -1;
+                    cmdCardLive.Add(() =>
+                    {
+                        int hp = session.Units.TryGet(id, out var r) ? r.Hp : 0;
+                        if (hp == shownHp) return;
+                        shownHp = hp;
+                        count.text = hp + "%";
+                        count.EnableInClassList("se-sel-count--hurt", hp <= 60);
+                    });
+                }
+            }
+            else
+            {
+                int shown = groups.Length > MaxBoxes ? MaxBoxes - 1 : groups.Length;
+                for (int k = 0; k < shown; k++)
+                    SelectionBox(grid, groups[k].Key, NameOf("UNITS", groups[k].Key), "×" + groups[k].Count(), groups[k].Select(u => u.Id).ToArray());
+                if (groups.Length > shown)
+                {
+                    int rest = groups.Skip(shown).Sum(g => g.Count());
+                    SelectionBox(grid, "", $"{groups.Length - shown} more types", "×" + rest);
+                }
             }
             CardBar(SelectionHp, () => $"Condition {SelectionHp():0}%", () => HealthColor(SelectionHp()));
+            AirFuelCardBar();   // Hud.Air.cs (D): lowest fuel among selected aircraft
             var movement = CardLine("se-cmd-card-line se-cmd-card-warn");
+            movement.style.display = DisplayStyle.None;
+            string shownMovement = "";
             cmdCardLive.Add(() =>
             {
                 int queued = 0, blocked = 0, settingUp = 0;
@@ -373,9 +424,39 @@ namespace SE.Runtime.UI
                     if ((u.Flags & 1024) != 0) settingUp++;
                 }
                 string text = queued > 0 ? $"{queued} queued at a crossing" : blocked > 0 ? $"{blocked} rerouting around obstacles" : settingUp > 0 ? $"{settingUp} setting up" : "";
+                if (text == shownMovement) return;
+                shownMovement = text;
                 movement.text = text;
-                movement.style.visibility = text.Length > 0 ? Visibility.Visible : Visibility.Hidden;
+                movement.style.display = text.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
             });
+        }
+
+        /// <summary>
+        /// One box of the selection panel: the unit glyph in a well, the name and a count (or condition). Returns the
+        /// count label. A click narrows the selection to the box's units; Shift-click drops them from it.
+        /// </summary>
+        Label SelectionBox(VisualElement grid, string type, string name, string count, int[] ids = null)
+        {
+            var box = UiKit.El("se-sel-box", grid);
+            var well = UiKit.El("se-sel-well", box);
+            if (!string.IsNullOrEmpty(type)) well.Add(new IconElement(type, "se-sel-icon"));
+            var text = UiKit.El("se-sel-box-text", box);
+            var label = UiKit.Text(name, "se-sel-name", text);
+            label.style.whiteSpace = WhiteSpace.Normal;
+            var c = UiKit.Text(count, "se-sel-count", text);
+            if (!string.IsNullOrEmpty(type)) box.tooltip = name + "\n" + UnitRole(type) + (ids != null ? "\nClick: select only these · Shift-click: remove them" : "");
+            if (ids != null && ids.Length > 0)
+            {
+                box.AddToClassList("se-sel-box--pick");
+                box.RegisterCallback<ClickEvent>(e =>
+                {
+                    if (e.button != 0) return;
+                    if (e.shiftKey) commander.SelectUnits(units.Selected.Where(id => Array.IndexOf(ids, id) < 0).ToArray());
+                    else commander.SelectUnits(ids);
+                    e.StopPropagation();
+                });
+            }
+            return c;
         }
 
         // ------------------------------------------------------------------ world markers (B5)
@@ -505,8 +586,8 @@ namespace SE.Runtime.UI
                 var sp = project(site);
                 if (sp.z <= 0) continue;
                 var p = ToPanel(sp);
-                // cull in panel space against the top bar (56) and the bottom band (92) — defect 29
-                if (p.x < 14 || p.x > width - 14 || p.y < 56 + 30 || p.y > height - 92) continue;
+                // cull in panel space against the floating top group (48) and the bottom band (92) — defect 29
+                if (p.x < 14 || p.x > width - 14 || p.y < 48 || p.y > height - 92) continue;
                 if (!objectiveMarkers.TryGetValue(site.Id, out var mark))
                 {
                     var markerRoot = UiKit.El("se-cmd-marker");
@@ -576,10 +657,10 @@ namespace SE.Runtime.UI
             string text;
             switch (tutorialStep)
             {
-                case 0: text = "Pan with WASD and zoom with the wheel."; done = Vector3.Distance(startFocus, CameraFocus?.Invoke() ?? Vector3.zero) > 2.1f; break;
+                case 0: text = "Pan with the arrow keys or the screen edges, and zoom with the wheel."; done = Vector3.Distance(startFocus, CameraFocus?.Invoke() ?? Vector3.zero) > 2.1f; break;
                 case 1: text = "Select your rifle squads. Drag a box to select the entire force."; done = units.Selected.Count > 0; break;
                 case 2: text = "Right-click terrain toward the marked ruins."; tile = site.Tile; done = commander.ActionMoveOrders > 0; break;
-                case 3: text = "Press T for attack-move and clear the defenders around the ruins."; tile = site.Tile; done = site.Capture > 0 || site.Owner == session.CivId; break;
+                case 3: text = AttackStepText(); tile = site.Tile; done = site.Capture > 0 || site.Owner == session.CivId; break;
                 case 4: text = "Hold infantry inside the command zone until capture completes."; tile = site.Tile; done = site.Owner == session.CivId; break;
                 case 5: text = "Click the secured ruin and choose Establish base on its wheel."; tile = site.Tile; done = site.Headquarters > 0; break;
                 case 6: text = "Click your headquarters, pick an empty socket and build a Barracks and a Materials Processor."; tile = site.Tile; done = check && HasBuildingAt(site.Id, "barracks") && HasBuildingAt(site.Id, "depot"); break;
@@ -605,6 +686,20 @@ namespace SE.Runtime.UI
             else pointer.style.display = DisplayStyle.None;
         }
 
+        // step 3 names the bound attack-move key (F by default; T is the terrain wheel since 2026-11-16), cached per key
+        string attackStepText;
+        KeyCode attackStepKey = KeyCode.None;
+        string AttackStepText()
+        {
+            var k = Input.InputFacade.KeyFor("attack");
+            if (attackStepText == null || k != attackStepKey)
+            {
+                attackStepKey = k;
+                attackStepText = $"Press {SettingsView.KeyName(k)} for attack-move, click past the ruins and clear the defenders.";
+            }
+            return attackStepText;
+        }
+
         // the coach text is set once per step; the scans over every building and unit run at 4 Hz
         int coachShownStep = -1;
         string coachShownText;
@@ -623,7 +718,26 @@ namespace SE.Runtime.UI
         {
             int id = ProtocolDecoder.Int(winner?["civ"], -1);
             string result = id < 0 ? "Draw" : session.Spectator ? "Match complete" : session.IsHostile(id) ? "Defeat" : "Victory";
-            ResultCard(result, $"{ProtocolDecoder.Str(winner?["name"], "")} · {ProtocolDecoder.Str(winner?["how"], "Military Domination")}", -1);
+            string how = ProtocolDecoder.Str(winner?["how"], "Military Domination");
+            ResultCard(result, $"{ProtocolDecoder.Str(winner?["name"], "")} · {how}" + HowExplained(how), -1);
+            // the countdown ends with the match
+            shownDomTeam = int.MinValue;
+            if (dominanceBanner != null) dominanceBanner.style.display = DisplayStyle.None;
+            root.EnableInClassList("se-hud--dominance", false);
+        }
+
+        /// <summary>One line on what the victory condition means (game over <c>how</c>; actionGame.js checkVictory).</summary>
+        string HowExplained(string how)
+        {
+            switch (how)
+            {
+                case "Decisive Domination":
+                    var rule = Defs?["RULESET"]?["dominance"];
+                    return $"\nHeld {Mathf.RoundToInt(ProtocolDecoder.Float(rule?["hqShare"], .65f) * 100f)}% of the headquarters with {ProtocolDecoder.Float(rule?["armyRatio"], 2.5f):0.#}× the rival army for {ProtocolDecoder.Int(rule?["hold"], 90)} s.";
+                case "Military Domination": return "\nEvery rival headquarters fell.";
+                case "Territorial Control": return "\nHeld most of the bases long enough.";
+                default: return "";
+            }
         }
     }
 }

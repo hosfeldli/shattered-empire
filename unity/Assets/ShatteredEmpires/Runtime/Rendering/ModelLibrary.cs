@@ -52,6 +52,10 @@ namespace SE.Runtime.Rendering
             for (int i = 0; i < v; i++, o += 4) surfaces[i] = new Vector2(BitConverter.ToSingle(data, o), 0);
             for (int i = 0; i < v; i++, o += 8) uv[i] = new Vector2(BitConverter.ToSingle(data, o), BitConverter.ToSingle(data, o + 4));
             for (int i = 0; i < n; i++, o += 4) { int k = BitConverter.ToInt32(data, o); if ((uint)k >= (uint)v) throw new FormatException("index out of range"); index[i] = k; }
+            // The exporter swaps Blender's Y and Z (a reflection) but keeps Blender's counter-clockwise order, so
+            // every SEM1 triangle arrives back-facing for Unity. With SE/InstancedLit's back-face culling the
+            // outside was culled and the inside drawn: models read near-black (round HQ, vehicles, defenses).
+            for (int i = 0; i < n; i += 3) { int t = index[i + 1]; index[i + 1] = index[i + 2]; index[i + 2] = t; }
             var mesh = new Mesh { name = name + " (Blender)", indexFormat = v > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
             mesh.SetVertices(positions); mesh.SetNormals(normals); mesh.SetColors(colors);
             mesh.SetUVs(0, uv); mesh.SetUVs(1, surfaces);

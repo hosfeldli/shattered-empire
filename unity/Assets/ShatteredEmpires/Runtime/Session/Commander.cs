@@ -66,6 +66,8 @@ namespace SE.Runtime.Session
             public string State = "pending";
             public string Reason;
             public float Time;
+            /// <summary>"move", "attackMove", "deploy", "attack", "capture", "collect", "rally", "rallyAttackMove" (markers colour by it).</summary>
+            public string Kind = "move";
         }
 
         public Commander(ClientSession s, RtsCamera c, UnitRenderer u)
@@ -97,6 +99,7 @@ namespace SE.Runtime.Session
         public void Begin(Mode mode, string option = "", JObject target = null)
         {
             Current = mode; Option = option ?? ""; TargetCommand = target;
+            CancelPatrol();   // another tool (F, a wheel item) ends patrol planning instead of leaving it armed underneath
             FieldYaw = 0; cam.PlacementRotation = mode == Mode.Target && ProtocolDecoder.Str(target?["c"]) == "fieldBuild";
             dragging = false; ClearRingPreview(); FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++;
             path.Clear(); preview = null; legal.Clear(); legalReady = false;
@@ -167,15 +170,19 @@ namespace SE.Runtime.Session
         public void Update(float time, bool pointerOverUi)
         {
             if (!session.Ready) return;
+            // one clock for everything the commander stamps: server replies (Resolve, Say, refused sites) use
+            // Time.unscaledTime, and the bootstrap clock lags it after any hitch (it accumulates clamped dt)
+            time = Time.unscaledTime;
             var mouse = InputFacade.MousePosition;
             hoverTile = pointerOverUi ? -1 : TileUnderCursor();
             if (session.ActionRts) UpdateFieldPreview(time, pointerOverUi);
             HoverRingSlotFromWorld = session.ActionRts && Current == Mode.Select && !pointerOverUi ? WorldParcelUnderCursor() : 0;
             if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { EscapeFrame = Time.frameCount; rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
             if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { EscapeFrame = Time.frameCount; Cancel(); return; }
+            OrderKeys(time, pointerOverUi);   // F attack move, V stance, the order cursor (Commander.Orders.cs)
             switch (Current)
             {
-                case Mode.Select: SelectMode(time, mouse, pointerOverUi); break;
+                case Mode.Select: if (!AirPatrolInput(time, pointerOverUi)) SelectMode(time, mouse, pointerOverUi); break;   // Commander.Air.cs (D)
                 case Mode.Place: if (session.ActionRts) PlaceBase(time, pointerOverUi); else PlaceMode(time, pointerOverUi); break;
                 case Mode.Trench: if (session.ActionRts) DrawActionTrench(time, pointerOverUi); else DrawMode(time, pointerOverUi); break;
                 case Mode.Road: if (session.ActionRts) DrawActionTrench(time, pointerOverUi); else DrawMode(time, pointerOverUi); break;
@@ -193,7 +200,7 @@ namespace SE.Runtime.Session
 
         void SelectMode(float time, Vector2 mouse, bool overUi)
         {
-            if (!overUi && InputFacade.LeftDown) { dragStart = mouse; dragging = true; }
+            if (!overUi && InputFacade.LeftDown && !InputFacade.Alt && !cam.MouseRotating) { dragStart = mouse; dragging = true; }   // Alt + drag turns the camera
             if (dragging && InputFacade.LeftUp)
             {
                 dragging = false;
@@ -209,7 +216,7 @@ namespace SE.Runtime.Session
                 for (int s = 0; s < st.SlotCount; s++)
                 {
                     ref var u = ref st.Records[s];
-                    if (!u.InUse || (u.Owner != session.CivId && !session.Spectator)) continue;
+                    if (!u.InUse || !Selectable(u)) continue;   // own units; automatic base engineers are not selectable
                     if (!ScreenOf(s, out var sp)) continue;
                     if (box) { if (rect.Contains(sp)) units.Selected.Add(u.Id); continue; }
                     float d = (sp - mouse).sqrMagnitude;
@@ -222,7 +229,7 @@ namespace SE.Runtime.Session
                         for (int s = 0; s < st.SlotCount; s++)
                         {
                             ref var u = ref st.Records[s];
-                            if (u.InUse && u.Owner == session.CivId && u.TypeIndex == bestType && ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) units.Selected.Add(u.Id);
+                            if (u.InUse && u.Owner == session.CivId && (u.Flags & AutoEngineerFlag) == 0 && u.TypeIndex == bestType && ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) units.Selected.Add(u.Id);
                         }
                 }
                 else if (!box && session.ActionRts && (SelectActionPickup(mouse) || SelectActionRing(mouse, doubleClick) || SelectActionObjective(mouse, tile)))
@@ -266,7 +273,6 @@ namespace SE.Runtime.Session
             {
                 if (InputFacade.Action("hold")) UnitCommand("hold", null, "Holding position");
                 if (InputFacade.Action("withdraw")) UnitCommand("withdraw", null, "Withdrawing");
-                if (InputFacade.Action("attack")) Begin(Mode.Target, "", new JObject { ["c"] = "move", ["units"] = "@units", ["tile"] = "@map", ["attackMove"] = true });
                 if (!lineDrag && InputFacade.Action("follow")) ToggleFollow(time);
             }
             ControlGroups(time);
@@ -321,7 +327,7 @@ namespace SE.Runtime.Session
             else if (InputFacade.Shift) cmd["queue"] = true;
             int token = ++lineToken;
             var point = lineStartGround;
-            if (!preview) { var order = new Order { MapPoint = point, Time = time }; Orders.Add(order); }
+            if (!preview) { var order = new Order { MapPoint = point, Time = time, Kind = "deploy" }; Orders.Add(order); NoteIssued("deploy", point); }
             session.Net.Command(cmd, r =>
             {
                 if (preview)
@@ -523,7 +529,7 @@ namespace SE.Runtime.Session
         // ------------------------------------------------------------------ map points
         void PointMode(float time, bool overUi)
         {
-            if (overUi) return;
+            if (overUi || cam.MouseRotating) return;
             if (InputFacade.RightDown) { Cancel(); return; }
             if ((!InputFacade.LeftDown && !(session.ActionRts && InputFacade.Pressed(KeyCode.Return))) || hoverTile < 0) return;
             int tile = hoverTile;
@@ -532,6 +538,11 @@ namespace SE.Runtime.Session
                 session.Net?.Command(new JObject { ["c"] = "cityGrowth", ["city"] = SelectedCity, ["kind"] = Option, ["tile"] = tile }, r => Say(r.Error ?? $"The mayor will grow {Option} there", r.Error == null, Time.unscaledTime));
             }
             else if (Current == Mode.Rally) SetRally(tile, time);
+            else if (AttackMoveArmed)
+            {
+                IssueAttackMove(tile, time);
+                if (InputFacade.Shift) return;   // Shift keeps attack move armed for more waypoints
+            }
             else if (Current == Mode.Target && TargetCommand != null)
             {
                 var cmd = (JObject)TargetCommand.DeepClone();
@@ -546,7 +557,11 @@ namespace SE.Runtime.Session
                     cmd["point"] = Point(p);
                     if (ProtocolDecoder.Str(cmd["c"]) == "move") { cmd["queue"] = InputFacade.Shift; ActionMoveOrders++; }
                 }
-                session.Net?.Command(cmd, r => Say(r.Error ?? "Order accepted", r.Error == null, Time.unscaledTime));
+                string sent = ProtocolDecoder.Str(cmd["c"]);
+                string ok = sent == "fieldBuild" ? "Construction started" : "Order accepted";
+                session.Net?.Command(cmd, r => Say(ReadableError(r) ?? ok, r.Error == null, Time.unscaledTime));
+                // Shift keeps a build-wheel placement armed for the next one (the preview re-checks the new spot)
+                if (sent == "fieldBuild" && InputFacade.Shift) { FieldPreviewValid = false; fieldPreviewType = null; return; }
             }
             Cancel();
         }
@@ -576,8 +591,9 @@ namespace SE.Runtime.Session
         // ------------------------------------------------------------------ unit orders
         void Move(int tile, Vector3 point, bool attackMove, float time)
         {
-            var order = new Order { MapPoint = point, Time = time };
+            var order = new Order { MapPoint = point, Time = time, Kind = attackMove ? "attackMove" : "move" };
             Orders.Add(order);
+            NoteIssued(order.Kind, point);
             var cmd = new JObject { ["c"] = "move", ["units"] = new JArray(new List<int>(units.Selected).ToArray()), ["tile"] = tile };
             if (attackMove) cmd["attackMove"] = true;
             order.Rid = session.Net?.Command(cmd, r => Resolve(order, r)) ?? -1;
@@ -603,6 +619,7 @@ namespace SE.Runtime.Session
         public void DrawOverlay(WrapImages images, float time)
         {
             rings.Clear(); discs.Clear(); routeLines.Clear();
+            time = Time.unscaledTime;   // the same clock Update and the replies use
             var w = session.World;
             if (!w.Ready) return;
             var g = w.Grid;
@@ -679,19 +696,25 @@ namespace SE.Runtime.Session
             if (!session.ActionRts) foreach (var t in pendingSites.Keys) Ring(t, new float4(1f, 0.82f, 0.25f, 0.9f), pulse);
             if (!session.ActionRts) foreach (var t in refusedSites.Keys) Ring(t, new float4(1f, 0.3f, 0.25f, 0.9f), 1.6f);
             foreach (var id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var b) && !session.ActionRts) Ring(b.Tile, new float4(.54f, .77f, .62f, .12f), 1.75f);
-            foreach (var o in Orders)
+            // action ruleset: one clean marker per order (Commander.Markers.cs, fed by Hud.NoteOrder, timed on
+            // Time.unscaledTime so it always fades); the legacy ruleset keeps its pending/accepted order rings
+            if (session.ActionRts) DrawOrderMarkers();
+            else foreach (var o in Orders)
             {
                 float a = 1f - Mathf.Clamp01((time - o.Time) / (o.State == "pending" ? 8f : 1.5f));
-                var col = o.State == "pending" ? new float4(1f, 0.82f, 0.25f, 0.6f) : o.State == "accepted" ? new float4(0.35f, 1f, 0.45f, 0.6f * a) : new float4(1f, 0.3f, 0.25f, 0.8f * a);
+                var col = o.State == "pending" ? new float4(1f, 0.82f, 0.25f, 0.6f) : o.State == "accepted" ? (o.Kind == "attackMove" || o.Kind == "rallyAttackMove" ? new float4(1f, 0.36f, 0.28f, 0.75f * a) : new float4(0.35f, 1f, 0.45f, 0.6f * a)) : new float4(1f, 0.3f, 0.25f, 0.8f * a);
                 float s = o.State == "pending" ? 0.5f + 0.1f * Mathf.Sin(time * 8f) : 0.5f + (1f - a) * 0.3f;
                 rings.Add(InstanceData.TRS(MapSpace.W(new float3(o.MapPoint.x, w.GroundHeight(o.MapPoint.x, o.MapPoint.z) + 0.02f, o.MapPoint.z)), 0, new float3(s), col));
             }
+            if (session.ActionRts) DrawPatrolOverlay(time);   // Commander.Air.cs (D)
+            if (session.ActionRts) DrawRallyMarkers(time);   // econ `ra` rally points of the selected production (Commander.Markers.cs)
             rings.DrawImages(images);
             discs.DrawImages(images);
         }
 
         public string ModeHint()
         {
+            if (PatrolPlanning) return PatrolHint();   // Commander.Air.cs (D)
             if (session.ActionRts && (lineDrag || Current != Mode.Select)) return ActionModeHint();
             if (lineDrag)
             {
@@ -717,6 +740,6 @@ namespace SE.Runtime.Session
             }
         }
 
-        public void Dispose() { rings.Dispose(); discs.Dispose(); routeLines.Dispose(); }
+        public void Dispose() { ResetOrderCursor(); rings.Dispose(); discs.Dispose(); routeLines.Dispose(); }
     }
 }

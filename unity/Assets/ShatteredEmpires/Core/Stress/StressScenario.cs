@@ -347,7 +347,7 @@ namespace SE.Core.Stress
                 list.Add(new UnitWire
                 {
                     Id = u.Id, Owner = u.Owner, Type = u.Type, Tile = u.Tile, Next = u.Next, Prog = (float)Math.Round(u.Prog * 100) / 100f,
-                    Hp = u.Hp, AirState = u.Air ? 2 : -1, AirMission = -1, AirMissionTile = -1,
+                    Hp = u.Hp, AirState = u.Air ? 2 : -1, AirMission = -1, AirMissionTile = -1, Fuel = -1,
                 });
             }
             if (!full)

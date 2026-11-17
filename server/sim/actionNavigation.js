@@ -9,6 +9,12 @@ import { readFileSync } from 'node:fs';
 let FOOTPRINTS = {};
 try { FOOTPRINTS = JSON.parse(readFileSync(new URL('./actionFootprints.json', import.meta.url), 'utf8')); } catch { FOOTPRINTS = {}; }
 export const footprintOf = (type) => FOOTPRINTS[type] || null;
+// Movement collision uses only the solid walls of a building. Thin decoration (fence runs, posts, rails
+// narrower than 0.12) is drawn but driven past, and walls give 0.03 of slack, so compounds keep lanes between their structures and
+// vehicles produced in the inner court can always leave (2026-11-16, Rowen: units stuck in bases).
+const SOLID = {};
+for (const [type, rects] of Object.entries(FOOTPRINTS)) SOLID[type] = rects.filter((r) => Math.min(r[2], r[3]) >= .06).map(([x, z, hw, hd, yaw]) => [x, z, hw - .03, hd - .03, yaw]);
+const solidFootprintOf = (type) => SOLID[type] || null;
 
 /** True if a disc of radius r at (x, z) touches any recorded wall of building b. */
 export function insideFootprint(b, rects, x, z, r) {
@@ -32,6 +38,42 @@ export const centerOf = (t) => ({ x: X[t], z: Z[t] });
 export const wrapX = (x) => WRAP ? ((x % PERIOD) + PERIOD) % PERIOD : x;
 export const dxBetween = (a, b) => { const d = b - a; return WRAP ? d - Math.round(d / PERIOD) * PERIOD : d; };
 export const distance = (a, b) => Math.hypot(dxBetween(a.x, b.x), b.z - a.z);
+
+/** True if a disc of radius r at (x, z) touches building b as drawn: every recorded wall (thin ones too), else its box or radius. */
+export function touchesBuilding(game, b, x, z, r) {
+  const rects = footprintOf(b.type);
+  if (rects) return insideFootprint(b, rects, x, z, r);
+  const def = game.defs?.BUILDINGS?.[b.type];
+  if (def?.width) {
+    const dx = dxBetween(b.x, x), dz = z - b.z, sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
+    const lx = Math.abs(dx * cs - dz * sn) - def.width * .5, lz = Math.abs(dx * sn + dz * cs) - def.depth * .5;
+    return Math.max(0, lx) ** 2 + Math.max(0, lz) ** 2 < r * r;
+  }
+  return dxBetween(x, b.x) ** 2 + (b.z - z) ** 2 < ((b.radius || .3) + r) ** 2;
+}
+
+// An outpost's compound (its relay, plant, station or bunker, drawn at the site) as a disc for works lines.
+export const OUTPOST_STRUCTURE_RADIUS = .78;
+
+/**
+ * The first structure a straight works line (a trench or a road) from a to b would cut through: a building's
+ * walls (any owner, built, under construction or ruined) or an outpost's compound. `clearance` is the
+ * half-width of the works. Returns { label, x, z } of the structure (label reads "the barracks"), or null when the line is clear.
+ */
+export function structureOnSegment(game, a, b, clearance = .14, { outposts = true } = {}) {
+  const dx = dxBetween(a.x, b.x), dz = b.z - a.z;
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / .08));
+  for (let i = 0; i <= steps; i++) {
+    const x = wrapX(a.x + dx * i / steps), z = a.z + dz * i / steps;
+    const t = tileAt(x, z);
+    if (t < 0) continue;
+    for (const bd of game.obstaclesAtTile(t))
+      if (touchesBuilding(game, bd, x, z, clearance)) return { label: 'the ' + (game.defs?.BUILDINGS?.[bd.type]?.name || 'building').toLowerCase(), x: bd.x, z: bd.z, building: bd.id };
+    if (outposts) for (const s of game.sites)
+      if (!s.slots && dxBetween(x, s.x) ** 2 + (s.z - z) ** 2 < (OUTPOST_STRUCTURE_RADIUS + clearance) ** 2) return { label: s.name ? 'the ' + s.name + ' outpost' : 'an outpost', x: s.x, z: s.z, site: s.id };
+  }
+  return null;
+}
 
 // Continuous positions along a completed trench. Shared by orders and cover evaluation;
 // entering a trench is an actual movement destination, not a cosmetic tile-wide bonus.
@@ -114,6 +156,9 @@ const TERRAIN_COST = {
 // up a ~33° hillside; tracks ~24°; wheels ~17°. Steeper ground is a wall: troops route around ridges and
 // through passes instead of walking up mountain faces.
 const MAX_GRADIENT = { infantry: .65, tracked: .45, wheeled: .31 };
+// Each class's cost on its best open ground (grass or plains): pace is measured relative to it, so a unit
+// type's normal cruising speed is its definition speed and only rough ground or roads change it.
+export const OPEN_COST = Object.fromEntries(Object.entries(TERRAIN_COST).map(([k, v]) => [k, Math.min(v[T.GRASS], v[T.PLAINS])]));
 const HEX_SPACING = Math.sqrt(3);
 // The client's visual terrain height for a tile (WorldModel.TileHeightFromGeo, land only), so the
 // gradient the server enforces is the one players see.
@@ -136,7 +181,116 @@ export class ActionNavigation {
     this.crossings = new Map(); this.crossingVersion = -1;
     this.terrainVersion = 0;
   }
-  invalidate() { this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.gradient = null; }
+  invalidate() {
+    this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.gradient = null;
+    this.roadOnlyCache = null; this.crowdCache = null; this.components = null;
+  }
+
+  /**
+   * True when tile t is only passable for this movement class along a road (a bridge over water, a lake,
+   * a wide river for vehicles, a road cut through a cliff). Moving into or out of such a tile is only valid
+   * along one of its usable road edges, so coarse routes never "jump" off the side of a bridge.
+   */
+  roadOnly(t, def) {
+    if (def.air || t < 0) return false;
+    const cache = (this.roadOnlyCache ??= {})[def.move] ??= new Uint8Array(N);
+    let v = cache[t];
+    if (!v) {
+      const w = this.world;
+      let only = isWater(w.terr[t]) || !!w.lake[t] || !Number.isFinite(TERRAIN_COST[def.move]?.[w.terr[t]] ?? Infinity);
+      if (!only && w.river[t] && w.flow[t] >= 94 && def.move !== 'infantry') only = true;
+      if (!only && this.gradientOf(t) > (MAX_GRADIENT[def.move] ?? .5)) only = true;
+      v = cache[t] = only ? 2 : 1;
+    }
+    return v === 2;
+  }
+
+  /** Whether a coarse step t -> n is physically possible (both tiles stand-able, bridges entered along their road). */
+  edgeOk(t, n, def) {
+    if (def.air) return true;
+    if (!this.roadOnly(t, def) && !this.roadOnly(n, def)) return true;
+    const e = this.roads.usable(t, n);
+    return !!e && e.type !== 4;
+  }
+
+  /**
+   * How much of a tile buildings and wrecks fill for a unit of this radius (0 = open, 1 = solid), from
+   * seven probe points. Coarse routes avoid dense compounds and pass between buildings through the open
+   * tiles instead of planning straight through a facility.
+   */
+  crowding(t, def) {
+    if (def.air) return 0;
+    const near = this.game.obstaclesAtTile(t), wrecks = this.game.wrecks.get(t);
+    if (!near.length && !wrecks?.length) return 0;
+    const key = t * 4 + (def.radius > .2 ? def.radius > .24 ? 2 : 1 : 0);
+    const sig = near.map((b) => b.id * 2 + (b.done === false || b.state === 'ruin' ? 1 : 0)).join(',') + '|' + (wrecks?.length || 0);
+    const cache = this.crowdCache ??= new Map();
+    const hit = cache.get(key);
+    if (hit && hit.sig === sig) return hit.value;
+    let blocked = 0;
+    const cx = X[t], cz = Z[t];
+    for (let i = -1; i < 6; i++) {
+      const x = i < 0 ? cx : cx + Math.cos(i * Math.PI / 3 + Math.PI / 6) * .5, z = i < 0 ? cz : cz + Math.sin(i * Math.PI / 3 + Math.PI / 6) * .5;
+      if (this.obstacleAt(t, wrapX(x), z, def.radius)) blocked++;
+    }
+    const value = blocked / 7;
+    if (cache.size > 20000) cache.clear();
+    cache.set(key, { sig, value });
+    return value;
+  }
+
+  /** Coarse step weight from t to n (Infinity when impossible), shared by flow fields and A*. */
+  stepCost(t, n, def) {
+    if (!this.edgeOk(t, n, def)) return Infinity;
+    let terrain = this.cost(n, X[n], Z[n], def);
+    if (!Number.isFinite(terrain)) return Infinity;
+    const crowd = this.crowding(n, def);
+    if (crowd >= 1) terrain *= 4; else if (crowd > 0) terrain *= 1 + crowd * 1.6;
+    return terrain;
+  }
+
+  /**
+   * Connected land regions per movement class (terrain and bridges only; buildings and units ignored).
+   * Two tiles in different regions can never be joined by a route: the cheap "can these units reach here" test.
+   */
+  componentOf(t, def) {
+    if (def.air) return 1;
+    const all = this.components ??= {};
+    let comp = all[def.move];
+    if (!comp) {
+      comp = all[def.move] = new Int32Array(N).fill(-1);
+      const stack = [];
+      let id = 0;
+      for (let s = 0; s < N; s++) {
+        if (comp[s] >= 0 || !Number.isFinite(this.cost(s, X[s], Z[s], def))) continue;
+        comp[s] = ++id; stack.push(s);
+        while (stack.length) {
+          const t = stack.pop();
+          for (let d = 0; d < 6; d++) {
+            const n = NB[t * 6 + d];
+            if (n < 0 || comp[n] >= 0 || !this.edgeOk(t, n, def) || !Number.isFinite(this.cost(n, X[n], Z[n], def))) continue;
+            comp[n] = id; stack.push(n);
+          }
+        }
+      }
+    }
+    return t >= 0 ? comp[t] : -1;
+  }
+
+  /**
+   * Cheap reachability for order feedback. Returns 'ok', 'blocked' (the point itself is impassable for this
+   * class: water, cliff, inside a structure) or 'unreachable' (passable, but cut off from the unit).
+   */
+  reachability(from, to, def) {
+    const b = tileAt(to.x, to.z);
+    if (b < 0) return 'blocked';
+    if (def.air) return 'ok';
+    if (!this.nearest(to, def, .45)) return 'blocked';
+    const a = tileAt(from.x, from.z), ca = this.componentOf(a, def);
+    if (ca < 0) return 'ok';   // a unit already standing somewhere odd (on a bridge edge): let the router decide
+    const goal = this.nearest(to, def, .45), cb = this.componentOf(tileAt(goal.x, goal.z), def);
+    return cb < 0 || cb === ca ? 'ok' : 'unreachable';
+  }
 
   /** Steepest visual gradient from each tile to a land neighbour (lazily rebuilt after terrain changes). */
   gradientOf(t) {
@@ -159,28 +313,38 @@ export class ActionNavigation {
 
   primeGroup(group, point) {
     this.activeFlows.clear();
-    if (group.length < 12) return;
+    if (group.length < 4) return;   // groups share one flow field so they take the same corridor around obstacles
     const goal = tileAt(point.x, point.z);
     if (goal < 0) return;
     for (const def of group.map((u) => this.game.defs.UNITS[u.type])) {
       if (def.air || this.activeFlows.has(def.move)) continue;
       const key = `${def.move}:${goal}`;
+      // review S: the field must reach the members' own tiles. With a fixed 4300-node bound a long order on
+      // a large map (an AI final assault across a 208 world) fell back to per-unit bounded A*, which
+      // exhausted its budget: ~40 ms per unit and a quarter of the group left behind with no route.
+      // Expand at least 4300 nodes as before, then on until every member of this class is covered.
+      const starts = group.filter((u) => this.game.defs.UNITS[u.type].move === def.move && !this.game.defs.UNITS[u.type].air)
+        .map((u) => tileAt(u.x, u.z)).filter((t) => t >= 0 && t !== goal);
       let flow = this.flows.get(key);
+      if (flow && !flow.complete && starts.some((t) => flow.next[t] < 0)) flow = null;
       if (!flow) {
         const next = new Int32Array(N).fill(-1), weights = new Float64Array(N).fill(Infinity), closed = new Uint8Array(N), heap = new MinHeap();
         weights[goal] = 0; heap.push(goal, 0); let expanded = 0;
-        while (heap.size && expanded < 4300) {
+        const pending = new Set(starts);
+        while (heap.size && (expanded < 4300 || pending.size)) {
           const t = heap.pop(); if (closed[t]) continue;
-          closed[t] = 1; expanded++;
+          closed[t] = 1; expanded++; pending.delete(t);
           for (let d = 0; d < 6; d++) {
             const n = NB[t * 6 + d]; if (n < 0 || closed[n]) continue;
-            const terrain = this.cost(n, X[n], Z[n], def); if (!Number.isFinite(terrain)) continue;
+            // flows run goal-outward: the unit will step n -> t
+            const terrain = Number.isFinite(this.cost(n, X[n], Z[n], def)) ? this.stepCost(n, t, def) : Infinity;
+            if (!Number.isFinite(terrain)) continue;
             const cost = weights[t] + terrain * (this.roads.usable(t, n) ? .94 : 1);
             if (cost >= weights[n]) continue;
             weights[n] = cost; next[n] = t; heap.push(n, cost);
           }
         }
-        flow = { goal, next };
+        flow = { goal, next, complete: !heap.size };
         if (this.flows.size >= 24) this.flows.delete(this.flows.keys().next().value);
         this.flows.set(key, flow);
       }
@@ -238,8 +402,8 @@ export class ActionNavigation {
       const next = NB[t * 6 + d];
       if (next < 0) continue;
       const edge = this.roads.usable(t, next);
+      // Any road over a river or water is a bridge every vehicle may use (tracked included, 2026-11-16).
       if (!edge || edge.type === 4) continue;
-      if (bridgeOnly && def.move === 'tracked' && edge.type < 2) continue;
       const bx = ax + dxBetween(X[t], X[next]) * .5, bz = (az + Z[next]) * .5;
       const r = bridgeOnly ? .38 : edge.type >= 2 ? .31 : .24;
       if (segmentDistanceSq(x, z, ax, az, bx, bz) <= r * r) best = Math.max(best, edge.cond < 50 ? 1 : edge.type);
@@ -285,7 +449,7 @@ export class ActionNavigation {
       if (b.id === ignore || b.id === ignoreTarget) continue;
       const def = this.game.defs.BUILDINGS[b.type];
       if (sight && def?.lowCover) continue;
-      const rects = b.done !== false && b.state !== 'ruin' ? footprintOf(b.type) : null;
+      const rects = b.done !== false && b.state !== 'ruin' ? solidFootprintOf(b.type) : null;
       if (rects) {
         if (insideFootprint(b, rects, x, z, radius + .015)) return true;
       } else if (def?.width) {
@@ -329,6 +493,9 @@ export class ActionNavigation {
   canMove(from, x, z, def) {
     if (this.canStand(x, z, def)) return true;
     if (def.air || !Number.isFinite(this.cost(tileAt(x, z), x, z, def))) return false;
+    // Escaping is only for a unit that is already overlapping something; a free unit may never use it
+    // to slide into a building's footprint (that trapped vehicles inside base compounds).
+    if (this.canStand(from.x, from.z, def)) return false;
     // New wrecks may overlap nearby troops. Permit a continuous step out, never farther in.
     let escaping = false;
     const tiles = new Set([tileAt(from.x, from.z), tileAt(x, z)]);
@@ -389,7 +556,7 @@ export class ActionNavigation {
       for (let d = 0; d < 6; d++) {
         const n = NB[t * 6 + d];
         if (n < 0 || closed.has(n)) continue;
-        let weight = this.cost(n, X[n], Z[n], def);
+        let weight = buildingRoads ? this.cost(n, X[n], Z[n], def) : this.stepCost(t, n, def);
         if (!Number.isFinite(weight) && buildingRoads && this.world.river[n] && !this.world.lake[n] && !isWater(this.world.terr[n])) weight = 2.6;
         if (!Number.isFinite(weight)) continue;
         if (buildingRoads) {
@@ -444,10 +611,15 @@ export class ActionNavigation {
       let j = Math.min(points.length - 1, i + 7);
       for (; j > i; j--) if (this.line(points[i], points[j], def)) break;
       if (j === i) {
-        const detour = this.localRoute(points[i], points[i + 1], def);
+        // A blocked corridor step (a facility, a wreck, a tight gap between buildings): search a fine
+        // local grid, first cheaply, then wider and toward the next waypoint too, so one badly placed
+        // portal inside a compound does not fail the whole order.
+        let detour = this.localRoute(points[i], points[i + 1], def), skip = 1;
+        if (!detour && i + 2 < points.length) { detour = this.localRoute(points[i], points[i + 2], def, 900, 37, .2); skip = 2; }
+        if (!detour) { detour = this.localRoute(points[i], points[i + 1], def, 1400, 45, .18); skip = 1; }
         if (!detour) return null;
         path.push(...detour);
-        i++;
+        i += skip;
       } else {
         path.push(points[j]);
         i = j;
@@ -456,15 +628,15 @@ export class ActionNavigation {
     return path;
   }
 
-  localRoute(a, b, def) {
-    const step = .24, grid = 25, mid = grid >> 1;
+  localRoute(a, b, def, budget = 220, grid = 25, step = .24) {
+    const mid = grid >> 1;
     const x0 = a.x, z0 = a.z, key = (x, z) => z * grid + x;
     const heap = new MinHeap(), start = key(mid, mid), weights = new Map([[start, 0]]), from = new Map();
     const point = (k) => ({ x: wrapX(x0 + (k % grid - mid) * step), z: z0 + (((k / grid) | 0) - mid) * step });
     const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
     heap.push(start, 0);
     let visited = 0;
-    while (heap.size && visited++ < 220) {
+    while (heap.size && visited++ < budget) {
       const t = heap.pop(), p = point(t);
       if (distance(p, b) < .65 && this.line(p, b, def, .15)) {
         const result = [b];

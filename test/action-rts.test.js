@@ -5,7 +5,7 @@ globalThis.SE_MAP_SIZE = 64;
 globalThis.SE_WRAP = false;
 const { ActionGame } = await import('../server/sim/actionGame.js');
 const { ACTION_UNITS } = await import('../server/sim/actionDefinitions.js');
-const { armyCapacity, openSlots, productionStep } = await import('../server/sim/actionBases.js');
+const { armyCapacity, incomeStep, openSlots, productionStep } = await import('../server/sim/actionBases.js');
 const { unitMotion } = await import('../server/sim/actionOrders.js');
 const { centerOf, distance, tileAt } = await import('../server/sim/actionNavigation.js');
 const { damageActionTarget, canEngage } = await import('../server/sim/actionCombat.js');
@@ -30,12 +30,14 @@ test('action matches start with secured bases, compact objectives and a genuinel
   assert.ok(new Set(g.sites.filter((s) => s.slots).map((s) => s.kind)).size >= 3);
   assert.ok(g.sites.slice(0, 2).every((s) => s.owner >= 0 && g.buildings.get(s.hq)?.done));
   assert.ok(g.sites.filter((s) => s.slots).every((s) => s.slots.length === 8 && s.parcels.length === 9));
-  assert.ok(g.sites.slice(0, 2).every((s) => openSlots(g, s).length === 4 && s.parcels.every((p) =>
-    !g.world.lake[p.tile] && !g.world.river[p.tile])), 'every starting ring has four active sites and eight dry planned parcels');
-  assert.equal([...g.units.values()].filter((u) => u.owner === 0).length, 5);
+  assert.ok(g.sites.slice(0, 2).every((s) => openSlots(g, s).length === 3 && s.parcels.every((p) =>
+    !g.world.lake[p.tile] && !g.world.river[p.tile])), 'every starting ring has three active sites and eight dry planned parcels');
+  // four starting troops plus the base's two automatic engineers
+  assert.equal([...g.units.values()].filter((u) => u.owner === 0).length, 6);
+  assert.equal([...g.units.values()].filter((u) => u.owner === 0 && u.auto && u.type === 'engineer').length, 2);
   assert.ok(armyCapacity(g, g.civs[0]).limit >= 5);
   const before = g.civs[0].res.materials;
-  productionStep(g, .3);
+  productionStep(g, .3); incomeStep(g, .3);
   assert.ok(g.civs[0].res.materials > before);
   for (const c of ['tax', 'diplo', 'import', 'settle']) assert.ok(g.command(0, { c }).error);
 });
@@ -64,7 +66,7 @@ test('headquarters require a captured site and facilities consume valid parcels'
   assert.ok(g.command(0, { c: 'baseBuild', site: s.id, type: 'barracks' }).error === undefined);
   const facilities = [...g.buildings.values()].filter((b) => b.site === s.id && b.type !== 'town');
   assert.ok(facilities.every((b) => s.slots.includes(b.slot)));
-  assert.equal(openSlots(g, s).length, 3);
+  assert.equal(openSlots(g, s).length, 2);
 });
 
 test('motion is continuous with world facing and separate group arrival positions', () => {
@@ -142,11 +144,11 @@ test('base upgrades and saves preserve the actual parcel position and facing', (
   assert.ok(s.parcels.some((p) => p.tile === b.tile && p.x === b.x && p.yaw === b.yaw));
   c.res = { materials: 5000, energy: 5000 };
   const parcels = structuredClone(s.parcels);
-  assert.equal(openSlots(g, s).length, 4);
+  assert.equal(openSlots(g, s).length, 3);
   assert.ok(!g.command(0, { c: 'advance', site: s.id }).error);
   productionStep(g, 60);
   assert.equal(s.tier, 2);
-  assert.equal(openSlots(g, s).length, 6);
+  assert.equal(openSlots(g, s).length, 5);
   assert.equal(c.age, 1);
   assert.equal(armyCapacity(g, c).limit, 220);
   assert.deepEqual(s.parcels, parcels);
@@ -188,14 +190,14 @@ test('demolish removes an owned finished facility, refunds part of its cost and 
   assert.ok(g.command(0, { c: 'demolish', id: built.building }).error, 'unfinished structures cannot be demolished');
   productionStep(g, 18);
   const b = g.buildings.get(built.building);
-  assert.equal(b.done, true); assert.equal(openSlots(g, s).length, 3);
+  assert.equal(b.done, true); assert.equal(openSlots(g, s).length, 2);
   assert.ok(g.command(1, { c: 'demolish', id: b.id }).error, 'only the owner may demolish');
   assert.ok(g.command(0, { c: 'demolish', id: s.hq }).error, 'headquarters cannot be demolished');
   const before = c.res.materials, seq = g.eventSeq;
   const result = g.command(0, { c: 'demolish', id: b.id });
   assert.ok(!result.error, result.error);
   assert.equal(c.res.materials - before, Math.floor(170 * .35));
-  assert.ok(!g.buildings.has(b.id)); assert.equal(openSlots(g, s).length, 4);
+  assert.ok(!g.buildings.has(b.id)); assert.equal(openSlots(g, s).length, 3);
   assert.ok(g.events.some((e) => e.i > seq && e.k === 'demolish' && e.t === b.id && e.ty === 'barracks'));
 });
 
@@ -248,6 +250,7 @@ test('trench lines leave roads open and mark the sections that meet them', async
   const { NB } = await import('../server/sim/hex.js');
   const g = create(), civ = g.civs[0];
   civ.res.materials = 5000; civ.visible.fill(1); g.units.clear(); reindex(g);
+  g.world.owner.fill(0);   // trenches are dug only inside the builder's territory
   const clear = (t) => g.sites.every((s) => distance(s, centerOf(t)) > 4.5);
   const edge = [...g.roads.edges.values()].find((e) => e.cond > 0 && clear(e.a) && clear(e.b) && !g.world.river[e.a] && !g.world.river[e.b]);
   assert.ok(edge, 'a country road away from the bases');

@@ -11,9 +11,9 @@ namespace SE.Runtime.Cities
     /// Two map-wide textures for SE/Terrain, sampled with the same map UV as the fog of war:
     ///
     /// _SE_TerritoryTex (rgb: owner team colour, sRGB values; a: signed distance to the territory border,
-    /// 0.5 = the border, encoded over ±Range world units). Territory is the union of soft discs around every
-    /// owned objective (bases grow with tier) plus corridors joining an owner's nearby bases, so one
-    /// player's cities read as one connected realm. Where two owners' claims meet, the border runs half-way.
+    /// 0.5 = the border, encoded over ±Range world units). The border is hexagonal: it runs along the hex sides
+    /// between differently owned hexes (the server's per-hex territory, or site claims rasterised onto hexes
+    /// with corridors joining one owner's nearby bases), in the owner's team colour on both sides of the line.
     ///
     /// _SE_BaseGroundTex (r: base apron ramp, 0.5 at the apron edge; g: headquarters plaza ramp;
     /// b: tier/3; a: maintained (1) or abandoned (0.3) compound). The terrain shader turns this into
@@ -35,8 +35,8 @@ namespace SE.Runtime.Cities
 
         Texture2D territory, ground;
         Color32[] tpx, gpx;
-        float[] best, second, apron, plaza, tier, upkeep;
-        int[] owner, secondOwner;
+        float[] best, apron, plaza, tier, upkeep, hexScore = Array.Empty<float>();
+        int[] owner, texOwner = Array.Empty<int>(), hexOwner = Array.Empty<int>();
         int tw, th, epoch = -1;
         float sx, sz;
         long signature = long.MinValue;
@@ -97,26 +97,14 @@ namespace SE.Runtime.Cities
                     { name = "SE base ground", filterMode = FilterMode.Bilinear, wrapModeU = wrapU, wrapModeV = TextureWrapMode.Clamp };
                     int n = w * h;
                     tpx = new Color32[n]; gpx = new Color32[n];
-                    best = new float[n]; second = new float[n]; apron = new float[n]; plaza = new float[n]; tier = new float[n]; upkeep = new float[n];
-                    owner = new int[n]; secondOwner = new int[n];
+                    best = new float[n]; apron = new float[n]; plaza = new float[n]; tier = new float[n]; upkeep = new float[n];
+                    owner = new int[n];
                 }
                 territory.wrapModeU = wrapU; ground.wrapModeU = wrapU;
                 epoch = worldEpoch;
             }
             tw = w; th = h;
             sx = w / g.Period; sz = h / g.Depth;
-        }
-
-        void Offer(int k, float v, int o)
-        {
-            if (owner[k] == o) { if (v > best[k]) best[k] = v; return; }
-            if (v > best[k])
-            {
-                float ob = best[k]; int oo = owner[k];
-                if (oo >= 0 && (secondOwner[k] == o || ob > second[k])) { second[k] = ob; secondOwner[k] = oo; }
-                best[k] = v; owner[k] = o;
-            }
-            else if (v > second[k]) { second[k] = v; secondOwner[k] = o; }
         }
 
         /// <summary>Visit the texels within reach of a point (map units); the callback gets the index and the texel centre.</summary>
@@ -143,62 +131,59 @@ namespace SE.Runtime.Cities
             int n = tw * th;
             for (int k = 0; k < n; k++)
             {
-                best[k] = second[k] = -2f * Range; owner[k] = secondOwner[k] = -1;
+                best[k] = Range; owner[k] = -1;
                 apron[k] = plaza[k] = tier[k] = upkeep[k] = 0;
+            }
+            ResolveHexOwners(world, actionRts);
+            // every texel takes the owner of the hex that holds its centre
+            if (texOwner.Length != n) texOwner = new int[n];
+            for (int j = 0; j < th; j++)
+            {
+                float mz = (j + .5f) / sz;
+                for (int i = 0; i < tw; i++)
+                {
+                    int t = g.TileAt((i + .5f) / sx, mz);
+                    texOwner[j * tw + i] = t >= 0 ? hexOwner[t] : -1;
+                }
             }
             if (Enabled)
             {
-                if (tileMode)
+                // The border follows the hex sides exactly: every side between two different owners (or an owner
+                // and no one) is stamped as a segment, and each texel keeps its distance to the nearest side of
+                // its own region. Inside that is the inward distance; outside, the distance to the nearest owned
+                // side in that owner's colour, so the line is centred on the hex side and stays straight.
+                const float Half = HexMath.Sqrt3 * .5f;
+                for (int i = 0; i < g.N; i++)
                 {
-                    // Union of soft discs over owned hexes (circumradius 1): a continuous region whose
-                    // edge follows the hexes loosely, never a jagged hex outline.
-                    var own = world.Owner;
-                    for (int i = 0; i < own.Length && i < g.N; i++)
+                    int o = hexOwner[i];
+                    if (o < 0) continue;
+                    float cx = g.CenterX(i), cz = g.CenterZ(i);
+                    for (int d = 0; d < 6; d++)
                     {
-                        int o = own[i];
-                        if (o < 0) continue;
-                        float cx = g.CenterX(i), cz = g.CenterZ(i);
-                        Stamp(cx, cz, 1.05f + Range, (k, mx, mz) => Offer(k, 1.05f - math.distance(new float2(mx, mz), new float2(cx, cz)), o), wrap);
+                        int nb = g.Nb[i * 6 + d];
+                        int on = nb >= 0 ? hexOwner[nb] : -1;
+                        if (on == o || on >= 0 && nb < i) continue;   // one visit per side
+                        var mid = new float2(cx + HexMath.DirX[d] * Half, cz + HexMath.DirZ[d] * Half);
+                        var along = new float2(-HexMath.DirZ[d], HexMath.DirX[d]) * .5f;
+                        var a = mid - along; var ab = along * 2;
+                        int inner = o, outer = on;
+                        Stamp(mid.x, mid.y, .5f + Range, (k, mx, mz) =>
+                        {
+                            int to = texOwner[k];
+                            if (to != inner && to != outer) return;
+                            var p = new float2(mx, mz);
+                            float s = math.saturate(math.dot(p - a, ab) / math.lengthsq(ab));
+                            float dist = math.distance(p, a + ab * s);
+                            if (dist >= best[k]) return;
+                            best[k] = dist;
+                            owner[k] = to >= 0 ? to : inner;
+                        }, wrap);
                     }
                 }
                 if (actionRts)
-                {
-                    if (!tileMode) foreach (var c in claims)
-                    {
-                        var claim = c;
-                        Stamp(claim.x, claim.z, claim.r + Range, (k, mx, mz) =>
-                        {
-                            float d = math.distance(new float2(mx, mz), new float2(claim.x, claim.z));
-                            Offer(k, claim.r - d, claim.owner);
-                        }, wrap);
-                    }
-                    // corridors: one owner's neighbouring bases form one connected realm
-                    for (int a = 0; a < claims.Count; a++)
-                    {
-                        if (!claims[a].hq) continue;
-                        for (int b = a + 1; b < claims.Count; b++)
-                        {
-                            if (!claims[b].hq || claims[b].owner != claims[a].owner) continue;
-                            var pa = new float2(claims[a].x, claims[a].z);
-                            var pb = new float2(g.NearX(claims[b].x, claims[a].x), claims[b].z);
-                            float length = math.distance(pa, pb);
-                            if (length > CorridorReach || length < .01f) continue;
-                            const float corridor = 1.15f;
-                            int who = claims[a].owner;
-                            var mid = (pa + pb) * .5f;
-                            Stamp(mid.x, mid.y, length * .5f + corridor + Range, (k, mx, mz) =>
-                            {
-                                var p = new float2(mx, mz); var ab = pb - pa;
-                                float t = math.saturate(math.dot(p - pa, ab) / math.max(1e-5f, math.lengthsq(ab)));
-                                // a gentle waist: the corridor is narrower half-way between the cities
-                                float waist = corridor * (1f - .25f * math.sin(t * math.PI));
-                                Offer(k, waist - math.distance(p, pa + ab * t), who);
-                            }, wrap);
-                        }
-                    }
                     foreach (var s in sites)
                     {
-                        if (!s.IsBase || s.Parcels == null || s.Parcels.Length < 9) continue;
+                        if (!s.IsBase || s.Parcels == null || s.Parcels.Length < 4) continue;
                         bool hq = s.Headquarters != 0;
                         int t = Mathf.Clamp(s.Tier, 1, 3);
                         float radius = hq ? 2.55f + .32f * (t - 1) : 2.35f;
@@ -214,17 +199,16 @@ namespace SE.Runtime.Cities
                             plaza[k] = math.max(plaza[k], math.saturate(.5f + (1.02f - d) / .5f) * (hq ? 1f : .55f));
                         }, wrap);
                     }
-                }
             }
             var colours = new Dictionary<int, Color32>();
             for (int k = 0; k < n; k++)
             {
-                int o = owner[k];
-                if (o < 0) { tpx[k] = new Color32(0, 0, 0, 0); }
+                int to = Enabled ? texOwner[k] : -1;
+                int o = to >= 0 ? to : owner[k];
+                if (o < 0 || !Enabled) { tpx[k] = new Color32(0, 0, 0, 0); }
                 else
                 {
-                    float d = best[k];
-                    if (secondOwner[k] >= 0 && second[k] > -Range) d = math.min(d, (best[k] - second[k]) * .5f);
+                    float d = to >= 0 ? best[k] : -best[k];
                     if (!colours.TryGetValue(o, out var col))
                     {
                         var c = math.saturate(teams.Color(o).xyz);
@@ -240,6 +224,59 @@ namespace SE.Runtime.Cities
             Shader.SetGlobalTexture(TerritoryTexId, territory);
             Shader.SetGlobalTexture(BaseGroundTexId, ground);
             Shader.SetGlobalVector(ParamsId, new Vector4(Enabled ? 1 : 0, Range, actionRts ? 1 : 0, 0));
+        }
+
+        /// <summary>
+        /// The owner of every hex: the server's per-hex territory when it sends one; otherwise (older servers)
+        /// each hex goes to the strongest site claim over its centre, and corridors join one owner's
+        /// neighbouring headquarters, so the outline is still drawn on hex sides.
+        /// </summary>
+        void ResolveHexOwners(WorldModel world, bool actionRts)
+        {
+            var g = world.Grid;
+            if (hexOwner.Length != g.N) { hexOwner = new int[g.N]; hexScore = new float[g.N]; }
+            for (int i = 0; i < g.N; i++) { hexOwner[i] = -1; hexScore[i] = 0; }
+            if (!Enabled) return;
+            if (tileMode)
+            {
+                var own = world.Owner;
+                for (int i = 0; i < own.Length && i < g.N; i++) hexOwner[i] = own[i];
+                return;
+            }
+            if (!actionRts || claims.Count == 0) return;
+            for (int i = 0; i < g.N; i++)
+            {
+                float cx = g.CenterX(i), cz = g.CenterZ(i);
+                foreach (var c in claims)
+                {
+                    float dx = g.DxWrap(c.x, cx), dz = cz - c.z;
+                    float margin = c.r - math.sqrt(dx * dx + dz * dz);
+                    if (margin > hexScore[i]) { hexScore[i] = margin; hexOwner[i] = c.owner; }
+                }
+            }
+            for (int a = 0; a < claims.Count; a++)
+            {
+                if (!claims[a].hq) continue;
+                for (int b = a + 1; b < claims.Count; b++)
+                {
+                    if (!claims[b].hq || claims[b].owner != claims[a].owner) continue;
+                    var pa = new float2(claims[a].x, claims[a].z);
+                    var pb = new float2(g.NearX(claims[b].x, claims[a].x), claims[b].z);
+                    float length = math.distance(pa, pb);
+                    if (length > CorridorReach || length < .01f) continue;
+                    const float Corridor = 1.15f;
+                    var ab = pb - pa;
+                    int who = claims[a].owner;
+                    for (int i = 0; i < g.N; i++)
+                    {
+                        var p = new float2(g.NearX(g.CenterX(i), pa.x), g.CenterZ(i));
+                        float t = math.saturate(math.dot(p - pa, ab) / math.lengthsq(ab));
+                        float waist = Corridor * (1f - .25f * math.sin(t * math.PI));
+                        float margin = waist - math.distance(p, pa + ab * t);
+                        if (margin > hexScore[i] && (hexOwner[i] < 0 || hexOwner[i] == who)) { hexScore[i] = margin; hexOwner[i] = who; }
+                    }
+                }
+            }
         }
 
         public void Dispose()

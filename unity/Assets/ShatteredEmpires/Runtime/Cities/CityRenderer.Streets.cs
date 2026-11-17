@@ -18,22 +18,45 @@ namespace SE.Runtime.Cities
         /// </summary>
         sealed class GroundLayers
         {
-            struct QuadRecord { public Vector3 A, B, C, D; public Color Color; public SurfaceKind Surface; }
+            public struct QuadRecord { public Vector3 A, B, C, D; public Color Color; public SurfaceKind Surface; }
             readonly SortedDictionary<int, List<QuadRecord>> layers = new SortedDictionary<int, List<QuadRecord>>();
             List<QuadRecord> current;
+            int currentKey;
             SurfaceKind surface;
+            /// <summary>While set, every quad is also copied here with its layer (the base compose cache, CityRenderer.BaseCache.cs).</summary>
+            public List<(int layer, QuadRecord quad)> Tap;
 
             /// <summary>Select the layer for this lift (0.05 mm buckets) and the surface of the following quads.</summary>
             public GroundLayers At(float lift, SurfaceKind kind)
             {
                 int key = Mathf.RoundToInt(lift * 20000f);
                 if (!layers.TryGetValue(key, out current)) layers[key] = current = new List<QuadRecord>();
+                currentKey = key;
                 surface = kind;
                 return this;
             }
 
             public void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Color color)
-                => current.Add(new QuadRecord { A = a, B = b, C = c, D = d, Color = color, Surface = surface });
+            {
+                var q = new QuadRecord { A = a, B = b, C = c, D = d, Color = color, Surface = surface };
+                current.Add(q);
+                Tap?.Add((currentKey, q));
+            }
+
+            /// <summary>Append recorded quads to their layers (a cached base compose).</summary>
+            public void Replay(List<(int layer, QuadRecord quad)> quads)
+            {
+                List<QuadRecord> list = null; int key = int.MinValue;
+                foreach (var (layer, q) in quads)
+                {
+                    if (layer != key || list == null)
+                    {
+                        key = layer;
+                        if (!layers.TryGetValue(key, out list)) layers[key] = list = new List<QuadRecord>();
+                    }
+                    list.Add(q);
+                }
+            }
 
             public Mesh Build(string name)
             {

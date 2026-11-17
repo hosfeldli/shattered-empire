@@ -7,7 +7,7 @@ namespace SE.Runtime.Military
 {
     public sealed partial class UnitRenderer
     {
-        struct Casualty { public int Epoch; public float3 Point; public float Facing, At; public Detail Torso; public float4 Color; }
+        struct Casualty { public int Epoch; public float3 Point; public float Facing, At; public Detail Torso; public float4 Color; public float3 Team; }
         readonly Casualty[] casualties = new Casualty[96];
         int casualtyHead;
         public void NoteCasualty(int id, string type, int owner, float3 point, int epoch, float time)
@@ -15,7 +15,8 @@ namespace SE.Runtime.Military
             if (type != "rifle_squad" && type != "engineer" && type != "militia" && type != "anti_armor" && type != "special_forces" && type != "exo_infantry" && type != "mortar_team") return;
             float facing = id * 2.39996f;
             for (int s = 0; s < ids.Length; s++) if (ids[s] == id) { facing = yaw[s]; break; }
-            casualties[casualtyHead++ % casualties.Length] = new Casualty { Epoch = epoch, Point = point, Facing = facing, At = time, Torso = Torso(type), Color = new float4(Paint(owner, Kind.Infantry, new float3(.40f, .42f, .35f)), 0) };
+            casualties[casualtyHead++ % casualties.Length] = new Casualty { Epoch = epoch, Point = point, Facing = facing, At = time, Torso = Torso(type), Color = new float4(Paint(owner, Kind.Infantry, new float3(.40f, .42f, .35f)), 0),
+                Team = lastCivColor != null ? TeamWear(lastCivColor(owner).xyz) * .85f : new float3(.6f, .6f, .58f) };
         }
 
         void DrawCasualties(float time, WorldModel world, Vector3 focus, float distance)
@@ -34,7 +35,11 @@ namespace SE.Runtime.Military
                     // The death clip, then the body lies where it fell and finally settles into the ground.
                     float sink = Mathf.SmoothStep(0, 1, (age - 19f) / 3f) * .05f;
                     var at = MapSpace.W(new float3(c.Point.x, world.GroundHeight(c.Point.x, c.Point.z) - sink, c.Point.z));
-                    soldiers[role].Add(InstanceData.TRS(at, quaternion.RotateY(MapSpace.Yaw(c.Facing)), new float3(scale), new float4(c.Color.xyz, 2 + rig.Frame(SoldierRig.Clip.Die, age))));
+                    float deathFrame = rig.Frame(SoldierRig.Clip.Die, age);
+                    var fallen = InstanceData.TRS(at, quaternion.RotateY(MapSpace.Yaw(c.Facing)), new float3(scale), new float4(c.Color.xyz, 2 + deathFrame));
+                    soldiers[role].Add(fallen);
+                    figureTeam = c.Team;
+                    AddTeamGear(role, fallen, deathFrame);
                     continue;
                 }
                 var rot = quaternion.EulerZXY(fall * 1.51f, MapSpace.Yaw(c.Facing), fall * .17f);

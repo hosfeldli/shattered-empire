@@ -534,6 +534,32 @@ namespace SE.Runtime.UI
                     break;
                 case "upgrade": Line(c, 0.1f, 0.2f, 0.56f, 0.5f, 0.26f, 0.8f, 0.56f); Line(c, 0.1f, 0.2f, 0.84f, 0.5f, 0.54f, 0.8f, 0.84f); break;
                 case "demolish": Box(c, 0.2f, 0.16f, 0.62f, 0.36f); Line(c, 0.09f, 0.42f, 0.36f, 0.74f, 0.88f); break;
+                // Build / Terrain wheels (workstream G, 2026-11-16)
+                case "new_base":
+                    Line(c, 0.07f, 0.5f, 0.08f, 0.86f, 0.29f, 0.86f, 0.71f, 0.5f, 0.92f, 0.14f, 0.71f, 0.14f, 0.29f, 0.5f, 0.08f);
+                    Line(c, 0.1f, 0.5f, 0.32f, 0.5f, 0.68f); Line(c, 0.1f, 0.32f, 0.5f, 0.68f, 0.5f);
+                    break;
+                case "terrain":
+                    Line(c, 0.07f, 0.5f, 0.08f, 0.86f, 0.29f, 0.86f, 0.71f, 0.5f, 0.92f, 0.14f, 0.71f, 0.14f, 0.29f, 0.5f, 0.08f);
+                    Poly(c, 0.26f, 0.7f, 0.44f, 0.42f, 0.54f, 0.54f, 0.62f, 0.46f, 0.76f, 0.7f);
+                    break;
+                case "terrain_raise":
+                    Poly(c, 0.08f, 0.9f, 0.5f, 0.5f, 0.92f, 0.9f);
+                    Line(c, 0.09f, 0.5f, 0.42f, 0.5f, 0.1f); Line(c, 0.09f, 0.34f, 0.24f, 0.5f, 0.08f, 0.66f, 0.24f);
+                    break;
+                case "terrain_lower":
+                    Poly(c, 0.08f, 0.62f, 0.3f, 0.62f, 0.5f, 0.84f, 0.7f, 0.62f, 0.92f, 0.62f, 0.92f, 0.92f, 0.08f, 0.92f);
+                    Line(c, 0.09f, 0.5f, 0.08f, 0.5f, 0.46f); Line(c, 0.09f, 0.34f, 0.3f, 0.5f, 0.46f, 0.66f, 0.3f);
+                    break;
+                case "terrain_flatten":
+                    Box(c, 0.08f, 0.66f, 0.92f, 0.92f);
+                    Line(c, 0.09f, 0.12f, 0.5f, 0.88f, 0.5f);
+                    Line(c, 0.07f, 0.3f, 0.12f, 0.3f, 0.38f); Line(c, 0.07f, 0.7f, 0.12f, 0.7f, 0.38f);
+                    break;
+                case "terrain_smooth":
+                    Line(c, 0.09f, 0.08f, 0.52f, 0.3f, 0.36f, 0.5f, 0.52f, 0.7f, 0.36f, 0.92f, 0.52f);
+                    Box(c, 0.08f, 0.68f, 0.92f, 0.9f);
+                    break;
                 case "cover": ArcFill(c, 0.5f, 0.7f, 0.3f, 180f, 360f); Box(c, 0.14f, 0.68f, 0.86f, 0.74f); Line(c, 0.05f, 0.08f, 0.88f, 0.92f, 0.88f); break;
                 case "scan":
                     Ring(c, 0.06f, 0.5f, 0.5f, 0.36f);

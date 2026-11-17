@@ -10,7 +10,9 @@ HowitzerBarrel 905 1014
 RoadWheel 900 840
 Wheel 1675 1322
 Carrier 4333 2256
-ArmoredCar 1128 548
+ArmoredCar 4919 2900
+ArmoredCarLo 1566 1152
+ArmoredCarMount 1840 1188
 CargoTruck 5136 2900
 RocketTruck 4032 2724
 AirDefense 3416 2208

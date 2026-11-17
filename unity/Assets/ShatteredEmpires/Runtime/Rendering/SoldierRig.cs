@@ -20,6 +20,8 @@ namespace SE.Runtime.Rendering
         public struct ClipInfo { public int Start, Count; public float Fps; public bool Loop; }
 
         public Mesh Mesh;
+        /// <summary>Team-colour overlay (helmet / cap, shoulder pads) on the same bones (Models/SoldierTeam&lt;role&gt;), or null.</summary>
+        public Mesh TeamMesh;
         public Material Material;
         public Texture2D Animation;
         public readonly ClipInfo[] Clips = new ClipInfo[9];
@@ -44,7 +46,7 @@ namespace SE.Runtime.Rendering
             if (mesh == null || asset == null) return null;
             try
             {
-                var rig = new SoldierRig { Mesh = mesh };
+                var rig = new SoldierRig { Mesh = mesh, TeamMesh = ModelLibrary.Get("SoldierTeam" + role) };
                 rig.Decode(asset.bytes, role);
                 Resources.UnloadAsset(asset);
                 return rig;

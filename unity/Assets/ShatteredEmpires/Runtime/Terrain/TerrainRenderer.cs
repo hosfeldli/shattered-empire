@@ -264,6 +264,7 @@ namespace SE.Runtime.Landscape
         public void Draw(WrapImages images, Vector3 cameraPos)
         {
             DrawnChunks = 0;
+            if (ViewLod.Valid) cameraPos = ViewLod.Eye;   // detail bands follow the zoom, not the telephoto eye
             var terrainParams = new RenderParams(RenderResources.Terrain) { shadowCastingMode = ShadowCastingMode.On, receiveShadows = true };
             var waterParams = new RenderParams(RenderResources.Water) { shadowCastingMode = ShadowCastingMode.Off, receiveShadows = true };
             if (oceanHorizon != null)
@@ -291,9 +292,11 @@ namespace SE.Runtime.Landscape
                     terrainParams.worldBounds = b;
                     Graphics.RenderMesh(terrainParams, dist > LodDistance ? ch.Lo : ch.Hi, 0, m);
                     if (ch.HasWater) { waterParams.worldBounds = b; Graphics.RenderMesh(waterParams, ch.Water, 0, m); }
-                    if (dist < TreeDistance)
+                    // forests never vanish when zoomed out: past every band they still draw as single-crown specks
+                    // (TreeDistance now only ends the silhouette band early on low quality)
                     {
                         var shadows = dist < TreeShadowDistance ? ShadowCastingMode.On : ShadowCastingMode.Off;
+                        if (dist >= TreeDistance) dist = Mathf.Max(dist, TreeSpeckDistance);
                         ch.TreesA.Shadows = shadows; ch.TreesB.Shadows = shadows;
                         ch.TreesA.Draw(off, k, meshOverride: dist < TreeLoDistance ? null : dist < TreeFarDistance ? MeshKit.DeciduousLo : dist < TreeSpeckDistance ? MeshKit.DeciduousFar : MeshKit.DeciduousSpeck);
                         ch.TreesB.Draw(off, k, meshOverride: dist < TreeLoDistance ? null : dist < TreeFarDistance ? MeshKit.ConiferLo : dist < TreeSpeckDistance ? MeshKit.ConiferFar : MeshKit.ConiferSpeck);

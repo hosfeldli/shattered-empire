@@ -18,6 +18,7 @@ namespace SE.Runtime.Cities
                 activityDishes = new InstanceBatch(satelliteDish, RenderResources.Instanced, 32) { Bounds = bounds };
             }
             activityBoxes.Clear(); activityRotors.Clear(); activityDishes.Clear();
+            AnimateTurrets(time);   // turret heads draw at every zoom, before the close-range cut below
             float windSpeed = math.clamp(math.length(wind), .1f, 3f);
             var direction = math.normalizesafe(new float2(wind.x, wind.z), new float2(1, .3f));
             float flagYaw = math.atan2(-direction.y, direction.x);
@@ -69,7 +70,12 @@ namespace SE.Runtime.Cities
                         activityRotors.Add(InstanceData.TRS(MapSpace.W(Local(lx + (k - (count - 1) * .5f) * .095f, lz, height)),
                             MapSpace.Yaw(time * 11 + b.Id), new float3(.039f, .028f, .039f), new float4(.52f, .55f, .53f, 0)));
                 }
-                if (b.Done && (b.Type == "aa_battery" || b.Type == "comms_tower"))
+                if (b.Done && b.Type == "sensor_post" && b.HasPosition)
+                {
+                    var mast = Local(0, 0, .585f);
+                    activityDishes.Add(InstanceData.TRS(MapSpace.W(mast), MapSpace.Yaw(phase * 2.2f), new float3(.15f), new float4(.84f, .86f, .81f, 0)));
+                }
+                else if (b.Done && b.Type == "comms_tower")
                 {
                     var p = Local(.12f, 0, .30f);
                     activityDishes.Add(InstanceData.TRS(MapSpace.W(p), MapSpace.Yaw(phase), new float3(.13f), new float4(.84f, .86f, .81f, 0)));

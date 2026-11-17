@@ -30,7 +30,8 @@ namespace SE.Runtime.Cities
                 if (s.Tile < 0 || s.Tile >= world.Grid.N) continue;
                 objectiveTiles.Add(s.Tile);
                 if (!objectiveByTile.TryGetValue(s.Tile, out var old) || old.Owner != s.Owner || old.Tier != s.Tier || old.DevelopedAt != s.DevelopedAt ||
-                    old.Headquarters != s.Headquarters || old.Operational != s.Operational || old.Memory != s.Memory || old.Slots?.Length != s.Slots?.Length)
+                    old.Headquarters != s.Headquarters || old.Operational != s.Operational || old.Memory != s.Memory || old.Slots?.Length != s.Slots?.Length
+                    || old.Capacity != s.Capacity || old.DefenseLevel != s.DefenseLevel)
                     dirty.Add(world.ChunkOf(s.Tile));
                 objectiveByTile[s.Tile] = s;
                 if (s.Parcels != null) foreach (var p in s.Parcels)

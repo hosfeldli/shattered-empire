@@ -21,6 +21,9 @@ namespace SE.Runtime.UI
             public readonly List<(Vector2 a, Vector2 b, Color color)> Lines = new List<(Vector2, Vector2, Color)>();
             public readonly List<(Vector2 p, Color color, float radius)> Rings = new List<(Vector2, Color, float)>();
             public readonly List<(Vector2 p, float angle, float alpha)> Arrows = new List<(Vector2, float, float)>();
+            /// <summary>The drag-selection rectangle in panel space (shown while <see cref="HasBox"/>).</summary>
+            public Rect Box;
+            public bool HasBox;
             public OverlayCanvas() { pickingMode = PickingMode.Ignore; generateVisualContent += Paint; style.position = Position.Absolute; style.left = style.top = style.right = style.bottom = 0; }
 
             int paintedHash = int.MinValue;
@@ -37,6 +40,7 @@ namespace SE.Runtime.UI
                 foreach (var (a, b, color) in Lines) h = Mix(Mix(Mix(Mix(h, a.x), a.y), b.x), b.y) * 31 + color.GetHashCode();
                 foreach (var (p, color, radius) in Rings) h = Mix(Mix(Mix(h, p.x), p.y), radius) * 31 + color.GetHashCode();
                 foreach (var (p, angle, alpha) in Arrows) h = Mix(Mix(Mix(Mix(h, p.x), p.y), angle * 100f), alpha * 100f);
+                if (HasBox) h = Mix(Mix(Mix(Mix(h * 7 + 1, Box.xMin), Box.yMin), Box.xMax), Box.yMax);
                 if (h == paintedHash) return false;
                 paintedHash = h;
                 MarkDirtyRepaint();
@@ -47,9 +51,22 @@ namespace SE.Runtime.UI
 
             static readonly (int sx, int sy)[] Corners = { (1, 1), (-1, 1), (1, -1), (-1, -1) };
 
+            static readonly Color BoxFill = new Color(.55f, .82f, 1f, .14f), BoxEdge = new Color(.70f, .90f, 1f, .95f);
+
             void Paint(MeshGenerationContext ctx)
             {
                 var p2 = ctx.painter2D;
+                if (HasBox)
+                {
+                    // the drag-selection box: a translucent fill with a bright border
+                    p2.fillColor = BoxFill;
+                    p2.BeginPath();
+                    p2.MoveTo(new Vector2(Box.xMin, Box.yMin)); p2.LineTo(new Vector2(Box.xMax, Box.yMin));
+                    p2.LineTo(new Vector2(Box.xMax, Box.yMax)); p2.LineTo(new Vector2(Box.xMin, Box.yMax)); p2.ClosePath();
+                    p2.Fill();
+                    p2.strokeColor = BoxEdge; p2.lineWidth = 1.5f; p2.lineJoin = LineJoin.Miter;
+                    p2.Stroke();
+                }
                 p2.lineWidth = 1.6f;
                 foreach (var (a, b, color) in Lines)
                 {
@@ -109,10 +126,13 @@ namespace SE.Runtime.UI
         readonly Dictionary<int, (Vector3 at, float time, bool building)> underFire = new Dictionary<int, (Vector3, float, bool)>();
         readonly List<int> overlayScratch = new List<int>();
 
-        /// <summary>Remember where units were just sent (map point), for the order lines.</summary>
+        /// <summary>Remember where units were just sent (map point), for the order lines (shown for 1.5 s after the order).
+        /// The ground marker comes from <see cref="Session.Commander.OrderIssued"/> (one per order), not from here.</summary>
         public static void NoteOrder(IEnumerable<int> ids, Vector3 mapPoint, string kind, float time)
         {
-            foreach (int id in ids) orderMarks[id] = new OrderMark { Dest = mapPoint, Time = time, Kind = kind };
+            // stamped on Time.unscaledTime (callers pass different clocks; the bootstrap clock lags after hitches)
+            float stamp = Time.unscaledTime;
+            foreach (int id in ids) orderMarks[id] = new OrderMark { Dest = mapPoint, Time = stamp, Kind = kind };
         }
 
         /// <summary>One of our units or buildings was hit at a map point.</summary>
@@ -127,11 +147,19 @@ namespace SE.Runtime.UI
             if (!session.ActionRts || MenuVisible || topbar.style.display == DisplayStyle.None)
             {
                 if (battleOverlay != null) battleOverlay.style.display = DisplayStyle.None;
+                HideHoverCard();
                 return;
             }
             if (battleOverlay == null) { battleOverlay = new OverlayCanvas(); root.Insert(0, battleOverlay); }
             battleOverlay.style.display = DisplayStyle.Flex;
             battleOverlay.Bars.Clear(); battleOverlay.Lines.Clear(); battleOverlay.Rings.Clear(); battleOverlay.Arrows.Clear();
+            // the drag-selection box (screen pixels, y up → panel space)
+            battleOverlay.HasBox = commander.Dragging(out var drag);
+            if (battleOverlay.HasBox)
+            {
+                var a0 = ToPanel(new Vector3(drag.xMin, drag.yMin, 1)); var a1 = ToPanel(new Vector3(drag.xMax, drag.yMax, 1));
+                battleOverlay.Box = Rect.MinMaxRect(Mathf.Min(a0.x, a1.x), Mathf.Min(a0.y, a1.y), Mathf.Max(a0.x, a1.x), Mathf.Max(a0.y, a1.y));
+            }
             var store = session.Units;
             bool close = zoom < 45f;
             float barWidth = Mathf.Clamp(46f - zoom * .55f, 18f, 40f);
@@ -157,17 +185,20 @@ namespace SE.Runtime.UI
             foreach (var pair in orderMarks)
             {
                 var mark = pair.Value;
+                // a line shows who was sent where for 1.5 s after the order, then fades (no destination ring: the one
+                // ground marker per order is drawn by the commander)
+                float lineAge = Time.unscaledTime - mark.Time;
                 var at = unitAt(pair.Key);
-                if (at == null || time - mark.Time > 90f) { overlayScratch.Add(pair.Key); continue; }
+                if (at == null || lineAge > 1.5f || lineAge < -1f) { overlayScratch.Add(pair.Key); continue; }
                 var here = at.Value; var dest = mark.Dest; dest.y = here.y;
                 if (new Vector2(here.x - dest.x, here.z - dest.z).sqrMagnitude < .09f) { overlayScratch.Add(pair.Key); continue; }
                 if (!units.Selected.Contains(pair.Key)) continue;
                 var a = toScreen(here + new Vector3(0, .05f, 0)); var b = toScreen(mark.Dest + new Vector3(0, .05f, 0));
                 if (a.z <= 0 || b.z <= 0) continue;
-                var color = mark.Kind == "attack" ? new Color(.95f, .35f, .28f, .85f) : mark.Kind == "capture" ? new Color(.95f, .78f, .32f, .85f)
-                    : mark.Kind == "collect" ? new Color(.45f, .85f, .95f, .85f) : new Color(.55f, .92f, .55f, .85f);
+                float fade = .85f * Mathf.Clamp01((1.5f - lineAge) / .6f);
+                var color = mark.Kind == "attack" ? new Color(.95f, .35f, .28f, fade) : mark.Kind == "capture" ? new Color(.95f, .78f, .32f, fade)
+                    : mark.Kind == "collect" ? new Color(.45f, .85f, .95f, fade) : new Color(.55f, .92f, .55f, fade);
                 battleOverlay.Lines.Add((ToPanel(a), ToPanel(b), color));
-                battleOverlay.Rings.Add((ToPanel(b), color, 7f + Mathf.Sin(time * 5f) * 1.5f));
             }
             foreach (int id in overlayScratch) orderMarks.Remove(id);
             // under attack: rings on screen, arrows at the edges for attacks out of view
@@ -199,6 +230,7 @@ namespace SE.Runtime.UI
             }
             foreach (int id in overlayScratch) underFire.Remove(id);
             battleOverlay.RepaintIfChanged();
+            UpdateHoverCard(toScreen, unitAt, time);   // Hud.HoverCard.cs
         }
     }
 }

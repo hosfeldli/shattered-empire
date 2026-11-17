@@ -3,16 +3,19 @@
    also set inline in code; this sheet supplies the look. */
 
 /* ---------------------------------------------------------------- radial wheel (B6) */
-/* The wedges are translucent dark glass drawn in code (RadialMenu.Paint); everything on top of them —
-   icons, badges, captions, the readout — stays fully opaque so it reads over any terrain. The open/close
-   animation is driven in code through translate/scale/opacity (no transitions: no per-frame style work). */
+/* 2026-11-16 (plan §2.G): nine segments of ~86 % opaque dark glass drawn in code (RadialMenu.Paint), meeting
+   an enlarged centre circle that shows the hovered item's name, description and cost (no card below the
+   wheel). Icons, counts and captions stay fully opaque on top. The open/close animation is driven in code
+   through translate/scale/opacity (no transitions: no per-frame style work). The old pop-out pickers and the
+   bottom defense bar are gone (facilities are a sub-ring; defenses live on the Build wheel). */
 .se-radial { position: absolute; }
 .se-radial-icon, .se-radial-hub-icon, .se-radial-arc-icon, .se-radial-lock { position: absolute; }
+/* queued count at the bottom of the item, under its green progress ring */
 .se-radial-badge {
-    position: absolute; width: 20px; height: 20px;
-    border-top-left-radius: 10px; border-top-right-radius: 10px; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px;
-    border-width: 1px; border-color: rgba(10, 14, 16, 0.85);
-    background-color: var(--se-accent); color: rgb(22, 20, 14);
+    position: absolute; width: 24px; height: 15px;
+    border-top-left-radius: 7px; border-top-right-radius: 7px; border-bottom-left-radius: 7px; border-bottom-right-radius: 7px;
+    border-width: 1px; border-color: rgba(10, 14, 16, 0.9);
+    background-color: rgba(9, 13, 15, 0.92); color: rgb(150, 230, 150);
     font-size: 11px; -unity-font-style: bold; -unity-text-align: middle-center;
     padding: 0; margin: 0;
 }
@@ -20,73 +23,17 @@
     position: absolute; font-size: 11px; -unity-font-style: bold; color: var(--se-warn); -unity-text-align: middle-center; padding: 0; margin: 0;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
-/* readout: a semi-transparent card with a solid-enough dark backing (no blur) so the text stays legible */
-.se-radial-readout {
-    position: absolute; width: 280px; min-height: 64px;
-    background-color: rgba(9, 13, 15, 0.86);
-    border-width: 1px; border-color: rgba(255, 255, 255, 0.14);
-    border-top-color: rgba(226, 182, 96, 0.45);
-    border-top-left-radius: 6px; border-top-right-radius: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
-    padding: 8px 10px;
-}
-.se-radial-readout-head { height: 22px; }
-.se-radial-readout-name { font-size: 16px; color: rgb(234, 204, 140); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); padding: 0; margin: 0; }
-.se-radial-readout-key { font-size: 13px; color: var(--se-text-dim); padding: 0 0 0 8px; margin: 0; }
-.se-radial-readout-cost { height: 20px; margin-top: 2px; }
-.se-radial-cost-icon { width: 14px; height: 14px; margin-right: 3px; }
-.se-radial-cost-value { font-size: 13px; color: var(--se-text); margin-right: 10px; padding: 0; }
-.se-radial-cost-time { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0; }
-.se-radial-readout-detail { font-size: 13px; color: var(--se-text-dim); margin-top: 2px; padding: 0; max-height: 36px; overflow: hidden; }
-.se-radial-readout-reason { font-size: 13px; color: var(--se-warn); margin-top: 2px; padding: 0; }
-
-/* ---------------------------------------------------------------- pop-out pickers (B7) */
-.se-cmd-picker {
-    position: absolute; width: 352px;
-    background-color: var(--se-surface-1);
-    border-width: 1px; border-color: var(--se-accent-dim);
-    border-top-left-radius: 6px; border-top-right-radius: 6px; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
-    padding: 0 12px 4px 12px;
-}
-.se-cmd-picker-head { height: 36px; margin-bottom: 4px; }
-.se-cmd-picker-title { font-size: 16px; color: rgb(234, 204, 140); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); padding: 0; margin: 0; }
-.se-cmd-tile {
-    background-color: var(--se-surface-2);
-    border-width: 1px; border-color: var(--se-line);
-    border-top-left-radius: 4px; border-top-right-radius: 4px; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;
-    transition-duration: 0.12s; transition-property: background-color, border-color;
-}
-.se-cmd-tile:hover { background-color: var(--se-surface-hover); border-color: rgba(226, 182, 96, 0.7); }
-.se-cmd-tile:active { background-color: rgb(92, 78, 44); translate: 0 1px; }
-.se-cmd-tile--disabled:hover { border-color: rgba(240, 188, 86, 0.5); }
-.se-cmd-tile-digit { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0; }
-.se-cmd-tile-name { font-size: 12px; color: var(--se-text); padding: 0; margin: 2px 0 0 0; }
-.se-cmd-tile-cost { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0; }
-.se-cmd-tile-reason { font-size: 11px; color: var(--se-warn); padding: 0; margin: 0; }
+/* centre circle text */
+.se-radial-info { position: absolute; }
+.se-radial-info-name { font-size: 14px; color: rgb(234, 204, 140); -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); padding: 0; margin: 0; }
+.se-radial-info-detail { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 2px 0 0 0; }
+.se-radial-info-cost { height: 16px; margin-top: 3px; }
+.se-radial-info-key { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0 0 0 4px; }
+.se-radial-info-reason { font-size: 11px; color: var(--se-warn); padding: 0; margin: 2px 0 0 0; }
+.se-radial-cost-icon { width: 12px; height: 12px; margin-right: 2px; }
+.se-radial-cost-value { font-size: 12px; color: var(--se-text); margin-right: 6px; padding: 0; }
+.se-radial-cost-time { font-size: 12px; color: var(--se-text-dim); padding: 0; margin: 0; }
 .se-cmd-short { color: var(--se-bad); }
-
-/* ---------------------------------------------------------------- defensive build bar (B11) */
-.se-defensebar {
-    position: absolute; height: 60px;
-    background-color: var(--se-surface-0);
-    border-width: 1px; border-color: var(--se-line);
-    border-top-left-radius: 8px; border-top-right-radius: 8px; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
-    transition-duration: 0.12s; transition-property: border-color, opacity;
-}
-.se-defensebar--armed { border-color: var(--se-accent); }
-.se-defensebar-btn {
-    background-color: var(--se-surface-2);
-    border-width: 1px; border-color: var(--se-line);
-    border-top-left-radius: 4px; border-top-right-radius: 4px; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px;
-    transition-duration: 0.12s; transition-property: background-color, border-color;
-}
-.se-defensebar-btn:hover { background-color: var(--se-surface-hover); border-color: rgba(226, 182, 96, 0.7); }
-.se-defensebar-btn:active { background-color: rgb(92, 78, 44); translate: 0 1px; }
-.se-defensebar-btn.selected { border-color: var(--se-accent); background-color: rgba(98, 82, 44, 0.96); }
-.se-defensebar-digit { font-size: 11px; color: var(--se-accent); padding: 0; margin: 0; }
-.se-defensebar-cost { font-size: 11px; color: var(--se-text-dim); padding: 0; margin: 0; }
-.se-defensebar-cost.se-cmd-short { color: var(--se-bad); }
-.se-defensebar-tier { font-size: 11px; color: var(--se-warn); padding: 0; margin: 0; }
-.se-defensebar-divider { background-color: var(--se-line); }
 
 /* ---------------------------------------------------------------- tool chip + cursor reason */
 .se-cmd-toolchip {

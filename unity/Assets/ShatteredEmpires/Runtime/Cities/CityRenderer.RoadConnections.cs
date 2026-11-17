@@ -15,49 +15,76 @@ namespace SE.Runtime.Cities
             public float2[] Points;
             public float Width = .235f, EndWidth = .235f, EndPavement = .05f;
             public bool Closed, Pavement = true;
-            public float3 EndColor = new float3(.286f, .288f, .296f);
+            public float3 EndColor = new float3(.286f, .288f, .296f), BaseColor = new float3(.286f, .288f, .296f);
+            public SurfaceKind Surface = SurfaceKind.Asphalt;
         }
 
         static float2 Cubic(float2 a, float2 b, float2 c, float2 d, float t)
         { float u = 1 - t; return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d; }
 
+        /// <summary>
+        /// Client skip radius of a compound: hexes whose centre lies within it draw no hex streets; their road
+        /// edges become compound approaches that end on the outer portals. It covers the first two hex rings
+        /// so every portal lies outside the base foundation and no outside street can cross a socket pad.
+        /// </summary>
+        const float CompoundSkipRadius = 3.6f;
+
+        /// <summary>The radius of a base's round foundation: it holds every socket pad with a margin.</summary>
+        static float FoundationRadius(float2 origin, BaseParcel[] lots)
+        {
+            float reach = 1.9f;
+            foreach (var lot in lots)
+            {
+                float w = lot.Width > .1f ? lot.Width : .95f, d = lot.Depth > .1f ? lot.Depth : .88f;
+                // the pad's outer corners (the socket faces the hub, so its back edge is farthest)
+                float along = math.distance(origin, new float2(lot.X, lot.Z)) + d * .5f + .07f;
+                reach = math.max(reach, math.sqrt(along * along + (w * .5f + .07f) * (w * .5f + .07f)) + .06f);
+            }
+            return math.min(reach, 3.0f);
+        }
+
         List<CompoundRoute> BuildCompoundRoadNetwork(ObjectiveSite site, BaseParcel[] lots, float2[] nodes)
         {
             var result = new List<CompoundRoute>();
             var loop = new List<float2>(); var origin = new float2(site.X, site.Z);
-            for (int i = 0; i < 8; i++) for (int k = 0; k < 20; k++)
-                loop.Add(Catmull(nodes[(i + 7) % 8], nodes[i], nodes[(i + 1) % 8], nodes[(i + 2) % 8], k / 20f));
+            int count = lots.Length;
+            for (int i = 0; i < count; i++) for (int k = 0; k < 20; k++)
+                loop.Add(Catmull(nodes[(i + count - 1) % count], nodes[i], nodes[(i + 1) % count], nodes[(i + 2) % count], k / 20f));
             loop.Add(loop[0]);
             result.Add(new CompoundRoute { Points = loop.ToArray(), Closed = true });
-            for (int i = 0; i < 8; i++)
+            // Docking causeways: concrete spurs from the ring road to each socket's threshold.
+            for (int i = 0; i < count; i++)
             {
                 var front = new float2(math.sin(lots[i].Yaw), math.cos(lots[i].Yaw));
-                var end = new float2(lots[i].X, lots[i].Z) + front * .43f;
+                float depth = lots[i].Depth > .1f ? lots[i].Depth : .88f;
+                var end = new float2(lots[i].X, lots[i].Z) + front * (depth * .5f - .02f);
                 var points = new float2[12];
                 for (int k = 0; k < points.Length; k++) points[k] = math.lerp(nodes[i], end, k / (float)(points.Length - 1));
-                result.Add(new CompoundRoute { Points = points, Width = .155f, EndWidth = .155f, Pavement = false });
+                result.Add(new CompoundRoute { Points = points, Width = .19f, EndWidth = .24f, Pavement = false,
+                    BaseColor = CausewayConcrete, EndColor = CausewayConcrete, Surface = SurfaceKind.Concrete });
             }
+            float clear = FoundationRadius(origin, lots) + .16f;
 
             // Only authoritative road edges can produce entrances. Each continuation
             // terminates at the SAME edge portal as the outside half-street, with its
             // tangent and carriageway width. No independent decorative road stubs.
             var anchors = new Dictionary<int, List<(int tile, int direction)>>();
             var g = world.Grid; int row = site.Tile / g.W, column = site.Tile % g.W;
-            for (int r = Mathf.Max(0, row - 3); r <= Mathf.Min(g.H - 1, row + 3); r++)
-                for (int q0 = column - 4; q0 <= column + 4; q0++)
+            for (int r = Mathf.Max(0, row - 4); r <= Mathf.Min(g.H - 1, row + 4); r++)
+                for (int q0 = column - 5; q0 <= column + 5; q0++)
                 {
                     int q = g.Wrap ? HexMath.PosMod(q0, g.W) : q0;
                     if (q < 0 || q >= g.W) continue;
                     int tile = r * g.W + q;
-                    if (world.Known[tile] == 0 || math.distance(RoadCurve.Centre(world, tile), origin) < 2.6f) continue;
+                    if (world.Known[tile] == 0 || math.distance(RoadCurve.Centre(world, tile), origin) < CompoundSkipRadius) continue;
                     for (int d = 0; d < 6; d++)
                     {
                         int n = g.Nb[tile * 6 + d];
                         if (n < 0 || world.RoadClass(tile, d) == 0 || world.RoadClass(tile, d) == 4 || world.RoadBroken(tile, d)
-                            || math.distance(RoadCurve.Centre(world, n), origin) >= 2.6f || RedundantEntrance(tile, d)) continue;
+                            || math.distance(RoadCurve.Centre(world, n), origin) >= CompoundSkipRadius || RedundantEntrance(tile, d)) continue;
                         var bearing = math.normalizesafe(RoadCurve.Mid(world, tile, d) - origin);
                         int gap = 0; float best = -2;
-                        for (int i = 0; i < 8; i++)
+                        for (int i = 0; i < count; i++)
                         {
                             var between = loop[i * 20 + 10];
                             float score = math.dot(math.normalizesafe(between - origin), bearing);
@@ -69,26 +96,23 @@ namespace SE.Runtime.Cities
                 }
             foreach (var entry in anchors.OrderBy(a => a.Key))
             {
+                // Every entrance leaves the ring road straight out through the gap between two sockets and
+                // only bends toward its portal once it is past the foundation, so it never crosses a pad.
                 var mouth = loop[entry.Key * 20 + 10];
                 var radial = math.normalizesafe(mouth - origin);
-                var hub = origin + radial * 2.43f;
-                // Multiple highways using one gap share a single entrance trunk.
-                if (entry.Value.Count > 1)
-                {
-                    var trunk = new float2[30];
-                    for (int k = 0; k < trunk.Length; k++) trunk[k] = math.lerp(mouth, hub, k / (float)(trunk.Length - 1));
-                    result.Add(new CompoundRoute { Points = trunk });
-                }
+                var hub = origin + radial * clear;
+                var trunk = new float2[24];
+                for (int k = 0; k < trunk.Length; k++) trunk[k] = math.lerp(mouth, hub, k / (float)(trunk.Length - 1));
+                result.Add(new CompoundRoute { Points = trunk });
                 foreach (var anchor in entry.Value)
                 {
                     var end = RoadCurve.Mid(world, anchor.tile, anchor.direction);
                     var outward = math.normalizesafe(RoadCurve.HalfControl(world, anchor.tile, anchor.direction, RoadCurve.Node(world, anchor.tile)) - end, radial);
-                    var start = entry.Value.Count > 1 ? hub : mouth;
-                    float reach = math.distance(start, end);
-                    var a = start + radial * Mathf.Min(.65f, reach * .45f);
+                    float reach = math.distance(hub, end);
+                    var a = hub + radial * Mathf.Min(.75f, reach * .45f);
                     var b = end - outward * Mathf.Min(.5f, reach * .38f);
-                    var points = new float2[48];
-                    for (int k = 0; k < points.Length; k++) points[k] = Cubic(start, a, b, end, k / (float)(points.Length - 1));
+                    var points = new float2[40];
+                    for (int k = 0; k < points.Length; k++) points[k] = Cubic(hub, a, b, end, k / (float)(points.Length - 1));
                     int cls = world.RoadClass(anchor.tile, anchor.direction);
                     result.Add(new CompoundRoute { Points = points, EndWidth = RoadCurve.Width(cls),
                         EndPavement = Sidewalked(anchor.tile) && cls >= 2 ? .048f : 0,
@@ -105,7 +129,7 @@ namespace SE.Runtime.Cities
         {
             var c = RoadCurve.Centre(world, tile);
             foreach (var s in objectiveByTile.Values)
-                if (s.IsBase && s.Parcels != null && s.Parcels.Length >= 9 && math.distancesq(c, new float2(s.X, s.Z)) < 2.6f * 2.6f) return new float2(s.X, s.Z);
+                if (s.IsBase && s.Parcels != null && s.Parcels.Length >= MinRingParcels && math.distancesq(c, new float2(s.X, s.Z)) < CompoundSkipRadius * CompoundSkipRadius) return new float2(s.X, s.Z);
             return c;
         }
 
@@ -185,9 +209,9 @@ namespace SE.Runtime.Cities
                 {
                     var a = route.Points[k]; var b = route.Points[k + 1]; var sa = RouteSide(route, k); var sb = RouteSide(route, k + 1);
                     float ha = RouteHalf(route, k), hb = RouteHalf(route, k + 1), t = (k + .5f) / (route.Points.Length - 1);
-                    var color = math.lerp(new float3(.286f, .288f, .296f), route.EndColor, math.smoothstep(.3f, 1, t));
+                    var color = math.lerp(route.BaseColor, route.EndColor, math.smoothstep(.3f, 1, t));
                     if (!restored) color = math.lerp(color, new float3(.36f, .35f, .31f), .30f);
-                    CompoundBand(a, b, sa, sb, -ha, ha, -hb, hb, 0, color, SurfaceKind.Asphalt);
+                    CompoundBand(a, b, sa, sb, -ha, ha, -hb, hb, 0, color, route.Surface);
                     if (!route.Pavement) continue;
                     float pavement = math.lerp(.05f, route.EndPavement, math.smoothstep(.65f, 1, t));
                     if (pavement < .003f) continue;

@@ -24,7 +24,7 @@ namespace SE.Runtime.Cities
                     if (!site.IsBase || site.Parcels == null) continue;
                     int home = world.ChunkOf(site.Tile);
                     if (dirty.Contains(home)) continue;
-                    for (int ring = 0; ring < 3 && !dirty.Contains(home); ring++)
+                    for (int ring = 0; ring < 4 && !dirty.Contains(home); ring++)   // out to the portals past CompoundSkipRadius
                         for (int k = 0; k < 12; k++)
                         {
                             float a = k * math.PI / 6, r = 1.6f + ring * .9f;
@@ -114,11 +114,20 @@ namespace SE.Runtime.Cities
             }
         }
 
+        /// <summary>Fewest parcels (the headquarters and three sockets) that make a ring compound.</summary>
+        const int MinRingParcels = 4;
+
         void ComposeCityDistrict(ObjectiveSite site)
         {
-            if (site.Parcels == null || site.Parcels.Length < 9) return;
+            if (site.Parcels == null || site.Parcels.Length < MinRingParcels) return;
+            // sockets in ring order (3, 5 or 7 open by tier; the server may send any count up to the ring size)
             var lots = site.Parcels.Where(p => p.Id > 0).OrderBy(p => p.Id).ToArray();
-            if (lots.Length != 8) return;
+            if (lots.Length < MinRingParcels - 1 || lots.Length > 12) return;
+            // The compound only changes with its own state (CityRenderer.BaseCache.cs): shells, damage and units
+            // inside the cell replay the recorded compound instead of composing it again.
+            ulong key = BaseSignature(site, lots);
+            if (RoadCurve.CompoundLanes.ContainsKey(site.Id) && ReplayBase(site.Id, key)) return;
+            var record = BeginBaseRecord(key, out var outerMin, out var outerMax, out int flagStart);
             var origin = new float2(site.X, site.Z);
             var nodes = lots.Select(p => origin + (new float2(p.X, p.Z) - origin) * .57f).ToArray();
             bool restored = site.Headquarters != 0;
@@ -128,18 +137,16 @@ namespace SE.Runtime.Cities
             RoadCurve.LaneRevision++;
             DrawCompoundRoadNetwork(network, restored);
             ComposeBasePresentation(site, lots, nodes);
-            for (int i = 0; i < 8; i++)
+            // A held base keeps clean sockets; only an unclaimed compound still shows the old town's ruins.
+            bool held = site.Headquarters != 0 && site.Owner >= 0;
+            for (int i = 0; i < lots.Length && !held; i++)
             {
                 var parcel = lots[i];
                 bool occupied = structures.Buildings.Values.Any(b => b.City == site.Id && b.Slot == parcel.Id);
                 if (!occupied) HistoricalBlock(parcel, site.Kind);
             }
-            // The command entrance is a pedestrian connection into the shared pavement.
-            float2 front = new float2(math.sin(site.Parcels[0].Yaw), math.cos(site.Parcels[0].Yaw));
-            var end = network[0].Points.OrderBy(p => math.distancesq(p, origin + front * 1.05f)).First() - front * .07f;
-            var right = new float2(-front.y, front.x);
-            RoadStrip(origin + front * .30f, end, right, right, -.035f, .035f, float.NegativeInfinity, .002f, new float3(.59f, .59f, .55f), SurfaceKind.Concrete);
             ComposeCityAccessories(site, lots);
+            EndBaseRecord(site.Id, record, outerMin, outerMax, flagStart);
         }
 
         // The complete compound graph is owned by its headquarters chunk. Outside
@@ -150,25 +157,32 @@ namespace SE.Runtime.Cities
             var center = new float2(world.Grid.CenterX(tile), world.Grid.CenterZ(tile));
             foreach (var s in objectiveByTile.Values)
             {
-                if (!s.IsBase || s.Parcels == null || s.Parcels.Length < 9) continue;
-                if (math.distancesq(center, new float2(s.X, s.Z)) < 2.6f * 2.6f) return true;
+                if (!s.IsBase || s.Parcels == null || s.Parcels.Length < MinRingParcels) continue;
+                if (math.distancesq(center, new float2(s.X, s.Z)) < CompoundSkipRadius * CompoundSkipRadius) return true;
             }
             return false;
         }
 
+        /// <summary>The ring of street-front houses outside the foundation is off (user request 2026-11-16:
+        /// it cluttered the clean compound); flip to true to restore it.</summary>
+        static readonly bool SettlementHouses = false;
+
         void ComposeCityAccessories(ObjectiveSite site, BaseParcel[] lots)
         {
+            if (!SettlementHouses) return;
             int established = Mathf.Max(site.VisualTier, site.Tier);
             float development = math.saturate(site.Maturity / 35f);
             int seed = DistrictPlanner.StableHash(Seed, site.Id, 2803);
+            // outside the round foundation (the base itself stays one clean compound)
+            float outside = FoundationRadius(new float2(site.X, site.Z), lots) + .45f;
             // A few inherited street fronts: compact blocks, shared setbacks and roof families.
             // Identity depends on the site and lot, never on the capturing faction.
             for (int i = 0; i < 7; i++)
             {
-                var lot = lots[(i * 3 + 1) % 8];
+                var lot = lots[(i * 3 + 1) % lots.Length];
                 float2 radial = math.normalizesafe(new float2(lot.X - site.X, lot.Z - site.Z));
                 float2 side = new float2(-radial.y, radial.x);
-                var point = new float2(site.X, site.Z) + radial * (2.72f + Hash(seed, i) * .15f) + side * ((i % 2 == 0 ? -1 : 1) * .17f);
+                var point = new float2(site.X, site.Z) + radial * (outside + Hash(seed, i) * .15f) + side * ((i % 2 == 0 ? -1 : 1) * .17f);
                 int tile = world.Grid.TileAt(point.x, point.y);
                 if (tile < 0 || world.Known[tile] == 0 || world.IsSea(tile) || world.IsLake(tile) || world.IsRiver(tile) || world.Biome[tile] >= 9) continue;
                 bool overlaps = structures.Buildings.Values.Any(b => b.HasPosition && math.distance(point, new float2(b.X, b.Z)) < .84f);

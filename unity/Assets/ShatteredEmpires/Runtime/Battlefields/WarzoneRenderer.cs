@@ -44,6 +44,49 @@ namespace SE.Runtime.Battlefields
             batches[(int)Part.Floor].Shadows = ShadowCastingMode.Off;
             batches[(int)Part.Plank].Shadows = ShadowCastingMode.Off;
             batches[(int)Part.Scorch].Shadows = ShadowCastingMode.Off;
+            // The burnt patch under a wreck is a soft-edged ground decal (SE/GroundDecal), not an opaque disc:
+            // a hard dark polygon read as a hole in the map (Rowen: black patches).
+            var decal = Resources.Load<Shader>("Shaders/GroundDecal");
+            if (decal != null)
+            {
+                scorchTexture = ScorchTexture();
+                scorchMaterial = new Material(decal) { name = "SE Wreck scorch", enableInstancing = true };
+                scorchMaterial.SetTexture("_MainTex", scorchTexture);
+                var quad = new Mesh { name = "SE scorch quad" };
+                quad.SetVertices(new[] { new Vector3(-.5f, 0, -.5f), new Vector3(-.5f, 0, .5f), new Vector3(.5f, 0, .5f), new Vector3(.5f, 0, -.5f) });
+                quad.SetUVs(0, new[] { new Vector2(0, 0), new Vector2(0, 1), new Vector2(1, 1), new Vector2(1, 0) });
+                quad.SetNormals(new[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up });
+                quad.SetTriangles(new[] { 0, 1, 2, 0, 2, 3 }, 0);
+                ownedMeshes.Add(quad);
+                batches[(int)Part.Scorch].Dispose();
+                batches[(int)Part.Scorch] = new InstanceBatch(quad, scorchMaterial, 256)
+                { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, ReceiveShadows = true };
+            }
+        }
+
+        Texture2D scorchTexture;
+        Material scorchMaterial;
+
+        /// <summary>A charred-earth splash: dark core, ragged soft edge (alpha), white rgb so the instance colour tints it.</summary>
+        internal static Texture2D ScorchTexture()
+        {
+            const int n = 64;
+            var tex = new Texture2D(n, n, TextureFormat.RGBA32, true) { name = "SE scorch", wrapMode = TextureWrapMode.Clamp };
+            var px = new Color32[n * n];
+            for (int y = 0; y < n; y++)
+                for (int x = 0; x < n; x++)
+                {
+                    float u = (x + .5f) / n * 2 - 1, v = (y + .5f) / n * 2 - 1;
+                    float r = math.sqrt(u * u + v * v), ang = math.atan2(v, u);
+                    float edge = .78f + .12f * math.sin(ang * 5 + 1.3f) + .07f * math.sin(ang * 11 + .4f);
+                    float a = math.saturate((edge - r) / (edge * .55f));
+                    a = a * a * (3 - 2 * a);
+                    float grain = Hash(x, y) * .25f;
+                    byte shade = (byte)(255 * (.82f + grain * .7f));
+                    px[y * n + x] = new Color32(shade, shade, shade, (byte)(255 * a * (.9f - grain * .4f)));
+                }
+            tex.SetPixels32(px); tex.Apply(true, true);
+            return tex;
         }
 
         /// <summary>A finished trench at this tile (troops there stand down in it).</summary>
@@ -72,6 +115,11 @@ namespace SE.Runtime.Battlefields
 
         void Put(Part part, float3 mapPos, float mapYaw, float3 size, float3 color)
             => batches[(int)part].Add(InstanceData.TRS(MapSpace.W(mapPos), MapSpace.Yaw(mapYaw), size, new float4(color, 0)));
+
+        /// <summary>The soft scorch decal (rgb tint, a = opacity); the opaque disc fallback takes the tint only.</summary>
+        void PutScorch(float3 mapPos, float mapYaw, float3 size, float4 color)
+            => batches[(int)Part.Scorch].Add(InstanceData.TRS(MapSpace.W(mapPos), MapSpace.Yaw(mapYaw), size,
+                scorchMaterial != null ? color : new float4(color.xyz * .8f, 0)));
 
         void PutQ(Part part, float3 mapPos, quaternion unityRotation, float3 size, float3 color)
             => batches[(int)part].Add(InstanceData.TRS(MapSpace.W(mapPos), unityRotation, size, new float4(color, 0)));
@@ -179,7 +227,7 @@ namespace SE.Runtime.Battlefields
                     var burnt = new float3(char0, char0 * .9f, char0 * .82f);
                     PlaceWreck(part, x, z, wreckYaw, s, burnt, out float y);
                     // the scorched patch it burned out on, and fragments thrown around it
-                    Put(Part.Scorch, new float3(x, y + .004f, z), wreckYaw, new float3(s * 1.7f, 1f, s * 2.1f), new float3(.05f, .045f, .04f));
+                    PutScorch(new float3(x, y + .004f, z), wreckYaw, new float3(s * 1.9f, 1f, s * 2.3f), new float4(.26f, .22f, .17f, .78f));   // soft burnt earth, not a black blob
                     if (part == Part.GunWreck)
                         Put(Part.Plank, new float3(x + math.sin(wreckYaw) * .055f, y + .05f, z + math.cos(wreckYaw) * .055f), wreckYaw,
                             new float3(.014f, .014f, .26f), new float3(.20f, .20f, .18f));
@@ -188,7 +236,7 @@ namespace SE.Runtime.Battlefields
                         float fa = Hash(w.Tile + n, k) * 6.283f, fr = s * (.6f + Hash(n + k, w.Tile) * .9f);
                         float fx = x + Mathf.Cos(fa) * fr, fz = z + Mathf.Sin(fa) * fr, piece = s * (.05f + Hash(k, n + 5) * .08f);
                         var tumble = quaternion.EulerZXY((Hash(k, n) - .5f) * .8f, fa * 3f, (Hash(n, k + 2) - .5f) * .8f);
-                        PutQ(Part.Debris, new float3(fx, Surface(fx, fz) + piece * .1f, fz), tumble, new float3(piece * 1.4f, piece * .35f, piece), new float3(.13f, .12f, .11f));
+                        PutQ(Part.Debris, new float3(fx, Surface(fx, fz) + piece * .1f, fz), tumble, new float3(piece * 1.4f, piece * .35f, piece), new float3(.30f, .28f, .25f));
                     }
                     if (w.Burning) BurningWrecks.Add(new float3(x, y + 0.05f, z));
                     n++;
@@ -269,7 +317,7 @@ namespace SE.Runtime.Battlefields
         // Trench cross-section (map units; 1 = 25 m): a 1.5 m wide cut, 2 m deep (shown by dark sunken walls and
         // floor), an earth berm in front topped with sandbags (the parapet), a lower parados behind, plank
         // revetments on the walls and a duckboard walk on the floor.
-        static readonly float3 Earth = new float3(.24f, .19f, .14f), Mud = new float3(.12f, .095f, .07f), Wall = new float3(.17f, .13f, .095f), Board = new float3(.42f, .33f, .22f);
+        static readonly float3 Earth = new float3(.24f, .19f, .14f), Mud = new float3(.19f, .15f, .11f), Wall = new float3(.17f, .13f, .095f), Board = new float3(.42f, .33f, .22f);
 
         static readonly float3 Steel = new float3(.29f, .30f, .29f);
         /// <summary>How close (outside the carriageway's edge) a trench may come to a road before it stops at the verge.</summary>
@@ -550,6 +598,6 @@ namespace SE.Runtime.Battlefields
 
         public void Draw(WrapImages images) { foreach (var b in batches) b.DrawImages(images); }
 
-        public void Dispose() { foreach (var b in batches) b.Dispose(); foreach (var mesh in ownedMeshes) UnityEngine.Object.Destroy(mesh); }
+        public void Dispose() { foreach (var b in batches) b.Dispose(); foreach (var mesh in ownedMeshes) UnityEngine.Object.Destroy(mesh); if (scorchMaterial != null) UnityEngine.Object.Destroy(scorchMaterial); if (scorchTexture != null) UnityEngine.Object.Destroy(scorchTexture); }
     }
 }

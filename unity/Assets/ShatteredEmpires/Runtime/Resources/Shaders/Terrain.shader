@@ -95,6 +95,19 @@ Shader "SE/Terrain"
             return a * (half)w.x + b * (half)w.y + c * (half)w.z;
         }
 
+        // The same with gradients supplied by the caller, so it may run inside a dynamic branch.
+        half4 SE_HexTiledGrad(TEXTURE2D_PARAM(tex, samp), float2 uv, float cells, float2 dx, float2 dy)
+        {
+            float3 w; float2 v1, v2, v3;
+            SE_HexGrid(uv * cells, w, v1, v2, v3);
+            half4 a = SAMPLE_TEXTURE2D_GRAD(tex, samp, uv + SE_Hash22(v1) * 7.13, dx, dy);
+            half4 b = SAMPLE_TEXTURE2D_GRAD(tex, samp, uv + SE_Hash22(v2) * 7.13, dx, dy);
+            half4 c = SAMPLE_TEXTURE2D_GRAD(tex, samp, uv + SE_Hash22(v3) * 7.13, dx, dy);
+            w = pow(max(w, 0.0), 3.0);
+            w /= max(w.x + w.y + w.z, 1e-4);
+            return a * (half)w.x + b * (half)w.y + c * (half)w.z;
+        }
+
         // Atlas regions are sampled with explicit gradients: frac must never choose a
         // coarse mip at a repeat seam. The inset keeps neighbouring materials separate.
         half3 SurfacePhoto(float2 uv, uint layer)
@@ -155,7 +168,7 @@ Shader "SE/Terrain"
                 float2 p = wp.xz * _DetailScale;
                 // View scale: the rig distance. The in-match camera is orthographic (size = distance * .36),
                 // where eye distance says nothing about zoom.
-                float camDist = unity_OrthoParams.w > .5 ? unity_OrthoParams.y / .36 : distance(_WorldSpaceCameraPos, wp);
+                float camDist = unity_OrthoParams.w > .5 ? unity_OrthoParams.y / .36 : SE_ViewDistance(wp);
                 half nearDetail = 1.0h - smoothstep(8.0h, 32.0h, (half)camDist);
                 half midDetail = 1.0h - smoothstep(24.0h, 110.0h, (half)camDist);
 
@@ -166,9 +179,14 @@ Shader "SE/Terrain"
                 half m3 = SE_Noise(wp.xz * .19 + 5.3);
                 half macro = m1 * .55h + m2 * .30h + m3 * .15h;
 
-                half3 grass = SE_HexTiled(TEXTURE2D_ARGS(_GrassTex, sampler_GrassTex), wp.xz * 7.0, .45).rgb;
-                half grassLuma = dot(grass, half3(.25h, .60h, .15h));
+                // (perf, workstream A) the close-up photo layers (four hex-tiled reads, twelve samples) only
+                // run where they show; the gradients come from outside the branch so mips stay correct
+                float2 gdx = ddx(wp.xz), gdy = ddy(wp.xz);
+                bool nearOn = nearDetail > .001h;
                 half3 grassFar = SAMPLE_TEXTURE2D(_GrassTex, sampler_GrassTex, wp.xz * .83 + .21).rgb;
+                half3 grass = grassFar;
+                UNITY_BRANCH if (nearOn) grass = SE_HexTiledGrad(TEXTURE2D_ARGS(_GrassTex, sampler_GrassTex), wp.xz * 7.0, .45, gdx * 7.0, gdy * 7.0).rgb;
+                half grassLuma = dot(grass, half3(.25h, .60h, .15h));
                 half farLuma = dot(grassFar, half3(.25h, .60h, .15h));
                 half3 palette = SRGBToLinear(i.color.rgb);
                 // vegetated land (green over red in the biome colour); deserts, rock and snow are not
@@ -185,8 +203,11 @@ Shader "SE/Terrain"
                 albedo *= lerp(half3(1.0h, 1.0h, 1.0h), hue, vegetated * .55h);
                 albedo *= .93h + macro * .14h;
 
-                half3 earthDetail = SE_HexTiled(TEXTURE2D_ARGS(_EarthTex, sampler_EarthTex), wp.xz * 3.2, .5).rgb;
-                half3 earth = lerp(half3(.075h, .061h, .038h), earthDetail, nearDetail * .72h);
+                // Far away the soil takes the photograph's mean colour (its smallest mip) instead of a
+                // near-black constant: churned ground and crater floors read as earth, not black blobs.
+                half3 earthDetail = SAMPLE_TEXTURE2D_LOD(_EarthTex, sampler_EarthTex, float2(.5, .5), 12).rgb;
+                UNITY_BRANCH if (nearOn) earthDetail = lerp(earthDetail, SE_HexTiledGrad(TEXTURE2D_ARGS(_EarthTex, sampler_EarthTex), wp.xz * 3.2, .5, gdx * 3.2, gdy * 3.2).rgb, nearDetail);
+                half3 earth = lerp(half3(.075h, .061h, .038h), earthDetail, .72h);
                 // Worn, bare patches in grassland: organic shapes that hide the hex lattice.
                 half bare = smoothstep(.70h, .86h, m2 * .65h + m3 * .35h + (SE_Noise(wp.xz * .9) - .5h) * .12h) * vegetated * .35h;
                 albedo = lerp(albedo, earth * half3(1.30h, 1.25h, 1.15h), bare);
@@ -248,10 +269,10 @@ Shader "SE/Terrain"
                 half soilness = saturate((i.color.r - i.color.g) * 12.0h + .1h) * cratered;
                 half core = smoothstep(.55h, .92h, soilness);
                 half rim = saturate(1.0h - abs(soilness - .28h) / .18h) * cratered;
-                half3 scorched = half3(.028h, .025h, .022h) * lerp(.7h, 1.5h, clod);
+                half3 scorched = half3(.062h, .054h, .044h) * lerp(.8h, 1.4h, clod);   // charred soil, not a black hole
                 half3 debris = lerp(aggregate * half3(.85h, .82h, .78h), rock, .35h) * lerp(.75h, 1.25h, SE_Noise(wp.xz * 31.0));
                 albedo = lerp(albedo, churned * .85h, soilness * .6h);
-                albedo = lerp(albedo, scorched, core * .75h);
+                albedo = lerp(albedo, scorched, core * .55h);
                 albedo = lerp(albedo, debris, rim * smoothstep(.45h, .75h, clod) * .7h);
 
                 half woodland = saturate((i.color.g - i.color.r) * 7.0h);
@@ -262,10 +283,13 @@ Shader "SE/Terrain"
 
                 half relief = lerp(grassLuma, rockLuma, steep);
                 n = SE_Relief(wp, n, relief, .00012h + steep * .00050h);
-                half3 grassNormal = UnpackNormal(SE_HexTiled(TEXTURE2D_ARGS(_GrassNormal, sampler_GrassNormal), wp.xz * 7.0, .45));
-                n = normalize(n + half3(grassNormal.x, 0, grassNormal.y) * nearDetail * (1 - steep) * (1.0h - apron) * .10h);
-                half3 earthNormal = UnpackNormal(SE_HexTiled(TEXTURE2D_ARGS(_EarthNormal, sampler_EarthNormal), wp.xz * 3.2, .5));
-                n = normalize(n + half3(earthNormal.x, 0, earthNormal.y) * nearDetail * max(max(scar, woodland), max(soilness, bare)) * .06h);
+                UNITY_BRANCH if (nearOn)
+                {
+                    half3 grassNormal = UnpackNormal(SE_HexTiledGrad(TEXTURE2D_ARGS(_GrassNormal, sampler_GrassNormal), wp.xz * 7.0, .45, gdx * 7.0, gdy * 7.0));
+                    n = normalize(n + half3(grassNormal.x, 0, grassNormal.y) * nearDetail * (1 - steep) * (1.0h - apron) * .10h);
+                    half3 earthNormal = UnpackNormal(SE_HexTiledGrad(TEXTURE2D_ARGS(_EarthNormal, sampler_EarthNormal), wp.xz * 3.2, .5, gdx * 3.2, gdy * 3.2));
+                    n = normalize(n + half3(earthNormal.x, 0, earthNormal.y) * nearDetail * max(max(scar, woodland), max(soilness, bare)) * .06h);
+                }
                 // Churned ground and crater walls catch the light instead of reading as smooth bowls.
                 n = SE_Relief(wp, n, clod, (scar * .5h + soilness) * .012h * (.2h + nearDetail * .8h));
 
@@ -277,11 +301,11 @@ Shader "SE/Terrain"
                 color *= 1.0h - SE_CloudShadow(wp);
 
                 // Territory: a soft glowing line in the owner's team colour with a faint inward wash.
-                // Thin and quiet up close, wider and clearer at strategic zoom.
+                // Thin and quiet up close, wider and clearer at strategic zoom. The distance field runs along
+                // the hex sides (TerritoryField), so it is sampled unwarped: the outline stays a clean hexagon.
                 if (territoryOn)
                 {
-                    float2 warp = float2(SE_Noise(wp.xz * .7), SE_Noise(wp.xz * .7 + 19.1)) - .5;
-                    half4 tt = SAMPLE_TEXTURE2D_LOD(_SE_TerritoryTex, sampler_SE_TerritoryTex, SE_MapUV(wp + float3(warp.x, 0, warp.y) * .18), 0);
+                    half4 tt = SAMPLE_TEXTURE2D_LOD(_SE_TerritoryTex, sampler_SE_TerritoryTex, SE_MapUV(wp), 0);
                     if (tt.a > .004h)
                     {
                         float d = (tt.a - .5) * 2.0 * _SE_TerritoryParams.y;

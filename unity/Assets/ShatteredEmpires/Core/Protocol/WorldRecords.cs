@@ -47,11 +47,25 @@ namespace SE.Core.Protocol
         public float WindAngle, WindSpeed;
         public byte[] Cloud, Rain, Fog, Wet, Storm;
 
+        /// <summary>
+        /// The field at a hex, blended bilinearly between the centres of the coarse weather cells. (Reading the
+        /// cell the hex falls in drew each 8-hex cell as a flat block: rain-wet ground showed as a straight-edged
+        /// light/dark split across the terrain, final pass f60/f91.)
+        /// </summary>
         public float Sample(byte[] field, int tile, int mapW)
         {
-            if (field == null || CellsW <= 0) return 0f;
+            if (field == null || CellsW <= 0 || CellsH <= 0 || Cell <= 0) return 0f;
             int q = tile % mapW, r = tile / mapW;
-            int cx = Math.Min(CellsW - 1, q / Cell), cy = Math.Min(CellsH - 1, r / Cell);
+            float gx = (q + .5f) / Cell - .5f, gy = (r + .5f) / Cell - .5f;
+            int x0 = (int)Math.Floor(gx), y0 = (int)Math.Floor(gy);
+            float tx = gx - x0, ty = gy - y0;
+            float a = At(field, x0, y0), b = At(field, x0 + 1, y0), c = At(field, x0, y0 + 1), d = At(field, x0 + 1, y0 + 1);
+            return (a + (b - a) * tx) * (1f - ty) + (c + (d - c) * tx) * ty;
+        }
+
+        float At(byte[] field, int cx, int cy)
+        {
+            cx = Math.Max(0, Math.Min(CellsW - 1, cx)); cy = Math.Max(0, Math.Min(CellsH - 1, cy));
             int i = cy * CellsW + cx;
             return i < field.Length ? field[i] / 255f : 0f;
         }

@@ -23,6 +23,10 @@ namespace SE.Core.Units
             public int Id, Owner, TypeIndex, Tile, Next, Hp, Supply, Flags, Target, Formation, Veteran, Morale;
             public float Prog;
             public int AirState, AirMission, AirMissionTile, AirRadius;
+            /// <summary>Own aircraft fuel 0-255 (action RTS), -1 when unknown.</summary>
+            public int Fuel;
+            /// <summary>Action RTS: server stance code (0 aggressive, 1 defensive, 2 holdFire), -1 when not sent.</summary>
+            public int Stance;
             public bool InUse;
             public WorldMotion Motion;
         }
@@ -138,6 +142,7 @@ namespace SE.Core.Units
                 u.Tile = a.Tile; u.Next = a.Next; u.Prog = a.Prog; u.Hp = a.Hp; u.Supply = a.Supply;
                 u.Flags = a.Flags; u.Target = a.Target; u.Formation = a.Formation; u.Veteran = a.Veteran; u.Morale = a.Morale;
                 u.AirState = a.AirState; u.AirMission = a.AirMission; u.AirMissionTile = a.AirMissionTile; u.AirRadius = a.AirRadius;
+                u.Fuel = a.Fuel; u.Stance = a.Stance;
                 u.Motion = a.Motion;
             }
             if (m.Delta)

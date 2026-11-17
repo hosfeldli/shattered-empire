@@ -206,7 +206,7 @@ namespace SE.Runtime.Rendering
         static readonly Color Glass = new Color(0.45f, 0.55f, 0.62f);
         static readonly Color Roofing = new Color(0.62f, 0.58f, 0.55f);
 
-        public static Mesh Box, Roof, Cylinder, Cone, Quad, Disc, Marker, Ring;
+        public static Mesh Box, Roof, Cylinder, Cone, Quad, Disc, Marker, Ring, RingThin;
         public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, DeciduousFar, ConiferFar, DeciduousSpeck, ConiferSpeck, Shrub, Grass, Understory, TankObstacle, StrategicHatch, StrategicMissile, Sandbag;
         public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
         public static Mesh Tower, Skyscraper, Silo, Chimney, Crane, Wreck;
@@ -235,6 +235,15 @@ namespace SE.Runtime.Rendering
                 ring.Quad(P(a0, 0.42f), P(a1, 0.42f), P(a1, 0.5f), P(a0, 0.5f), White);
             }
             Ring = ring.Build("ring");
+            // the same outline with a narrower band, for rings stretched round a spread-out squad
+            var thin = new MeshBuilder();
+            for (int k = 0; k < 36; k++)
+            {
+                float a0 = k * Mathf.PI / 18, a1 = (k + 1) * Mathf.PI / 18;
+                Vector3 P(float a, float r) => new Vector3(Mathf.Cos(a) * r, 0, Mathf.Sin(a) * r);
+                thin.Quad(P(a0, 0.465f), P(a1, 0.465f), P(a1, 0.5f), P(a0, 0.5f), White);
+            }
+            RingThin = thin.Build("ring_thin");
             // strategic marker: a raised chevron readable from far away
             Marker = new MeshBuilder()
                 .Wedge(new Vector3(0, 0, 0), new Vector3(0.8f, 0.25f, 1f), 0.08f, White)

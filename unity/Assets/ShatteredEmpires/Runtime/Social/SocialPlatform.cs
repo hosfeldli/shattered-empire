@@ -33,6 +33,8 @@ namespace SE.Runtime.Social
         public int TeamSize = 1;
         /// <summary>"lobby" before the match starts, "running" after.</summary>
         public string Status = "lobby";
+        /// <summary>The host's game version (lobby data se_version) and the room's format and map, as advertised.</summary>
+        public string Version = "", Format = "", MapName = "";
         public IReadOnlyList<LobbyMember> Members = Array.Empty<LobbyMember>();
     }
 
@@ -50,6 +52,10 @@ namespace SE.Runtime.Social
         public int MaxMembers = 8;
         /// <summary>Open the Steam overlay invite dialog as soon as the lobby exists.</summary>
         public bool OpenInviteDialog;
+        /// <summary>The room's format ("2v2", "ffa4") and map name, shown in lobby lists.</summary>
+        public string Format = "", MapName = "";
+        /// <summary>Listed in the public lobby search (same game and version) as well as to friends.</summary>
+        public bool Public;
     }
 
     /// <summary>A request to join a server match that came from the platform (invite, friends list, launch argument).</summary>

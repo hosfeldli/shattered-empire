@@ -26,7 +26,7 @@ namespace SE.Runtime.UI
             if (text.StartsWith("multiplayer")) return "Multiplayer\nCreate or join a hosted match. Select teams and opponents before launching.";
             if (text.StartsWith("field guide")) return "Field Guide\nLook up units, buildings, resources, counters, commands and asset credits.";
             if (text.StartsWith("settings")) return "Settings\nAdjust graphics, audio, interface scaling, accessibility and key bindings.";
-            if (text.StartsWith("field construction")) return "Field construction\nChoose a defense, road or trench. No engineer selection is required. Engineers assist automatically. Q / E rotates a defensive building before placement.";
+            if (text.StartsWith("field construction")) return "Build wheel (B)\nPlace defenses, roads, trenches, outposts or a New Base inside your territory. Your base engineers build them. Comma and period rotate a defense before placement.";
             if (text.StartsWith("rally")) return "Rally point\nClick a world position. Newly recruited units move there automatically.";
             if (text.StartsWith("reinforce")) return "Reinforce an army\nSend compatible newly recruited units to the selected army group.";
             if (text.StartsWith("repeat")) return "Repeat production\nContinue recruiting this unit when resources and command capacity permit. Disable it to stop future recruitment.";

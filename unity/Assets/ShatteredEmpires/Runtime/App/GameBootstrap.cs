@@ -107,6 +107,8 @@ namespace SE.Runtime.App
         }
         /// <summary>Host in the match lobby: start now (open human seats become AI).</summary>
         public void StartLobbyMatch() => net?.Send(LobbyMessages.Start());
+        /// <summary>A lobby edit (seat, team, AI seats, format, map); the server answers with a fresh 'room'.</summary>
+        public void SendLobby(JObject message) { if (message != null) net?.Send(message); }
         public void SetLobbyReady(bool ready)
         {
             net?.Send(LobbyMessages.Ready(ready));
@@ -177,6 +179,7 @@ namespace SE.Runtime.App
             };
             units = new UnitRenderer();
             units.InTrench = t => warzone.HasTrench(t);
+            units.IsHostile = owner => session.IsHostile(owner);   // enemy role glyphs (J)
             fx = new EffectsRenderer();
             wildlife = new Wildlife();
             fx.Blast += wildlife.Disturb;
@@ -209,6 +212,9 @@ namespace SE.Runtime.App
             ps.scale = GameSettings.UiScale;
             uiDocument.panelSettings = ps;
             hud = new Hud(uiDocument.rootVisualElement, session, commander, units, this);
+            Hud.UnitFuel = id => session.Units.TryGet(id, out var air) ? air.Fuel : -1;   // aircraft fuel 0-255 on the hover card (D)
+            // squads draw exactly the living men the server sends (unit extra[8]); -1 falls back to the hp estimate
+            units.MenOf = id => session.Units.TryGet(id, out var squad) && squad.Motion.Present ? squad.Motion.Men : -1;
             hud.TileScreen = tile =>
             {
                 var g = session.World.Grid;
@@ -303,7 +309,7 @@ namespace SE.Runtime.App
             if (net != null || phase == Phase.Playing || phase == Phase.Connecting) SocialPlatform.Current.LeaveLobby();
             if (rootPage) MenuView?.ResetToRoot();
             phase = Phase.Menu;
-            rts.Cam.orthographic = false;
+            rts.Cam.orthographic = false; rts.Telephoto = false;
             net?.Dispose(); net = null;
             stress = null; perfRunning = false;
             var gen = StressWorld.Generate(80, 3, bounded: true);
@@ -359,8 +365,13 @@ namespace SE.Runtime.App
                 {
                     msg["teamSize"] = pendingTeamSize;
                     msg["humans"] = pendingTeamSize * 2;
+                    if (!string.IsNullOrEmpty(pendingFormat)) { msg["format"] = pendingFormat; msg["humans"] = MapPreview.Seats(pendingFormat); }
+                    // this client's lobby starts when everyone is ready (or the host presses Start), not when the last seat fills
+                    msg["waitForReady"] = true;
+                    // listed in the in-game lobby browser (and publicly on Steam) when the host chose Public
+                    msg["public"] = PlayerPrefs.GetInt("se.lobby.public", 0) == 1;
                     if (pendingMap != "random") msg["map"] = pendingMap;
-                    pendingTeamSize = 1; pendingMap = "random";
+                    pendingTeamSize = 1; pendingMap = "random"; pendingFormat = null;
                 }
                 if (opts.Has("seed")) msg["seed"] = opts.Int("seed", 0);
                 if (opts.Has("map")) msg["mapSize"] = opts.Get("map");
@@ -372,9 +383,32 @@ namespace SE.Runtime.App
                     var c = pendingCampaign;
                     msg["style"] = c.Style; msg["mapSize"] = c.MapSize; msg["ais"] = c.Rivals; msg["difficulty"] = c.Difficulty;
                     msg["objective"] = c.Objective; msg["wrap"] = c.Wrap; msg["tutorial"] = c.Tutorial;
+                    if (!string.IsNullOrEmpty(c.StartRes)) msg["startRes"] = c.StartRes;
                     if (!string.IsNullOrEmpty(c.Map) && c.Map != "random") msg["map"] = c.Map;
                     if (int.TryParse(c.Seed, out int s)) msg["seed"] = s;
                     msg["title"] = c.Tutorial ? "Tutorial" : $"{playerName} · {c.Style}";
+                    // New Skirmish: a format (teams or free-for-all) and each AI's difficulty and personality, in seat order
+                    if (!string.IsNullOrEmpty(c.Format) && !c.Tutorial)
+                    {
+                        msg["format"] = c.Format;
+                        msg["ais"] = Mathf.Max(1, MapPreview.Seats(c.Format) - 1);
+                        msg["title"] = $"{playerName} · {MapPreview.FormatLabel(c.Format)}";
+                    }
+                    if (c.Ais != null && c.Ais.Count > 0 && !c.Tutorial)
+                    {
+                        var rivals = new JArray();
+                        foreach (var ai in c.Ais)
+                        {
+                            var rv = new JObject { ["difficulty"] = string.IsNullOrEmpty(ai.Difficulty) ? c.Difficulty : ai.Difficulty };
+                            if (!string.IsNullOrEmpty(ai.Personality) && ai.Personality != "random") rv["personality"] = ai.Personality;
+                            rivals.Add(rv);
+                        }
+                        msg["rivals"] = rivals;
+                        // seats left empty (uneven sides; random worlds only): seat i + 1 for AI entry i
+                        var closed = new JArray();
+                        for (int i = 0; i < c.Ais.Count; i++) if (c.Ais[i].Closed) closed.Add(i + 1);
+                        if (closed.Count > 0 && (string.IsNullOrEmpty(c.Map) || c.Map == "random")) msg["closed"] = closed;
+                    }
                 }
                 pendingCampaign = null;
                 if (opts.Has("perf") || opts.Has("bench"))
@@ -408,7 +442,7 @@ namespace SE.Runtime.App
             city.ActionRts = session.ActionRts;
             city.SetShowcaseRoads(null);
             if (phase != Phase.Menu) atmosphere.GameplayMood();
-            rts.Cam.orthographic = session.ActionRts;
+            rts.Cam.orthographic = false; rts.Telephoto = session.ActionRts;   // telephoto perspective (workstream A)
             fx.ClearPersistent();
             units.Selected.Clear();
             commander.Cancel();
@@ -439,18 +473,23 @@ namespace SE.Runtime.App
         CampaignOptions pendingCampaign;
         int pendingTeamSize = 1;
         string pendingMap = "random";
+        string pendingFormat;
 
-        public void HostMultiplayer(int teamSize, string map = "random")
+        public void HostMultiplayer(int teamSize, string map = "random", string format = null)
         {
             pendingTeamSize = Mathf.Clamp(teamSize, 1, 4);
             pendingMap = string.IsNullOrEmpty(map) ? "random" : map;
+            pendingFormat = string.IsNullOrEmpty(format) ? null : format;
             StartMatch("pvp", "");
         }
 
         public void StartCampaign(CampaignOptions options)
         {
             pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty,
-                Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective, Map = options.Map };
+                Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective, Map = options.Map,
+                Format = options.Format, StartRes = options.StartRes };
+            if (options.Ais != null)
+                foreach (var ai in options.Ais) pendingCampaign.Ais.Add(new AiSeatOption { Difficulty = ai.Difficulty, Personality = ai.Personality, Closed = ai.Closed });
             StartMatch("ai", "");
         }
 
@@ -536,18 +575,30 @@ namespace SE.Runtime.App
         /// The server's pre-game lobby changed (a 'room' message): the host opens the friends-only Steam lobby
         /// for this match code as soon as it exists, and the menu shows the lobby page.
         /// </summary>
+        string steamAdvert = "";
+
         void OnRoom(JObject raw)
         {
             var room = MatchRoom.Parse(raw);
             if (room == null || room.Status != "lobby" || phase != Phase.Connecting) return;
             var sp = SocialPlatform.Current;
-            if (room.IsHost && room.Mode == "pvp" && sp.Available && !sp.Busy && sp.Lobby?.MatchCode != room.Code)
+            // the Steam lobby advertises the room (format, map, human seats, visibility); re-applied when that changes
+            int humanSeats = 0;
+            foreach (var seat in room.Seats) if (seat.Human) humanSeats++;
+            bool listPublic = room.Public;   // the host's Public / Private choice, kept by the server
+            string mapName = room.Map == "random" || string.IsNullOrEmpty(room.MapName) ? "Random world" : room.MapName;
+            string advert = room.Code + "|" + room.Format + "|" + mapName + "|" + humanSeats + "|" + listPublic + "|" + room.MapSize;
+            if (room.IsHost && room.Mode == "pvp" && sp.Available && !sp.Busy && (sp.Lobby?.MatchCode != room.Code || advert != steamAdvert))
+            {
+                steamAdvert = advert;
                 sp.HostLobby(new LobbyRequest
                 {
                     MatchCode = room.Code, Server = serverUrl, Name = room.Name, Ruleset = room.Ruleset,
                     MapSize = room.MapSize > 0 ? room.MapSize.ToString() : "", TeamSize = room.TeamSize,
-                    MaxMembers = Mathf.Max(2, room.Seats.Count),
+                    MaxMembers = Mathf.Max(2, humanSeats),
+                    Format = room.Format, MapName = mapName, Public = listPublic,
                 });
+            }
             if (hud != null && !hud.MenuVisible) hud.ShowMenu(true, null);
             MenuView?.ShowLobby(raw);
         }
@@ -579,6 +630,11 @@ namespace SE.Runtime.App
                 if (perfSeconds > 0 && !perfRunning) StartCoroutine(LivePerf());
             });
         }
+
+        /// <summary>Diagnostics: barracks-kit effects presented (0 grenade, 1 rocket, 2 marksman, 3 armour save) and where the last one was (map space).</summary>
+        public static readonly int[] UpgradeFxCount = new int[4];
+        public static readonly Vector3[] UpgradeFxLast = new Vector3[4];
+        static void NoteUpgradeFx(int kind, float3 p) { UpgradeFxCount[kind]++; UpgradeFxLast[kind] = new Vector3(p.x, p.y, p.z); }
 
         void Advance()
         {
@@ -763,7 +819,7 @@ namespace SE.Runtime.App
             Mark(5, ref tq);
             stallCity = Ms(ts); ts = Stopwatch.GetTimestamp();
             var cam = rts.Cam;
-            float camX = cam.transform.position.x;
+            float camX = SE.Runtime.Rendering.ViewLod.EyeOr(cam).x;   // the logical eye: the telephoto camera stands far back
             units.Update(session.Units, world, session.CivColor, camX, rts.Focus, rts.Distance, time, dt, session.Structures);
             city.Animate(time, session.Units.RenderTime, rts.Focus, rts.Distance, atmosphere.WindMap);
             hud?.BadgeCounts(units.Badges, p => rts.ToScreen(new Vector3(p.x, p.y, p.z)));
@@ -786,7 +842,8 @@ namespace SE.Runtime.App
             fx.Wind = atmosphere.WindMap;
             if (fx.GroundAt == null) fx.GroundAt = world.GroundHeight;
             fx.Update(dt, camX, world.Grid.Period, world.Grid.Wrap, phase == Phase.Playing ? session.Paused ? 0 : session.PlayRate : 1);
-            if (world.Ready) wildlife?.Update(dt, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, world.GroundHeight);
+            // birds freeze with the game while it is paused (workstream A)
+            if (world.Ready) wildlife?.Update(phase == Phase.Playing && session.Paused ? 0f : dt, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, world.GroundHeight);
             Mark(8, ref tq);
             if (audioDirector != null) UpdateAudio(dt);
             images.Begin(cam, world.Grid.Period, world.Grid.Wrap);
@@ -922,14 +979,11 @@ namespace SE.Runtime.App
                         var target = EventPoint(e, false, .05f);
                         p = WeaponMuzzle(e.Shooter, p, target);
                         fx.Muzzle(p, heavy, target-p);
-                        fx.Tracer(p, target, heavy);
+                        if (e.Marksman) { NoteUpgradeFx(2, p); fx.MarksmanShot(p, target); }   // Designated Marksmen: one long precision shot (J)
+                        else fx.Tracer(p, target, heavy);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(sound, p, heavy ? 0.9f : 0.5f, heavy ? 4f : 1.5f, heavy ? 2 : 1, rts.Distance);
-                        // Hand Grenades (barracks): at close quarters, riflemen now and then lob one (the server's +20%)
-                        if (store.TryGet(e.Shooter, out var thrower) && (thrower.Motion.Equipment & 32) != 0 && sound == "rifle"
-                            && math.distance(p.xz, target.xz) < 1.2f && UnityEngine.Random.value < .14f)
-                            fx.Projectile(p + new float3(0, .02f, 0), target, "grenade", .9f);
-                        if (aa || IsAirTarget(e.Target))
+                        if ((aa || IsAirTarget(e.Target)) && !(session.ActionRts && aa && IsAirTarget(e.Target)))   // action RTS AA volleys come as 'flak' events (D)
                         {
                             // anti-aircraft fire bursts in the sky around the target
                             fx.AirBurst(target);
@@ -944,18 +998,23 @@ namespace SE.Runtime.App
                         var target = EventPoint(e, false, .05f);
                         p = WeaponMuzzle(e.Shooter, p, target);
                         string weapon = ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "cannon");
-                        fx.Muzzle(p, true, target-p);
-                        fx.Projectile(p, target, weapon, e.Flight);
+                        // barracks kit (server event flags, J): a lobbed grenade, or a squad's anti-tank rocket
+                        if (e.Grenade) { weapon = "grenade"; NoteUpgradeFx(0, p); }
+                        else if (e.Rocket) { weapon = "at_rocket"; NoteUpgradeFx(1, p); fx.RocketBackBlast(p, target); }
+                        if (!e.Grenade) fx.Muzzle(p, true, target-p);
+                        fx.Projectile(e.Grenade ? p + new float3(0, .02f, 0) : p, target, weapon, e.Flight);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(weapon == "cannon" || weapon == "howitzer" || weapon == "atgun" || weapon == "fortgun" ? "cannon" : "launch", p, 0.9f, 5f, 2, rts.Distance);
                         break;
                     }
+                    case "flak": PresentFlak(e); break;   // GameBootstrap.Air.cs (D)
                     case "impact":
                     {
                         var p = EventPoint(e, false, .01f);
                         if (!Near(p, reach)) break;
                         float scale = Mathf.Max(0.6f, e.Radius > 0 ? e.Radius * 1.4f : 0.7f);
-                        if (e.Airburst) { fx.AirBurst(p + new float3(0, IsAirTarget(e.Target) ? 0 : 1.6f, 0)); audioDirector?.Play("flak", p, 0.8f, 5f, 2, rts.Distance); }
+                        if (e.Airburst && session.ActionRts && e.Weapon >= 0 && ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "") == "airburst") { }   // drawn by its 'flak' event (D)
+                        else if (e.Airburst) { fx.AirBurst(p + new float3(0, IsAirTarget(e.Target) ? 0 : 1.6f, 0)); audioDirector?.Play("flak", p, 0.8f, 5f, 2, rts.Distance); }
                         else
                         {
                             fx.Impact(p, scale, e.To >= 0 && e.To < world.Grid.N ? world.Biome[e.To] : 2);
@@ -967,6 +1026,7 @@ namespace SE.Runtime.App
                     case "hit":
                         if (store.TryGet(e.Target, out var victim) && victim.Owner == session.CivId)
                         { var vp = EventPoint(e, false, 0); hud?.NoteUnderFire(e.Target, new Vector3(vp.x, vp.y, vp.z), false, time); }
+                        if (e.Armoured) { var ap = EventPoint(e, false, .035f); NoteUpgradeFx(3, ap); if (Near(ap, reach)) fx.ArmourSave(ap); }   // body armour saved a man (J)
                         if (e.Damage >= 8 && UnityEngine.Random.value < 0.5f)
                         {
                             var p = EventPoint(e, false, .035f);
@@ -1042,6 +1102,15 @@ namespace SE.Runtime.App
                 foreach (var b in session.Structures.Buildings.Values)
                 {
                     if (b.Tile < 0) continue;
+                    // (workstream I) damage stages smoke and burn from the building's breaches
+                    if (!b.Memory && city.DamageEmitters.TryGetValue(b.Id, out var hurtList) && UnityEngine.Random.value < .6f)
+                        foreach (var hurt in hurtList)
+                        {
+                            var hurtAt = hurt.Pos; hurtAt.x = world.Grid.NearX(hurtAt.x, rts.Focus.x);
+                            if (!Near(hurtAt, reach)) break;
+                            if (hurt.Fire) fx.Fire(hurtAt + Jitter(.04f), hurt.Size);
+                            else fx.Smoke(hurtAt, atmosphere.WindMap, false, hurt.Size);
+                        }
                     if (b.Fire)
                     {
                         var p = b.HasPosition ? new float3(b.X, world.GroundHeight(b.X, b.Z) + .12f, b.Z) : TileCentre(b.Tile, .12f);

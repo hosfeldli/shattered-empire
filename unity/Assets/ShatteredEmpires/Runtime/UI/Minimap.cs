@@ -9,12 +9,15 @@ using UnityEngine.UIElements;
 namespace SE.Runtime.UI
 {
     /// <summary>
-    /// The circular minimap (docs/UI_DESIGN_SPEC.md B4): bottom-left, 240 across, north up. The whole map
-    /// is fitted into the circle (its diagonal spans the inner 224); wrapping maps scroll sideways so the
+    /// The circular minimap (docs/UI_DESIGN_SPEC.md B4): bottom-left, 240 across, north up. The map fills
+    /// the circle (its shorter side spans the inner 224, so there is no small square with dark corners); the
+    /// view slides toward the camera only as far as needed to keep the camera footprint inside the circle, so
+    /// the clipped corners come into view when the camera goes there. Wrapping maps scroll sideways so the
     /// circle stays centred on the camera. Layers, bottom to top: terrain + territory + fog (a texture
     /// redrawn twice a second), buildings and units as relation-coloured dots (gathered eight times a
-    /// second, aggregated per 4 px cell), bases shape-coded (friendly circle, enemy diamond, neutral hollow
-    /// ring), the camera footprint and alert pings. Left-click or drag moves the camera; right-click
+    /// second; one owner's units sharing a 4 px cell merge into a dot that grows with the count), bases shape-coded (friendly circle, enemy diamond, neutral hollow
+    /// ring), the camera footprint (a filled trapezoid) and alert pings. Z (minimap_zoom) switches to a local view
+    /// around the camera, 2.25 times closer. Left-click or drag moves the camera; right-click
     /// orders the selection there (<see cref="OrderAt"/>). Nothing here allocates per frame, and the dot and
     /// mark meshes are regenerated only when their content changes.
     /// </summary>
@@ -36,8 +39,15 @@ namespace SE.Runtime.UI
         bool dragging;
 
         // projection (clip-local panel units): screen = (mapLeft + x * scale, mapTop + z * scale)
-        float scale = 1f, mapW, mapH, mapLeft, mapTop, focusX;
+        float scale = 1f, mapW, mapH, mapLeft, mapTop, focusX, focusZ, baseScale = 1f;
+        // the local view (Z): the circle shows a smaller section around the camera, ZoomFactor times closer
+        // (relative to the filled whole-map view: about 3.2x the old diagonal fit)
+        const float ZoomFactor = 2.25f;
+        // whole-map view: the camera footprint centre stays at least this far inside the rim (px)
+        const float FollowMargin = 22f;
+        bool zoomed, zoomDirty;
         readonly float[] terrainLeft = { float.NaN, float.NaN, float.NaN };
+        float terrainTop = float.NaN;
         readonly Vector2[] foot = new Vector2[4];
         bool hasFoot;
 
@@ -45,6 +55,7 @@ namespace SE.Runtime.UI
         readonly float[] dotX = new float[MaxDots], dotZ = new float[MaxDots];
         readonly Color32[] dotC = new Color32[MaxDots];
         readonly byte[] dotSize = new byte[MaxDots];
+        readonly ushort[] dotN = new ushort[MaxDots];   // units merged into this dot (drawn larger, never hidden)
         int dotCount;
         // per-frame projected quads
         readonly float[] emitX = new float[MaxEmit], emitY = new float[MaxEmit];
@@ -52,7 +63,7 @@ namespace SE.Runtime.UI
         readonly byte[] emitS = new byte[MaxEmit];
         int emitCount;
         // aggregation stamps: one per (cell, colour key)
-        int[] stamp = Array.Empty<int>();
+        int[] stamp = Array.Empty<int>(), cellDot = Array.Empty<int>();
         int stampGen, cellsX, cellsZ;
         readonly Dictionary<int, Color32> ownerColor = new Dictionary<int, Color32>();
 
@@ -72,6 +83,7 @@ namespace SE.Runtime.UI
         static readonly Color BezelColor = new Color(8 / 255f, 12 / 255f, 14 / 255f, 0.80f);
         static readonly Color AccentDim = new Color(226 / 255f, 182 / 255f, 96 / 255f, 0.35f);
         static readonly Color FootColor = new Color(1f, 236 / 255f, 180 / 255f, 0.95f);
+        static readonly Color FootFill = new Color(1f, 236 / 255f, 180 / 255f, 0.10f);
         static readonly Color32 PingAlert = new Color32(242, 116, 96, 255);   // --se-bad
         static readonly Color32 PingFire = new Color32(240, 188, 86, 255);    // --se-warn
         static readonly Color ContestedColor = new Color(0.95f, 0.26f, 0.2f, 1f);
@@ -82,6 +94,14 @@ namespace SE.Runtime.UI
         public Action<float, float> FocusMap;
         /// <summary>Right-click on the map: order the selection to map (x, z); the flag queues (Shift).</summary>
         public Action<float, float, bool> OrderAt;
+        /// <summary>One of our units or buildings started taking damage at map (x, z) (at most every 2.5 s; also pinged).</summary>
+        public Action<float, float> UnderAttack;
+
+        /// <summary>True while the circle shows the local section around the camera instead of the whole map.</summary>
+        public bool Zoomed => zoomed;
+
+        /// <summary>Z: switch between the whole map (default) and the local view around the camera.</summary>
+        public void ToggleZoom() { zoomed = !zoomed; zoomDirty = true; }
 
         public Minimap(ClientSession s)
         {
@@ -106,6 +126,8 @@ namespace SE.Runtime.UI
                 var img = new Image { scaleMode = ScaleMode.StretchToFill, pickingMode = PickingMode.Ignore };
                 img.AddToClassList("se-minimap__terrain");
                 img.style.position = Position.Absolute;
+                img.style.left = 0; img.style.top = 0;   // placed by translate (it follows the camera in the local view)
+                img.usageHints = UsageHints.DynamicTransform;
                 img.style.display = DisplayStyle.None;
                 terrain[k] = img;
                 clip.Add(img);
@@ -249,10 +271,11 @@ namespace SE.Runtime.UI
             var corners = ViewCorners?.Invoke();
             if (corners != null && corners.Length == 4)
             {
-                float sum = 0;
-                for (int k = 1; k < 4; k++) sum += g.DxWrap(corners[0].x, corners[k].x);
+                float sum = 0, sumZ = corners[0].y;
+                for (int k = 1; k < 4; k++) { sum += g.DxWrap(corners[0].x, corners[k].x); sumZ += corners[k].y; }
                 float cx = corners[0].x + sum * 0.25f;
-                if (g.Wrap) focusX = g.BaseX(cx);
+                focusX = g.Wrap ? g.BaseX(cx) : cx;
+                focusZ = sumZ * 0.25f;
                 for (int k = 0; k < 4; k++)
                 {
                     if ((foot[k] - corners[k]).sqrMagnitude > 1e-6f) footMoved = true;
@@ -261,9 +284,26 @@ namespace SE.Runtime.UI
                 hasFoot = true;
             }
             if (hasFoot != hadFoot) footMoved = true;
-            float left = g.Wrap ? InnerR - focusX * scale : (Inner - mapW) * 0.5f;
-            bool scrolled = Mathf.Abs(left - mapLeft) > 0.01f;
-            mapLeft = left;
+            bool rescaled = false;
+            if (zoomDirty) { zoomDirty = false; ApplyScale(); rescaled = true; gatherAt = 0; }
+            // whole map: the map fills the circle around its centre and slides toward the camera only when the
+            // footprint centre would leave the circle (wrapping maps follow the camera sideways); local view:
+            // centred on the camera
+            float viewX = focusX, viewZ = focusZ;
+            if (!zoomed)
+            {
+                float midX = g.Wrap ? focusX : g.Period * 0.5f, midZ = g.H * 0.75f;
+                float dx = g.Wrap ? 0f : focusX - midX, dz = focusZ - midZ;
+                float reach = Mathf.Max(1f, InnerR - FollowMargin) / Mathf.Max(1e-4f, scale);
+                float dist = Mathf.Sqrt(dx * dx + dz * dz);
+                float slide = dist > reach ? 1f - reach / dist : 0f;
+                viewX = g.Wrap ? focusX : Mathf.Clamp(midX + dx * slide, 0f, g.Period);
+                viewZ = Mathf.Clamp(midZ + dz * slide, 0f, g.H * 1.5f);
+            }
+            float left = InnerR - viewX * scale;
+            float top = InnerR - viewZ * scale;
+            bool scrolled = rescaled || Mathf.Abs(left - mapLeft) > 0.01f || Mathf.Abs(top - mapTop) > 0.01f;
+            mapLeft = left; mapTop = top;
             PlaceTerrain(g.Wrap);
 
             bool gathered = false;
@@ -296,15 +336,14 @@ namespace SE.Runtime.UI
         {
             grid = g;
             float depth = g.H * 1.5f;
-            scale = Inner / Mathf.Sqrt(g.Period * g.Period + depth * depth);
-            mapW = g.Period * scale;
-            mapH = depth * scale;
-            mapTop = (Inner - mapH) * 0.5f;
+            // the map fills the circle: its shorter side spans the inner disc (no dark corners); the clipped
+            // corners are reached by sliding toward the camera (Tick)
+            baseScale = Inner / Mathf.Max(1f, Mathf.Min(g.Period, depth));
             focusX = g.Period * 0.5f;
-            cellsX = Mathf.CeilToInt(mapW / CellPx) + 1;
-            cellsZ = Mathf.CeilToInt(mapH / CellPx) + 1;
-            int need = cellsX * cellsZ * 8;
-            if (stamp.Length < need) stamp = new int[need];
+            focusZ = depth * 0.5f;
+            // aggregation cells sized once for the closest view, so toggling the local view never allocates
+            int maxCells = (Mathf.CeilToInt(g.Period * baseScale * ZoomFactor / CellPx) + 1) * (Mathf.CeilToInt(depth * baseScale * ZoomFactor / CellPx) + 1) * 8;
+            if (stamp.Length < maxCells) { stamp = new int[maxCells]; cellDot = new int[maxCells]; }
             else Array.Clear(stamp, 0, stamp.Length);
             stampGen = 0;
             dotCount = 0;
@@ -327,24 +366,45 @@ namespace SE.Runtime.UI
             {
                 var img = terrain[k];
                 img.image = tex;
-                img.style.top = mapTop;
-                img.style.width = mapW;
-                img.style.height = mapH;
-                terrainLeft[k] = float.NaN;
                 // wrapping maps draw the neighbouring images too so the seam never shows
                 img.style.display = k == 1 || g.Wrap ? DisplayStyle.Flex : DisplayStyle.None;
             }
+            ApplyScale();
+            mapLeft = (Inner - mapW) * 0.5f;
+            mapTop = (Inner - mapH) * 0.5f;
+        }
+
+        /// <summary>The whole-map or local-view scale: sizes the terrain images and the aggregation grid (on a toggle only).</summary>
+        void ApplyScale()
+        {
+            var g = grid;
+            if (g == null) return;
+            scale = baseScale * (zoomed ? ZoomFactor : 1f);
+            mapW = g.Period * scale;
+            mapH = g.H * 1.5f * scale;
+            cellsX = Mathf.CeilToInt(mapW / CellPx) + 1;
+            cellsZ = Mathf.CeilToInt(mapH / CellPx) + 1;
+            if (cellsX * cellsZ * 8 > stamp.Length) { stamp = new int[cellsX * cellsZ * 8]; cellDot = new int[stamp.Length]; stampGen = 0; }
+            for (int k = 0; k < terrain.Length; k++)
+            {
+                terrain[k].style.width = mapW;
+                terrain[k].style.height = mapH;
+                terrainLeft[k] = float.NaN;
+            }
+            terrainTop = float.NaN;
         }
 
         void PlaceTerrain(bool wrap)
         {
+            bool topMoved = !(Mathf.Abs(mapTop - terrainTop) < 0.01f);   // NaN never compares, so the first call sets it
+            if (topMoved) terrainTop = mapTop;
             for (int k = 0; k < terrain.Length; k++)
             {
                 if (!wrap && k != 1) continue;
                 float left = mapLeft + (k - 1) * mapW;
-                if (Mathf.Abs(left - terrainLeft[k]) < 0.01f) continue;   // NaN never compares, so the first call sets it
+                if (!topMoved && Mathf.Abs(left - terrainLeft[k]) < 0.01f) continue;
                 terrainLeft[k] = left;
-                terrain[k].style.left = left;
+                terrain[k].style.translate = new Translate(left, mapTop);
             }
         }
 
@@ -488,11 +548,15 @@ namespace SE.Runtime.UI
             if (underFire && now - underFireAt > 2.5f)
             {
                 underFireAt = now;
-                AddPing(fireX, fireZ, PingFire);
+                AddPing(fireX, fireZ, PingAlert);
+                UnderAttack?.Invoke(fireX, fireZ);
             }
         }
 
-        /// <summary>Add a dot unless one of the same colour already marks this 4 px cell.</summary>
+        /// <summary>
+        /// Add a dot; units of one owner sharing a 4 px cell merge into one dot that grows with the count (a
+        /// platoon reads as a bigger mark, not as a single unit). False when merged or full.
+        /// </summary>
         bool AddDot(HexGrid g, float x, float z, Color32 c, byte size, int owner, bool aggregate)
         {
             if (dotCount >= MaxDots) return false;
@@ -504,12 +568,29 @@ namespace SE.Runtime.UI
                 int cz = Mathf.Clamp((int)(z * scale / CellPx), 0, cellsZ - 1);
                 int key = ((cz * cellsX + cx) << 3) | ((owner + 1) & 7);
                 if (key < 0 || key >= stamp.Length) return false;
-                if (stamp[key] == stampGen) return false;
+                if (stamp[key] == stampGen)
+                {
+                    int at = cellDot[key];
+                    if (at >= 0 && at < dotCount && dotN[at] < ushort.MaxValue) dotN[at]++;
+                    return false;
+                }
                 stamp[key] = stampGen;
+                cellDot[key] = dotCount;
             }
-            dotX[dotCount] = x; dotZ[dotCount] = z; dotC[dotCount] = c; dotSize[dotCount] = size;
+            dotX[dotCount] = x; dotZ[dotCount] = z; dotC[dotCount] = c; dotSize[dotCount] = size; dotN[dotCount] = 1;
             dotCount++;
             return true;
+        }
+
+        /// <summary>Drawn size of a dot: the base size, one pixel more at 2, 4, 8 and 16 merged units.</summary>
+        int DotPixels(int i)
+        {
+            int n = dotN[i], s = dotSize[i];
+            if (n >= 2) s++;
+            if (n >= 4) s++;
+            if (n >= 8) s++;
+            if (n >= 16) s++;
+            return s;
         }
 
         // ---------------------------------------------------------------- drawing
@@ -549,7 +630,7 @@ namespace SE.Runtime.UI
                 {
                     float x = k == 0 ? a : b;
                     if (!InCircle(x, y, 3)) continue;
-                    emitX[emitCount] = x; emitY[emitCount] = y; emitC[emitCount] = dotC[i]; emitS[emitCount] = dotSize[i];
+                    emitX[emitCount] = x; emitY[emitCount] = y; emitC[emitCount] = dotC[i]; emitS[emitCount] = (byte)DotPixels(i);
                     emitCount++;
                 }
             }
@@ -610,25 +691,27 @@ namespace SE.Runtime.UI
                 }
             }
 
-            // camera footprint (the ground under the screen's corners)
+            // camera footprint: the ground under the screen's corners (a trapezoid under a perspective camera),
+            // a faint fill so the view reads at a glance, then the outline
             if (hasFoot)
             {
-                float refX = g.Wrap ? focusX : 0f;
-                p.strokeColor = FootColor;
-                p.lineWidth = 1.5f;
-                p.lineJoin = LineJoin.Round;
-                p.BeginPath();
-                for (int k = 0; k < 4; k++)
+                float refX = g.Wrap || zoomed ? focusX : 0f;
+                for (int pass = 0; pass < 2; pass++)
                 {
-                    float x = g.Wrap ? refX + g.DxWrap(refX, foot[k].x) : foot[k].x;
-                    var v = new Vector2(mapLeft + x * scale, mapTop + Mathf.Clamp(foot[k].y, -g.H, g.H * 2.5f) * scale);
-                    if (k == 0) p.MoveTo(v); else p.LineTo(v);
+                    p.BeginPath();
+                    for (int k = 0; k < 4; k++)
+                    {
+                        float x = g.Wrap ? refX + g.DxWrap(refX, foot[k].x) : foot[k].x;
+                        var v = new Vector2(mapLeft + x * scale, mapTop + Mathf.Clamp(foot[k].y, -g.H, g.H * 2.5f) * scale);
+                        if (k == 0) p.MoveTo(v); else p.LineTo(v);
+                    }
+                    p.ClosePath();
+                    if (pass == 0) { p.fillColor = FootFill; p.Fill(); }
+                    else { p.strokeColor = FootColor; p.lineWidth = 1.5f; p.lineJoin = LineJoin.Round; p.Stroke(); }
                 }
-                p.ClosePath();
-                p.Stroke();
             }
 
-            // alert pings: an expanding ring 12 → 28 across over 1.2 s
+            // alert pings: an expanding ring 12 → 36 across over 1.2 s
             for (int i = 0; i < MaxPings; i++)
             {
                 ref var ping = ref pings[i];
@@ -643,7 +726,7 @@ namespace SE.Runtime.UI
                     var c = new Vector2(k == 0 ? a : b, y);
                     p.strokeColor = new Color(col.r, col.g, col.b, 1f - t);
                     p.lineWidth = 2f;
-                    p.BeginPath(); p.Arc(c, 6f + 8f * t, 0f, 360f); p.ClosePath(); p.Stroke();
+                    p.BeginPath(); p.Arc(c, 6f + 12f * t, 0f, 360f); p.ClosePath(); p.Stroke();
                     p.fillColor = new Color(col.r, col.g, col.b, 0.9f * (1f - t));
                     p.BeginPath(); p.Arc(c, 2f, 0f, 360f); p.ClosePath(); p.Fill();
                 }

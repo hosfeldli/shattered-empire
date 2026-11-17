@@ -1,20 +1,27 @@
 import { N, T } from './constants.js';
-import { WEAPON_KEYS, WEAPONS, weaponVs } from './weapons.js';
+import { WEAPON_KEYS, WEAPONS, weaponVs as baseVs } from './weapons.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, OUTPOST_TYPES } from './actionDefinitions.js';
 import { addCrater, addIntensity, addSmoke, addWreck, scarCover } from './battlefield.js';
 import { emit } from './combat.js';
 import { centerOf, distance, dxBetween, tileAt, trenchPosition } from './actionNavigation.js';
-import { chase, moveGroup, stopUnit } from './actionOrders.js';
+import { chase, moveGroup, stanceOf, stopUnit } from './actionOrders.js';
+import { airStep, CITY_AA, cityHasAA, flakBurst } from './actionAir.js';
+import { armourDamage, infantryKit, squadFirepower, structureDamage, structureRange } from './actionUpgrades.js';
 
 const VID = Object.fromEntries(WEAPON_KEYS.map((key, index) => [key, index]));
 const unitOf = (obj) => obj?.isUnit ? ACTION_UNITS[obj.type] : null;
 const alive = (obj) => obj && obj.hp > 0;
+// W2 (2026-11-16): in the action ruleset small arms and machine guns also engage low-flying aircraft (helicopters,
+// drones) at a heavy penalty, so helicopters are no longer immune to everything but dedicated AA. The shared
+// WEAPONS table (legacy ruleset) is unchanged.
+export const SMALL_ARMS_VS_LOWAIR = { carbine: .1, rifle: .12, smg_team: .15, mg: .3, mg_light: .2, pistol: 0 };
+const weaponVs = (wk, d) => baseVs(wk, d) || (d?.air && d.alt !== 'high' ? SMALL_ARMS_VS_LOWAIR[wk] || 0 : 0);
 
 function attackRange(game, actor, def, target) {
   const enemy = unitOf(target);
   const elevated = !enemy?.air && game.world.elev[actor.tile] - game.world.elev[target.tile] > .09;
-  const marksman = def.move === 'infantry' && def.cat !== 'artillery' && game.civs[actor.owner]?.techs.has('marksmen') ? def.range * .1 : 0;
-  return def.range + marksman + (actor.abilityUntil > game.time && def.ability === 'intercept' && enemy?.air ? 1.6 : 0) + (elevated ? .35 : 0);
+  // era-upgraded defenses reach further (B: building levels); marksmen fire their own shots (actionUpgrades)
+  return def.range + structureRange(actor) + (actor.abilityUntil > game.time && def.ability === 'intercept' && enemy?.air ? 1.6 : 0) + (elevated ? .35 : 0);
 }
 
 function hitChance(game, shooter, profile, target, range) {
@@ -39,6 +46,9 @@ function cover(game, target, source, indirect) {
       c = Math.max(c, indirect ? .21 : Math.cos(src - a) > 0 ? .43 : .27);
     }
     if (d.ability === 'cover' && target.abilityUntil > game.time && !target.goal) c = Math.max(c, .40);
+    // Infantry Training (functional, review S): fieldcraft. Halted infantry scrape firing positions and go
+    // prone, taking cover .22 against direct fire (.12 against indirect) wherever they stop.
+    if (!target.goal && game.civs[target.owner]?.techs.has('infantry_training')) c = Math.max(c, indirect ? .12 : .22);
     // Friendly armor between the squad and the shooter is a moving wall: infantry tucked in behind a
     // tank or carrier (within half a hex, on the side away from the fire) take reduced fire.
     const armor = armorShield(game, target, source);
@@ -69,13 +79,17 @@ export function damageActionTarget(game, target, source, amount, weapon, indirec
   if (!mult) return;
   if (d?.move === 'tracked' || d?.move === 'wheeled') mult *= profile?.vsArmor ?? 1;
   else if (d?.move === 'infantry' && weapon === 'atgun') mult *= .58;
-  if (d?.move === 'tracked' && game.civs[target.owner].techs.has('heavy_armor')) mult *= .84;
-  if (d?.move === 'infantry' && game.civs[target.owner].techs.has('body_armor')) mult *= .88;
   if (d) mult *= 1 - cover(game, target, source, indirect);
-  const damage = Math.max(1, Math.round(amount * mult - (d?.def || 0) * .20));
+  // heavy_armor / body_armor are functional (actionUpgrades.armourDamage): small-arms immunity, one saved life per man
+  const damage = armourDamage(game, target, d, weapon, Math.max(1, Math.round(amount * mult - (d?.def || 0) * .20)));
+  if (damage <= 0) {
+    target.lastCombat = game.time;
+    if (target.armourSave === game.time) emit(game, { k: 'hit', a: source.tile, b: target.tile, s: source.id, t: target.id, w: VID[weapon], d: 0, bx: target.x, bz: target.z, ar: 1 });
+    return;
+  }
   target.hp = Math.max(0, target.hp - damage);
   target.lastCombat = game.time;
-  if (d) target.hitAt = game.time;
+  target.hitAt = game.time; // W2: structures too (repairs slow down under fire)
   const tile = target.tile;
   game.recordEngagement(source, target, weapon, damage);
   if (d) {
@@ -87,8 +101,9 @@ export function damageActionTarget(game, target, source, amount, weapon, indirec
       if (unit) unit.kills++;
       if (!d.air || target.z >= 0) addWreck(game, tile, target.type, target.owner, { x: target.x, z: target.z, yaw: target.yaw, air: d.air });
       emit(game, { k: 'kill', a: source.tile, b: tile, s: source.id, t: target.id, ow: target.owner, ty: target.type, bx: target.x, bz: target.z });
-    } else if (damage >= 6 && (game.tickN + target.id) % 3 === 0)
-      emit(game, { k: 'hit', a: source.tile, b: tile, s: source.id, t: target.id, w: VID[weapon], d: damage, bx: target.x, bz: target.z });
+    } else if (target.armourSave === game.time || damage >= 6 && (game.tickN + target.id) % 3 === 0)
+      emit(game, { k: 'hit', a: source.tile, b: tile, s: source.id, t: target.id, w: VID[weapon], d: damage, bx: target.x, bz: target.z,
+        ar: target.armourSave === game.time ? 1 : undefined });
   } else {
     if (target.hp < target.maxHp * .35) target.fire = Math.max(target.fire, 9);
     emit(game, { k: 'bhit', a: source.tile, b: tile, s: source.id, t: target.id, d: damage, bx: target.x, bz: target.z, o: target.hp <= 0 ? 'destroyed' : 'damaged' });
@@ -163,7 +178,8 @@ function resolveProjectiles(game, near) {
       damageActionTarget(game, target, source, p.damage, p.weapon, !!w.arc);
     emit(game, { k: p.strategic ? 'mimpact' : 'impact', a: p.from, b: t, ax: p.ax, az: p.az, bx: aim.x, bz: aim.z,
       t: target?.id, w: VID[p.weapon], r: p.radius, ab: p.air ? 1 : undefined });
-    if (p.air) continue;
+    if (w.airburst) flakBurst(game, source, target, aim, p.weapon, aim === target);
+    if (p.air || p.small) continue;
     const ctr = centerOf(t);
     if (p.radius > 0 || ['cannon', 'atgun', 'fortgun', 'rockets'].includes(p.weapon))
       addCrater(game, t, p.strategic ? 2.6 : p.radius > 0 ? .63 : .26, p.strategic ? 'strategic' : p.weapon === 'mortar' ? 'mortar' : p.weapon === 'bombs' ? 'bomb' : p.weapon === 'missile' ? 'missile' : 'shell',
@@ -187,12 +203,8 @@ function fire(game, actor, def, target) {
   let damage = (def.atk ?? def.attack) * 1.65;
   if (!unitOf(target)) damage *= def.antiBuilding || .85;
   if (actor.abilityUntil > game.time && (def.ability === 'focused_fire' || def.ability === 'intercept' && unitOf(target)?.air)) damage *= 1.40;
-  if (def.move === 'infantry' && game.civs[actor.owner].techs.has('infantry_training')) damage *= 1.15;
-  // barracks kit: grenades at close quarters, a disposable rocket against vehicles and works
-  const kit = def.move === 'infantry' && def.cat !== 'artillery' ? game.civs[actor.owner].techs : null;
-  if (kit?.has('grenades') && distance(actor, target) < 1.2 && !unitOf(target)?.air) damage *= 1.2;
-  if (kit?.has('rocket_teams') && (actor.type === 'rifle_squad' || actor.type === 'special_forces' || actor.type === 'militia') &&
-    (!unitOf(target) || ['tracked', 'wheeled'].includes(unitOf(target).move))) damage *= 1.45;
+  // squads fire with the men still standing; era-upgraded defenses hit harder (B)
+  damage *= (actor.isUnit ? squadFirepower(actor) : structureDamage(actor));
   if (actor.kills) damage *= 1 + Math.min(3, Math.floor(actor.kills / 4)) * .04;
   actor.readyAt = game.time + w.cooldown;
   actor.lastCombat = game.time;
@@ -202,7 +214,9 @@ function fire(game, actor, def, target) {
     emit(game, { k: 'fire', a: actor.tile, b: target.tile, ax: actor.x, az: actor.z, bx: target.x, bz: target.z,
       s: actor.id, t: target.id, w: VID[def.weapon] });
     damageActionTarget(game, target, actor, damage, def.weapon);
+    if (def.weapon === 'flak' && unitOf(target)?.air) flakBurst(game, actor, target, target, 'flak', true);
   }
+  infantryKit(game, actor, def, target, damageActionTarget);
 }
 
 // Troops under fire look for better cover nearby: trenches, forest, ruins, sandbags, or friendly armor
@@ -252,7 +266,7 @@ function seekCover(game, u, target) {
 
 function acquire(game, actor, def, near) {
   const civ = game.civs[actor.owner];
-  const range = def.range + (def.ability === 'intercept' && actor.abilityUntil > game.time ? 1.7 : .45);
+  const range = def.range + structureRange(actor) + (def.ability === 'intercept' && actor.abilityUntil > game.time ? 1.7 : .45);
   let best = null, score = Infinity;
   for (const v of game.targets.query(actor.x, actor.z, range, near)) {
     if (!alive(v) || !game.hostile(actor.owner, v.owner) || !game.sees(civ, v)) continue;
@@ -267,37 +281,17 @@ function acquire(game, actor, def, near) {
   return best;
 }
 
-function aircraftMission(game, u) {
-  const order = u.airOrder;
-  if (u.goal) return false;
-  const d = ACTION_UNITS[u.type];
-  if (u.grounded) {
-    const base = game.buildings.get(u.airBase);
-    if (!base?.done) { u.grounded = false; u.airOrder = null; }
-    else if (u.altitude < .16) u.hp = Math.min(u.maxHp, u.hp + u.maxHp * .015);
-    return true;
-  }
-  if (!order) {
-    if (d.alt === 'high' && !u.orders.length) u.airOrder = { kind: 'patrol', point: { x: u.x, z: u.z }, phase: 0 };
-    return false;
-  }
-  if (order.kind === 'strike') {
-    bombard(game, u, order.point);
-    u.airOrder = null;
-    if (u.type === 'oneway_drone') { game.units.delete(u.id); return true; }
-    game.returnAircraft(u);
-  } else if (order.kind === 'return') {
-    const base = game.buildings.get(order.base);
-    if (!base?.done) { u.airOrder = null; game.returnAircraft(u); }
-    else { u.grounded = true; u.airBase = base.id; u.airOrder = null; u.target = 0; }
-  } else if (order.kind === 'patrol' || order.kind === 'intercept' || order.kind === 'scout' || order.kind === 'support') {
-    order.phase = ((order.phase || 0) + 1) % 6;
-    const a = order.phase * Math.PI / 3;
-    const r = order.kind === 'scout' ? 2.7 : order.kind === 'intercept' ? 1.8 : 1.38;
-    const p = game.nav.nearest({ x: order.point.x + Math.sin(a) * r, z: order.point.z + Math.cos(a) * r }, d);
-    if (p) { u.goal = p; u.path = [p]; }
-  }
-  return false;
+// Aircraft missions, fuel, refuelling, patrol routes and flight paths live in actionAir.js (D).
+const aircraftMission = airStep;
+
+// Upgraded city defenses give a headquarters built-in AA (actionAir.cityHasAA): flak airbursts at aircraft.
+function cityAntiAir(game, b, near) {
+  if ((b.aaReadyAt || 0) > game.time || !cityHasAA(game, b)) return;
+  const target = acquire(game, b, CITY_AA, near);
+  if (!target || !unitOf(target)?.air) return;
+  b.aaReadyAt = game.time + CITY_AA.cooldown;
+  b.lastCombat = game.time;
+  projectile(game, b, target, CITY_AA.weapon, CITY_AA.attack * 1.65);
 }
 
 // Idle infantry beside a friendly trench man it: each squad takes a free firing position along the line
@@ -327,6 +321,60 @@ function manTrenches(game) {
   }
 }
 
+// ---- Stances and attack-move (workstream C, 2026-11-16) ----
+// aggressive: idle units pursue hostiles they can see (leashed to where they stood);
+// defensive (default): fire at what comes into range, never pursue; holdFire: never choose targets
+// (explicit attack orders and attack-moves still fire). Hold position (`hold` command, `braced`) never moves.
+const PURSUIT_LEASH = 4.5;
+function nearestHostile(game, u, def, radius) {
+  const civ = game.civs[u.owner];
+  let best = null, score = Infinity;
+  for (const v of game.targets.query(u.x, u.z, radius, [])) {
+    if (!alive(v) || !game.hostile(u.owner, v.owner) || !game.sees(civ, v) || !weaponVs(def.weapon, unitOf(v) || { air: false })) continue;
+    if (def.defensiveOnly && !v.isUnit) continue;
+    const d = distance(u, v) + (v.isUnit ? 0 : .6);
+    if (d < score) { score = d; best = v; }
+  }
+  return best;
+}
+
+function stanceStep(game, u, def) {
+  if (def.defensiveOnly || u.braced || u.formation && u.goal) return;
+  const range = def.range;
+  // Attack-move: an enemy seen near the line of advance (but out of range) draws the unit off its path to
+  // engage; the original destination resumes afterwards (tacticalResume), as in a normal RTS attack-move.
+  if (u.goal && u.mode === 'assault' && !u.tacticalResume && !u.target) {
+    const foe = nearestHostile(game, u, def, Math.min(def.vision || 5, range + 2.6));
+    if (foe && distance(u, foe) > range * .95) {
+      const resume = u.goal, convoy = u.convoy, convoySpeed = u.convoySpeed;
+      chase(game, u, foe, range);
+      if (u.goal !== resume) {
+        u.tacticalResume = { goal: resume }; u.tacticalUntil = game.time + 9;
+        u.convoy = convoy; u.convoySpeed = convoySpeed;
+      }
+    }
+    return;
+  }
+  if (stanceOf(u) !== 'aggressive') { u.pursuit = null; return; }
+  if (u.goal && !u.pursuit) return;
+  const anchor = u.pursuit || { x: u.x, z: u.z };
+  const away = distance(u, anchor);
+  const foe = away < PURSUIT_LEASH ? nearestHostile(game, u, def, Math.min(def.vision || 5, 6.5)) : null;
+  if (foe && distance(foe, anchor) < PURSUIT_LEASH + range) {
+    if (distance(u, foe) <= range * .9 && game.nav.clearShot(u, foe)) { if (u.goal && u.pursuit) stopUnit(game, u); u.pursuit = anchor; return; }
+    u.pursuit = anchor;
+    chase(game, u, foe, range);
+    return;
+  }
+  if (!u.pursuit) return;
+  if (away < .9) { u.pursuit = null; if (u.goal) stopUnit(game, u); return; }
+  if (!u.goal || u.goal.x !== anchor.x || u.goal.z !== anchor.z) {
+    const path = game.nav.route(u, anchor, def);
+    if (!path) { u.pursuit = null; return; }
+    u.goal = { x: anchor.x, z: anchor.z }; u.path = path; u.blocked = 0; u.mode = 'guard';
+  }
+}
+
 export function actionCombat(game) {
   manTrenches(game);
   const near = [];
@@ -338,7 +386,7 @@ export function actionCombat(game) {
     const def = ACTION_UNITS[u.type];
     if (def.air && aircraftMission(game, u)) continue;
     if (def.setup && (u.vx || u.vz) && (u.deployed || u.setupUntil)) { u.deployed = false; u.setupUntil = 0; }
-    if (!def.weapon || u.mode === 'move' || u.grounded || !alive(u)) continue;
+    if (!def.weapon || u.mode === 'move' || u.grounded || !alive(u) || def.air && u.fuel <= 0) continue;
     const civ = game.civs[u.owner];
     const explicit = u.attack ? game.units.get(u.attack) || game.buildings.get(u.attack) : null;
     const seen = alive(explicit) && game.sees(civ, explicit);
@@ -348,9 +396,11 @@ export function actionCombat(game) {
         if (!u.goal || !u.chase || distance(u.chase, explicit) > 1.6) { chase(game, u, explicit, r); u.chase = { x: explicit.x, z: explicit.z }; }
       } else if (u.goal && !def.air && !u.tacticalResume) stopUnit(game, u);
     } else if (u.attack && (!explicit || explicit.hp <= 0)) { u.attack = null; stopUnit(game, u, true); }
+    if (!def.air && !u.attack && (game.tickN + u.id) % 9 === 4) stanceStep(game, u, def);
     if (u.readyAt > game.time || (game.tickN + u.id) % 3 !== 0) continue;
     let target = seen && hitChance(game, u, def.weapon, explicit, attackRange(game, u, def, explicit)) ? explicit : null;
-    if (!target) target = acquire(game, u, def, near);
+    // hold fire: no self-chosen targets, except while carrying out an attack-move
+    if (!target && (stanceOf(u) !== 'holdFire' || u.goal && u.mode === 'assault')) target = acquire(game, u, def, near);
     u.target = target?.id || 0;
     if (target) {
       if (!u.goal && !def.air) u.yaw = Math.atan2(dxBetween(u.x, target.x), target.z - u.z);
@@ -366,6 +416,7 @@ export function actionCombat(game) {
   }
   for (const b of game.buildings.values()) {
     const def = ACTION_BUILDINGS[b.type];
+    if (b.type === 'town' && b.done && (game.tickN + b.id) % 6 === 3) cityAntiAir(game, b, near);
     if (!b.done || !def.attack || b.readyAt > game.time || (game.tickN + b.id) % 6 !== 0) continue;
     const target = acquire(game, b, def, near);
     if (target) fire(game, b, def, target);

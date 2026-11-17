@@ -25,6 +25,8 @@ namespace SE.Runtime.Session
         float fieldPreviewAt;
         Vector3 fieldPreviewPoint;
         int fieldPreviewToken;
+        /// <summary>The New Base preview ring: (x, yaw, z) per parcel, from the server preview.</summary>
+        readonly List<Vector3> newBaseRing = new List<Vector3>(8);
 
         void UpdateFieldPreview(float time, bool overUi)
         {
@@ -37,7 +39,7 @@ namespace SE.Runtime.Session
             int tile = session.World.Grid.TileAt(point.x, point.z);
             FieldPreviewParcel = new BaseParcel { Tile = tile, X = point.x, Z = point.z, Yaw = FieldYaw, Width = .9f, Depth = .9f };
             bool changed = fieldPreviewType != Option || (point - fieldPreviewPoint).sqrMagnitude > .035f || Mathf.Abs(FieldYaw - fieldPreviewYaw) > .001f;
-            if (changed) { fieldPreviewToken++; FieldPreviewValid = false; FieldPreviewReason = "Checking the footprint…"; }
+            if (changed) { fieldPreviewToken++; FieldPreviewValid = false; FieldPreviewReason = "Checking the footprint…"; newBaseRing.Clear(); }
             if (!changed || time < fieldPreviewAt) return;
             fieldPreviewAt = time + .15f; fieldPreviewType = Option; fieldPreviewPoint = point; fieldPreviewYaw = FieldYaw; FieldPreviewValid = false;
             int token = ++fieldPreviewToken;
@@ -45,7 +47,11 @@ namespace SE.Runtime.Session
             {
                 if (token != fieldPreviewToken || Current != Mode.Target) return;
                 FieldPreviewValid = r.Error == null && ProtocolDecoder.Bool(r.Raw?["placement"]?["valid"]);
-                FieldPreviewReason = r.Error ?? "Valid footprint · Click to begin construction";
+                FieldPreviewReason = ReadableError(r) ?? "Valid footprint · Click to begin construction";
+                // a New Base preview answers with its eight-parcel ring ([tile, x, z, yaw] each): drawn while placing
+                newBaseRing.Clear();
+                if (FieldPreviewValid && r.Raw?["placement"]?["parcels"] is JArray ring)
+                    foreach (var t in ring) if (t is JArray q && q.Count >= 4) newBaseRing.Add(new Vector3(ProtocolDecoder.Float(q[1]), ProtocolDecoder.Float(q[3]), ProtocolDecoder.Float(q[2])));
             });
         }
 
@@ -166,7 +172,7 @@ namespace SE.Runtime.Session
         {
             ClearRingPreview();
             session.Net?.Command(new JObject { ["c"] = "baseBuild", ["site"] = siteId, ["slot"] = slotId, ["type"] = type },
-                r => { Say(r.Error ?? "Construction started", r.Error == null, Time.unscaledTime); SelectionChanged?.Invoke(); });
+                r => { Say(ReadableError(r) ?? "Construction started", r.Error == null, Time.unscaledTime); SelectionChanged?.Invoke(); });
         }
 
         public void BeginFieldConstruction(string type)

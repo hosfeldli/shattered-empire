@@ -46,7 +46,7 @@ namespace SE.Runtime.Landscape
         public void Draw(Camera cam, bool on, bool fogOfWar, bool wrap, Vector2 wind, float dt, float daylight)
         {
             // nothing to draw (and no depth copy to pay for) without fog of war on the orthographic camera, which has no sky clouds
-            Active = on && material != null && cam != null && (fogOfWar || !cam.orthographic);
+            Active = on && material != null && cam != null && (fogOfWar || !(cam.orthographic || SE.Runtime.Rendering.ViewLod.Telephoto));
             if (!Active) Shader.SetGlobalFloat(OnId, 0);
             if (!Active) return;
             target = cam;
@@ -59,7 +59,8 @@ namespace SE.Runtime.Landscape
             Shader.SetGlobalVector(ParamsId, new Vector4(wrap ? 1 : 0, -.4f, 6.5f, fogOfWar ? 2.4f : 0f));
             // low cumulus 325-525 m up, seen toward the horizon from a low perspective camera only; never from
             // the orthographic action camera, which looks down on the battlefield
-            Shader.SetGlobalVector(CloudLayerId, new Vector4(13f, 21f, cam.orthographic ? 0f : 1f, 0));
+            // (the telephoto match camera also looks down from above that layer: no cumulus for it either)
+            Shader.SetGlobalVector(CloudLayerId, new Vector4(13f, 21f, cam.orthographic || SE.Runtime.Rendering.ViewLod.Telephoto ? 0f : 1f, 0));
             Shader.SetGlobalColor(LitId, lit);
             Shader.SetGlobalFloat(OnId, fogOfWar ? 1 : 0);
             Shader.SetGlobalColor(ShadeId, shade);

@@ -1,11 +1,13 @@
 import { N, T, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
-import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, MISSILE_PROJECT, OUTPOST_TYPES, TIERS } from './actionDefinitions.js';
-import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, tileAt } from './actionNavigation.js';
+import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, MISSILE_PROJECT, NEW_BASE_GAP, OUTPOST_TYPES, TIERS } from './actionDefinitions.js';
+import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, tileAt } from './actionNavigation.js';
 import { hubRoute, hubTiles, ROAD_SEARCH } from './actionMap.js';
 import { launchStrategic } from './actionCombat.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
+import { newBaseRing } from './actionEngineers.js';
+import { HASTE } from './actionUpgrades.js';
 
 const ERA = [0, 1, 2, 4];
 export const canPay = (civ, cost) => ACTION_RESOURCES.every((key) => civ.res[key] >= (cost[key] || 0));
@@ -16,7 +18,7 @@ const affordable = (civ, cost) => canPay(civ, cost) ? null : { error: 'Insuffici
 
 export const headquarters = (game, site) => site?.hq ? game.buildings.get(site.hq) : null;
 export function openSlots(game, site) {
-  const count = Math.min(8, 4 + (site.tier - 1) * 2);
+  const count = Math.min(7, 3 + (site.tier - 1) * 2);   // 3 / 5 / 7 ring sites by base tier
   const occupied = new Set([...game.buildings.values()].filter((b) => b.site === site.id && b.slot).map((b) => b.slot));
   return site.slots.slice(0, count).filter((id) => !occupied.has(id));
 }
@@ -97,6 +99,10 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   const tile = tileAt(point.x, point.z);
   if (civ.age + 1 < def.tier) return { error: 'This defense requires more advanced global technology.' };
   if (tile < 0 || !civ.visible[tile]) return { error: 'Scout the construction site so it is currently visible.' };
+  if (game.world.owner[tile] !== civ.id) return { error: 'Build only inside your own territory.', code: 'territory' };
+  if (def.newBase) return placeNewBase(game, civ, type, tile, preview);
+  // a pending New Base keeps its whole building ring clear
+  if ([...game.buildings.values()].some((b) => b.type === 'base_site' && distance(b, point) < 2.75 + def.radius)) return { error: 'Keep clear of the new base being built.' };
   const protectedZone = game.sites.some((s) => distance(s, point) < s.radius + def.radius + .10 ||
     s.slots && (s.parcels.some((p) => distance(p, point) < def.radius + .62) || s.owner >= 0 && game.hostile(civ.id, s.owner) && s.hq && distance(s, point) < 2.65 + def.radius));
   if (protectedZone || game.fieldworks.has(tile) ||
@@ -104,7 +110,7 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   if (def.width) for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1],[0,-1],[0,1],[-1,0],[1,0]]) {
     const x = point.x + sx * def.width * .5 * Math.cos(yaw) + sz * def.depth * .5 * Math.sin(yaw);
     const z = point.z - sx * def.width * .5 * Math.sin(yaw) + sz * def.depth * .5 * Math.cos(yaw), t = tileAt(x, z);
-    if (t < 0 || !civ.visible[t] || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
+    if (t < 0 || !civ.visible[t] || game.world.owner[t] !== civ.id || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
       return { error: 'The rotated footprint needs visible, level and unobstructed ground.' };
   }
   if (game.hasEnemyAt({ ...point, radius: .75 }, civ.id)) return { error: 'The position is contested.' };
@@ -114,6 +120,77 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   const b = addFacility(game, civ, null, type, tile, { point: { ...point, yaw } });
   pay(civ, def.cost);
   return { building: b.id };
+}
+
+// New Base (build wheel): own territory, on or beside a road, NEW_BASE_GAP from every base site, 3.5 from
+// outposts, and room for a full building ring. The engineers build it; on completion it becomes a real
+// base site with an operational headquarters (actionEngineers.foundBase).
+function placeNewBase(game, civ, type, tile, preview) {
+  const def = ACTION_BUILDINGS[type], point = centerOf(tile), w = game.world;
+  if (!w.road[tile] && !NB.slice(tile * 6, tile * 6 + 6).some((n) => n >= 0 && w.road[n])) return { error: 'A new base must connect to a road: place it on or beside one.', code: 'road' };
+  if (game.sites.some((s) => distance(s, point) < (s.slots ? NEW_BASE_GAP : 3.5)) ||
+    [...game.buildings.values()].some((b) => b.type === 'base_site' && distance(b, point) < NEW_BASE_GAP)) return { error: 'Too close to another base or outpost.', code: 'spacing' };
+  if (!game.nav.canStand(point.x, point.z, { ...LIGHT_GROUND, radius: def.radius }) || game.fieldworks.has(tile) || game.buildingAtTile(tile)) return { error: 'Choose clear, open ground.' };
+  const plan = newBaseRing(game, tile);
+  if (plan.error) return { error: plan.error, code: 'ring' };
+  if (game.hasEnemyAt({ ...point, radius: 1.5 }, civ.id)) return { error: 'The position is contested.' };
+  const error = affordable(civ, def.cost);
+  if (error) return error;
+  if (preview) return { reply: { t: 'ack', placement: { valid: true, cost: def.cost, seconds: def.time, x: point.x, z: point.z,
+    parcels: plan.ring.map((p) => [p.tile, p.x, p.z, p.yaw]) } } };
+  const b = addFacility(game, civ, null, type, tile, { point: { ...point, yaw: 0 } });
+  pay(civ, def.cost);
+  return { building: b.id };
+}
+
+// Era level of a structure: defenses gain health here (+30% per level); firepower and range in combat.
+function setLevel(b, level) {
+  const def = ACTION_BUILDINGS[b.type];
+  if (def.levels?.effect === 'defense') {
+    const scale = (1 + .3 * (level - 1)) / (1 + .3 * ((b.level || 1) - 1));
+    b.maxHp *= scale; b.hp = Math.min(b.maxHp, b.hp * scale);
+  }
+  b.level = level;
+}
+
+/** Command upgradeBuilding: buy the next era level of a production, power, supply or defensive structure. */
+export function upgradeBuilding(game, civ, id) {
+  const b = game.buildings.get(id), def = b && ACTION_BUILDINGS[b.type];
+  if (b?.owner !== civ.id || !b.done || !def.levels) return { error: 'Select a structure that can be upgraded.' };
+  if (b.perimeterSlot) return { error: 'Upgrade perimeter positions together from the headquarters.' };
+  const next = (b.level || 1) + 1;
+  if (next > def.levels.max) return { error: 'This structure is fully upgraded.' };
+  if (civ.age + 1 < next) return { error: `Level ${next} requires Era ${TIERS[next - 1].label}.`, code: 'era' };
+  if (b.project) return { error: 'This structure already has a project underway.' };
+  const cost = def.levels.cost[next - 2], error = affordable(civ, cost);
+  if (error) return error;
+  pay(civ, cost);
+  b.project = { kind: 'level', level: next, left: def.levels.time[next - 2], total: def.levels.time[next - 2] };
+  return {};
+}
+
+/** Command upgradeDefenses: harden a base perimeter (level 2 adds built-in city anti-aircraft fire). */
+export function upgradeDefenses(game, civ, site) {
+  const hq = headquarters(game, site), spec = CITY_DEFENSES.upgrade;
+  if (!site?.slots || site.owner !== civ.id || !hq?.done) return { error: 'Select an operational headquarters.' };
+  if (![...game.buildings.values()].some((b) => b.site === site.id && b.owner === civ.id && b.perimeterSlot)) return { error: 'Build the perimeter defenses first.' };
+  const next = (site.defenseLevel || 1) + 1;
+  if (next > spec.max) return { error: 'The perimeter is fully upgraded.' };
+  if (civ.age + 1 < next) return { error: `Perimeter level ${next} requires Era ${TIERS[next - 1].label}.`, code: 'era' };
+  if (hq.project) return { error: 'Finish the current headquarters project first.' };
+  const cost = spec.cost[next - 2], error = affordable(civ, cost);
+  if (error) return error;
+  pay(civ, cost);
+  hq.project = { kind: 'defenses', level: next, left: spec.time[next - 2], total: spec.time[next - 2] };
+  return {};
+}
+
+/** True when a city's upgraded perimeter gives it built-in anti-aircraft fire (D fires it). */
+export const cityAA = (site) => (site?.defenseLevel || 1) >= CITY_DEFENSES.upgrade.aaLevel;
+
+/** Income accrues every tick (10 Hz) at the rates productionStep last computed. */
+export function incomeStep(game, dt) {
+  for (const civ of game.civs) if (civ.alive && civ.rates) pay(civ, civ.rates, dt);
 }
 
 export function advanceBase(game, civ, site) {
@@ -156,6 +233,7 @@ export function fortifyBase(game, civ, site) {
   for (const plan of plans) {
     const b = addFacility(game, civ, site, plan.type, tileAt(plan.point.x, plan.point.z), { point: plan.point, duration: CITY_DEFENSES.time });
     b.perimeterSlot = plan.slot;
+    if (site.defenseLevel > 1) setLevel(b, site.defenseLevel);
   }
   hq.project = { kind: 'perimeter', total: CITY_DEFENSES.time, left: CITY_DEFENSES.time };
   return {};
@@ -179,19 +257,19 @@ export function startUpgrade(game, civ, key, buildingId = 0) {
 
 export function armyCapacity(game, civ) {
   let used = 0, queued = 0;
-  for (const u of game.units.values()) if (u.owner === civ.id) used += ACTION_UNITS[u.type].capacity;
+  for (const u of game.units.values()) if (u.owner === civ.id && !u.auto) used += ACTION_UNITS[u.type].capacity;   // base engineers are free
   for (const b of game.buildings.values()) {
     if (b.owner !== civ.id || !b.done) continue;
     for (const q of b.queue) queued += ACTION_UNITS[q.unit].capacity;
   }
   // Era capacities sized for large combined-arms battles.
   const limit = [140, 220, 300][Math.max(0, Math.min(2, civ.age))];
-  return { used, queued, limit: Math.min(game.armyLimit, limit + (civ.techs.has('networked_command') ? 40 : 0)) };
+  return { used, queued, limit: Math.min(game.armyLimit, limit) };
 }
 
 export function train(game, civ, ids, type, count, perBuilding = false) {
   const def = Object.hasOwn(ACTION_UNITS, type) ? ACTION_UNITS[type] : null;
-  if (!def || !Array.isArray(ids) || !Number.isInteger(count) || count < 1 || count > 40) return { error: 'Choose a unit and training quantity.' };
+  if (!def || def.auto || !Array.isArray(ids) || !Number.isInteger(count) || count < 1 || count > 40) return { error: 'Choose a unit and training quantity.' };
   const buildings = [...new Set(ids.slice(0, 40))].map((id) => game.buildings.get(id)).filter((b) =>
     b?.owner === civ.id && b.done && b.type === def.facility && civ.age + 1 >= def.tier);
   if (!buildings.length) return { error: 'Select an operational facility at the required tier.' };
@@ -207,7 +285,7 @@ export function train(game, civ, ids, type, count, perBuilding = false) {
     const site = game.siteById.get(b.site);
     const bonus = (site.kind === 'industrial' && def.facility === 'motor_works') || (site.kind === 'military' && def.facility === 'barracks') ||
       (site.kind === 'coastal' && def.facility === 'airfield');
-    const total = def.time * (bonus ? .88 : 1);
+    const total = def.time * (bonus ? .88 : 1) * (1 - .15 * ((b.level || 1) - 1));   // production level: -15% per level
     pay(civ, def.cost);
     b.queue.push({ unit: type, left: total, total });
     ready.set(b.id, ready.get(b.id) + total);
@@ -322,6 +400,13 @@ function completeProject(game, civ, b, p) {
     growBase(game, site);
     game.refreshTerritory();
     game.notify(civ.id, `${site.name} advanced to Tier ${TIERS[p.tier - 1].label}.`, { kind: 'age', tile: site.tile });
+  } else if (p.kind === 'level') {
+    setLevel(b, p.level);
+    game.notify(civ.id, `${ACTION_BUILDINGS[b.type].name} upgraded to level ${p.level}.`, { kind: 'building', tile: b.tile });
+  } else if (p.kind === 'defenses') {
+    site.defenseLevel = p.level;
+    for (const d of game.buildings.values()) if (d.site === site.id && d.owner === civ.id && d.perimeterSlot) setLevel(d, p.level);
+    game.notify(civ.id, `${site.name} perimeter upgraded to level ${p.level}${cityAA(site) ? ': the city now has anti-aircraft defenses' : ''}.`, { kind: 'building', tile: site.tile });
   } else if (p.kind === 'perimeter') {
     game.notify(civ.id, `${site.name} perimeter defenses constructed.`, { kind: 'building', tile: site.tile });
   } else if (p.kind === 'upgrade') {
@@ -340,6 +425,8 @@ export function productionStep(game, dt) {
     const helpers = game.movers.query(b.x, b.z, b.radius + 1, []).filter((u) => u.owner === b.owner && u.type === 'engineer' && game.time - u.lastCombat > 4 && !u.attack && distance(u, b) < b.radius + 1).length;
     const buildRate = (civ.techs.has('field_engineering') ? 1.25 : 1) * (1 + Math.min(2, helpers) * .20);
     b.fire = Math.max(0, b.fire - dt);
+    // field structures are built by the base engineers (actionEngineers.js); perimeter pieces by the HQ project
+    if (!b.done && def.field && !b.perimeterSlot) continue;
     if (!b.done) {
       const add = Math.min(1 - b.progress, dt * buildRate / b.buildTime);
       b.progress += add;
@@ -364,13 +451,16 @@ export function productionStep(game, dt) {
       }
       continue;
     }
-    if (def.materials) rates[b.owner].materials += b.type === 'depot' && civ.techs.has('improved_logistics') ? 250 / 60 : def.materials;
-    if (def.energy) rates[b.owner].energy += b.type === 'power_plant' && civ.techs.has('improved_logistics') ? 100 / 60 : def.energy;
+    // era levels: processors and generators produce +40% per level
+    const output = def.levels?.effect === 'output' ? 1 + .4 * ((b.level || 1) - 1) : 1;
+    if (def.materials) rates[b.owner].materials += def.materials * output;
+    if (def.energy) rates[b.owner].energy += def.energy * output;
     if (def.repair) game.repairAround(civ, b, 2.4, def.repair * dt);
     const p = b.project;
     if (p) {
       p.left = Math.max(0, p.left - dt * (p.kind === 'repair' ? buildRate : 1));
-      if (p.kind === 'repair') b.hp = Math.min(b.maxHp, b.hp + b.maxHp * dt * buildRate / p.total * .83);
+      // W2: a structure under fire (hit in the last 5 s) repairs at 30%, so a besieged headquarters can't out-heal the siege
+      if (p.kind === 'repair') b.hp = Math.min(b.maxHp, b.hp + b.maxHp * dt * buildRate / p.total * .83 * (game.time - (b.hitAt ?? -99) < 5 ? .3 : 1));
       if (p.left <= .0001) { completeProject(game, civ, b, p); b.project = null; }
     }
     if (!b.queue.length && b.repeat && (game.tickN + b.id) % 10 < 3) train(game, civ, [b.id], b.repeat, 1);
@@ -383,6 +473,7 @@ export function productionStep(game, dt) {
     b.state = 'operational';
     b.queue.shift();
     game.reinforce(b, u);
+    if (civ.techs.has('improved_logistics') && u.goal) u.hasteUntil = game.time + HASTE.seconds;
   }
   for (const site of game.sites) {
     if (site.owner < 0 || site.slots) continue;
@@ -391,21 +482,13 @@ export function productionStep(game, dt) {
     if (def.energy) rates[site.owner].energy += def.energy;
     if (def.repair) game.repairAround(game.civs[site.owner], site, 2.3, def.repair * dt);
   }
-  for (const civ of game.civs) {
-    if (!civ.alive) continue;
-    const rate = rates[civ.id];
-    civ.rates = rate;
-    pay(civ, rate, dt);
-  }
-  for (const f of game.fieldworks.values()) {
-    if (f.progress >= 1) continue;
-    if (game.hasEnemyAt({ ...f, radius: .75 }, f.owner)) continue;
-    f.progress = Math.min(1, f.progress + dt / 7 * (game.hasEngineer(game.civs[f.owner], f, 1.1) ? 1.2 : 1));
-    if (f.progress >= .99999) { f.progress = 1; f.state = 'built'; }
-  }
+  // income itself accrues every tick in incomeStep; trenches are dug by the engineers
+  for (const civ of game.civs) if (civ.alive) civ.rates = rates[civ.id];
+  // defenses and trenches claim territory: refresh when one is finished or lost, and every ~5 s
+  if (game.territoryDirty || game.tickN % 50 < 3) { game.territoryDirty = false; game.refreshTerritory(); }
 }
 
-export function trenchLine(game, civ, points, reverse, preview) {
+export function trenchLine(game, civ, points, reverse, preview, { anywhere = false } = {}) {
   const byTile = new Map();
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1], b = points[i];
@@ -421,15 +504,24 @@ export function trenchLine(game, civ, points, reverse, preview) {
       }
     }
   }
+  // A trench line never cuts through a structure: a stroke across a building's walls or an outpost's compound is
+  // refused as a whole (2026-11-16: a line was accepted straight through a relay building).
+  for (let i = 1; i < points.length; i++) {
+    const hit = structureOnSegment(game, points[i - 1], points[i], .14);
+    if (hit) return { error: `The trench line runs through ${hit.label}: draw it around the structure.`, code: 'blocked' };
+  }
   // A trench line never cuts a road: tiles carrying a road (or a bridge) are left open as a crossing,
   // and the trench sections either side end square at it (see trenchRoadMask).
   const crossings = [...byTile.values()].filter((p) => p.tile >= 0 && game.world.road[p.tile]).length;
+  const outside = anywhere ? 0 : [...byTile.values()].filter((p) => p.tile >= 0 && game.world.owner[p.tile] !== civ.id).length;
   const valid = [...byTile.values()].filter((p) => p.tile >= 0 && p.tile < N && !game.world.road[p.tile] && civ.visible[p.tile] && !game.fieldworks.has(p.tile) &&
+    (anywhere || game.world.owner[p.tile] === civ.id) &&
     game.nav.canStand(p.x, p.z, LIGHT_GROUND) && !game.sites.some((s) => distance(s, p) < s.radius + .25 ||
       s.slots && s.parcels.some((lot) => distance(lot, p) < .75)) && !game.hasEnemyAt({ ...p, radius: .75 }, civ.id));
   const cost = { materials: valid.length * 35 };
-  if (preview) return { reply: { t: 'ack', trench: { positions: valid.map((p) => ({ ...p, road: trenchRoadMask(game, p.tile) })), cost, crossings } } };
-  if (!valid.length) return { error: crossings ? 'Trenches leave roads open: draw the line across open ground beside the road.' : 'Choose visible, clear ground outside protected city sites.' };
+  if (preview) return { reply: { t: 'ack', trench: { positions: valid.map((p) => ({ ...p, road: trenchRoadMask(game, p.tile) })), cost, crossings, outside } } };
+  if (!valid.length) return { error: outside ? 'Trenches can only be dug inside your own territory.' : crossings ? 'Trenches leave roads open: draw the line across open ground beside the road.' : 'Choose visible, clear ground outside protected city sites.',
+    code: outside ? 'territory' : undefined };
   const error = affordable(civ, cost);
   if (error) return error;
   pay(civ, cost);

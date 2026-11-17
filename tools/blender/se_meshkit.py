@@ -187,14 +187,20 @@ class Asset:
         bm.verts.ensure_lookup_table(); bm.faces.ensure_lookup_table()
         bm.normal_update()
         bvh = BVHTree.FromBMesh(bm)
-        # Fixed hemisphere directions (deterministic builds).
+        # Fixed, cosine-weighted hemisphere directions about +Z (deterministic builds); each vertex turns them
+        # onto its normal. Cosine weighting is the proper ambient integral: grazing rays (which hit the next
+        # part over on almost any flat deck) count for little, rays toward the sky for a lot.
         rnd = random.Random(7)
         dirs = []
-        while len(dirs) < ao_rays:
-            v = Vector((rnd.uniform(-1, 1), rnd.uniform(-1, 1), rnd.uniform(-1, 1)))
-            if .05 < v.length <= 1: dirs.append(v.normalized())
+        for k in range(ao_rays):
+            u1, u2 = (k + rnd.random()) / ao_rays, rnd.random()
+            r, phi = math.sqrt(u1), 2 * math.pi * u2
+            dirs.append(Vector((r * math.cos(phi), r * math.sin(phi), math.sqrt(max(0., 1 - u1)))))
         cos_split = math.cos(math.radians(38))
         verts, index, lookup, ao_cache = [], [], {}, {}
+        # Hits closer than this are coincident or touching geometry (a slab laid on a deck, a band on a drum):
+        # not occlusion. Without it, coplanar roof decks baked to near-black.
+        ao_min = max(.004, ao_radius * .06)
 
         def corner_normal(v, f):
             n = Vector()
@@ -207,12 +213,15 @@ class Asset:
             key = (round(p.x, 4), round(p.y, 4), round(p.z, 4), round(n.x, 2), round(n.y, 2), round(n.z, 2))
             if key in ao_cache: return ao_cache[key]
             origin = p + n * .0015
+            basis = Vector((0, 0, 1)).rotation_difference(n) if n.length > 0 else None
             hit = 0.0
             for d in dirs:
-                if d.dot(n) < 0: d = -d
-                loc, _, _, dist = bvh.ray_cast(origin, d, ao_radius)
-                if loc is not None: hit += 1 - dist / ao_radius
+                w = basis @ d if basis is not None else d
+                loc, _, _, dist = bvh.ray_cast(origin, w, ao_radius)
+                if loc is not None and dist > ao_min: hit += 1 - (dist - ao_min) / (ao_radius - ao_min)
             o = hit / len(dirs)
+            # Sky-facing faces always see most of the sky: never let a deck, roof or pad bake dark.
+            if n.z > .5: o = min(o, .30 + (1 - n.z) * .5)
             if ground_ao is not None:   # vehicles sit on the ground: darken the underside and lower flanks
                 o = max(o, max(0., 1 - (p.z - ground_ao) / .12) * .55 * max(0., -n.z * .5 + .5))
             ao_cache[key] = o

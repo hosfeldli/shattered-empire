@@ -210,10 +210,12 @@ Shader "SE/Shroud"
                         if (density <= .001) continue;
                         float a = 1 - exp(-density * dt);
                         // sunlit crowns, shadowed bellies and hollows: depth below the crown plus a cheap sun-facing term
-                        float depth = saturate((crown - p.y) / 1.2);
+                        // final pass: the shaded depth runs over a taller range and darkens less, so a bank face seen from the
+                        // camera side (below a ridge of explored land) reads as cloud, not as a grey cliff band
+                        float depth = saturate((crown - p.y) / 2.4);
                         float facing = saturate(.5 + .5 * dot(sun, normalize(float3(billow - .5, 1.2, .5 - billow))));
                         float detail = exp(-t / 22);
-                        float3 col = lerp(_SE_ShroudShade.rgb, _SE_ShroudLit.rgb, saturate(.88 + ((1 - depth) * .5 + facing * .25 + (billow - .5) * .45 - .5) * detail));
+                        float3 col = lerp(_SE_ShroudShade.rgb, _SE_ShroudLit.rgb, saturate(.92 + ((1 - depth) * .35 + facing * .2 + (billow - .5) * .35 - .4) * detail));
                         light += transmittance * a * col;
                         transmittance *= 1 - a;
                         if (transmittance < .015) break;

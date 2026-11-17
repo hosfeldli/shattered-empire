@@ -19,6 +19,17 @@ const SIZES = { small: 128, medium: 192, large: 256 };
 // Action RTS worlds: wide enough that bases stand well apart (site spacing scales with the size in actionMap.js).
 const ACTION_SIZES = { small: 104, medium: 152, large: 208, huge: 232 };
 const autoSize = (n) => (n <= 4 ? 128 : n <= 8 ? 192 : 256);
+// Lobby formats (action RTS): teams × seats per team. Team = seat index / team size (actionGame.js), so
+// moving a player between teams is a seat swap. FFA formats are one-seat teams.
+const FORMATS = { '1v1': { teamSize: 1, teams: 2 }, '2v2': { teamSize: 2, teams: 2 }, '3v3': { teamSize: 3, teams: 2 }, '4v4': { teamSize: 4, teams: 2 },
+  ffa3: { teamSize: 1, teams: 3 }, ffa4: { teamSize: 1, teams: 4 }, ffa5: { teamSize: 1, teams: 5 }, ffa6: { teamSize: 1, teams: 6 } };
+const AI_DIFFICULTIES = ['easy', 'normal', 'hard', 'expert', 'brutal'];
+const AI_PERSONALITIES = ['warlord', 'merchant', 'builder'];
+// Lobby game options (host, New Skirmish): victory, starting resources and a random world's style and size.
+const OBJECTIVES = ['domination', 'control', 'operation'];
+const START_RESOURCES = ['low', 'standard', 'high', 'max'];   // amounts: actionGame.js START_RES
+const STYLES = ['continents', 'pangaea', 'archipelago', 'inlandSea'];
+const formatName = (teamSize, teams) => (teamSize > 1 || teams === 2 ? `${teamSize}v${teamSize}` : `ffa${teams}`);
 // Admission control (inside this process: no change to how many instances run). A new match is
 // refused, with a clear message, when the running matches already use most of the CPU time the
 // tick loops have, or when free memory would not hold another worker of that map size.
@@ -58,10 +69,13 @@ export class MatchManager {
     const mapId = action && !sandbox && opts.map && opts.map !== 'random' ? String(opts.map) : 'random';
     const authored = mapId !== 'random' ? (Object.hasOwn(MAPS_BY_ID, mapId) ? MAPS_BY_ID[mapId] : null) : null;
     if (mapId !== 'random' && !authored) throw new Error(`Unknown map "${mapId}"`);
-    const teamSize = authored ? authored.teamSize : action && !sandbox ? Math.min(4, Math.max(1, opts.teamSize | 0)) : 1;
-    const humans = observe ? 0 : Math.max(1, Math.min(authored ? authored.players : MAX_CIVS, pvp ? (opts.humans | 0) || 2 : 1));
-    const desired = Math.min(MAX_CIVS, teamSize * 2);
-    const ais = authored ? authored.players - humans : sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) :
+    // a lobby format ('2v2', 'ffa4') or teams × teamSize fixes the seat count exactly (lobby and New Skirmish)
+    const fmt = action && !sandbox && !observe && !authored ? (Object.hasOwn(FORMATS, opts.format) ? FORMATS[opts.format] : null) || (Number.isInteger(opts.teams) ? { teamSize: opts.teamSize | 0, teams: opts.teams } : null) : null;
+    const teamSize = authored ? authored.teamSize : action && !sandbox ? Math.min(4, Math.max(1, (fmt ? fmt.teamSize : opts.teamSize) | 0)) : 1;
+    const teams = fmt ? Math.max(2, Math.min(teamSize > 1 ? 2 : 6, fmt.teams | 0)) : 2;
+    const desired = Math.min(MAX_CIVS, teamSize * teams);
+    const humans = observe ? 0 : Math.max(1, Math.min(authored ? authored.players : fmt ? desired : MAX_CIVS, pvp ? (opts.humans | 0) || (fmt ? desired : 2) : 1));
+    const ais = authored ? authored.players - humans : sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) : fmt ? desired - humans :
       Math.max(pvp ? 0 : 1, action ? desired - humans : 0, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
@@ -82,7 +96,24 @@ export class MatchManager {
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
       seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: !action && !sandbox && opts.rebels !== false, worker: null, stats: null,
       ruleset, wrap: !action, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
-      teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination' };
+      teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination',
+      startRes: START_RESOURCES.includes(opts.startRes) ? opts.startRes : 'standard' };
+    // closed seats (uneven teams: 2 v 1, three humans against two AIs): a random world only (a catalog map
+    // has a start for every seat). Seat indices other than the creator's; dropped when the match starts.
+    if (action && fmt && !authored && Array.isArray(opts.closed)) {
+      for (const v of opts.closed) {
+        const i = Number(v);
+        if (!Number.isInteger(i) || i <= 0 || i >= slots.length || slots[i].human && slots[i].token) continue;
+        const before = slots[i];
+        slots[i] = { human: false, closed: true, name: 'Closed', token: null, ws: null };
+        if (!this.playable(slots, teamSize)) slots[i] = before;
+      }
+    }
+    // lobby (pvp): the size the host asked for (random maps re-size with the seat count), and whether the
+    // match waits for everyone to be ready (Unity lobby) instead of starting when the last seat is taken
+    m.sizeKey = Object.hasOwn(ACTION_SIZES, opts.mapSize) ? opts.mapSize : null;
+    m.waitForReady = pvp && opts.waitForReady === true;
+    m.public = pvp && opts.public === true;   // listed in /api/lobbies (the in-game lobby browser)
     this.matches.set(id, m);
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
@@ -105,17 +136,18 @@ export class MatchManager {
   }
 
   meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style,
-    teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective,
+    teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective, startRes: m.startRes, teamOf: m.teamOf,
     slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
-    if (!restoreBuf) for (const s of m.slots) if (s.human && !s.token) { s.human = false; s.name = 'AI'; s.personality = 'builder'; }
+    if (!restoreBuf) this.dropClosed(m);
+    if (!restoreBuf) for (const s of m.slots) if (s.human && !s.token) { s.human = false; s.name = 'AI'; s.personality = 'builder'; s.difficulty = s.difficulty || 'normal'; s.fairPlay = s.fairPlay !== false; }
     m.slots.forEach((s, i) => { s.civId = i; });
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
-        teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective,
+        teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
@@ -211,13 +243,19 @@ export class MatchManager {
   // Open human seats become AI when the host starts early; the match starts by itself once every
   // human seat is taken.
   roomUpdate(m) {
-    const slots = m.slots.map((x) => ({ name: x.name, human: x.human, taken: !!x.token, connected: !!x.ws, ready: x.human ? !!x.ready : undefined,
-      difficulty: x.human ? undefined : x.difficulty, personality: x.human ? undefined : x.personality, fairPlay: x.human ? undefined : x.fairPlay !== false }));
+    const host = this.hostOf(m), ts = Math.max(1, m.teamSize || 1);
+    const slots = m.slots.map((x, i) => ({ seat: i, team: Math.floor(i / ts), name: x.name, human: x.human, closed: x.closed || undefined, taken: !!x.token, connected: !!x.ws, ready: x.human ? !!x.ready : undefined, host: x === host || undefined,
+      difficulty: x.human || x.closed ? undefined : x.difficulty, personality: x.human || x.closed ? undefined : x.personality, fairPlay: x.human || x.closed ? undefined : x.fairPlay !== false }));
     const open = m.slots.filter((x) => x.human && !x.token).length;
+    const teams = this.teamsOf(m);
+    const spectators = (m.watchers || []).map((w) => ({ name: w.name, connected: !!w.ws }));
+    const room = { t: 'room', match: m.id, code: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, mapSize: m.mapSize, teamSize: m.teamSize, map: m.map || 'random', mapName: MAPS_BY_ID[m.map]?.name || 'Random',
+      teams, format: formatName(ts, teams), players: m.slots.filter((x) => !x.closed).length, waitForReady: !!m.waitForReady, host: host?.name, open, slots, spectators,
+      objective: m.objective || 'domination', startRes: m.startRes || 'standard', style: m.style, size: m.sizeKey || null, public: !!m.public };
     m.slots.forEach((s, i) => {
-      if (s.ws) this.send(s.ws, { t: 'room', match: m.id, code: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, mapSize: m.mapSize, teamSize: m.teamSize, map: m.map || 'random', mapName: MAPS_BY_ID[m.map]?.name || 'Random',
-        host: m.slots[0]?.name, you: i, isHost: i === 0, canStart: i === 0 && m.status === 'lobby', open, slots });
+      if (s.ws) this.send(s.ws, { ...room, you: i, isHost: s === host, canStart: s === host && m.status === 'lobby' });
     });
+    for (const w of m.watchers || []) if (w.ws) this.send(w.ws, { ...room, you: -1, spectator: true, isHost: false, canStart: false });
   }
 
   // a seated player leaves a match that has not started: a guest frees the seat for someone else;
@@ -226,9 +264,12 @@ export class MatchManager {
     const { match: m, slot } = ws.ctx;
     if (!m || !slot || m.status !== 'lobby') return false;
     ws.ctx = { ...ws.ctx, match: null, slot: null };
-    if (slot === m.slots[0]) {
+    if (slot.spectator) {
+      m.watchers = (m.watchers || []).filter((w) => w !== slot);
+      this.roomUpdate(m);
+    } else if (slot === this.hostOf(m)) {
       this.matches.delete(m.id);
-      for (const s of m.slots) if (s.ws && s.ws !== ws) { this.send(s.ws, { t: 'lobbyClosed', match: m.id, error: 'The host closed the lobby' }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; }
+      for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws && s.ws !== ws) { this.send(s.ws, { t: 'lobbyClosed', match: m.id, error: 'The host closed the lobby' }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; }
       this.log.info?.(`match ${m.id} lobby closed by the host`);
     } else {
       Object.assign(slot, { token: null, ws: null, name: 'Open seat', ready: false });
@@ -249,7 +290,8 @@ export class MatchManager {
       const { match, slot } = ws.ctx;
       if (match && slot && slot.ws === ws) {
         slot.ws = null;
-        if (slot.spectator) { if (!match.watchers.some((w) => w.ws)) this.toWorker(match, { t: 'observe', on: false }); }
+        if (slot.spectator && match.status === 'lobby') match.watchers = match.watchers.filter((w) => w !== slot);   // a lobby spectator who left
+        else if (slot.spectator) { if (!match.watchers.some((w) => w.ws)) this.toWorker(match, { t: 'observe', on: false }); }
         else if (slot.civId != null) this.toWorker(match, { t: 'connect', civId: slot.civId, on: false });
         match.lastActive = Date.now();
         if (match.status === 'lobby') this.roomUpdate(match);
@@ -274,6 +316,7 @@ export class MatchManager {
         if (msg.ruleset === ACTION_RULESET && (!ctx.caps?.includes('action-rts') || !ctx.caps?.includes('ring-cities-v1'))) throw new Error('This match requires the updated Unity client with ring-city RTS support.');
         const m = this.create(msg);
         const slot = m.mode === 'observe' ? this.watch(m, msg.name) : this.seat(m, msg.name);
+        if (!slot.spectator) m.hostSlot = slot;
         this.bind(ws, m, slot);
         if (m.mode === 'ai' || m.mode === 'observe' || m.mode === 'sandbox') this.start(m); else this.roomUpdate(m);
         return;
@@ -282,9 +325,12 @@ export class MatchManager {
         // watch any running match (no fog, no orders)
         const m = this.matches.get(String(msg.match || '').toLowerCase()); if (!m) throw new Error('No such match');
         this.requireClient(ctx, m);
-        if (m.status === 'lobby') throw new Error('Match has not started yet');
+        if (m.status === 'lobby' && m.mode !== 'pvp') throw new Error('Match has not started yet');
+        if (ctx.match && ctx.slot && ctx.match !== m) this.leaveLobby(ws);
         const w = this.watch(m, msg.name);
         this.bind(ws, m, w);
+        // a lobby's spectator seat: sees the room now and watches the match once it starts
+        if (m.status === 'lobby') { this.roomUpdate(m); return; }
         this.wake(m); this.welcome(m, w);
         return;
       }
@@ -300,7 +346,7 @@ export class MatchManager {
         const slot = this.seat(m, msg.name);
         this.bind(ws, m, slot);
         this.roomUpdate(m);
-        if (m.slots.every((s) => !s.human || s.token)) this.start(m);
+        this.autoStart(m);
         return;
       }
       case 'rejoin': {
@@ -314,7 +360,7 @@ export class MatchManager {
       }
       case 'start': {
         if (!ctx.match || ctx.match.status !== 'lobby') throw new Error('Not in a match lobby');
-        if (ctx.match.slots[0] !== ctx.slot) throw new Error('Only the host can start the match');
+        if (this.hostOf(ctx.match) !== ctx.slot) throw new Error('Only the host can start the match');
         this.start(ctx.match);
         return;
       }
@@ -322,9 +368,45 @@ export class MatchManager {
         if (!ctx.match || ctx.match.status !== 'lobby' || !ctx.slot || ctx.slot.spectator) throw new Error('Not in a match lobby');
         ctx.slot.ready = msg.on !== false;
         this.roomUpdate(ctx.match);
+        this.autoStart(ctx.match);
+        return;
+      }
+      // lobby seat editing (see editLobby): seats, teams, AI seats, format and map
+      case 'watch': {
+        // a seated player (not the host) moves to the lobby's spectator seats; their seat opens
+        const m = this.lobbyOf(ctx), me = ctx.slot;
+        if (me === this.hostOf(m)) throw new Error('The host plays in the match');
+        const w = this.watch(m, me.name);
+        Object.assign(me, { token: null, ws: null, name: 'Open seat', ready: false });
+        this.bind(ws, m, w);
+        this.roomUpdate(m);
+        if (msg.rid != null) this.send(ws, { t: 'ack', rid: msg.rid });
+        return;
+      }
+      case 'sit': {
+        // a lobby spectator takes an open seat ({ to } or the first open one)
+        const m = ctx.match;
+        if (!m || m.status !== 'lobby' || !ctx.slot?.spectator) throw new Error('Not watching a match lobby');
+        const to = msg.to != null ? Number(msg.to) : m.slots.findIndex((s) => s.human && !s.token);
+        const s = m.slots[to];
+        if (!s || !s.human || s.token || s.closed) throw new Error('That seat is not open');
+        m.watchers = m.watchers.filter((w) => w !== ctx.slot);
+        s.token = crypto.randomBytes(16).toString('hex'); s.name = String(ctx.slot.name || 'Player').slice(0, 24); s.ready = false;
+        this.bind(ws, m, s);
+        this.roomUpdate(m);
+        if (msg.rid != null) this.send(ws, { t: 'ack', rid: msg.rid });
+        return;
+      }
+      case 'seat': case 'team': case 'addAi': case 'removeAi': case 'aiDifficulty': case 'mode': case 'map': case 'options': case 'closeSeat': {
+        const m = this.lobbyOf(ctx);
+        this.editLobby(m, ctx.slot, msg);
+        m.lastActive = Date.now();
+        this.roomUpdate(m);
+        if (msg.rid != null) this.send(ws, { t: 'ack', rid: msg.rid });
         return;
       }
       case 'room': {
+        if (ctx.match && ctx.slot?.spectator && ctx.match.status === 'lobby') { this.roomUpdate(ctx.match); return; }
         if (!ctx.match || ctx.match.status !== 'lobby') throw new Error('Not in a match lobby');
         this.roomUpdate(ctx.match);
         return;
@@ -337,9 +419,223 @@ export class MatchManager {
         else this.toWorker(m, { t: 'cmd', civId: ctx.slot.civId, cmd: msg.cmd || {}, rid: msg.rid });
         return;
       }
+      case 'obsCmd': {
+        // spectators' commands (follow, fog, match speed) in their own envelope; the worker validates them
+        const m = ctx.match; if (!m || !m.worker || !ctx.slot?.spectator) throw new Error('Not spectating a running match');
+        m.lastActive = Date.now();
+        this.toWorker(m, { t: 'obsCmd', cmd: msg.cmd || {}, rid: msg.rid });
+        return;
+      }
       case 'admin': if (!this.admin) throw new Error('Administration is not available'); return this.admin.handle(ws, msg);
       default: throw new Error('Unknown message');
     }
+  }
+
+  // ------------------------------------------------------------------ lobby seat editing
+  // The host (by reference: seats move, the host keeps the role) edits the room; players may move only
+  // themselves, to a free seat (an open seat or an AI's, which takes theirs). Every change is answered
+  // with a fresh 'room' to everyone; a refused one with an 'error' to the sender.
+  hostOf(m) { return m.hostSlot && m.slots.includes(m.hostSlot) ? m.hostSlot : m.slots[0]; }
+  teamsOf(m) { return Math.max(1, Math.ceil(m.slots.length / Math.max(1, m.teamSize || 1))); }
+  lobbyOf(ctx) {
+    const m = ctx.match;
+    if (!m || m.status !== 'lobby' || !ctx.slot || ctx.slot.spectator || !m.slots.includes(ctx.slot)) throw new Error('Not in a match lobby');
+    return m;
+  }
+
+  editLobby(m, me, msg) {
+    const host = this.hostOf(m), isHost = me === host;
+    const needHost = (what) => { if (!isHost) throw new Error(`Only the host can ${what}`); };
+    const seatOf = (v, fallback) => {
+      if (v == null) { if (fallback >= 0) return fallback; throw new Error('Choose a seat'); }
+      const i = Number(v);
+      if (!Number.isInteger(i) || i < 0 || i >= m.slots.length) throw new Error('No such seat');
+      return i;
+    };
+    const mine = m.slots.indexOf(me), ts = Math.max(1, m.teamSize || 1);
+    const free = (s) => !s.closed && (!s.human || !s.token);
+    const aiAt = (i) => { const s = m.slots[i]; if (s.human || s.closed) throw new Error('That seat is not an AI'); return s; };
+    switch (msg.t) {
+      case 'seat': {
+        // { to } moves you; the host may move any seat: { seat, to }
+        const from = seatOf(msg.seat, mine), to = seatOf(msg.to);
+        if (from !== mine) needHost('move other players');
+        if (from === to) return;
+        if (!isHost && !free(m.slots[to])) throw new Error('That seat is taken');
+        if (m.slots[to].closed || m.slots[from].closed) throw new Error('That seat is closed');
+        [m.slots[from], m.slots[to]] = [m.slots[to], m.slots[from]];
+        return;
+      }
+      case 'team': {
+        // { team } moves you to a free seat in that team (an open seat before an AI's); the host may move anyone: { seat, team }
+        const from = seatOf(msg.seat, mine), team = Number(msg.team), teams = this.teamsOf(m);
+        if (from !== mine) needHost('move other players');
+        if (!Number.isInteger(team) || team < 0 || team >= teams) throw new Error('No such team');
+        if (Math.floor(from / ts) === team) return;
+        let to = -1;
+        for (let i = team * ts; i < Math.min(m.slots.length, (team + 1) * ts); i++) if (free(m.slots[i]) && (to < 0 || m.slots[i].human && !m.slots[to].human)) to = i;
+        if (to < 0) throw new Error(`Team ${team + 1} is full`);
+        [m.slots[from], m.slots[to]] = [m.slots[to], m.slots[from]];
+        return;
+      }
+      case 'addAi': {
+        // an open seat becomes an AI: { seat } or the first open seat (in { team } when given)
+        needHost('add AI players');
+        let i = -1;
+        if (msg.seat != null) i = seatOf(msg.seat);
+        else for (let k = 0; k < m.slots.length && i < 0; k++) if (m.slots[k].human && !m.slots[k].token && (msg.team == null || Math.floor(k / ts) === Number(msg.team))) i = k;
+        if (i < 0) throw new Error('No open seat for an AI (remove one or change the format)');
+        const s = m.slots[i];
+        if (!s.human || s.token) throw new Error('That seat is not open');
+        if (msg.difficulty != null && !AI_DIFFICULTIES.includes(msg.difficulty)) throw new Error('Unknown AI difficulty');
+        if (msg.personality != null && msg.personality !== 'random' && !AI_PERSONALITIES.includes(msg.personality)) throw new Error('Unknown AI personality');
+        Object.assign(s, { human: false, name: 'AI', token: null, ws: null, ready: false, fairPlay: true, difficulty: msg.difficulty || 'normal',
+          personality: AI_PERSONALITIES.includes(msg.personality) ? msg.personality : AI_PERSONALITIES[(Math.random() * 3) | 0] });
+        return;
+      }
+      case 'removeAi': {
+        needHost('remove AI players');
+        const s = aiAt(seatOf(msg.seat));
+        Object.assign(s, { human: true, name: 'Open seat', token: null, ws: null, ready: false });
+        delete s.difficulty; delete s.personality; delete s.fairPlay;
+        return;
+      }
+      case 'aiDifficulty': {
+        // { seat, difficulty?, personality? }
+        needHost('change AI players');
+        const s = aiAt(seatOf(msg.seat));
+        if (msg.difficulty == null && msg.personality == null) throw new Error('Choose a difficulty or a personality');
+        if (msg.difficulty != null && !AI_DIFFICULTIES.includes(msg.difficulty)) throw new Error('Unknown AI difficulty');
+        if (msg.personality != null && !AI_PERSONALITIES.includes(msg.personality)) throw new Error('Unknown AI personality');
+        if (msg.difficulty != null) s.difficulty = msg.difficulty;
+        if (msg.personality != null) s.personality = msg.personality;
+        return;
+      }
+      case 'mode': {
+        // { mode: '1v1' | '2v2' | '3v3' | '4v4' | 'ffa3' | 'ffa4' | 'ffa5' | 'ffa6' }
+        needHost('change the format');
+        if (m.ruleset !== ACTION_RULESET) throw new Error('Formats are part of the action RTS');
+        const f = Object.hasOwn(FORMATS, msg.mode) ? FORMATS[msg.mode] : null;
+        if (!f) throw new Error('Unknown format');
+        const map = MAPS_BY_ID[m.map];
+        const keepMap = map && map.teamSize === f.teamSize && map.players === f.teamSize * f.teams;
+        this.relayout(m, f.teamSize, f.teams);   // throws (nothing changed) when more players are seated than it holds
+        if (map && !keepMap) { m.map = 'random'; this.resize(m); }
+        return;
+      }
+      case 'map': {
+        needHost('choose the map');
+        if (m.ruleset !== ACTION_RULESET) throw new Error('Maps are part of the action RTS');
+        const id = String(msg.map || 'random');
+        if (id === 'random') { m.map = 'random'; this.resize(m); return; }
+        const def = Object.hasOwn(MAPS_BY_ID, id) ? MAPS_BY_ID[id] : null;
+        if (!def) throw new Error(`Unknown map "${id}"`);
+        this.relayout(m, def.teamSize, Math.max(2, Math.round(def.players / Math.max(1, def.teamSize))));
+        m.map = id;
+        // a catalog map has a start for every seat: closed seats open again
+        for (const s of m.slots) if (s.closed) { delete s.closed; Object.assign(s, { human: true, name: 'Open seat', token: null, ws: null }); }
+        this.resize(m);
+        return;
+      }
+      case 'options': {
+        // { objective?, startRes?, style?, size?, public? }: the match rules; style and size shape a random world
+        needHost('change the match options');
+        if (msg.objective != null && !OBJECTIVES.includes(msg.objective)) throw new Error('Unknown victory condition');
+        if (msg.startRes != null && !START_RESOURCES.includes(msg.startRes)) throw new Error('Unknown starting resources');
+        if (msg.style != null && !STYLES.includes(msg.style)) throw new Error('Unknown world style');
+        if (msg.size != null && msg.size !== 'auto' && !Object.hasOwn(ACTION_SIZES, msg.size)) throw new Error('Unknown map size');
+        if (msg.objective != null) m.objective = msg.objective;
+        if (msg.startRes != null) m.startRes = msg.startRes;
+        if (msg.style != null) m.style = msg.style;
+        if (msg.size != null) { m.sizeKey = msg.size === 'auto' ? null : msg.size; this.resize(m); }   // auto: follows the seat count
+        if (msg.public != null) m.public = msg.public === true;
+        return;
+      }
+      case 'closeSeat': {
+        // { seat, closed }: an empty seat leaves the match (uneven teams) or opens again; random worlds only
+        needHost('close seats');
+        const i = seatOf(msg.seat), s = m.slots[i];
+        if (msg.closed === false) {
+          if (!s.closed) return;
+          delete s.closed; Object.assign(s, { human: true, name: 'Open seat', token: null, ws: null });
+          return;
+        }
+        if (MAPS_BY_ID[m.map]) throw new Error('A catalog map has a start for every seat: choose Random to close seats');
+        if (s.closed) return;
+        if (s.human && s.token) throw new Error('A player sits there');
+        const before = { ...s };
+        for (const k of Object.keys(s)) delete s[k];
+        Object.assign(s, { human: false, closed: true, name: 'Closed', token: null, ws: null });
+        if (!this.playable(m.slots, ts)) { for (const k of Object.keys(s)) delete s[k]; Object.assign(s, before); throw new Error('At least two sides must keep a seat'); }
+        return;
+      }
+      default: throw new Error('Unknown message');
+    }
+  }
+
+  // Closed seats leave the match when it starts; everyone keeps the team of the seat they sat in
+  // (teams renumbered from 0), passed to the simulation as teamOf.
+  dropClosed(m) {
+    if (!m.slots.some((s) => s.closed)) return;
+    const ts = Math.max(1, m.teamSize || 1);
+    const kept = m.slots.map((s, i) => ({ s, team: Math.floor(i / ts) })).filter((e) => !e.s.closed);
+    const order = [...new Set(kept.map((e) => e.team))];
+    m.slots = kept.map((e) => e.s);
+    m.teamOf = kept.map((e) => order.indexOf(e.team));
+  }
+
+  // at least two sides keep a seat that is not closed
+  playable(slots, teamSize) {
+    const ts = Math.max(1, teamSize || 1);
+    return new Set(slots.map((s, i) => (s.closed ? -1 : Math.floor(i / ts))).filter((t) => t >= 0)).size >= 2;
+  }
+
+  // public lobbies for the in-game browser (/api/lobbies): only those the host listed
+  lobbies() {
+    return [...this.matches.values()].filter((m) => m.status === 'lobby' && m.public && m.mode === 'pvp').map((m) => {
+      const ts = Math.max(1, m.teamSize || 1), teams = this.teamsOf(m);
+      return { id: m.id, name: m.name, host: this.hostOf(m)?.name || '', format: formatName(ts, teams), map: m.map || 'random', mapName: MAPS_BY_ID[m.map]?.name || 'Random',
+        mapSize: m.mapSize, seats: m.slots.filter((s) => !s.closed).length, players: m.slots.filter((s) => s.human && s.token).length,
+        open: m.slots.filter((s) => s.human && !s.token).length, spectators: (m.watchers || []).length, objective: m.objective || 'domination', created: m.created };
+    });
+  }
+
+  // Rebuild the seats for teams × teamSize: seated players first, then AIs, then open seats, each keeping
+  // its team where there is room; new seats are open; what does not fit (open seats, then AIs) is dropped.
+  relayout(m, teamSize, teams) {
+    const n = teamSize * teams;
+    if (n > MAX_CIVS || n < 2) throw new Error('Unsupported format');
+    const oldTs = Math.max(1, m.teamSize || 1);
+    const ranked = m.slots.map((s, i) => ({ s, team: Math.floor(i / oldTs), rank: s.human && s.token ? 0 : !s.human && !s.closed ? 1 : 2 }));
+    const seated = ranked.filter((e) => e.rank === 0).length;
+    if (seated > n) throw new Error(`${seated} players are seated; that format has ${n} seats`);
+    const next = new Array(n).fill(null);
+    const place = (e, team) => { for (let k = 0; k < teamSize; k++) { const i = team * teamSize + k; if (!next[i]) { next[i] = e.s; return true; } } return false; };
+    for (const rank of [0, 1, 2]) {
+      const group = ranked.filter((e) => e.rank === rank), later = [];
+      for (const e of group) if (!(e.team < teams && place(e, e.team))) later.push(e);
+      for (const e of later) for (let t = 0; t < teams; t++) if (place(e, t)) break;
+    }
+    for (let i = 0; i < n; i++) if (!next[i]) next[i] = { human: true, name: 'Open seat', token: null, ws: null };
+    m.slots = next;
+    m.teamSize = teamSize;
+    this.resize(m);
+  }
+
+  // an authored map fixes the world size; a random one follows the host's size choice or the seat count
+  resize(m) {
+    const def = MAPS_BY_ID[m.map], n = m.slots.length;
+    m.mapSize = def ? def.size : ACTION_SIZES[m.sizeKey] || (n <= 2 ? ACTION_SIZES.small : n <= 4 ? ACTION_SIZES.medium : ACTION_SIZES.large);
+  }
+
+  // Unity lobbies (waitForReady) start when every seat is taken and every player is ready; older
+  // clients' lobbies start as soon as the last human seat is taken.
+  autoStart(m) {
+    if (m.status !== 'lobby') return;
+    const humans = m.slots.filter((s) => s.human);
+    if (!humans.every((s) => s.token)) return;
+    if (m.waitForReady && (humans.length < 2 || !humans.every((s) => s.ready))) return;
+    this.start(m);
   }
 
   requireClient(ctx, match) {

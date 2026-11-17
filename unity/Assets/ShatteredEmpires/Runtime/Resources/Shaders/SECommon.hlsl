@@ -32,6 +32,10 @@ float _SE_CityPower;
 half4 _SE_AmbientSky, _SE_AmbientEquator, _SE_AmbientGround;
 float4 _SE_Haze;
 half4 _SE_HazeColor;
+// How much further back the telephoto match camera stands than the zoom distance (ViewLod.cs; 0 otherwise).
+// Detail fades measured from the eye subtract it, so they follow the zoom as with the old camera.
+float _SE_EyeOffset;
+float SE_ViewDistance(float3 positionWS) { return max(distance(_WorldSpaceCameraPos, positionWS) - _SE_EyeOffset, 0.0); }
 half3 SE_Ambient(half3 n)
 {
     return n.y >= 0 ? lerp(_SE_AmbientEquator.rgb, _SE_AmbientSky.rgb, n.y)

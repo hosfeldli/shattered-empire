@@ -29,7 +29,7 @@ namespace SE.Core.World
         public int* Nb;           // neighbour table, 6 per hex
         public float* Impacts;    // six persistent [local x, local z, radius, depth] records per cell
         public byte* ImpactCounts;
-        public float* Trenches;   // per cell: local x, local z, facing, depth
+        public float* Trenches;   // per cell: local x, local z, facing (+ link mask, see EncodeTrenchFacing), depth
 
         public const float NoWater = -1e9f;
         public const float LakeDepth = 0.14f;
@@ -324,26 +324,93 @@ namespace SE.Core.World
             return false;
         }
 
+        /// <summary>
+        /// A trench node's facing slot also carries which of its six neighbours it is joined to (WorldModel.ApplyTrenches
+        /// computes the links by the rule WarzoneRenderer draws them): facing (wrapped to ±π) + 16 × mask.
+        /// </summary>
+        public static float EncodeTrenchFacing(float facing, int linkMask)
+        {
+            const float Tau = 6.2831853f;
+            facing -= Tau * (float)Math.Floor((facing + 3.14159265f) / Tau);
+            return facing + 16f * (linkMask & 63);
+        }
+
+        /// <summary>The facing (enemy side, radians) of the trench node in cell n.</summary>
+        public float TrenchFacing(int n) { float v = Trenches[n * 4 + 2]; return v - 16f * (float)Math.Floor((v + 8f) / 16f); }
+
+        /// <summary>The trench node in cell n's links to its neighbours (bit d: joined to Nb[n * 6 + d]).</summary>
+        public int TrenchLinks(int n) => (int)Math.Floor((Trenches[n * 4 + 2] + 8f) / 16f) & 63;
+
+        /// <summary>
+        /// The nearest point of the dug trench line to (x, z) in tile t (searching t and its neighbours): each node
+        /// owns the half of every link to a joined neighbour, so a line is continuous and ends at its last node; a
+        /// node joined to none is a straight run of ±0.42 across its facing (as WarzoneRenderer draws it). Returns
+        /// the distance (1e9 when there is no trench near), the point, the unit direction along the line there, and
+        /// that node's facing and depth.
+        /// </summary>
+        public float TrenchNearest(int t, float x, float z, out float px, out float pz, out float dirX, out float dirZ, out float facing, out float depth)
+        {
+            px = x; pz = z; dirX = 1; dirZ = 0; facing = 0; depth = 0;
+            float best = 1e9f;
+            if (Trenches == null || t < 0) return best;
+            bool wrap = Wrap != 0;
+            for (int cell = -1; cell < 6; cell++)
+            {
+                int n = cell < 0 ? t : Nb[t * 6 + cell];
+                if (n < 0 || Trenches[n * 4 + 3] <= 0) continue;
+                int tr = n * 4;
+                // the node, relative to (x, z)
+                float nx = HexMath.DxWrap(x, HexMath.CenterX(n, W), Period, wrap) + Trenches[tr], nz = HexMath.CenterZ(n, W) + Trenches[tr + 1] - z;
+                float a = TrenchFacing(n);
+                int links = TrenchLinks(n), joined = 0;
+                for (int d = 0; d < 6; d++)
+                {
+                    if ((links & (1 << d)) == 0) continue;
+                    int m = Nb[n * 6 + d];
+                    if (m < 0 || Trenches[m * 4 + 3] <= 0) continue;
+                    joined++;
+                    float mx = nx + HexMath.DxWrap(HexMath.CenterX(n, W), HexMath.CenterX(m, W), Period, wrap) + Trenches[m * 4] - Trenches[tr];
+                    float mz = HexMath.CenterZ(m, W) + Trenches[m * 4 + 1] - z;
+                    NearestOnRun(nx, nz, (nx + mx) * .5f, (nz + mz) * .5f, a, Trenches[tr + 3], x, z, ref best, ref px, ref pz, ref dirX, ref dirZ, ref facing, ref depth);
+                }
+                if (joined == 0)
+                {
+                    float ax = -(float)Math.Cos(a) * .42f, az = (float)Math.Sin(a) * .42f;
+                    NearestOnRun(nx - ax, nz - az, nx + ax, nz + az, a, Trenches[tr + 3], x, z, ref best, ref px, ref pz, ref dirX, ref dirZ, ref facing, ref depth);
+                }
+            }
+            return best;
+        }
+
+        /// <summary>The run a → b (relative to the query point x, z): keeps it when nearer than the best so far.</summary>
+        static void NearestOnRun(float ax, float az, float bx, float bz, float a, float d, float x, float z,
+            ref float best, ref float px, ref float pz, ref float dirX, ref float dirZ, ref float facing, ref float depth)
+        {
+            float ux = bx - ax, uz = bz - az, len2 = ux * ux + uz * uz;
+            float s = len2 > 1e-8f ? Math.Max(0, Math.Min(1, -(ax * ux + az * uz) / len2)) : 0;
+            float qx = ax + ux * s, qz = az + uz * s;
+            float dist = (float)Math.Sqrt(qx * qx + qz * qz);
+            if (dist >= best) return;
+            best = dist; px = x + qx; pz = z + qz; facing = a; depth = d;
+            if (len2 > 1e-8f) { float l = (float)Math.Sqrt(len2); dirX = ux / l; dirZ = uz / l; }
+        }
+
         /// <summary>Persistent irregular crater bowls and displaced rims, shared by meshes and actors.</summary>
         public float DamageHeight(int t, float x, float z)
         {
             if (ImpactCounts == null || Impacts == null) return 0;
             float bowl = 0, rim = 0;
+            if (Trenches != null)
+            {
+                // the dug cut: a narrow flat-bottomed channel along the drawn line, no longer than the line itself
+                float across = TrenchNearest(t, x, z, out _, out _, out _, out _, out _, out float trenchDepth);
+                if (across < .11f) bowl = -trenchDepth * Math.Max(0, Math.Min(1, (.11f - across) / .035f));
+            }
             for (int cell = -1; cell < 6; cell++)
             {
                 int n = cell < 0 ? t : Nb[t * 6 + cell];
                 if (n < 0) continue;
                 float dx = HexMath.DxWrap(HexMath.CenterX(n, W), x, Period, Wrap != 0), dz = z - HexMath.CenterZ(n, W);
-                if (Trenches != null && Trenches[n * 4 + 3] > 0)
-                {
-                    int tr = n * 4;
-                    float tx = dx - Trenches[tr], tz = dz - Trenches[tr + 1], a = Trenches[tr + 2];
-                    float sn = (float)Math.Sin(a), cs = (float)Math.Cos(a);
-                    float across = Math.Abs(tx * sn + tz * cs), along = Math.Abs(-tx * cs + tz * sn);
-                    float width = Math.Max(0, Math.Min(1, (.11f - across) / .035f));
-                    float ends = Math.Max(0, Math.Min(1, (.88f - along) / .12f));
-                    bowl = Math.Min(bowl, -Trenches[tr + 3] * width * ends);
-                }
                 for (int k = 0; k < ImpactCounts[n]; k++)
                 {
                     int index = (n * 6 + k) * 4;

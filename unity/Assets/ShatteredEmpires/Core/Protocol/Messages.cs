@@ -12,6 +12,8 @@ namespace SE.Core.Protocol
         public string T = "";
         public int Rid = -1;
         public string Error;
+        /// <summary>Machine-readable refusal reason the action server may attach (territory, road, spacing, ring, era, foundation); null otherwise.</summary>
+        public string ErrorCode;
         /// <summary>The parsed JSON, for UI panels and command replies that need fields not typed here.</summary>
         public JObject Raw;
         public SnapshotMessage Snapshot;
@@ -34,6 +36,8 @@ namespace SE.Core.Protocol
         /// <summary>Aircraft state code (owner view: air[0]; others: 0 grounded, 2 airborne), -1 for ground units.</summary>
         public int AirState;
         public int AirMission, AirMissionTile, AirRadius;
+        /// <summary>Action RTS: own aircraft fuel 0-255 (air[1]); -1 when not shown (enemy aircraft, ground units).</summary>
+        public int Fuel;
         public WorldMotion Motion;
     }
 
@@ -48,11 +52,15 @@ namespace SE.Core.Protocol
         public bool Present;
         public float X, Z, Yaw, Vx, Vz, Cooldown, Altitude;
         public int Equipment;
+        /// <summary>Action RTS squads: living men (extra[8]); -1 when not sent.</summary>
+        public int Men;
     }
 
     public struct ObjectiveSite
     {
         public int Id, Tile, Owner, Capturing, Headquarters, Tier, Capacity, RingVersion, VisualTier, DefenseCount;
+        /// <summary>Action RTS own bases: perimeter upgrade level (1..3, server `defenseLevel`); 0 when not sent.</summary>
+        public int DefenseLevel;
         public float X, Z, Radius, Capture, Build, DevelopedAt, Tenure, Maturity;
         public bool IsBase, Contested, Operational, Memory, Starting;
         public string Name, Kind;
@@ -88,6 +96,9 @@ namespace SE.Core.Protocol
         public float X, Z, Yaw;
         public int Missiles, Slot;
         public int RallyGroup;
+        /// <summary>Own production: the rally point (econ `ra:[x, z, mode]`), mode 1 attack-move, 0 move.</summary>
+        public bool HasRally, RallyAttackMove;
+        public float RallyX, RallyZ;
         public string Project;
     }
 
@@ -111,8 +122,13 @@ namespace SE.Core.Protocol
         public int Seq, From, To, Shooter, Target, Weapon, Damage, Owner, Amount;
         public float Flight, Radius;
         public bool Airburst;
+        /// <summary>'flak' events: burst altitude above ground (y) and puff offsets [dx,dy,dz,...] from the burst centre (p).</summary>
+        public float Altitude;
+        public float[] Bursts;
         /// <summary>A half-strength strategic blast (a destroyed reactor).</summary>
         public bool Half;
+        /// <summary>Barracks upgrades (server actionUpgrades.js): a grenade lob (gr), a squad AT rocket (rk), a marksman shot (mk), a hit absorbed by body armour (ar).</summary>
+        public bool Grenade, Rocket, Marksman, Armoured;
         public bool HasOrigin, HasDestination;
         public WorldPoint Origin, Destination;
     }
@@ -139,6 +155,8 @@ namespace SE.Core.Protocol
         public JObject Weather;
         public bool HasEcon;
         public JObject Econ;
+        /// <summary>The stockpile, sent in every snapshot (income accrues per tick; econ only once a second).</summary>
+        public JToken Res;
         public BuildingRecord[] Buildings;
         public CityRecord[] Cities;
         public JToken Fieldworks;

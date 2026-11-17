@@ -6,10 +6,27 @@ namespace SE.Runtime.UI
     public sealed class CampaignOptions
     {
         public string Style = "pangaea", MapSize = "medium", Difficulty = "normal", Seed = "", Objective = "domination";
+        /// <summary>Starting resources: "low", "standard", "high", "max" (server START_RES in actionGame.js).</summary>
+        public string StartRes = "standard";
         /// <summary>A hand-authored map id from the server catalog, or "random" (procedural).</summary>
         public string Map = "random";
         public int Rivals = 1;
         public bool Tutorial, Wrap;
+        /// <summary>
+        /// Teams and seats: "1v1", "2v2", "3v3", "4v4", "ffa3", "ffa4" (server FORMATS). Null: the old
+        /// free-for-all of 1 + <see cref="Rivals"/>. A catalog map fixes it.
+        /// </summary>
+        public string Format;
+        /// <summary>One entry per AI seat in seat order (seat 1 on): its difficulty and personality ("random" allowed).</summary>
+        public List<AiSeatOption> Ais = new List<AiSeatOption>();
+    }
+
+    /// <summary>One AI of a New Skirmish (server 'rivals' entry).</summary>
+    public sealed class AiSeatOption
+    {
+        public string Difficulty = "normal", Personality = "random";
+        /// <summary>The seat is left empty (uneven sides on a random world; server create 'closed').</summary>
+        public bool Closed;
     }
 
     /// <summary>What the interface asks the game to do (implemented by the bootstrap).</summary>
@@ -22,7 +39,10 @@ namespace SE.Runtime.UI
         void ApplyQuality(string preset);
         void ApplyUiScale(float scale);
         void StartCampaign(CampaignOptions options);
-        void HostMultiplayer(int teamSize, string map = "random");
+        /// <summary>Open a match lobby: <paramref name="format"/> ("2v2", "ffa4"; null: teamSize v teamSize) on a catalog map or "random".</summary>
+        void HostMultiplayer(int teamSize, string map = "random", string format = null);
+        /// <summary>A lobby edit for the server (LobbyMessages.Seat/Team/AddAi/RemoveAi/AiSettings/Mode/Map).</summary>
+        void SendLobby(Newtonsoft.Json.Linq.JObject message);
         void InviteFriends();
         bool CanInvite { get; }
         string Server { get; set; }
@@ -60,5 +80,9 @@ namespace SE.Runtime.UI
         public ulong LobbyId;
         public string FriendName, LobbyName;
         public int Members, MaxMembers;
+        /// <summary>Found by the public lobby search (same game and version), not through a friend.</summary>
+        public bool Public;
+        /// <summary>Format and map as the host advertises them ("2v2 · Twin Rivers"); may be empty.</summary>
+        public string Detail;
     }
 }

@@ -12,6 +12,7 @@ const { ACTION_RULESET } = await import('./sim/rulesets.js');
 const { GAME_DEFS, TICK_HZ, aiProfile } = await import('./sim/constants.js');
 const { serializeGame, restoreGame } = await import('./sim/persist.js');
 const { geoViewer, geoMessage } = await import('./sim/terrainGeo.js');
+const { commandAck } = await import('./commandAck.js');
 
 let game;
 if (workerData.restore) {
@@ -131,8 +132,7 @@ parentPort.on('message', (m) => {
       flush();
     } else if (m.t === 'cmd') {
       const res = game.command(m.civId, m.cmd || {});
-      if (res && res.reply) send(m.civId, { ...res.reply, rid: m.rid });
-      else send(m.civId, { t: 'ack', rid: m.rid, error: res ? res.error : undefined });
+      send(m.civId, commandAck(res, m.rid));   // refusals carry their `code` (review S / U)
       flush();
     } else if (m.t === 'connect') {
       const c = game.civs[m.civId]; if (c) c.connected = !!m.on;
@@ -174,7 +174,7 @@ parentPort.on('message', (m) => {
         send(-2, { t: 'ack', rid: m.rid, diag: civ?.aiPlan ?? (civ?.ai?.brain ? civ.ai.brain.report(true) : null) });
       } else if (c.c === 'speed') {
         if (!OBSERVE) error = 'Speed control is only available when spectating an AI match';
-        else { game.speed = [0, 1, 2, 4, 8].includes(+c.speed) ? +c.speed : 1; send(-2, { t: 'ack', rid: m.rid, speed: game.speed }); }
+        else { game.speed = [0, 1, 2, 4, 8].includes(+c.speed) ? +c.speed : 1; send(-2, { t: 'ack', rid: m.rid, speed: game.speed }); send(-2, { t: 'paused', on: !game.speed, speed: game.speed }); }
       } else error = 'Spectators cannot give orders';
       if (error) send(-2, { t: 'ack', rid: m.rid, error });
       flush();

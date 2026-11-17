@@ -49,7 +49,8 @@ export function serializeGame(g) {
     v: actionRules(g) ? 5 : 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, map: g.mapId, tutorial: g.tutorial,
       tutorialSite: g.tutorialSite, teamHold: g.teamHold, engagements: mapOut(g.engagements), reports: g.reports,
-      materialCaches: mapOut(g.materialCaches), roadProjects: g.roadProjects, armyLimit: g.armyLimit } } : {}),
+      materialCaches: mapOut(g.materialCaches), roadProjects: g.roadProjects, armyLimit: g.armyLimit,
+      dominance: g.dominance || null, territoryDirty: !!g.territoryDirty } } : {}),
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
     // v2: wrapped topology and world style
     wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style,
@@ -137,6 +138,9 @@ export function restoreGame(data) {
     g.teamHold = data.action.teamHold;
     g.engagements = new Map(data.action.engagements || []);
     g.reports = data.action.reports || [];
+    // review S: a running decisive-domination countdown survives a save; the territory refresh flag too
+    g.dominance = data.action.dominance || null;
+    g.territoryDirty = !!data.action.territoryDirty;
     for (const u of g.units.values()) {
       if (!ACTION_UNITS[u.type].air) g.movers.add(u);
       g.targets.add(u);

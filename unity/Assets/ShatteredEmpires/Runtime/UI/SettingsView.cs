@@ -160,7 +160,6 @@ namespace SE.Runtime.UI
             }, true), c);
             UiKit.SettingRow("High-contrast markers", UiKit.Switch(GameSettings.HighContrastMarkers, v => GameSettings.HighContrastMarkers = v), c);
             UiKit.SettingRow("Open unit wheel on selection", UiKit.Switch(GameSettings.OpenUnitWheelOnSelection, v => GameSettings.OpenUnitWheelOnSelection = v), c);
-            UiKit.SettingRow("Show defense bar hotkey labels", UiKit.Switch(GameSettings.DefenseBarHotkeyLabels, v => GameSettings.DefenseBarHotkeyLabels = v), c);
         }
 
         void CameraTab(VisualElement c)
@@ -225,7 +224,7 @@ namespace SE.Runtime.UI
         }
 
         /// <summary>Another action on the same key shows in amber beside the key (deliberate shared defaults, such as
-        /// Follow and Flip on F, are not conflicts).</summary>
+        /// Attack move and Flip on F, are not conflicts).</summary>
         void UpdateConflicts()
         {
             foreach (var kv in keyRows)

@@ -110,6 +110,7 @@ namespace SE.Runtime.Session
             if (session.ActionRts) { cmd["point"] = Point(point); cmd["queue"] = queue; }
             var order = new Order { MapPoint = point, Time = Time.unscaledTime };
             Orders.Add(order);
+            NoteIssued("move", point);
             UI.Hud.NoteOrder(units.Selected, point, "move", order.Time);
             order.Rid = session.Net.Command(cmd, r => { Resolve(order, r); if (r.Error == null) ActionMoveOrders++; });
         }
@@ -233,9 +234,11 @@ namespace SE.Runtime.Session
                 cmd["c"] = "move"; cmd["point"] = Point(point);
                 cmd["attackMove"] = InputFacade.Ctrl; cmd["queue"] = InputFacade.Shift;
             }
-            var order = new Order { MapPoint = point, Time = time };
+            string kind = (string)cmd["c"] == "move" && InputFacade.Ctrl ? "attackMove" : (string)cmd["c"];
+            var order = new Order { MapPoint = point, Time = time, Kind = kind };
             Orders.Add(order);
-            UI.Hud.NoteOrder(units.Selected, point, (string)cmd["c"], time);
+            NoteIssued(kind, point);
+            UI.Hud.NoteOrder(units.Selected, point, kind == "attackMove" ? "attack" : (string)cmd["c"], time);
             order.Rid = session.Net?.Command(cmd, r =>
             {
                 Resolve(order, r);
@@ -248,16 +251,25 @@ namespace SE.Runtime.Session
             var ids = SelectedBuildings.ToList();
             if (SelectedObjective > 0) ids.AddRange(session.Structures.Buildings.Values.Where(b =>
                 b.City == SelectedObjective && b.Done && session.Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray).Select(b => b.Id));
-            var cmd = new JObject { ["c"] = "rally", ["buildings"] = new JArray(ids), ["tile"] = tile };
+            // the rally point carries an action: right-click sets a move, F then click an attack move
+            bool attack = RallyAttackMoveArmed;
+            var cmd = new JObject { ["c"] = "rally", ["buildings"] = new JArray(ids), ["tile"] = tile, ["action"] = attack ? "attackMove" : "move", ["attackMove"] = attack };
             if (cam.TryGround(InputFacade.MousePosition, out var p)) cmd["point"] = Point(p);
-            session.Net?.Command(cmd, r => Say(r.Error ?? "Rally point set", r.Error == null, Time.unscaledTime));
+            else { var g = session.World.Grid; p = new Vector3(g.CenterX(tile), 0, g.CenterZ(tile)); }
+            var order = new Order { MapPoint = p, Time = time, Kind = attack ? "rallyAttackMove" : "rally" };
+            Orders.Add(order);
+            NoteIssued(order.Kind, p);
+            order.Rid = session.Net?.Command(cmd, r => { Resolve(order, r); if (r.Error == null) Say("Rally point set", true, Time.unscaledTime); }) ?? -1;
         }
+
+        /// <summary>Why the trench / road stroke being drawn was refused in preview (null while valid; shown at the cursor by the HUD).</summary>
+        public string StrokePreviewReason { get; private set; }
 
         void DrawActionTrench(float time, bool overUi)
         {
             if (InputFacade.RightDown) { Cancel(); return; }
             if (!overUi && InputFacade.LeftDown) { worldStroke.Clear(); previewAt = 0; dragging = true; }
-            if (!dragging) return;
+            if (!dragging) { StrokePreviewReason = null; return; }
             if (!overUi && cam.TryGround(InputFacade.MousePosition, out var p)) AppendPoint(worldStroke, p, 72, .22f);
             bool commit = InputFacade.LeftUp || InputFacade.Pressed(KeyCode.Return);
             if (worldStroke.Count >= 2 && (commit || time >= previewAt))
@@ -268,8 +280,12 @@ namespace SE.Runtime.Session
                 var cmd = new JObject { ["c"] = operation, ["points"] = PointArray(worldStroke), ["preview"] = !commit };
                 session.Net?.Command(cmd, r =>
                 {
-                    if (commit) Say(r.Error ?? (operation == "roadBuild" ? "Road construction started" : "Trench construction started"), r.Error == null, Time.unscaledTime);
-                    else if (token == trenchToken && (Current == Mode.Trench || Current == Mode.Road)) actionTrenchPreview = r.Raw?[operation == "roadBuild" ? "road" : "trench"] as JObject;
+                    if (commit) Say(ReadableError(r) ?? (operation == "roadBuild" ? "Road construction started" : "Trench construction started"), r.Error == null, Time.unscaledTime);
+                    else if (token == trenchToken && (Current == Mode.Trench || Current == Mode.Road))
+                    {
+                        actionTrenchPreview = r.Raw?[operation == "roadBuild" ? "road" : "trench"] as JObject;
+                        StrokePreviewReason = ReadableError(r);   // e.g. outside your own territory, through a base foundation
+                    }
                 });
             }
             if (commit) { dragging = false; Cancel(); }
@@ -341,6 +357,7 @@ namespace SE.Runtime.Session
                     Corners(lot.X, lot.Z, lot.Yaw, lot.Width, lot.Depth, color);
                 }
             }
+            if (Current == Mode.Target && FieldPreviewParcel != null) foreach (var lot in newBaseRing) Corners(lot.x, lot.z, lot.y, .9f, .9f, Valid);   // New Base ring footprint
             foreach (int id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var selected))
                 Corners(selected.X, selected.Z, selected.Yaw, 1.02f, 1.02f, new float4(.43f, .77f, .65f, .5f));
             foreach (var s in session.Objectives.Values)

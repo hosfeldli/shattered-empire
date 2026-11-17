@@ -302,6 +302,8 @@ namespace SE.Runtime.Session
                 if (s.Buildings != null) Structures.ApplyBuildings(s.Buildings, World, DirtyCells);
                 if (s.Cities != null) Structures.ApplyCities(s.Cities, World, DirtyCells);
             }
+            // between econ frames the stockpile still arrives every snapshot, so the bars fill smoothly
+            else if (s.Res != null && Econ != null) Econ["res"] = s.Res.DeepClone();
         }
     }
 }

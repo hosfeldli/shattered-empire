@@ -1,9 +1,16 @@
 import { DT } from './constants.js';
 import { ACTION_UNITS } from './actionDefinitions.js';
-import { distance, dxBetween, SpatialIndex, tileAt, wrapX, trenchPosition } from './actionNavigation.js';
+import { distance, dxBetween, OPEN_COST, SpatialIndex, tileAt, wrapX, trenchPosition } from './actionNavigation.js';
 import { addWear } from './battlefield.js';
 
 const SIDESTEPS = [.34, -.34, .66, -.66, 1.04, -1.04, 1.48, -1.48];
+// 2026-11-16: every ground unit moves ~30% slower than its definition speed (Rowen: 20-50% slower),
+// and terrain only nudges pace (roads +20%, rough ground at most -20%) so a unit type keeps a consistent speed.
+export const GROUND_PACE = .7;
+// open ground (grass and plains, within 10% of the class's best) is one cruising speed
+const TERRAIN_PACE = (c) => !Number.isFinite(c) || c >= 1 && c <= 1.1 ? 1 : 1 / Math.min(1.25, Math.max(.83, c));
+export const STANCES = ['aggressive', 'defensive', 'holdFire'];
+export const stanceOf = (u) => STANCES.includes(u.stance) ? u.stance : 'defensive';
 const angleDelta = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
 const turn = (from, to, max) => {
   const d = angleDelta(from, to), value = from + Math.max(-max, Math.min(max, d));
@@ -21,7 +28,7 @@ export function ownedUnits(game, civ, ids) {
 }
 
 function assign(game, u, goal, opts, path) {
-  const order = { goal, mode: opts.mode, facing: opts.facing ?? null, path };
+  const order = { goal, mode: opts.mode, facing: opts.facing ?? null, path, convoy: opts.convoy || 0, convoySpeed: opts.convoySpeed || 0 };
   if (opts.queue && (u.goal || u.airOrder || u.attack)) {
     if (u.orders.length >= 8) return false;
     u.orders.push(order); return true;
@@ -36,6 +43,7 @@ function assign(game, u, goal, opts, path) {
   u.tacticalResume = null;
   u.tacticalUntil = 0;
   u.alignFacing = null;
+  u.pursuit = null;
   if (u.grounded) u.grounded = false;
   startOrder(game, u, order);
   return true;
@@ -54,10 +62,13 @@ function startOrder(game, u, order) {
   u.mode = order.mode;
   u.destinationFacing = order.facing;
   u.blocked = 0;
+  u.convoy = order.convoy || 0; u.convoySpeed = order.convoySpeed || 0;
+  u.stall = 0; u.stallLen = -1; u.stallBest = Infinity;
 }
 
 export function stopUnit(game, u, advance = false) {
   u.goal = null;
+  u.convoy = 0;
   u.path = [];
   u.vx = u.vz = u.speed = 0;
   if (advance && u.destinationFacing != null) {
@@ -98,21 +109,39 @@ export function moveGroup(game, group, point, opts = {}) {
   if (!group.length) return { error: 'Select units to give an order.' };
   game.nav.primeGroup(group, point);
   const ground = group.filter((u) => !ACTION_UNITS[u.type].air), air = group.filter((u) => ACTION_UNITS[u.type].air);
-  const base = ground[0] || air[0], a = Math.atan2(dxBetween(base.x, point.x), point.z - base.z);
+  // The formation faces from the group's centre to the destination (not from whichever unit was listed first).
+  const base = ground[0] || air[0], members = ground.length ? ground : air;
+  let cx = 0, cz = 0;
+  for (const u of members) { cx += dxBetween(base.x, u.x); cz += u.z - base.z; }
+  const centre = { x: base.x + cx / members.length, z: base.z + cz / members.length };
+  const a = Math.atan2(dxBetween(centre.x, point.x), point.z - centre.z);
   const sideX = Math.cos(a), sideZ = -Math.sin(a), fx = Math.sin(a), fz = Math.cos(a);
   const cols = Math.max(1, Math.ceil(Math.sqrt(ground.length * 1.5)));
   const rows = Math.ceil(ground.length / cols);
   const spacing = Math.max(.43, ...ground.map((u) => ACTION_UNITS[u.type].radius * 2 + .11));
   const reserved = new SpatialIndex(.70);
   let placed = 0;
-  ground.sort((a, b) => a.id - b.id);
+  // Slots keep the group's arrangement: the units furthest along the line of travel take the front row,
+  // left-to-right order is preserved, so paths do not cross and early arrivals never wall in later ones.
+  const along = (u) => dxBetween(centre.x, u.x) * fx + (u.z - centre.z) * fz;
+  const across = (u) => dxBetween(centre.x, u.x) * sideX + (u.z - centre.z) * sideZ;
+  ground.sort((p, q) => along(q) - along(p) || p.id - q.id);
+  for (let r = 0; r < rows; r++) {
+    const row = ground.slice(r * cols, (r + 1) * cols).sort((p, q) => across(p) - across(q) || p.id - q.id);
+    ground.splice(r * cols, row.length, ...row);
+  }
+  // A group moves at its slowest member's pace (lagging members may catch up; see unitMotion).
+  const convoy = ground.length > 1 && !opts.formation ? (game.nextConvoy = (game.nextConvoy || 0) + 1) : 0;
+  const convoySpeed = convoy ? Math.min(...ground.map((u) => ACTION_UNITS[u.type].speed)) * GROUND_PACE : 0;
+  const orderOpts = convoy ? { ...opts, convoy, convoySpeed } : opts;
   for (let i = 0; i < ground.length; i++) {
     const u = ground[i], row = Math.floor(i / cols), width = Math.min(cols, ground.length - row * cols);
     const side = (i % cols - (width - 1) * .5) * spacing, forward = ((rows - 1) * .5 - row) * spacing;
     const p = { x: point.x + sideX * side + fx * forward, z: point.z + sideZ * side + fz * forward };
-    const pick = candidate(game, u, p, reserved, opts.exact ? .45 : 1.55);
+    // a crowded destination (a base court, a bridgehead) widens the slot search instead of leaving the unit behind
+    const pick = candidate(game, u, p, reserved, opts.exact ? .45 : 1.55) || (!opts.exact && candidate(game, u, p, reserved, 3.1));
     if (!pick) continue;
-    if (assign(game, u, pick.slot, opts, pick.path)) placed++;
+    if (assign(game, u, pick.slot, orderOpts, pick.path)) placed++;
   }
   for (let i = 0; i < air.length; i++) {
     const u = air[i], offset = (i - (air.length - 1) / 2) * Math.min(.32, 4 / air.length);
@@ -122,6 +151,26 @@ export function moveGroup(game, group, point, opts = {}) {
   }
   game.nav.activeFlows.clear();
   return placed ? { placed, blocked: group.length - placed } : { error: 'No selected unit can reach that ground.' };
+}
+
+/**
+ * {c:'reach', units, point} -> { t:'ack', reach: { ok, all, reachable, units, reason } }.
+ * Cheap (connected-region lookup, no route search). Without units it answers for `move`
+ * ('infantry' | 'wheeled' | 'tracked', default infantry).
+ */
+export function reachQuery(game, group, point, move = 'infantry') {
+  const ground = group.filter((u) => !ACTION_UNITS[u.type].air);
+  const air = group.length - ground.length;
+  const probes = ground.length ? ground : group.length ? [] : [{ x: point.x, z: point.z, probe: { move: ['infantry', 'wheeled', 'tracked'].includes(move) ? move : 'infantry', radius: .14 } }];
+  let reachable = air, blocked = 0;
+  for (const u of probes) {
+    const def = u.probe || ACTION_UNITS[u.type];
+    const r = game.nav.reachability(u.probe ? { x: u.x, z: u.z, unknown: true } : u, point, def);
+    if (r === 'ok') reachable++; else if (r === 'blocked') blocked++;
+  }
+  const total = probes.length + air;
+  const reason = reachable === total ? null : blocked ? 'impassable' : 'unreachable';
+  return { reply: { t: 'ack', reach: { ok: reachable > 0, all: reachable === total, reachable, units: total, reason } } };
 }
 
 function polyline(points) {
@@ -216,9 +265,15 @@ export function unitMotion(game) {
       if (u.alignFacing != null) { u.yaw = turn(u.yaw, u.alignFacing, DT * 1.25); if (Math.abs(angleDelta(u.yaw,u.alignFacing)) < .015) u.alignFacing = null; }
       u.vx = u.vz = u.speed = 0; continue;
     }
-    if (!def.air && !u.tacticalResume && u.mode === 'assault' && u.target && (game.time - u.lastCombat < 2.1 || def.setup && (u.setupUntil || u.deployed))) {
-      const target = game.units.get(u.target) || game.buildings.get(u.target);
-      if (target && distance(u, target) < def.range && game.sees(game.civs[u.owner], target)) { u.vx = u.vz = u.speed = 0; continue; }
+    // W2: crew-served guns (def.setup) halt for their target even while an attack-move has turned them aside
+    // (tacticalResume), at the full range they acquire at (+.45), stay set up while the target is only hidden
+    // by battlefield smoke. Direct-fire guns (def.setupHold) also keep their position for a moment after a shot, so
+    // they retarget once the target dies instead of packing up and walking into the enemy (mortars still re-lay).
+    if (!def.air && (!u.tacticalResume || def.setup) && u.mode === 'assault') {
+      const target = u.target && (game.units.get(u.target) || game.buildings.get(u.target));
+      if (target && (game.time - u.lastCombat < 2.1 || def.setup && (u.setupUntil || u.deployed)) &&
+        distance(u, target) < def.range + (def.setup ? .45 : 0) && (game.sees(game.civs[u.owner], target) || def.setup && u.deployed)) { u.vx = u.vz = u.speed = 0; continue; }
+      if (def.setupHold && u.deployed && game.time - u.lastCombat < def.setupHold) { u.vx = u.vz = u.speed = 0; continue; }
     }
     let p = u.path[0];
     if (!p) { stopUnit(game, u, true); continue; }
@@ -241,13 +296,30 @@ export function unitMotion(game) {
       });
       if (front) {
         const sameDirection = (front.vx*sn+front.vz*cs) > .035;
-        if (sameDirection && game.allied(u.owner,front.owner) && ACTION_UNITS[front.type].move !== 'infantry')
-          followingSpeed = Math.max(.015,Math.hypot(front.vx,front.vz)*.88);
+        if (sameDirection && game.allied(u.owner,front.owner) && ACTION_UNITS[front.type].move !== 'infantry') {
+          // match the vehicle ahead; only ease off when closer than a comfortable gap (no compounding slow-down down a column)
+          const x = dxBetween(u.x,front.x), z = front.z-u.z, gap = x*sn+z*cs, tight = gap < def.radius+ACTION_UNITS[front.type].radius+.10;
+          followingSpeed = Math.max(.015,Math.hypot(front.vx,front.vz)*(tight ? .8 : 1));
+        }
         else { u.avoidSide ||= 1; u.avoidUntil = game.time+.60; desired += .70*u.avoidSide; }
       } else if (u.avoidUntil > game.time) desired += .40*u.avoidSide*(u.avoidUntil-game.time)/.60;
     }
     const c = game.nav.cost(u.tile, u.x, u.z, def);
-    const pace = def.speed * (def.air && game.civs[u.owner].techs.has('aircraft_systems') ? 1.18 : 1) / Math.max(.65, Number.isFinite(c) ? c : 1);
+    const terrainPace = def.air ? 1 : TERRAIN_PACE(c / (OPEN_COST[def.move] || 1));
+    let pace = def.air ? def.speed : def.speed * GROUND_PACE * terrainPace;   // aircraft_systems is drop tanks now (actionAir)
+    if (u.convoy && u.convoySpeed && !def.air) {
+      // Convoy pace: the group's leader (the member nearest its slot) holds the slowest member's speed;
+      // members lagging well behind drive at their own speed until they close up.
+      const convoys = game.convoys ??= new Map();
+      let cv = convoys.get(u.convoy);
+      if (!cv) { cv = { lead: Infinity, next: Infinity, tick: phase }; convoys.set(u.convoy, cv); }
+      if (cv.tick !== phase) { cv.lead = cv.next; cv.next = Infinity; cv.tick = phase; }
+      const remaining = distance(u, u.goal);
+      cv.next = Math.min(cv.next, remaining);
+      if (!(remaining > cv.lead + 1.3)) pace = Math.min(pace, u.convoySpeed * terrainPace);
+      if (phase % 200 === 0) for (const [id, other] of convoys) if (phase - other.tick > 50) convoys.delete(id);
+    }
+    if (u.hasteUntil > game.time) pace *= 1.35;   // B: Improved Logistics, fresh reinforcements heading to their rally point
     const turnRate = def.air ? 3 : !vehicle ? 7 : def.move === 'wheeled' ? 1.65 : 1.25;
     const headingError = Math.abs(angleDelta(u.yaw, desired));
     const corner = vehicle ? Math.max(0, Math.cos(headingError)) ** 2 : 1;
@@ -260,9 +332,15 @@ export function unitMotion(game) {
     const ox = u.x, oz = u.z;
     u.yaw = yaw;
     if (!def.air) index.query(ox, oz, def.radius + .56 + step, near);
+    // Friendly ground: inside our own team's territory allied units may brush past each other (half
+    // the clearance), and a unit that has made no progress for a while briefly ghosts through allies.
+    const owner = game.world.owner?.[u.tile] ?? -1;
+    const homeGround = owner >= 0 && game.allied(u.owner, owner), ghost = u.ghostUntil > game.time;
     const allowed = (x, z) => game.nav.canMove(u, x, z, def) && (def.air || near.every((v) => {
       if (v === u || v.hp <= 0) return true;
-      const r = def.radius + ACTION_UNITS[v.type].radius + .016;
+      const friend = game.allied(u.owner, v.owner);
+      if (ghost && friend) return true;
+      const r = (def.radius + ACTION_UNITS[v.type].radius) * (homeGround && friend ? .5 : 1) + .016;
       const after = dxBetween(x, v.x) ** 2 + (v.z - z) ** 2;
       return after >= r * r || after > dxBetween(ox, v.x) ** 2 + (v.z - oz) ** 2 + .000001;
     }));
@@ -314,5 +392,29 @@ export function unitMotion(game) {
         else if (u.blocked > 60) stopUnit(game, u, true);
       }
     }
+    if (!def.air && u.goal) stallCheck(game, u, def);
   }
+}
+
+// Progress watchdog. Sidesteps keep `blocked` at zero while a unit jiggles in place, so progress is
+// measured against the current waypoint instead: no gain for 2.5 s near the destination means the
+// slot is taken (halt there, the formation is close enough); no gain for 4 s elsewhere means a jam
+// (ghost through allies and re-plan); a minute with no progress gives up.
+function stallCheck(game, u, def) {
+  const wp = u.path[0] || u.goal, d = distance(u, wp);
+  if (u.path.length !== u.stallLen || d < (u.stallBest ?? Infinity) - .04) { u.stallLen = u.path.length; u.stallBest = d; u.stall = 0; return; }
+  u.stall = (u.stall || 0) + 1;
+  const toGoal = distance(u, u.goal);
+  if (u.stall >= 25 && toGoal < .9 + def.radius * 2) { stopUnit(game, u, true); return; }
+  if (u.stall % 40 === 0) {
+    u.ghostUntil = game.time + 2.5;
+    // wedged against a structure (a new wreck or building placed on top of it): step to the nearest free spot
+    if (!game.nav.canStand(u.x, u.z, def)) {
+      const spot = game.nav.nearest(u, def, .7);
+      if (spot) { const ox = u.x, oz = u.z; u.x = spot.x; u.z = spot.z; u.tile = tileAt(u.x, u.z); game.movers.moved(u, ox, oz); }
+    }
+    const route = game.nav.route(u, u.goal, def);
+    if (route) { u.path = route; u.stallLen = route.length; u.stallBest = distance(u, route[0]); }
+  }
+  if (u.stall > 600) stopUnit(game, u, true);
 }

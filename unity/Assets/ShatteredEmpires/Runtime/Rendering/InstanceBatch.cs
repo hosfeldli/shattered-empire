@@ -183,7 +183,7 @@ namespace SE.Runtime.Rendering
         public void Begin(Camera cam, float period, bool wrap)
         {
             Period = period; Wrap = wrap;
-            CameraX = cam.transform.position.x;
+            CameraX = ViewLod.EyeOr(cam).x;   // the logical eye: the telephoto camera itself stands far back
             GeometryUtility.CalculateFrustumPlanes(cam, planes);
         }
 

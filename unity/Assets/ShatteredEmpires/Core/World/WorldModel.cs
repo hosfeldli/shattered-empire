@@ -159,6 +159,22 @@ namespace SE.Core.World
             if (!Ready) return;
             var next = new Dictionary<int, TrenchRecord>();
             foreach (var r in records) if (r.HasPosition && r.Tile >= 0 && r.Tile < Grid.N && r.Progress > 0) next[r.Tile] = r;
+            // Which neighbouring nodes each dug node is joined to (the rule WarzoneRenderer draws links by), so the
+            // ground cut and its scar follow the drawn line and stop where it stops (TerrainView.TrenchNearest).
+            var links = new Dictionary<int, int>();
+            foreach (var kv in next)
+            {
+                var r = kv.Value; int mask = 0;
+                for (int d = 0; d < 6; d++)
+                {
+                    int nb = Grid.Nb[kv.Key * 6 + d];
+                    if (nb < 0 || !next.TryGetValue(nb, out var o) || o.Owner != r.Owner) continue;
+                    float lx = Grid.DxWrap(r.X, o.X), lz = o.Z - r.Z, len = (float)Math.Sqrt(lx * lx + lz * lz);
+                    bool routed = (r.Route & (1 << d)) != 0 || (o.Route & (1 << ((d + 3) % 6))) != 0;
+                    if (len >= .02f && len <= (routed ? 2.2f : 1.35f)) mask |= 1 << d;
+                }
+                links[kv.Key] = mask;
+            }
             var candidates = new HashSet<int>(trenchTiles); candidates.UnionWith(next.Keys);
             bool changed = false;
             foreach (int tile in candidates)
@@ -167,9 +183,11 @@ namespace SE.Core.World
                 float x = r.HasPosition ? Grid.DxWrap(Grid.CenterX(tile), r.X) : 0, z = r.HasPosition ? r.Z - Grid.CenterZ(tile) : 0;
                 float depth = r.HasPosition ? (float)Math.Ceiling(r.Progress / 25f) * .013f : 0;
                 int i = tile * 4;
-                if (TrenchGeometry[i] == x && TrenchGeometry[i + 1] == z && TrenchGeometry[i + 2] == r.Facing && TrenchGeometry[i + 3] == depth) continue;
+                links.TryGetValue(tile, out int linkMask);
+                float facing = r.HasPosition ? TerrainView.EncodeTrenchFacing(r.Facing, linkMask) : 0;
+                if (TrenchGeometry[i] == x && TrenchGeometry[i + 1] == z && TrenchGeometry[i + 2] == facing && TrenchGeometry[i + 3] == depth) continue;
                 if (!changed) { beforeChange?.Invoke(); changed = true; }
-                TrenchGeometry[i] = x; TrenchGeometry[i + 1] = z; TrenchGeometry[i + 2] = r.Facing; TrenchGeometry[i + 3] = depth;
+                TrenchGeometry[i] = x; TrenchGeometry[i + 1] = z; TrenchGeometry[i + 2] = facing; TrenchGeometry[i + 3] = depth;
                 chunks.Add(ChunkOf(tile)); cells.Add(ChunkOf(tile));
                 for (int d = 0; d < 6; d++) { int n = Grid.Nb[tile * 6 + d]; if (n >= 0) { chunks.Add(ChunkOf(n)); cells.Add(ChunkOf(n)); } }
             }

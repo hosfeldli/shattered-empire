@@ -80,6 +80,15 @@ test('AI-only spectator match: whole map visible, follow + fog toggle, speed con
     await new Promise((r) => setTimeout(r, 1200));
     const p2 = await waitFor(ws, (m) => m.t === 's');
     assert.equal(p2.time, p1.time, 'paused');
+    // the native client sends spectator commands in their own 'obsCmd' envelope (2026-11-16: this was
+    // refused as an unknown message, so the spectate speed buttons did nothing); the HUD learns the new
+    // speed from a 'paused' notice
+    ws.send(JSON.stringify({ t: 'obsCmd', rid: 6, cmd: { c: 'speed', speed: 2 } }));
+    const [ack, notice] = await Promise.all([waitFor(ws, (m) => m.rid === 6), waitFor(ws, (m) => m.t === 'paused')]);
+    assert.equal(ack.error, undefined);
+    assert.equal(ack.speed, 2);
+    assert.equal(notice.on, false);
+    assert.equal(notice.speed, 2);
     ws.close();
   } finally { srv.kill('SIGTERM'); }
 });

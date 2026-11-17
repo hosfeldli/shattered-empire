@@ -68,12 +68,34 @@ namespace SE.Runtime.Effects
         /// <summary>Raised for every blast (map point, relative strength): ambient life reacts to it.</summary>
         public event Action<float3, float> Blast;
 
+        Material craterMaterial;
+        Texture2D craterTexture;
+        Mesh craterQuad;
+        /// <summary>Instance colour for a ground mark: the decal reads w as opacity (and its splash fades at ~0.8 of the quad, so it is drawn a little larger); the opaque fallback ignores w.</summary>
+        float4 MarkColor(float3 rgb, float opacity) => new float4(rgb, craterMaterial != null ? opacity : 0);
+        float MarkScale => craterMaterial != null ? 1.25f : 1f;
+
         public EffectsRenderer()
         {
             pool = new Particle[Budget];
             addData = new NativeArray<ParticleGpu>(Budget, Allocator.Persistent);
             alphaData = new NativeArray<ParticleGpu>(Budget, Allocator.Persistent);
-            craters = new InstanceBatch(MeshKit.Disc, RenderResources.Instanced, MaxCraters) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off };
+            // Final pass: scorches and craters were opaque 12-sided discs (the hard black octagons left by fallen
+            // buildings and wrecks). They are now the same soft-edged SE/GroundDecal splash the wreck scorch uses.
+            var decal = Resources.Load<Shader>("Shaders/GroundDecal");
+            if (decal != null)
+            {
+                craterTexture = SE.Runtime.Battlefields.WarzoneRenderer.ScorchTexture();
+                craterMaterial = new Material(decal) { name = "SE scorch decals", enableInstancing = true };
+                craterMaterial.SetTexture("_MainTex", craterTexture);
+                craterQuad = new Mesh { name = "SE crater quad" };
+                craterQuad.SetVertices(new[] { new Vector3(-.5f, 0, -.5f), new Vector3(-.5f, 0, .5f), new Vector3(.5f, 0, .5f), new Vector3(.5f, 0, -.5f) });
+                craterQuad.SetUVs(0, new[] { new Vector2(0, 0), new Vector2(0, 1), new Vector2(1, 1), new Vector2(1, 0) });
+                craterQuad.SetNormals(new[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up });
+                craterQuad.SetTriangles(new[] { 0, 1, 2, 0, 2, 3 }, 0);
+                craters = new InstanceBatch(craterQuad, craterMaterial, MaxCraters) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, ReceiveShadows = true };
+            }
+            else craters = new InstanceBatch(MeshKit.Disc, RenderResources.Instanced, MaxCraters) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off };
             wrecks = new InstanceBatch(MeshKit.Wreck, RenderResources.Instanced, MaxWrecks) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
             rubble = new InstanceBatch(MeshKit.Box, RenderResources.Instanced, MaxRubble) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
         }
@@ -117,8 +139,8 @@ namespace SE.Runtime.Effects
             for (int k = 0; k < n + 3; k++)
             {
                 var v = new float3(R() - 0.5f, R() * 0.5f + 0.3f, R() - 0.5f) * 0.45f * scale;
-                float g = 0.1f + R() * 0.1f;
-                Emit(p + new float3(0, 0.05f, 0), v, 0.15f * scale, 0.35f * scale, 2.5f + R() * 2.5f, new float3(0.18f + g, 0.16f + g, 0.14f + g), new float3(0.48f, 0.47f, 0.45f), 0.6f, false, 0, 1.2f, 0.12f);
+                float g = R() * 0.07f;   // final pass: dusty grey-brown, not dark (heavy barrages stacked it into a black sheet)
+                Emit(p + new float3(0, 0.05f, 0), v, 0.15f * scale, 0.35f * scale, 2.5f + R() * 2.5f, new float3(0.47f + g, 0.42f + g, 0.35f + g), new float3(0.64f, 0.6f, 0.53f), 0.5f, false, 0, 1.2f, 0.12f);
             }
             for (int k = 0; k < n; k++)
             {
@@ -135,7 +157,7 @@ namespace SE.Runtime.Effects
             for (int k = 0; k < n + 2; k++)
             {
                 var v = new float3(R() - 0.5f, R() * 1.1f + 0.9f, R() - 0.5f) * 1.05f * scale;
-                float g = .08f + R() * .07f;
+                float g = .17f + R() * .09f;   // earth clods: dark soil, never black
                 EmitDebris(p + new float3(0, 0.03f, 0), v, (0.012f + R() * .014f) * scale, 1.3f + R() * .9f, new float3(g, g * .85f, g * .7f), floor, -3.4f);
             }
             if (scale > .6f)
@@ -143,9 +165,9 @@ namespace SE.Runtime.Effects
                 // A lingering smoke column that drifts with the wind, and a low dust skirt rolling outward.
                 for (int k = 0; k < 4; k++)
                 {
-                    float g = .07f + R() * .06f;
+                    float g = .40f + R() * .07f;   // dusty grey-brown column (was .07-.13: near-black)
                     Emit(p + new float3((R() - .5f) * .08f * scale, .1f * scale + k * .07f * scale, (R() - .5f) * .08f * scale), new float3(0, .12f + R() * .08f, 0) * scale,
-                        .22f * scale, .30f * scale, 7f + R() * 5f, new float3(g, g, g * 1.05f), new float3(.36f, .35f, .34f), .55f, false, 0, .35f, .05f);
+                        .22f * scale, .30f * scale, 7f + R() * 5f, new float3(g, g * .92f, g * .8f), new float3(.6f, .57f, .52f), .42f, false, 0, .35f, .05f);
                 }
                 for (int k = 0; k < 8; k++)
                 {
@@ -207,7 +229,7 @@ namespace SE.Runtime.Effects
             }
             float g = R() * 0.06f;
             Emit(p + new float3(0, size * .7f, 0), Wind * .07f + new float3((R() - .5f) * .05f, .20f, (R() - .5f) * .05f),
-                size * .42f, size * .55f, 3.3f + R() * 1.4f, new float3(.08f + g, .075f + g, .07f + g), new float3(.32f, .31f, .3f), .46f, false, 0, .35f, .055f);
+                size * .42f, size * .55f, 3.3f + R() * 1.4f, new float3(.27f + g, .255f + g, .24f + g), new float3(.5f, .49f, .47f), .26f, false, 0, .35f, .055f);   // final pass: lighter again, many fires still stacked into black   // Review V: overlapping columns read as a black sheet at .08 / .46
         }
 
         /// <summary>
@@ -248,7 +270,7 @@ namespace SE.Runtime.Effects
                     new float3(0.92f, 0.92f, 0.9f), new float3(0.85f, 0.86f, 0.88f), 0.5f, false, 0, 0.6f, 0.05f);
             else
                 Emit(p, new float3(windMap.x * 0.3f, 0.3f + R() * 0.1f, windMap.z * 0.3f), size * 0.25f, size * 0.7f, 5f + R() * 2f,
-                    new float3(0.16f + g, 0.15f + g, 0.14f + g), new float3(0.42f, 0.41f, 0.4f), 0.4f, false, 0, 0.3f, 0.04f);
+                    new float3(0.22f + g, 0.21f + g, 0.20f + g), new float3(0.46f, 0.45f, 0.44f), 0.32f, false, 0, 0.3f, 0.04f);
         }
 
         // ------------------------------------------------------------------ weather
@@ -270,17 +292,17 @@ namespace SE.Runtime.Effects
         // ------------------------------------------------------------------ persistent marks
         public void Crater(float3 p, float size)
         {
-            var d = InstanceData.TRS(MapSpace.W(p) + new float3(0, 0.006f, 0), R() * 6.28f, new float3(size, 1, size * (0.8f + R() * 0.4f)), new float4(0.14f, 0.11f, 0.09f, 0));
+            var d = InstanceData.TRS(MapSpace.W(p) + new float3(0, 0.006f, 0), R() * 6.28f, new float3(size, 1, size * (0.8f + R() * 0.4f)) * MarkScale, MarkColor(new float3(0.27f, 0.22f, 0.16f), .7f));   // turned earth, not a black blob
             if (craters.Count < MaxCraters) craters.Add(d);
             else { craters.Data[craterHead] = d; craterHead = (craterHead + 1) % MaxCraters; craters.MarkDirty(); }
         }
 
         public void Wreck(float3 p, float yaw, float scale)
         {
-            var d = InstanceData.TRS(MapSpace.W(p), MapSpace.Yaw(yaw), new float3(scale), new float4(0.2f, 0.19f, 0.18f, 0));
+            var d = InstanceData.TRS(MapSpace.W(p), MapSpace.Yaw(yaw), new float3(scale), new float4(0.34f, 0.32f, 0.29f, 0));
             if (wrecks.Count < MaxWrecks) wrecks.Add(d);
             else { wrecks.Data[wreckHead] = d; wreckHead = (wreckHead + 1) % MaxWrecks; wrecks.MarkDirty(); }
-            for (int k = 0; k < 3; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 6f, new float3(0.1f, 0.1f, 0.1f), new float3(0.3f, 0.3f, 0.3f), 0.5f, false, 0, 0.4f, 0.06f);
+            for (int k = 0; k < 3; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 6f, new float3(0.2f, 0.19f, 0.18f), new float3(0.4f, 0.39f, 0.37f), 0.45f, false, 0, 0.4f, 0.06f);
             Scorch(p, scale * 1.3f);
             AddEmitter(p + new float3(0, .04f, 0), .15f, 30f + R() * 20f, EmitterWreck);
         }
@@ -386,7 +408,7 @@ namespace SE.Runtime.Effects
             foreach (var b in alphaBuffers) b?.Release();
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
-            craters.Dispose(); wrecks.Dispose(); rubble.Dispose(); DisposeDecals(); DisposeDistortions();
+            craters.Dispose(); if (craterMaterial != null) UnityEngine.Object.Destroy(craterMaterial); if (craterTexture != null) UnityEngine.Object.Destroy(craterTexture); if (craterQuad != null) UnityEngine.Object.Destroy(craterQuad); wrecks.Dispose(); rubble.Dispose(); DisposeDecals(); DisposeDistortions();
             missileBodies?.Dispose();
             if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
             if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);

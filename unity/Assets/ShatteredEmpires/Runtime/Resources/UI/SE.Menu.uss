@@ -66,7 +66,7 @@
 .se-menu-row { flex-direction: row; align-items: center; }
 
 .se-menu-action { height: 36px; min-height: 36px; padding: 0 14px; margin: 0 0 0 8px; flex-direction: row; align-items: center; flex-shrink: 0; }
-.se-menu-footer .se-menu-action:first-child { margin-left: 0; }
+.se-menu-footer .se-menu-action--lead { margin-left: 0; }
 .se-menu-action--primary { min-width: 140px; justify-content: center; }
 .se-menu-action IconElement { width: 18px; height: 18px; margin-right: 6px; }
 
@@ -149,3 +149,99 @@
 .se-map-mode { width: 48px; flex-shrink: 0; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); -unity-text-align: middle-right; margin: 0; padding: 0; }
 .se-map-option.selected .se-map-mode { color: var(--se-accent, rgb(226, 182, 96)); }
 .se-map-help { height: 54px; min-height: 54px; max-height: 54px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin-top: 2px; white-space: normal; overflow: hidden; }
+
+/* map picker with preview (New Skirmish, lobby): a preview card (the catalog's top-down grid with start
+   positions; a plain card without one) over a filter row and the list. 400 wide (one menu column). */
+.se-map-picker { flex-direction: column; flex-shrink: 0; }
+.se-map-card { flex-direction: column; flex-shrink: 0; margin-bottom: 8px; padding: 8px; background-color: rgba(0, 0, 0, 0.22); border-radius: 6px; border-width: 1px; border-color: var(--se-line, rgba(255, 255, 255, 0.08)); }
+.se-map-preview {
+    width: 200px; height: 200px; flex-shrink: 0; align-self: center; margin-bottom: 8px; border-radius: 4px;
+    border-width: 1px; border-color: rgba(255, 255, 255, 0.14); background-color: rgb(32, 42, 38); -unity-background-scale-mode: scale-to-fit;
+    align-items: center; justify-content: center;
+}
+.se-map-preview--none { background-color: rgba(108, 122, 82, 0.35); }
+.se-map-preview-empty { font-size: 28px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: rgba(244, 232, 202, 0.55); -unity-text-align: middle-center; }
+.se-map-card-name { height: 22px; font-size: 17px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: rgb(244, 232, 202); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; padding: 0; }
+.se-map-card-meta { height: 18px; font-size: 13px; color: var(--se-accent, rgb(226, 182, 96)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; padding: 0; }
+.se-map-card-text { height: 54px; min-height: 54px; max-height: 54px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); white-space: normal; overflow: hidden; margin: 4px 0 0 0; padding: 0; }
+.se-map-picker-list { flex-direction: column; flex-shrink: 0; }
+.se-map-filter { flex-direction: row; flex-shrink: 0; margin-bottom: 6px; }
+.se-map-filter-option { height: 26px; min-height: 26px; padding: 0 10px; margin: 0 6px 0 0; font-size: 13px; border-radius: 13px; background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); border-width: 1px; border-color: var(--se-line, rgba(255, 255, 255, 0.08)); }
+.se-map-filter-option.selected { border-color: var(--se-accent, rgb(226, 182, 96)); color: var(--se-accent, rgb(226, 182, 96)); }
+
+/* AI lists (New Skirmish) and lobby seat controls */
+.se-ai-list { flex-direction: column; flex-shrink: 0; }
+.se-ai-row { flex-direction: row; align-items: center; height: 36px; min-height: 36px; padding: 0 8px; margin-bottom: 4px; background-color: rgba(0, 0, 0, 0.22); border-radius: 4px; }
+.se-ai-row-name { flex-grow: 1; flex-shrink: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; padding: 0; }
+.se-team-dot { width: 10px; height: 10px; border-radius: 5px; margin-right: 8px; flex-shrink: 0; }
+.se-cycle {
+    width: 72px; min-width: 72px; height: 26px; min-height: 26px; margin: 0 0 0 6px; padding: 0 4px; font-size: 13px; flex-shrink: 0;
+    border-radius: 4px; background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); border-width: 1px; border-color: var(--se-line, rgba(255, 255, 255, 0.08));
+    white-space: nowrap; overflow: hidden; -unity-text-align: middle-center;
+}
+.se-cycle:hover { border-color: var(--se-accent-dim, rgba(226, 182, 96, 0.35)); }
+.se-lobby-format-row { flex-direction: row; align-items: center; height: 40px; min-height: 40px; flex-shrink: 0; margin-top: 4px; }
+.se-lobby-format-caption { margin: 0 12px 0 0; }
+.se-lobby-format { font-size: 16px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); color: var(--se-accent, rgb(226, 182, 96)); }
+.se-menu-column .se-lobby-teams { flex-direction: column; flex-wrap: nowrap; margin-top: 4px; }
+.se-menu-column .se-lobby-team { width: auto; margin: 0 0 10px 0; }
+.se-lobby-team-head { flex-direction: row; align-items: center; height: 26px; margin-bottom: 2px; }
+.se-lobby-team-head .se-lobby-team-title { height: 20px; margin: 0; }
+.se-lobby-small { height: 26px; min-height: 26px; padding: 0 8px; margin: 0 0 0 6px; font-size: 12px; flex-shrink: 0; border-radius: 4px; }
+.se-lobby-icon { flex-shrink: 0; margin-left: 4px; }
+.se-menu-column .se-lobby-seat-tags { width: 64px; }
+
+/* ---------------------------------------------------------------- menu review (2026-11-16): sections, fields,
+   compact map card, seat rows, lobby rules and spectators */
+.se-menu-section {
+    font-size: 12px; letter-spacing: 2px; -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold");
+    color: var(--se-accent, rgb(226, 182, 96)); height: 18px; margin: 18px 0 6px 0; padding: 0 0 4px 0;
+    border-bottom-width: 1px; border-bottom-color: var(--se-line, rgba(255, 255, 255, 0.08));
+    white-space: nowrap; overflow: hidden;
+}
+.se-menu-section--first { margin-top: 0; }
+/* text fields: dark inset with light text (the default theme drew a white box with pale text) */
+.se-menu-field .unity-base-text-field__input, .se-menu-field .unity-text-field__input {
+    background-color: rgba(0, 0, 0, 0.45); color: var(--se-text, rgb(232, 226, 210));
+    border-width: 1px; border-color: rgba(255, 255, 255, 0.14); border-radius: 4px; padding: 0 10px; -unity-text-align: middle-left;
+}
+.se-menu-field:focus .unity-base-text-field__input { border-color: var(--se-accent, rgb(226, 182, 96)); }
+.se-menu-field .unity-text-element { color: var(--se-text, rgb(232, 226, 210)); }
+.se-menu-field { background-color: rgba(0, 0, 0, 0); border-width: 0; padding: 0; }
+
+/* small buttons in seat rows: the menu's dark button, not the default theme's light one */
+.se-lobby-small {
+    background-color: var(--se-surface-2, rgba(30, 40, 43, 0.96)); color: var(--se-text, rgb(232, 226, 210));
+    border-width: 1px; border-color: rgba(255, 255, 255, 0.16); -unity-text-align: middle-center; white-space: nowrap;
+}
+.se-lobby-small:hover { border-color: var(--se-accent, rgb(226, 182, 96)); background-color: var(--se-surface-hover, rgba(52, 66, 66, 0.98)); }
+.se-lobby-small:disabled { opacity: 0.35; }
+.se-cycle { color: var(--se-text, rgb(232, 226, 210)); }
+.se-map-filter-option { color: var(--se-text, rgb(232, 226, 210)); }
+.se-map-filter-option:hover { border-color: var(--se-accent-dim, rgba(226, 182, 96, 0.35)); }
+.se-map-option { color: var(--se-text, rgb(232, 226, 210)); }
+
+/* seat rows (New Skirmish): you, allies and rivals; a closed seat reads as an empty slot */
+.se-ai-list--seats { margin-top: 8px; }
+.se-ai-row--you { background-color: rgba(74, 150, 255, 0.12); border-width: 1px; border-color: rgba(74, 150, 255, 0.35); }
+.se-ai-row-tag { font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin: 0 4px 0 6px; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.se-ai-row--closed { background-color: rgba(0, 0, 0, 0.10); border-width: 1px; border-color: rgba(255, 255, 255, 0.10); }
+.se-ai-row-name--closed { color: var(--se-text-dim, rgb(150, 164, 160)); -unity-font-style: italic; }
+.se-team-dot--empty { border-width: 1px; border-color: var(--se-text-dim, rgb(150, 164, 160)); }
+.se-menu-random { flex-shrink: 0; }
+
+/* map picker: a compact card (preview left, name and notes right) above the list */
+.se-map-card { flex-direction: row; align-items: flex-start; }
+.se-map-preview { width: 136px; height: 136px; min-width: 136px; margin: 0 12px 0 0; align-self: flex-start; }
+.se-map-card-info { flex-grow: 1; flex-shrink: 1; min-width: 0; flex-direction: column; }
+.se-map-card-text { height: auto; min-height: 0; max-height: 104px; margin-top: 6px; font-size: 12px; }
+
+/* lobby */
+.se-lobby-seat--closed { opacity: 0.8; }
+.se-lobby-watch-row { flex-direction: row; align-items: center; min-height: 40px; flex-shrink: 0; }
+.se-lobby-spectators { flex-grow: 1; flex-shrink: 1; font-size: 14px; color: var(--se-text-dim, rgb(150, 164, 160)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-lobby-rules { flex-shrink: 0; }
+.se-lobby-rules-text { font-size: 14px; margin-top: 10px; white-space: normal; color: var(--se-text, rgb(232, 226, 210)); }
+.se-lobby-team-head .se-lobby-small { height: 22px; min-height: 22px; }
+.se-lobby-format-row { margin-bottom: 14px; }
+.se-menu-host-row .se-menu-item { margin: 0; }

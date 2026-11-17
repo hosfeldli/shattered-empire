@@ -1,7 +1,9 @@
 import { T } from './constants.js';
 import { NB, disk } from './hex.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, MISSILE_PROJECT, TIERS } from './actionDefinitions.js';
-import { advanceBase, armyCapacity, canPay, construct, constructDefense, establish, facilitiesAt, fortifyBase, headquarters, openSlots, repairFacility, startUpgrade, train } from './actionBases.js';
+import { advanceBase, armyCapacity, canPay, construct, constructDefense, establish, facilitiesAt, fortifyBase, headquarters, openSlots, repairFacility, startUpgrade, train,
+  upgradeBuilding, upgradeDefenses } from './actionBases.js';
+import { CITY_DEFENSES, NEW_BASE_GAP } from './actionDefinitions.js';
 import { centerOf, distance } from './actionNavigation.js';
 import { moveGroup } from './actionOrders.js';
 
@@ -27,7 +29,23 @@ function objective(game, p, state, target = 0) {
   p.issued = 0;
   p.best = 1e6;
   p.progressAt = game.time;
+  p.rallied = false;
   note(game, p, target ? `${state} at ${game.siteById.get(target)?.name || 'the objective'}` : state);
+}
+
+// W2: what the airfields train. Air is capped at ~18% of the army (min 2). Enemy air seen recently calls for
+// fighters first; otherwise the mix aims at helicopters 2 : fighters 1 (: bombers 1 from era III), plus one recon
+// drone once the army is 20 strong. Before this every airfield built only helicopters (Wave 1: 26 helicopters,
+// no fighters or bombers in 30 sims).
+export function airChoice(own, count, airSeen, highest) {
+  const air = own.filter((u) => ACTION_UNITS[u.type].air && ACTION_UNITS[u.type].facility === 'airfield');
+  if (air.length >= Math.max(2, Math.round(own.length * .18))) return null;
+  if (airSeen >= 1 && count('fighter') < Math.min(6, airSeen * .6 + .5)) return 'fighter';
+  if (!count('recon_drone') && own.length >= 20) return 'recon_drone';
+  const mix = [['helicopter', 2], ['fighter', 1]];
+  if (highest >= 3) mix.push(['bomber', 1]);
+  const total = mix.reduce((n, [, w]) => n + w, 0), size = air.filter((u) => u.type !== 'recon_drone').length + 1;
+  return mix.map(([type, w]) => ({ type, gap: w / total * size - count(type) })).sort((a, b) => b.gap - a.gap)[0].type;
 }
 
 function buildArmy(game, civ, bases, own, observed, p) {
@@ -49,8 +67,13 @@ function buildArmy(game, civ, bases, own, observed, p) {
     const exists = (type) => facilities.some((b) => b.type === type);
     const main = s === bases[0];
     // a second Materials Processor before the Armory: materials, not energy, limit how many troops an AI can field
-    const build = main ? ['depot', 'barracks', 'power_plant', 'depot', 'armory', 'motor_works', enemyAir > 1 ? 'heavy_weapons' : 'airfield', 'advanced_lab', 'heavy_weapons'] :
+    // W2: enemy air seen in the last couple of minutes (p.enemyAir) brings the Heavy Weapons Works (AA vehicles) forward
+    const build = main ? ['depot', 'barracks', 'power_plant', 'depot', 'armory', 'motor_works', ...(Math.max(enemyAir, p.enemyAir || 0) >= 1 ? ['heavy_weapons', 'airfield'] : ['airfield', 'heavy_weapons']), 'advanced_lab'] :
       s.kind === 'research' ? ['power_plant', 'armory', 'advanced_lab', 'depot', 'missile_silo', 'airfield'] :
+      // W2: the second base puts up the airfield (or, against enemy air, the AA-producing Heavy Weapons Facility) fourth,
+      // so the AI fields an air arm at all (Wave 1: airfields only appeared at the seventh slot of a tier-3 base)
+      bases.indexOf(s) === 1 ? ['depot', 'power_plant', s.kind === 'military' ? 'barracks' : 'motor_works',
+        ...(Math.max(enemyAir, p.enemyAir || 0) >= 1 ? ['heavy_weapons', 'airfield'] : ['airfield', 'heavy_weapons']), 'barracks', 'advanced_lab'] :
       ['depot', 'power_plant', s.kind === 'military' ? 'barracks' : 'motor_works', 'barracks', 'heavy_weapons', 'airfield', 'advanced_lab'];
     if (openSlots(game, s).length && !facilities.some((b) => !b.done)) {
       const have = {}, wanted = {};
@@ -77,20 +100,25 @@ function buildArmy(game, civ, bases, own, observed, p) {
   const needsArmor = highest >= 2 && armorCount < Math.max(3, own.length * .22);
   const preferred = [];
   if (count('rifle_squad') + count('militia') < 4 || own.length < 6) preferred.push('rifle_squad');
-  if (count('engineer') === 0) preferred.push('engineer');
+
   if (count('scout_buggy') === 0) preferred.push('scout_buggy');
-  if (enemyAir > count('air_defense') + count('fighter')) preferred.push('air_defense', 'fighter');
+  // W2: air defence answers the enemy air seen recently (p.enemyAir decays over ~2 min): one AA vehicle per two
+  // enemy aircraft (up to 6) and fighters through airChoice; upgraded city perimeters add AA in developBases.
+  const airSeen = Math.max(enemyAir, p.enemyAir || 0);
+  if (airSeen >= 1 && count('air_defense') < Math.min(6, Math.ceil(airSeen * .5))) preferred.push('air_defense');
   if (enemyArmor > count('tank') + count('anti_armor')) preferred.push('anti_armor', 'tank');
   if (count('mortar_team') + count('sp_artillery') < own.length / 6) preferred.push('sp_artillery', 'mortar_team');
   if (count('rifle_squad') < own.length / 3) preferred.push('rifle_squad');
   if (civ.personality?.aggression > .65) preferred.push('armored_car', 'tank', 'exo_infantry');
-  else if (civ.personality?.riskAversion > .55) preferred.push('tank', 'mortar_team', 'fighter');
+  else if (civ.personality?.riskAversion > .55) preferred.push('tank', 'mortar_team');
   if (count('anti_armor') < Math.max(1, own.length * .15)) preferred.push('anti_armor');
   if (energyRich) preferred.unshift(...['sp_artillery', 'tank', 'air_defense', 'mortar_team', 'anti_armor'].filter((t) => ACTION_UNITS[t].tier <= highest));
-  preferred.push('autonomous_tank', 'helicopter', 'tank', 'mech_infantry', 'armored_car', 'rifle_squad');
+  const airPick = airChoice(own, count, airSeen, highest);
+  if (airPick) preferred.push(airPick);
+  preferred.push('autonomous_tank', 'tank', 'mech_infantry', 'armored_car', 'rifle_squad');
   const facilities = bases.flatMap((s) => facilitiesAt(game, s)).filter((b) => b.done && b.queue.length < 2)
     .sort((a, b) => Number(a.type === 'barracks') - Number(b.type === 'barracks') || a.id - b.id);
-  const operation = game.siteById.get(p.target), staging = operation ? game.lerpPoint(bases[0], operation,
+  const operation = game.siteById.get(p.target), staging = operation && bases[0] ? game.lerpPoint(bases[0], operation,
     p.state === 'Attacking' || p.state === 'Final Assault' ? .38 : .10) : null;
   for (const b of facilities) {
     if (staging) b.rally = staging;
@@ -182,7 +210,8 @@ function evacuateWounded(game, civ, own, home, p) {
   p.wounded = (p.wounded || []).filter((id) => { const u = game.units.get(id); return u && u.hp < u.maxHp * .8; });
   if (!home || game.time < (p.evacAt || 0)) return;
   p.evacAt = game.time + 4;
-  if (!own.some((u) => ACTION_UNITS[u.type].ability === 'repair' && distance(u, home) < 6)) return;
+  // the base's automatic engineers (not in `own`) or a support truck patch them up at home
+  if (![...game.units.values()].some((u) => u.owner === civ.id && ACTION_UNITS[u.type].ability === 'repair' && distance(u, home) < 6)) return;
   const out = own.filter((u) => !ACTION_UNITS[u.type].air && ACTION_UNITS[u.type].ability !== 'repair' && !p.wounded.includes(u.id) &&
     u.hp < u.maxHp * .3 && game.time - (u.lastCombat ?? -99) < 6 && distance(u, home) > 5).slice(0, 6);
   if (!out.length) return;
@@ -270,16 +299,62 @@ function tacticalSupport(game, civ, own, observed) {
   }
 }
 
+// Era upgrades on economy buildings and perimeters, and a New Base (1000) once the AI banks a surplus
+// and has no ruin left to expand to. Placement follows the player rules (own territory, beside a road).
+function developBases(game, civ, bases, own, p) {
+  if (game.time < (p.developAt || 0)) return;
+  p.developAt = game.time + 10;
+  if (own.length < armyFloor(game) * .7) return;
+  const mine = [...game.buildings.values()].filter((b) => b.owner === civ.id && b.done);
+  if (civ.age >= 1) {
+    const economy = mine.filter((b) => (b.type === 'depot' || b.type === 'power_plant') && !b.project && (b.level || 1) < civ.age + 1)
+      .sort((a, b) => (a.level || 1) - (b.level || 1) || Number(b.type === 'depot') - Number(a.type === 'depot') || a.id - b.id)[0];
+    const cost = economy && ACTION_BUILDINGS[economy.type].levels.cost[(economy.level || 1) - 1];
+    if (economy && civ.res.materials > cost.materials + 280 && civ.res.energy > (cost.energy || 0) + 60) upgradeBuilding(game, civ, economy.id);
+    const walled = bases.find((s) => (s.defenseLevel || 1) < 2 && !headquarters(game, s)?.project && mine.some((b) => b.site === s.id && b.perimeterSlot));
+    const wall = CITY_DEFENSES.upgrade.cost[0];
+    // W2: enemy air makes city AA (perimeter level 2) urgent rather than a luxury
+    const reserve = (p.enemyAir || 0) >= 2 ? 120 : 500;
+    if (walled && civ.res.materials > wall.materials + reserve && civ.res.energy > wall.energy + 60) upgradeDefenses(game, civ, walled);
+  }
+  if (game.time < 420 || bases.length >= 5 || civ.res.materials < 1350 || p.state === 'Expanding' || game.time < (p.newBaseAt || 0)) return;
+  if (mine.some((b) => b.type === 'base_site') || [...game.buildings.values()].some((b) => b.owner === civ.id && b.type === 'base_site')) return;
+  p.newBaseAt = game.time + 30;
+  const home = bases[0];
+  if (!home) return;
+  const w = game.world, candidates = [];
+  for (let t = 0; t < w.owner.length; t++) {
+    if (w.owner[t] !== civ.id || !civ.visible[t]) continue;
+    const c = centerOf(t);
+    if (game.sites.some((s) => distance(s, c) < (s.slots ? NEW_BASE_GAP + .3 : 3.6))) continue;
+    if (!w.road[t] && ![0, 1, 2, 3, 4, 5].some((d) => NB[t * 6 + d] >= 0 && w.road[NB[t * 6 + d]])) continue;
+    candidates.push({ t, c, score: distance(home, c) });
+  }
+  candidates.sort((a, b) => a.score - b.score || a.t - b.t);
+  for (const { c } of candidates.slice(0, 24)) {
+    if (constructDefense(game, civ, 'base_site', c, true).error) continue;
+    if (!constructDefense(game, civ, 'base_site', c).error) { note(game, p, 'Founding a new base.'); break; }
+  }
+}
+
 export function planActionAI(game, civ) {
   const p = civ.aiPlan;
   p.next = game.time + (civ.difficulty === 'easy' ? 4.2 : ['expert', 'brutal'].includes(civ.difficulty) ? 2 : 3);
-  const owned = [...game.units.values()].filter((u) => u.owner === civ.id);
+  // base engineers (u.auto) work on their own and are never drafted into operations
+  const owned = [...game.units.values()].filter((u) => u.owner === civ.id && !u.auto);
   const bases = game.sites.filter((s) => s.owner === civ.id && s.slots).sort((a, b) => b.tier - a.tier || a.id - b.id);
   const home = bases[0] || game.sites[civ.id];
   const known = [...civ.siteIntel.values()];
   const enemy = [...game.units.values()].filter((u) => game.hostile(civ.id, u.owner) && game.sees(civ, u));
+  // W2: short strategic memory. Enemy air seen recently (decays to half in ~2.3 min) drives AA and fighter
+  // production; the strongest enemy force seen recently (half-life ~3.5 min) is what field superiority is judged against.
+  p.enemyAir = Math.max(enemy.filter((u) => ACTION_UNITS[u.type].air).length, (p.enemyAir || 0) * .985);
+  p.enemyPeak = Math.max(sumForce(enemy), (p.enemyPeak || 0) * .99);
+  p.checked ??= {};
+  for (const s of game.sites) if (s.slots && civ.visible[s.tile]) p.checked[s.id] = game.time;
   for (const s of bases) if (!s.hq) establish(game, civ, s);
   buildArmy(game, civ, bases, owned, enemy, p);
+  developBases(game, civ, bases, owned, p);
   tacticalSupport(game, civ, owned, enemy);
   if (civ.difficulty !== 'easy') evacuateWounded(game, civ, owned, home, p);
 
@@ -338,38 +413,63 @@ export function planActionAI(game, civ) {
     return;
   }
   if (p.state === 'Defending') objective(game, p, 'Recovering');
-  if (p.target && (p.failures >= 3 || game.time - p.progressAt > 85)) {
+  const attackCount = civ.difficulty === 'easy' ? 17 : 13;
+  const opening = civ.difficulty === 'easy' ? 360 : ['expert', 'brutal'].includes(civ.difficulty) ? 240 : 300;
+  // W2: closing out. From minute 12 with clear field superiority (a 24-strong army, 1.8x the strongest enemy force
+  // seen recently), or past minute 16 with a 30-strong army, the AI stops expanding and commits to a Final Assault
+  // on the weakest enemy headquarters, keeps feeding it reinforcements and stays on that target until it falls
+  // (or the assault is beaten back).
+  const closing = game.time > 720 && (owned.length >= 24 && sumForce(owned) > Math.max(p.enemyPeak, 1) * 1.8 || game.time > 960 && owned.length >= 30);
+  const final = p.state === 'Final Assault';
+  if (p.target && (p.failures >= (final ? 5 : 3) || game.time - p.progressAt > (final ? 150 : 85))) {
     p.avoid = p.target;
     p.avoidUntil = game.time + 50;
     note(game, p, 'Operation ended after bounded recovery.');
     objective(game, p, 'Recovering');
   }
   const expansion = chooseExpansion(game, civ, known.filter((s) => s.id !== p.avoid || game.time > p.avoidUntil), home, enemy);
-  const enemyBases = known.filter((s) => s.hq && s.owner >= 0 && game.hostile(civ.id, s.owner) && (s.id !== p.avoid || game.time > p.avoidUntil))
-    .sort((a, b) => distance(a, home) - distance(b, home));
-  let target = known.find((s) => s.id === p.target);
+  const rival = (id) => id >= 0 && game.hostile(civ.id, id) && game.civs[id]?.alive;
+  const enemyBases = known.filter((s) => s.hq && rival(s.owner) && (s.id !== p.avoid || game.time > p.avoidUntil));
+  // W2: a rival's capital that was never scouted is presumed to be held by that rival (start positions are known)
+  for (const c of game.civs) {
+    const capital = game.sites[c.id];
+    if (rival(c.id) && capital && !civ.siteIntel.has(capital.id) && (capital.id !== p.avoid || game.time > p.avoidUntil))
+      enemyBases.push({ id: capital.id, x: capital.x, z: capital.z, radius: capital.radius, owner: c.id, hq: -1, tier: 1, presumed: true });
+  }
+  // nearest first; when closing, the weakest first: lightly garrisoned, and belonging to the rival with the fewest
+  // bases left (finishing a player ends the match). The current target is sticky, so the AI stops dithering.
+  const garrisonAt = (s) => sumForce(enemy.filter((u) => distance(u, s) < 8));
+  const rank = (s) => distance(s, home) + (closing ? garrisonAt(s) / 25 + (enemyBases.filter((o) => o.owner === s.owner).length - 1) * 5 : 0) -
+    (s.id === p.target ? 12 : 0);
+  enemyBases.sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  let target = known.find((s) => s.id === p.target) || enemyBases.find((s) => s.presumed && s.id === p.target);
   if (target?.owner === civ.id) { objective(game, p, 'Consolidating'); target = null; }
-  const attackCount = civ.difficulty === 'easy' ? 17 : 13;
-  const opening = civ.difficulty === 'easy' ? 360 : ['expert', 'brutal'].includes(civ.difficulty) ? 240 : 300;
+  // superiority interrupts expansion and lesser operations for the final assault (or the hunt, below)
+  if (target && closing && !['Attacking', 'Final Assault', 'Defending'].includes(p.state)) target = null;
+  if (target && closing && p.state === 'Attacking' && enemyBases[0].id === target.id) objective(game, p, 'Final Assault', target.id);
   // Do not march into a defence that is visibly stronger than the army that would attack it.
   const garrison = enemyBases[0] ? sumForce(enemy.filter((u) => distance(u, enemyBases[0]) < 8)) : 0;
   const canAssault = owned.length >= attackCount && game.time > opening && sumForce(owned) * .85 > garrison * 1.2;
   if (!target) {
-    if (expansion && (bases.length < 3 || !canAssault || !enemyBases.length)) objective(game, p, bases.length ? 'Expanding' : 'Recovering', expansion.id);
-    else if (canAssault && enemyBases.length) objective(game, p, enemyBases.length === 1 && owned.length >= 19 ? 'Final Assault' : 'Attacking', enemyBases[0].id);
+    if (expansion && !closing && (bases.length < 3 || !canAssault || !enemyBases.length)) objective(game, p, bases.length ? 'Expanding' : 'Recovering', expansion.id);
+    else if ((canAssault || closing) && enemyBases.length) objective(game, p, closing || enemyBases.length === 1 && owned.length >= 19 ? 'Final Assault' : 'Attacking', enemyBases[0].id);
     else if (game.time > 40) objective(game, p, 'Preparing');
-    target = known.find((s) => s.id === p.target);
+    target = known.find((s) => s.id === p.target) || enemyBases.find((s) => s.presumed && s.id === p.target);
   }
-  if (!target && !enemyBases.length && owned.length >= attackCount * 1.6 && game.time > opening) {
-    // a large army with no known enemy base advances to find one: toward unexplored ground near the
-    // map's heart, where the rivals must be
+  if (!target && !enemyBases.length && (closing || owned.length >= attackCount * 1.6) && game.time > opening) {
+    // W2: a large army with no known enemy base hunts for one: it sweeps the base sites it has not seen for 2.5
+    // minutes (where a rival may have rebuilt), nearest to the army first. Before this it probed unexplored ground
+    // near the map's centre, and expanded instead whenever a ruin was free, so beaten rivals survived for good.
     if (game.time > (p.probeAt || 0)) {
-      p.probeAt = game.time + 25;
-      const centre = { x: game.sites.reduce((n, s) => n + s.x, 0) / game.sites.length, z: game.sites.reduce((n, s) => n + s.z, 0) / game.sites.length };
-      const ahead = frontier(game, civ, game.lerpPoint(home, centre, .5), p)[0];
-      const group = owned.filter((u) => !ACTION_UNITS[u.type].air && !u.goal && !u.attack && !(p.wounded || []).includes(u.id))
-        .slice(0, Math.floor(owned.length * .7));
-      if (ahead && group.length) { moveGroup(game, group, ahead, { mode: 'assault' }); note(game, p, 'Advancing to find the enemy.'); }
+      p.probeAt = game.time + 20;
+      const group = owned.filter((u) => !ACTION_UNITS[u.type].air && !u.attack && !(p.wounded || []).includes(u.id))
+        .slice(0, Math.max(6, Math.floor(owned.length * .75)));
+      const centre = group.length ? { x: group.reduce((n, u) => n + u.x, 0) / group.length, z: group.reduce((n, u) => n + u.z, 0) / group.length } : home;
+      const site = game.sites.filter((s) => s.slots && !(s.owner >= 0 && game.allied(civ.id, s.owner)) && game.time - (p.checked[s.id] ?? -1e9) > 150)
+        .sort((a, b) => distance(a, centre) - distance(b, centre) || a.id - b.id)[0];
+      const ahead = site || frontier(game, civ, home, p)[0];
+      if (ahead && group.length && !moveGroup(game, group, ahead, { mode: 'assault' }).error) note(game, p, 'Hunting for the enemy.');
+      else if (site) p.checked[site.id] = game.time;
     }
     scout(game, civ, owned, home, p);
     return;
@@ -381,6 +481,21 @@ export function planActionAI(game, civ) {
   if (attacking && target.hq) {
     if (group.length < 3) return;
     const visible = game.buildings.get(target.hq);
+    // W2: the column closes up at a forward rally point ~7 short of the objective before the assault, so the army
+    // arrives together instead of trickling into the defences a few units at a time (the Wave 1 sieges stalled
+    // with 5-13 of 50+ troops at the objective while the rest were strung out along the route).
+    const nearest = Math.min(...group.map((u) => distance(u, target)));
+    if (!p.rallied && group.length >= 6 && nearest < 12 && p.phase !== 'engage') {
+      const rally = game.lerpPoint(target, home, Math.min(.45, 7 / Math.max(.1, distance(home, target))));
+      if (p.phase !== 'rally') { p.phase = 'rally'; p.rallySince = game.time; p.issued = 0; p.best = 1e6; }
+      const gathered = group.filter((u) => distance(u, rally) < 4.5 || distance(u, target) < 9).length;
+      if (gathered < Math.ceil(group.length * .6) && game.time - p.rallySince < 50) {
+        const behind = group.filter((u) => distance(u, rally) >= 4.5 && distance(u, target) >= 9);
+        if (game.time - (p.rallyOrder || -99) > 10) { moveGroup(game, behind, rally, { mode: 'assault' }); p.rallyOrder = game.time; }
+        return;
+      }
+      p.rallied = true; p.phase = 'approach'; p.issued = 0; p.best = 1e6; p.progressAt = game.time;
+    }
     if (visible && game.sees(civ, visible)) {
       if (p.phase !== 'engage') { p.phase = 'engage'; p.progressAt = game.time; }
       const local = group.filter((u) => distance(u, target) < 10);
@@ -419,7 +534,9 @@ export function planActionAI(game, civ) {
       if (local.length >= Math.min(5, group.length)) {
         const reinforcements = group.filter((u) => !u.goal && !u.attack && distance(u, target) >= 10);
         if (reinforcements.length && game.time > (p.reinforceAt || 0)) {
-          moveGroup(game, reinforcements, game.lerpPoint(home, target, .83), { mode: 'assault' });
+          // W2: reinforcements join the siege 3.5 short of the objective (was 83% of the way from home, which on
+          // short routes left them idling outside the fight)
+          moveGroup(game, reinforcements, game.lerpPoint(target, home, Math.min(.5, 3.5 / Math.max(.1, distance(home, target)))), { mode: 'assault' });
           p.reinforceAt = game.time + 14;
         }
         return;

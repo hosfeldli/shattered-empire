@@ -6,8 +6,9 @@ using UnityEngine;
 namespace SE.Runtime.CameraControl
 {
     /// <summary>
-    /// Strategy camera: pan (WASD, arrows, screen edges, middle drag), zoom toward the cursor, rotate
-    /// (Q/E). The focus is kept in map coordinates and in the base image: crossing the seam recentres
+    /// Strategy camera: pan (arrow keys, screen edges, middle drag), zoom toward the cursor, rotate
+    /// (Alt + left or middle drag, or the rotate keys). WASD and Q/E are left free for commands.
+    /// The focus is kept in map coordinates and in the base image: crossing the seam recentres
     /// by exactly one period, and because everything is drawn at the image nearest the camera nothing
     /// moves on screen. Camera motion only moves the view; it never rebuilds world data.
     /// </summary>
@@ -18,19 +19,45 @@ namespace SE.Runtime.CameraControl
         public Vector3 Focus;
         public float Distance = 40f, TargetDistance = 40f;
         public float Yaw;
-        public float MinDistance = .16f, MaxDistance = 260f;
+        public float MinDistance = 1.6f, MaxDistance = 260f;   // zoom-in capped further out (workstream A, Rowen)
         public bool EdgePan = true;
         /// <summary>Pan speed multiplier (a player setting).</summary>
         public float PanSpeed = 1f;
         public bool UserControl = true;
         public bool PointerOverUi;
         public bool PlacementRotation;
+        /// <summary>Degrees of yaw per pixel of Alt + drag.</summary>
+        public float MouseRotateSpeed = .25f;
+        /// <summary>True while an Alt + drag is turning the view (the commander ignores that click).</summary>
+        public bool MouseRotating => mouseRotate;
+        bool mouseRotate;
         WorldModel world;
         Vector3 velocity;   // map units per second
 
         public RtsCamera(Camera cam) { Cam = cam; }
 
         public void Bind(WorldModel w) => world = w;
+
+        /// <summary>
+        /// The furthest the match camera may zoom out on this map: the framed ground (0.72 x Distance tall at the
+        /// focus, times the aspect wide, 0.72 / sin(pitch) deep on the ground) stays inside the map, so the edge of
+        /// the ocean slab and the void beyond it never show. Large maps keep <see cref="MaxDistance"/>.
+        /// </summary>
+        public float ZoomOutLimit
+        {
+            get
+            {
+                if (world == null || !world.Ready || !Telephoto || Cam.orthographic) return MaxDistance;
+                var g = world.Grid;
+                // half the framed ground per unit of Distance: across the screen, and along the view on the ground
+                float halfWide = .36f * Mathf.Max(1f, Cam.aspect), halfDeep = .36f / Mathf.Sin(BasePitch * Mathf.Deg2Rad);
+                // the view turns (yaw), so fit the turned frame's axis-aligned extent
+                float c = Mathf.Abs(Mathf.Cos(Yaw * Mathf.Deg2Rad)), s = Mathf.Abs(Mathf.Sin(Yaw * Mathf.Deg2Rad));
+                float across = g.Wrap ? float.MaxValue : g.Period * .5f / (halfWide * c + halfDeep * s);
+                float deep = g.Depth * .5f / (halfWide * s + halfDeep * c);
+                return Mathf.Clamp(Mathf.Min(across, deep) * .9f, 40f, MaxDistance);
+            }
+        }
 
         /// <summary>A fixed pitch for cinematic shots (negative: follow the zoom).</summary>
         public float PitchOverride = -1f;
@@ -50,7 +77,7 @@ namespace SE.Runtime.CameraControl
         readonly System.Collections.Generic.List<(Vector3 focus, float distance)> history = new System.Collections.Generic.List<(Vector3, float)>();
 
         /// <summary>The camera position in map coordinates.</summary>
-        public Vector3 MapPosition => MapSpace.ToMap(Cam.transform.position);
+        public Vector3 MapPosition => MapSpace.ToMap(ViewLod.EyeOr(Cam));   // the logical eye (see ViewLod)
 
         public void FocusTile(int tile, float distance)
         {
@@ -113,6 +140,10 @@ namespace SE.Runtime.CameraControl
                 }
                 if (!PlacementRotation && InputFacade.ActionHeld("rotate_left")) Yaw -= 90f * dt;
                 if (!PlacementRotation && InputFacade.ActionHeld("rotate_right")) Yaw += 90f * dt;
+                // Alt + left or middle drag (started over the map) turns the view until the button is released
+                if (!mouseRotate && InputFacade.Alt && !PointerOverUi && (InputFacade.LeftDown || InputFacade.MiddleDown)) mouseRotate = true;
+                if (mouseRotate && !InputFacade.LeftHeld && !InputFacade.MiddleHeld) mouseRotate = false;
+                if (mouseRotate) Yaw += InputFacade.MouseDelta.x * MouseRotateSpeed;
                 if (InputFacade.Action("back")) Back();
                 var dir = ScreenToMap(right, forward);
                 if (dir.sqrMagnitude > 1f) dir.Normalize();
@@ -121,7 +152,7 @@ namespace SE.Runtime.CameraControl
                 var want = dir * Distance * (InputFacade.Shift ? 2.4f : 1.1f) * PanSpeed;
                 velocity = Vector3.Lerp(velocity, want, 1f - Mathf.Exp(-dt * 10f));
                 Focus += velocity * dt;
-                if (InputFacade.MiddleHeld && !PointerOverUi)
+                if (InputFacade.MiddleHeld && !PointerOverUi && !mouseRotate)
                 {
                     var d = InputFacade.MouseDelta;
                     Focus += ScreenToMap(-d.x, -d.y) * Distance * 0.0022f;
@@ -141,7 +172,7 @@ namespace SE.Runtime.CameraControl
                 {
                     // zoom toward the point under the cursor
                     float before = TargetDistance;
-                    TargetDistance = Mathf.Clamp(TargetDistance * Mathf.Pow(0.85f, scroll), MinDistance, MaxDistance);
+                    TargetDistance = Mathf.Clamp(TargetDistance * Mathf.Pow(0.85f, scroll), MinDistance, ZoomOutLimit);
                     if (TryGround(InputFacade.MousePosition, out var hit))
                     {
                         float k = 1f - TargetDistance / before;
@@ -149,6 +180,9 @@ namespace SE.Runtime.CameraControl
                     }
                 }
             }
+            // a small map is never zoomed out past its own edges (final pass: the square ocean slab and the grey
+            // void around it showed at 120+ on the sandbox island); jumps and scripted zooms obey the same cap
+            if (Telephoto) TargetDistance = Mathf.Min(TargetDistance, ZoomOutLimit);
             Distance = Mathf.Lerp(Distance, TargetDistance, 1f - Mathf.Exp(-dt * 9f));
             if (Cam.orthographic) Cam.orthographicSize = Distance * .36f;
             Apply();
@@ -163,6 +197,17 @@ namespace SE.Runtime.CameraControl
                 if (g.Wrap) Focus.x = g.BaseX(Focus.x);   // seam: shift by whole periods (invisible)
                 else Focus.x = Mathf.Clamp(Focus.x, 0, g.Period);
                 Focus.z = Mathf.Clamp(Focus.z, 0, g.Depth);
+                if (Telephoto && !Cam.orthographic)
+                {
+                    // the frame is kept on the map at every zoom (a little of the far ocean may show at the
+                    // rim), so panning to a corner of a small map does not reveal the void past the ocean slab
+                    float k = Distance * .8f;   // proportional to the zoom, so zooming never jumps the focus
+                    float halfWide = .36f * Mathf.Max(1f, Cam.aspect) * k, halfDeep = .36f / Mathf.Sin(BasePitch * Mathf.Deg2Rad) * k;
+                    float c = Mathf.Abs(Mathf.Cos(Yaw * Mathf.Deg2Rad)), s = Mathf.Abs(Mathf.Sin(Yaw * Mathf.Deg2Rad));
+                    float ex = halfWide * c + halfDeep * s, ez = halfWide * s + halfDeep * c;
+                    if (!g.Wrap) Focus.x = ex * 2 < g.Period ? Mathf.Clamp(Focus.x, ex, g.Period - ex) : g.Period * .5f;
+                    Focus.z = ez * 2 < g.Depth ? Mathf.Clamp(Focus.z, ez, g.Depth - ez) : g.Depth * .5f;
+                }
                 float y = world.GroundHeight(Focus.x, Focus.z);
                 Focus.y = Mathf.Lerp(Focus.y, Mathf.Max(0, y), 0.2f);
             }
@@ -170,7 +215,19 @@ namespace SE.Runtime.CameraControl
             var look = Quaternion.Euler(Pitch, Yaw, 0);
             var focusUnity = MapSpace.ToUnity(Focus);
             var shake = Shake > 0.001f ? new Vector3(Mathf.PerlinNoise(Time.unscaledTime * 23f, 0.3f) - 0.5f, Mathf.PerlinNoise(0.7f, Time.unscaledTime * 21f) - 0.5f, 0) * Shake * Mathf.Min(1.5f, Distance * 0.03f) : Vector3.zero;
-            var eye = focusUnity - look * Vector3.forward * Distance + look * shake;
+            // (workstream A: projection) the match camera is a telephoto perspective: a narrow field of view
+            // from further back, framing the same ground height as the zoom distance did, so the view keeps
+            // a little depth (more close in, almost flat at strategic zoom) without the wide-angle distortion
+            float eyeDistance = Distance;
+            if (Telephoto && !Cam.orthographic)
+            {
+                if (baseFov < 0) baseFov = Cam.fieldOfView;
+                float fov = Mathf.Lerp(TelephotoFovNear, TelephotoFovFar, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(3f, 140f, Distance)));
+                Cam.fieldOfView = fov;
+                eyeDistance = Distance * .36f / Mathf.Tan(fov * .5f * Mathf.Deg2Rad);
+            }
+            else if (baseFov > 0 && !Cam.orthographic) { Cam.fieldOfView = baseFov; baseFov = -1f; }
+            var eye = focusUnity - look * Vector3.forward * eyeDistance + look * shake;
             // a low battlefield camera must never sink into the hillside behind it
             if (world != null && world.Ready && Distance < 6f)
             {
@@ -178,9 +235,16 @@ namespace SE.Runtime.CameraControl
                 if (eye.y < floor) eye.y = floor;
             }
             Cam.transform.SetPositionAndRotation(eye, look);
-            Cam.farClipPlane = Mathf.Max(600f, Distance * 6f);
-            Cam.nearClipPlane = Mathf.Clamp(Distance * 0.02f, 0.006f, 2f);
+            Cam.farClipPlane = Mathf.Max(600f, eyeDistance + Distance * 6f);
+            Cam.nearClipPlane = Mathf.Clamp(eyeDistance * 0.02f, 0.006f, 8f);
+            ViewLod.Set(focusUnity - look * Vector3.forward * Distance, eyeDistance - Distance, Telephoto && !Cam.orthographic);
         }
+
+        /// <summary>The in-match telephoto projection (workstream A); off for the menu and cinematic cameras.</summary>
+        public bool Telephoto;
+        /// <summary>Telephoto field of view (degrees) fully zoomed in and at strategic zoom.</summary>
+        public float TelephotoFovNear = 30f, TelephotoFovFar = 14f;
+        float baseFov = -1f;
 
         /// <summary>The ground point (map coordinates) under a screen position, ray-marched against the terrain.</summary>
         public bool TryGround(Vector2 screen, out Vector3 mapPoint)

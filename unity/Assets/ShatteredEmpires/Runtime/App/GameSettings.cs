@@ -34,12 +34,11 @@ namespace SE.Runtime.App
         /// <summary>Open the unit command wheel automatically whenever units are selected (off: press C).</summary>
         public static bool OpenUnitWheelOnSelection { get => B("unitWheel", false); set => SetB("unitWheel", value); }
         /// <summary>Always show the digit labels on the defensive build bar (off: only while B arms it).</summary>
-        public static bool DefenseBarHotkeyLabels { get => B("defenseKeys", false); set => SetB("defenseKeys", value); }
 
         /// <summary>Restore the Interface tab defaults (the interface scale is applied by the caller).</summary>
         public static void ResetInterface()
         {
-            UiScale = 1f; HighContrastMarkers = false; OpenUnitWheelOnSelection = false; DefenseBarHotkeyLabels = false;
+            UiScale = 1f; HighContrastMarkers = false; OpenUnitWheelOnSelection = false;
         }
 
         /// <summary>Restore the Camera tab defaults.</summary>

@@ -461,3 +461,138 @@
 .context-facility .label { white-space: normal; font-size: 12px; }
 .action-card .action-train { width: 23%; min-height: 34px; padding: 5px; margin: 3px; flex-direction: row; }
 .action-card .action-train .label { white-space: normal; font-size: 12px; }
+
+/* ================================================================ HUD per the 2026-11-16 mockup (workstream F)
+   docs/design/hud_mockup_2026-11-16.png: no top bar (clock top centre, floating pause/menu top right), the
+   minimap console bottom-left, the Build/Terrain dock bottom centre, the selection panel bottom-right, the
+   unit hover card. Geometry that code relies on: console 420x312 at left 16 / bottom 16 (minimap 240 at its
+   bottom-left), dock bottom 16 centred, selection panel 560 wide at right 16 / bottom 16. */
+
+/* the top bar floats: nothing but the clock, the status pill and the right group */
+.se-topbar.se-topbar--floating { background-color: rgba(0, 0, 0, 0); border-bottom-width: 0; }
+.se-topbar--floating .se-status-pill { top: 50px; height: 28px; font-size: 13px; }
+.se-clock {
+    position: absolute; left: 50%; top: 10px; height: 30px; translate: -50% 0;
+    flex-direction: row; align-items: center; padding: 0 12px 0 10px;
+    background-color: rgba(8, 12, 14, 0.86); border-width: 1px; border-color: var(--se-line); border-radius: 4px;
+}
+.se-clock-glyph { width: 14px; height: 14px; margin-right: 6px; }
+.se-clock-text { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; letter-spacing: 0.5px; padding: 0; margin: 0; }
+
+/* ruleset-scoped placement: clear of the clock and of the console */
+.se-hud--action .se-toast { top: 88px; }
+.se-hud--action .banner, .se-hud--action .result-card { top: 128px; }
+.se-hud--action .feed { bottom: 336px; }
+
+/* ---------------------------------------------------------------- minimap console */
+.se-console { position: absolute; left: 16px; bottom: 16px; width: 420px; height: 312px; }
+
+.se-attack-banner {
+    position: absolute; left: 0; top: 0; height: 34px; max-width: 420px;
+    flex-direction: row; align-items: center; padding: 0 18px 0 12px;
+    background-color: rgba(16, 12, 12, 0.92); border-left-width: 3px; border-color: var(--se-bad); border-radius: 2px;
+}
+.se-attack-banner:hover { background-color: rgba(40, 22, 20, 0.95); }
+.se-attack-dot { width: 10px; height: 10px; margin-right: 8px; flex-shrink: 0; }
+.se-attack-text { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; letter-spacing: 1px; color: var(--se-text); padding: 0; margin: 0; white-space: nowrap; }
+.se-attack-hint { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0 0 0 12px; white-space: nowrap; }
+
+.se-era-badge { position: absolute; left: 0; top: 66px; width: 50px; height: 56px; align-items: center; justify-content: center; }
+.se-era-label { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 10px; letter-spacing: 1.5px; color: rgb(40, 28, 8); padding: 0; margin: 0; -unity-text-align: middle-center; }
+.se-era-numeral { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 20px; color: rgb(30, 20, 6); padding: 0; margin: -3px 0 0 0; -unity-text-align: middle-center; }
+
+.se-resbars { position: absolute; left: 224px; top: 146px; width: 190px; flex-direction: column; }
+.se-resbar {
+    position: relative; height: 26px; min-height: 26px; width: 180px; margin: 0 0 4px 0; padding: 0 20px 0 8px; border-width: 0; border-radius: 0;
+    flex-direction: row; align-items: center; justify-content: flex-start; background-color: rgba(0, 0, 0, 0);
+}
+.se-resbar--energy { margin-left: 6px; }
+.se-resbar:hover, .se-resbar:active, .se-resbar:focus { background-color: rgba(0, 0, 0, 0); border-width: 0; }
+.se-resbar-icon { width: 16px; height: 16px; margin-right: 6px; flex-shrink: 0; }
+.se-resbar-amount { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; width: 66px; flex-shrink: 0; padding: 0; margin: 0; white-space: nowrap; overflow: hidden; color: var(--se-text); }
+.se-resbar-rate { flex-grow: 1; font-size: 12px; color: var(--se-good); padding: 0; margin: 0; -unity-text-align: middle-right; white-space: nowrap; }
+.se-resbar-rate.se-res-rate--zero { color: var(--se-text-dim); }
+.se-resbar-load { position: absolute; left: 30px; right: 26px; bottom: 3px; height: 2px; background-color: rgba(255, 255, 255, 0.10); }
+.se-resbar-load-fill { height: 100%; width: 0; background-color: var(--se-good); }
+
+.se-console-round {
+    position: absolute; width: 44px; height: 44px; min-height: 0; margin: 0; padding: 0;
+    border-radius: 22px; border-width: 1px; border-color: var(--se-accent-dim);
+    background-color: var(--se-surface-1); align-items: center; justify-content: center;
+    transition-property: background-color, border-color; transition-duration: 0.12s;
+}
+.se-console-round:hover { background-color: var(--se-surface-hover); border-color: var(--se-accent); }
+.se-console-round:active { background-color: rgb(92, 78, 44); }
+.se-console-round.selected { border-color: var(--se-accent); background-color: rgba(98, 82, 44, 0.96); }
+.se-console-round--empty { opacity: 0.55; }
+.se-idle-button { left: 185px; top: 256px; }
+.se-idle-glyph { width: 16px; height: 16px; }
+.se-idle-count { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 12px; padding: 0; margin: -1px 0 0 0; -unity-text-align: middle-center; color: var(--se-text); }
+.se-production-button { left: 236px; top: 262px; width: 36px; height: 36px; border-radius: 18px; }
+.se-console-icon { width: 20px; height: 20px; }
+.se-zoom-button { left: 192px; top: 82px; width: 30px; height: 30px; border-radius: 15px; }
+.se-zoom-glyph { width: 14px; height: 14px; }
+
+/* ---------------------------------------------------------------- bottom-centre dock (Build B, Terrain T) */
+.se-dock { position: absolute; left: 50%; bottom: 16px; translate: -50% 0; flex-direction: row; }
+.se-dock-button {
+    width: 80px; height: 64px; min-height: 0; margin: 0 4px; padding: 6px 4px 4px 4px;
+    flex-direction: column; align-items: center; justify-content: center;
+    background-color: var(--se-surface-1); border-width: 1px; border-color: var(--se-line); border-radius: 6px;
+    transition-property: background-color, border-color; transition-duration: 0.12s;
+}
+.se-dock-button:hover { background-color: var(--se-surface-hover); border-color: rgba(226, 182, 96, 0.7); }
+.se-dock-button:active { background-color: rgb(92, 78, 44); }
+.se-dock-button.selected { border-color: var(--se-accent); background-color: rgba(98, 82, 44, 0.96); }
+.se-dock-icon { width: 24px; height: 24px; margin-bottom: 4px; }
+.se-dock-label { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 12px; padding: 0; margin: 0; white-space: nowrap; color: var(--se-text); }
+
+/* ---------------------------------------------------------------- unit hover card */
+.se-hovercard {
+    position: absolute; width: 330px; padding: 8px 10px;
+    background-color: rgba(10, 14, 16, 0.94); border-width: 1px; border-color: rgba(255, 255, 255, 0.12); border-radius: 4px;
+}
+.se-hovercard-head { flex-direction: row; align-items: center; height: 22px; }
+.se-hovercard-name { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 15px; color: var(--se-text); flex-grow: 1; flex-shrink: 1; padding: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-hovercard-dot { width: 8px; height: 8px; border-radius: 4px; margin: 0 6px 0 8px; }
+.se-hovercard-owner { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 12px; padding: 0; margin: 0; white-space: nowrap; flex-shrink: 0; }
+.se-hovercard-role { font-size: 12px; color: var(--se-text-dim); white-space: normal; padding: 0; margin: 2px 0 0 0; }
+.se-hovercard-status { font-size: 12px; color: var(--se-text); padding: 0; margin: 3px 0 0 0; }
+
+/* ---------------------------------------------------------------- selection panel (bottom-right) */
+.se-sel-head { flex-direction: row; align-items: center; height: 36px; margin-bottom: 8px; }
+.se-sel-title { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 18px; color: var(--se-text); flex-grow: 1; flex-shrink: 1; padding: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-sel-order { height: 32px; min-height: 32px; margin-left: 8px; padding: 0 10px; flex-shrink: 0; }
+.se-sel-order .se-btn-label { font-size: 13px; }
+.se-sel-order .se-btn-icon { width: 16px; height: 16px; margin-right: 6px; }
+.se-sel-attack { border-color: rgba(242, 116, 96, 0.75); }
+.se-sel-attack .se-btn-label { color: rgb(250, 172, 152); }
+.se-sel-attack:hover { border-color: var(--se-bad); }
+.se-sel-attack.selected { background-color: rgba(120, 40, 30, 0.92); border-color: var(--se-bad); }
+.se-sel-grid { flex-direction: row; flex-wrap: wrap; }
+.se-sel-box {
+    width: 170px; height: 56px; margin: 0 6px 6px 0; padding: 6px;
+    flex-direction: row; align-items: center;
+    background-color: rgba(255, 255, 255, 0.04); border-width: 1px; border-color: var(--se-line); border-radius: 4px;
+}
+.se-sel-well { width: 40px; height: 40px; margin-right: 8px; flex-shrink: 0; align-items: center; justify-content: center; background-color: rgba(255, 255, 255, 0.06); border-radius: 4px; }
+.se-sel-icon { width: 32px; height: 24px; }
+.se-sel-box-text { flex-grow: 1; flex-shrink: 1; }
+.se-sel-name { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 12px; color: var(--se-text); padding: 0; margin: 0; max-height: 30px; overflow: hidden; }
+.se-sel-count { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 13px; color: var(--se-accent); padding: 0; margin: 0; }
+.se-sel-count.se-sel-count--hurt { color: var(--se-warn); }
+
+/* ---------------------------------------------------------------- decisive domination countdown (review U)
+   under the clock; the status pill steps down to 116 while it shows (Hud.Shell.cs UpdateDominance) */
+.se-dominance {
+    position: absolute; left: 50%; top: 48px; translate: -50% 0; min-width: 420px; max-width: 640px;
+    padding: 6px 16px 7px 16px; align-items: center;
+    background-color: rgba(10, 14, 16, 0.92); border-width: 1px; border-left-width: 3px; border-color: var(--se-accent); border-radius: 3px;
+}
+.se-dominance--ours { border-color: var(--se-good); background-color: rgba(18, 40, 26, 0.92); }
+.se-dominance--enemy { border-color: var(--se-bad); background-color: rgba(48, 16, 12, 0.94); }
+.se-dominance-title { -unity-font: resource("Fonts/BarlowSemiCondensed-SemiBold"); font-size: 16px; letter-spacing: 1px; color: var(--se-text); padding: 0; margin: 0; -unity-text-align: middle-center; white-space: nowrap; }
+.se-dominance-text { font-size: 12px; color: var(--se-text-dim); padding: 0; margin: 2px 0 0 0; -unity-text-align: middle-center; white-space: normal; }
+.se-hud--action.se-hud--dominance .se-toast { top: 154px; }
+.se-hud--action.se-hud--dominance .banner, .se-hud--action.se-hud--dominance .result-card { top: 196px; }
+.se-sel-box--pick:hover { background-color: rgba(255, 255, 255, 0.09); border-color: rgba(226, 182, 96, 0.6); }

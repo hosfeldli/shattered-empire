@@ -61,7 +61,7 @@ namespace SE.Runtime.Effects
                 From = from, To = to, Last = from, Duration = math.max(.05f, duration),
                 Grenade = weapon == "grenade",
                 Arc = weapon == "grenade" ? .06f + distance * .22f : strategic ? math.min(13, distance * .48f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
-                Rocket = weapon == "warhead" || weapon == "missile" || weapon == "rockets" || weapon == "aam" || weapon == "drone_strike",
+                Rocket = weapon == "warhead" || weapon == "missile" || weapon == "rockets" || weapon == "aam" || weapon == "drone_strike" || weapon == "at_rocket",
                 Strategic = strategic,
                 Warhead = weapon == "warhead",
             };
@@ -77,7 +77,7 @@ namespace SE.Runtime.Effects
             {
                 ref var f = ref flights[i];
                 f.Age += dt;
-                if (f.Age > f.Duration + .05f) { if (f.Grenade) Explosion(f.To, .22f); flights[i--] = flights[--flightCount]; continue; }
+                if (f.Age > f.Duration + .05f) { if (f.Grenade) GrenadeBurst(f.To); flights[i--] = flights[--flightCount]; continue; }
                 float t = math.saturate(f.Age / f.Duration);
                 float3 p = math.lerp(f.From, f.To, t) + new float3(0, 4 * f.Arc * t * (1 - t), 0);
                 var step = p - f.Last;

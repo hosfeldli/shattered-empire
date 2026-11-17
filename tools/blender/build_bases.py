@@ -7,7 +7,7 @@
 #   mark <type> x z y w h d              faction-coloured panels (Unity frame, metres in units)
 #   flag <type> x z height               animated flag poles
 #   smoke <type> x z height steam size   smoke stacks
-import bpy, sys, os, math, importlib
+import bpy, bmesh, sys, os, math, importlib
 HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else r"D:/Projects/shattered_empires/tools/blender"
 sys.path.insert(0, HERE)
 import se_meshkit; importlib.reload(se_meshkit)
@@ -20,7 +20,7 @@ os.makedirs(OUT, exist_ok=True)
 
 PAL.update({
     'concrete': ((.74, .72, .66), CONCRETE), 'concrete2': ((.60, .60, .56), CONCRETE),
-    'brick': ((.66, .60, .52), BRICK), 'roofm': ((.44, .48, .47), SHEET), 'siding': ((.60, .63, .60), SHEET),
+    'brick': ((.66, .60, .52), BRICK), 'roofm': ((.60, .63, .61), SHEET), 'roofl': ((.72, .72, .69), CONCRETE), 'siding': ((.60, .63, .60), SHEET),
     'sidingd': ((.42, .45, .44), SHEET), 'tarmac': ((.36, .37, .36), ASPHALT), 'window': ((.30, .42, .48), GLASS),
     'sandbag': ((.64, .58, .45), FABRIC), 'gabion': ((.56, .52, .42), FABRIC), 'olive2': ((.40, .44, .32), PLAIN),
     'hazard': ((.86, .66, .16), PLAIN), 'rust': ((.55, .37, .26), SHEET), 'crate': ((.50, .38, .24), PLAIN),
@@ -31,8 +31,19 @@ def mark(t, x, y, z, w, h, d): layout.append('mark %s %.4f %.4f %.4f %.4f %.4f %
 def flag(t, x, y, h): layout.append('flag %s %.4f %.4f %.4f' % (t, x, y, h))
 def smoke(t, x, y, h, steam, size): layout.append('smoke %s %.4f %.4f %.4f %d %.3f' % (t, x, y, h, 1 if steam else 0, size))
 
+def rounded_outline(cx, cy, w, d, r, n=4):
+    """A rounded-rectangle plan outline (counter-clockwise), corner radius r with n segments per corner."""
+    pts = []
+    for (sx, sy, a0) in ((1, -1, -90), (1, 1, 0), (-1, 1, 90), (-1, -1, 180)):
+        ox, oy = cx + sx * (w / 2 - r), cy + sy * (d / 2 - r)
+        for k in range(n + 1):
+            ang = math.radians(a0 + 90 * k / n)
+            pts.append((ox + math.cos(ang) * r, oy + math.sin(ang) * r))
+    return pts
+
 def plinth(a, cx, cy, w, d):
-    a.box((cx, cy, -.06), (w, d, .14), 'concrete2', bevel=.01)
+    # rounded corners, matching the client's rounded socket pads the plinth stands on
+    a.prism(rounded_outline(cx, cy, w, d, .09), 'z', -.13, .01, 'concrete2', bevel=.008)
 
 def windows(a, cx, cy, w, d, z0, floors, storey, n, sides=('front', 'back')):
     for f in range(floors):
@@ -76,37 +87,67 @@ def hvac(a, x, y, z):
     a.box((x, y, z + .025), (.09, .07, .05), 'siding', bevel=.005)
     a.cyl((x, y, z + .05), 'z', .025, .025, .006, 'grille', segs=12, bevel=0)
 
+def ring_band(a, r0, r1, z0, z1, key, segs=24):
+    """A closed annular solid (tube) between radii r0 < r1 and heights z0 < z1: parapets, collars, bands."""
+    bm = a.bm; before = set(bm.faces)
+    rings = []
+    for (r, z) in ((r0, z0), (r1, z0), (r1, z1), (r0, z1)):
+        rings.append([bm.verts.new((math.cos(k / segs * math.tau) * r, math.sin(k / segs * math.tau) * r, z)) for k in range(segs)])
+    for i in range(4):
+        A, B = rings[i], rings[(i + 1) % 4]
+        for k in range(segs):
+            kk = (k + 1) % segs
+            bm.faces.new((A[k], A[kk], B[kk], B[k]))
+    faces = [f for f in bm.faces if f not in before]
+    bmesh.ops.recalc_face_normals(bm, faces=faces)
+    return a._finish(faces, key, 0)
+
+def obox(a, cx, cy, z0, z1, w, d, ang, key, bevel=.004):
+    """A box of width w (across) and depth d (along ang), turned to heading ang (radians, 0 = +Y)."""
+    s, c = math.sin(ang), math.cos(ang)
+    pts = []
+    for (u, v) in ((-w / 2, -d / 2), (w / 2, -d / 2), (w / 2, d / 2), (-w / 2, d / 2)):
+        pts.append((cx + u * c + v * s, cy - u * s + v * c))
+    return a.prism(pts, 'z', z0, z1, key, bevel=bevel)
+
 def headquarters():
+    """The command hub: a round, stepped drum on a circular podium, read from every side. Docking gates,
+    arms and the team ring are drawn by the client toward the actual sockets (they move with the slot count)."""
     t = 'town'; a = Asset('Base_' + t)
-    plinth(a, 0, -.16, 1.02, .86)
-    a.box((0, -.27, .155), (.86, .43, .29), 'concrete', bevel=.012)                    # command block
-    a.box((0, -.27, .305), (.89, .46, .03), 'concrete2', bevel=.006)                     # parapet
-    a.box((0, -.27, .318), (.82, .39, .01), 'tarmac', bevel=0)                           # roof membrane
-    for k in range(9): a.box((-.40 + k * .1, -.05, .155), (.022, .016, .29), 'concrete2', bevel=.003)   # pilasters
-    windows(a, 0, -.27, .82, .43, .01, 2, .145, 8)
-    windows(a, 0, -.27, .43, .86, .01, 2, .145, 3, ()) ;
-    for s in (-1, 1):
-        for f in range(2):
-            a.box((s * .433, -.27, .01 + .145 * (f + .55)), (.006, .34, .06), 'window', bevel=0)
-    # columned portico, doors, steps
-    a.box((0, .035, .215), (.34, .16, .025), 'concrete', bevel=.006)
-    for x in (-.14, -.05, .05, .14): a.cyl((x, .1, .0), 'z', .015, .013, .205, 'concrete', segs=10, bevel=0)
-    a.box((0, -.054, .08), (.13, .006, .15), 'window', bevel=0)
-    for k in range(3): a.box((0, .125 + k * .03, .012 - k * .008), (.36, .03, .03 - k * .008), 'concrete2', bevel=.003)
-    # roof: lattice mast, dish, air handlers
-    lattice_mast(a, -.3, -.38, .32, .5)
-    a.cyl((.28, -.36, .32), 'z', .012, .012, .07, 'steel', segs=8, bevel=0)
-    a.cyl((.28, -.36, .39), (0, .6, .8), .075, .01, .035, 'concrete', segs=18, bevel=0)
-    for k in range(3): hvac(a, -.05 + k * .12, -.2, .32)
-    # perimeter: gabions, sandbag positions, floodlights, guard booth
-    hesco(a, -.48, .12, 4); hesco(a, .225, .12, 4)
-    sandbags(a, -.42, .3, .22); sandbags(a, .42, .3, .22)
-    for s in (-1, 1): floodlight(a, s * .47, -.5)
-    a.box((.36, .2, .065), (.09, .09, .13), 'concrete', bevel=.006); a.box((.36, .246, .085), (.07, .004, .04), 'window', bevel=0)
-    a.box((.36, .2, .135), (.11, .11, .012), 'roofm', bevel=.003)
+    a.lathe([(0, -.08), (.66, -.08), (.66, .018), (.635, .036), (0, .036)], 'z', 'concrete2', segs=32)       # podium
+    ring_band(a, .55, .60, .036, .05, 'sidingd', segs=32)                                                       # dock collar
+    a.lathe([(0, .03), (.50, .03), (.50, .225), (.475, .24), (0, .24)], 'z', 'concrete', segs=28)            # lower drum
+    ring_band(a, .495, .508, .095, .165, 'window', segs=28)                                                     # window band
+    for z in (.09, .17): ring_band(a, .49, .516, z, z + .008, 'concrete2', segs=28)
+    for k in range(16):                                                                                          # pilasters
+        ang = (k + .5) * math.tau / 16
+        obox(a, math.sin(ang) * .505, math.cos(ang) * .505, .03, .23, .026, .03, ang, 'concrete2', bevel=.003)
+    a.lathe([(0, .235), (.37, .235), (.37, .35), (0, .35)], 'z', 'concrete', segs=24)                         # upper drum
+    ring_band(a, .372, .378, .26, .33, 'window', segs=24)
+    ring_band(a, .35, .392, .345, .375, 'concrete2', segs=24)                                                   # parapet
+    a.cyl((0, 0, .345), 'z', .352, .352, .012, 'roofl', segs=24, bevel=0)                                      # roof deck
+    for k in range(4):                                                                                           # roof plant
+        ang = k * math.tau / 4 + math.tau / 8
+        x, y = math.sin(ang) * .26, math.cos(ang) * .26
+        a.box((x, y, .382), (.08, .06, .045), 'siding', bevel=.004)
+        a.cyl((x, y, .404), 'z', .022, .022, .006, 'grille', segs=10, bevel=0)
+    # the command tower and its glazed cab
+    a.lathe([(0, .35), (.15, .35), (.15, .55), (0, .55)], 'z', 'concrete', segs=20)
+    a.lathe([(0, .55), (.17, .55), (.205, .60), (.185, .65), (0, .65)], 'z', 'window', segs=20)
+    a.lathe([(0, .65), (.215, .65), (.215, .672), (.06, .69), (0, .69)], 'z', 'roofl', segs=20)
+    for k in range(10):                                                                                          # cab mullions
+        ang = k * math.tau / 10
+        a.beam((math.sin(ang) * .172, math.cos(ang) * .172, .552), (math.sin(ang) * .205, math.cos(ang) * .205, .60), .004, 'concrete2')
+        a.beam((math.sin(ang) * .205, math.cos(ang) * .205, .60), (math.sin(ang) * .186, math.cos(ang) * .186, .648), .004, 'concrete2')
+    lattice_mast(a, 0, 0, .69, .28, w=.045)
+    a.cyl((-.24, -.18, .375), 'z', .012, .012, .06, 'steel', segs=8, bevel=0)                                 # dish
+    a.cyl((-.24, -.18, .435), (-.45, -.3, .84), .085, .012, .04, 'concrete', segs=18, bevel=0)
+    for s in (-1, 1): floodlight(a, s * .58, -.25, .30)
     a.export(os.path.join(OUT, a.name + '.bytes'), ao_radius=.08, ao_rays=16)
-    wall(t, 0, -.27, .89, .46); wall(t, .36, .2, .1, .1); wall(t, -.355, .12, .34, .08); wall(t, .355, .12, .34, .08)
-    mark(t, 0, -.049, .26, .3, .045, .006); flag(t, -.28, .26, .48); flag(t, .28, .26, .48)
+    wall(t, 0, 0, .98, .98); wall(t, 0, 0, .98, .98, math.pi / 4)
+    for (x, y, w, d) in ((0, .371, .2, .006), (0, -.371, .2, .006), (.371, 0, .006, .2), (-.371, 0, .006, .2)):
+        mark(t, x, y, .30, w, .03, d)
+    flag(t, -.42, .45, .5); flag(t, .42, .45, .5)
     return a
 
 def barracks():

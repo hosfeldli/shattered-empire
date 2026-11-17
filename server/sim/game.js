@@ -684,7 +684,7 @@ export class Game {
   endGame(civ, how) {
     if (this.over) return;
     this.over = true;
-    this.winner = { civ: civ.id, name: civ.name, how };
+    this.winner = { civ: civ.id, name: civ.name, how, team: civ.team };   // team: the whole team wins (action team games)
     this.outbox.push([-1, { t: 'over', winner: this.winner, stats: this.civs.filter((c) => !c.isRebel).map((c) => this.civSummary(c)) }]);
   }
   eliminate(civ) {

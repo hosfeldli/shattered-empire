@@ -6,6 +6,9 @@ namespace SE.Runtime.Rendering
     public static class MilitaryMeshes
     {
         public static Mesh Tank, Autonomous, Howitzer, Turret, RemoteTurret, HowitzerTurret, GunBarrel, HowitzerBarrel;
+        /// <summary>Gun truck: ArmoredCar is the hull (wheels drawn apart), ArmoredCarLo the whole vehicle for the
+        /// operational zoom, ArmoredCarMount the roof-ring weapon station (origin on the ring, gun along +z).</summary>
+        public static Mesh ArmoredCarLo, ArmoredCarMount;
         public static Mesh Carrier, Scout, ArmoredCar, CargoTruck, RocketTruck, AirDefense, FieldGun, Mortar, ReconDrone, StrikeDrone;
         public static Mesh Fighter, Bomber, Helicopter, Rotor, Wheel, RoadWheel, CivilianCar;
         public static Mesh[] Torsos;
@@ -33,10 +36,18 @@ namespace SE.Runtime.Rendering
             Carrier = Wheeled(0).Build("Eight-wheel infantry carrier");
             Scout = Wheeled(1).Build("Scout vehicle");
             ArmoredCar = Wheeled(2).Build("Armored reconnaissance car");
+            ArmoredCarMount = new MeshBuilder().Surface(SurfaceKind.Armor)
+                .Cylinder(P(0, 0, 0), .105f, .10f, .022f, 12, Dark)
+                .Box(P(0, .02f, .079f), P(.24f, .175f, .018f), Paint)
+                .Box(P(0, .12f, .03f), P(.048f, .05f, .16f), Dark)
+                .Tube(P(0, .145f, .10f), .23f, .014f, 6, Dark)
+                .Box(P(0, .03f, -.07f), P(.10f, .15f, .08f), Edge)
+                .Build("Gun truck roof mount");
             CargoTruck = Wheeled(3).Build("Military cargo truck");
             RocketTruck = Wheeled(4).Build("Rocket artillery truck");
             AirDefense = Wheeled(5).Build("Air defense radar carrier");
             CivilianCar = Wheeled(6).Build("Civilian saloon");
+            ArmoredCarLo = CivilianCar;   // code-built fallback for the operational-zoom gun truck (a car with wheels)
             Wheel = WheelModel(false).Build("Tire and wheel hub");
             RoadWheel = WheelModel(true).Build("Tracked road wheel");
             FieldGun = Towed(false).Build("Towed gun");
@@ -73,6 +84,7 @@ namespace SE.Runtime.Rendering
             GunBarrel = ModelLibrary.Or("GunBarrel", GunBarrel); HowitzerBarrel = ModelLibrary.Or("HowitzerBarrel", HowitzerBarrel);
             RoadWheel = ModelLibrary.Or("RoadWheel", RoadWheel); Wheel = ModelLibrary.Or("Wheel", Wheel);
             Carrier = ModelLibrary.Or("Carrier", Carrier); ArmoredCar = ModelLibrary.Or("ArmoredCar", ArmoredCar);
+            ArmoredCarLo = ModelLibrary.Or("ArmoredCarLo", ArmoredCarLo); ArmoredCarMount = ModelLibrary.Or("ArmoredCarMount", ArmoredCarMount);
             CargoTruck = ModelLibrary.Or("CargoTruck", CargoTruck); RocketTruck = ModelLibrary.Or("RocketTruck", RocketTruck);
             AirDefense = ModelLibrary.Or("AirDefense", AirDefense);
             Fighter = ModelLibrary.Or("Fighter", Fighter); Bomber = ModelLibrary.Or("Bomber", Bomber);

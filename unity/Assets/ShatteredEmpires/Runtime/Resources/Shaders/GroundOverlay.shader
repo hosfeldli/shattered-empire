@@ -93,7 +93,8 @@ Shader "SE/GroundOverlay"
                 o.color = half4(inst.color.rgb * v.vcolor.rgb, inst.color.a * v.vcolor.a);
                 // Pull along the ray to the eye: for an orthographic camera that is the camera's back vector,
                 // for a perspective one the direction to the eye; either way the pixel stays where it is.
-                float bias = _ViewBias + (unity_OrthoParams.w > .5 ? unity_OrthoParams.y * _ViewBiasOrtho : 0);
+                // (the telephoto match camera: the same pull as the orthographic one at that zoom, from its eye offset)
+                float bias = _ViewBias + (unity_OrthoParams.w > .5 ? unity_OrthoParams.y * _ViewBiasOrtho : _SE_EyeOffset * .36 * _ViewBiasOrtho);
                 o.positionCS = TransformWorldToHClip(p + GetWorldSpaceNormalizeViewDir(p) * bias);
                 o.fogCoord = ComputeFogFactor(TransformWorldToHClip(p).z);
                 o.materialPos = v.positionOS;

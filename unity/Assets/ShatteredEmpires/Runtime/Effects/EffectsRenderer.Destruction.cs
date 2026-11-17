@@ -110,7 +110,7 @@ namespace SE.Runtime.Effects
                 Emit(g + new float3(0, .04f, 0), new float3((R() - .5f) * .1f, .22f + R() * .1f, (R() - .5f) * .1f), .06f, .16f, 4f + R() * 2f,
                     new float3(.06f, .055f, .05f), new float3(.25f, .24f, .23f), .6f, false, 0, .5f, .06f);
             for (int i = 0; i < 3; i++)
-                EmitDebris(g, new float3(R() - .5f, 1.2f + R(), R() - .5f) * .5f, .008f + R() * .008f, 1.5f, new float3(.1f, .1f, .09f), floor);
+                EmitDebris(g, new float3(R() - .5f, 1.2f + R(), R() - .5f) * .5f, .008f + R() * .008f, 1.5f, new float3(.22f, .21f, .19f), floor);
             FlashLight(g, .35f);
             Shake = Mathf.Max(Shake, .05f);
         }
@@ -119,9 +119,9 @@ namespace SE.Runtime.Effects
         public void Scorch(float3 p, float radius)
         {
             float y = GroundOr(p);
-            float shade = .035f + R() * .025f;
+            float shade = .2f + R() * .04f;   // burnt earth (a near-black disc read as a hole in the map)
             var d = InstanceData.TRS(MapSpace.W(new float3(p.x, y, p.z)) + new float3(0, .007f, 0), R() * 6.28f,
-                new float3(radius * 2f, 1, radius * 2f * (.75f + R() * .4f)), new float4(shade, shade * .92f, shade * .85f, 0));
+                new float3(radius * 2f, 1, radius * 2f * (.75f + R() * .4f)) * MarkScale, MarkColor(new float3(shade, shade * .9f, shade * .78f), .8f));
             if (craters.Count < MaxCraters) craters.Add(d);
             else { craters.Data[craterHead] = d; craterHead = (craterHead + 1) % MaxCraters; craters.MarkDirty(); }
         }
@@ -137,8 +137,8 @@ namespace SE.Runtime.Effects
                 float y = (GroundAt != null ? GroundAt(x, z) : g.y) + size.y * .2f;   // half buried
                 var rot = quaternion.EulerZXY((R() - .5f) * .9f, R() * 6.283f, (R() - .5f) * .9f);
                 float3 color;
-                if (metal) { float m = .1f + R() * .1f; color = new float3(m, m * .95f, m * .88f); }
-                else if (R() < .22f) { float c = .1f + R() * .06f; color = new float3(c, c * .9f, c * .8f); }   // charred timber
+                if (metal) { float m = .22f + R() * .12f; color = new float3(m, m * .95f, m * .88f); }
+                else if (R() < .22f) { float c = .2f + R() * .08f; color = new float3(c, c * .9f, c * .8f); }   // charred timber
                 else { float c = .36f + R() * .2f; color = new float3(c, c * .95f, c * (.85f + R() * .1f)); }   // masonry, brick dust
                 var d = InstanceData.TRS(MapSpace.W(new float3(x, y, z)), rot, size, new float4(color, 0));
                 if (rubble.Count < MaxRubble) rubble.Add(d);
@@ -223,9 +223,9 @@ namespace SE.Runtime.Effects
                     case EmitterSmoke:
                     {
                         e.Next = .3f + R() * .15f;
-                        float g = .07f + R() * .07f;
+                        float g = .20f + R() * .07f;   // final pass: grey, not black (it stacked into sheets that hid units)
                         Emit(e.Point + new float3((R() - .5f) * e.Size * .4f, 0, (R() - .5f) * e.Size * .4f), Wind * .06f + new float3(0, .16f + R() * .08f, 0),
-                            e.Size * (.5f + R() * .3f), e.Size * .55f, 9f + R() * 4f, new float3(g, g, g * 1.04f), new float3(.38f, .37f, .36f), .5f * vigour, false, 0, .3f, .045f);
+                            e.Size * (.5f + R() * .3f), e.Size * .55f, 9f + R() * 4f, new float3(g, g * .97f, g * .93f), new float3(.46f, .44f, .41f), .42f * vigour, false, 0, .3f, .045f);
                         break;
                     }
                     case EmitterFire:
@@ -237,9 +237,9 @@ namespace SE.Runtime.Effects
                         // a burning wreck: low flames and a thick, oily black plume
                         e.Next = .16f + R() * .08f;
                         if (vigour > .25f) Fire(e.Point, e.Size * vigour, true);
-                        float g = .03f + R() * .03f;
+                        float g = .13f + R() * .05f;   // dark oily smoke, but no longer a black sheet over the units
                         Emit(e.Point + new float3(0, .04f, 0), Wind * .08f + new float3((R() - .5f) * .03f, .2f + R() * .07f, (R() - .5f) * .03f),
-                            .05f, .14f, 6f + R() * 3f, new float3(g, g * .95f, g * .9f), new float3(.22f, .21f, .2f), .62f * vigour + .1f, false, 0, .35f, .05f);
+                            .05f, .14f, 6f + R() * 3f, new float3(g, g * .95f, g * .9f), new float3(.34f, .33f, .31f), .48f * vigour + .08f, false, 0, .35f, .05f);
                         break;
                     }
                 }

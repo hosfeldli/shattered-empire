@@ -30,6 +30,7 @@ namespace SE.Core.Protocol
             m.T = Str(o["t"], "");
             m.Rid = Int(o["rid"], -1);
             m.Error = o["error"]?.Type == JTokenType.String ? (string)o["error"] : null;
+            m.ErrorCode = m.Error != null && o["code"]?.Type == JTokenType.String ? (string)o["code"] : null;
             switch (m.T)
             {
                 case "s": m.Snapshot = DecodeSnapshot(o); break;
@@ -53,6 +54,15 @@ namespace SE.Core.Protocol
                     return int.TryParse((string)t, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v) ? v : def;
                 default: return def;
             }
+        }
+
+        /// <summary>A JSON array of numbers as floats, or null when absent.</summary>
+        public static float[] Floats(JToken t)
+        {
+            if (!(t is JArray a)) return null;
+            var r = new float[a.Count];
+            for (int i = 0; i < r.Length; i++) r[i] = Float(a[i]);
+            return r;
         }
 
         public static float Float(JToken t, float def = 0f)
@@ -151,7 +161,7 @@ namespace SE.Core.Protocol
                     if (site is JObject st) records.Add(new ObjectiveSite
                     {
                         Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
-                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]),
+                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]), DefenseLevel = Int(st["defenseLevel"]),
                         X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
                         IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Operational = Bool(st["operational"]),
                         Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
@@ -201,6 +211,8 @@ namespace SE.Core.Protocol
                         HasOrigin = e["ax"] != null && e["az"] != null, HasDestination = e["bx"] != null && e["bz"] != null,
                         Origin = new WorldPoint(Float(e["ax"]), Float(e["az"])), Destination = new WorldPoint(Float(e["bx"]), Float(e["bz"])),
                         Amount = Int(e["amount"]), Resource = Str(e["resource"]),
+                        Altitude = Float(e["y"]), Bursts = Floats(e["p"]),
+                        Grenade = Int(e["gr"]) == 1, Rocket = Int(e["rk"]) == 1, Marksman = Int(e["mk"]) == 1, Armoured = Int(e["ar"]) == 1,
                     };
                 }
             }
@@ -208,6 +220,7 @@ namespace SE.Core.Protocol
             s.WeatherState = WorldRecordDecoder.Weather(s.Weather);
             s.Observer = o["obs"] as JObject;
             s.ActionPlan = o["actionPlan"] as JObject;
+            s.Res = o["res"];
             if (o["econ"] is JObject econ)
             {
                 s.HasEcon = true;
@@ -253,6 +266,7 @@ namespace SE.Core.Protocol
                             for (int qi = 0; qi < q.Count; qi++) types[qi] = q[qi] is JArray qa && qa.Count > 0 ? Str(qa[0], "") : "";
                             s.Buildings[k].Queue = types;
                         }
+                        if (b["ra"] is JArray ra && ra.Count >= 2) { s.Buildings[k].HasRally = true; s.Buildings[k].RallyX = Float(ra[0]); s.Buildings[k].RallyZ = Float(ra[1]); s.Buildings[k].RallyAttackMove = ra.Count < 3 || Int(ra[2], 1) != 0; }
                         if (b["wk"] is JArray wk && wk.Count >= 2) { s.Buildings[k].WorksKind = Str(wk[0]) == "r" ? "repair" : "upgrade"; s.Buildings[k].WorksPct = Int(wk[1]); }
                     }
                 }
@@ -294,13 +308,16 @@ namespace SE.Core.Protocol
                 Next = n > 4 ? Int(a[4], -1) : -1, Prog = n > 5 ? Float(a[5]) / 100f : 0f, Hp = n > 6 ? Int(a[6], 100) : 100,
                 Supply = n > 7 ? Int(a[7]) : 0, Flags = n > 8 ? Int(a[8]) : 0,
                 Target = n > 11 ? Int(a[11], 0) : 0, Morale = n > 13 ? Int(a[13], 100) : 100, Veteran = n > 14 ? Int(a[14]) : 0,
-                Formation = n > 16 ? Int(a[16]) : 0, AirState = -1, AirMission = -1, AirMissionTile = -1,
+                Formation = n > 16 ? Int(a[16]) : 0, AirState = -1, AirMission = -1, AirMissionTile = -1, Fuel = -1,
+                // action ruleset: index 10 is the stance code (0 aggressive, 1 defensive, 2 holdFire) for every visible unit; -1 when absent
+                Stance = n > 10 && a[10] != null && a[10].Type == JTokenType.Integer ? Int(a[10], -1) : -1,
             };
             if (n > 18 && a[18] is JArray air && air.Count > 0)
             {
                 u.AirState = Int(air[0]);
                 if (air.Count > 4) { u.AirMission = Int(air[3], -1); u.AirMissionTile = Int(air[4], -1); }
                 if (air.Count > 6) u.AirRadius = Int(air[6]);
+                u.Fuel = air.Count > 1 ? Int(air[1], -1) : -1;
             }
             if (n > 20 && a[20] is JArray p && p.Count >= 5) u.Motion = new WorldMotion
             {
@@ -308,6 +325,7 @@ namespace SE.Core.Protocol
                 Cooldown = p.Count > 5 ? Float(p[5]) : 0,
                 Altitude = p.Count > 6 ? Float(p[6]) : 0,
                 Equipment = p.Count > 7 ? Int(p[7]) : 0,
+                Men = p.Count > 8 ? Int(p[8], -1) : -1,
             };
             return u;
         }

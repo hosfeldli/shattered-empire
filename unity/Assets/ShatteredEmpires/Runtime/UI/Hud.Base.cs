@@ -11,36 +11,118 @@ using UnityEngine.UIElements;
 namespace SE.Runtime.UI
 {
     /// <summary>
-    /// Contextual command wheels (spec B6–B9): the base wheel (eight sockets wired to the HQ, tier upgrade on
-    /// the hub, an outer arc of base commands), building wheels (training, upgrades, rally, repair, missile,
-    /// demolish) and the unit wheel (orders, abilities, air missions). Empty sockets open a pop-out build
-    /// picker; the Defenses command opens the defense picker. Contract C7: BuildCommandUi, UpdateCommandUi,
-    /// CloseCommandContext, CommandUiCapturesDigits, ShowCommandUi.
+    /// Contextual command wheels (2026-11-16 rework, plan §2.G). Every wheel has nine segments with the enlarged
+    /// centre circle describing the hovered item (see <see cref="RadialMenu"/>):
+    /// <list type="bullet">
+    /// <item>Base wheel: the top segment is the HQ tier upgrade, the base's sites (3 / 5 / 7 by tier, the
+    /// rest shown locked) point toward their parcels, the perimeter sits near the bottom (build, rebuild,
+    /// upgrade); an empty site opens a sub-ring of the nine facilities. Outer arc: rally, this base's
+    /// production, all production, HQ repair.</item>
+    /// <item>Building wheel: the top segment is building upgrades (era level, Armory/Barracks techs), then
+    /// training (green progress ring and queued count per unit), missiles. Outer arc: rally, reinforce,
+    /// repair, demolish. Several buildings (or bases) selected share one roster and batch-queue across them.</item>
+    /// <item>Build wheel (B / dock button): trench, road, sandbags, watchtower, bunker, AT, AA, outpost, new base;
+    /// support emplacements on the outer arc. Placement is validated by the server (own territory only), and
+    /// the reason is shown at the cursor.</item>
+    /// <item>Terrain wheel (T / dock button): raise, lower, flatten, smooth (server command <c>terrain</c>).</item>
+    /// <item>Unit wheel (C) and the secured-ruin wheel.</item>
+    /// </list>
+    /// Wheels never overlap the minimap console, the bottom-centre dock or the selection panel: see
+    /// <see cref="RegisterWheelKeepOut"/>. Contract: BuildCommandUi, UpdateCommandUi, CloseCommandContext,
+    /// CommandUiCapturesDigits, ShowCommandUi; public: OpenBuildWheel, OpenTerrainWheel, ToggleBuildWheel,
+    /// ToggleTerrainWheel, BuildWheelOpen, TerrainWheelOpen, OpenProductionWheel,
+    /// RegisterWheelKeepOut, DockWheelLift.
     /// </summary>
     public sealed partial class Hud
     {
         VisualElement commandLayer;
         RadialMenu wheel;
         string wheelKind = "", wheelSubject = "", wheelStructure = "";
-        int wheelSite;
+        int wheelSite, wheelEnteredSlot;
         int[] wheelBuildings = Array.Empty<int>();
         bool selectionEvent, commandUiShown = true;
         int digitFrame = -1;
         // world-anchored parcel bearings for the socket wedges
         readonly List<RadialItem> socketItems = new List<RadialItem>();
         readonly Dictionary<string, BaseParcel> socketParcels = new Dictionary<string, BaseParcel>();
-
-        // pop-out pickers (build / defense)
-        VisualElement picker, pickerGrid;
-        Label pickerTitle;
-        string pickerKind = "";
-        int pickerSite, pickerSlot;
-        readonly List<(Action pick, Action refresh)> pickerTiles = new List<(Action, Action)>();
+        // elements the wheels must never cover (registered by the HUD shell: dock, selection panel, minimap console)
+        readonly List<VisualElement> wheelKeepOut = new List<VisualElement>();
 
         const float MinimapRadius = 136f;
+        /// <summary>Base wheel segments for the sites (the top is the tier upgrade, 200° the perimeter).</summary>
+        static readonly int[] SocketSegments = { 1, 2, 3, 4, 6, 7, 8 };
+        const float PerimeterAngle = 200f;
+
+        /// <summary>
+        /// Distance (panel px) from the bottom of the screen to the bottom of the Build/Terrain wheels: they open
+        /// just above the bottom-centre dock. The HUD shell may set it to its dock's height plus a margin.
+        /// </summary>
+        public float DockWheelLift = 112f;
+
+        // ------------------------------------------------------------------ public API (HUD shell, F)
+        /// <summary>The wheels never cover this element while it is displayed (dock buttons, selection panel, minimap console, banners).</summary>
+        public void RegisterWheelKeepOut(VisualElement element)
+        {
+            if (element != null && !wheelKeepOut.Contains(element)) wheelKeepOut.Add(element);
+        }
+
+        public bool BuildWheelOpen => wheel != null && wheel.IsOpen && wheelKind == "build";
+        public bool TerrainWheelOpen => wheel != null && wheel.IsOpen && wheelKind == "terrain";
+
+        /// <summary>The Build wheel (B or the dock's Build button): every defense and improvement, outpost and new base.</summary>
+        public void OpenBuildWheel(bool keyboard = false)
+        {
+            if (wheel == null || session.Spectator || !session.ActionRts) return;
+            if (commander.Current != Commander.Mode.Select) commander.Cancel();
+            CloseWheel();
+            wheelKind = "build";
+            wheel.Open("Build", "build", BuildWheelItems(), DockAnchor, null, BuildWheelSupport(), keyboard);
+            wheel.SubjectDetail = () => "Defenses and improvements · your territory only";
+        }
+
+        /// <summary>The Terrain wheel (T or the dock's Terrain button): pay engineers to reshape ground in your territory.</summary>
+        public void OpenTerrainWheel(bool keyboard = false)
+        {
+            if (wheel == null || session.Spectator || !session.ActionRts) return;
+            if (commander.Current != Commander.Mode.Select) commander.Cancel();
+            CloseWheel();
+            wheelKind = "terrain";
+            wheel.Open("Terrain", "terrain", TerrainWheelItems(), DockAnchor, null, null, keyboard);
+            wheel.SubjectDetail = () => ProtocolDecoder.Str(Defs?["RULESET"]?["terrain"]?["desc"], "Reshape the ground in your territory");
+        }
+
+        public void ToggleBuildWheel(bool keyboard = false) { if (BuildWheelOpen) CloseWheel(); else OpenBuildWheel(keyboard); }
+        public void ToggleTerrainWheel(bool keyboard = false) { if (TerrainWheelOpen) CloseWheel(); else OpenTerrainWheel(keyboard); }
+
+        /// <summary>
+        /// Multi-base select: one shared training roster over every production building of these bases ("all
+        /// production"). Clicking a unit batch-queues it across them (Shift ×5, Alt one per building).
+        /// </summary>
+        public void OpenProductionWheel(IEnumerable<int> siteIds)
+        {
+            if (wheel == null || session.Spectator || siteIds == null) return;
+            var sites = new HashSet<int>(siteIds);
+            var ids = new List<int>();
+            foreach (var b in session.Structures.Buildings.Values)
+                if (sites.Contains(b.City) && IsTrainer(b)) ids.Add(b.Id);
+            if (ids.Count == 0) { commander.Say("No production buildings at these bases", false, Time.unscaledTime); return; }
+            ids.Sort();
+            OpenBuildingWheel(ids.ToArray(), sites.Count > 1 ? $"All production · {sites.Count} bases" : null);
+        }
+
+        /// <summary>Select every finished production building of every own base (the wheel shows the shared roster and batch-queues across them).</summary>
+        void SelectEveryProduction()
+        {
+            var ids = new List<int>();
+            foreach (var b in session.Structures.Buildings.Values) if (IsTrainer(b)) ids.Add(b.Id);
+            if (ids.Count == 0) { commander.Say("No production buildings yet", false, Time.unscaledTime); return; }
+            commander.SelectProduction(ids);
+        }
+
+        bool IsTrainer(BuildingRecord b) => b.Owner == session.CivId && b.Done && Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray;
 
         // ------------------------------------------------------------------ contract (C7)
-        /// <summary>Called once from Hud.Build(): the wheel layer, the defense bar and the tool chip.</summary>
+        /// <summary>Called once from Hud.Build(): the wheel layer and the tool chip.</summary>
         void BuildCommandUi()
         {
             if (commandLayer != null) return;
@@ -54,37 +136,28 @@ namespace SE.Runtime.UI
             commandLayer.Add(wheel);
             commander.SelectionChanged += () => selectionEvent = true;
             commander.Refused += FlashForRefusal;
-            BuildDefenseBar();
             BuildToolChip();
         }
 
-        /// <summary>True while digits belong to the command UI (wheel hot, picker open, defense bar armed).</summary>
-        bool CommandUiCapturesDigits => wheel != null && wheel.IsOpen && wheel.Hot || picker != null && pickerKind != "" || defenseBarArmed || digitFrame == Time.frameCount;
+        /// <summary>True while digits belong to the command UI (a hot wheel).</summary>
+        bool CommandUiCapturesDigits => wheel != null && wheel.IsOpen && wheel.Hot || digitFrame == Time.frameCount;
 
-        /// <summary>From ShowGame: show or hide the command layer, defense bar and tool chip.</summary>
+        /// <summary>From ShowGame: show or hide the command layer and tool chip.</summary>
         void ShowCommandUi(bool on)
         {
             commandUiShown = on;
             if (commandLayer == null) return;
             commandLayer.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
-            if (!on) { CloseWheel(); SetDefenseBarArmed(false); }
-            ShowDefenseBar(on);
-            if (on && defenseBar != null)
-            {
-                defenseBar.style.opacity = 0;
-                var bar = defenseBar; bar.schedule.Execute(() => bar.style.opacity = 1).StartingIn(60);
-            }
+            if (!on) CloseWheel();
         }
 
-        /// <summary>Escape chain step 5: picker → wheel sub-ring → armed defense bar → wheel. True if consumed.</summary>
+        /// <summary>Escape chain step 5: wheel sub-ring → wheel. True if consumed.</summary>
         bool CloseCommandContext()
         {
             // a running tool or battle line belongs to the commander, which cancels it this frame
             // (it runs after the HUD, so its EscapeFrame is not set yet): consume so the selection survives
             if (commander.Current != Commander.Mode.Select || commander.DrawingLine) return true;
-            if (pickerKind != "") { ClosePicker(); return true; }
             if (wheel != null && wheel.IsOpen && wheel.Back()) return true;
-            if (defenseBarArmed) { SetDefenseBarArmed(false); return true; }
             if (wheel != null && wheel.IsOpen) { CloseWheel(); return true; }
             return false;
         }
@@ -93,23 +166,21 @@ namespace SE.Runtime.UI
         void UpdateCommandUi(float time)
         {
             if (commandLayer == null) return;
-            bool active = commandUiShown && session.ActionRts && session.Ready && !MenuVisible && topbar != null && topbar.style.display != DisplayStyle.None;
+            bool active = commandUiShown && session.ActionRts && session.Ready && !MenuVisible;
             if (!active)
             {
                 CloseWheel();
-                SetDefenseBarArmed(false);
-                ShowDefenseBar(false);
                 if (toolChip != null) toolChip.style.display = DisplayStyle.None;
                 if (cursorReason != null) cursorReason.style.display = DisplayStyle.None;
                 commander.SuppressGroupKeys = false;
                 return;
             }
-            ShowDefenseBar(!session.Spectator);
             var mouse = InputFacade.MousePosition;
             var pointer = ToPanel(new Vector3(mouse.x, mouse.y, 1));
             float width = root.layout.width, height = root.layout.height;
             if (float.IsNaN(width) || width <= 0) { width = 1920; height = 1080; }
-            var safe = new Rect(16, 64, Mathf.Max(0, width - 32), Mathf.Max(0, height - 64 - 92));
+            // top: the floating clock and pause/menu buttons; the bottom band is handled by the keep-out rectangles
+            var safe = new Rect(16, 56, Mathf.Max(0, width - 32), Mathf.Max(0, height - 56 - 12));
             var minimapCentre = new Vector2(136, height - 136);
 
             if (commander.Current != Commander.Mode.Select) CloseWheel();   // a placement/target tool started
@@ -120,23 +191,56 @@ namespace SE.Runtime.UI
                 {
                     bool changed = subject != wheelSubject;
                     selectionEvent = false;
-                    if (wheel.IsOpen && (changed || wheelKind == "unit")) CloseWheel();
+                    bool dock = wheelKind == "build" || wheelKind == "terrain";
+                    // a new selection replaces the wheel (the dock wheels stay unless something new is selected)
+                    if (wheel.IsOpen && (changed && (!dock || subject != "") || wheelKind == "unit")) CloseWheel();
                     wheelSubject = subject;
                     if (!wheel.IsOpen) AutoOpen(subject);
-                    if (wheelKind == "base") SocketPickerFromSelection();
+                    if (wheelKind == "base") SocketFromSelection();
                 }
                 // right-click orders in the world close the unit wheel
                 if (wheelKind == "unit" && InputFacade.RightDown && !IsPointerOverUi(mouse)) CloseWheel();
             }
             if (wheel.IsOpen) RefreshWheel();
             CommandKeys(time);
+            FillKeepOut(width, height);
             wheel.Pointer = pointer;
             wheel.Tick(time, safe, minimapCentre, MinimapRadius);
-            UpdatePicker(safe);
-            UpdateDefenseBar(time);
             UpdateToolChip(pointer);
             commander.SuppressGroupKeys = CommandUiCapturesDigits;
             if (!(wheel.IsOpen && wheelKind == "base")) commander.HoverRingSlot = 0;
+        }
+
+        /// <summary>
+        /// The keep-out rectangles: registered elements while displayed; until the shell registers any, a
+        /// conservative layout of the mockup (minimap console bottom-left, dock bottom-centre, selection panel
+        /// bottom-right). Rect is a struct: no allocation.
+        /// </summary>
+        void FillKeepOut(float width, float height)
+        {
+            var list = wheel.KeepOut;
+            list.Clear();
+            for (int i = 0; i < wheelKeepOut.Count; i++)
+            {
+                var e = wheelKeepOut[i];
+                if (e == null || e.panel == null || e.resolvedStyle.display == DisplayStyle.None || e.resolvedStyle.visibility == Visibility.Hidden) continue;
+                var r = e.worldBound;
+                if (float.IsNaN(r.x) || r.width <= 0 || r.height <= 0) continue;
+                list.Add(r);
+            }
+            if (wheelKeepOut.Count > 0) return;
+            list.Add(new Rect(0, height - 312, 420, 312));                    // minimap console + resource bars
+            list.Add(new Rect(width * .5f - 100, height - 96, 200, 96));      // Build / Terrain dock
+            list.Add(new Rect(width - 640, height - 250, 640, 250));          // selection panel
+        }
+
+        Vector2? DockAnchor()
+        {
+            float width = root.layout.width, height = root.layout.height;
+            if (float.IsNaN(width) || width <= 0) { width = 1920; height = 1080; }
+            float r = wheel.WheelBounds.height * .5f;
+            if (r < 10f) r = (RadialMenu.OuterRadius + 6f) * Mathf.Max(.5f, wheel.CurrentScale);
+            return new Vector2(width * .5f, height - DockWheelLift - r);
         }
 
         // ------------------------------------------------------------------ helpers
@@ -168,7 +272,7 @@ namespace SE.Runtime.UI
         {
             session.Net?.Command(cmd, r =>
             {
-                commander.Say(r.Error ?? ok, r.Error == null, Time.unscaledTime);
+                commander.Say(Commander.ReadableError(r) ?? ok, r.Error == null, Time.unscaledTime);
                 cmdCardSignature = "";
                 after?.Invoke(r);
             });
@@ -225,13 +329,16 @@ namespace SE.Runtime.UI
             if (commander.SelectedBuildings.Count > 0)
             {
                 var own = new List<int>();
-                int town = -1;
+                var towns = new List<int>();
                 foreach (int id in commander.SelectedBuildings)
                     if (session.Structures.Buildings.TryGetValue(id, out var b) && b.Owner == session.CivId)
                     {
-                        if (b.Type == "town") town = b.City; else own.Add(id);
+                        if (b.Type == "town") { if (!towns.Contains(b.City)) towns.Add(b.City); }
+                        else own.Add(id);
                     }
-                if (own.Count == 0 && town >= 0 && session.Objectives.TryGetValue(town, out var hqSite) && hqSite.Operational) return "base:" + town;
+                if (own.Count == 0 && towns.Count == 1 && session.Objectives.TryGetValue(towns[0], out var hqSite) && hqSite.Operational) return "base:" + towns[0];
+                // several headquarters selected: all production across those bases
+                if (own.Count == 0 && towns.Count > 1) { towns.Sort(); return "prod:" + string.Join(",", towns); }
                 if (own.Count == 0) return "";
                 own.Sort();
                 return "bld:" + string.Join(",", own);
@@ -239,24 +346,23 @@ namespace SE.Runtime.UI
             return units.Selected.Count > 0 ? "unit" : "";
         }
 
+        static int[] ParseIds(string list) => list.Split(',').Select(s => int.TryParse(s, out int v) ? v : 0).Where(v => v != 0).ToArray();
+
         void AutoOpen(string subject)
         {
             if (string.IsNullOrEmpty(subject) || session.Spectator) return;
             if (subject.StartsWith("base:") && int.TryParse(subject.Substring(5), out int baseId)) OpenBaseWheel(baseId);
             else if (subject.StartsWith("ruin:") && int.TryParse(subject.Substring(5), out int ruinId)) OpenRuinWheel(ruinId);
-            else if (subject.StartsWith("bld:"))
-            {
-                var ids = subject.Substring(4).Split(',').Select(s => int.TryParse(s, out int v) ? v : 0).Where(v => v != 0).ToArray();
-                OpenBuildingWheel(ids);
-            }
+            else if (subject.StartsWith("bld:")) OpenBuildingWheel(ParseIds(subject.Substring(4)));
+            else if (subject.StartsWith("prod:")) OpenProductionWheel(ParseIds(subject.Substring(5)));
             else if (subject == "unit" && App.GameSettings.OpenUnitWheelOnSelection) OpenUnitWheel(false);
         }
 
         void CloseWheel()
         {
-            ClosePicker();
+            if (wheelEnteredSlot != 0) commander.ClearRingPreview();
             if (wheel != null && wheel.IsOpen) wheel.Close();
-            wheelKind = ""; wheelStructure = ""; wheelSite = 0; wheelBuildings = Array.Empty<int>();
+            wheelKind = ""; wheelStructure = ""; wheelSite = 0; wheelEnteredSlot = 0; wheelBuildings = Array.Empty<int>();
             commander.HoverRingSlot = 0;
         }
 
@@ -277,13 +383,20 @@ namespace SE.Runtime.UI
                     if (structure != wheelStructure)
                     {
                         wheelStructure = structure;
-                        wheel.ReplaceRoot(BaseSockets(site), BaseOuterArc(site), BaseHub(site));
+                        wheel.ReplaceRoot(BaseItems(site), BaseOuterArc(site));
                     }
                 }
                 AssignSocketAngles(site);
                 int fromWorld = commander.HoverRingSlotFromWorld;
                 if (fromWorld != highlightSlot) { highlightSlot = fromWorld; highlightId = fromWorld != 0 ? "socket:" + fromWorld : null; }
                 wheel.HighlightId = highlightId;
+                // left an empty site's facility ring: drop its world preview and the site selection
+                if (wheelEnteredSlot != 0 && wheel.Depth == 0)
+                {
+                    wheelEnteredSlot = 0;
+                    commander.ClearRingPreview();
+                    if (commander.SelectedRingSlot != 0 && commander.SelectedObjective == wheelSite) commander.SelectObjective(wheelSite);
+                }
             }
             else if (wheelKind == "building")
             {
@@ -294,7 +407,26 @@ namespace SE.Runtime.UI
                     if (structure != wheelStructure)
                     {
                         wheelStructure = structure;
-                        wheel.ReplaceRoot(BuildingItems(wheelBuildings));
+                        wheel.ReplaceRoot(BuildingItems(wheelBuildings), BuildingOuterArc(wheelBuildings));
+                    }
+                }
+            }
+            else if (wheelKind == "build" || wheelKind == "terrain")
+            {
+                // tier locks and the definitions follow the era: rebuild the ring when the era changes
+                if (wheelStructureSnap != session.Snapshots)
+                {
+                    wheelStructureSnap = session.Snapshots;
+                    string structure = Age + "|" + (Defs?.GetHashCode() ?? 0);
+                    if (structure != wheelStructure)
+                    {
+                        bool first = wheelStructure == "";
+                        wheelStructure = structure;
+                        if (!first)
+                        {
+                            if (wheelKind == "build") wheel.ReplaceRoot(BuildWheelItems(), BuildWheelSupport());
+                            else wheel.ReplaceRoot(TerrainWheelItems());
+                        }
                     }
                 }
             }
@@ -311,20 +443,9 @@ namespace SE.Runtime.UI
             {
                 if (wheelKind == "unit") CloseWheel(); else OpenUnitWheel(true);
             }
-            if (wheelKind == "base" && ActionKey("upgrade_base", KeyCode.U)) wheel.PressHub();
-            if (!session.Spectator && InputFacade.Action("build")) ToggleDefenseBarArmed();
-            // digits: picker, then the armed defense bar, then a hot wheel
-            if (pickerKind != "")
-            {
-                for (int d = 1; d <= 9; d++) if (DigitPressed(d))
-                {
-                    digitFrame = Time.frameCount;
-                    if (d - 1 < pickerTiles.Count) pickerTiles[d - 1].pick();
-                    break;
-                }
-                return;
-            }
-            if (defenseBarArmed) { DefenseBarKeys(); return; }
+            if (wheelKind == "base" && wheel.Depth == 0 && ActionKey("upgrade_base", KeyCode.U)) wheel.PressItem("upgrade:tier");
+            if (!session.Spectator && InputFacade.KeyFor("build") != KeyCode.None && InputFacade.Action("build")) ToggleBuildWheel(true);
+            if (!session.Spectator && InputFacade.KeyFor("terrain") != KeyCode.None && InputFacade.Action("terrain")) ToggleTerrainWheel(true);
             if (wheel.IsOpen && wheel.Hot)
                 for (int d = 0; d <= 9; d++) if (DigitPressed(d))
                 {
@@ -334,12 +455,25 @@ namespace SE.Runtime.UI
                 }
         }
 
-        // ------------------------------------------------------------------ base wheel (B7)
+        // ------------------------------------------------------------------ base wheel
+        /// <summary>The perimeter upgrade level: the server's site.defenseLevel, else the lowest level among the perimeter pieces (1 when unknown).</summary>
+        int PerimeterLevel(int siteId)
+        {
+            if (session.Objectives.TryGetValue(siteId, out var site) && site.DefenseLevel > 0) return site.DefenseLevel;
+            int level = int.MaxValue;
+            foreach (var b in session.Structures.Buildings.Values)
+                if (b.City == siteId && b.Owner == session.CivId && b.Type == "city_turret") level = Mathf.Min(level, Mathf.Max(1, b.Level));
+            return level == int.MaxValue ? 1 : level;
+        }
+
         string BaseStructure(ObjectiveSite site)
         {
             var sb = new System.Text.StringBuilder();
-            sb.Append(site.Tier).Append('|').Append(site.DefenseCount).Append('|').Append(site.Headquarters).Append('|').Append(site.RingVersion).Append('|');
+            sb.Append(site.Tier).Append('|').Append(site.DefenseCount).Append('|').Append(PerimeterLevel(site.Id)).Append('|').Append(Age).Append('|')
+                .Append(site.Headquarters).Append('|').Append(site.RingVersion).Append('|');
             if (site.Slots != null) foreach (int s in site.Slots) sb.Append(s).Append(',');
+            sb.Append('|');
+            if (site.Parcels != null) foreach (var p in site.Parcels) sb.Append(p.Id).Append(':').Append(p.Tier).Append(',');
             sb.Append('|');
             foreach (var b in session.Structures.Buildings.Values)
                 if (b.City == site.Id && b.Owner == session.CivId && b.Slot != 0) sb.Append(b.Slot).Append(':').Append(b.Id).Append(b.Type).Append(',');
@@ -349,13 +483,12 @@ namespace SE.Runtime.UI
         void OpenBaseWheel(int siteId)
         {
             if (!session.Objectives.TryGetValue(siteId, out var site) || !site.Operational) return;
-            ClosePicker();
-            wheelKind = "base"; wheelSite = siteId;
+            wheelKind = "base"; wheelSite = siteId; wheelEnteredSlot = 0;
             wheelStructure = BaseStructure(site);
             wheelStructureSnap = session.Snapshots;
             float x = site.X, z = site.Z;
             if (session.Structures.Buildings.TryGetValue(site.Headquarters, out var hq) && hq.HasPosition) { x = hq.X; z = hq.Z; }
-            wheel.Open(site.Name, "hq", BaseSockets(site), WorldAnchor(x, z, .3f), BaseHub(site), BaseOuterArc(site));
+            wheel.Open(site.Name, "hq", BaseItems(site), WorldAnchor(x, z, .3f), null, BaseOuterArc(site));
             wheel.HubPips = () => session.Objectives.TryGetValue(siteId, out var s) ? Mathf.Clamp(s.Tier, 1, 3) : 0;
             wheel.SubjectDetail = () =>
             {
@@ -364,13 +497,17 @@ namespace SE.Runtime.UI
                 return $"Tier {Tier(s.Tier)} base · {used}/{s.Capacity} sites used";
             };
             AssignSocketAngles(site);
+            SocketFromSelection();
         }
 
-        List<RadialItem> BaseSockets(ObjectiveSite site)
+        BuildingRecord HqOf(int siteId) => session.Objectives.TryGetValue(siteId, out var s) && session.Structures.Buildings.TryGetValue(s.Headquarters, out var b) ? b : default;
+
+        /// <summary>The base wheel: tier upgrade on top, the sites, the perimeter near the bottom.</summary>
+        List<RadialItem> BaseItems(ObjectiveSite site)
         {
             socketItems.Clear(); socketParcels.Clear();
             int siteId = site.Id;
-            var list = new List<RadialItem>();
+            var list = new List<RadialItem> { BaseUpgrade(site), PerimeterItem(site) };
             foreach (var parcel in (site.Parcels ?? Array.Empty<BaseParcel>()).Where(p => p.Id > 0).OrderBy(p => p.Id))
             {
                 int slot = parcel.Id, parcelTier = parcel.Tier;
@@ -379,7 +516,7 @@ namespace SE.Runtime.UI
                 bool locked = parcelTier > site.Tier;
                 bool empty = !locked && occupantId == 0 && site.Slots != null && Array.IndexOf(site.Slots, slot) >= 0;
                 string id = "socket:" + slot;
-                var item = new RadialItem { Id = id, Angle = 0f };
+                var item = new RadialItem { Id = id, Angle = SocketSegments[socketItems.Count % SocketSegments.Length] * RadialMenu.SegmentSpan };
                 item.Hover = on =>
                 {
                     if (on) commander.HoverRingSlot = slot;
@@ -387,7 +524,7 @@ namespace SE.Runtime.UI
                 };
                 if (locked)
                 {
-                    item.Icon = "lock"; item.Title = $"Site {slot % 16} · locked";
+                    item.Icon = "lock"; item.Title = "Locked site";
                     item.Caption = () => Tier(parcelTier);
                     item.Enabled = () => false;
                     item.Reason = () => $"Unlocks at base Tier {Tier(parcelTier)}";
@@ -406,24 +543,30 @@ namespace SE.Runtime.UI
                         if (b.QueueLength > 0) return b.TrainProgress / 100f;
                         return -1f;
                     };
+                    item.Caption = () => session.Structures.Buildings.TryGetValue(occupantId, out var b) && b.Level > 1 ? "Lv " + b.Level : null;
                     item.Detail = () =>
                     {
                         if (!session.Structures.Buildings.TryGetValue(occupantId, out var b)) return "";
                         if (!b.Done) return $"Construction {b.Progress}%";
                         if (b.QueueLength > 0) return $"{b.QueueLength} in queue";
-                        return b.Hp < 100 ? $"Condition {b.Hp}%" : "Open its command wheel";
+                        return b.Hp < 100 ? $"Condition {b.Hp}%" : "Open its wheel: production and upgrades";
                     };
                     item.Click = _ => commander.SelectRingSlot(siteId, slot);
                 }
                 else if (empty)
                 {
-                    item.Icon = "plus"; item.Title = $"Site {slot % 16} · empty"; item.Pulse = true;
+                    item.Icon = "plus"; item.Title = "Empty site"; item.Pulse = true;
                     item.Detail = () => "Choose a facility to build here";
-                    item.Click = _ => { commander.SelectRingSlot(siteId, slot); OpenBuildPicker(siteId, slot); };
+                    item.Children = () =>
+                    {
+                        wheelEnteredSlot = slot;
+                        commander.SelectRingSlot(siteId, slot);
+                        return FacilityItems(siteId, slot);
+                    };
                 }
                 else
                 {
-                    item.Icon = "plus"; item.Title = $"Site {slot % 16}";
+                    item.Icon = "plus"; item.Title = "Site";
                     item.Enabled = () => false;
                     item.Reason = () => "Site not available";
                 }
@@ -434,16 +577,15 @@ namespace SE.Runtime.UI
             return list;
         }
 
-        /// <summary>Point each socket wedge at its parcel: greedy nearest-angle assignment of parcels to the 8 wedge angles.</summary>
         // per-frame socket assignment scratch (no allocations: the camera moves every frame)
         readonly List<(float cost, int item, int wedge)> anglePairs = new List<(float, int, int)>(96);
         bool[] angleItemDone = new bool[16];
-        readonly bool[] angleWedgeDone = new bool[8];
+        readonly bool[] angleWedgeDone = new bool[RadialMenu.Segments];
         static readonly Func<bool> NoWedge = () => false;
 
         /// <summary>
-        /// Point each socket wedge at its parcel: greedy nearest-angle assignment of parcels to the 8 wedge angles.
-        /// Also sizes the base wheel to the base on screen: a little larger when the camera is close.
+        /// Point each site wedge at its parcel: greedy nearest-angle assignment of parcels to the seven site
+        /// segments (the top is the upgrade, 200° the perimeter). Also sizes the base wheel to the base on screen.
         /// </summary>
         void AssignSocketAngles(ObjectiveSite site)
         {
@@ -463,10 +605,10 @@ namespace SE.Runtime.UI
                 var d = sp.z > 0 ? ToPanel(sp) - hub : Vector2.up;
                 if (sp.z > 0) reach = Mathf.Max(reach, d.magnitude);
                 float bearing = Mathf.Atan2(d.x, -d.y) * Mathf.Rad2Deg;
-                for (int w = 0; w < 8; w++)
+                foreach (int w in SocketSegments)
                 {
-                    // insertion keeps the list sorted by cost (stable; ≤ 8 × sockets entries, no comparer allocation)
-                    var entry = (Mathf.Abs(Mathf.DeltaAngle(bearing, w * 45f)), i, w);
+                    // insertion keeps the list sorted by cost (stable; ≤ 7 × sites entries, no comparer allocation)
+                    var entry = (Mathf.Abs(Mathf.DeltaAngle(bearing, RadialMenu.SegmentAngle(w))), i, w);
                     int at = pairs.Count;
                     while (at > 0 && pairs[at - 1].cost > entry.Item1) at--;
                     pairs.Insert(at, entry);
@@ -482,7 +624,7 @@ namespace SE.Runtime.UI
                 if (angleItemDone[item] || angleWedgeDone[w]) continue;
                 angleItemDone[item] = angleWedgeDone[w] = true;
                 var it = socketItems[item];
-                float angle = w * 45f;
+                float angle = RadialMenu.SegmentAngle(w);
                 if (it.Angle != angle || it.Visible != null) changed = true;
                 it.Angle = angle;
                 it.Visible = null;
@@ -492,90 +634,133 @@ namespace SE.Runtime.UI
                 if (angleItemDone[i]) continue;
                 var it = socketItems[i];
                 if (it.Visible != NoWedge) changed = true;
-                it.Visible = NoWedge;   // more parcels than wedges: the extra one has no wedge
+                it.Visible = NoWedge;   // more parcels than site segments: the extra one has no wedge
             }
             if (changed) wheel.InvalidateLayout();
-            // the base's on-screen radius → wheel size: 1× when the base is small on screen, up to 1.25× close in
-            if (reach > 0f) wheel.Scale = Mathf.Clamp(1f + (reach - 170f) / 900f, 1f, 1.25f);
+            // the base's on-screen radius → wheel size: 1× when the base is small on screen, up to 1.2× close in
+            if (reach > 0f) wheel.Scale = Mathf.Clamp(1f + (reach - 170f) / 900f, 1f, 1.2f);
         }
 
-        RadialItem BaseHub(ObjectiveSite site)
+        /// <summary>Top segment of the base wheel: the headquarters tier upgrade (U).</summary>
+        RadialItem BaseUpgrade(ObjectiveSite site)
         {
             int siteId = site.Id;
-            BuildingRecord Hq() => session.Objectives.TryGetValue(siteId, out var s) && session.Structures.Buildings.TryGetValue(s.Headquarters, out var b) ? b : default;
             var next = site.Tier < 3 ? Defs?["AGES"]?[site.Tier] : null;
+            var slots = Defs?["RULESET"]?["slots"] as JArray;
+            int SlotsAt(int tier) => slots != null && slots.Count >= tier && tier >= 1 ? ProtocolDecoder.Int(slots[tier - 1]) : 1 + 2 * tier;
             return new RadialItem
             {
-                Id = "hub:tier", Icon = "hq", Hotkey = "U",
+                Id = "upgrade:tier", Icon = "upgrade", Hotkey = "U", Angle = 0f,
                 Name = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 ? $"Upgrade to Tier {TierLabels[Mathf.Clamp(s.Tier, 0, 2)]}" : "Tier III headquarters",
                 Cost = next?["cost"], Seconds = ProtocolDecoder.Int(next?["time"]),
-                Enabled = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 && Hq().Project == null,
+                Enabled = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 && HqOf(siteId).Project == null,
                 Reason = () =>
                 {
                     if (!session.Objectives.TryGetValue(siteId, out var s)) return "";
                     if (s.Tier >= 3) return "Maximum tier reached";
-                    var h = Hq();
+                    var h = HqOf(siteId);
                     if (h.Project == "tier") return $"Upgrading · {h.WorksPct}%";
                     if (h.Project != null) return "The headquarters is busy";
                     return null;
                 },
                 Detail = () =>
                 {
-                    if (!session.Objectives.TryGetValue(siteId, out var s) || s.Tier >= 3) return "All eight sites are unlocked";
-                    return $"Unlocks 2 sites and Tier {TierLabels[Mathf.Clamp(s.Tier, 0, 2)]} units";
+                    if (!session.Objectives.TryGetValue(siteId, out var s) || s.Tier >= 3) return $"All {SlotsAt(3)} sites are unlocked";
+                    int more = SlotsAt(s.Tier + 1) - SlotsAt(s.Tier);
+                    return $"Unlocks {more} sites and Tier {TierLabels[Mathf.Clamp(s.Tier, 0, 2)]} units";
                 },
-                Progress = () => Hq().Project == "tier" ? Hq().WorksPct / 100f : -1f,
+                Progress = () => HqOf(siteId).Project == "tier" ? HqOf(siteId).WorksPct / 100f : -1f,
                 Click = _ => Send(new JObject { ["c"] = "advance", ["site"] = siteId }, "Upgrade started"),
             };
         }
 
-        int[] TrainersAt(int siteId) => session.Structures.Buildings.Values
-            .Where(b => b.City == siteId && b.Owner == session.CivId && b.Done && Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray)
-            .Select(b => b.Id).ToArray();
+        static bool PerimeterProject(string project) => project == "perimeter" || project == "defenses" || project == "upgradeDefenses" || project == "defenseUpgrade";
+
+        /// <summary>Near the bottom of the base wheel: build, rebuild or upgrade the city perimeter.</summary>
+        RadialItem PerimeterItem(ObjectiveSite site)
+        {
+            int siteId = site.Id;
+            var def = Defs?["CITY_DEFENSES"];
+            var upgrade = def?["upgrade"];
+            int count = site.DefenseCount;
+            var item = new RadialItem { Id = "perimeter", Icon = "sandbags", Angle = PerimeterAngle };
+            item.Progress = () => PerimeterProject(HqOf(siteId).Project) ? HqOf(siteId).WorksPct / 100f : -1f;
+            if (count < 6)
+            {
+                int missing = Mathf.Clamp(6 - count, 0, 6);
+                item.Cost = new JObject
+                {
+                    ["materials"] = Mathf.CeilToInt(ProtocolDecoder.Float(def?["cost"]?["materials"], 240) * missing / 6f),
+                    ["energy"] = Mathf.CeilToInt(ProtocolDecoder.Float(def?["cost"]?["energy"], 60) * missing / 6f)
+                };
+                item.Seconds = ProtocolDecoder.Int(def?["time"], 25);
+                item.Title = count > 0 ? $"Rebuild perimeter ({count}/6)" : "Build city perimeter";
+                item.Detail = () => "Four sandbag positions and two machine-gun turrets around the base. Uses no sites.";
+                item.Enabled = () => HqOf(siteId).Project == null;
+                item.Reason = () => PerimeterProject(HqOf(siteId).Project) ? $"Under construction · {HqOf(siteId).WorksPct}%" : HqOf(siteId).Project != null ? "The headquarters is busy" : null;
+                item.Click = _ => Send(new JObject { ["c"] = "baseDefenses", ["site"] = siteId }, "Construction started");
+                return item;
+            }
+            int level = PerimeterLevel(siteId), max = ProtocolDecoder.Int(upgrade?["max"], 1);
+            int aaLevel = ProtocolDecoder.Int(upgrade?["aaLevel"], 2);
+            if (upgrade == null || level >= max)
+            {
+                item.Title = level > 1 ? $"Perimeter · level {level}" : "City perimeter";
+                item.Caption = () => level > 1 ? "Lv " + level : null;
+                item.Detail = () => upgrade == null ? "Complete" : level >= aaLevel ? "Fully upgraded · built-in anti-aircraft fire" : "Fully upgraded";
+                item.Enabled = () => false;
+                item.Reason = () => upgrade == null ? "The perimeter is complete" : "Maximum level";
+                return item;
+            }
+            int next = level + 1;
+            item.Icon = "upgrade";
+            item.Title = $"Upgrade perimeter to level {next}";
+            item.Cost = (upgrade["cost"] as JArray)?.ElementAtOrDefault(level - 1);
+            item.Seconds = ProtocolDecoder.Int((upgrade["time"] as JArray)?.ElementAtOrDefault(level - 1));
+            item.Caption = () => "Lv " + level;
+            item.Detail = () => ProtocolDecoder.Str(upgrade["desc"], "Hardens every perimeter position") + (next == aaLevel ? " Adds city anti-aircraft fire." : "");
+            item.Enabled = () => next <= Age + 1 && HqOf(siteId).Project == null;
+            item.Reason = () =>
+            {
+                if (next > Age + 1) return $"Requires era {Tier(next)}";
+                var h = HqOf(siteId);
+                if (PerimeterProject(h.Project)) return $"Upgrading · {h.WorksPct}%";
+                return h.Project != null ? "The headquarters is busy" : null;
+            };
+            item.Click = _ => Send(new JObject { ["c"] = "upgradeDefenses", ["site"] = siteId }, "Perimeter upgrade started");
+            return item;
+        }
+
+        int[] TrainersAt(int siteId) => session.Structures.Buildings.Values.Where(b => b.City == siteId && IsTrainer(b)).Select(b => b.Id).ToArray();
 
         /// <summary>Allocation-free <c>TrainersAt(siteId).Length &gt; 0</c> (polled by the outer arc's visibility at 10 Hz).</summary>
         bool HasTrainersAt(int siteId)
         {
             var defs = Defs?["BUILDINGS"];
             foreach (var b in session.Structures.Buildings.Values)
-                if (b.City == siteId && b.Owner == session.CivId && b.Done && defs?[b.Type]?["trains"] is JArray) return true;
+                if ((siteId == 0 || b.City == siteId) && b.Owner == session.CivId && b.Done && defs?[b.Type]?["trains"] is JArray) return true;
+            return false;
+        }
+
+        /// <summary>True when production exists at more than one own base (allocation-free, 10 Hz).</summary>
+        bool TrainersAtSeveralBases()
+        {
+            var defs = Defs?["BUILDINGS"];
+            int first = int.MinValue;
+            foreach (var b in session.Structures.Buildings.Values)
+            {
+                if (b.Owner != session.CivId || !b.Done || !(defs?[b.Type]?["trains"] is JArray)) continue;
+                if (first == int.MinValue) first = b.City;
+                else if (b.City != first) return true;
+            }
             return false;
         }
 
         List<RadialItem> BaseOuterArc(ObjectiveSite site)
         {
             int siteId = site.Id;
-            BuildingRecord Hq() => session.Objectives.TryGetValue(siteId, out var s) && session.Structures.Buildings.TryGetValue(s.Headquarters, out var b) ? b : default;
-            JObject PerimeterCost()
-            {
-                var def = Defs?["CITY_DEFENSES"];
-                int missing = session.Objectives.TryGetValue(siteId, out var s) ? Mathf.Clamp(6 - s.DefenseCount, 0, 6) : 6;
-                return new JObject
-                {
-                    ["materials"] = Mathf.CeilToInt(ProtocolDecoder.Float(def?["cost"]?["materials"], 240) * missing / 6f),
-                    ["energy"] = Mathf.CeilToInt(ProtocolDecoder.Float(def?["cost"]?["energy"], 60) * missing / 6f)
-                };
-            }
-            var perimeter = new RadialItem
-            {
-                Id = "arc:perimeter", Icon = "sandbags", Seconds = ProtocolDecoder.Int(Defs?["CITY_DEFENSES"]?["time"], 25),
-                Cost = PerimeterCost(),
-                Name = () => session.Objectives.TryGetValue(siteId, out var s) && s.DefenseCount > 0 ? $"Rebuild perimeter ({s.DefenseCount}/6)" : "Build city perimeter",
-                Detail = () => "Four sandbag positions and two machine-gun turrets. Uses no sites.",
-                Visible = () => session.Objectives.TryGetValue(siteId, out var s) && s.DefenseCount < 6,
-                Enabled = () => Hq().Project == null,
-                Reason = () => Hq().Project == "perimeter" ? $"Under construction · {Hq().WorksPct}%" : Hq().Project != null ? "The headquarters is busy" : null,
-                Click = _ => Send(new JObject { ["c"] = "baseDefenses", ["site"] = siteId }, "Construction started"),
-            };
             return new List<RadialItem>
             {
-                new RadialItem
-                {
-                    Id = "arc:defenses", Icon = "defense", Title = "Defenses",
-                    Detail = () => "Place field defenses anywhere on visible ground",
-                    Click = _ => OpenDefensePicker(siteId),
-                },
-                perimeter,
                 new RadialItem
                 {
                     Id = "arc:rally", Icon = "rally", Title = "Rally point",
@@ -585,18 +770,25 @@ namespace SE.Runtime.UI
                 },
                 new RadialItem
                 {
-                    Id = "arc:production", Icon = "barracks", Title = "Production",
-                    Detail = () => "Select every production facility at this base",
+                    Id = "arc:production", Icon = "barracks", Title = "Base production",
+                    Detail = () => "Every production building at this base: one shared roster",
                     Visible = () => HasTrainersAt(siteId),
                     Click = _ => commander.SelectProduction(TrainersAt(siteId)),
                 },
                 new RadialItem
                 {
+                    Id = "arc:allproduction", Icon = "army", Title = "All production",
+                    Detail = () => "Every production building at every base: units queue across all of them",
+                    Visible = TrainersAtSeveralBases,
+                    Click = _ => SelectEveryProduction(),
+                },
+                new RadialItem
+                {
                     Id = "arc:repair", Icon = "repair", Title = "Repair headquarters",
-                    Visible = () => Hq().RepairCost > 0,
-                    Enabled = () => Hq().Project == null,
-                    Reason = () => Hq().Project != null ? "The headquarters is busy" : $"Costs {Hq().RepairCost} Materials",
-                    Click = _ => Send(new JObject { ["c"] = "repair", ["id"] = Hq().Id }, "Repairs started"),
+                    Visible = () => HqOf(siteId).RepairCost > 0,
+                    Enabled = () => HqOf(siteId).Project == null,
+                    Reason = () => HqOf(siteId).Project != null ? "The headquarters is busy" : $"Costs {HqOf(siteId).RepairCost} Materials",
+                    Click = _ => Send(new JObject { ["c"] = "repair", ["id"] = HqOf(siteId).Id }, "Repairs started"),
                 },
             };
         }
@@ -604,7 +796,6 @@ namespace SE.Runtime.UI
         void OpenRuinWheel(int siteId)
         {
             if (!session.Objectives.TryGetValue(siteId, out var site)) return;
-            ClosePicker();
             wheelKind = "ruin"; wheelSite = siteId;
             JToken cost = ProtocolDecoder.Int(Econ?["recovery"]) > 0 ? new JObject { ["materials"] = 140 } : Defs?["BUILDINGS"]?["town"]?["cost"];
             var establish = new RadialItem
@@ -619,178 +810,22 @@ namespace SE.Runtime.UI
             wheel.SubjectDetail = () => "Secured ruin";
         }
 
-        // ------------------------------------------------------------------ build / defense pickers (B7)
-        void SocketPickerFromSelection()
+        // ------------------------------------------------------------------ an empty site's facility sub-ring
+        /// <summary>A site picked in the world (or by the selection) opens its facility ring.</summary>
+        void SocketFromSelection()
         {
             int slot = commander.SelectedRingSlot;
-            if (slot == 0 || !session.Objectives.TryGetValue(wheelSite, out var site)) return;
-            if (site.Slots == null || Array.IndexOf(site.Slots, slot) < 0) return;
-            if (pickerKind == "build" && pickerSlot == slot) return;
-            OpenBuildPicker(wheelSite, slot);
+            if (slot == 0 || wheelKind != "base" || slot == wheelEnteredSlot && wheel.Depth > 0) return;
+            if (!session.Objectives.TryGetValue(wheelSite, out var site) || site.Slots == null || Array.IndexOf(site.Slots, slot) < 0) return;
+            while (wheel.Depth > 0) wheel.Back();
+            wheelEnteredSlot = slot;   // set first: the item's Children re-selects the same slot
+            if (!wheel.EnterItem("socket:" + slot)) wheelEnteredSlot = 0;
         }
 
-        VisualElement OpenPickerPanel(string kind, string title)
+        /// <summary>The nine facilities for an empty site: name, description and cost in the centre; hover previews it in the world.</summary>
+        List<RadialItem> FacilityItems(int siteId, int slot)
         {
-            if (picker == null)
-            {
-                picker = UiKit.El("se-cmd-picker");
-                picker.style.position = Position.Absolute;
-                picker.style.width = 352;
-                picker.style.left = 0; picker.style.top = 0;
-                picker.usageHints = UsageHints.DynamicTransform;   // hints before attaching
-                commandLayer.Add(picker);
-                var header = UiKit.El("se-cmd-picker-head", picker);
-                header.style.flexDirection = FlexDirection.Row; header.style.alignItems = Align.Center; header.style.height = 36;
-                pickerTitle = UiKit.Text("", "se-cmd-picker-title", header);
-                pickerTitle.style.flexGrow = 1; pickerTitle.style.overflow = Overflow.Hidden; pickerTitle.style.textOverflow = TextOverflow.Ellipsis; pickerTitle.style.whiteSpace = WhiteSpace.NoWrap;
-                UiKit.IconButton("close", ClosePicker, "Close (Esc)", header, 28);
-                pickerGrid = UiKit.El("se-cmd-picker-grid", picker);
-                pickerGrid.style.flexDirection = FlexDirection.Row; pickerGrid.style.flexWrap = Wrap.Wrap;
-            }
-            pickerTiles.Clear();
-            pickerGrid.Clear();
-            pickerKind = kind;
-            pickerTitle.text = title;
-            picker.style.display = DisplayStyle.Flex;
-            picker.BringToFront();
-            return pickerGrid;
-        }
-
-        void ClosePicker()
-        {
-            if (pickerKind == "") return;
-            string kind = pickerKind;
-            int site = pickerSite;
-            pickerKind = ""; pickerSlot = 0;
-            pickerTiles.Clear();
-            if (picker != null) picker.style.display = DisplayStyle.None;
-            commander.ClearRingPreview();
-            if (kind == "build" && commander.SelectedRingSlot != 0 && commander.SelectedObjective == site) commander.SelectObjective(site);
-        }
-
-        float pickerRefreshAt;
-        Vector2 pickerAt = new Vector2(float.NaN, float.NaN);
-        int pickerSlotIdFor;
-        string pickerSlotId;
-
-        void UpdatePicker(Rect safe)
-        {
-            if (pickerKind == "" || picker == null) return;
-            if (!wheel.IsOpen || wheel.style.display == DisplayStyle.None) { picker.style.visibility = Visibility.Hidden; return; }
-            picker.style.visibility = Visibility.Visible;
-            // tile states (locks, shortfalls) follow the economy: 10 Hz is plenty (tiles refresh on build too)
-            if (Time.unscaledTime >= pickerRefreshAt)
-            {
-                pickerRefreshAt = Time.unscaledTime + .1f;
-                foreach (var tile in pickerTiles) tile.refresh();
-            }
-            float w = 352, h = picker.resolvedStyle.height;
-            if (float.IsNaN(h) || h < 60) h = pickerKind == "build" ? 404 : 344;
-            var c = wheel.Centre;
-            float k = wheel.CurrentScale;
-            float left, top;
-            if (pickerKind == "build")
-            {
-                if (pickerSlotId == null || pickerSlotIdFor != pickerSlot) { pickerSlotIdFor = pickerSlot; pickerSlotId = "socket:" + pickerSlot; }
-                string id = pickerSlotId;
-                float angle = wheel.AngleOf(id);
-                var icon = wheel.IconPosition(id);
-                bool right = !float.IsNaN(angle) && Mathf.Repeat(angle, 360f) > 0f && Mathf.Repeat(angle, 360f) < 180f;
-                left = right ? c.x + 148 * k : c.x - 148 * k - w;
-                top = icon.y - h * .5f;
-            }
-            else
-            {
-                left = c.x + 210 * k + w <= safe.xMax ? c.x + 210 * k : c.x - 210 * k - w;
-                top = c.y - h * .5f;
-            }
-            left = Mathf.Clamp(left, safe.xMin, Mathf.Max(safe.xMin, safe.xMax - w));
-            top = Mathf.Clamp(top, safe.yMin, Mathf.Max(safe.yMin, safe.yMax - h));
-            // moved with a transform (it follows the wheel every frame): no layout pass
-            var at = new Vector2(left, top);
-            if (!((at - pickerAt).sqrMagnitude <= .0001f)) { pickerAt = at; picker.style.translate = new Translate(left, top); }
-        }
-
-        /// <summary>One picker tile: icon, name, cost row (or the lock reason), digit, lock glyph. Disabled tiles stay hoverable.</summary>
-        void PickerTile(VisualElement grid, string icon, string title, JToken cost, Func<string> lockReason, Action pick, Action<bool> hover, float width, float height, float iconSize, string tooltip)
-        {
-            int index = pickerTiles.Count;
-            var tile = new Button { text = "" };
-            tile.AddToClassList("se-cmd-tile");
-            tile.style.width = width; tile.style.height = height;
-            tile.style.marginRight = (index + 1) % (width > 90 ? 3 : 4) == 0 ? 0 : 8;
-            tile.style.marginBottom = 8; tile.style.marginLeft = 0; tile.style.marginTop = 0;
-            tile.style.paddingLeft = 4; tile.style.paddingRight = 4; tile.style.paddingTop = 0; tile.style.paddingBottom = 0;
-            tile.style.flexDirection = FlexDirection.Column; tile.style.alignItems = Align.Center;
-            if (!string.IsNullOrEmpty(tooltip)) tile.tooltip = tooltip;
-            var digit = UiKit.Text(index < 9 ? (index + 1).ToString() : "", "se-cmd-tile-digit", tile);
-            digit.style.position = Position.Absolute; digit.style.left = 4; digit.style.top = 2;
-            var lockIcon = new IconElement("lock", "se-cmd-tile-lock");
-            lockIcon.style.position = Position.Absolute; lockIcon.style.right = 4; lockIcon.style.top = 4; lockIcon.style.width = 12; lockIcon.style.height = 12;
-            tile.Add(lockIcon);
-            var glyph = new IconElement(icon, "se-cmd-tile-icon");
-            glyph.style.width = iconSize; glyph.style.height = iconSize; glyph.style.marginTop = width > 90 ? 10 : 8; glyph.style.flexShrink = 0;
-            tile.Add(glyph);
-            var name = UiKit.Text(title, "se-cmd-tile-name", tile);
-            name.style.whiteSpace = WhiteSpace.Normal; name.style.unityTextAlign = TextAnchor.MiddleCenter;
-            name.style.height = width > 90 ? 30 : 26; name.style.overflow = Overflow.Hidden;
-            var footer = UiKit.El("se-cmd-tile-footer", tile);
-            footer.style.flexDirection = FlexDirection.Row; footer.style.justifyContent = Justify.Center; footer.style.alignItems = Align.Center; footer.style.height = 14;
-            int materials = Mathf.RoundToInt(ProtocolDecoder.Float(cost?["materials"])), energy = Mathf.RoundToInt(ProtocolDecoder.Float(cost?["energy"]));
-            Label CostPart(string res, int amount)
-            {
-                if (amount <= 0) return null;
-                var ic = new IconElement(res, "se-cmd-tile-cost-icon");
-                ic.style.width = 11; ic.style.height = 11; ic.style.marginRight = 1;
-                footer.Add(ic);
-                var l = UiKit.Text(amount.ToString(), "se-cmd-tile-cost", footer);
-                l.style.marginRight = 4;
-                return l;
-            }
-            var materialsLabel = CostPart("materials", materials);
-            var energyLabel = CostPart("energy", energy);
-            var reasonLabel = UiKit.Text("", "se-cmd-tile-reason", footer);
-            reasonLabel.style.whiteSpace = WhiteSpace.NoWrap; reasonLabel.style.overflow = Overflow.Hidden; reasonLabel.style.textOverflow = TextOverflow.Ellipsis;
-            string lastReason = "\u0001";
-            void Refresh()
-            {
-                string reason = lockReason?.Invoke();
-                bool locked = !string.IsNullOrEmpty(reason);
-                tile.EnableInClassList("se-cmd-tile--disabled", locked || Shortfall(cost) != null);
-                glyph.style.opacity = locked ? .4f : 1f;
-                lockIcon.style.display = locked ? DisplayStyle.Flex : DisplayStyle.None;
-                if (reason != lastReason)
-                {
-                    lastReason = reason;
-                    reasonLabel.text = reason ?? "";
-                    reasonLabel.style.display = locked ? DisplayStyle.Flex : DisplayStyle.None;
-                    foreach (var child in footer.Children()) if (child != reasonLabel) child.style.display = locked ? DisplayStyle.None : DisplayStyle.Flex;
-                }
-                if (materialsLabel != null) materialsLabel.EnableInClassList("se-cmd-short", ResourceHave("materials") < materials);
-                if (energyLabel != null) energyLabel.EnableInClassList("se-cmd-short", ResourceHave("energy") < energy);
-            }
-            void Pick()
-            {
-                string reason = lockReason?.Invoke() ?? Shortfall(cost);
-                if (!string.IsNullOrEmpty(reason)) { commander.Say(reason, false, Time.unscaledTime); return; }
-                pick();
-            }
-            tile.clicked += Pick;
-            if (hover != null)
-            {
-                tile.RegisterCallback<PointerEnterEvent>(_ => hover(true));
-                tile.RegisterCallback<PointerLeaveEvent>(_ => hover(false));
-            }
-            grid.Add(tile);
-            Refresh();
-            pickerTiles.Add((Pick, Refresh));
-        }
-
-        void OpenBuildPicker(int siteId, int slot)
-        {
-            if (!session.Objectives.TryGetValue(siteId, out var site)) return;
-            var grid = OpenPickerPanel("build", $"Site {slot % 16} · empty");
-            pickerSite = siteId; pickerSlot = slot;
+            var list = new List<RadialItem>();
             foreach (string type in Facilities)
             {
                 var d = Defs?["BUILDINGS"]?[type];
@@ -800,59 +835,30 @@ namespace SE.Runtime.UI
                 string needs = ProtocolDecoder.Str(d["needs"]);
                 string Lock()
                 {
-                    if (tier > Age + 1) return $"Tier {Tier(tier)}";
+                    if (tier > Age + 1) return $"Requires Tier {Tier(tier)}";
                     if (!string.IsNullOrEmpty(needs) && !session.Structures.Buildings.Values.Any(b => b.City == siteId && b.Owner == session.CivId && b.Type == needs && b.Done))
-                        return "Needs " + ShortName(needs);
+                        return "Needs " + NameOf("BUILDINGS", needs) + " at this base";
                     if (!session.Objectives.TryGetValue(siteId, out var s) || s.Slots == null || Array.IndexOf(s.Slots, slot) < 0) return "Site taken";
                     return null;
                 }
-                string tip = NameOf("BUILDINGS", type) + "\n" + ProtocolDecoder.Str(d["desc"], "") + $" {ProtocolDecoder.Int(d["time"])} s." +
-                    (tier > 1 ? $" Requires faction Tier {Tier(tier)}." : "") + (string.IsNullOrEmpty(needs) ? "" : $" Requires {NameOf("BUILDINGS", needs)} at this base.");
-                PickerTile(grid, Icons.BuildingKind(type), NameOf("BUILDINGS", type), d["cost"], Lock,
-                    () => { commander.BuildRingFacility(siteId, slot, facility); ClosePicker(); },
-                    on => { if (on && Lock() == null) commander.PreviewRingFacility(siteId, slot, facility); else commander.ClearRingPreview(); },
-                    104, 104, 36, tip);
-            }
-        }
-
-        string ShortName(string type) => type switch
-        {
-            "advanced_lab" => "Adv. Lab", "heavy_weapons" => "Heavy Weapons", "motor_works" => "Vehicle Works", "missile_silo" => "Missile Facility",
-            _ => NameOf("BUILDINGS", type)
-        };
-
-        void OpenDefensePicker(int siteId)
-        {
-            var grid = OpenPickerPanel("defense", "Defenses");
-            pickerSite = siteId; pickerSlot = 0;
-            if (session.Objectives.TryGetValue(siteId, out var site) && site.DefenseCount < 6)
-            {
-                var def = Defs?["CITY_DEFENSES"];
-                int missing = 6 - site.DefenseCount;
-                var cost = new JObject
+                list.Add(new RadialItem
                 {
-                    ["materials"] = Mathf.CeilToInt(ProtocolDecoder.Float(def?["cost"]?["materials"], 240) * missing / 6f),
-                    ["energy"] = Mathf.CeilToInt(ProtocolDecoder.Float(def?["cost"]?["energy"], 60) * missing / 6f)
-                };
-                PickerTile(grid, "sandbags", "City perimeter", cost,
-                    () => session.Structures.Buildings.TryGetValue(site.Headquarters, out var hq) && hq.Project != null ? "HQ busy" : null,
-                    () => { Send(new JObject { ["c"] = "baseDefenses", ["site"] = siteId }, "Construction started"); ClosePicker(); },
-                    null, 76, 88, 28, "City perimeter\nFour sandbag positions and two machine-gun turrets. Uses no sites.");
+                    Id = "facility:" + type, Icon = Icons.BuildingKind(type), Title = NameOf("BUILDINGS", type), Cost = d["cost"], Seconds = ProtocolDecoder.Int(d["time"]),
+                    Detail = () => ProtocolDecoder.Str(d["desc"], ""),
+                    Enabled = () => Lock() == null,
+                    Reason = Lock,
+                    Hover = on => { if (on && Lock() == null) commander.PreviewRingFacility(siteId, slot, facility); else commander.ClearRingPreview(); },
+                    Click = _ =>
+                    {
+                        commander.BuildRingFacility(siteId, slot, facility);
+                        wheel.Back();
+                    },
+                });
             }
-            foreach (string type in Defenses)
-            {
-                var d = Defs?["BUILDINGS"]?[type];
-                if (d == null) continue;
-                string defense = type;
-                int tier = ProtocolDecoder.Int(d["tier"], 1);
-                PickerTile(grid, Icons.BuildingKind(type), NameOf("BUILDINGS", type), d["cost"],
-                    () => tier > Age + 1 ? $"Tier {Tier(tier)}" : null,
-                    () => { ClosePicker(); commander.BeginFieldConstruction(defense); },
-                    null, 76, 88, 28, DefenseTooltip(type));
-            }
+            return list;
         }
 
-        // ------------------------------------------------------------------ building wheel (B8)
+        // ------------------------------------------------------------------ building wheel
         BuildingRecord[] OwnBuildings(int[] ids)
         {
             var list = new List<BuildingRecord>(ids.Length);
@@ -865,20 +871,19 @@ namespace SE.Runtime.UI
             var sb = new System.Text.StringBuilder();
             sb.Append(Age).Append('|').Append((Econ?["techs"] as JArray)?.Count ?? 0).Append('|').Append((Econ?["groups"] as JArray)?.Count ?? 0).Append('|');
             foreach (var b in OwnBuildings(ids))
-                sb.Append(b.Id).Append(b.Done ? 'd' : 'u').Append(b.Missiles > 0 ? 'm' : '-').Append(b.Project != null ? 'p' : '-').Append(b.RepairCost > 0 ? 'r' : '-').Append(',');
+                sb.Append(b.Id).Append(b.Done ? 'd' : 'u').Append(b.Missiles > 0 ? 'm' : '-').Append(b.Project != null ? 'p' : '-').Append(b.RepairCost > 0 ? 'r' : '-').Append(b.Level).Append(',');
             return sb.ToString();
         }
 
-        void OpenBuildingWheel(int[] ids)
+        void OpenBuildingWheel(int[] ids, string titleOverride = null)
         {
             var own = OwnBuildings(ids);
             if (own.Length == 0) return;
-            ClosePicker();
             wheelKind = "building"; wheelBuildings = ids; wheelSite = own[0].City;
             wheelStructure = BuildingStructure(ids);
             wheelStructureSnap = session.Snapshots;
             var first = own[0];
-            string title = own.Length == 1 ? NameOf("BUILDINGS", first.Type) : own.All(b => b.Type == first.Type) ? $"{own.Length} × {NameOf("BUILDINGS", first.Type)}" : $"{own.Length} facilities";
+            string title = titleOverride ?? (own.Length == 1 ? NameOf("BUILDINGS", first.Type) : own.All(b => b.Type == first.Type) ? $"{own.Length} × {NameOf("BUILDINGS", first.Type)}" : $"{own.Length} facilities");
             Func<Vector2?> anchor;
             if (own.Length == 1 && first.HasPosition) anchor = WorldAnchor(first.X, first.Z, .3f);
             else
@@ -888,8 +893,10 @@ namespace SE.Runtime.UI
                 foreach (var b in own) if (b.HasPosition) { sx += first.X + session.World.Grid.DxWrap(first.X, b.X); sz += b.Z; n++; }
                 anchor = n > 0 ? WorldAnchor(sx / n, sz / n, .3f) : (() => (Vector2?)null);
             }
+            // a roster spread over several bases: anchor at the dock instead (the buildings may be far apart)
+            if (own.Select(b => b.City).Distinct().Count() > 1) anchor = DockAnchor;
             int[] idsCopy = ids;
-            wheel.Open(title, Icons.BuildingKind(first.Type), BuildingItems(ids), anchor);
+            wheel.Open(title, Icons.BuildingKind(first.Type), BuildingItems(ids), anchor, null, BuildingOuterArc(ids));
             wheel.SubjectDetail = () =>
             {
                 var current = OwnBuildings(idsCopy);
@@ -899,7 +906,8 @@ namespace SE.Runtime.UI
                 if (queued > 0) return $"{queued} in queue";
                 var busy = current.FirstOrDefault(b => b.Project != null);
                 if (busy.Id != 0) return $"{ProjectName(busy.Project)} {busy.WorksPct}%";
-                return $"Condition {current.Min(b => b.Hp)}%";
+                int level = current.Max(b => b.Level);
+                return (level > 1 ? $"Level {level} · " : "") + $"Condition {current.Min(b => b.Hp)}%";
             };
         }
 
@@ -909,53 +917,17 @@ namespace SE.Runtime.UI
             var own = OwnBuildings(ids);
             if (own.Length == 0) return items;
             int[] all = own.Select(b => b.Id).ToArray();
-            var trainers = own.Where(b => b.Done && Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray).Select(b => b.Id).ToArray();
-            // 1. training, one wedge per unit type across the selection
+            var trainers = own.Where(IsTrainer).Select(b => b.Id).ToArray();
+            var hostTypes = new HashSet<string>(own.Where(b => b.Done).Select(b => b.Type));
+            // 1. the top segment: building upgrades (era level, Armory / Barracks techs)
+            items.Add(UpgradesItem(all, hostTypes));
+            // 2. training, one wedge per unit type across the selection (batch-queued across every host)
             var types = new List<string>();
             foreach (var b in own)
                 if (b.Done && Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray trains)
                     foreach (var t in trains) { string key = (string)t; if (!types.Contains(key)) types.Add(key); }
             foreach (string type in types) items.Add(TrainItem(type, trainers));
-            // 2. upgrades (Armory techs, Barracks upgrades)
-            var hostTypes = new HashSet<string>(own.Where(b => b.Done).Select(b => b.Type));
-            if (Defs?["TECHS"] is JObject techs && techs.Properties().Any(p => hostTypes.Contains(ProtocolDecoder.Str(p.Value["at"], "armory"))))
-                items.Add(new RadialItem
-                {
-                    Id = "upgrades", Icon = "upgrade", Title = "Upgrades",
-                    Detail = () => hostTypes.Contains("barracks") && !hostTypes.Contains("armory") ? "Infantry equipment" : "Faction-wide military upgrades",
-                    Children = () => TechItems(all, hostTypes),
-                });
-            // 3. rally
-            if (trainers.Length > 0)
-                items.Add(new RadialItem
-                {
-                    Id = "rally", Icon = "rally", Title = "Rally point",
-                    Detail = () => "Click the ground where new units gather (right-click also sets it)",
-                    Click = _ => commander.Begin(Commander.Mode.Rally),
-                });
-            // 4. reinforce a control group
-            if (trainers.Length > 0 && Econ?["groups"] is JArray savedGroups && savedGroups.Count > 0)
-                items.Add(new RadialItem
-                {
-                    Id = "reinforce", Icon = "army", Title = "Reinforce group",
-                    Detail = () => "New units from here join a control group",
-                    Children = () => GroupItems(trainers),
-                });
-            // 5. repair
-            items.Add(new RadialItem
-            {
-                Id = "repair", Icon = "repair", Title = "Repair",
-                Visible = () => OwnBuildings(all).Any(b => b.Done && b.RepairCost > 0),
-                Cost = new JObject { ["materials"] = own.Where(b => b.Done && b.Project == null).Sum(b => b.RepairCost) },
-                Enabled = () => OwnBuildings(all).Any(b => b.Done && b.RepairCost > 0 && b.Project == null),
-                Reason = () => "The facility is busy",
-                Click = _ =>
-                {
-                    foreach (var b in OwnBuildings(all)) if (b.Done && b.RepairCost > 0 && b.Project == null)
-                        Send(new JObject { ["c"] = "repair", ["id"] = b.Id }, "Repairs started");
-                },
-            });
-            // 6. strategic missile
+            // 3. strategic missile
             var silo = own.FirstOrDefault(b => b.Type == "missile_silo" && b.Done);
             if (silo.Id != 0)
             {
@@ -977,7 +949,44 @@ namespace SE.Runtime.UI
                         Click = _ => Send(new JObject { ["c"] = "missileBuild", ["id"] = siloId }, "Construction started"),
                     });
             }
-            // 7. demolish (two-step)
+            return items;
+        }
+
+        /// <summary>Rally, reinforce, repair, demolish: outside the nine segments so training keeps the ring.</summary>
+        List<RadialItem> BuildingOuterArc(int[] ids)
+        {
+            var items = new List<RadialItem>();
+            var own = OwnBuildings(ids);
+            if (own.Length == 0) return items;
+            int[] all = own.Select(b => b.Id).ToArray();
+            var trainers = own.Where(IsTrainer).Select(b => b.Id).ToArray();
+            if (trainers.Length > 0)
+                items.Add(new RadialItem
+                {
+                    Id = "rally", Icon = "rally", Title = "Rally point",
+                    Detail = () => "Click the ground where new units gather (right-click also sets it)",
+                    Click = _ => commander.Begin(Commander.Mode.Rally),
+                });
+            if (trainers.Length > 0 && Econ?["groups"] is JArray savedGroups && savedGroups.Count > 0)
+                items.Add(new RadialItem
+                {
+                    Id = "reinforce", Icon = "army", Title = "Reinforce group",
+                    Detail = () => "New units from here join a control group",
+                    Children = () => GroupItems(trainers),
+                });
+            items.Add(new RadialItem
+            {
+                Id = "repair", Icon = "repair", Title = "Repair",
+                Visible = () => OwnBuildings(all).Any(b => b.Done && b.RepairCost > 0),
+                Cost = new JObject { ["materials"] = own.Where(b => b.Done && b.Project == null).Sum(b => b.RepairCost) },
+                Enabled = () => OwnBuildings(all).Any(b => b.Done && b.RepairCost > 0 && b.Project == null),
+                Reason = () => "The facility is busy",
+                Click = _ =>
+                {
+                    foreach (var b in OwnBuildings(all)) if (b.Done && b.RepairCost > 0 && b.Project == null)
+                        Send(new JObject { ["c"] = "repair", ["id"] = b.Id }, "Repairs started");
+                },
+            });
             if (own.Any(b => b.Type != "town"))
             {
                 int refund = own.Where(b => b.Type != "town").Sum(b => Mathf.FloorToInt(ProtocolDecoder.Float(Defs?["BUILDINGS"]?[b.Type]?["cost"]?["materials"]) * .35f));
@@ -1009,6 +1018,84 @@ namespace SE.Runtime.UI
             return null;
         }
 
+        /// <summary>Project kinds that are not an era level upgrade (anything else running on a building with levels is).</summary>
+        static bool LevelProject(string project) =>
+            project != null && project != "upgrade" && project != "repair" && project != "missile" && project != "tier" && !PerimeterProject(project);
+
+        /// <summary>
+        /// The top segment of a building wheel. With techs (Armory, Barracks) it is an "Upgrades" sub-ring holding
+        /// the era level upgrade and the techs; with only a level upgrade it is that upgrade; otherwise disabled.
+        /// </summary>
+        RadialItem UpgradesItem(int[] ids, HashSet<string> hostTypes)
+        {
+            var level = LevelUpgradeItem(ids);
+            bool techs = Defs?["TECHS"] is JObject options && options.Properties().Any(p => hostTypes.Contains(ProtocolDecoder.Str(p.Value["at"], "armory")));
+            if (techs)
+                return new RadialItem
+                {
+                    Id = "upgrades", Icon = "upgrade", Title = "Upgrades",
+                    Detail = () => (hostTypes.Contains("barracks") && !hostTypes.Contains("armory") ? "Infantry equipment" : "Faction-wide military upgrades") + (level != null ? " and the building's era level" : ""),
+                    Children = () =>
+                    {
+                        var list = new List<RadialItem>();
+                        var lv = LevelUpgradeItem(ids);
+                        if (lv != null) list.Add(lv);
+                        list.AddRange(TechItems(ids, hostTypes));
+                        return list;
+                    },
+                };
+            if (level != null) return level;
+            return new RadialItem
+            {
+                Id = "upgrades", Icon = "upgrade", Title = "Upgrades",
+                Enabled = () => false,
+                Reason = () => "This building has no upgrades",
+            };
+        }
+
+        /// <summary>The era level upgrade (server <c>upgradeBuilding</c>), for every selected building that has levels; null when none has.</summary>
+        RadialItem LevelUpgradeItem(int[] ids)
+        {
+            var own = OwnBuildings(ids).Where(b => Defs?["BUILDINGS"]?[b.Type]?["levels"] is JObject).ToArray();
+            if (own.Length == 0) return null;
+            var first = own.OrderBy(b => Mathf.Max(1, b.Level)).First();
+            var levels = Defs?["BUILDINGS"]?[first.Type]?["levels"];
+            int current = Mathf.Max(1, first.Level), max = ProtocolDecoder.Int(levels?["max"], 3), next = current + 1;
+            int[] candidates = own.Select(b => b.Id).ToArray();
+            BuildingRecord[] Ready() => OwnBuildings(candidates).Where(b => b.Done && b.Project == null && Mathf.Max(1, b.Level) < ProtocolDecoder.Int(Defs?["BUILDINGS"]?[b.Type]?["levels"]?["max"], 3)
+                && Mathf.Max(1, b.Level) + 1 <= Age + 1).ToArray();
+            var item = new RadialItem
+            {
+                Id = "level", Icon = "upgrade",
+                Title = current >= max ? $"Level {current} (maximum)" : own.Length == 1 ? $"Upgrade to level {next}" : $"Upgrade {own.Length} to level {next}",
+                Cost = current < max ? (levels?["cost"] as JArray)?.ElementAtOrDefault(current - 1) : null,
+                Seconds = current < max ? ProtocolDecoder.Int((levels?["time"] as JArray)?.ElementAtOrDefault(current - 1)) : 0,
+                Caption = () => "Lv " + current,
+                Detail = () => ProtocolDecoder.Str(levels?["desc"], "Era upgrade") + $" · Level {current} of {max}" + (own.Length > 1 ? " · cost per building" : ""),
+                Enabled = () => Ready().Length > 0,
+                Reason = () =>
+                {
+                    if (current >= max) return "Maximum level";
+                    if (next > Age + 1) return $"Requires era {Tier(next)}";
+                    var cur = OwnBuildings(candidates);
+                    if (cur.Any(b => LevelProject(b.Project))) return $"Upgrading · {cur.First(b => LevelProject(b.Project)).WorksPct}%";
+                    if (cur.All(b => !b.Done)) return "Still under construction";
+                    if (cur.All(b => b.Project != null)) return "The building is busy";
+                    return null;
+                },
+                Progress = () =>
+                {
+                    foreach (var b in OwnBuildings(candidates)) if (LevelProject(b.Project)) return b.WorksPct / 100f;
+                    return -1f;
+                },
+                Click = _ =>
+                {
+                    foreach (var b in Ready()) Send(new JObject { ["c"] = "upgradeBuilding", ["id"] = b.Id }, "Upgrade started");
+                },
+            };
+            return item;
+        }
+
         RadialItem TrainItem(string type, int[] trainers)
         {
             var d = Defs?["UNITS"]?[type];
@@ -1018,9 +1105,10 @@ namespace SE.Runtime.UI
             return new RadialItem
             {
                 Id = "train:" + type, Icon = type, Title = NameOf("UNITS", type), Cost = d?["cost"], Seconds = ProtocolDecoder.Int(d?["time"]),
-                Detail = () => UnitRole(type) + $" · {ProtocolDecoder.Int(d?["capacity"])} command",
+                Detail = () => UnitRole(type) + $" · {ProtocolDecoder.Int(d?["capacity"])} command" + (Hosts().Length > 1 ? $" · queues across {Hosts().Length} buildings" : ""),
                 Enabled = () => tier <= Age + 1 && Hosts().Length > 0,
-                Reason = () => tier > Age + 1 ? $"Requires Tier {Tier(tier)}" : Hosts().Length == 0 ? "Needs " + NameOf("BUILDINGS", facility) : "Shift ×5 · right-click cancels · Ctrl repeats",
+                Reason = () => tier > Age + 1 ? $"Requires Tier {Tier(tier)}" : Hosts().Length == 0 ? "Needs " + NameOf("BUILDINGS", facility)
+                    : Hosts().Length > 1 ? "Shift ×5 · Alt one each · right-click cancels" : "Shift ×5 · right-click cancels · Ctrl repeats",
                 Badge = () =>
                 {
                     int n = 0;
@@ -1046,8 +1134,12 @@ namespace SE.Runtime.UI
                                 r => { if (r.Error != null) commander.Say(r.Error, false, Time.unscaledTime); });
                         return;
                     }
-                    int count = c.Shift ? 5 : 1;
-                    session.Net?.Command(new JObject { ["c"] = "batchTrain", ["buildings"] = new JArray(hosts.Select(b => b.Id).ToArray()), ["unit"] = type, ["count"] = count }, r =>
+                    // batch production: the server spreads the count over the hosts; Alt queues one in every host
+                    bool each = c.Alt && hosts.Length > 1;
+                    int count = each ? hosts.Length : c.Shift ? 5 : 1;
+                    var cmd = new JObject { ["c"] = "batchTrain", ["buildings"] = new JArray(hosts.Select(b => b.Id).ToArray()), ["unit"] = type, ["count"] = each ? 1 : count };
+                    if (each) cmd["policy"] = "each";
+                    session.Net?.Command(cmd, r =>
                     {
                         int n = ProtocolDecoder.Int(r.Raw?["training"]?["queued"], count);
                         string why = ProtocolDecoder.Str(r.Raw?["training"]?["reason"], "");
@@ -1132,6 +1224,106 @@ namespace SE.Runtime.UI
             return list;
         }
 
+        // ------------------------------------------------------------------ Build wheel (B)
+        /// <summary>The nine segments, in order clockwise from the top (plan §2.G).</summary>
+        static readonly string[] BuildWheelOrder = { "trench", "road", "barricade", "guard_post", "bunker", "turret", "aa_battery", "fort", "@newbase" };
+        /// <summary>Support emplacements on the outer arc (any other field building the server adds joins them).</summary>
+        static readonly string[] BuildWheelExtras = { "artillery_post", "sensor_post", "repair_point" };
+
+        string NewBaseType => ProtocolDecoder.Str(Defs?["RULESET"]?["newBase"]?["type"], "base_site");
+
+        List<RadialItem> BuildWheelItems()
+        {
+            var list = new List<RadialItem>();
+            foreach (string key in BuildWheelOrder) list.Add(BuildItem(key == "@newbase" ? NewBaseType : key, key == "@newbase"));
+            return list;
+        }
+
+        List<RadialItem> BuildWheelSupport()
+        {
+            var list = new List<RadialItem>();
+            foreach (string key in BuildWheelExtras) if (Defs?["BUILDINGS"]?[key] != null) list.Add(BuildItem(key, false));
+            if (Defs?["BUILDINGS"] is JObject all)
+                foreach (var p in all.Properties())
+                {
+                    string key = p.Name;
+                    if (!ProtocolDecoder.Bool(p.Value["field"]) || key == "city_turret" || key == NewBaseType || ProtocolDecoder.Bool(p.Value["newBase"])) continue;
+                    if (Array.IndexOf(BuildWheelOrder, key) >= 0 || Array.IndexOf(BuildWheelExtras, key) >= 0) continue;
+                    if (list.Count < 5) list.Add(BuildItem(key, false));
+                }
+            return list;
+        }
+
+        // read-only cost tokens for the two tools without a definition (shared: never mutate them)
+        static readonly JObject TrenchCost = new JObject { ["materials"] = 35 }, RoadCost = new JObject { ["materials"] = 15 };
+
+        RadialItem BuildItem(string key, bool newBase)
+        {
+            if (key == "trench")
+                return new RadialItem
+                {
+                    Id = "build:trench", Icon = "trench", Title = "Trench", Cost = TrenchCost,
+                    Detail = () => "Drag a line across your territory and release to dig. 35 Materials per segment; infantry inside gain cover.",
+                    Click = _ => { CloseWheel(); commander.BeginTrench(); },
+                };
+            if (key == "road")
+                return new RadialItem
+                {
+                    Id = "build:road", Icon = "road", Title = "Road", Cost = RoadCost,
+                    Detail = () => "Drag a route through your territory and release to build. 15 Materials per link; roads over rivers become bridges.",
+                    Click = _ => { CloseWheel(); commander.BeginRoad(); },
+                };
+            var d = Defs?["BUILDINGS"]?[key];
+            int tier = ProtocolDecoder.Int(d?["tier"], 1);
+            string type = key;
+            string name = newBase ? "New base" : d != null ? NameOf("BUILDINGS", key) : key;
+            string desc = ProtocolDecoder.Str(d?["desc"], newBase ? "Found a new base in your territory beside a road." : "Field defense.")
+                .Replace(" Q / E rotates before placement.", "");
+            return new RadialItem
+            {
+                Id = "build:" + key, Icon = newBase ? "new_base" : Icons.BuildingKind(key), Title = name,
+                Cost = d?["cost"], Seconds = ProtocolDecoder.Int(d?["time"]),
+                Detail = () => desc,
+                Enabled = () => Defs?["BUILDINGS"]?[type] != null && tier <= Age + 1,
+                Reason = () => Defs?["BUILDINGS"]?[type] == null ? "Not available on this server" : tier > Age + 1 ? $"Requires Tier {Tier(tier)}"
+                    : newBase ? "Inside your territory, on or beside a road" : "Inside your territory · , . rotate",
+                Click = _ => { CloseWheel(); commander.BeginFieldConstruction(type); },
+            };
+        }
+
+        // ------------------------------------------------------------------ Terrain wheel (T)
+        static readonly string[] TerrainOps = { "raise", "lower", "flatten", "smooth" };
+
+        List<RadialItem> TerrainWheelItems()
+        {
+            var works = Defs?["RULESET"]?["terrain"];
+            var ops = works?["ops"] is JArray serverOps && serverOps.Count > 0 ? serverOps.Select(o => (string)o).ToArray() : TerrainOps;
+            var list = new List<RadialItem>();
+            foreach (string op in ops)
+            {
+                string o = op;
+                string title = o switch { "raise" => "Raise ground", "lower" => "Lower ground", "flatten" => "Flatten", "smooth" => "Smooth", _ => char.ToUpperInvariant(o[0]) + o.Substring(1) };
+                string detail = o switch
+                {
+                    "raise" => "Engineers heap up the ground around a point: high ground for defenses",
+                    "lower" => "Engineers dig the ground down around a point",
+                    "flatten" => "Level the ground around a point to the height at its centre",
+                    "smooth" => "Even out rough ground around a point for roads and movement",
+                    _ => "Reshape the ground around a point",
+                };
+                list.Add(new RadialItem
+                {
+                    Id = "terrain:" + o, Icon = "terrain_" + o, Title = title,
+                    Cost = works?["cost"], Seconds = ProtocolDecoder.Int(works?["time"]),
+                    Detail = () => detail,
+                    Enabled = () => Defs?["RULESET"]?["terrain"] != null,
+                    Reason = () => Defs?["RULESET"]?["terrain"] == null ? "Terrain works are not available on this server" : "Then click a point in your territory",
+                    Click = _ => { CloseWheel(); commander.Begin(Commander.Mode.Target, "", new JObject { ["c"] = "terrain", ["op"] = o, ["tile"] = "@map" }); },
+                });
+            }
+            return list;
+        }
+
         // ------------------------------------------------------------------ unit wheel (B9)
         static string AbilityGlyph(string ability) => ability switch
         {
@@ -1148,7 +1340,6 @@ namespace SE.Runtime.UI
             var groups = typeNames.GroupBy(t => t).OrderByDescending(g => g.Count()).ToArray();
             string main = groups[0].Key;
             var types = groups.Select(g => g.Key).ToArray();
-            ClosePicker();
             wheelKind = "unit"; wheelSite = 0; wheelBuildings = Array.Empty<int>(); wheelStructure = "";
             var items = new List<RadialItem>
             {
