@@ -71,7 +71,7 @@ test('neutral ground outside the ring: double price, with the reason, and that i
   const quote = preview(g, 'guard_post', far).reply.placement;
   assert.deepEqual(quote.cost, doubled(ACTION_BUILDINGS.guard_post.cost));
   assert.equal(quote.surcharge, DEFENSE_INFLUENCE.factor);
-  assert.match(quote.note, /Outside your influence: ×2 cost/);
+  assert.match(quote.note, /Outside your influence: ×3 cost/);
   const before = { ...g.civs[0].res };
   assert.ok(g.command(0, { c: 'fieldBuild', type: 'guard_post', point: far }).building);
   assert.equal(before.materials - g.civs[0].res.materials, quote.cost.materials);

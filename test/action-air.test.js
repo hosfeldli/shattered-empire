@@ -22,11 +22,11 @@ function setup() {
   return { g, hq, enemy, mid: { x: (hq.x + enemy.x) / 2, z: (hq.z + enemy.z) / 2 } };
 }
 
-test('aircraft have endurance by role: fighters ~60 s, bombers ~90 s, helicopters ~120 s, drones less', () => {
-  assert.equal(ACTION_UNITS.fighter.fuel, 60);
-  assert.equal(ACTION_UNITS.bomber.fuel, 90);
-  assert.equal(ACTION_UNITS.helicopter.fuel, 120);
-  for (const t of ['recon_drone', 'oneway_drone', 'strike_swarm']) assert.ok(ACTION_UNITS[t].fuel < 60, t);
+test('aircraft have endurance by role: fighters ~51 s, bombers ~76 s, helicopters ~102 s, drones less', () => {
+  assert.equal(ACTION_UNITS.fighter.fuel, 51);
+  assert.equal(ACTION_UNITS.bomber.fuel, 76);
+  assert.equal(ACTION_UNITS.helicopter.fuel, 102);
+  for (const t of ['recon_drone', 'oneway_drone', 'strike_swarm']) assert.ok(ACTION_UNITS[t].fuel < 51, t);
   for (const [k, d] of Object.entries(ACTION_UNITS)) if (!d.air) assert.equal(d.fuel, undefined, k);
 });
 

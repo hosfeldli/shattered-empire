@@ -21,7 +21,7 @@ namespace SE.Runtime.Session
         public float FieldYaw { get; private set; }
         public string FieldPreviewReason { get; private set; } = "Choose visible, clear terrain.";
         /// <summary>The price the server quoted for this spot (null until a preview answers): defenses outside the
-        /// ring of influence cost more, with FieldPreviewNote saying why ("Outside your influence: ×2 cost").</summary>
+        /// ring of influence cost more, with FieldPreviewNote saying why ("Outside your influence: ×3 cost").</summary>
         public JToken FieldPreviewCost { get; private set; }
         public string FieldPreviewNote { get; private set; }
         float fieldPreviewYaw;
@@ -31,6 +31,77 @@ namespace SE.Runtime.Session
         int fieldPreviewToken;
         /// <summary>The New Base preview ring: (x, yaw, z) per parcel, from the server preview.</summary>
         readonly List<Vector3> newBaseRing = new List<Vector3>(8);
+
+        // Ring of influence (server DEFENSE_INFLUENCE, BFS from every hex we own): while a defense is being placed,
+        // the hexes where the surcharge starts are outlined in amber, so it is clear before the click where it costs more.
+        int[] influenceDist = Array.Empty<int>();
+        float influenceAt = -1f;
+        public bool PlacingSurchargedDefense { get; private set; }
+
+        bool PlacingDefense(out int reach)
+        {
+            reach = 8;
+            if (Current != Mode.Target || ProtocolDecoder.Str(TargetCommand?["c"]) != "fieldBuild" || string.IsNullOrEmpty(Option)) return false;
+            var influence = session.Defs?["RULESET"]?["influence"];
+            if (influence == null || !ProtocolDecoder.Bool(session.Defs?["BUILDINGS"]?[Option]?["defense"])) return false;
+            reach = ProtocolDecoder.Int(influence["reach"], 8);
+            return true;
+        }
+
+        void DrawInfluenceEdge(float time)
+        {
+            PlacingSurchargedDefense = false;
+            if (!session.ActionRts || !PlacingDefense(out int reach)) return;
+            var w = session.World;
+            var g = w.Grid;
+            var own = w.Owner;
+            if (g == null || own == null || own.Length < g.N) return;
+            if (influenceDist.Length != g.N || time >= influenceAt)
+            {
+                influenceAt = time + .5f;
+                if (influenceDist.Length != g.N) influenceDist = new int[g.N];
+                int cap = reach + 1;
+                var queue = new Queue<int>();
+                for (int i = 0; i < g.N; i++)
+                {
+                    if (own[i] == session.CivId) { influenceDist[i] = 0; queue.Enqueue(i); }
+                    else influenceDist[i] = cap + 1;
+                }
+                while (queue.Count > 0)
+                {
+                    int t = queue.Dequeue(), d0 = influenceDist[t];
+                    if (d0 >= cap) continue;
+                    for (int k = 0; k < 6; k++)
+                    {
+                        int n = g.Neighbor(t, k);
+                        if (n >= 0 && influenceDist[n] > d0 + 1) { influenceDist[n] = d0 + 1; queue.Enqueue(n); }
+                    }
+                }
+            }
+            float pulse = .5f + .5f * Mathf.Sin(time * 3f);
+            var edge = new float4(1f, .62f, .18f, .38f + .14f * pulse);
+            // the first band of surcharged hexes, near the cursor (keeps the overlay readable on big maps)
+            float cx = FieldPreviewParcel?.X ?? 0, cz = FieldPreviewParcel?.Z ?? 0;
+            bool near = FieldPreviewParcel.HasValue;
+            for (int i = 0; i < g.N; i++)
+            {
+                if (influenceDist[i] != reach + 1) continue;
+                float x = g.CenterX(i), z = g.CenterZ(i);
+                if (near && (x - cx) * (x - cx) + (z - cz) * (z - cz) > 60f * 60f) continue;
+                discs.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + .03f, z)), 0, new float3(1.35f, 1f, 1.35f), edge));
+            }
+            // the hovered hex: amber when this spot pays the surcharge
+            if (near)
+            {
+                int tile = FieldPreviewParcel.Value.Tile;
+                if (tile >= 0 && tile < g.N && influenceDist[tile] > reach)
+                {
+                    PlacingSurchargedDefense = true;
+                    float x = g.CenterX(tile), z = g.CenterZ(tile);
+                    rings.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + .05f, z)), 0, new float3(2.1f + .15f * pulse), new float4(1f, .55f, .15f, .95f)));
+                }
+            }
+        }
 
         void UpdateFieldPreview(float time, bool overUi)
         {

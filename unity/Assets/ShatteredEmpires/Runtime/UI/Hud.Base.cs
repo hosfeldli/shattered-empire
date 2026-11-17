@@ -23,7 +23,7 @@ namespace SE.Runtime.UI
     /// repair, demolish. Several buildings (or bases) selected share one roster and batch-queue across them.</item>
     /// <item>Build wheel (B / dock button): trench, road, sandbags, watchtower, bunker, AT, AA, outpost, new base;
     /// support emplacements on the outer arc. Placement is validated by the server (own territory; defenses also on neutral ground,
-    /// at ×2 beyond the ring of influence), and
+    /// at ×3 beyond the ring of influence), and
     /// the reason is shown at the cursor.</item>
     /// <item>Terrain wheel (T / dock button): raise, lower, flatten, smooth, painted as a brush stroke (server command <c>terrain</c> with points + radius; Commander.Terrain.cs).</item>
     /// <item>Unit wheel (C) and the secured-ruin wheel.</item>

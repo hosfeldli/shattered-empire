@@ -168,12 +168,12 @@ namespace SE.Runtime.UI
             }
             else toolChipSignature = "";
             // ring of influence: the server's quote for this spot replaces the list price when it is surcharged
-            // ("390 Materials · 30 Energy · Outside your influence: ×2 cost"); rebuilt only when the quote changes
+            // ("390 Materials · 30 Energy · Outside your influence: ×3 cost"); rebuilt only when the quote changes
             if (fieldBuild && !ReferenceEquals(commander.FieldPreviewCost, toolChipQuote))
             {
                 toolChipQuote = commander.FieldPreviewCost;
                 string note = commander.FieldPreviewNote;
-                string text = !string.IsNullOrEmpty(note) && toolChipQuote != null ? CmdCostText(toolChipQuote) + " · " + note
+                string text = !string.IsNullOrEmpty(note) && toolChipQuote != null ? "! " + CmdCostText(toolChipQuote) + " · " + note
                     : CmdCostText(Defs?["BUILDINGS"]?[commander.Option]?["cost"]);
                 if (toolChipCost.text != text) toolChipCost.text = text;
                 toolChipCost.style.display = text.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
@@ -209,6 +209,17 @@ namespace SE.Runtime.UI
                 reason = commander.StrokePreviewReason ?? "";
                 invalid = reason.Length > 0;
             }
+            // a valid defense spot beyond the ring of influence: an amber "!" warning at the cursor with the price
+            bool surcharged = false;
+            if (fieldBuild && !invalid && commander.FieldPreviewParcel != null
+                && (!string.IsNullOrEmpty(commander.FieldPreviewNote) || commander.PlacingSurchargedDefense))
+            {
+                float factor = ProtocolDecoder.Float(Defs?["RULESET"]?["influence"]?["factor"], 3);
+                string price = commander.FieldPreviewCost != null && !string.IsNullOrEmpty(commander.FieldPreviewNote) ? " · " + CmdCostText(commander.FieldPreviewCost) : "";
+                reason = $"!  ×{factor:0.#} cost here: outside your ring of influence{price}";
+                surcharged = invalid = true;
+            }
+            cursorReason.EnableInClassList("se-cmd-cursor-reason--warn", surcharged);
             if (invalid && !IsPointerOverUi(InputFacade.MousePosition))
             {
                 if (cursorReason.text != reason) cursorReason.text = reason;

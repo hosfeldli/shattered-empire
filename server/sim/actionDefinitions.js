@@ -42,7 +42,7 @@ for (const [key, def] of Object.entries(ACTION_BUILDINGS)) if (!def.weapon) def.
 // structure stays territory-only. The ring of influence is your territory plus `reach` hexes beyond its border:
 // inside it a defense costs its listed price, outside it `factor` times that. Support posts (radar, repair) and a
 // New Base are never surcharged. Computed by actionBases.influenceRing: a BFS from every owned hex, capped at reach + 1.
-export const DEFENSE_INFLUENCE = { reach: 8, factor: 2, note: 'Outside your influence: ×2 cost' };
+export const DEFENSE_INFLUENCE = { reach: 8, factor: 3, note: 'Outside your influence: ×3 cost' };
 for (const def of Object.values(ACTION_BUILDINGS)) if (def.field && !def.newBase && (def.attack || def.lowCover)) def.defense = true;
 export const BASE_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => key !== 'town' && !ACTION_BUILDINGS[key].field);
 export const FIELD_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => ACTION_BUILDINGS[key].field);
@@ -110,7 +110,7 @@ export const ACTION_UNITS = {
 const AIR_PACE = { fighter: 1.6, oneway_drone: 1.55, bomber: 1.5, recon_drone: 1.4, strike_swarm: 1.35, helicopter: 1.35 };
 for (const [key, pace] of Object.entries(AIR_PACE)) ACTION_UNITS[key].speed *= pace;
 // Endurance in seconds of flight (actionAir.js fuel): aircraft refuel at an airfield or headquarters.
-const AIR_FUEL = { fighter: 60, bomber: 90, helicopter: 120, recon_drone: 50, strike_swarm: 45, oneway_drone: 35 };
+const AIR_FUEL = { fighter: 51, bomber: 76, helicopter: 102, recon_drone: 42, strike_swarm: 38, oneway_drone: 30 };
 for (const [key, fuel] of Object.entries(AIR_FUEL)) ACTION_UNITS[key].fuel = fuel;
 // Crew-served weapons must stop and set up before their first shot (seconds).
 // W2: the field gun sets up in 1.5 s (was 3: tanks closed its whole range advantage while it set up) and,

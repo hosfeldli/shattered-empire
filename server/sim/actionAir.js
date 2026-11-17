@@ -22,7 +22,7 @@ export const AIR = {
   reserve: 6,          // seconds of fuel kept in hand on the way home
   refuelTime: 10,      // seconds on the ground from empty to full
   dryPace: .35,        // share of top speed left once the tank is dry
-  rangeShare: .4,      // a patrol waypoint must lie within speed x endurance x this of a refuelling base
+  rangeShare: .32,     // a patrol waypoint must lie within speed x endurance x this of a refuelling base
   maxWaypoints: 8,
 };
 export const AIR_MISSIONS = ['patrol', 'route', 'intercept', 'scout', 'support', 'strike', 'return', 'orbit'];
