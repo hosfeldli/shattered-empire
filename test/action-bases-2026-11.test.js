@@ -30,14 +30,19 @@ function spot(g, owner, type, near, test = () => true) {
   return null;
 }
 
-test('build wheel placements are limited to the builder\'s own territory', () => {
+test('build wheel placements: own territory only, except defenses also on neutral ground; never on enemy land', () => {
   const g = create(); rich(g);
   const enemy = g.sites[1];
   const hostile = disk(enemy.tile, 2).map(centerOf).find((p) => g.world.owner[tileAt(p.x, p.z)] === 1);
   const r = g.command(0, { c: 'fieldBuild', type: 'bunker', point: hostile });
   assert.equal(r.code, 'territory', r.error);
   const neutral = [...Array(g.world.owner.length).keys()].find((t) => g.world.owner[t] < 0 && g.nav.canStand(centerOf(t).x, centerOf(t).z, ACTION_UNITS.rifle_squad));
-  assert.equal(g.command(0, { c: 'fieldPreview', type: 'guard_post', point: centerOf(neutral) }).code, 'territory');
+  // 2026-11-17: defenses may go on neutral ground (ring of influence, action-influence.test.js); other structures may not
+  g.civs[0].age = 1;   // radar and repair posts are Tier II
+  assert.equal(g.command(0, { c: 'fieldPreview', type: 'sensor_post', point: centerOf(neutral) }).code, 'territory');
+  assert.equal(g.command(0, { c: 'fieldPreview', type: 'repair_point', point: centerOf(neutral) }).code, 'territory');
+  assert.equal(g.command(0, { c: 'fieldPreview', type: 'base_site', point: centerOf(neutral) }).code, 'territory');
+  assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'guard_post', point: centerOf(neutral) }).code, 'territory');
   // trenches and roads too
   const t = g.command(0, { c: 'trenchWorld', points: [centerOf(neutral), centerOf(NB[neutral * 6 + 1] >= 0 ? NB[neutral * 6 + 1] : neutral)] });
   assert.ok(t.error);

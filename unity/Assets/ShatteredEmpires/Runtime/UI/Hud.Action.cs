@@ -85,6 +85,8 @@ namespace SE.Runtime.UI
         };
 
         // ------------------------------------------------------------------ selection card (B10)
+        UiKit.SmoothResize cardResize;   // the selection panel eases to its new height when rebuilt (Hud.cs Build)
+        int cardSubject = int.MinValue, cardUnits;
         string cmdCardSignature = "";
         readonly List<Action> cmdCardLive = new List<Action>();
         bool cardStyled;
@@ -114,19 +116,28 @@ namespace SE.Runtime.UI
             if (!cardStyled) StyleSelectionCard(true);
             // a running tool replaces the card with the tool chip (Hud.DefenseBar.cs)
             // (an armed attack move keeps the panel: its button shows the armed state)
-            if (commander.Current != Commander.Mode.Select && !commander.AttackMoveArmed) { card.style.display = DisplayStyle.None; cmdCardSignature = "tool"; return; }
+            if (commander.Current != Commander.Mode.Select && !commander.AttackMoveArmed) { UiKit.Hide(card); cmdCardSignature = "tool"; return; }
             session.Objectives.TryGetValue(commander.SelectedObjective, out var site);
-            int unitHash = 0;
-            foreach (int id in units.Selected) unitHash = unitHash * 31 + id;
+            // the living selected units (jumpiness: the global unit-membership revision changed with every spawn and
+            // death anywhere on the map, rebuilding the panel several times a second in a battle)
+            int unitHash = 0, alive = 0;
+            foreach (int id in units.Selected) if (session.Units.TryGet(id, out _)) { unitHash = unitHash * 31 + id; alive++; }
             // the structure revision matters only to a building card and unit membership only to a unit card (live
             // values update in place): a site card is no longer rebuilt whenever any building in the world changes
             bool buildingsSelected = commander.SelectedBuildings.Count > 0;
             int structureRev = buildingsSelected ? session.Structures.Revision : 0;
-            int membershipRev = units.Selected.Count > 0 ? session.Units.MembershipRevision : 0;
+            int membershipRev = alive;
             string sig = $"{site.Id}|{site.Owner}|{site.Headquarters}|{site.Operational}|{site.Tier}|{site.Contested}|{site.Capture > 0}|{site.Slots?.Length}|" +
                 $"{commander.SelectedPickup}|{(buildingsSelected ? string.Join(",", commander.SelectedBuildings) : "")}|{units.Selected.Count}:{unitHash}|{structureRev}|{membershipRev}";
             if (!force && sig == cmdCardSignature) { foreach (var update in cmdCardLive) update(); return; }
             cmdCardSignature = sig;
+            // a new subject (or more units) cross-fades the content in; casualties only resize the panel smoothly
+            int subject = site.Id * 397 ^ commander.SelectedPickup * 31 ^ (units.Selected.Count > 0 ? 1 : 0);
+            foreach (int b in commander.SelectedBuildings) subject ^= b * 7;
+            bool freshContent = subject != cardSubject || alive > cardUnits;
+            cardSubject = subject; cardUnits = alive;
+            bool wasShown = UiKit.IsShown(card);
+            cardResize?.Arm();
             card.Clear();
             cmdCardLive.Clear();
             card.RemoveFromClassList("se-sel-panel");
@@ -134,7 +145,8 @@ namespace SE.Runtime.UI
             else if (site.Id > 0) SiteCard(site);
             else if (commander.SelectedBuildings.Count > 0) BuildingStatusCard();
             else if (units.Selected.Count > 0) UnitStatusCard();
-            card.style.display = card.childCount > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(card, card.childCount > 0);
+            if (wasShown && freshContent) UiKit.EnterChildren(card, 0, 16);
             foreach (var update in cmdCardLive) update();
         }
 
@@ -657,7 +669,7 @@ namespace SE.Runtime.UI
             string text;
             switch (tutorialStep)
             {
-                case 0: text = "Pan with the arrow keys or the screen edges, and zoom with the wheel."; done = Vector3.Distance(startFocus, CameraFocus?.Invoke() ?? Vector3.zero) > 2.1f; break;
+                case 0: text = "Pan with " + Input.InputFacade.PanKeysText() + " or the screen edges, and zoom with the wheel."; done = Vector3.Distance(startFocus, CameraFocus?.Invoke() ?? Vector3.zero) > 2.1f; break;
                 case 1: text = "Select your rifle squads. Drag a box to select the entire force."; done = units.Selected.Count > 0; break;
                 case 2: text = "Right-click terrain toward the marked ruins."; tile = site.Tile; done = commander.ActionMoveOrders > 0; break;
                 case 3: text = AttackStepText(); tile = site.Tile; done = site.Capture > 0 || site.Owner == session.CivId; break;
@@ -669,7 +681,7 @@ namespace SE.Runtime.UI
                 case 9: text = "Queue an Anti-Armor Squad to counter vehicles. Use terrain and hold position."; done = check && (session.Structures.Buildings.Values.Any(b => b.Queue?.Contains("anti_armor") == true) || session.Units.Records.Any(u => u.InUse && u.Owner == session.CivId && session.Units.Types.Name(u.TypeIndex) == "anti_armor")); break;
                 case 10: text = "Hold the new base, then push toward an enemy headquarters."; tile = site.Tile; done = time - stepAt > 8f; break;
                 case 11: text = "Destroy the enemy headquarters. Capture the ruin with infantry and rebuild it."; done = check && session.Objectives.Values.Any(s => s.Starting && s.Id != 1 && s.Owner == session.CivId); break;
-                default: tutorialStep = -1; coach.style.display = DisplayStyle.None; pointer.style.display = DisplayStyle.None; return;
+                default: tutorialStep = -1; UiKit.Hide(coach); pointer.style.display = DisplayStyle.None; return;
             }
             if (coachShownStep != tutorialStep || !ReferenceEquals(coachShownText, text))
             {
@@ -722,7 +734,7 @@ namespace SE.Runtime.UI
             ResultCard(result, $"{ProtocolDecoder.Str(winner?["name"], "")} · {how}" + HowExplained(how), -1);
             // the countdown ends with the match
             shownDomTeam = int.MinValue;
-            if (dominanceBanner != null) dominanceBanner.style.display = DisplayStyle.None;
+            if (dominanceBanner != null) UiKit.Hide(dominanceBanner);
             root.EnableInClassList("se-hud--dominance", false);
         }
 

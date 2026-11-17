@@ -17,8 +17,12 @@ namespace SE.Steam
     /// and raises JoinRequested so the game joins that match on the game server. No game traffic goes
     /// through Steam. Uses Spacewar (480) unless steam_appid.txt / the SteamAppId variable says otherwise.
     /// </summary>
-    public sealed class SteamInvites : ISocialPlatform, IFriendLobbyList
+    public sealed class SteamInvites : ISocialPlatform, IFriendLobbyList, IFriendInvites
     {
+        // Every Steam step is logged with this prefix (Player.log: %USERPROFILE%/AppData/LocalLow/Shattered Empires/Shattered Empires/Player.log)
+        static void Log(string message) => Debug.Log("[Steam] " + message);
+        static void Warn(string message) => Debug.LogWarning("[Steam] " + message);
+
         public const uint DefaultAppId = 480;
         const string GameKey = "shattered-empires";
         /// <summary>
@@ -28,8 +32,22 @@ namespace SE.Steam
         /// </summary>
         static string GameVersion => string.IsNullOrEmpty(Application.version) ? "dev" : Application.version;
 
+        // SteamAPI.Init loads gameoverlayrenderer64.dll, which hooks the swap chain's Present: start Steam as early
+        // as managed code runs (before the splash screen and the first scene) so the overlay sees every frame.
+        static SteamInvites early;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+        static void StartEarly()
+        {
+            if (early == null) early = new SteamInvites();
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        static void RegisterPlatform() => SocialPlatform.Register(() => new SteamInvites());
+        static void RegisterPlatform()
+        {
+            Log("registering the Steam platform (SE.Steam is in this build)");
+            SocialPlatform.Register(() => { var s = early ?? new SteamInvites(); early = null; return s; });
+        }
 
         bool ready;
         int lastTick = -1;
@@ -54,7 +72,15 @@ namespace SE.Steam
         CallResult<LobbyCreated_t> created;
         CallResult<LobbyEnter_t> entered;
         CallResult<LobbyMatchList_t> listed;
+        Callback<GameOverlayActivated_t> overlayActivated;
         bool hostPublic;
+        string persona = "";
+        // the overlay hooks the swap chain a few frames after SteamAPI.Init; checked again after start-up
+        bool overlayReady, overlayChecked, overlaySeen, pumpLogged;
+        float startedAt;
+        readonly HashSet<ulong> invited = new HashSet<ulong>();
+        readonly List<SocialFriend> onlineFriends = new List<SocialFriend>();
+        public bool OverlayReady => ready && (overlayReady || overlaySeen);
 
         Action<string> joinRequested;
         public event Action<string> JoinRequested
@@ -81,19 +107,33 @@ namespace SE.Steam
         {
             try
             {
-                if (!Packsize.Test() || !DllCheck.Test()) { status = "Steam libraries are missing from this build; share the match code instead"; return; }
+                Log("starting · game v" + GameVersion + " · graphics " + SystemInfo.graphicsDeviceType + " · cwd " + Directory.GetCurrentDirectory() +
+                    " · Steam launch args: " + SteamArgs());
+                if (!Packsize.Test() || !DllCheck.Test())
+                {
+                    status = "Steam libraries are missing from this build; join with a match code instead";
+                    Warn("Packsize/DllCheck failed: steam_api64.dll is missing or the wrong version (" + status + ")");
+                    return;
+                }
                 EnsureAppId();
                 var init = SteamAPI.InitEx(out string why);
                 ready = init == ESteamAPIInitResult.k_ESteamAPIInitResult_OK;
+                Log("SteamAPI.InitEx = " + init + (string.IsNullOrEmpty(why) ? "" : " (" + why + ")") + " · SteamAppId env " + Environment.GetEnvironmentVariable("SteamAppId"));
                 if (!ready)
                 {
                     status = init == ESteamAPIInitResult.k_ESteamAPIInitResult_NoSteamClient
-                        ? "Steam is not running; start Steam and sign in to invite friends (match codes still work)"
-                        : "Steam is not available (" + (string.IsNullOrEmpty(why) ? init.ToString() : why) + "); match codes still work";
+                        ? "Steam is not running; start Steam and sign in, then restart the game (Join by code still works)"
+                        : "Steam is not available (" + (string.IsNullOrEmpty(why) ? init.ToString() : why) + "); Join by code still works";
+                    Warn(status);
                     return;
                 }
                 me = SteamUser.GetSteamID();
-                status = "Steam: " + SteamFriends.GetPersonaName();
+                persona = SteamFriends.GetPersonaName();
+                startedAt = Time.realtimeSinceStartup;
+                overlayReady = SteamUtils.IsOverlayEnabled();
+                Log("signed in as \"" + persona + "\" (" + me.m_SteamID + ") · logged on " + SteamUser.BLoggedOn() + " · app " + SteamUtils.GetAppID() +
+                    " · overlay enabled (at init) " + overlayReady + " · friends " + SteamFriends.GetFriendCount(EFriendFlags.k_EFriendFlagImmediate));
+                status = IdleStatus();
                 lobbyJoinRequested = Callback<GameLobbyJoinRequested_t>.Create(OnLobbyJoinRequested);
                 presenceJoinRequested = Callback<GameRichPresenceJoinRequested_t>.Create(OnPresenceJoinRequested);
                 chatUpdate = Callback<LobbyChatUpdate_t>.Create(OnLobbyChatUpdate);
@@ -103,18 +143,45 @@ namespace SE.Steam
                 created = CallResult<LobbyCreated_t>.Create(OnLobbyCreated);
                 entered = CallResult<LobbyEnter_t>.Create(OnLobbyEntered);
                 listed = CallResult<LobbyMatchList_t>.Create(OnLobbyList);
+                overlayActivated = Callback<GameOverlayActivated_t>.Create(OnOverlayActivated);
                 SteamFriends.ClearRichPresence();
                 // launched by Steam from an invite or "Join Game": +connect_lobby <id> [+se_match <code>]
                 if (!ParseConnect(string.Join(" ", Environment.GetCommandLineArgs()), "launch"))
                 {
-                    if (SteamApps.GetLaunchCommandLine(out string line, 1024) > 0 && !string.IsNullOrEmpty(line)) ParseConnect(line, "launch");
+                    if (SteamApps.GetLaunchCommandLine(out string line, 1024) > 0 && !string.IsNullOrEmpty(line))
+                    {
+                        Log("launch command line from Steam: " + line);
+                        ParseConnect(line, "launch");
+                    }
                 }
             }
             catch (Exception e)
             {
                 ready = false;
-                status = "Steam is not available: " + e.Message + " (match codes still work)";
+                status = "Steam is not available: " + e.Message + " (Join by code still works)";
+                Debug.LogError("[Steam] start-up failed: " + e);
             }
+        }
+
+        /// <summary>Only the '+' arguments Steam passes (+connect_lobby, +se_match); never the whole line, which can hold tokens.</summary>
+        static string SteamArgs()
+        {
+            var keep = new List<string>();
+            var args = Environment.GetCommandLineArgs();
+            for (int i = 1; i < args.Length; i++)
+                if (args[i].StartsWith("+", StringComparison.Ordinal)) { keep.Add(args[i]); if (i + 1 < args.Length) keep.Add(args[++i]); }
+            return keep.Count == 0 ? "(none)" : string.Join(" ", keep);
+        }
+
+        /// <summary>The status line while nothing is in progress: who is signed in and whether the overlay works.</summary>
+        string IdleStatus() =>
+            "Steam: " + persona + (OverlayReady ? " · overlay ready (Shift+Tab)"
+                : overlayChecked ? " · Steam overlay unavailable: invite friends from the lobby's friend list" : "");
+
+        void OnOverlayActivated(GameOverlayActivated_t r)
+        {
+            overlaySeen = true;
+            Log("overlay " + (r.m_bActive != 0 ? "opened" : "closed") + (r.m_bUserInitiated ? " by the player" : ""));
         }
 
         /// <summary>
@@ -146,7 +213,19 @@ namespace SE.Steam
             int frame = Time.frameCount;
             if (frame == lastTick) return;
             lastTick = frame;
-            SteamAPI.RunCallbacks();
+            if (!pumpLogged || frame % 18000 == 0) { pumpLogged = true; Log("RunCallbacks pumping (frame " + frame + ")"); }
+            try { SteamAPI.RunCallbacks(); }
+            catch (Exception e) { Debug.LogError("[Steam] a callback failed: " + e); }
+            if (!overlayChecked && Time.realtimeSinceStartup - startedAt > 4f)
+            {
+                // the overlay renderer hooks the swap chain after init; ask again once it has had time
+                overlayChecked = true;
+                overlayReady = SteamUtils.IsOverlayEnabled();
+                Log("overlay enabled (after start-up) " + overlayReady + " · graphics " + SystemInfo.graphicsDeviceType +
+                    (overlayReady ? "" : " · enable it in Steam › Settings › In Game, or use the lobby's friend list to invite"));
+                if (lobby == CSteamID.Nil && !creating && !joining) status = IdleStatus();
+                Changed();
+            }
         }
 
         // ------------------------------------------------------------------ host
@@ -168,7 +247,9 @@ namespace SE.Steam
             creating = true;
             int max = Mathf.Clamp(request.MaxMembers, 2, 250);
             hostPublic = request.Public;
-            created.Set(SteamMatchmaking.CreateLobby(request.Public ? ELobbyType.k_ELobbyTypePublic : ELobbyType.k_ELobbyTypeFriendsOnly, max));
+            var type = request.Public ? ELobbyType.k_ELobbyTypePublic : ELobbyType.k_ELobbyTypeFriendsOnly;
+            created.Set(SteamMatchmaking.CreateLobby(type, max));
+            Log("CreateLobby " + type + " max " + max + " for match " + request.MatchCode + " on " + request.Server);
             status = "Opening a Steam lobby…";
             Changed();
         }
@@ -180,14 +261,17 @@ namespace SE.Steam
             pendingHost = null;
             if (failure || r.m_eResult != EResult.k_EResultOK || request == null)
             {
-                status = "Steam could not create a lobby (" + (failure ? "connection failure" : r.m_eResult.ToString()) + "); share the match code instead";
+                status = "Steam could not create a lobby (" + (failure ? "connection failure" : r.m_eResult.ToString()) + "); friends can still use Join by code";
+                Warn("LobbyCreated failed: ioFailure " + failure + " · result " + r.m_eResult + " · request " + (request != null));
                 Changed();
                 return;
             }
             lobby = new CSteamID(r.m_ulSteamIDLobby);
             isHost = true;
+            invited.Clear();
+            Log("LobbyCreated OK: lobby " + lobby.m_SteamID + " · owner is me " + (SteamMatchmaking.GetLobbyOwner(lobby) == me));
             ApplyHostData(request);
-            status = "Steam lobby open: invite friends from the Steam overlay";
+            status = OverlayReady ? "Steam lobby open: invite friends (overlay or the friend list below)" : "Steam lobby open: invite friends from the list below";
             if (request.OpenInviteDialog) OpenInviteDialog();
             Changed();
         }
@@ -215,9 +299,13 @@ namespace SE.Steam
             SteamMatchmaking.SetLobbyData(lobby, "se_team", Mathf.Max(1, r.TeamSize).ToString());
             SteamMatchmaking.SetLobbyData(lobby, "se_status", "lobby");
             SteamMatchmaking.SetLobbyData(lobby, "name", name);
-            SteamMatchmaking.SetLobbyJoinable(lobby, true);
+            bool joinable = SteamMatchmaking.SetLobbyJoinable(lobby, true);
             UpdatePresence("lobby");
             Rebuild();
+            Log("lobby data set: lobby " + lobby.m_SteamID + " · se_match " + SteamMatchmaking.GetLobbyData(lobby, "se_match") + " · se_version " +
+                SteamMatchmaking.GetLobbyData(lobby, "se_version") + " · se_server " + SteamMatchmaking.GetLobbyData(lobby, "se_server") +
+                " · format " + r.Format + " · limit " + SteamMatchmaking.GetLobbyMemberLimit(lobby) + " · public " + hostPublic + " · joinable " + joinable +
+                " · members " + SteamMatchmaking.GetNumLobbyMembers(lobby));
         }
 
         public void InviteFriends()
@@ -247,10 +335,59 @@ namespace SE.Steam
 
         void OpenInviteDialog()
         {
-            if (!SteamUtils.IsOverlayEnabled())
-                status = "The Steam overlay is off for this game; enable it in Steam, or share the match code " + lobbyMatch;
+            bool enabled = SteamUtils.IsOverlayEnabled();
+            Log("ActivateGameOverlayInviteDialog lobby " + lobby.m_SteamID + " · overlay enabled " + enabled + " · needs present " + SteamUtils.BOverlayNeedsPresent());
+            if (!enabled)
+                status = "The Steam overlay is not available in this game: invite friends from the list below, or share the match code " + lobbyMatch;
             SteamFriends.ActivateGameOverlayInviteDialog(lobby);
             Changed();
+        }
+
+        // ------------------------------------------------------------------ direct invites (no overlay needed)
+
+        public IReadOnlyList<SocialFriend> OnlineFriends()
+        {
+            onlineFriends.Clear();
+            if (!ready) return onlineFriends;
+            var app = SteamUtils.GetAppID();
+            var members = new HashSet<ulong>();
+            if (lobby != CSteamID.Nil)
+                for (int i = 0, n = SteamMatchmaking.GetNumLobbyMembers(lobby); i < n; i++) members.Add(SteamMatchmaking.GetLobbyMemberByIndex(lobby, i).m_SteamID);
+            int count = SteamFriends.GetFriendCount(EFriendFlags.k_EFriendFlagImmediate);
+            for (int i = 0; i < count; i++)
+            {
+                var f = SteamFriends.GetFriendByIndex(i, EFriendFlags.k_EFriendFlagImmediate);
+                if (SteamFriends.GetFriendPersonaState(f) == EPersonaState.k_EPersonaStateOffline) continue;
+                bool inGame = SteamFriends.GetFriendGamePlayed(f, out FriendGameInfo_t g) && g.m_gameID.IsValid() && g.m_gameID.AppID() == app;
+                onlineFriends.Add(new SocialFriend
+                {
+                    Id = f.m_SteamID, Name = SteamFriends.GetFriendPersonaName(f), InGame = inGame,
+                    InLobby = members.Contains(f.m_SteamID), Invited = invited.Contains(f.m_SteamID),
+                });
+            }
+            onlineFriends.Sort((a, b) => a.InGame != b.InGame ? (a.InGame ? -1 : 1) : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            return onlineFriends;
+        }
+
+        public bool InviteFriend(ulong friendId)
+        {
+            if (!ready || friendId == 0) return false;
+            if (lobby == CSteamID.Nil)
+            {
+                status = creating ? "The Steam lobby is still opening; try again in a moment" : "Host a lobby first, then invite friends";
+                Warn("InviteUserToLobby skipped: no lobby yet (creating " + creating + ")");
+                Changed();
+                return false;
+            }
+            var friend = new CSteamID(friendId);
+            bool ok = SteamMatchmaking.InviteUserToLobby(lobby, friend);
+            string name = SteamFriends.GetFriendPersonaName(friend);
+            Log("InviteUserToLobby " + name + " (" + friendId + ") to lobby " + lobby.m_SteamID + " match " + lobbyMatch + " = " + ok);
+            if (ok) invited.Add(friendId);
+            status = ok ? "Invite sent to " + name + ": they accept it in Steam chat while Shattered Empires is running (or join with code " + lobbyMatch + ")"
+                        : "Steam did not send the invite to " + name + "; share the match code " + lobbyMatch;
+            Changed();
+            return ok;
         }
 
         public void SetLobbyStatus(string newStatus)
@@ -275,18 +412,21 @@ namespace SE.Steam
             // groups the party together in friends lists
             SteamFriends.SetRichPresence("steam_player_group", lobby.m_SteamID.ToString());
             SteamFriends.SetRichPresence("steam_player_group_size", Mathf.Max(1, SteamMatchmaking.GetNumLobbyMembers(lobby)).ToString());
+            Log("rich presence: " + phase + (open ? " · connect +connect_lobby " + lobby.m_SteamID + " +se_match " + lobbyMatch : ""));
         }
 
         // ------------------------------------------------------------------ guest
 
         void OnLobbyJoinRequested(GameLobbyJoinRequested_t r)
         {
+            Log("GameLobbyJoinRequested_t: lobby " + r.m_steamIDLobby.m_SteamID + " from " + SteamFriends.GetFriendPersonaName(r.m_steamIDFriend));
             InviteAccepted?.Invoke(SteamFriends.GetFriendPersonaName(r.m_steamIDFriend));
             Join(r.m_steamIDLobby, "", "invite");
         }
 
         void OnPresenceJoinRequested(GameRichPresenceJoinRequested_t r)
         {
+            Log("GameRichPresenceJoinRequested_t: \"" + r.m_rgchConnect + "\" from " + SteamFriends.GetFriendPersonaName(r.m_steamIDFriend));
             InviteAccepted?.Invoke(SteamFriends.GetFriendPersonaName(r.m_steamIDFriend));
             ParseConnect(r.m_rgchConnect, "friends-list");
         }
@@ -303,6 +443,7 @@ namespace SE.Steam
                 if (parts[i] == "+connect_lobby" && ulong.TryParse(parts[i + 1], out ulong id)) lobbyId = id;
                 else if (parts[i] == "+se_match") code = LobbyMessages.NormalizeCode(parts[i + 1]);
             }
+            if (lobbyId != 0 || code != "") Log("connect line (" + source + "): lobby " + lobbyId + " · code " + code);
             if (lobbyId != 0) { Join(new CSteamID(lobbyId), code, source); return true; }
             if (code != "") { Deliver(code, "", 0, source); return true; }
             return false;
@@ -327,6 +468,7 @@ namespace SE.Steam
             joinFallbackCode = fallbackCode ?? "";
             joinSource = source;
             entered.Set(SteamMatchmaking.JoinLobby(id));
+            Log("JoinLobby " + id.m_SteamID + " (" + source + (string.IsNullOrEmpty(fallbackCode) ? "" : ", fallback code " + fallbackCode) + ")");
             status = "Joining a friend's match…";
             Changed();
         }
@@ -337,6 +479,10 @@ namespace SE.Steam
             string fallback = joinFallbackCode;
             joinFallbackCode = "";
             var id = new CSteamID(r.m_ulSteamIDLobby);
+            Log("LobbyEnter_t: lobby " + id.m_SteamID + " · ioFailure " + failure + " · response " + (EChatRoomEnterResponse)r.m_EChatRoomEnterResponse +
+                (failure ? "" : " · se_game " + SteamMatchmaking.GetLobbyData(id, "se_game") + " · se_version " + SteamMatchmaking.GetLobbyData(id, "se_version") +
+                    " · se_match " + SteamMatchmaking.GetLobbyData(id, "se_match") + " · se_server " + SteamMatchmaking.GetLobbyData(id, "se_server") +
+                    " · se_status " + SteamMatchmaking.GetLobbyData(id, "se_status") + " · members " + SteamMatchmaking.GetNumLobbyMembers(id)));
             if (failure || r.m_EChatRoomEnterResponse != (uint)EChatRoomEnterResponse.k_EChatRoomEnterResponseSuccess)
             {
                 if (!failure && id != CSteamID.Nil) SteamMatchmaking.LeaveLobby(id);
@@ -345,7 +491,9 @@ namespace SE.Steam
                     status = "The Steam lobby is gone; joining match " + fallback + " directly";
                     Deliver(fallback, "", 0, joinSource);
                 }
-                else status = "Could not join that Steam lobby (it may be full or closed); ask for the match code";
+                else status = "Could not join that Steam lobby (" + (failure ? "no answer from Steam" : ((EChatRoomEnterResponse)r.m_EChatRoomEnterResponse).ToString().Replace("k_EChatRoomEnterResponse", "")) +
+                    "); ask the host for the match code and use Join by code";
+                Warn(status);
                 Changed();
                 return;
             }
@@ -354,6 +502,7 @@ namespace SE.Steam
             if (SteamMatchmaking.GetLobbyData(lobby, "se_game") != GameKey)
             {
                 status = "That Steam lobby is not a Shattered Empires match";
+                Warn(status + " (se_game \"" + SteamMatchmaking.GetLobbyData(lobby, "se_game") + "\")");
                 LeaveSteamLobby();
                 Changed();
                 return;
@@ -365,6 +514,7 @@ namespace SE.Steam
                 status = string.IsNullOrEmpty(hostVersion)
                     ? "That lobby is from an older Shattered Empires build; both players need the same version (you have v" + GameVersion + ")"
                     : "Version mismatch: the host runs v" + hostVersion + ", you have v" + GameVersion + "; update so both match";
+                Warn(status);
                 LeaveSteamLobby();
                 Changed();
                 return;
@@ -373,7 +523,8 @@ namespace SE.Steam
             if (code == "") code = fallback;
             if (code == "")
             {
-                status = "That Steam lobby has no match yet";
+                status = "That Steam lobby has no match code yet; ask the host for the code and use Join by code";
+                Warn(status);
                 LeaveSteamLobby();
                 Changed();
                 return;
@@ -388,6 +539,8 @@ namespace SE.Steam
 
         void Deliver(string code, string server, ulong lobbyId, string source)
         {
+            Log("join match " + code + " on " + (string.IsNullOrEmpty(SafeServer(server)) ? "(the configured server)" : SafeServer(server)) + " · source " + source +
+                " · " + (joinRequested != null ? "delivered" : "held until the game listens"));
             lastJoin = new SocialJoin { MatchCode = code, Server = SafeServer(server), LobbyId = lobbyId, Source = source ?? "" };
             Changed();
             if (joinRequested != null) joinRequested(code);
@@ -415,6 +568,8 @@ namespace SE.Steam
         void OnLobbyChatUpdate(LobbyChatUpdate_t r)
         {
             if (lobby == CSteamID.Nil || r.m_ulSteamIDLobby != lobby.m_SteamID) return;
+            Log("LobbyChatUpdate_t: " + SteamFriends.GetFriendPersonaName(new CSteamID(r.m_ulSteamIDUserChanged)) + " " + (EChatMemberStateChange)r.m_rgfChatMemberStateChange +
+                " · members now " + SteamMatchmaking.GetNumLobbyMembers(lobby));
             isHost = SteamMatchmaking.GetLobbyOwner(lobby) == me;    // the owner leaving hands the lobby on
             SteamFriends.SetRichPresence("steam_player_group_size", Mathf.Max(1, SteamMatchmaking.GetNumLobbyMembers(lobby)).ToString());
             Rebuild();
@@ -598,6 +753,7 @@ namespace SE.Steam
         {
             searching = false;
             publicLobbies.Clear();
+            Log("LobbyMatchList_t: " + (failure ? "ioFailure" : r.m_nLobbiesMatching + " lobbies of " + GameKey + " v" + GameVersion));
             if (failure) { Changed(); return; }
             for (int i = 0; i < (int)r.m_nLobbiesMatching; i++)
             {
@@ -621,6 +777,7 @@ namespace SE.Steam
                 if (!game.m_gameID.IsValid() || game.m_gameID.AppID() != app) continue;
                 var id = game.m_steamIDLobby;
                 if (!id.IsValid() || !id.IsLobby()) continue;
+                if (!friendLobbies.ContainsKey(id.m_SteamID)) Log("friend " + SteamFriends.GetFriendPersonaName(friend) + " is in lobby " + id.m_SteamID + "; requesting its data");
                 friendLobbies[id.m_SteamID] = friend;
                 SteamMatchmaking.RequestLobbyData(id);    // the data (se_game, name, members) arrives by LobbyDataUpdate_t
             }
@@ -630,6 +787,12 @@ namespace SE.Steam
         public void OpenFriendsOverlay()
         {
             if (!ready) return;
+            Log("ActivateGameOverlay Friends · overlay enabled " + SteamUtils.IsOverlayEnabled());
+            if (!SteamUtils.IsOverlayEnabled())
+            {
+                status = "The Steam overlay is not available in this game: use the Steam window's friends list (Join Game), or Join by code";
+                Changed();
+            }
             SteamFriends.ActivateGameOverlay("Friends");
         }
 
@@ -640,13 +803,13 @@ namespace SE.Steam
             if (!ready) return;
             pendingHost = null;
             LeaveSteamLobby();
-            status = "Steam: " + SteamFriends.GetPersonaName();
+            status = IdleStatus();
             Changed();
         }
 
         void LeaveSteamLobby()
         {
-            if (lobby != CSteamID.Nil) SteamMatchmaking.LeaveLobby(lobby);
+            if (lobby != CSteamID.Nil) { Log("LeaveLobby " + lobby.m_SteamID); SteamMatchmaking.LeaveLobby(lobby); }
             lobby = CSteamID.Nil;
             isHost = false;
             lobbyMatch = "";
@@ -663,6 +826,7 @@ namespace SE.Steam
             foreach (var t in avatars.Values) if (t != null) UnityEngine.Object.Destroy(t);
             avatars.Clear();
             ready = false;
+            Log("SteamAPI.Shutdown");
             SteamAPI.Shutdown();
         }
     }

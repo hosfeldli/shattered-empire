@@ -33,12 +33,24 @@ namespace SE.Runtime.App
         public static bool HighContrastMarkers { get => B("contrast", false); set => SetB("contrast", value); }
         /// <summary>Open the unit command wheel automatically whenever units are selected (off: press C).</summary>
         public static bool OpenUnitWheelOnSelection { get => B("unitWheel", false); set => SetB("unitWheel", value); }
+        /// <summary>
+        /// Camera keys: false = Arrow keys (the default: arrows pan, orders on their natural letters), true = WASD
+        /// (W/A/S/D pan, colliding orders move). Read and switched through <c>InputFacade.WasdScheme</c> /
+        /// <c>InputFacade.SetWasdScheme</c>, which also migrate and re-derive the default key set.
+        /// </summary>
+        public static bool WasdCameraKeys { get => B("wasdKeys", false); set => SetB("wasdKeys", value); }
         /// <summary>Always show the digit labels on the defensive build bar (off: only while B arms it).</summary>
 
-        /// <summary>Restore the Interface tab defaults (the interface scale is applied by the caller).</summary>
+        /// <summary>
+        /// Reduce UI motion: interface transitions (panel fades and slides, wheel blooms, counting numbers, the
+        /// minimap zoom) become instant. Applied by <c>UiKit.ApplyMotion</c>.
+        /// </summary>
+        public static bool ReduceUiMotion { get => B("reduceUiMotion", false); set => SetB("reduceUiMotion", value); }
+
+        /// <summary>Restore the Interface tab defaults (the interface scale and UI motion are applied by the caller).</summary>
         public static void ResetInterface()
         {
-            UiScale = 1f; HighContrastMarkers = false; OpenUnitWheelOnSelection = false;
+            UiScale = 1f; HighContrastMarkers = false; OpenUnitWheelOnSelection = false; ReduceUiMotion = false;
         }
 
         /// <summary>Restore the Camera tab defaults.</summary>

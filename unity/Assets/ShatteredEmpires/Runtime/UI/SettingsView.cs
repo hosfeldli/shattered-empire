@@ -96,6 +96,8 @@ namespace SE.Runtime.UI
                 case "Camera": CameraTab(c); break;
                 case "Controls": ControlsTab(c); break;
             }
+            // the tab's rows ease in (staggered, at most a dozen steps)
+            UiKit.EnterChildren(c, 0, 14);
         }
 
         // ------------------------------------------------------------------ tabs
@@ -160,6 +162,9 @@ namespace SE.Runtime.UI
             }, true), c);
             UiKit.SettingRow("High-contrast markers", UiKit.Switch(GameSettings.HighContrastMarkers, v => GameSettings.HighContrastMarkers = v), c);
             UiKit.SettingRow("Open unit wheel on selection", UiKit.Switch(GameSettings.OpenUnitWheelOnSelection, v => GameSettings.OpenUnitWheelOnSelection = v), c);
+            UiKit.SettingRow("Reduce UI motion", UiKit.Switch(GameSettings.ReduceUiMotion, v => { GameSettings.ReduceUiMotion = v; UiKit.ApplyMotion(this); }), c);
+            UiKit.Text("Panels, wheels and counters change instantly instead of fading, sliding or counting.", "se-settings-note", c);
+            UiKit.SettingRow("Check for updates on startup", UiKit.Switch(Updater.CheckOnStartup, v => Updater.CheckOnStartup = v), c);
         }
 
         void CameraTab(VisualElement c)
@@ -173,6 +178,18 @@ namespace SE.Runtime.UI
 
         void ControlsTab(VisualElement c)
         {
+            // Camera keys: two complete default sets. Switching swaps the whole set in place (the key list below
+            // refreshes); custom binds survive unless their key now belongs to another action in the new set.
+            var schemes = new (string id, string label, string icon)[] { ("arrows", "Arrow keys", null), ("wasd", "WASD", null) };
+            Label schemeNote = null;
+            var scheme = UiKit.Segmented(schemes, InputFacade.WasdScheme ? "wasd" : "arrows", p =>
+            {
+                var reset = InputFacade.SetWasdScheme(p == "wasd");
+                RefreshKeys();
+                if (schemeNote != null) schemeNote.text = SchemeNote(reset);
+            }, null, 120);
+            UiKit.SettingRow("Camera keys", scheme, c);
+            schemeNote = UiKit.Text(SchemeNote(null), "se-settings-note", c);
             UiKit.Text("Click a key, then press the new key. Escape keeps the old one.", "se-settings-note", c);
             foreach (var act in InputFacade.Actions)
             {
@@ -183,6 +200,23 @@ namespace SE.Runtime.UI
                 var conflict = UiKit.Text("", "se-key-conflict", row);
                 keyRows[id] = (key, conflict);
             }
+            UpdateConflicts();
+        }
+
+        static string SchemeNote(List<string> reset)
+        {
+            string s = InputFacade.WasdScheme
+                ? "WASD: W/A/S/D pan (the arrow keys too); attack move, stance and withdraw move to F, V and X."
+                : "Arrow keys: the arrows pan; orders use their natural letters (A attack move, S stance, W withdraw).";
+            s += " Switching keeps your own keys unless the new set needs them.";
+            if (reset != null && reset.Count > 0) s += "\nReset to the new set (their key was taken): " + string.Join("; ", reset) + ".";
+            return s;
+        }
+
+        /// <summary>Re-reads every key in the list (after a scheme switch) without rebuilding the tab.</summary>
+        void RefreshKeys()
+        {
+            foreach (var kv in keyRows) UiKit.SetText(kv.Value.key, KeyName(InputFacade.KeyFor(kv.Key)));
             UpdateConflicts();
         }
 
@@ -236,7 +270,7 @@ namespace SE.Runtime.UI
                 foreach (var a in InputFacade.Actions)
                 {
                     if (a.Id == kv.Key || InputFacade.KeyFor(a.Id) != key || key == KeyCode.None) continue;
-                    bool sharedDefault = self != null && a.Default == self.Default && key == self.Default;
+                    bool sharedDefault = self != null && InputFacade.DefaultKey(a) == InputFacade.DefaultKey(self) && key == InputFacade.DefaultKey(self);
                     if (sharedDefault) continue;
                     other = a.Label;
                     break;
@@ -246,39 +280,7 @@ namespace SE.Runtime.UI
         }
 
         /// <summary>A short, readable key name ("1", "=", "Space", "Backspace").</summary>
-        public static string KeyName(KeyCode k)
-        {
-            string n = k.ToString();
-            if (n.StartsWith("Alpha") && n.Length == 6) return n.Substring(5);
-            if (n.StartsWith("Keypad") && n.Length == 7 && char.IsDigit(n[6])) return "Num " + n[6];
-            switch (k)
-            {
-                case KeyCode.None: return "—";
-                case KeyCode.Equals: return "=";
-                case KeyCode.Minus: return "-";
-                case KeyCode.Period: return ".";
-                case KeyCode.Comma: return ",";
-                case KeyCode.Slash: return "/";
-                case KeyCode.Backslash: return "\\";
-                case KeyCode.Semicolon: return ";";
-                case KeyCode.Quote: return "'";
-                case KeyCode.LeftBracket: return "[";
-                case KeyCode.RightBracket: return "]";
-                case KeyCode.BackQuote: return "`";
-                case KeyCode.Return: return "Enter";
-                case KeyCode.LeftShift: return "Left Shift";
-                case KeyCode.RightShift: return "Right Shift";
-                case KeyCode.LeftControl: return "Left Ctrl";
-                case KeyCode.RightControl: return "Right Ctrl";
-                case KeyCode.LeftAlt: return "Left Alt";
-                case KeyCode.RightAlt: return "Right Alt";
-                case KeyCode.UpArrow: return "Up";
-                case KeyCode.DownArrow: return "Down";
-                case KeyCode.LeftArrow: return "Left";
-                case KeyCode.RightArrow: return "Right";
-                default: return n;
-            }
-        }
+        public static string KeyName(KeyCode k) => InputFacade.KeyName(k);
 
         // ------------------------------------------------------------------ defaults
         void RestoreDefaults()
@@ -300,6 +302,7 @@ namespace SE.Runtime.UI
                 case "Interface":
                     GameSettings.ResetInterface();
                     game?.ApplyUiScale(GameSettings.UiScale);
+                    UiKit.ApplyMotion(this);
                     break;
                 case "Camera":
                     GameSettings.ResetCamera();

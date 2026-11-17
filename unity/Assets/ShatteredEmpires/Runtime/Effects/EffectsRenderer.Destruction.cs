@@ -43,13 +43,13 @@ namespace SE.Runtime.Effects
             FlashLight(g + new float3(0, .08f, 0), .4f + r);
             Shake = Mathf.Max(Shake, .1f + r * .25f);
             // the structure gives way: a dense dust wave bursts out along the ground from its base
-            int ring = 10 + (int)(r * 14);
+            int ring = 7 + (int)(r * 10);   // smoke pass: was 10 + 14r puffs living 3.5-6 s
             for (int k = 0; k < ring; k++)
             {
                 float a = k / (float)ring * 6.283f + R() * .5f;
                 float shade = .38f + R() * .12f;
                 Emit(g + new float3(math.cos(a) * r * .4f, .03f, math.sin(a) * r * .4f), new float3(math.cos(a), .06f + R() * .08f, math.sin(a)) * (.45f + R() * .35f) * (.5f + r),
-                    (.09f + R() * .05f) * (.6f + r), .26f * (.6f + r), 3.5f + R() * 2.5f, new float3(shade, shade * .94f, shade * .86f), new float3(.56f, .54f, .5f), .62f, false, 0, 1.4f, .015f);
+                    (.09f + R() * .05f) * (.6f + r), .26f * (.6f + r), 2.6f + R() * 1.8f, new float3(shade, shade * .94f, shade * .86f), new float3(.56f, .54f, .5f), .62f, false, 0, 1.4f, .015f);
             }
             // then it comes down storey by storey: each stage drops masonry and lifts more dust
             int stages = 3 + (int)(r * 4);
@@ -106,8 +106,8 @@ namespace SE.Runtime.Effects
             Emit(g + new float3(0, .03f, 0), float3.zero, .07f, .36f, .09f, new float3(1f, .8f, .45f), new float3(.9f, .3f, .06f), .9f, true, 1.4f);
             for (int i = 0; i < 6; i++)
                 Emit(g, RandDir() * (1f + R()) + new float3(0, .8f, 0), .006f, 0, .5f + R() * .4f, new float3(1f, .8f, .4f), new float3(1f, .35f, .1f), 1f, true, 2f, .6f, -2.2f, Streak, default, true);
-            for (int i = 0; i < 3; i++)
-                Emit(g + new float3(0, .04f, 0), new float3((R() - .5f) * .1f, .22f + R() * .1f, (R() - .5f) * .1f), .06f, .16f, 4f + R() * 2f,
+            for (int i = 0; i < 2; i++)   // smoke pass: 2 puffs living 3-4.5 s (was 3 living 4-6 s)
+                Emit(g + new float3(0, .04f, 0), new float3((R() - .5f) * .1f, .22f + R() * .1f, (R() - .5f) * .1f), .06f, .16f, 3f + R() * 1.5f,
                     new float3(.06f, .055f, .05f), new float3(.25f, .24f, .23f), .6f, false, 0, .5f, .06f);
             for (int i = 0; i < 3; i++)
                 EmitDebris(g, new float3(R() - .5f, 1.2f + R(), R() - .5f) * .5f, .008f + R() * .008f, 1.5f, new float3(.22f, .21f, .19f), floor);
@@ -185,13 +185,13 @@ namespace SE.Runtime.Effects
                 EmitDebris(from, vel, (.012f + R() * .022f) * math.min(1.3f, .5f + r * 1.4f), 2.4f + R() * 1.6f, new float3(c, c * .94f, c * .86f), stage.Floor, -3f);
             }
             // dust boils up out of the falling storey and spreads low around it
-            for (int i = 0; i < 4 + (int)(r * 6); i++)
+            for (int i = 0; i < 3 + (int)(r * 4); i++)   // smoke pass: was 4 + 6r puffs living 5-9 s
             {
                 float a = R() * 6.283f;
                 float shade = .4f + R() * .12f;
                 Emit(g + new float3(math.cos(a) * r * .5f * R(), .03f + R() * r * .3f, math.sin(a) * r * .5f * R()),
                     new float3(math.cos(a) * .25f, .1f + R() * .12f, math.sin(a) * .25f) * (.5f + r),
-                    (.12f + R() * .06f) * (.5f + r), .3f * (.5f + r), 5f + R() * 4f, new float3(shade, shade * .95f, shade * .88f), new float3(.6f, .58f, .55f), .55f, false, 0, .9f, .03f);
+                    (.12f + R() * .06f) * (.5f + r), .3f * (.5f + r), 3.5f + R() * 3f, new float3(shade, shade * .95f, shade * .88f), new float3(.6f, .58f, .55f), .55f, false, 0, .9f, .03f);
             }
             Shake = Mathf.Max(Shake, .04f + r * .08f);
             Blast?.Invoke(g, r);
@@ -222,10 +222,10 @@ namespace SE.Runtime.Effects
                 {
                     case EmitterSmoke:
                     {
-                        e.Next = .3f + R() * .15f;
+                        e.Next = .42f + R() * .2f;   // smoke pass: a puff every .42-.62 s living 6.5-9.5 s (was .3-.45 s, 9-13 s)
                         float g = .20f + R() * .07f;   // final pass: grey, not black (it stacked into sheets that hid units)
                         Emit(e.Point + new float3((R() - .5f) * e.Size * .4f, 0, (R() - .5f) * e.Size * .4f), Wind * .06f + new float3(0, .16f + R() * .08f, 0),
-                            e.Size * (.5f + R() * .3f), e.Size * .55f, 9f + R() * 4f, new float3(g, g * .97f, g * .93f), new float3(.46f, .44f, .41f), .42f * vigour, false, 0, .3f, .045f);
+                            e.Size * (.5f + R() * .3f), e.Size * .55f, 6.5f + R() * 3f, new float3(g, g * .97f, g * .93f), new float3(.46f, .44f, .41f), .42f * vigour, false, 0, .3f, .045f);
                         break;
                     }
                     case EmitterFire:
@@ -238,8 +238,9 @@ namespace SE.Runtime.Effects
                         e.Next = .16f + R() * .08f;
                         if (vigour > .25f) Fire(e.Point, e.Size * vigour, true);
                         float g = .13f + R() * .05f;   // dark oily smoke, but no longer a black sheet over the units
-                        Emit(e.Point + new float3(0, .04f, 0), Wind * .08f + new float3((R() - .5f) * .03f, .2f + R() * .07f, (R() - .5f) * .03f),
-                            .05f, .14f, 6f + R() * 3f, new float3(g, g * .95f, g * .9f), new float3(.34f, .33f, .31f), .48f * vigour + .08f, false, 0, .35f, .05f);
+                        // smoke pass: the plume puffs on ~65% of the beats and lives 4.5-6.5 s (was every beat, 6-9 s)
+                        if (R() < .65f) Emit(e.Point + new float3(0, .04f, 0), Wind * .08f + new float3((R() - .5f) * .03f, .2f + R() * .07f, (R() - .5f) * .03f),
+                            .05f, .14f, 4.5f + R() * 2f, new float3(g, g * .95f, g * .9f), new float3(.34f, .33f, .31f), .48f * vigour + .08f, false, 0, .35f, .05f);
                         break;
                     }
                 }

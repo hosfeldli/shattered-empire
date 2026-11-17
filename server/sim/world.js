@@ -3,6 +3,7 @@ import { W, H, N, T, RES, TERRAIN, isWater } from './constants.js';
 import { NB, idx, qOf, rOf, dist, disk, WRAP, dqWrap } from './hex.js';
 import { mulberry32, fbm, hash2 } from './rng.js';
 import { authoredMap, generateAuthored } from './authoredMaps.js';
+import { paintSketchWorld } from './sketchMaps.js';
 
 export const RIVER_FLOW = 42;
 export const WORLD_STYLES = { continents: { plates: 11, land: 0.42, cont: 0.45 }, pangaea: { plates: 8, land: 0.55, cont: 0.7 }, archipelago: { plates: 18, land: 0.34, cont: 0.4 }, inlandSea: { plates: 10, land: 0.56, cont: 0.75 } };
@@ -53,6 +54,8 @@ export class World {
     // a hand-authored map (mapCatalog.js) replaces the whole procedural pipeline
     const authored = authoredMap(this.opts.map);
     if (authored) return generateAuthored(this, authored);
+    // a map-builder sketch (sketchMaps.js) paints the relief; the natural pipeline below fills in the rest
+    if (this.opts.map === 'custom' && this.opts.sketch) { paintSketchWorld(this, this.opts.sketch); return this.finishTerrain(nCivs); }
     const rng = this.rng, seed = this.seed;
     // --- Tectonic plates (warped Voronoi)
     const styleKeys = Object.keys(WORLD_STYLES);
@@ -137,6 +140,13 @@ export class World {
     }
     // --- The Great Rift: a subsiding fracture through the continent, leaving an isthmus.
     this.makeRift(rng);
+    this.finishTerrain(nCivs);
+  }
+
+  // The natural half of generation, shared by procedural worlds and map-builder sketches (sketchMaps.js):
+  // the coastal border, climate, hydrology (rivers, lakes), classes, volcanoes, resources and starts.
+  finishTerrain(nCivs) {
+    const rng = this.rng, seed = this.seed;
     // Bounded battlefields terminate in real coastal water, rather than cutting an old
     // cylindrical continent at a vertical edge. The outer deep-water band also meets
     // the client's continuous ocean at the same depth and surface color.
@@ -169,7 +179,8 @@ export class World {
     for (let i = 0; i < N; i++) this.classify(i);
     this.placeVolcanoes(rng);
     this.placeResources(rng);
-    this.starts = this.pickStarts(nCivs, rng);
+    // a sketch's starts are its painted bases (actionMap.js buildActionMap)
+    this.starts = this.sketch ? [] : this.pickStarts(nCivs, rng);
     this.moveRiverResources();
     this.dirty.clear();
   }
@@ -233,7 +244,9 @@ export class World {
       }
     }
     const flow = this.flow;
-    for (let i = 0; i < N; i++) flow[i] = this.elev[i] < 0 ? 0 : (0.45 + this.moist[i]) * (this.drought[i] > 0 ? 0.25 : 1);
+    // flowScale < 1 (a map-builder sketch's broad landmass): fewer, longer rivers instead of a maze of them
+    const scale = this.flowScale || 1;
+    for (let i = 0; i < N; i++) flow[i] = this.elev[i] < 0 ? 0 : (0.45 + this.moist[i]) * (this.drought[i] > 0 ? 0.25 : 1) * scale;
     for (let k = order.length - 1; k >= 0; k--) {
       const i = order[k];
       if (dir[i] < 0) continue;

@@ -37,6 +37,13 @@ export const ACTION_BUILDINGS = {
 };
 
 for (const [key, def] of Object.entries(ACTION_BUILDINGS)) if (!def.weapon) def.weapon = BUILDING_WEAPON[key];
+// Ring of influence (2026-11-17). Defensive structures (`def.defense`: anything armed, plus barricades) may be
+// placed on your own territory or on neutral ground (never in another player's territory); every other build-wheel
+// structure stays territory-only. The ring of influence is your territory plus `reach` hexes beyond its border:
+// inside it a defense costs its listed price, outside it `factor` times that. Support posts (radar, repair) and a
+// New Base are never surcharged. Computed by actionBases.influenceRing: a BFS from every owned hex, capped at reach + 1.
+export const DEFENSE_INFLUENCE = { reach: 8, factor: 2, note: 'Outside your influence: ×2 cost' };
+for (const def of Object.values(ACTION_BUILDINGS)) if (def.field && !def.newBase && (def.attack || def.lowCover)) def.defense = true;
 export const BASE_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => key !== 'town' && !ACTION_BUILDINGS[key].field);
 export const FIELD_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => ACTION_BUILDINGS[key].field);
 export const CITY_DEFENSES = { name: 'City perimeter', cost: cost(240, 60), time: 25, pieces: 6,
@@ -175,9 +182,12 @@ export const ACTION_RESOURCES = ['materials', 'energy'];
 export const MISSILE_PROJECT = { cost: cost(480, 380), time: 52, range: 58, radius: 2.7 };
 // A new base keeps this distance (world units) from every other base site, and 3.5 from outposts.
 export const NEW_BASE_GAP = 5;
-// Terrain works (command `terrain`): engineers reshape the 7 hexes around a point in your own territory.
+// Terrain works (command `terrain`): engineers reshape ground in your own territory. A legacy single-point order
+// reshapes the 7 hexes around the point for `cost` / `time`; a brush stroke (`points` + `radius` 0..maxRadius) covers
+// every hex within `radius` of the stroke (at most maxHexes) and costs `cost` / `time` per 7 hexes (minimum minCost).
 export const TERRAIN_WORKS = { ops: ['raise', 'lower', 'flatten', 'smooth'], cost: cost(60), time: 6, step: .06, min: .02, max: .5,
-  desc: 'Engineers raise, lower, flatten or smooth the ground around a point in your territory (never water, never into mountains).' };
+  maxRadius: 2, maxHexes: 60, minCost: 10,
+  desc: 'Engineers raise, lower, flatten or smooth the ground in your territory: drag a brush stroke across visible open ground (never water, never into mountains). The cost grows with the hexes painted.' };
 
 // W2 (2026-11-16): decisive domination (default 'domination' scenario). From minute 18, a team that holds at least
 // 65% of the operational headquarters while fielding at least 2.5x the army value of all its rivals together, for
@@ -192,7 +202,7 @@ export function actionDefinitions(base) {
     AGES: TIERS, TECHS: ACTION_UPGRADES, CITY_DEFENSES, GOODS: ACTION_RESOURCES, GOOD_NAMES: { materials: 'Materials', energy: 'Energy' },
     RULESET: { id: 'action-v2', ringVersion: 1, slots: [3, 5, 7], commandCapacity: [80, 120, 160], fieldConstruction: 'engineers', engineerRequired: false,
       autoEngineers: [2, 3, 4], territoryBuild: true, newBase: { type: 'base_site', cost: ACTION_BUILDINGS.base_site.cost, minGap: NEW_BASE_GAP },
-      terrain: TERRAIN_WORKS, dominance: DOMINANCE },
+      terrain: TERRAIN_WORKS, dominance: DOMINANCE, influence: DEFENSE_INFLUENCE },
     BUILDINGS: ACTION_BUILDINGS, UNITS: ACTION_UNITS, ABILITIES, RUIN_TYPES, OUTPOST_TYPES, MISSILE: MISSILE_PROJECT,
   };
 }

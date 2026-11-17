@@ -4,6 +4,7 @@ import { hash2 } from './rng.js';
 import { OUTPOST_TYPES, RUIN_TYPES } from './actionDefinitions.js';
 import { centerOf, distance, dxBetween, HEAVY_GROUND, tileAt } from './actionNavigation.js';
 import { MAP_SEED, mapPoint, mirrorTile, rotatePoint, rotateTile, siteTiles, symmetryOf, tileOf } from './authoredMaps.js';
+import { sketchMetrics } from './sketchMaps.js';
 
 const NAMES = ['Ironford', 'Ashby Crossing', 'Gantry', 'Saltreach', 'Signal Point', 'Northlight', 'Hollowgate',
   'Cinderhold', 'Pylon Ridge', 'Dry Dock', 'Ember Station', 'Scrapton', 'Clearwater', 'Terminal', 'Quarry Nine',
@@ -91,11 +92,16 @@ export function buildActionMap(game) {
   const { world: w, civs, seed } = game;
   if (w.mapDef) return buildAuthoredMap(game, w.mapDef);
   massifs(w);
-  const starts = civs.length;
+  // a map-builder sketch (sketchMaps.js): every painted base is a start; fewer players leave spares neutral
+  const sketch = w.sketch || null;
+  if (sketch && civs.length > sketch.bases.length) throw new Error(`This custom map has ${sketch.bases.length} bases (this match has ${civs.length} players).`);
+  const starts = sketch ? sketch.bases.length : civs.length;
   // Bigger maps carry proportionally more cities and outposts, so larger armies have more to fight over.
   const density = Math.min(1.8, .55 + W / 140);
   const desired = Math.min(24, Math.round((4 + starts * 2) * density));
-  const area = districts(w)[0] || [];
+  // a procedural world plays on its largest landmass; a sketch's bases may stand on any painted continent
+  // or island (only the largest one gave a base on a second continent a site on the first)
+  const area = sketch ? districts(w).flat() : districts(w)[0] || [];
   const candidates = area.filter((t) => {
     const q = qOf(t), r = rOf(t);
     // A city needs a connected land apron for its buildings and army. Thin spits
@@ -105,7 +111,7 @@ export function buildActionMap(game) {
       && disk(t, 1).filter((n) => parcel(w, n)).length >= 5
       && disk(t, 2).every((n) => parcel(w, n)) && planRing(w, t, seed) != null;
   }).map((tile) => ({ tile, ...centerOf(tile), ...quality(w, tile), noise: hash2(qOf(tile), rOf(tile), seed) }));
-  if (candidates.length < starts + 2) throw new Error('This world does not have enough connected land for an action RTS match.');
+  if (candidates.length < starts + 2) throw new Error(sketch ? 'This custom map has too little open land for its bases: paint broader landmasses.' : 'This world does not have enough connected land for an action RTS match.');
   // Bases stand clearly apart: the minimum gap between city ruins grows with the world (the compact
   // 64-hex test/sandbox map keeps its original spacing), and starts sit on a wider ring.
   const gap = W <= 64 ? 6.2 : Math.min(13, 8.2 + (W - 80) * .045);
@@ -117,11 +123,29 @@ export function buildActionMap(game) {
   });
   // One flood fill answers "can a road reach this candidate from the centre" for every candidate. The
   // former per-candidate A* (capped at a few thousand nodes) failed thousands of times on large maps.
-  const reach = reachable(game, central.tile, HEAVY_GROUND);
+  let reach = reachable(game, central.tile, HEAVY_GROUND);
   const angle = hash2(27, 13, seed) * Math.PI * 2;
   const occupied = new Set();
   const locations = [];
-  for (let i = 0; i < starts; i++) {
+  if (sketch) {
+    // each painted base takes the nearest buildable city site, the bases kept a city gap apart
+    for (let i = 0; i < starts; i++) {
+      const at = mapPoint(sketch.bases[i]);
+      let best = null, bd = Infinity;
+      for (const c of candidates) {
+        if (occupied.has(c.tile) || !locations.every((o) => distance(o, c) >= gap)) continue;
+        const d = distance(at, c);
+        if (d < bd) { bd = d; best = c; }
+      }
+      if (!best) throw new Error(`This custom map has no room for base ${i + 1}: give it more open land.`);
+      locations.push({ ...best, start: i });
+      occupied.add(best.tile);
+    }
+    // the bases' own landmasses (islands too) are where expansions, outposts and roads may go
+    reach = Uint8Array.from(reach);
+    for (const b of locations) { const r = reachable(game, b.tile, HEAVY_GROUND); for (let t = 0; t < N; t++) reach[t] |= r[t]; }
+  }
+  for (let i = 0; i < starts && !sketch; i++) {
     const a = angle + i * Math.PI * 2 / starts, tx = Math.cos(a), tz = Math.sin(a);
     const broad = candidates.filter((p) => disk(p.tile, 1).filter((n) => parcel(w, n)).length >= 6);
     const ranked = (broad.length >= starts ? broad : candidates).filter((p) => !occupied.has(p.tile)).map((p) => {
@@ -147,7 +171,7 @@ export function buildActionMap(game) {
     locations.push({ ...start, start: i });
     occupied.add(start.tile);
   }
-  if (!occupied.has(central.tile)) { locations.push(central); occupied.add(central.tile); }
+  if (!occupied.has(central.tile) && (!sketch || locations.every((o) => distance(o, central) >= gap * 1.5))) { locations.push(central); occupied.add(central.tile); }
   // Give each start a nearby expansion with room to maneuver, then fill the contested region.
   for (let i = 0; i < starts && locations.length < desired; i++) {
     const start = locations[i];
@@ -174,6 +198,17 @@ export function buildActionMap(game) {
     if (!p) break;
     locations.push(p);
     occupied.add(p.tile);
+  }
+  if (sketch) {
+    // Seat the civs on the bases (chooseStarts over the sketch's own metrics, as the lobby preview does):
+    // their starts first in civ order, the spare bases next as neutral cities, then everything else.
+    const { steps, reach: baseReach } = sketchMetrics(sketch);
+    const civStart = chooseStarts(steps, baseReach, sketch.bases.map((_, i) => i), civs.map((c) => c.team));
+    const taken = new Set(civStart);
+    const bases = locations.slice(0, starts), rest = locations.slice(starts);
+    locations.length = 0;
+    locations.push(...civStart.map((b, civ) => ({ ...bases[b], start: civ })),
+      ...bases.filter((_, b) => !taken.has(b)).map((p) => ({ ...p, start: undefined })), ...rest);
   }
 
   const sites = locations.map((p, i) => {
@@ -213,7 +248,7 @@ export function buildActionMap(game) {
       radius: .91, captureTime: 10, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
   }
 
-  w.starts = sites.slice(0, starts).map((s) => s.tile);
+  w.starts = sites.slice(0, civs.length).map((s) => s.tile);
   const main = sites.filter((s) => s.slots);
   const corridors = [];
   const hubs = main.map((s) => s.tile);
@@ -235,7 +270,8 @@ export function buildActionMap(game) {
     const other = main.filter((b) => b !== s).sort((a, b) => distance(s, a) - distance(s, b))[1];
     if (other && distance(s, other) < 24 * Math.max(1, gap / 6.2)) link(s.tile, other.tile);
   }
-  compactBattlefield(game, sites, corridors);
+  // a sketch's coast is the player's design: it is not pulled in around the objectives
+  if (!sketch) compactBattlefield(game, sites, corridors);
   for (const site of sites) game.addRuin(site.tile, site.ruin, -1, site.name);
   game.nav.invalidate();
   return sites;
@@ -394,12 +430,120 @@ function mainSite(id, tile, x, z, name, kindKey, start, ring) {
     parcels: [{ id: 0, index: -1, tile, x, z, yaw: ring[0].yaw, tier: 1, width: 1.12, depth: 1.12 }, ...ring], claimedAt: -1 };
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Flexible player counts (maps wave 3). A catalog map can be played by fewer players than it has starts,
+// and with any team arrangement up to its number of starts (2 v 1, 2 v 2 on a free-for-all map, a duel
+// on a 3 v 3 map). Every civ gets one authored start; the starts nobody takes stay on the map as
+// ordinary neutral city ruins (capturable, no head start). The choice is deterministic and depends only
+// on the map and the teams:
+//   - when every start is taken by the teams the map was drawn for, seat i takes start i (unchanged);
+//   - otherwise every civ -> start assignment is scored and the lowest score wins:
+//       side:   on team maps, allies on the same authored side and rivals on opposite sides;
+//       fair:   every civ's nearest rival as far away as every other civ's, and the same reach to the
+//               neutral bases around it (starts that are symmetric twins score exactly the same);
+//       spread: rivals as far apart as possible (a duel on a six-start map takes opposite starts);
+//       close:  allies next to each other.
+// Distances are ground steps for a heavy vehicle (rivers count as crossable: they will be bridged).
+function groundField(w, from) {
+  const d = new Int32Array(N).fill(-1), queue = new Int32Array(N);
+  let head = 0, tail = 0;
+  d[from] = 0; queue[tail++] = from;
+  while (head < tail) {
+    const t = queue[head++];
+    for (let k = 0; k < 6; k++) {
+      const n = NB[t * 6 + k];
+      if (n < 0 || d[n] >= 0 || !(land(w, n) || (w.river[n] && !w.lake[n] && !isWater(w.terr[n])))) continue;
+      d[n] = d[t] + 1; queue[tail++] = n;
+    }
+  }
+  return d;
+}
+
+/**
+ * Ground metrics of a map's authored starts, which decide how fewer (or other) teams are seated:
+ * `steps[i][j]`, ground steps from start i to start j (1e4: unreachable), and `reach[i]`, the mean steps
+ * from start i to its three nearest neutral main sites. They depend only on the map, so the lobby
+ * preview carries them (mapPreview) and the client seats a preview exactly as the match will.
+ */
+export function startMetrics(w, starts, others) {
+  const fields = starts.map((t) => groundField(w, t));
+  const far = (v) => (v < 0 ? 1e4 : v);
+  const steps = starts.map((_, i) => starts.map((t) => far(fields[i][t])));
+  const reach = fields.map((f) => {
+    const v = others.map((t) => far(f[t])).sort((a, b) => a - b).slice(0, 3);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
+  });
+  return { steps, reach };
+}
+
+const isDesigned = (sides, teams) => teams.length === sides.length && teams.every((_, a) => teams.every((__, b) => (teams[a] === teams[b]) === (sides[a] === sides[b])));
+
+/**
+ * Which authored start each civ takes. `starts`: the start tiles (index = designed seat); `sides`: the
+ * designed team of each start; `others`: tiles of the neutral main sites; `teams`: each civ's team.
+ * Returns civ -> start index.
+ */
+export function assignStarts(w, starts, sides, others, teams) {
+  const P = starts.length, C = teams.length;
+  if (C > P) throw new Error(`${C} players on a map with ${P} starts`);
+  if (isDesigned(sides, teams)) return teams.map((_, i) => i);
+  const { steps, reach } = startMetrics(w, starts, others);
+  return chooseStarts(steps, reach, sides, teams);
+}
+
+/** The scoring half of assignStarts over startMetrics (ported to the client's lobby preview, MapPreview.cs SeatStarts). */
+export function chooseStarts(D, reachSteps, sides, teams) {
+  const P = D.length, C = teams.length;
+  if (C > P) throw new Error(`${C} players on a map with ${P} starts`);
+  if (isDesigned(sides, teams)) return teams.map((_, i) => i);
+  let sum = 0, pairs = 0;
+  for (let i = 0; i < P; i++) for (let j = i + 1; j < P; j++) if (D[i][j] < 1e4) { sum += D[i][j]; pairs++; }
+  const unit = pairs ? sum / pairs : 1;
+  // reach: mean steps to the three nearest neutral bases, in units of the mean start-to-start distance
+  const reach = reachSteps.map((r) => r / unit);
+  const teamSided = new Set(sides).size < P;
+  const spread = (v) => (v.length ? Math.max(...v) - Math.min(...v) : 0);
+  const pick = new Array(C), used = new Array(P).fill(false);
+  let best = null, bestScore = Infinity;
+  const score = () => {
+    let side = 0, close = 0, allies = 0;
+    const near = new Array(C).fill(Infinity);
+    for (let a = 0; a < C; a++) for (let b = a + 1; b < C; b++) {
+      const d = D[pick[a]][pick[b]] / unit, ally = teams[a] === teams[b];
+      if (ally) { close += d; allies++; } else { near[a] = Math.min(near[a], d); near[b] = Math.min(near[b], d); }
+      if (teamSided && ally !== (sides[pick[a]] === sides[pick[b]])) side++;
+    }
+    const e = near.filter(Number.isFinite);
+    return side * 4 + spread(e) * 3 + spread(pick.map((p) => reach[p])) * 3 + (allies ? close / allies : 0) - (e.length ? Math.min(...e) : 0) * 1.5;
+  };
+  const walk = (c) => {
+    if (c === C) { const v = score(); if (v < bestScore - 1e-9) { bestScore = v; best = [...pick]; } return; }
+    for (let p = 0; p < P; p++) if (!used[p]) { used[p] = true; pick[c] = p; walk(c + 1); used[p] = false; }
+  };
+  walk(0);
+  return best;
+}
+
+// Orders the placed sites so the civs' starts come first (in civ order, each with its `seat`); the
+// authored starts nobody takes follow as neutral ruins, then everything else as placed.
+function seatStarts(game, def, placed, designedOf) {
+  const civs = game.civs.length, players = def.players;
+  if (civs > players) throw new Error(`${def.name} has ${players} starts (this match has ${civs} players).`);
+  const startAt = new Array(players);
+  placed.forEach((p) => { const d = designedOf(p); if (d !== undefined) startAt[d] = p; });
+  const sides = startAt.map((_, i) => Math.floor(i / Math.max(1, def.teamSize)));
+  const rest = placed.filter((p) => designedOf(p) === undefined);
+  const civStart = assignStarts(game.world, startAt.map((p) => p.tile), sides, rest.map((p) => p.tile), game.civs.map((c) => c.team));
+  const taken = new Set(civStart);
+  return [...civStart.map((d, civ) => ({ ...startAt[d], seat: civ })), ...startAt.filter((_, d) => !taken.has(d)).map((p) => ({ ...p, seat: undefined })),
+    ...rest.map((p) => ({ ...p, seat: undefined }))];
+}
+
 function buildAuthoredMap(game, def) {
   if (symmetryOf(def) !== 2) return buildRotatedMap(game, def);
-  const w = game.world, players = def.players, team = def.teamSize;
-  if (game.civs.length !== players) throw new Error(`${def.name} is a ${team}v${team} map for ${players} players (this match has ${game.civs.length}).`);
+  const w = game.world, team = def.teamSize;
   const { half, center } = siteTiles(def);
-  const placed = [];
+  let placed = [];
   const place = (s, mirrored) => {
     const tile = nearestLand(w, s.tile, (t) => parcel(w, t) && planRing(w, t, MAP_SEED) != null);
     if (tile < 0) throw new Error(`${def.name}: no room for a city ring at ${s.key}`);
@@ -411,6 +555,7 @@ function buildAuthoredMap(game, def) {
   for (const s of starts) place(s, true);
   for (const s of half.filter((x) => x.start === undefined)) { place(s, false); place(s, true); }
   for (const s of center) place(s, false);
+  placed = seatStarts(game, def, placed, (p) => (p.s.start !== undefined ? p.s.start + (p.mirrored ? team : 0) : undefined));
   const sites = placed.map((p, i) => {
     const id = i + 1, c = centerOf(p.tile);
     let ring;
@@ -422,8 +567,7 @@ function buildAuthoredMap(game, def) {
     }
     if (!ring || ring.length !== 8 || ring.some((lot) => !parcel(w, lot.tile))) throw new Error(`${def.name}: the ring at ${p.s.key} does not fit`);
     const name = p.mirrored ? def.names?.[p.s.key] || `${p.s.name} East` : p.s.name;
-    const start = p.s.start !== undefined ? p.s.start + (p.mirrored ? team : 0) : undefined;
-    return mainSite(id, p.tile, c.x, c.z, name, p.s.kind, start, ring);
+    return mainSite(id, p.tile, c.x, c.z, name, p.s.kind, p.seat, ring);
   });
   gradeSites(w, sites);
   game.nav.invalidate();
@@ -462,7 +606,7 @@ function buildAuthoredMap(game, def) {
       game.nav.invalidate();
     }
   }
-  w.starts = sites.slice(0, players).map((s) => s.tile);
+  w.starts = sites.slice(0, game.civs.length).map((s) => s.tile);
   for (const site of sites) game.addRuin(site.tile, site.ruin, -1, site.name);
   game.nav.invalidate();
   return sites;
@@ -480,12 +624,11 @@ function turnedRing(ring, k, n, id) {
 // centre, and each turned road is routed on its own ground. Centre sites and outposts are shared.
 function buildRotatedMap(game, def) {
   const w = game.world, players = def.players, n = symmetryOf(def);
-  if (game.civs.length !== players) throw new Error(`${def.name} is a free-for-all map for ${players} players (this match has ${game.civs.length}).`);
   if (players % n) throw new Error(`${def.name}: ${players} players do not divide into ${n} turned sectors`);
   const perSector = players / n;
   const { half, center } = siteTiles(def);
   const ringFits = (t) => parcel(w, t) && planRing(w, t, MAP_SEED) != null;
-  const placed = [];
+  let placed = [];
   const place = (s, k) => {
     const tile = nearestLand(w, k ? rotateTile(s.tile, k, n) : s.tile, ringFits);
     if (tile < 0) throw new Error(`${def.name}: no room for a city ring at ${s.key} (turn ${k})`);
@@ -500,6 +643,7 @@ function buildRotatedMap(game, def) {
     if (tile < 0) throw new Error(`${def.name}: no room for the central city ring at ${s.key}`);
     placed.push({ s, k: -1, tile });
   }
+  placed = seatStarts(game, def, placed, (p) => (p.s.start !== undefined && p.k >= 0 ? p.s.start + p.k * perSector : undefined));
   const sites = placed.map((p, i) => {
     const id = i + 1, c = centerOf(p.tile);
     let ring = null;
@@ -520,8 +664,7 @@ function buildRotatedMap(game, def) {
     ring ??= planRing(w, p.tile, MAP_SEED, id);
     if (!ring || ring.length !== 8 || ring.some((lot) => !parcel(w, lot.tile))) throw new Error(`${def.name}: the ring at ${p.s.key} does not fit`);
     const name = p.k > 0 ? def.names?.[p.s.key]?.[p.k - 1] || `${p.s.name} ${p.k + 1}` : p.s.name;
-    const start = p.s.start !== undefined ? p.s.start + p.k * perSector : undefined;
-    return mainSite(id, p.tile, c.x, c.z, name, p.s.kind, start, ring);
+    return mainSite(id, p.tile, c.x, c.z, name, p.s.kind, p.seat, ring);
   });
   gradeSites(w, sites);
   game.nav.invalidate();
@@ -560,7 +703,7 @@ function buildRotatedMap(game, def) {
       game.nav.invalidate();
     }
   }
-  w.starts = sites.slice(0, players).map((s) => s.tile);
+  w.starts = sites.slice(0, game.civs.length).map((s) => s.tile);
   for (const site of sites) game.addRuin(site.tile, site.ruin, -1, site.name);
   game.nav.invalidate();
   return sites;
@@ -607,11 +750,15 @@ export function mapPreview(game, size = PREVIEW_SIZE) {
     cells[i] = best;
   }
   const at = (s) => uv(s).map((x) => +x.toFixed(4));
+  // seating metrics (startMetrics): with fewer players than starts, the client picks the starts the match will use
+  const startSites = game.sites.filter((s) => s.start !== undefined).sort((a, b) => a.start - b.start);
+  const metrics = startMetrics(w, startSites.map((s) => s.tile), game.sites.filter((s) => s.slots && s.start === undefined).map((s) => s.tile));
   return {
     w: size, h: size, aspect: +(Math.sqrt(3) / 1.5).toFixed(4), classes: PREVIEW_CLASSES,
     cells: Buffer.from(cells).toString('base64'),
     starts: game.sites.filter((s) => s.start !== undefined).sort((a, b) => a.start - b.start).map((s) => { const [u, v] = at(s); return { seat: s.start, u, v, name: s.name }; }),
     bases: game.sites.filter((s) => s.slots && s.start === undefined).map((s) => { const [u, v] = at(s); return { u, v, name: s.name, kind: s.kind }; }),
     outposts: game.sites.filter((s) => !s.slots).map((s) => { const [u, v] = at(s); return { u, v, kind: s.kind }; }),
+    startSteps: metrics.steps, startReach: metrics.reach,
   };
 }

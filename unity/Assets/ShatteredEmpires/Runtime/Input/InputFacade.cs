@@ -21,16 +21,23 @@ namespace SE.Runtime.Input
         public static bool Typing;
 
         // ---------------------------------------------------------------- remappable actions
-        public sealed class ActionDef { public string Id, Label; public KeyCode Default; }
+        /// <summary>A remappable shortcut. <see cref="Default"/> is its key in the Arrow-keys camera scheme;
+        /// <see cref="Wasd"/> (when not None) replaces it in the WASD scheme.</summary>
+        public sealed class ActionDef { public string Id, Label; public KeyCode Default, Wasd; }
 
         /// <summary>Every remappable shortcut, in the order the settings list shows them.</summary>
+        /// <remarks>
+        /// Two complete default sets (Settings › Controls › Camera keys). Arrow keys (the default): the arrows pan and
+        /// the orders keep their natural letters (A attack move, S stance, W withdraw). WASD: W/A/S/D pan, and the orders
+        /// that would collide move to F, V and X. In the WASD scheme the arrows pan too (unless one is bound to an order).
+        /// </remarks>
         public static readonly ActionDef[] Actions =
         {
-            // camera: arrows and screen edges pan, Alt + drag turns (WASD and Q/E are free for commands)
-            new ActionDef { Id = "pan_up", Label = "Camera: pan forward", Default = KeyCode.UpArrow },
-            new ActionDef { Id = "pan_down", Label = "Camera: pan backward", Default = KeyCode.DownArrow },
-            new ActionDef { Id = "pan_left", Label = "Camera: pan left", Default = KeyCode.LeftArrow },
-            new ActionDef { Id = "pan_right", Label = "Camera: pan right", Default = KeyCode.RightArrow },
+            // camera: the pan keys (per scheme), the screen edges and middle drag pan; Alt + drag turns
+            new ActionDef { Id = "pan_up", Label = "Camera: pan forward", Default = KeyCode.UpArrow, Wasd = KeyCode.W },
+            new ActionDef { Id = "pan_down", Label = "Camera: pan backward", Default = KeyCode.DownArrow, Wasd = KeyCode.S },
+            new ActionDef { Id = "pan_left", Label = "Camera: pan left", Default = KeyCode.LeftArrow, Wasd = KeyCode.A },
+            new ActionDef { Id = "pan_right", Label = "Camera: pan right", Default = KeyCode.RightArrow, Wasd = KeyCode.D },
             new ActionDef { Id = "rotate_left", Label = "Camera: rotate left (or Alt + drag)", Default = KeyCode.Comma },
             new ActionDef { Id = "rotate_right", Label = "Camera: rotate right (or Alt + drag)", Default = KeyCode.Period },
             new ActionDef { Id = "group_1", Label = "Control group 1 (Ctrl: assign)", Default = KeyCode.Alpha1 },
@@ -42,10 +49,10 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "group_7", Label = "Control group 7 (Ctrl: assign)", Default = KeyCode.Alpha7 },
             new ActionDef { Id = "group_8", Label = "Control group 8 (Ctrl: assign)", Default = KeyCode.Alpha8 },
             new ActionDef { Id = "group_9", Label = "Control group 9 (Ctrl: assign)", Default = KeyCode.Alpha9 },
-            new ActionDef { Id = "attack", Label = "Attack move, then click (twice: units on screen; Ctrl: whole army)", Default = KeyCode.F },
-            new ActionDef { Id = "stance", Label = "Cycle stance: aggressive, defensive, hold fire", Default = KeyCode.V },
+            new ActionDef { Id = "attack", Label = "Attack move, then click (twice: units on screen; Ctrl: whole army)", Default = KeyCode.A, Wasd = KeyCode.F },
+            new ActionDef { Id = "stance", Label = "Cycle stance: aggressive, defensive, hold fire", Default = KeyCode.S, Wasd = KeyCode.V },
             new ActionDef { Id = "hold", Label = "Hold position", Default = KeyCode.H },
-            new ActionDef { Id = "withdraw", Label = "Withdraw", Default = KeyCode.X },
+            new ActionDef { Id = "withdraw", Label = "Withdraw", Default = KeyCode.W, Wasd = KeyCode.X },
             new ActionDef { Id = "air_patrol", Label = "Aircraft: patrol route, then click waypoints (Shift-click adds more; pauses when no aircraft selected)", Default = KeyCode.P },
             new ActionDef { Id = "follow", Label = "Follow selection with the camera", Default = KeyCode.G },
             new ActionDef { Id = "flip", Label = "Flip battle-line facing (while drawing)", Default = KeyCode.F },
@@ -55,6 +62,8 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "upgrade_base", Label = "Upgrade base tier (base wheel open)", Default = KeyCode.U },
             new ActionDef { Id = "build", Label = "Build wheel", Default = KeyCode.B },
             new ActionDef { Id = "terrain", Label = "Terrain wheel", Default = KeyCode.T },
+            new ActionDef { Id = "brush_smaller", Label = "Terrain brush: smaller (while painting terrain)", Default = KeyCode.LeftBracket },
+            new ActionDef { Id = "brush_larger", Label = "Terrain brush: larger (while painting terrain)", Default = KeyCode.RightBracket },
             new ActionDef { Id = "minimap_zoom", Label = "Minimap: local zoom", Default = KeyCode.Z },
             new ActionDef { Id = "research", Label = "Open Research (legacy)", Default = KeyCode.R },
             new ActionDef { Id = "overview", Label = "Open Overview (legacy)", Default = KeyCode.O },
@@ -63,47 +72,189 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "slower", Label = "Game speed: slower", Default = KeyCode.Minus },
         };
 
+        static readonly string[] PanActions = { "pan_up", "pan_down", "pan_left", "pan_right" };
         static readonly Dictionary<string, KeyCode> bound = new Dictionary<string, KeyCode>();
 
-        // 2026-11-16: pan moved from WASD to the arrows, rotate off Q/E, attack move to F, follow to G.
+        // 2026-11-16 (v2): pan moved from WASD to the arrows, rotate off Q/E, attack move to F, follow to G.
         // Saved bindings for those actions came from the old layout, so they are dropped once.
-        const int BindingVersion = 2;
+        // 2026-11-17 (v3): WASD panning by default (arrows hard-wired), so saved pan keys reset again.
+        // 2026-11-17 (v4): two schemes, Arrow keys (default) and WASD. Players without custom binds land on the
+        // Arrow scheme; a v3 player who had custom binds keeps the WASD scheme, so their layout does not change.
+        const int BindingVersion = 4;
         static bool migrated;
         static void Migrate()
         {
             migrated = true;
-            if (PlayerPrefs.GetInt("se.keys.version", 1) >= BindingVersion) return;
-            foreach (var id in new[] { "pan_up", "pan_down", "pan_left", "pan_right", "rotate_left", "rotate_right", "attack", "follow", "build" })
+            int saved = PlayerPrefs.GetInt("se.keys.version", 1);
+            if (saved >= BindingVersion) return;
+            string[] reset = saved < 2
+                ? new[] { "pan_up", "pan_down", "pan_left", "pan_right", "rotate_left", "rotate_right", "attack", "follow", "build" }
+                : saved < 3 ? PanActions : new string[0];
+            foreach (var id in reset)
                 PlayerPrefs.DeleteKey("se.key." + id);
+            bool custom = false;
+            foreach (var a in Actions) if (PlayerPrefs.HasKey("se.key." + a.Id)) custom = true;
+            SE.Runtime.App.GameSettings.WasdCameraKeys = saved == 3 && custom;
             PlayerPrefs.SetInt("se.keys.version", BindingVersion);
             PlayerPrefs.Save();
         }
+
+        /// <summary>True when the WASD camera scheme is chosen (Settings › Controls › Camera keys; default: Arrow keys).</summary>
+        public static bool WasdScheme
+        {
+            get { if (!migrated) Migrate(); return SE.Runtime.App.GameSettings.WasdCameraKeys; }
+        }
+
+        /// <summary>The action's default key in the chosen scheme.</summary>
+        public static KeyCode DefaultKey(ActionDef a) => WasdScheme && a.Wasd != KeyCode.None ? a.Wasd : a.Default;
+
+        static ActionDef Def(string id)
+        {
+            foreach (var a in Actions) if (a.Id == id) return a;
+            return null;
+        }
+
+        /// <summary>True when the player saved their own key for this action.</summary>
+        public static bool IsCustom(string action) => PlayerPrefs.HasKey("se.key." + action);
 
         public static KeyCode KeyFor(string action)
         {
             if (bound.TryGetValue(action, out var k)) return k;
             if (!migrated) Migrate();
-            foreach (var a in Actions)
-                if (a.Id == action)
-                {
-                    k = (KeyCode)PlayerPrefs.GetInt("se.key." + action, (int)a.Default);
-                    bound[action] = k;
-                    return k;
-                }
-            return KeyCode.None;
+            var a = Def(action);
+            if (a == null) return KeyCode.None;
+            k = (KeyCode)PlayerPrefs.GetInt("se.key." + action, (int)DefaultKey(a));
+            bound[action] = k;
+            return k;
         }
 
         public static void Rebind(string action, KeyCode key)
         {
             bound[action] = key;
-            PlayerPrefs.SetInt("se.key." + action, (int)key);
+            var a = Def(action);
+            // binding an action back to its scheme default clears the custom bind, so it follows later scheme switches
+            if (a != null && key == DefaultKey(a)) PlayerPrefs.DeleteKey("se.key." + action);
+            else PlayerPrefs.SetInt("se.key." + action, (int)key);
             PlayerPrefs.Save();
         }
 
+        /// <summary>Restore every shortcut to the default (Arrow keys) scheme, dropping custom binds.</summary>
         public static void ResetBindings()
         {
+            if (!migrated) Migrate();
             foreach (var a in Actions) PlayerPrefs.DeleteKey("se.key." + a.Id);
+            SE.Runtime.App.GameSettings.WasdCameraKeys = false;
+            PlayerPrefs.Save();
             bound.Clear();
+        }
+
+        /// <summary>
+        /// Switch the camera key scheme, swapping in that scheme's whole default set. The pan keys always follow the
+        /// scheme. Every other custom bind is kept unless its key is now the default of another (not custom) action in
+        /// the new scheme; such a bind resets to the scheme default. Returns the labels of the binds that were reset.
+        /// </summary>
+        public static List<string> SetWasdScheme(bool wasd)
+        {
+            var reset = new List<string>();
+            if (WasdScheme == wasd) return reset;
+            SE.Runtime.App.GameSettings.WasdCameraKeys = wasd;
+            bound.Clear();
+            foreach (var id in PanActions) PlayerPrefs.DeleteKey("se.key." + id);
+            var customKeys = new Dictionary<string, KeyCode>();
+            foreach (var a in Actions)
+                if (IsCustom(a.Id)) customKeys[a.Id] = (KeyCode)PlayerPrefs.GetInt("se.key." + a.Id, 0);
+            foreach (var kv in customKeys)
+            {
+                var self = Def(kv.Key);
+                if (kv.Value == DefaultKey(self)) { PlayerPrefs.DeleteKey("se.key." + kv.Key); continue; }
+                foreach (var b in Actions)
+                {
+                    if (b.Id == kv.Key || customKeys.ContainsKey(b.Id) || DefaultKey(b) != kv.Value) continue;
+                    PlayerPrefs.DeleteKey("se.key." + kv.Key);
+                    reset.Add(self.Label);
+                    break;
+                }
+            }
+            PlayerPrefs.Save();
+            return reset;
+        }
+
+        /// <summary>
+        /// A camera pan direction is held: its bound key or, as a fixed extra, the matching arrow key (unless that
+        /// arrow is bound to another action).
+        /// </summary>
+        public static bool PanHeld(string panAction, KeyCode arrow)
+        {
+            if (ActionHeld(panAction)) return true;
+            if (!Held(arrow)) return false;
+            foreach (var a in Actions)
+                if (Array.IndexOf(PanActions, a.Id) < 0 && KeyFor(a.Id) == arrow) return false;
+            return true;
+        }
+
+        /// <summary>A short, readable key name ("1", "=", "Space", "Up").</summary>
+        public static string KeyName(KeyCode k)
+        {
+            string n = k.ToString();
+            if (n.StartsWith("Alpha") && n.Length == 6) return n.Substring(5);
+            if (n.StartsWith("Keypad") && n.Length == 7 && char.IsDigit(n[6])) return "Num " + n[6];
+            switch (k)
+            {
+                case KeyCode.None: return "—";
+                case KeyCode.Equals: return "=";
+                case KeyCode.Minus: return "-";
+                case KeyCode.Period: return ".";
+                case KeyCode.Comma: return ",";
+                case KeyCode.Slash: return "/";
+                case KeyCode.Backslash: return "\\";
+                case KeyCode.Semicolon: return ";";
+                case KeyCode.Quote: return "'";
+                case KeyCode.LeftBracket: return "[";
+                case KeyCode.RightBracket: return "]";
+                case KeyCode.BackQuote: return "`";
+                case KeyCode.Return: return "Enter";
+                case KeyCode.LeftShift: return "Left Shift";
+                case KeyCode.RightShift: return "Right Shift";
+                case KeyCode.LeftControl: return "Left Ctrl";
+                case KeyCode.RightControl: return "Right Ctrl";
+                case KeyCode.LeftAlt: return "Left Alt";
+                case KeyCode.RightAlt: return "Right Alt";
+                case KeyCode.UpArrow: return "Up";
+                case KeyCode.DownArrow: return "Down";
+                case KeyCode.LeftArrow: return "Left";
+                case KeyCode.RightArrow: return "Right";
+                default: return n;
+            }
+        }
+
+        /// <summary>The bound key's short name for an action ("A", ",").</summary>
+        public static string KeyLabel(string action) => KeyName(KeyFor(action));
+
+        /// <summary>The pan keys as help text: "the arrow keys", or "W/A/S/D (or the arrow keys)".</summary>
+        public static string PanKeysText()
+        {
+            KeyCode u = KeyFor("pan_up"), l = KeyFor("pan_left"), d = KeyFor("pan_down"), r = KeyFor("pan_right");
+            if (u == KeyCode.UpArrow && l == KeyCode.LeftArrow && d == KeyCode.DownArrow && r == KeyCode.RightArrow) return "the arrow keys";
+            return KeyName(u) + "/" + KeyName(l) + "/" + KeyName(d) + "/" + KeyName(r) + " (or the arrow keys)";
+        }
+
+        /// <summary>Help text with the bound keys filled in: "{attack}" becomes the attack-move key, "{pan}" ("{Pan}" capitalised) the pan keys.</summary>
+        public static string Expand(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.IndexOf('{') < 0) return text;
+            var sb = new System.Text.StringBuilder(text.Length + 16);
+            for (int i = 0; i < text.Length; i++)
+            {
+                int close = text[i] == '{' ? text.IndexOf('}', i + 1) : -1;
+                if (close > i + 1)
+                {
+                    string id = text.Substring(i + 1, close - i - 1);
+                    if (id == "pan" || id == "Pan") { string t = PanKeysText(); sb.Append(id == "Pan" ? char.ToUpperInvariant(t[0]) + t.Substring(1) : t); i = close; continue; }
+                    if (Def(id) != null) { sb.Append(KeyLabel(id)); i = close; continue; }
+                }
+                sb.Append(text[i]);
+            }
+            return sb.ToString();
         }
 
         public static bool Action(string action) => Pressed(KeyFor(action));

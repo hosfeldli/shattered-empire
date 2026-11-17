@@ -46,6 +46,8 @@
 .se-cmd-toolchip-icon { margin-right: 8px; }
 .se-cmd-toolchip-name { font-size: 15px; color: var(--se-text); padding: 0; margin: 0; }
 .se-cmd-toolchip-cost { font-size: 13px; color: var(--se-text-dim); padding: 0; margin: 0 8px 0 0; -unity-text-align: middle-left; }
+/* ring of influence: a defense quoted outside your influence (surcharged price + reason) */
+.se-cmd-toolchip-cost--surcharge { color: var(--se-warn); }
 .se-cmd-toolchip-keys { align-items: center; }
 .se-cmd-keycap {
     font-size: 11px; color: var(--se-text); min-width: 18px; height: 18px; -unity-text-align: middle-center;

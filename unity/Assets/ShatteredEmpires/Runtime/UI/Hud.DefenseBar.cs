@@ -25,6 +25,10 @@ namespace SE.Runtime.UI
         Commander.Mode toolChipMode;
         string toolChipOption, toolChipCommand, toolChipAbility, toolChipMission;
         JObject toolChipTarget;
+        JToken toolChipQuote = QuoteUnset;
+        static readonly JToken QuoteUnset = new JValue("unset");
+        JObject terrainChipPlan;
+        int terrainChipRadius = -1;
         Vector2 cursorReasonAt = new Vector2(float.NaN, float.NaN);
 
         /// <summary>Kept for callers of the old defense bar (Hud.ActionContext): B now toggles the Build wheel.</summary>
@@ -48,11 +52,11 @@ namespace SE.Runtime.UI
         // ------------------------------------------------------------------ tool chip + cursor reason
         void BuildToolChip()
         {
-            toolChip = UiKit.El("se-cmd-toolchip", root);
+            toolChip = UiKit.Fx(UiKit.El("se-cmd-toolchip", root), "se-fx--cup");   // rises in above the dock, fades out
             toolChip.style.position = Position.Absolute;
             toolChip.style.bottom = 112; toolChip.style.height = 40;
             // sized to its text (no fixed width: long titles were cut, "New base · beside a…"), centred by translate
-            toolChip.style.left = Length.Percent(50); toolChip.style.translate = new Translate(Length.Percent(-50), 0);
+            toolChip.style.left = Length.Percent(50);   // centred by the -50 % translate of .se-fx--cup (SE.uss), which also slides it
             toolChip.style.maxWidth = 860;
             toolChip.style.flexDirection = FlexDirection.Row; toolChip.style.alignItems = Align.Center;
             toolChipIcon = new IconElement("", "se-cmd-toolchip-icon");
@@ -70,13 +74,11 @@ namespace SE.Runtime.UI
             UiKit.Text("rotate", "se-cmd-toolchip-cost", toolChipKeys);
             var close = UiKit.IconButton("close", () => commander.Cancel(), "Cancel (Esc)", toolChip, 28);
             close.style.flexShrink = 0;
-            toolChip.style.display = DisplayStyle.None;
-            cursorReason = UiKit.Text("", "se-cmd-cursor-reason", root);
+            cursorReason = UiKit.Fx(UiKit.Text("", "se-cmd-cursor-reason", root), "se-fx--follow se-fx--quick");
             cursorReason.pickingMode = PickingMode.Ignore;
             // wraps at 380 px so a long refusal never runs off the screen; flipped left of the cursor near the right edge
             cursorReason.style.position = Position.Absolute; cursorReason.style.whiteSpace = WhiteSpace.Normal; cursorReason.style.maxWidth = 380;
             cursorReason.style.left = 0; cursorReason.style.top = 0;
-            cursorReason.style.display = DisplayStyle.None;
         }
 
         /// <summary>A short keycap for a bound action (",", ".", "Q"), or the fallback.</summary>
@@ -105,7 +107,7 @@ namespace SE.Runtime.UI
             bool tool = commander.Current != Commander.Mode.Select && !session.Spectator;
             // aircraft patrol planning (P) runs in select mode: it gets the chip too, with its waypoint count and keys
             bool patrol = !tool && !session.Spectator && commander.PatrolPlanning;
-            toolChip.style.display = tool || patrol ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(toolChip, tool || patrol);
             if (patrol)
             {
                 int n = commander.PatrolWaypointCount;
@@ -118,7 +120,7 @@ namespace SE.Runtime.UI
                     toolChipCost.style.display = DisplayStyle.Flex;
                     toolChipKeys.style.display = DisplayStyle.None;
                 }
-                cursorReason.style.display = DisplayStyle.None;
+                UiKit.Hide(cursorReason);
                 return;
             }
             if (toolChipSignature == "patrol") toolChipSignature = "";
@@ -149,7 +151,7 @@ namespace SE.Runtime.UI
                                 title = newBase ? "New base · on or beside a road, in your territory" : NameOf("BUILDINGS", commander.Option);
                                 cost = CmdCostText(Defs?["BUILDINGS"]?[commander.Option]?["cost"]);
                             }
-                            else if (command == "terrain") { string op = ProtocolDecoder.Str(commander.TargetCommand?["op"]); icon = "terrain_" + op; title = TerrainTitle(op); cost = CmdCostText(Defs?["RULESET"]?["terrain"]?["cost"]); }
+                            else if (command == "terrain") { string op = ProtocolDecoder.Str(commander.TargetCommand?["op"]); icon = "terrain_" + op; title = TerrainTitle(op) + " · brush"; cost = ""; terrainChipRadius = -1; }
                             else if (command == "move") { bool attack = ProtocolDecoder.Bool(commander.TargetCommand?["attackMove"]); icon = attack ? "attack_move" : "move"; title = attack ? "Attack-move" : "Move"; }
                             else if (command == "ability") { string key = ProtocolDecoder.Str(commander.TargetCommand?["ability"]); icon = AbilityGlyph(key); title = ProtocolDecoder.Str(Defs?["ABILITIES"]?[key]?["name"], "Use ability"); }
                             else if (command == "airMission") { string mission = ProtocolDecoder.Str(commander.TargetCommand?["mission"], ""); icon = "airfield"; title = mission.Length > 0 ? char.ToUpperInvariant(mission[0]) + mission.Substring(1) : "Air mission"; }
@@ -159,12 +161,35 @@ namespace SE.Runtime.UI
                     }
                     toolChipIcon.Kind = icon;
                     toolChipName.text = title;
-                    toolChipCost.text = cost;
+                    toolChipCost.text = cost; toolChipQuote = QuoteUnset; toolChipCost.RemoveFromClassList("se-cmd-toolchip-cost--surcharge");
                     toolChipCost.style.display = cost.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
                     toolChipKeys.style.display = fieldBuild ? DisplayStyle.Flex : DisplayStyle.None;
                 }
             }
             else toolChipSignature = "";
+            // ring of influence: the server's quote for this spot replaces the list price when it is surcharged
+            // ("390 Materials · 30 Energy · Outside your influence: ×2 cost"); rebuilt only when the quote changes
+            if (fieldBuild && !ReferenceEquals(commander.FieldPreviewCost, toolChipQuote))
+            {
+                toolChipQuote = commander.FieldPreviewCost;
+                string note = commander.FieldPreviewNote;
+                string text = !string.IsNullOrEmpty(note) && toolChipQuote != null ? CmdCostText(toolChipQuote) + " · " + note
+                    : CmdCostText(Defs?["BUILDINGS"]?[commander.Option]?["cost"]);
+                if (toolChipCost.text != text) toolChipCost.text = text;
+                toolChipCost.style.display = text.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+                toolChipCost.EnableInClassList("se-cmd-toolchip-cost--surcharge", !string.IsNullOrEmpty(note));
+            }
+            else if (!fieldBuild) toolChipQuote = QuoteUnset;
+            // terrain brush: the previewed stroke's cost, hexes and the brush size keys (rebuilt only when they change)
+            bool terrainBrush = tool && commander.TerrainBrushActive;
+            if (terrainBrush && (!ReferenceEquals(commander.TerrainPreview, terrainChipPlan) || commander.TerrainBrushRadius != terrainChipRadius))
+            {
+                terrainChipPlan = commander.TerrainPreview; terrainChipRadius = commander.TerrainBrushRadius;
+                string text = commander.TerrainBrushChipText();
+                if (toolChipCost.text != text) toolChipCost.text = text;
+                toolChipCost.style.display = DisplayStyle.Flex;
+            }
+            else if (!terrainBrush) { terrainChipPlan = null; terrainChipRadius = -1; }
             // the invalid placement reason sits at the cursor, only while invalid: field builds (territory, footprint)
             // and trench / road strokes the server refused in preview
             string reason = "";
@@ -173,6 +198,11 @@ namespace SE.Runtime.UI
             {
                 reason = commander.FieldPreviewReason ?? "";
                 invalid = commander.FieldPreviewParcel != null && !commander.FieldPreviewValid && reason.Length > 0 && !reason.StartsWith("Checking");
+            }
+            else if (terrainBrush)
+            {
+                reason = commander.TerrainPreviewReason ?? "";
+                invalid = reason.Length > 0;
             }
             else if (tool && (commander.Current == Commander.Mode.Trench || commander.Current == Commander.Mode.Road))
             {
@@ -187,9 +217,9 @@ namespace SE.Runtime.UI
                 float panelWidth = root.resolvedStyle.width > 0 ? root.resolvedStyle.width : Screen.width;
                 var at = new Vector2(pointer.x + 18 + reasonWidth > panelWidth - 8 ? pointer.x - 12 - reasonWidth : pointer.x + 18, pointer.y + 14);
                 if (!((at - cursorReasonAt).sqrMagnitude <= .0025f)) { cursorReasonAt = at; cursorReason.style.translate = new Translate(at.x, at.y); }
-                cursorReason.style.display = DisplayStyle.Flex;
+                UiKit.Show(cursorReason);
             }
-            else cursorReason.style.display = DisplayStyle.None;
+            else UiKit.Hide(cursorReason);
         }
     }
 }

@@ -17,13 +17,12 @@ if (!dir || kind !== 'unity-preview' || !/^[0-9a-f]{7,40}$/.test(build)) {
   console.error('usage: publish-downloads.mjs --dir=DIR --kind=unity-preview --build=HASH [--bucket=B] [--dry-run] (Windows ZIP only)');
   process.exit(2);
 }
-// Windows installs gcloud as a .cmd wrapper, which execFile cannot start directly.
-// Invoke the SDK's Python entry point with separate arguments; no shell quoting is involved.
-const sdkRoot = process.env.CLOUDSDK_ROOT_DIR || (process.platform === 'win32'
-  ? path.join(process.env.LOCALAPPDATA || '', 'Google', 'Cloud SDK', 'google-cloud-sdk') : '');
-const gcloudProgram = process.platform === 'win32'
-  ? process.env.CLOUDSDK_PYTHON || path.join(sdkRoot, 'platform', 'bundledpython', 'python.exe') : 'gcloud';
-const gcloudPrefix = process.platform === 'win32' ? [path.join(sdkRoot, 'lib', 'gcloud.py')] : [];
+// Windows installs gcloud as gcloud.cmd, which execFile cannot start directly (Node refuses .cmd files
+// without a shell). Start it through cmd.exe; the arguments here are bucket paths and file names, which
+// Node quotes. The SDK's bundled Python is not always present, so it is no longer used. For a full
+// release (server, client ZIP, manifest merge, verification) use tools/release.ps1 instead.
+const gcloudProgram = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'gcloud';
+const gcloudPrefix = process.platform === 'win32' ? ['/d', '/s', '/c', 'gcloud.cmd'] : [];
 const gcloud = (...args) => (dry ? (console.log('[dry-run] gcloud', args.join(' ')), '')
   : execFileSync(gcloudProgram, [...gcloudPrefix, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
 const platformOf = (n) => (/mac|osx|darwin/i.test(n) ? 'mac' : /win/i.test(n) || /\.exe$/i.test(n) ? 'win' : /linux/i.test(n) ? 'linux' : null);
@@ -51,7 +50,8 @@ let manifest = { version: null, files: [] };
 try {
   if (!dry) { gcloud('storage', 'cp', `gs://${bucket}/downloads/manifest.json`, path.join(tmp, 'old.json')); manifest = JSON.parse(fs.readFileSync(path.join(tmp, 'old.json'), 'utf8')); }
 } catch { console.warn('no existing manifest; starting a new one'); }
-manifest = { version: manifest.version ?? null, unity: { build, date: files[0].date }, files };
+const others = (manifest.files || []).filter((f) => !files.some((n) => n.name === f.name || (n.kind === f.kind && n.platform === f.platform && n.build === f.build)));
+manifest = { version: opts.version ? String(opts.version) : manifest.version ?? null, unity: { build, date: files[0].date }, files: [...files, ...others] };
 fs.writeFileSync(path.join(tmp, 'new.json'), JSON.stringify(manifest, null, 2) + '\n');
 gcloud('storage', 'cp', path.join(tmp, 'new.json'), `gs://${bucket}/downloads/manifest.json`, '--cache-control=no-cache');
 console.log(`published ${kind} ${build}: ${files.map((f) => `${f.name} (${(f.size / 1e6).toFixed(0)} MB)`).join(', ')}`);

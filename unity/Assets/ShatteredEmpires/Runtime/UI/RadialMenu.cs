@@ -76,7 +76,9 @@ namespace SE.Runtime.UI
             ProgressRadius = 20f, ArcRadius = 196f, ArcButtonRadius = 20f, HotRadius = 226f;
         const float Half = 232f;        // the element is 464×464; its centre is the wheel centre
         const int NoHit = -1, HubHit = 1000, ArcHit = 2000;
-        const float OpenSeconds = .12f, CloseSeconds = .10f, SampleSeconds = .1f;
+        const float OpenSeconds = .16f, CloseSeconds = .12f, SampleSeconds = .1f;
+        // hover highlights ease in and out over about HoverSeconds; progress rings ease to a new value over ProgressSeconds
+        const float HoverSeconds = .09f, ProgressSeconds = .3f;
 
         // ~86 % opaque dark glass: busy bases do not bleed through, icons and text stay fully opaque on top
         static readonly Color Surface = new Color(12 / 255f, 18 / 255f, 21 / 255f, .86f);
@@ -150,7 +152,12 @@ namespace SE.Runtime.UI
         // sampled state
         readonly SlotState[] state = new SlotState[Segments];
         bool[] arcUsable = new bool[6];
-        float hubProgress = -1f;
+        float hubProgress = -1f, hubProgressShown = -1f;
+        // eased presentation (0..1 hover glow per segment, per outer-arc button and the hub; shown progress per segment)
+        readonly float[] hoverGlow = new float[Segments], progressShown = new float[Segments];
+        float[] arcGlow = new float[6];
+        float hubGlow;
+        bool easing;
         int pips, page;
         bool anyPulse, forceSample, paintDirty;
         float sampleAt;
@@ -242,7 +249,7 @@ namespace SE.Runtime.UI
             infoName.style.whiteSpace = WhiteSpace.Normal; infoName.style.unityTextAlign = TextAnchor.MiddleCenter;
             infoName.style.maxHeight = 36; infoName.style.overflow = Overflow.Hidden; infoName.style.flexShrink = 0;
             infoDetail = MakeLabel(info, "se-radial-info-detail");
-            infoDetail.style.whiteSpace = WhiteSpace.Normal; infoDetail.style.unityTextAlign = TextAnchor.MiddleCenter;
+            infoDetail.style.whiteSpace = WhiteSpace.Normal; infoDetail.style.unityTextAlign = TextAnchor.UpperCenter;   // a long detail clips at its end, never its start
             infoDetail.style.maxHeight = 42; infoDetail.style.overflow = Overflow.Hidden; infoDetail.style.flexShrink = 1;
             infoCost = new VisualElement { pickingMode = PickingMode.Ignore };
             infoCost.AddToClassList("se-radial-info-cost");
@@ -259,7 +266,7 @@ namespace SE.Runtime.UI
             infoTime = MakeLabel(infoCost, "se-radial-cost-time");
             infoKey = MakeLabel(infoCost, "se-radial-info-key");
             infoReason = MakeLabel(info, "se-radial-info-reason");
-            infoReason.style.whiteSpace = WhiteSpace.Normal; infoReason.style.unityTextAlign = TextAnchor.MiddleCenter;
+            infoReason.style.whiteSpace = WhiteSpace.Normal; infoReason.style.unityTextAlign = TextAnchor.UpperCenter;
             infoReason.style.maxHeight = 28; infoReason.style.overflow = Overflow.Hidden; infoReason.style.flexShrink = 0;
 
             RegisterCallback<PointerDownEvent>(OnPointerDown);
@@ -325,7 +332,10 @@ namespace SE.Runtime.UI
             levels.Add(new Level { Items = items ?? new List<RadialItem>(), Page = 0 });
             armedId = null; flash = null; HighlightId = null; HubPips = null; SubjectDetail = null;
             Scale = 1f;
-            reducedMotion = App.GameSettings.ReducedMotion;
+            reducedMotion = App.GameSettings.ReducedMotion || App.GameSettings.ReduceUiMotion;
+            System.Array.Clear(hoverGlow, 0, Segments); System.Array.Clear(arcGlow, 0, arcGlow.Length); hubGlow = 0f;
+            for (int i = 0; i < Segments; i++) progressShown[i] = -1f;
+            hubProgressShown = -1f;
             layoutValid = false; forceSample = true; paintDirty = true;
             IsOpen = true;
             closingAt = -1f;
@@ -500,6 +510,7 @@ namespace SE.Runtime.UI
             else if (highlightChanged) RefreshChildren();
             if (hoverChanged || highlightChanged) paintDirty = true;
             InfoFlash();
+            if (Ease(dt)) paintDirty = true;
             if (paintDirty) { paintDirty = false; MarkDirtyRepaint(); }
         }
 
@@ -602,6 +613,12 @@ namespace SE.Runtime.UI
                         arcVisible++;
                         if (levels.Count == 1) arcScratch.Add(item);
                     }
+            // a sub-ring or another page re-blooms the wheel briefly (from about half way), so the change reads
+            if (shown && !reducedMotion && (lastLevels != levels.Count || lastPage != level.Page) && lastLevels > 0)
+            {
+                shownAt = now - OpenSeconds * .45f;
+                for (int i = 0; i < Segments; i++) progressShown[i] = -1f;
+            }
             bool same = layoutValid && lastLevels == levels.Count && lastPage == level.Page
                 && scratch.Count == lastItems.Count && arcScratch.Count == lastArc.Count;
             for (int i = 0; same && i < scratch.Count; i++)
@@ -662,6 +679,7 @@ namespace SE.Runtime.UI
         {
             while (arcIcons.Count < arc.Count) { var icon = new IconElement("", "se-radial-arc-icon"); Add(icon); arcIcons.Add(icon); }
             if (arcUsable.Length < arc.Count) arcUsable = new bool[Mathf.Max(arc.Count, arcUsable.Length * 2)];
+            if (arcGlow.Length < arc.Count) arcGlow = new float[arcUsable.Length];
             info.BringToFront();
         }
 
@@ -976,6 +994,49 @@ namespace SE.Runtime.UI
             }
         }
 
+        // ------------------------------------------------------------------ eased presentation
+        /// <summary>
+        /// Per frame while open: hover glows ease in and out (about 90 ms) and progress rings ease to a jump in value
+        /// (about 0.3 s; the small 10 Hz steps of a running job are drawn as they come, so a training wheel is not
+        /// repainted every frame). True while anything moved (the wheel repaints only then).
+        /// </summary>
+        bool Ease(float dt)
+        {
+            bool moving = false;
+            float step = reducedMotion ? 1f : dt / HoverSeconds;
+            for (int i = 0; i < Segments; i++)
+            {
+                var s = slots[i];
+                bool hi = !s.Empty && (hover == i || !s.More && s.Item != null && HighlightId != null && HighlightId == s.Item.Id);
+                moving |= Approach(ref hoverGlow[i], hi ? 1f : 0f, step);
+                moving |= EaseProgress(ref progressShown[i], s.Empty || s.More ? -1f : state[i].Progress, dt);
+            }
+            for (int k = 0; k < arcGlow.Length; k++) moving |= Approach(ref arcGlow[k], k < arc.Count && hover == ArcHit + k ? 1f : 0f, step);
+            moving |= Approach(ref hubGlow, hover == HubHit && (levels.Count > 1 || hub != null) ? 1f : 0f, step);
+            moving |= EaseProgress(ref hubProgressShown, hubProgress, dt);
+            return moving;
+        }
+
+        static bool Approach(ref float v, float target, float step)
+        {
+            if (v == target) return false;
+            v = Mathf.MoveTowards(v, target, Mathf.Max(step, 0f));
+            return true;
+        }
+
+        bool EaseProgress(ref float shown, float target, float dt)
+        {
+            if (shown == target) return false;
+            // appearing, hiding, restarting (a new job) or a small running step: drawn at once
+            if (reducedMotion || target < 0f || shown < 0f || target < shown || target - shown < .02f) { shown = target; return true; }
+            shown += (target - shown) * (1f - Mathf.Exp(-dt * 3f / ProgressSeconds));
+            if (target - shown < .004f) shown = target;
+            return true;
+        }
+
+        static float Smooth(float t) => t * t * (3f - 2f * t);
+        static Color Alpha(Color c, float a) => new Color(c.r, c.g, c.b, c.a * a);
+
         // ------------------------------------------------------------------ painting
         void Paint(MeshGenerationContext ctx)
         {
@@ -994,13 +1055,14 @@ namespace SE.Runtime.UI
                 float a0 = s.Mid - SegmentSpan * .5f, a1 = s.Mid + SegmentSpan * .5f;
                 if (s.Empty) { Sector(p, a0, a1, InnerRadius, OuterRadius, SurfaceEmpty); continue; }
                 var item = s.Item;
-                bool hi = hover == i || !s.More && item != null && HighlightId != null && HighlightId == item.Id;
+                float g = Smooth(hoverGlow[i]);   // eased hover / world highlight
+                bool hi = g > .5f;
                 bool armed = !s.More && item != null && armedId == item.Id;
-                Sector(p, a0, a1, InnerRadius, OuterRadius, armed ? Armed : hi ? SurfaceHover : Surface);
-                if (hi) Sector(p, a0, a1, InnerRadius, OuterRadius, GlowFill);
+                Sector(p, a0, a1, InnerRadius, OuterRadius, armed ? Armed : Color.Lerp(Surface, SurfaceHover, g));
+                if (g > .001f) Sector(p, a0, a1, InnerRadius, OuterRadius, Alpha(GlowFill, g));
                 if (s.More || item == null)
                 {
-                    if (hi) ArcStroke(p, a0, a1, OuterRadius - 1.5f, 3f, Accent);
+                    if (g > .001f) ArcStroke(p, a0, a1, OuterRadius - 1.5f, 3f, Alpha(Accent, g));
                     continue;
                 }
                 var st = state[i];
@@ -1011,17 +1073,18 @@ namespace SE.Runtime.UI
                     float alpha = Mathf.Lerp(.35f, .7f, .5f + .5f * Mathf.Sin(now * Mathf.PI * 2f / 1.6f));
                     ArcStroke(p, a0 + 1f, a1 - 1f, OuterRadius - 1.5f, 2.5f, new Color(Accent.r, Accent.g, Accent.b, alpha));
                 }
-                if (hi)
+                if (g > .001f)
                 {
-                    ArcStroke(p, a0, a1, OuterRadius + 4f, 7f, GlowWide);
-                    ArcStroke(p, a0, a1, OuterRadius - 1.5f, 3f, Accent);
+                    ArcStroke(p, a0, a1, OuterRadius + 4f, 7f, Alpha(GlowWide, g));
+                    ArcStroke(p, a0, a1, OuterRadius - 1.5f, 3f, Alpha(Accent, g));
                 }
-                // progress: a green ring filling clockwise around the item's icon
-                if (st.Progress >= 0f)
+                // progress: a green ring filling clockwise around the item's icon (eased to jumps, Ease)
+                float prog = progressShown[i] >= 0f || st.Progress < 0f ? progressShown[i] : st.Progress;
+                if (prog >= 0f)
                 {
                     var ic = At(IconRadius, s.Mid);
                     RingStroke(p, ic, ProgressRadius, 0f, 1f, 3.5f, ProgressTrack);
-                    if (st.Progress > 0f) RingStroke(p, ic, ProgressRadius, 0f, Mathf.Clamp01(st.Progress), 3.5f, Good);
+                    if (prog > 0f) RingStroke(p, ic, ProgressRadius, 0f, Mathf.Clamp01(prog), 3.5f, Good);
                 }
             }
             // hairline separators between the segments (no gaps) and the outer rim
@@ -1034,15 +1097,16 @@ namespace SE.Runtime.UI
             p.strokeColor = Rim; p.lineWidth = 1.5f;
             p.BeginPath(); p.Arc(c, OuterRadius + .75f, 0f, 360f); p.Stroke();
             // the enlarged centre circle: the info disc, meeting the segments with no gap
-            bool hubHover = hover == HubHit && (levels.Count > 1 || hub != null);
-            p.fillColor = hubHover ? HubHover : HubSurface;
+            float hg = Smooth(hubGlow);
+            p.fillColor = Color.Lerp(HubSurface, HubHover, hg);
             p.BeginPath(); p.Arc(c, HubRadius, 0f, 360f); p.Fill();
-            p.strokeColor = hubHover ? Accent : Line; p.lineWidth = hubHover ? 2f : 1f;
+            p.strokeColor = Color.Lerp(Line, Accent, hg); p.lineWidth = Mathf.Lerp(1f, 2f, hg);
             p.BeginPath(); p.Arc(c, HubRadius, 0f, 360f); p.Stroke();
-            if (hubProgress >= 0f)
+            float hubProg = hubProgressShown >= 0f || hubProgress < 0f ? hubProgressShown : hubProgress;
+            if (hubProg >= 0f)
             {
                 RingStroke(p, c, HubRadius - 3f, 0f, 1f, 3f, ProgressTrack);
-                if (hubProgress > 0f) RingStroke(p, c, HubRadius - 3f, 0f, Mathf.Clamp01(hubProgress), 3f, Good);
+                if (hubProg > 0f) RingStroke(p, c, HubRadius - 3f, 0f, Mathf.Clamp01(hubProg), 3f, Good);
             }
             int drawPips = lastLevels == 1 ? pips : 0;
             float bottom = Half + HubRadius - 14f;
@@ -1068,17 +1132,17 @@ namespace SE.Runtime.UI
             for (int k = 0; k < arc.Count && levels.Count <= 1; k++)
             {
                 var at = At(ArcRadius, arc[k].angle);
-                bool hi = hover == ArcHit + k;
+                float ag = k < arcGlow.Length ? Smooth(arcGlow[k]) : 0f;
                 p.fillColor = Shadow;
                 p.BeginPath(); p.Arc(at + new Vector2(0, 2f), ArcButtonRadius + 2f, 0f, 360f); p.Fill();
-                if (hi)
+                if (ag > .001f)
                 {
-                    p.strokeColor = GlowWide; p.lineWidth = 6f;
+                    p.strokeColor = Alpha(GlowWide, ag); p.lineWidth = 6f;
                     p.BeginPath(); p.Arc(at, ArcButtonRadius + 3.5f, 0f, 360f); p.Stroke();
                 }
-                p.fillColor = hi ? SurfaceHover : SurfaceButton;
+                p.fillColor = Color.Lerp(SurfaceButton, SurfaceHover, ag);
                 p.BeginPath(); p.Arc(at, ArcButtonRadius, 0f, 360f); p.Fill();
-                p.strokeColor = hi ? Accent : Line; p.lineWidth = hi ? 2f : 1f;
+                p.strokeColor = Color.Lerp(Line, Accent, ag); p.lineWidth = Mathf.Lerp(1f, 2f, ag);
                 p.BeginPath(); p.Arc(at, ArcButtonRadius, 0f, 360f); p.Stroke();
             }
         }

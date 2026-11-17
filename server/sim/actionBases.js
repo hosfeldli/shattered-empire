@@ -1,6 +1,6 @@
 import { N, T, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
-import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, MISSILE_PROJECT, NEW_BASE_GAP, OUTPOST_TYPES, TIERS } from './actionDefinitions.js';
+import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, DEFENSE_INFLUENCE, MISSILE_PROJECT, NEW_BASE_GAP, OUTPOST_TYPES, TIERS } from './actionDefinitions.js';
 import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, tileAt } from './actionNavigation.js';
 import { hubRoute, hubTiles, ROAD_SEARCH } from './actionMap.js';
 import { launchStrategic } from './actionCombat.js';
@@ -91,6 +91,35 @@ export function construct(game, civ, site, type, tile) {
   return { building: b.id };
 }
 
+// Ring of influence (DEFENSE_INFLUENCE): per civ, the hex distance from its nearest territory hex, capped at
+// reach + 1 (255 = farther, or no territory at all). One BFS per civ per tick, run only when a placement asks.
+const influenceCache = new WeakMap();
+export function influenceRing(game, civ) {
+  let byCiv = influenceCache.get(game);
+  if (!byCiv || byCiv.tick !== game.tickN) influenceCache.set(game, byCiv = { tick: game.tickN, rings: new Map() });
+  let ring = byCiv.rings.get(civ.id);
+  if (ring) return ring;
+  const cap = DEFENSE_INFLUENCE.reach + 1, owner = game.world.owner, queue = [];
+  ring = new Uint8Array(N).fill(255);
+  for (let t = 0; t < N; t++) if (owner[t] === civ.id) { ring[t] = 0; queue.push(t); }
+  for (let head = 0; head < queue.length; head++) {
+    const t = queue[head], d = ring[t] + 1;
+    if (d > cap) continue;
+    for (let k = t * 6; k < t * 6 + 6; k++) { const n = NB[k]; if (n >= 0 && ring[n] > d) { ring[n] = d; queue.push(n); } }
+  }
+  byCiv.rings.set(civ.id, ring);
+  return ring;
+}
+/** Build-wheel ground: your own territory, and for defenses (def.defense) also neutral ground; never another player's land. */
+export const placeableBy = (game, civ, def, t) => { const o = game.world.owner[t]; return o === civ.id || !!def.defense && o < 0; };
+/** The price of a build-wheel structure at a tile: defenses outside the ring of influence cost DEFENSE_INFLUENCE.factor ×. */
+export function fieldCost(game, civ, type, tile) {
+  const def = ACTION_BUILDINGS[type];
+  if (!def?.defense || tile < 0 || influenceRing(game, civ)[tile] <= DEFENSE_INFLUENCE.reach) return { cost: def?.cost, surcharge: 1 };
+  const f = DEFENSE_INFLUENCE.factor;
+  return { cost: Object.fromEntries(Object.entries(def.cost).map(([k, v]) => [k, Math.ceil(v * f)])), surcharge: f };
+}
+
 export function constructDefense(game, civ, type, point, preview = false, yaw = 0) {
   const def = Object.hasOwn(ACTION_BUILDINGS, type) ? ACTION_BUILDINGS[type] : null;
   if (!def?.field || !point) return { error: 'Choose a tactical defense and a location.' };
@@ -99,7 +128,9 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   const tile = tileAt(point.x, point.z);
   if (civ.age + 1 < def.tier) return { error: 'This defense requires more advanced global technology.' };
   if (tile < 0 || !civ.visible[tile]) return { error: 'Scout the construction site so it is currently visible.' };
-  if (game.world.owner[tile] !== civ.id) return { error: 'Build only inside your own territory.', code: 'territory' };
+  if (!placeableBy(game, civ, def, tile)) return def.defense
+    ? { error: 'Defenses go on your own territory or neutral ground, never in another player\'s territory.', code: 'territory' }
+    : { error: 'Build only inside your own territory.', code: 'territory' };
   if (def.newBase) return placeNewBase(game, civ, type, tile, preview);
   // a pending New Base keeps its whole building ring clear
   if ([...game.buildings.values()].some((b) => b.type === 'base_site' && distance(b, point) < 2.75 + def.radius)) return { error: 'Keep clear of the new base being built.' };
@@ -110,15 +141,15 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   if (def.width) for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1],[0,-1],[0,1],[-1,0],[1,0]]) {
     const x = point.x + sx * def.width * .5 * Math.cos(yaw) + sz * def.depth * .5 * Math.sin(yaw);
     const z = point.z - sx * def.width * .5 * Math.sin(yaw) + sz * def.depth * .5 * Math.cos(yaw), t = tileAt(x, z);
-    if (t < 0 || !civ.visible[t] || game.world.owner[t] !== civ.id || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
+    if (t < 0 || !civ.visible[t] || !placeableBy(game, civ, def, t) || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
       return { error: 'The rotated footprint needs visible, level and unobstructed ground.' };
   }
   if (game.hasEnemyAt({ ...point, radius: .75 }, civ.id)) return { error: 'The position is contested.' };
-  const error = affordable(civ, def.cost);
-  if (error) return error;
-  if (preview) return { reply: { t: 'ack', placement: { valid: true, cost: def.cost, seconds: def.time } } };
+  const { cost, surcharge } = fieldCost(game, civ, type, tile), note = surcharge > 1 ? DEFENSE_INFLUENCE.note : null;
+  if (!canPay(civ, cost)) return note ? { error: `Insufficient materials or energy · ${note}.`, code: 'influence' } : { error: 'Insufficient materials or energy.' };
+  if (preview) return { reply: { t: 'ack', placement: { valid: true, cost, seconds: def.time, ...(note && { surcharge, note }) } } };
   const b = addFacility(game, civ, null, type, tile, { point: { ...point, yaw } });
-  pay(civ, def.cost);
+  pay(civ, cost);
   return { building: b.id };
 }
 

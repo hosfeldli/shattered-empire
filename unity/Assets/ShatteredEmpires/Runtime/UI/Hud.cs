@@ -58,6 +58,7 @@ namespace SE.Runtime.UI
             var text = Resources.Load<TextAsset>("Data/ui_actions");
             catalogue = text != null ? JArray.Parse(text.text) : new JArray();
             Build();
+            UiKit.ApplyMotion(root);   // "Reduce UI motion" (.se-calm): every interface transition instant
             commander.SelectionChanged += () => { cardSignature = ""; };
             // one ground marker per order (Commander.Markers.cs): green move, red attack move / attack, fading in 1.5 s
             commander.OrderIssued += (kind, point) => Session.Commander.AddOrderMarker(kind, point);
@@ -169,18 +170,20 @@ namespace SE.Runtime.UI
             B("Overview", () => Toggle("overview"), rail, "overview").name = "rail-overview";
             B("Settings", () => Toggle("settings"), rail, "settings").name = "rail-settings";
 
-            panel = El("panel glass", root); panel.style.display = DisplayStyle.None;
-            card = El("card glass", root); card.style.display = DisplayStyle.None;
+            // panels, cards, banners and the tooltip fade and slide in and out (UiKit.Fx / Show / Hide, SE.uss "UI transitions")
+            panel = UiKit.Fx(El("panel glass", root), "se-fx--left");
+            card = UiKit.Fx(El("card glass", root), "se-fx--up");
+            cardResize = new UiKit.SmoothResize(card);
             feed = El("feed", root); feed.pickingMode = PickingMode.Ignore;
-            banner = El("banner glass", root); banner.style.display = DisplayStyle.None;
+            banner = UiKit.Fx(El("banner glass", root), "se-fx--cdown");
             bannerText = L("", "heading", banner);
             BuildToast();   // Hud.Shell.cs
-            tooltip = El("tooltip", root); tooltip.style.display = DisplayStyle.None; tooltip.pickingMode = PickingMode.Ignore;
-            coach = El("coach glass", root); coach.style.display = DisplayStyle.None;
+            tooltip = UiKit.Fx(El("tooltip", root), "se-fx--quick"); tooltip.pickingMode = PickingMode.Ignore;
+            coach = UiKit.Fx(El("coach glass", root), "se-fx--down");
             L("Getting started", "heading", coach);
             coachText = L("", "", coach); coachText.style.whiteSpace = WhiteSpace.Normal;
             var coachRow = El("row", coach);
-            B("Skip tutorial", () => { tutorialStep = -1; coach.style.display = DisplayStyle.None; PlayerPrefs.SetInt("se.tutorial.done", 1); }, coachRow);
+            B("Skip tutorial", () => { tutorialStep = -1; UiKit.Hide(coach); PlayerPrefs.SetInt("se.tutorial.done", 1); }, coachRow);
             highlight = El("highlight", root); highlight.pickingMode = PickingMode.Ignore; highlight.style.display = DisplayStyle.None;
             // the tutorial pointer: a drawn triangle (no font glyph)
             pointer = El(null, root); pointer.style.position = Position.Absolute; pointer.pickingMode = PickingMode.Ignore; pointer.style.display = DisplayStyle.None;
@@ -237,23 +240,25 @@ namespace SE.Runtime.UI
             topbar.style.display = d; feed.style.display = d;
             rail.style.display = on && legacy ? DisplayStyle.Flex : DisplayStyle.None;
             Map.style.display = d;
-            if (groupsBar != null && !on) groupsBar.style.display = DisplayStyle.None;
-            if (!on) { ClosePauseMenu(false); ClosePopover(); toast.style.display = DisplayStyle.None; }
+            if (groupsBar != null && !on) UiKit.HideNow(groupsBar);
+            if (!on) { ClosePauseMenu(false); ClosePopover(); UiKit.HideNow(toast); UiKit.HideNow(banner); UiKit.HideNow(tooltip); }
             ShowCommandUi(on);   // Hud.Base.cs (Impl-2)
             ShowConsole(on);   // Hud.Console.cs
             if (on)
-                foreach (var el in new VisualElement[] { topbar, rail, Map })
+                foreach (var el in new VisualElement[] { topbar, rail })
                 {
-                    // the interface enters gradually instead of snapping over the world
+                    // the interface enters gradually instead of snapping over the world (the top bar and rail have
+                    // a 0.6 s opacity transition in SE.uss; the minimap eases in with UiKit.Enter)
                     el.style.opacity = 0;
                     var e2 = el; e2.schedule.Execute(() => e2.style.opacity = 1).StartingIn(60);
                 }
+            if (on) { Map.style.opacity = StyleKeyword.Null; UiKit.Enter(Map, 60); }
             if (objectiveLayer != null) objectiveLayer.style.display = on && session.ActionRts ? DisplayStyle.Flex : DisplayStyle.None;
             if (on) ApplyRulesetLayout();
-            if (!on) { panel.style.display = DisplayStyle.None; card.style.display = DisplayStyle.None; coach.style.display = DisplayStyle.None; }
+            if (!on) { UiKit.HideNow(panel); UiKit.HideNow(card); UiKit.HideNow(coach); }
             else if (!session.Spectator && (session.ActionRts ? ProtocolDecoder.Int(Econ?["tutorialSite"]) > 0 : PlayerPrefs.GetInt("se.tutorial.done", 0) == 0))
             {
-                tutorialStep = 0; stepAt = 0; coachShownStep = -1; coach.style.display = DisplayStyle.Flex;
+                tutorialStep = 0; stepAt = 0; coachShownStep = -1; UiKit.Show(coach);
             }
             else tutorialStep = -1;
         }
@@ -306,10 +311,10 @@ namespace SE.Runtime.UI
         void PlacementCard()
         {
             int tile = commander.PlacementTile;
-            if (tile < 0) { if (placeCard != null) placeCard.style.display = DisplayStyle.None; placeFor = -2; return; }
+            if (tile < 0) { if (placeCard != null) UiKit.Hide(placeCard); placeFor = -2; return; }
             if (placeCard == null)
             {
-                placeCard = El("place-card glass", root); placeCard.pickingMode = PickingMode.Ignore;
+                placeCard = UiKit.Fx(El("place-card glass", root), "se-fx--follow"); placeCard.pickingMode = PickingMode.Ignore;
                 placeCard.style.left = 0; placeCard.style.top = 0;   // follows the cursor by translate (no layout pass)
                 placeName = L("", "heading", placeCard); placeCost = L("", "small", placeCard); placeWhy = L("", "small", placeCard);
                 placeWhy.style.whiteSpace = WhiteSpace.Normal;
@@ -331,7 +336,7 @@ namespace SE.Runtime.UI
                     queued ? "Not enough now: the site will wait for materials" : "Click to place · drag for several · Shift keeps placing";
                 placeWhy.EnableInClassList("bad", !valid); placeWhy.EnableInClassList("warn", valid && queued); placeWhy.EnableInClassList("good", valid && !queued);
             }
-            placeCard.style.display = DisplayStyle.Flex;
+            UiKit.Show(placeCard);
             var mouse = Input.InputFacade.MousePosition;
             var p = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(mouse.x, Screen.height - mouse.y));
             // offset so the card never covers the site itself
@@ -349,12 +354,12 @@ namespace SE.Runtime.UI
         {
             if (loading == null)
             {
-                loading = El("loading glass", root);
+                loading = UiKit.Fx(El("loading glass", root), "se-fx--cup");
                 L("SHATTERED EMPIRES", "loading-title", loading);
                 foreach (var s in LoadingStages) loadingSteps.Add(L(s, "loading-step", loading));
                 var bar = El("loading-bar", loading); El("loading-bar-run", bar);
             }
-            loading.style.display = stage < 0 ? DisplayStyle.None : DisplayStyle.Flex;
+            UiKit.SetShown(loading, stage >= 0);
             for (int i = 0; i < loadingSteps.Count; i++)
             {
                 loadingSteps[i].EnableInClassList("done", i < stage);
@@ -412,7 +417,7 @@ namespace SE.Runtime.UI
             UpdateShell(time);   // Hud.Shell.cs: clock, chip hover, popover
             if (session.ActionRts) UpdateConsole(time);   // Hud.Console.cs: minimap console and dock
             UpdateToast(time);
-            if (time > bannerUntil) banner.style.display = DisplayStyle.None;
+            if (time > bannerUntil) UiKit.Hide(banner);
             if (Map.resolvedStyle.display != DisplayStyle.None) Map.Tick(time);
             PlacementCard();
             if (Input.InputFacade.Pressed(KeyCode.Escape)) HandleEscape();
@@ -558,7 +563,7 @@ namespace SE.Runtime.UI
                     var rate = L("", "rate", box);
                     string good = g;
                     box.RegisterCallback<PointerEnterEvent>(e => ShowResourceTip(good, box));
-                    box.RegisterCallback<PointerLeaveEvent>(e => tooltip.style.display = DisplayStyle.None);
+                    box.RegisterCallback<PointerLeaveEvent>(e => UiKit.Hide(tooltip));
                     el = (box, amount, rate);
                     resEls[g] = el;
                 }
@@ -579,12 +584,12 @@ namespace SE.Runtime.UI
                 powerLabel = L("", "amount", box);
                 var gauge = El("gauge", box); powerFill = El("gauge-fill", gauge);
                 box.RegisterCallback<PointerEnterEvent>(e => ShowPowerTip(box));
-                box.RegisterCallback<PointerLeaveEvent>(e => tooltip.style.display = DisplayStyle.None);
+                box.RegisterCallback<PointerLeaveEvent>(e => UiKit.Hide(tooltip));
                 var pbox = El("res", resRow);
                 L("People", "muted", pbox);
                 peopleLabel = L("", "amount", pbox);
                 pbox.RegisterCallback<PointerEnterEvent>(e => ShowPeopleTip(pbox));
-                pbox.RegisterCallback<PointerLeaveEvent>(e => tooltip.style.display = DisplayStyle.None);
+                pbox.RegisterCallback<PointerLeaveEvent>(e => UiKit.Hide(tooltip));
             }
             int gen = ProtocolDecoder.Int(Econ?["power"]?["gen"]), use = ProtocolDecoder.Int(Econ?["power"]?["use"]);
             powerLabel.text = $"{use}/{gen}";
@@ -596,8 +601,8 @@ namespace SE.Runtime.UI
             foreach (var city in session.Structures.Cities.Values) if (city.Owner == session.CivId) { pop += Mathf.RoundToInt(city.Pop); jobs += city.Jobs; idle += city.Unemployed; }
             peopleLabel.text = $"{pop}" + (idle > 0 ? $" ({idle} idle)" : jobs > pop ? " (short of workers)" : "");
             if (jobs > pop * 1.1f && worst == null) worst = "workers";
-            focusPill.style.display = worst != null ? DisplayStyle.Flex : DisplayStyle.None;
-            focusPill.text = worst != null ? "Short of " + worst.ToLowerInvariant() : "";
+            UiKit.SetShown(focusPill, worst != null);
+            if (worst != null) focusPill.text = "Short of " + worst.ToLowerInvariant();
             var invite = topbar.Q<Button>("invite");
             if (invite != null) invite.style.display = game.CanInvite ? DisplayStyle.Flex : DisplayStyle.None;
         }
@@ -607,7 +612,7 @@ namespace SE.Runtime.UI
             var wb = anchor.worldBound;
             tooltip.style.left = Mathf.Max(8, Mathf.Min(wb.xMin, root.layout.width - TooltipWidth() - 8));
             tooltip.style.top = wb.yMax + 6;
-            tooltip.style.display = DisplayStyle.Flex;
+            UiKit.Show(tooltip);
         }
 
         /// <summary>What produces and what consumes a resource, why it is short, and what to do.</summary>
@@ -706,7 +711,7 @@ namespace SE.Runtime.UI
                 string title = meta.Title ?? "Outcome", body = text;
                 bool critical = level == "critical";
                 // one row: severity bar · text (two lines at most) · Go; clicking the text also acts
-                var n = El("se-note" + (critical ? " se-note--critical" : ""), feed);
+                var n = UiKit.Fx(El("se-note" + (critical ? " se-note--critical" : ""), feed), "se-fx--left");
                 El("se-note-bar", n).pickingMode = PickingMode.Ignore;
                 var label = L(text, "se-note-text", n);
                 label.pickingMode = PickingMode.Ignore;
@@ -721,9 +726,12 @@ namespace SE.Runtime.UI
                     go.RegisterCallback<ClickEvent>(e => e.StopPropagation());
                     if (critical || level == "major") Map.Ping(tile);
                 }
-                n.schedule.Execute(() => n.RemoveFromHierarchy()).StartingIn(8000);
-                if (critical) { bannerText.text = text; banner.style.display = DisplayStyle.Flex; bannerUntil = now + 4f; }
-                while (feed.childCount > 3) feed.RemoveAt(0);
+                UiKit.Show(n);   // slides in from the left; fades out before it is removed
+                n.schedule.Execute(() => UiKit.HideAndRemove(n)).StartingIn(8000);
+                if (critical) { bannerText.text = text; UiKit.Show(banner); bannerUntil = now + 4f; }
+                // at most three notices: the oldest fades out (notices already leaving do not count)
+                for (int c = feed.childCount - 1, live = 0; c >= 0; c--)
+                    if (UiKit.IsShown(feed[c]) && ++live > 3) UiKit.HideAndRemove(feed[c]);
             }
             noteCount = total;
         }
@@ -733,15 +741,16 @@ namespace SE.Runtime.UI
         /// <summary>A concise outcome card (battle won or lost, a city taken…): title, summary, Go there, dismiss.</summary>
         void ResultCard(string title, string text, int tile)
         {
-            resultCard?.RemoveFromHierarchy();
-            resultCard = El("result-card glass", root);
+            UiKit.HideAndRemove(resultCard);
+            resultCard = UiKit.Fx(El("result-card glass", root), "se-fx--cdown");
             L(title, "title", resultCard);
             L(text, "", resultCard).style.whiteSpace = WhiteSpace.Normal;
             var row = El("row", resultCard);
-            if (tile >= 0) B("Go there", () => { game.FocusTile(tile, 22f); resultCard?.RemoveFromHierarchy(); }, row, null, "primary");
-            B("Dismiss", () => resultCard?.RemoveFromHierarchy(), row);
             var card0 = resultCard;
-            card0.schedule.Execute(() => card0.RemoveFromHierarchy()).StartingIn(15000);
+            if (tile >= 0) B("Go there", () => { game.FocusTile(tile, 22f); UiKit.HideAndRemove(card0); }, row, null, "primary");
+            B("Dismiss", () => UiKit.HideAndRemove(card0), row);
+            UiKit.Show(card0);
+            card0.schedule.Execute(() => UiKit.HideAndRemove(card0)).StartingIn(15000);
         }
 
         // ------------------------------------------------------------------ contextual card
@@ -754,7 +763,7 @@ namespace SE.Runtime.UI
             if (commander.SelectedCity >= 0 && session.Structures.Cities.TryGetValue(commander.SelectedCity, out var city)) CityCard(city);
             else if (commander.SelectedBuildings.Count > 0) BuildingCard();
             else if (units.Selected.Count > 0) UnitCard();
-            card.style.display = card.childCount > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(card, card.childCount > 0);
         }
 
         readonly List<(Label label, Func<string> text)> live = new List<(Label, Func<string>)>();
@@ -781,9 +790,9 @@ namespace SE.Runtime.UI
             }
             var orders = El("row wrap", card);
             B("Attack-move", () => commander.Begin(Commander.Mode.Target, "", new JObject { ["c"] = "move", ["units"] = "@units", ["tile"] = "@map", ["attackMove"] = true }), orders);
-            B("Hold (H)", () => commander.UnitCommand("hold", null, "Holding position"), orders);
+            B("Hold (" + Input.InputFacade.KeyLabel("hold") + ")", () => commander.UnitCommand("hold", null, "Holding position"), orders);
             B("Stop", () => commander.UnitCommand("stop", null, "Orders cleared"), orders);
-            B("Withdraw (X)", () => commander.UnitCommand("withdraw", null, "Withdrawing"), orders);
+            B("Withdraw (" + Input.InputFacade.KeyLabel("withdraw") + ")", () => commander.UnitCommand("withdraw", null, "Withdrawing"), orders);
             B("Dig in", () => commander.UnitCommand("fortify", null, "Digging in"), orders, "trench");
             B("Explore", () => commander.UnitCommand("stance", new JObject { ["stance"] = "explore" }, "Exploring on their own"), orders);
             B("Defend", () => commander.UnitCommand("stance", new JObject { ["stance"] = "defensive" }, "Defending"), orders);
@@ -964,7 +973,7 @@ namespace SE.Runtime.UI
         // ------------------------------------------------------------------ panels
         void Panel(bool force)
         {
-            panel.style.display = openPanel == "" ? DisplayStyle.None : DisplayStyle.Flex;
+            UiKit.SetShown(panel, openPanel != "");
             if (openPanel == "") return;
             // the signature says when the panel's structure changes; live values (research progress)
             // update in place, so typing in a panel's search box is never interrupted by a rebuild
@@ -1445,7 +1454,7 @@ namespace SE.Runtime.UI
             switch (tutorialStep)
             {
                 case 0:
-                    text = "Welcome, commander. Move the camera with the arrow keys or by pushing the mouse to the screen edge (Alt + drag turns it), and zoom with the mouse wheel.";
+                    text = "Welcome, commander. Move the camera with " + Input.InputFacade.PanKeysText() + " or by pushing the mouse to the screen edge (Alt + drag turns it), and zoom with the mouse wheel.";
                     if (stepAt == 0) { stepAt = time; startFocus = CameraFocus?.Invoke() ?? Vector3.zero; }
                     advance = time - stepAt > 3f && Vector3.Distance(CameraFocus?.Invoke() ?? Vector3.zero, startFocus) > 3f;
                     break;
@@ -1494,7 +1503,7 @@ namespace SE.Runtime.UI
                     advance = time - stepAt > 10f;
                     break;
                 default:
-                    tutorialStep = -1; coach.style.display = DisplayStyle.None; PlayerPrefs.SetInt("se.tutorial.done", 1);
+                    tutorialStep = -1; UiKit.Hide(coach); PlayerPrefs.SetInt("se.tutorial.done", 1);
                     return;
             }
             coachText.text = $"{tutorialStep + 1}/10 · {text}";

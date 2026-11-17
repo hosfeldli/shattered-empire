@@ -596,3 +596,107 @@
 .se-hud--action.se-hud--dominance .se-toast { top: 154px; }
 .se-hud--action.se-hud--dominance .banner, .se-hud--action.se-hud--dominance .result-card { top: 196px; }
 .se-sel-box--pick:hover { background-color: rgba(255, 255, 255, 0.09); border-color: rgba(226, 182, 96, 0.6); }
+
+/* ================================================================ UI transitions (UiKit.Fx / Show / Hide / Enter)
+   Panels, cards, banners, toasts, tool chips, tooltips and the hover card fade with a small slide or scale:
+   about 180 ms ease-out in, 140 ms ease-in out (UiKit.InMs / OutMs); UiKit.Hide sets display None only after
+   the out-transition. Transitions run on real time, so they also play while the game is paused. Variants:
+   --up / --down / --left (a short slide), --cdown / --cup (elements centred with translate -50%), --follow
+   (elements moved by translate every frame: their position is never transitioned), --fade (opacity only),
+   --quick (tooltips). .se-calm on the root (Settings > Interface > Reduce UI motion) makes them instant. */
+.se-fx {
+    opacity: 0; scale: 0.97 0.97;
+    transition-property: opacity, scale, translate;
+    transition-duration: 0.14s;
+    transition-timing-function: ease-in;
+}
+.se-fx.se-in { opacity: 1; scale: 1 1; transition-duration: 0.18s; transition-timing-function: ease-out; }
+.se-fx.se-fx--fade, .se-fx.se-fx--fade.se-in { scale: 1 1; }
+.se-fx.se-fx--pop { scale: 0.92 0.92; }
+.se-fx.se-fx--pop.se-in { scale: 1 1; }
+.se-fx.se-fx--up { translate: 0 8px; }
+.se-fx.se-fx--up.se-in { translate: 0 0; }
+.se-fx.se-fx--down { translate: 0 -8px; }
+.se-fx.se-fx--down.se-in { translate: 0 0; }
+.se-fx.se-fx--left { translate: -16px 0; scale: 1 1; }
+.se-fx.se-fx--left.se-in { translate: 0 0; }
+.se-fx.se-fx--cdown { translate: -50% -10px; }
+.se-fx.se-fx--cdown.se-in { translate: -50% 0; }
+.se-fx.se-fx--cup { translate: -50% 10px; }
+.se-fx.se-fx--cup.se-in { translate: -50% 0; }
+.se-fx.se-fx--follow, .se-fx.se-fx--follow.se-in { transition-property: opacity, scale; }
+.se-fx.se-fx--quick { transition-duration: 0.09s; }
+.se-fx.se-fx--quick.se-in { transition-duration: 0.12s; }
+
+/* the pause / confirm frame pops inside its fading dimmer */
+.se-dimmer.se-fx .se-frame { scale: 0.96 0.96; transition-property: scale, width, height; transition-duration: 0.14s; transition-timing-function: ease-in; }
+.se-dimmer.se-fx.se-in .se-frame { scale: 1 1; transition-duration: 0.2s; transition-timing-function: ease-out; }
+/* elements that step to a new place when another appears (the pill and toast under the domination banner) glide there */
+.se-status-pill.se-fx, .se-status-pill.se-fx.se-in, .se-toast.se-fx, .se-toast.se-fx.se-in, .banner.se-fx, .banner.se-fx.se-in,
+.result-card.se-fx, .result-card.se-fx.se-in { transition-property: opacity, scale, translate, top; }
+
+/* one-shot entrance (UiKit.Enter: list rows, pages, rebuilt panel content) and the page cross-fade (PageStack) */
+.se-enter-anim { transition-property: opacity, translate; transition-duration: 0.2s; transition-timing-function: ease-out; }
+.se-enter { opacity: 0; translate: 0 6px; }
+.se-leave { opacity: 0; transition-property: opacity; transition-duration: 0.12s; transition-timing-function: ease-in; }
+/* UiKit.SmoothResize: the selection panel eases to its new height when its content is rebuilt */
+.se-resizing, .se-fx.se-resizing, .se-fx.se-in.se-resizing {
+    overflow: hidden;
+    transition-property: height, opacity, scale; transition-duration: 0.18s; transition-timing-function: ease-out;
+}
+
+/* buttons: colour eases, a slight lift on hover and a press-in on click */
+.se-btn, .btn {
+    transition-property: background-color, border-color, color, scale, translate;
+    transition-duration: 0.12s; transition-timing-function: ease-out;
+}
+.se-btn:hover, .btn:hover { scale: 1.03 1.03; }
+.se-btn:active, .btn:active { scale: 0.97 0.97; translate: 0 0; }
+.se-pause-item:hover, .se-settings-tab:hover, .se-popover-row:hover, .se-keycap:hover { scale: 1.015 1.015; }
+.se-pause-item:active, .se-settings-tab:active, .se-popover-row:active, .se-keycap:active { scale: 0.985 0.985; }
+.se-chip, .se-dock-button, .se-console-round, .se-sel-box {
+    transition-property: background-color, border-color, scale, opacity;
+    transition-duration: 0.12s; transition-timing-function: ease-out;
+}
+.se-chip:hover, .se-sel-box--pick:hover { scale: 1.03 1.03; }
+.se-chip:active, .se-sel-box--pick:active { scale: 0.97 0.97; }
+.se-dock-button:hover { scale: 1.04 1.04; }
+.se-dock-button:active { scale: 0.96 0.96; }
+.se-console-round:hover { scale: 1.06 1.06; }
+.se-console-round:active { scale: 0.94 0.94; }
+.se-resbar:hover, .se-resbar:active { scale: 1 1; }
+/* the idle and production buttons also fade in and out (.se-fx): keep their hover, press and empty looks */
+.se-console-round.se-fx, .se-console-round.se-fx.se-in { transition-property: opacity, scale, background-color, border-color; }
+.se-console-round.se-fx.se-in:hover { scale: 1.06 1.06; }
+.se-console-round.se-fx.se-in:active { scale: 0.94 0.94; }
+.se-console-round--empty.se-fx.se-in { opacity: 0.55; }
+.se-segment { transition-property: background-color, color; transition-duration: 0.12s; transition-timing-function: ease-out; }
+.se-switch .unity-toggle__checkmark { transition-property: background-color, border-color; transition-duration: 0.12s; }
+.list-item { transition-property: background-color; transition-duration: 0.12s; }
+
+/* bars ease to their new value instead of jumping (widths set from code at the 4 Hz refresh) */
+.se-resbar-load-fill, .se-cmd-bar-fill, .gauge-fill, .progress-fill, .objective-fill, .action-meter-fill {
+    transition-property: width, background-color; transition-duration: 0.3s; transition-timing-function: ease-out;
+}
+.se-cmd-queue-progress { transition-property: width; transition-duration: 0.25s; transition-timing-function: ease-out; }
+/* the control-group chips follow the selection panel's height smoothly */
+.se-groups, .se-groups.se-fx, .se-groups.se-fx.se-in { transition-property: opacity, scale, bottom; transition-duration: 0.18s; transition-timing-function: ease-out; }
+
+/* jumpiness: text that changes every second sits in a fixed slot, so its box never resizes or re-centres */
+.se-clock-text { min-width: 42px; -unity-text-align: middle-center; }
+.se-dominance { width: 600px; min-width: 0; max-width: 92%; }
+.se-toast { min-width: 220px; }
+.se-idle-count { min-width: 20px; }
+
+/* reduce UI motion: every transition above is instant */
+.se-calm .se-fx, .se-calm .se-fx.se-in, .se-calm .se-fx.se-fx--quick, .se-calm .se-fx.se-fx--quick.se-in,
+.se-calm .se-fx.se-fx--follow, .se-calm .se-fx.se-fx--follow.se-in,
+.se-calm .se-dimmer.se-fx .se-frame, .se-calm .se-dimmer.se-fx.se-in .se-frame,
+.se-calm .se-enter-anim, .se-calm .se-leave, .se-calm .se-resizing, .se-calm .se-fx.se-in.se-resizing,
+.se-calm .se-btn, .se-calm .btn, .se-calm .se-chip, .se-calm .se-dock-button, .se-calm .se-console-round, .se-calm .se-sel-box,
+.se-calm .se-resbar-load-fill, .se-calm .se-cmd-bar-fill, .se-calm .gauge-fill, .se-calm .progress-fill, .se-calm .objective-fill,
+.se-calm .action-meter-fill, .se-calm .se-cmd-queue-progress, .se-calm .se-groups, .se-calm .se-groups.se-fx.se-in {
+    transition-duration: 0s;
+}
+.se-calm .se-btn:hover, .se-calm .btn:hover, .se-calm .se-chip:hover, .se-calm .se-sel-box--pick:hover,
+.se-calm .se-dock-button:hover, .se-calm .se-console-round:hover { scale: 1 1; }

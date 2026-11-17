@@ -9,7 +9,8 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
-import { MAPS_BY_ID, mapList } from './sim/mapCatalog.js';
+import { MAPS_BY_ID, mapList, mapMode } from './sim/mapCatalog.js';
+import { parseSketch } from './sim/sketchMaps.js';
 
 const PARKED_TTL_MS = +(process.env.PARKED_TTL_HOURS || 168) * 3600 * 1000;
 const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 4));
@@ -29,6 +30,13 @@ const AI_PERSONALITIES = ['warlord', 'merchant', 'builder'];
 const OBJECTIVES = ['domination', 'control', 'operation'];
 const START_RESOURCES = ['low', 'standard', 'high', 'max'];   // amounts: actionGame.js START_RES
 const STYLES = ['continents', 'pangaea', 'archipelago', 'inlandSea'];
+// a catalog map takes any number of players from 2 up to its starts (actionMap.assignStarts)
+const fitsMap = (def, seats) => seats >= 2 && seats <= def.players;
+// A map-builder sketch (sketchMaps.js) as the lobby sees a map: a free-for-all map with one start per
+// placed base (any format up to that many seats fits), its size one of the action sizes.
+const sketchDef = (sk) => (sk ? { id: 'custom', name: sk.name, players: sk.bases.length, teamSize: 1, size: ACTION_SIZES[sk.size] || ACTION_SIZES.small } : null);
+/** The catalog entry or the sketch of a match's map (null: a random world). */
+const mapDefOf = (m) => (m.map === 'custom' ? sketchDef(m.sketch) : Object.hasOwn(MAPS_BY_ID, m.map || '') ? MAPS_BY_ID[m.map] : null);
 const formatName = (teamSize, teams) => (teamSize > 1 || teams === 2 ? `${teamSize}v${teamSize}` : `ffa${teams}`);
 // Admission control (inside this process: no change to how many instances run). A new match is
 // refused, with a clear message, when the running matches already use most of the CPU time the
@@ -65,17 +73,23 @@ export class MatchManager {
     const pvp = opts.mode === 'pvp';
     const observe = opts.mode === 'observe';   // AI-only match watched by spectators (no fog, speed control)
     const sandbox = opts.mode === 'sandbox';   // developer combat sandbox: one player, one passive opponent
-    // a hand-authored map (mapCatalog.js) fixes its size and teams; 'random' (the default) is procedural
+    // a hand-authored map (mapCatalog.js) fixes its size; 'random' (the default) is procedural
     const mapId = action && !sandbox && opts.map && opts.map !== 'random' ? String(opts.map) : 'random';
-    const authored = mapId !== 'random' ? (Object.hasOwn(MAPS_BY_ID, mapId) ? MAPS_BY_ID[mapId] : null) : null;
+    // 'custom': the host's map-builder sketch, validated here (a bad one refuses the match)
+    const sketch = mapId === 'custom' ? parseSketch(opts.sketch) : null;
+    const authored = mapId === 'custom' ? sketchDef(sketch) : mapId !== 'random' ? (Object.hasOwn(MAPS_BY_ID, mapId) ? MAPS_BY_ID[mapId] : null) : null;
     if (mapId !== 'random' && !authored) throw new Error(`Unknown map "${mapId}"`);
-    // a lobby format ('2v2', 'ffa4') or teams × teamSize fixes the seat count exactly (lobby and New Skirmish)
-    const fmt = action && !sandbox && !observe && !authored ? (Object.hasOwn(FORMATS, opts.format) ? FORMATS[opts.format] : null) || (Number.isInteger(opts.teams) ? { teamSize: opts.teamSize | 0, teams: opts.teams } : null) : null;
-    const teamSize = authored ? authored.teamSize : action && !sandbox ? Math.min(4, Math.max(1, (fmt ? fmt.teamSize : opts.teamSize) | 0)) : 1;
+    // a lobby format ('2v2', 'ffa4') or teams × teamSize fixes the seat count exactly (lobby and New Skirmish).
+    // On a catalog map any format up to its number of starts fits (fewer players than it was drawn for, or
+    // other teams: actionMap.assignStarts places them); without one, or one that does not fit, the map's own.
+    let fmt = action && !sandbox && !observe ? (Object.hasOwn(FORMATS, opts.format) ? FORMATS[opts.format] : null) || (Number.isInteger(opts.teams) ? { teamSize: opts.teamSize | 0, teams: opts.teams } : null) : null;
+    if (fmt && authored && !fitsMap(authored, Math.max(1, Math.min(4, fmt.teamSize | 0)) * Math.max(2, fmt.teams | 0))) fmt = null;
+    const teamSize = fmt ? Math.min(4, Math.max(1, fmt.teamSize | 0)) : authored ? authored.teamSize : action && !sandbox ? Math.min(4, Math.max(1, opts.teamSize | 0)) : 1;
     const teams = fmt ? Math.max(2, Math.min(teamSize > 1 ? 2 : 6, fmt.teams | 0)) : 2;
-    const desired = Math.min(MAX_CIVS, teamSize * teams);
-    const humans = observe ? 0 : Math.max(1, Math.min(authored ? authored.players : fmt ? desired : MAX_CIVS, pvp ? (opts.humans | 0) || (fmt ? desired : 2) : 1));
-    const ais = authored ? authored.players - humans : sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) : fmt ? desired - humans :
+    const desired = Math.min(MAX_CIVS, fmt || !authored ? teamSize * teams : authored.players);
+    const fixed = fmt || authored;
+    const humans = observe ? 0 : Math.max(1, Math.min(fixed ? desired : MAX_CIVS, pvp ? (opts.humans | 0) || (fixed ? desired : 2) : 1));
+    const ais = authored && !fmt ? authored.players - humans : sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) : fmt ? desired - humans :
       Math.max(pvp ? 0 : 1, action ? desired - humans : 0, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
@@ -98,9 +112,9 @@ export class MatchManager {
       ruleset, wrap: !action, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
       teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination',
       startRes: START_RESOURCES.includes(opts.startRes) ? opts.startRes : 'standard' };
-    // closed seats (uneven teams: 2 v 1, three humans against two AIs): a random world only (a catalog map
-    // has a start for every seat). Seat indices other than the creator's; dropped when the match starts.
-    if (action && fmt && !authored && Array.isArray(opts.closed)) {
+    // closed seats (uneven teams: 2 v 1, three humans against two AIs), on a random world or a catalog map
+    // (whose unused starts stay neutral). Seat indices other than the creator's; dropped when the match starts.
+    if (action && (fmt || authored) && !observe && !sandbox && Array.isArray(opts.closed)) {
       for (const v of opts.closed) {
         const i = Number(v);
         if (!Number.isInteger(i) || i <= 0 || i >= slots.length || slots[i].human && slots[i].token) continue;
@@ -112,6 +126,7 @@ export class MatchManager {
     // lobby (pvp): the size the host asked for (random maps re-size with the seat count), and whether the
     // match waits for everyone to be ready (Unity lobby) instead of starting when the last seat is taken
     m.sizeKey = Object.hasOwn(ACTION_SIZES, opts.mapSize) ? opts.mapSize : null;
+    if (sketch) m.sketch = sketch;
     m.waitForReady = pvp && opts.waitForReady === true;
     m.public = pvp && opts.public === true;   // listed in /api/lobbies (the in-game lobby browser)
     this.matches.set(id, m);
@@ -136,24 +151,29 @@ export class MatchManager {
   }
 
   meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style,
-    teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective, startRes: m.startRes, teamOf: m.teamOf,
+    teamSize: m.teamSize, map: m.map || 'random', sketch: m.map === 'custom' ? m.sketch : undefined, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes, teamOf: m.teamOf,
     slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
-    if (!restoreBuf) this.dropClosed(m);
+    // the lobby as it was, so a world that cannot be generated (a sketch with no room for a base) hands it back
+    const before = restoreBuf ? null : { slots: m.slots.map((s) => [s, { ...s }]), teamOf: m.teamOf, teamSize: m.teamSize };
+    if (!restoreBuf) { this.dropClosed(m); this.catalogTeams(m); }
     if (!restoreBuf) for (const s of m.slots) if (s.human && !s.token) { s.human = false; s.name = 'AI'; s.personality = 'builder'; s.difficulty = s.difficulty || 'normal'; s.fairPlay = s.fairPlay !== false; }
     m.slots.forEach((s, i) => { s.civId = i; });
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
-        teamSize: m.teamSize, map: m.map || 'random', tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
+        teamSize: m.teamSize, map: m.map || 'random', sketch: m.map === 'custom' ? m.sketch : null, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
     m.worker = worker; m.ready = false; m.pending = [];
     worker.on('message', (msg) => this.onWorker(m, msg));
-    worker.on('error', (e) => this.log.error?.(`match ${m.id} worker error`, e));
+    worker.on('error', (e) => {
+      this.log.error?.(`match ${m.id} worker error`, e);
+      if (before && !m.ready && m.worker === worker) this.startFailed(m, before, e);
+    });
     worker.on('exit', (code) => {
       if (m.worker !== worker) return;
       m.worker = null;
@@ -163,6 +183,33 @@ export class MatchManager {
       }
     });
     this.log.info?.(`match ${m.id} ${restoreBuf ? 'restored' : 'started'} seed=${m.seed} size=${m.mapSize}`);
+  }
+
+  // A new match whose world could not be built (the worker threw before it was ready, e.g. a map-builder
+  // sketch that validates but has no room for a base): nothing was played, so a lobby goes back to the
+  // lobby as it was, with the reason shown; a skirmish, exhibition or sandbox is closed with the reason.
+  startFailed(m, before, e) {
+    const w = m.worker; m.worker = null; m.ready = false; m.pending = [];
+    if (w) w.terminate().catch(() => {});
+    const why = `The match could not start: ${String(e?.message || e || 'world generation failed').replace(/^Error:\s*/, '')}`;
+    m.slots = before.slots.map(([s, copy]) => {
+      for (const k of Object.keys(s)) if (!(k in copy) && k !== 'ws') delete s[k];
+      return Object.assign(s, copy, { ws: s.ws });
+    });
+    m.teamSize = before.teamSize;
+    if (before.teamOf === undefined) delete m.teamOf; else m.teamOf = before.teamOf;
+    const seen = [...m.slots, ...(m.watchers || [])];
+    if (m.mode === 'pvp') {
+      m.status = 'lobby';
+      for (const s of m.slots) if (s.human) s.ready = false;
+      for (const s of seen) if (s.ws) this.send(s.ws, { t: 'error', error: why, startFailed: true });
+      this.roomUpdate(m);
+    } else {
+      m.status = 'over';
+      this.matches.delete(m.id);
+      for (const s of seen) if (s.ws) { this.send(s.ws, { t: 'lobbyClosed', match: m.id, error: why, startFailed: true }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; }
+    }
+    this.log.warn?.(`match ${m.id}: ${why}`);
   }
 
   async recover(m) {
@@ -249,7 +296,8 @@ export class MatchManager {
     const open = m.slots.filter((x) => x.human && !x.token).length;
     const teams = this.teamsOf(m);
     const spectators = (m.watchers || []).map((w) => ({ name: w.name, connected: !!w.ws }));
-    const room = { t: 'room', match: m.id, code: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, mapSize: m.mapSize, teamSize: m.teamSize, map: m.map || 'random', mapName: MAPS_BY_ID[m.map]?.name || 'Random',
+    const room = { t: 'room', match: m.id, code: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, mapSize: m.mapSize, teamSize: m.teamSize, map: m.map || 'random', mapName: mapDefOf(m)?.name || 'Random',
+      mapPlayers: mapDefOf(m)?.players || 0, mapFormat: mapDefOf(m) ? mapMode(mapDefOf(m)) : null, sketch: m.map === 'custom' ? m.sketch : undefined,
       teams, format: formatName(ts, teams), players: m.slots.filter((x) => !x.closed).length, waitForReady: !!m.waitForReady, host: host?.name, open, slots, spectators,
       objective: m.objective || 'domination', startRes: m.startRes || 'standard', style: m.style, size: m.sizeKey || null, public: !!m.public };
     m.slots.forEach((s, i) => {
@@ -517,23 +565,27 @@ export class MatchManager {
         if (m.ruleset !== ACTION_RULESET) throw new Error('Formats are part of the action RTS');
         const f = Object.hasOwn(FORMATS, msg.mode) ? FORMATS[msg.mode] : null;
         if (!f) throw new Error('Unknown format');
-        const map = MAPS_BY_ID[m.map];
-        const keepMap = map && map.teamSize === f.teamSize && map.players === f.teamSize * f.teams;
+        // a catalog map stays while the format still fits its starts
+        const map = mapDefOf(m);
+        const keepMap = map && fitsMap(map, f.teamSize * f.teams);
         this.relayout(m, f.teamSize, f.teams);   // throws (nothing changed) when more players are seated than it holds
-        if (map && !keepMap) { m.map = 'random'; this.resize(m); }
+        if (map && !keepMap) { m.map = 'random'; delete m.sketch; this.resize(m); }
         return;
       }
       case 'map': {
         needHost('choose the map');
         if (m.ruleset !== ACTION_RULESET) throw new Error('Maps are part of the action RTS');
         const id = String(msg.map || 'random');
-        if (id === 'random') { m.map = 'random'; this.resize(m); return; }
-        const def = Object.hasOwn(MAPS_BY_ID, id) ? MAPS_BY_ID[id] : null;
+        if (id === 'random') { m.map = 'random'; delete m.sketch; this.resize(m); return; }
+        // { map: 'custom', sketch }: the host's map-builder sketch (validated; every client previews it from the room)
+        const sketch = id === 'custom' ? parseSketch(msg.sketch) : null;
+        const def = sketch ? sketchDef(sketch) : Object.hasOwn(MAPS_BY_ID, id) ? MAPS_BY_ID[id] : null;
         if (!def) throw new Error(`Unknown map "${id}"`);
-        this.relayout(m, def.teamSize, Math.max(2, Math.round(def.players / Math.max(1, def.teamSize))));
+        // the seats stay when they fit the map's starts (2 v 2 on a free-for-all map, a duel on a 3 v 3 map);
+        // otherwise the map's own format
+        if (!fitsMap(def, m.slots.length)) this.relayout(m, def.teamSize, Math.max(2, Math.round(def.players / Math.max(1, def.teamSize))));
         m.map = id;
-        // a catalog map has a start for every seat: closed seats open again
-        for (const s of m.slots) if (s.closed) { delete s.closed; Object.assign(s, { human: true, name: 'Open seat', token: null, ws: null }); }
+        if (sketch) m.sketch = sketch; else delete m.sketch;
         this.resize(m);
         return;
       }
@@ -552,7 +604,7 @@ export class MatchManager {
         return;
       }
       case 'closeSeat': {
-        // { seat, closed }: an empty seat leaves the match (uneven teams) or opens again; random worlds only
+        // { seat, closed }: an empty seat leaves the match (uneven teams) or opens again (any map: a catalog map leaves the spare starts neutral)
         needHost('close seats');
         const i = seatOf(msg.seat), s = m.slots[i];
         if (msg.closed === false) {
@@ -560,7 +612,6 @@ export class MatchManager {
           delete s.closed; Object.assign(s, { human: true, name: 'Open seat', token: null, ws: null });
           return;
         }
-        if (MAPS_BY_ID[m.map]) throw new Error('A catalog map has a start for every seat: choose Random to close seats');
         if (s.closed) return;
         if (s.human && s.token) throw new Error('A player sits there');
         const before = { ...s };
@@ -584,6 +635,14 @@ export class MatchManager {
     m.teamOf = kept.map((e) => order.indexOf(e.team));
   }
 
+  // A catalog map always gets explicit teams (seat / team size of the lobby's format): the simulation then
+  // seats them on the map's starts (actionMap.assignStarts), as drawn when the format is the map's own.
+  catalogTeams(m) {
+    if (m.teamOf || !mapDefOf(m) || m.ruleset !== ACTION_RULESET) return;
+    const ts = Math.max(1, m.teamSize || 1);
+    m.teamOf = m.slots.map((_, i) => Math.floor(i / ts));
+  }
+
   // at least two sides keep a seat that is not closed
   playable(slots, teamSize) {
     const ts = Math.max(1, teamSize || 1);
@@ -594,7 +653,7 @@ export class MatchManager {
   lobbies() {
     return [...this.matches.values()].filter((m) => m.status === 'lobby' && m.public && m.mode === 'pvp').map((m) => {
       const ts = Math.max(1, m.teamSize || 1), teams = this.teamsOf(m);
-      return { id: m.id, name: m.name, host: this.hostOf(m)?.name || '', format: formatName(ts, teams), map: m.map || 'random', mapName: MAPS_BY_ID[m.map]?.name || 'Random',
+      return { id: m.id, name: m.name, host: this.hostOf(m)?.name || '', format: formatName(ts, teams), map: m.map || 'random', mapName: mapDefOf(m)?.name || 'Random',
         mapSize: m.mapSize, seats: m.slots.filter((s) => !s.closed).length, players: m.slots.filter((s) => s.human && s.token).length,
         open: m.slots.filter((s) => s.human && !s.token).length, spectators: (m.watchers || []).length, objective: m.objective || 'domination', created: m.created };
     });
@@ -624,7 +683,7 @@ export class MatchManager {
 
   // an authored map fixes the world size; a random one follows the host's size choice or the seat count
   resize(m) {
-    const def = MAPS_BY_ID[m.map], n = m.slots.length;
+    const def = mapDefOf(m), n = m.slots.length;
     m.mapSize = def ? def.size : ACTION_SIZES[m.sizeKey] || (n <= 2 ? ACTION_SIZES.small : n <= 4 ? ACTION_SIZES.medium : ACTION_SIZES.large);
   }
 

@@ -20,6 +20,10 @@ namespace SE.Runtime.Session
         public bool FieldPreviewValid { get; private set; }
         public float FieldYaw { get; private set; }
         public string FieldPreviewReason { get; private set; } = "Choose visible, clear terrain.";
+        /// <summary>The price the server quoted for this spot (null until a preview answers): defenses outside the
+        /// ring of influence cost more, with FieldPreviewNote saying why ("Outside your influence: ×2 cost").</summary>
+        public JToken FieldPreviewCost { get; private set; }
+        public string FieldPreviewNote { get; private set; }
         float fieldPreviewYaw;
         string fieldPreviewType;
         float fieldPreviewAt;
@@ -32,7 +36,7 @@ namespace SE.Runtime.Session
         {
             cam.PlacementRotation = Current == Mode.Target && ProtocolDecoder.Str(TargetCommand?["c"]) == "fieldBuild";
             if (Current != Mode.Target || ProtocolDecoder.Str(TargetCommand?["c"]) != "fieldBuild" || overUi || !cam.TryGround(InputFacade.MousePosition, out var point))
-            { FieldPreviewParcel = null; fieldPreviewType = null; return; }
+            { FieldPreviewParcel = null; fieldPreviewType = null; FieldPreviewCost = null; FieldPreviewNote = null; return; }
             if (InputFacade.Action("rotate_left")) FieldYaw -= Mathf.PI / 12;
             if (InputFacade.Action("rotate_right")) FieldYaw += Mathf.PI / 12;
             FieldYaw = Mathf.Atan2(Mathf.Sin(FieldYaw), Mathf.Cos(FieldYaw));
@@ -47,6 +51,8 @@ namespace SE.Runtime.Session
             {
                 if (token != fieldPreviewToken || Current != Mode.Target) return;
                 FieldPreviewValid = r.Error == null && ProtocolDecoder.Bool(r.Raw?["placement"]?["valid"]);
+                FieldPreviewCost = r.Raw?["placement"]?["cost"];
+                FieldPreviewNote = ProtocolDecoder.Str(r.Raw?["placement"]?["note"], null);
                 FieldPreviewReason = ReadableError(r) ?? "Valid footprint · Click to begin construction";
                 // a New Base preview answers with its eight-parcel ring ([tile, x, z, yaw] each): drawn while placing
                 newBaseRing.Clear();

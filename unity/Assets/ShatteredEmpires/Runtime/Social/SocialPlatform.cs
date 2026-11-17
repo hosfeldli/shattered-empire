@@ -121,6 +121,34 @@ namespace SE.Runtime.Social
         void Shutdown();
     }
 
+    /// <summary>An online Steam friend the host can invite straight from the lobby page (no overlay needed).</summary>
+    public sealed class SocialFriend
+    {
+        public ulong Id;
+        public string Name = "";
+        /// <summary>Running this game (the Steam app id) right now: an invite reaches them in the game.</summary>
+        public bool InGame;
+        /// <summary>Already a member of our platform lobby.</summary>
+        public bool InLobby;
+        /// <summary>Invited from this lobby already (this session).</summary>
+        public bool Invited;
+    }
+
+    /// <summary>
+    /// Optional platform extension: invite a friend to the current lobby directly (Steam
+    /// ISteamMatchmaking::InviteUserToLobby). Works when the Steam overlay cannot hook the game; the friend
+    /// gets the invite in Steam chat and accepting it while Shattered Empires runs joins the lobby.
+    /// </summary>
+    public interface IFriendInvites
+    {
+        /// <summary>Online friends, those running this game first.</summary>
+        IReadOnlyList<SocialFriend> OnlineFriends();
+        /// <summary>Send a lobby invite to this friend; false when there is no lobby yet or Steam refused.</summary>
+        bool InviteFriend(ulong friendId);
+        /// <summary>The Steam overlay hooked this game (Shift+Tab works, the invite dialog can open).</summary>
+        bool OverlayReady { get; }
+    }
+
     public static class SocialPlatform
     {
         sealed class None : ISocialPlatform
@@ -163,7 +191,9 @@ namespace SE.Runtime.Social
                 if (current == null)
                 {
                     try { current = factory != null ? factory() : new None(); }
-                    catch (Exception e) { Debug.LogWarning("Social platform failed: " + e.Message); current = new None(); }
+                    catch (Exception e) { Debug.LogError("[Steam] Social platform failed to start: " + e); current = new None(); }
+                    Debug.Log("[Steam] Social platform: " + current.GetType().Name + (factory == null ? " (no platform assembly registered)" : "") +
+                        " · available=" + current.Available + " · " + current.Status);
                     EnsurePump();
                 }
                 return current;

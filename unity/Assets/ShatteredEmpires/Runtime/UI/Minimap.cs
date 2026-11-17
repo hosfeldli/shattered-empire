@@ -46,6 +46,10 @@ namespace SE.Runtime.UI
         // whole-map view: the camera footprint centre stays at least this far inside the rim (px)
         const float FollowMargin = 22f;
         bool zoomed, zoomDirty;
+        // the Z switch eases: 0 whole map … 1 local view, smoothstepped over ZoomSeconds of unscaled (panel) time
+        const float ZoomSeconds = .3f;
+        float zoomT, zoomTickAt = -1f;
+        float ZoomEase => zoomT * zoomT * (3f - 2f * zoomT);
         readonly float[] terrainLeft = { float.NaN, float.NaN, float.NaN };
         float terrainTop = float.NaN;
         readonly Vector2[] foot = new Vector2[4];
@@ -285,20 +289,31 @@ namespace SE.Runtime.UI
             }
             if (hasFoot != hadFoot) footMoved = true;
             bool rescaled = false;
-            if (zoomDirty) { zoomDirty = false; ApplyScale(); rescaled = true; gatherAt = 0; }
+            if (zoomDirty) { zoomDirty = false; gatherAt = 0; }
+            float zdt = zoomTickAt < 0f ? 0f : Mathf.Clamp(time - zoomTickAt, 0f, .1f);
+            zoomTickAt = time;
+            float zoomTarget = zoomed ? 1f : 0f;
+            if (zoomT != zoomTarget)
+            {
+                zoomT = App.GameSettings.ReduceUiMotion ? zoomTarget : Mathf.MoveTowards(zoomT, zoomTarget, zdt / ZoomSeconds);
+                ApplyScale();   // terrain size and cells follow the eased scale (cells were sized once for the closest view)
+                rescaled = true;
+            }
             // whole map: the map fills the circle around its centre and slides toward the camera only when the
             // footprint centre would leave the circle (wrapping maps follow the camera sideways); local view:
             // centred on the camera
             float viewX = focusX, viewZ = focusZ;
-            if (!zoomed)
+            float ze = ZoomEase;
+            if (ze < 1f)
             {
                 float midX = g.Wrap ? focusX : g.Period * 0.5f, midZ = g.H * 0.75f;
                 float dx = g.Wrap ? 0f : focusX - midX, dz = focusZ - midZ;
                 float reach = Mathf.Max(1f, InnerR - FollowMargin) / Mathf.Max(1e-4f, scale);
                 float dist = Mathf.Sqrt(dx * dx + dz * dz);
                 float slide = dist > reach ? 1f - reach / dist : 0f;
-                viewX = g.Wrap ? focusX : Mathf.Clamp(midX + dx * slide, 0f, g.Period);
-                viewZ = Mathf.Clamp(midZ + dz * slide, 0f, g.H * 1.5f);
+                // blended toward the camera-centred local view while the zoom eases
+                viewX = Mathf.Lerp(g.Wrap ? focusX : Mathf.Clamp(midX + dx * slide, 0f, g.Period), focusX, ze);
+                viewZ = Mathf.Lerp(Mathf.Clamp(midZ + dz * slide, 0f, g.H * 1.5f), focusZ, ze);
             }
             float left = InnerR - viewX * scale;
             float top = InnerR - viewZ * scale;
@@ -379,7 +394,7 @@ namespace SE.Runtime.UI
         {
             var g = grid;
             if (g == null) return;
-            scale = baseScale * (zoomed ? ZoomFactor : 1f);
+            scale = baseScale * Mathf.Lerp(1f, ZoomFactor, ZoomEase);
             mapW = g.Period * scale;
             mapH = g.H * 1.5f * scale;
             cellsX = Mathf.CeilToInt(mapW / CellPx) + 1;
@@ -695,7 +710,7 @@ namespace SE.Runtime.UI
             // a faint fill so the view reads at a glance, then the outline
             if (hasFoot)
             {
-                float refX = g.Wrap || zoomed ? focusX : 0f;
+                float refX = g.Wrap || zoomT > 0f ? focusX : 0f;
                 for (int pass = 0; pass < 2; pass++)
                 {
                     p.BeginPath();

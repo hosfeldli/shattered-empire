@@ -10,7 +10,7 @@
 // Units: u.auto = true, u.home = site id, u.job = job key ('b<id>' build/repair, 'f<tile>' trench,
 // 'p<id>' road or terrain project, 'u<id>' vehicle) or null. Snapshot flag 4096 marks them.
 import { N, T, isWater } from './constants.js';
-import { disk } from './hex.js';
+import { disk, dist as hexDist, hexLine } from './hex.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, RUIN_TYPES, TERRAIN_WORKS } from './actionDefinitions.js';
 import { centerOf, distance, tileAt } from './actionNavigation.js';
 import { planRing } from './actionMap.js';
@@ -71,7 +71,7 @@ function homeOf(game, u) {
 }
 
 const projectPoint = (game, p) => {
-  if (p.kind === 'terrain') return p.point;
+  if (p.kind === 'terrain') return terrainWorkPoint(p);
   const total = p.total || p.left || 1, i = Math.max(0, Math.min(p.edges.length - 1, Math.floor((1 - p.left / total) * p.edges.length)));
   const e = p.edges[i];
   return game.lerpPoint(centerOf(e.a), centerOf(e.b), .5);
@@ -154,7 +154,10 @@ function work(game, civ, u, job, working, dt) {
       f.progress = Math.min(1, f.progress + dt / 4);
       if (f.progress >= .99999) { f.progress = 1; f.state = 'built'; game.territoryDirty = true; }
     }
-  } else t.left = Math.max(0, t.left - dt * rate);   // road or terrain project: completed by fieldEconomyStep
+  } else {
+    t.left = Math.max(0, t.left - dt * rate);   // road or terrain project: completed by fieldEconomyStep
+    if (t.kind === 'terrain') advanceTerrain(game, t);   // a brush stroke is reshaped step by step as the engineers move along it
+  }
 }
 
 function runEngineer(game, civ, u, jobs, byKey, load, working, dt) {
@@ -274,35 +277,140 @@ function editable(game, civ, t) {
     !game.reservedTiles.has(t) && !game.buildingAtTile(t) && !game.fieldworks.has(t);
 }
 
-/** Command `terrain`: queue a terrain work for the engineers (or preview it). */
-export function terrainOrder(game, civ, op, point, preview = false) {
-  const W = TERRAIN_WORKS;
-  if (!W.ops.includes(op) || !point) return { error: 'Choose raise, lower, flatten or smooth, and a location.' };
-  const tile = tileAt(point.x, point.z);
-  if (tile < 0 || game.world.owner[tile] !== civ.id) return { error: 'Terrain can only be reshaped inside your own territory.' };
-  if (!editable(game, civ, tile)) return { error: 'Choose open dry ground: not water, mountains, bases, structures or trenches.' };
-  const tiles = disk(tile, 1).filter((t) => editable(game, civ, t));
-  if (game.roadProjects.some((p) => p.kind === 'terrain' && p.tiles.some((t) => tiles.includes(t)))) return { error: 'Engineers are already reshaping that ground.' };
-  if (game.roadProjects.filter((p) => p.kind === 'terrain' && p.owner === civ.id).length >= 6) return { error: 'Finish an existing terrain project first.' };
-  if (!canPay(civ, W.cost)) return { error: `Terrain works require ${W.cost.materials} Materials.` };
-  if (preview) return { reply: { t: 'ack', terrain: { op, tile, tiles, cost: W.cost, seconds: W.time } } };
-  civ.res.materials -= W.cost.materials;
-  game.roadProjects.push({ id: game.id_(), owner: civ.id, kind: 'terrain', op, tile, tiles, point: centerOf(tile), edges: [], left: W.time, total: W.time,
-    label: 'Terrain works complete.' });
-  return {};
+/** Why a hex cannot be reshaped by this civ ('territory' | 'hidden' | 'ground'), or null when it can. */
+function refusal(game, civ, t) {
+  if (t < 0 || t >= N || game.world.owner[t] !== civ.id) return 'territory';
+  if (civ.visible && !civ.visible[t]) return 'hidden';
+  return editable(game, civ, t) ? null : 'ground';
 }
 
-/** Applies a finished terrain work: the centre moves a full step, the ring half a step. */
+const TERRAIN_REASONS = {
+  territory: 'Terrain can only be reshaped inside your own territory.',
+  hidden: 'Paint over ground you can see.',
+  ground: 'Choose open dry ground: not water, mountains, bases, structures or trenches.',
+  busy: 'Engineers are already reshaping that ground.',
+};
+
+/**
+ * The hexes a brush stroke paints: the stroke's centre hexes in drawing order (consecutive points joined by hex
+ * lines, so a fast drag leaves no gaps), each widened to `radius`, deduplicated and capped at maxHexes.
+ */
+export function terrainStroke(points, radius, maxHexes = TERRAIN_WORKS.maxHexes) {
+  const centres = [];
+  let last = -1;
+  for (const p of points) {
+    const t = tileAt(p.x, p.z);
+    if (t < 0) continue;
+    for (const s of last >= 0 && last !== t ? hexLine(last, t) : [t]) if (s !== centres[centres.length - 1] && !centres.includes(s)) centres.push(s);
+    last = t;
+  }
+  const tiles = [], seen = new Set();
+  let truncated = false;
+  for (const c of centres) {
+    for (const t of disk(c, radius)) {
+      if (seen.has(t)) continue;
+      if (tiles.length >= maxHexes) { truncated = true; break; }
+      seen.add(t); tiles.push(t);
+    }
+    if (truncated) break;
+  }
+  return { centres, tiles, truncated };
+}
+
+/**
+ * Command `terrain`: queue terrain works for the engineers (or preview them).
+ * Brush stroke: `points` (world points along the drag, ≤72) and `radius` (0..maxRadius, default 1); every hex
+ * within `radius` of the stroke that can be reshaped is painted, the others are skipped (listed in `refused`).
+ * Legacy single point: `point` only; reshapes the 7 hexes around it for the flat cost, refused as a whole when the
+ * centre cannot be reshaped or overlaps works under way.
+ */
+export function terrainOrder(game, civ, op, point, preview = false, stroke = null, radius = 1) {
+  const W = TERRAIN_WORKS;
+  const legacy = !Array.isArray(stroke) || !stroke.length;
+  const points = legacy ? (point ? [point] : []) : stroke;
+  if (!W.ops.includes(op) || !points.length) return { error: 'Choose raise, lower, flatten or smooth, and a location.' };
+  for (let i = 1; i < points.length; i++) if (distance(points[i - 1], points[i]) > 38) return { error: 'Paint a shorter stroke.' };
+  const r = legacy ? 1 : Math.max(0, Math.min(W.maxRadius ?? 2, Math.round(Number.isFinite(radius) ? radius : 1)));
+  const { centres, tiles: footprint, truncated } = terrainStroke(points, r, W.maxHexes ?? 60);
+  const first = centres[0] ?? -1;
+  const busy = new Set();
+  for (const p of game.roadProjects) if (p.kind === 'terrain') for (const t of p.tiles) busy.add(t);
+  if (legacy) {
+    // unchanged single-point rules (whole order refused)
+    if (first < 0 || game.world.owner[first] !== civ.id) return { error: TERRAIN_REASONS.territory, code: 'territory' };
+    if (!editable(game, civ, first)) return { error: TERRAIN_REASONS.ground };
+    if (footprint.some((t) => busy.has(t) && editable(game, civ, t))) return { error: TERRAIN_REASONS.busy };
+  }
+  const tiles = [], refused = [], why = {};
+  for (const t of footprint) {
+    const no = busy.has(t) ? 'busy' : refusal(game, civ, t);
+    if (no && !(legacy && no === 'hidden')) { refused.push(t); why[no] = (why[no] || 0) + 1; }
+    else tiles.push(t);
+  }
+  if (!tiles.length) {
+    const code = why.territory && !why.ground && !why.busy && !why.hidden ? 'territory' : why.busy ? 'busy' : why.hidden && !why.ground ? 'hidden' : 'ground';
+    return { error: TERRAIN_REASONS[code], code };
+  }
+  if (game.roadProjects.filter((p) => p.kind === 'terrain' && p.owner === civ.id).length >= 6) return { error: 'Finish an existing terrain project first.' };
+  const cost = legacy ? W.cost : { materials: Math.max(W.minCost ?? 10, Math.round(tiles.length * W.cost.materials / 7)) };
+  const seconds = legacy ? W.time : Math.round(W.time * Math.max(1, tiles.length / 7) * 10) / 10;
+  const plan = { op, tile: first, tiles, refused, cost, seconds, radius: r, truncated: truncated || undefined };
+  if (preview) return { reply: { t: 'ack', terrain: { ...plan, afford: canPay(civ, cost) } } };
+  if (!canPay(civ, cost)) return { error: `Terrain works require ${cost.materials} Materials.` };
+  civ.res.materials -= cost.materials;
+  // the engineers work through the stroke in drawing order: each centre hex with the brush hexes it adds
+  const valid = new Set(tiles), assigned = new Set(), steps = [];
+  for (const c of centres) {
+    const group = disk(c, r).filter((t) => valid.has(t) && !assigned.has(t));
+    for (const t of group) assigned.add(t);
+    if (group.length) steps.push({ t: c, tiles: group });
+  }
+  // full step on the stroke itself, easing to half a step at the brush edge (a single point: centre 1, ring .5)
+  const weights = tiles.map((t) => { let d = r; for (const c of centres) d = Math.min(d, hexDist(t, c)); return 1 - .5 * d / Math.max(1, r); });
+  game.roadProjects.push({ id: game.id_(), owner: civ.id, kind: 'terrain', op, tile: first, tiles, weights, steps, applied: 0,
+    level: game.world.elev[first], point: centerOf(steps[0]?.t ?? first), edges: [], left: seconds, total: seconds,
+    label: 'Terrain works complete.' });
+  return { hexes: tiles.length, skipped: refused.length, cost };
+}
+
+/** The point the engineers work at: the stroke step matching the project's progress. */
+export function terrainWorkPoint(p) {
+  if (!p.steps?.length) return p.point;
+  const k = Math.max(0, Math.min(p.steps.length - 1, Math.floor((1 - p.left / (p.total || 1)) * p.steps.length)));
+  return centerOf(p.steps[k].t);
+}
+
+/** Applies the stroke steps the engineers have finished (all of them once the project completes). */
+export function advanceTerrain(game, p, all = false) {
+  if (!p.steps?.length) return;
+  const done = all ? p.steps.length : Math.floor((1 - p.left / (p.total || 1)) * p.steps.length);
+  if (done <= (p.applied || 0)) return;
+  const tiles = [];
+  for (let i = p.applied || 0; i < done; i++) tiles.push(...p.steps[i].tiles);
+  p.applied = done;
+  reshape(game, p, tiles);
+}
+
+/** Applies a finished terrain work: every hex not yet reshaped (a legacy point: the centre a full step, the ring half). */
 export function applyTerrain(game, p) {
+  if (p.steps?.length) { advanceTerrain(game, p, true); return; }
+  reshape(game, p, p.tiles);
+}
+
+function reshape(game, p, list) {
   const w = game.world, W = TERRAIN_WORKS, civ = game.civs[p.owner];
-  const tiles = p.tiles.filter((t) => editable(game, civ, t) || t === p.tile && !isWater(w.terr[t]) && !w.river[t]);
-  const before = new Map(tiles.map((t) => [t, w.elev[t]])), centre = w.elev[p.tile];
+  const weight = new Map(p.tiles.map((t, i) => [t, p.weights?.[i] ?? (t === p.tile ? 1 : .5)]));
+  const tiles = list.filter((t) => editable(game, civ, t) || t === p.tile && !isWater(w.terr[t]) && !w.river[t]);
+  if (!tiles.length) return;
+  const before = new Map(tiles.map((t) => [t, w.elev[t]]));
+  // flatten levels to the stroke's first hex as it was when ordered (a legacy point: its centre now)
+  const level = p.steps?.length ? p.level ?? w.elev[p.tile] : w.elev[p.tile];
   for (const t of tiles) {
-    const e0 = before.get(t), k = t === p.tile ? 1 : .5;
+    const e0 = before.get(t), k = weight.get(t) ?? .5;
     let e = e0;
     if (p.op === 'raise') e += W.step * k;
     else if (p.op === 'lower') e -= W.step * k;
-    else if (p.op === 'flatten') e = centre;
+    else if (p.op === 'flatten') e = level;
     else {
       const around = disk(t, 1).filter((n) => n !== t && !isWater(w.terr[n]) && !w.lake[n]);
       if (around.length) e = (e0 + around.reduce((s, n) => s + (before.get(n) ?? w.elev[n]), 0) / around.length) / 2;

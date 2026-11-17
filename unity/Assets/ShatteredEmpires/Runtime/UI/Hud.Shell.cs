@@ -36,6 +36,30 @@ namespace SE.Runtime.UI
             public VisualElement BarFill;
             public float Shown, SampledAt = -1f, FlashUntil;
             public int ShownAmount = int.MinValue, ShownTenths = int.MinValue;   // what the labels show (format only on change)
+            public int TargetAmount;           // the server's amount; the label counts toward it (no jumps)
+            public UiKit.Tween AmountTween;
+        }
+
+        float tweenLast = -1f;
+
+        /// <summary>
+        /// Per frame: Materials and Energy count smoothly toward the server's amount (about 0.45 s, unscaled time, so
+        /// also while paused). The text changes only when the shown integer does, from cached strings (no garbage).
+        /// </summary>
+        void TweenResources(float time)
+        {
+            float dt = tweenLast < 0f ? 0f : Mathf.Clamp(time - tweenLast, 0f, .1f);
+            tweenLast = time;
+            if (!session.ActionRts) return;
+            foreach (var kind in ChipKinds)
+            {
+                if (!resChips.TryGetValue(kind, out var rc) || rc.ShownAmount == rc.TargetAmount && rc.AmountTween.Value == rc.TargetAmount) continue;
+                rc.AmountTween.Step(rc.TargetAmount, dt, .45f);
+                int shown = Mathf.RoundToInt(rc.AmountTween.Value);
+                if (shown == rc.ShownAmount) continue;
+                rc.ShownAmount = shown;
+                rc.Amount.text = shown >= 100000 ? Amount(shown) : UiKit.IntText(shown);
+            }
         }
 
         readonly Dictionary<string, ResChip> resChips = new Dictionary<string, ResChip>();
@@ -61,18 +85,16 @@ namespace SE.Runtime.UI
             clockText.pickingMode = PickingMode.Ignore;
             clock.style.display = DisplayStyle.None;
 
-            focusPill = L("", "se-status-pill", topbar);
+            focusPill = UiKit.Fx(L("", "se-status-pill", topbar), "se-fx--cdown");
             focusPill.pickingMode = PickingMode.Ignore;
-            focusPill.style.display = DisplayStyle.None;
 
-            // the decisive-domination countdown under the clock (action ruleset; econ dominance:[team, secondsLeft])
-            dominanceBanner = El("se-dominance", topbar);
+            // the decisive-domination countdown under the clock (action ruleset; econ dominance:[team, secondsLeft]); slides down in
+            dominanceBanner = UiKit.Fx(El("se-dominance", topbar), "se-fx--cdown");
             dominanceBanner.pickingMode = PickingMode.Ignore;
             dominanceTitle = L("", "se-dominance-title", dominanceBanner);
             dominanceTitle.pickingMode = PickingMode.Ignore;
             dominanceText = L("", "se-dominance-text", dominanceBanner);
             dominanceText.pickingMode = PickingMode.Ignore;
-            dominanceBanner.style.display = DisplayStyle.None;
 
             topRight = El("se-topbar-right", topbar);
             // the speed control is built once the ruleset is known (spectators get 8×)
@@ -91,13 +113,12 @@ namespace SE.Runtime.UI
             pauseButton.style.display = DisplayStyle.None;
             menuButton = UiKit.IconButton("menu", OpenPauseMenu, "Menu (Esc)", topRight);
 
-            popover = El("se-popover", root);
+            popover = UiKit.Fx(El("se-popover", root), "se-fx--quick");
             popover.pickingMode = PickingMode.Position;
-            popover.style.display = DisplayStyle.None;
             // a click anywhere else in the interface closes a pinned popover
             root.RegisterCallback<PointerDownEvent>(e =>
             {
-                if (!popoverPinned || popover.style.display == DisplayStyle.None) return;
+                if (!popoverPinned || !UiKit.IsShown(popover)) return;
                 var t = e.target as VisualElement;
                 if (t != null && (popover.Contains(t) || Owns(t))) return;
                 ClosePopover();
@@ -224,7 +245,7 @@ namespace SE.Runtime.UI
             resRow.style.display = action ? DisplayStyle.None : DisplayStyle.Flex;
             if (action) TopBarAction(); else TopBar();
             UpdateRightGroup();
-            if (popover.style.display == DisplayStyle.Flex && popoverKind != null && PopoverSignature() != popoverFilledFor) FillPopover();
+            if (UiKit.IsShown(popover) && popoverKind != null && PopoverSignature() != popoverFilledFor) FillPopover();
         }
 
         long popoverFilledFor = long.MinValue;
@@ -274,7 +295,7 @@ namespace SE.Runtime.UI
             {
                 var rc = resChips[kind];
                 int amount = ProtocolDecoder.Int(res?[kind]);
-                if (amount != rc.ShownAmount) { rc.ShownAmount = amount; rc.Amount.text = Amount(amount); }
+                rc.TargetAmount = amount;   // the label counts toward it every frame (TweenResources)
                 float instant = ProtocolDecoder.Float(rates?[kind]) + (kind == "materials" ? PickupIncome(now) : 0f);
                 // EMA, τ = 10 s, sampled at the refresh; spending never enters it so it does not flicker
                 if (rc.SampledAt < 0) rc.Shown = instant;
@@ -312,9 +333,9 @@ namespace SE.Runtime.UI
             // the centred status pill: fixed width, hidden when empty (it is absolute: nothing shifts)
             int recovery = ProtocolDecoder.Int(Econ?["recovery"]), held = ProtocolDecoder.Int(Econ?["hold"]);
             string status = recovery > 0 ? $"Restore command in {recovery} s" : held > 0 ? $"Objective held {held} s" : session.Spectator ? "Observing: " + CivName(session.CivId) : "";
-            focusPill.text = status;
+            if (focusPill.text != status) focusPill.text = status;
             focusPill.EnableInClassList("se-status--bad", recovery > 0);
-            focusPill.style.display = status.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(focusPill, status.Length > 0);
             UpdateDominance();
         }
 
@@ -337,7 +358,7 @@ namespace SE.Runtime.UI
             shownDomTeam = team; shownDomSeconds = left;
             if (team < 0)
             {
-                dominanceBanner.style.display = DisplayStyle.None;
+                UiKit.Hide(dominanceBanner);
                 root.EnableInClassList("se-hud--dominance", false);
                 focusPill.style.top = StyleKeyword.Null;
                 return;
@@ -359,7 +380,7 @@ namespace SE.Runtime.UI
                 : $"{who} holds {hq}% of the headquarters with {army:0.#}× your army · retake a headquarters or rebuild to stop it";
             dominanceBanner.EnableInClassList("se-dominance--ours", ours);
             dominanceBanner.EnableInClassList("se-dominance--enemy", !ours && !spectator);
-            dominanceBanner.style.display = DisplayStyle.Flex;
+            UiKit.Show(dominanceBanner);
             focusPill.style.top = 116;   // the status pill steps below the banner
             root.EnableInClassList("se-hud--dominance", true);   // the toast and the critical banner too (SE.uss)
         }
@@ -471,15 +492,15 @@ namespace SE.Runtime.UI
                 popover.style.left = Mathf.Max(8, Mathf.Min(wb.xMin, root.layout.width - 272));
                 popover.style.top = wb.yMax + 6;
             }
-            popover.style.display = DisplayStyle.Flex;
-            popover.BringToFront();
-            tooltip.style.display = DisplayStyle.None;
+            if (!UiKit.IsShown(popover)) popover.BringToFront();
+            UiKit.Show(popover);
+            UiKit.Hide(tooltip);
         }
 
         void ClosePopover()
         {
             if (popover == null) return;
-            popover.style.display = DisplayStyle.None;
+            UiKit.Hide(popover);
             popoverPinned = false;
             popoverKind = null;
             foreach (var rc in resChips.Values) rc.Chip.EnableInClassList("selected", false);
@@ -490,7 +511,7 @@ namespace SE.Runtime.UI
         void UpdateChipHover()
         {
             if (popoverPinned || hoverChip == null || now - hoverSince < .35f) return;
-            if (popoverKind == hoverChip && popover.style.display == DisplayStyle.Flex) return;
+            if (popoverKind == hoverChip && UiKit.IsShown(popover)) return;
             if (!resChips.TryGetValue(hoverChip, out var rc)) return;
             popoverKind = hoverChip;
             ShowPopover(rc.Chip);
@@ -603,9 +624,8 @@ namespace SE.Runtime.UI
 
         void BuildToast()
         {
-            toast = L("", "se-toast", root);
+            toast = UiKit.Fx(L("", "se-toast", root), "se-fx--cdown");   // slides down in, fades out
             toast.pickingMode = PickingMode.Ignore;
-            toast.style.display = DisplayStyle.None;
         }
 
         /// <summary>Positive feedback worth a toast in the action ruleset; everything else that succeeds stays quiet.</summary>
@@ -650,7 +670,7 @@ namespace SE.Runtime.UI
                     showToast = true;
                 }
             }
-            toast.style.display = showToast ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(toast, showToast);
         }
 
         // ------------------------------------------------------------------ pause menu (B13)
@@ -664,7 +684,9 @@ namespace SE.Runtime.UI
         {
             if (pauseDimmer != null || MenuVisible) return;
             ClosePopover();
-            pauseDimmer = El("se-dimmer", root);
+            // the dimmer fades in and the frame pops (SE.uss .se-dimmer.se-fx); it fades out before it is removed
+            pauseDimmer = UiKit.Fx(El("se-dimmer", root), "se-fx--fade");
+            UiKit.Show(pauseDimmer);
             pauseFrame = El("se-frame se-pause-frame", pauseDimmer);
             pausePages = new UiKit.PageStack(pauseFrame);
             pausePages.WideChanged += wide => pauseFrame?.EnableInClassList("se-frame--wide", wide);
@@ -677,7 +699,7 @@ namespace SE.Runtime.UI
         void ClosePauseMenu(bool resume)
         {
             if (pauseDimmer == null) return;
-            pauseDimmer.RemoveFromHierarchy();
+            UiKit.HideAndRemove(pauseDimmer);
             pauseDimmer = null; pauseFrame = null; pausePages = null;
             if (resume && pausedByMenu && game.CanPause && session.Paused) game.SetPaused(false);
             pausedByMenu = false;
@@ -752,7 +774,7 @@ namespace SE.Runtime.UI
             // 3. pause menu: back one page, at the root resume
             if (pauseDimmer != null) { PopPause(); return; }
             // 4. a pinned or hovered breakdown / observer popover
-            if (popover != null && popover.style.display == DisplayStyle.Flex) { ClosePopover(); return; }
+            if (popover != null && UiKit.IsShown(popover)) { ClosePopover(); return; }
             // 5. picker → sub-ring → armed defense bar → wheel (Hud.Base.cs)
             if (session.ActionRts && CloseCommandContext()) return;
             // 6. a legacy side panel
@@ -768,6 +790,7 @@ namespace SE.Runtime.UI
         {
             now = time;
             UpdateClock();
+            TweenResources(time);
             UpdateChipHover();
             // clicking the world closes a pinned popover
             if (popoverPinned && Input.InputFacade.LeftDown && !IsPointerOverUi(Input.InputFacade.MousePosition)) ClosePopover();

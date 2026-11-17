@@ -171,6 +171,23 @@ export function paintAuthoredWorld(w, def) {
     }
     w.elev.set(next);
   }
+  // Massifs: a broad block of peaks would otherwise be one flat snow table. The peaks rise with their
+  // distance (in hexes) from the nearest lower ground, with a little symmetric noise, so a range reads as
+  // mountains with a crest. The outer ring of peaks keeps its height (the slopes up to it are unchanged),
+  // and every lifted hex is already a peak, so terrain classes, routes and previews stay as they were.
+  const PEAK = .74, depth = new Int16Array(N).fill(-1), queue = new Int32Array(N);
+  let head = 0, tail = 0;
+  for (let i = 0; i < N; i++) if (w.elev[i] <= PEAK) { depth[i] = 0; queue[tail++] = i; }
+  while (head < tail) {
+    const t = queue[head++];
+    for (let d = 0; d < 6; d++) { const m = NB[t * 6 + d]; if (m >= 0 && depth[m] < 0) { depth[m] = depth[t] + 1; queue[tail++] = m; } }
+  }
+  for (let i = 0; i < N; i++) {
+    if (depth[i] < 2) continue;
+    const c = tileCenter(i), steps = depth[i] - 1;
+    const lift = Math.min(.24, .06 * steps) + sym(c.x, c.z, MAP_SEED + 7, 3 * scale, 2) * .06 * Math.min(1, steps / 2);
+    w.elev[i] = Math.min(.995, Math.max(w.elev[i], w.elev[i] + lift));
+  }
   return w;
 }
 

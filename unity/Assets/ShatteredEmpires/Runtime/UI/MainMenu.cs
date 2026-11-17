@@ -14,7 +14,7 @@ namespace SE.Runtime.UI
     /// exactly one level on every page. The multiplayer pages work without Steam (match codes); with Steam
     /// they add hosting a friends lobby, the invite overlay and joining friends.
     /// </summary>
-    public sealed class MainMenuView : VisualElement
+    public sealed partial class MainMenuView : VisualElement
     {
         readonly IGameActions game;
         readonly Func<VisualElement> settingsFactory;
@@ -23,7 +23,7 @@ namespace SE.Runtime.UI
         readonly UiKit.PageStack pages;
         readonly CampaignOptions skirmish = new CampaignOptions();
 
-        static readonly HashSet<string> WidePages = new HashSet<string> { "skirmish", "lobby", "settings", "guide", "browse" };
+        static readonly HashSet<string> WidePages = new HashSet<string> { "skirmish", "lobby", "settings", "guide", "browse", "builder" };
 
         bool advancedOpen;
         string codeMode = "join";
@@ -42,7 +42,8 @@ namespace SE.Runtime.UI
             pageHost = Box("se-menu-page-host", frame);
             var foot = Box("se-menu-foot", frame);
             statusLabel = Line("", "se-menu-status", foot);
-            Line($"v{Application.version} · Windows preview", "se-menu-version", foot);
+            Line($"v{Application.version} · Windows preview" + (App.Updater.CurrentBuild.Length > 0 ? " · build " + App.Updater.CurrentBuild : ""), "se-menu-version", foot);
+            UpdateBanner.Attach(frame, foot);   // in-app updater (App/Updater.cs): hidden unless an update is on offer
 
             // the mouse's back button pops a page like Escape
             frame.RegisterCallback<PointerDownEvent>(e =>
@@ -72,6 +73,7 @@ namespace SE.Runtime.UI
         /// <summary>Show or hide the menu; <paramref name="status"/> null keeps the current status line.</summary>
         public void Show(bool on, string status)
         {
+            if (on && style.display == DisplayStyle.None) UiKit.Enter(frame);   // the frame eases in when the menu opens
             style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
             if (status != null) SetStatus(status);
             // the root page reflects whether there is a match to continue
@@ -97,6 +99,7 @@ namespace SE.Runtime.UI
             lobbyMapName = room["map"] != null && (string)room["map"] != "random" ? (string)room["mapName"] ?? (string)room["map"] : "";
             lobby = parsed;
             lobbyCode = parsed.Code;
+            SyncLobbySketch(parsed);   // MainMenu.Builder.cs
             // the server's copy of your ready flag is the truth
             if (parsed.You >= 0 && parsed.You < parsed.Seats.Count) lobbyReadyOn = parsed.Seats[parsed.You].Ready;
             OpenLobbyPage();
@@ -176,6 +179,7 @@ namespace SE.Runtime.UI
                 case "training": return BuildTraining;
                 case "settings": return BuildSettings;
                 case "guide": return BuildGuide;
+                case "builder": return BuildBuilder;   // MainMenu.Builder.cs
                 default: return BuildRoot;
             }
         }
@@ -304,6 +308,7 @@ namespace SE.Runtime.UI
             var fresh = Item("skirmish", "New Skirmish", () => Go("skirmish"), list);
             (hasMatch ? resume : fresh).AddToClassList("se-menu-item--primary");
             Item("multiplayer", "Multiplayer", () => Go("multiplayer"), list);
+            Item("terrain", "Map builder", () => OpenBuilder("root"), list);
             Item("training", "Training & Extras", () => Go("training"), list);
             Item("settings", "Settings", () => Go("settings"), list);
 
@@ -465,10 +470,11 @@ namespace SE.Runtime.UI
                 v => { skirmish.StartRes = v; if (resHelp != null) resHelp.text = HelpFor(StartResHelp, v); }, left, 99);
             resHelp = Line(HelpFor(StartResHelp, string.IsNullOrEmpty(skirmish.StartRes) ? "standard" : skirmish.StartRes), "se-menu-help-line", left);
 
-            // ---- battlefield: a catalog map (it fixes the format) or a random world (style, size, seed)
+            // ---- battlefield: a catalog map with a start for every seat, or a random world (style, size, seed)
             Section("Battlefield", right, true);
-            skirmishPicker = new MapPicker(() => maps, OnSkirmishMap);
+            skirmishPicker = new MapPicker(() => WithCustom(skirmishCustom), OnSkirmishMap);
             right.Add(skirmishPicker);
+            Btn("Map builder", () => OpenBuilder("skirmish"), right, "terrain").tooltip = "Paint your own map: sea, land, mountains and the bases";
             RequestMaps();
             skirmishRandomBox = Box("se-menu-random", right);
             Line("World style", "se-menu-label", skirmishRandomBox);
@@ -493,9 +499,8 @@ namespace SE.Runtime.UI
             {
                 skirmish.Wrap = false;
                 EnsureSkirmishAis();
-                // a catalog map seats everyone: closed seats only apply to a random world
-                if (!SkirmishRandom) foreach (var ai in skirmish.Ais) ai.Closed = false;
                 skirmish.Rivals = skirmish.Ais.Count;
+                skirmish.Sketch = skirmish.Map == "custom" ? skirmishSketch?.Encode() : null;
                 game.StartCampaign(skirmish);
             }, p.Footer, "play", true);
             return p.Root;
@@ -504,17 +509,18 @@ namespace SE.Runtime.UI
         void SetSkirmishFormat(string format)
         {
             skirmish.Format = format;
-            // a catalog map drawn for another format gives way to a random world
+            // a catalog map stays while it has a start for every seat; one with fewer starts gives way to a random world
             var m = FindMap(skirmish.Map);
-            if (m != null && m.Format != format) skirmish.Map = "random";
+            if (m != null && !m.Fits(MapPreview.Seats(format))) skirmish.Map = "random";
             SyncSkirmish();
         }
 
         void OnSkirmishMap(string id)
         {
             skirmish.Map = id;
+            // the format stays when the map has room for it (spare starts stay neutral); otherwise the map's own
             var m = FindMap(id);
-            if (m != null) skirmish.Format = m.Format;
+            if (m != null && !m.Fits(MapPreview.Seats(SkirmishFormat))) skirmish.Format = m.Format;
             SyncSkirmish();
         }
 
@@ -540,7 +546,7 @@ namespace SE.Runtime.UI
         ulong SkirmishClosedMask()
         {
             ulong mask = 0;
-            if (SkirmishRandom) for (int i = 0; i < skirmish.Ais.Count && i < 63; i++) if (skirmish.Ais[i].Closed) mask |= 1UL << (i + 1);
+            for (int i = 0; i < skirmish.Ais.Count && i < 63; i++) if (skirmish.Ais[i].Closed) mask |= 1UL << (i + 1);
             return mask;
         }
 
@@ -575,6 +581,7 @@ namespace SE.Runtime.UI
         void FillSkirmishAis()
         {
             if (skirmishAiList == null) return;
+            UiKit.EnterAdded(skirmishAiList, skirmishAiList.childCount);   // added seats ease in
             skirmishAiList.Clear();
             string format = SkirmishFormat;
             int ts = MapPreview.TeamSizeOf(format);
@@ -594,7 +601,7 @@ namespace SE.Runtime.UI
             {
                 var ai = skirmish.Ais[i];
                 int seat = i + 1, team = seat / ts, index = i;
-                bool closed = random && ai.Closed;
+                bool closed = ai.Closed;
                 if (!closed && team < teams) perTeam[team]++;
                 var row = Box("se-ai-row", skirmishAiList);
                 row.EnableInClassList("se-ai-row--closed", closed);
@@ -618,11 +625,11 @@ namespace SE.Runtime.UI
                     SyncSkirmish();
                 }, "Leave this seat empty (uneven sides: 2 v 1, 1 v 3 …)", row, 26);
                 remove.AddToClassList("se-lobby-icon");
-                remove.SetEnabled(random && SidesPlayable(index));
-                if (!random) remove.tooltip = "A catalog map seats everyone; choose Random for uneven sides";
+                remove.SetEnabled(SidesPlayable(index));
             }
             if (skirmishSides != null)
-                skirmishSides.text = SidesText(perTeam, ffa) + (skirmish.Ais.Count < 2 ? "" : random ? " · ✕ leaves a seat empty for uneven sides" : " · uneven sides need a random world");
+                skirmishSides.text = SidesText(perTeam, ffa) + (skirmish.Ais.Count < 2 ? "" : " · ✕ leaves a seat empty for uneven sides") +
+                    (!random && FindMap(skirmish.Map) is MapCatalogEntry sm && sm.Players > MapPreview.Seats(format) ? $" · {sm.Name} has {sm.Players} starts; the spare ones stay neutral" : "");
         }
 
         // ------------------------------------------------------------------ multiplayer
@@ -721,6 +728,7 @@ namespace SE.Runtime.UI
 
         void FillBrowse(JArray list)
         {
+            UiKit.EnterAdded(browseRows, browseRows.childCount);   // new lobbies ease in; the 4 s refresh never flashes
             browseRows.Clear();
             int shown = 0;
             foreach (var t in list)
@@ -774,22 +782,36 @@ namespace SE.Runtime.UI
         {
             new MapCatalogEntry { Id = "twin_rivers", Name = "Twin Rivers", Players = 2, TeamSize = 1, Size = 76,
                 Description = "Two rivers frame a central ridge. Coastal roads bridge both rivers; the direct route wades the fords to the Ridgeway saddle." },
+            new MapCatalogEntry { Id = "serpentine", Name = "Serpentine", Players = 2, TeamSize = 1, Size = 80,
+                Description = "Long ridges fold the valley into an S around the Coil; river fords cut the bends and a saddle lets infantry climb straight over." },
             new MapCatalogEntry { Id = "mirefen_gap", Name = "Mirefen Gap", Players = 2, TeamSize = 1, Size = 84,
                 Description = "Two fen lakes cut the map coast to coast. Mirefen holds the dry gap between them; coastal bridges and upstream fords open the flanks." },
+            new MapCatalogEntry { Id = "fortress_pass", Name = "Fortress Pass", Players = 2, TeamSize = 1, Size = 84,
+                Description = "A wall of impassable peaks splits the map: one winding canyon to the Keep, and two narrow goat trails far to the north and south." },
             new MapCatalogEntry { Id = "three_crowns", Name = "Three Crowns", Players = 3, TeamSize = 1, Size = 96,
                 Description = "Free for all. Three realms around the Crown plateau, each split from the next by a border river with one bridge and one ford." },
             new MapCatalogEntry { Id = "shattered_delta", Name = "Shattered Delta", Players = 3, TeamSize = 1, Size = 104,
                 Description = "Free for all. Three rivers run into a central lagoon, one between each pair of realms; delta towns hold the crossings." },
+            new MapCatalogEntry { Id = "ring_of_fire", Name = "Ring of Fire", Players = 3, TeamSize = 1, Size = 104,
+                Description = "Free for all. A ring of volcanic peaks walls in a rich caldera; three gates breach it, each between two realms." },
             new MapCatalogEntry { Id = "highland_fork", Name = "Highland Fork", Players = 4, TeamSize = 2, Size = 100,
                 Description = "Rivers fall north and south from the Fork plateau: the flanks need bridges and fords while the centre climbs open hills." },
             new MapCatalogEntry { Id = "crossroads", Name = "Crossroads", Players = 4, TeamSize = 1, Size = 104,
                 Description = "Free for all. Four realms around the Hub; lakes on the diagonals split the approaches into lanes." },
+            new MapCatalogEntry { Id = "stepping_stones", Name = "Stepping Stones", Players = 4, TeamSize = 2, Size = 104,
+                Description = "Every capital on its own island; causeways and bridged straits chain the islands into three lanes. Long ground routes: air matters." },
+            new MapCatalogEntry { Id = "king_of_the_hill", Name = "King of the Hill", Players = 4, TeamSize = 1, Size = 104,
+                Description = "Free for all. A sheer-sided plateau with one ramp per realm: hold the Summit and see everything, but every ramp leads to you." },
             new MapCatalogEntry { Id = "saltmarsh_estuary", Name = "Saltmarsh Estuary", Players = 4, TeamSize = 2, Size = 108,
                 Description = "A tidal sound splits the coast. Land bridges cross it north and south; causeways reach Tidewater Isle in the middle." },
+            new MapCatalogEntry { Id = "fjordmark", Name = "Fjordmark", Players = 4, TeamSize = 2, Size = 108,
+                Description = "Two cliff-walled fjords cut deep into the land; the centre is reached around a fjord head or over the Narrows rock bridge." },
             new MapCatalogEntry { Id = "quarry_highlands", Name = "Quarry Highlands", Players = 4, TeamSize = 1, Size = 112,
                 Description = "Free for all. An impassable massif fills the centre; four passes cross its shoulders between neighbouring realms." },
             new MapCatalogEntry { Id = "iron_basin", Name = "Iron Basin", Players = 6, TeamSize = 3, Size = 128,
                 Description = "Two lakes split the basin into three fronts; the centre lane narrows to the Iron Gate mountain pass." },
+            new MapCatalogEntry { Id = "twin_continents", Name = "Twin Continents", Players = 6, TeamSize = 3, Size = 128,
+                Description = "Two continents across an inland sea, joined by thin isthmuses far north and south and by causeways to Midsea. Air does not take the long way." },
             new MapCatalogEntry { Id = "continental_divide", Name = "Continental Divide", Players = 6, TeamSize = 3, Size = 132,
                 Description = "A mountain divide runs around Lake Meridian. Two high passes and the lakeshore gates are the only ways across." },
         };
@@ -802,6 +824,7 @@ namespace SE.Runtime.UI
         MapCatalogEntry FindMap(string id)
         {
             if (string.IsNullOrEmpty(id) || id == "random") return null;
+            if (id == "custom") return skirmishCustom;   // the map builder's sketch (MainMenu.Builder.cs)
             foreach (var m in maps) if (m.Id == id) return m;
             return null;
         }
@@ -864,6 +887,8 @@ namespace SE.Runtime.UI
             }
             FillFriends();
             Btn("Open Steam friends", OpenFriends, p.Footer, "friends").tooltip = "Join a friend's game from the Steam friends list";
+            // always possible, with or without Steam: the host reads the code off their lobby page
+            Btn("Join by code", () => { codeMode = "join"; Go("code"); }, p.Footer, "code").tooltip = "Type the match code your host shares (shown on their lobby page)";
             return p.Root;
         }
 
@@ -876,6 +901,7 @@ namespace SE.Runtime.UI
         void FillFriends()
         {
             if (friendRows == null) return;
+            UiKit.EnterAdded(friendRows, friendRows.childCount);
             friendRows.Clear();
             var social = game.Social;
             IReadOnlyList<FriendLobby> sessions = (social as IFriendLobbyList)?.FriendSessions();
@@ -986,10 +1012,11 @@ namespace SE.Runtime.UI
 
             // ---- battlefield and rules: editable by the host, a summary for everyone else
             Section("Battlefield", right, true);
-            lobbyPicker = new MapPicker(() => maps, id => game.SendLobby(LobbyMessages.Map(id)));
+            lobbyPicker = new MapPicker(() => WithCustom(lobbyCustom), id => game.SendLobby(id == "custom" && lobbySketch != null ? LobbyMessages.CustomMap(lobbySketch.Encode()) : LobbyMessages.Map(id)));
             right.Add(lobbyPicker);
             RequestMaps();
             lobbyRulesHost = Box("se-lobby-rules", right);
+            Btn("Map builder", () => OpenBuilder("lobby"), lobbyRulesHost, "terrain").tooltip = "Paint your own map for this lobby; everyone sees its preview";
             lobbyRandomBox = Box("se-menu-random", lobbyRulesHost);
             Line("World style", "se-menu-label", lobbyRandomBox);
             lobbyStyleSeg = UiKit.Segmented(Options(StyleOptions), "pangaea", v => game.SendLobby(LobbyMessages.Option("style", v)), lobbyRandomBox, 99);
@@ -1004,6 +1031,15 @@ namespace SE.Runtime.UI
 
             lobbyMap = Line("", "se-lobby-map", p.Content);
             lobbySocial = Line("", "se-menu-note", p.Content);
+            // Steam friends with an Invite button each: works even when the Steam overlay cannot open in the game
+            lobbyFriendsBox = Box("se-lobby-steam-friends", p.Content);
+            Section("Invite Steam friends", lobbyFriendsBox);
+            var friendTools = Box("se-menu-row", lobbyFriendsBox);
+            Btn("Copy match code", CopyCode, friendTools, "copy");
+            lobbyFriendsHint = Line("", "se-menu-note se-menu-note--wrap", lobbyFriendsBox);
+            lobbyFriendRows = Box("se-menu-friends", lobbyFriendsBox);
+            lobbyFriendRows.schedule.Execute(FillLobbyFriends).Every(3000);
+            FillLobbyFriends();
 
             // footer: [Back] is Leave here (it leaves the lobby); Ready; Start (host) or Waiting
             var back = p.Footer.Q<Button>();
@@ -1090,6 +1126,7 @@ namespace SE.Runtime.UI
             lobbyFormatLabel.style.display = isHost ? DisplayStyle.None : DisplayStyle.Flex;
 
             // seats grouped by team (server: team = seat index / team size)
+            UiKit.EnterAdded(lobbySeats, lobbySeats.childCount <= 1 ? 0 : lobbySeats.childCount);   // the teams ease in once filled
             lobbySeats.Clear();
             int humans = 0;
             bool random = r == null || string.IsNullOrEmpty(r.Map) || r.Map == "random";
@@ -1123,8 +1160,10 @@ namespace SE.Runtime.UI
                     }
                 }
                 foreach (var s in r.Seats) if (s.Human && s.Taken) humans++;
+                var lm = r.Map == "custom" ? lobbyCustom : FindMap(r.Map);
                 lobbySides.text = SidesText(perTeam, format.StartsWith("ffa", StringComparison.Ordinal)) +
-                    (isHost ? random ? " · Close leaves an empty seat out (uneven sides)" : " · uneven sides need a random world" : "");
+                    (isHost ? " · Close leaves an empty seat out (uneven sides)" : "") +
+                    (lm != null && lm.Players > r.Seats.Count ? $" · {lm.Name} has {lm.Players} starts; the spare ones stay neutral" : "");
             }
 
             // spectators
@@ -1172,7 +1211,8 @@ namespace SE.Runtime.UI
             bool steam = social != null && social.Available;
             lobbyInvite.style.display = steam ? DisplayStyle.Flex : DisplayStyle.None;
             lobbyInvite.SetEnabled(steam && !string.IsNullOrEmpty(code));
-            lobbyInvite.tooltip = steam ? "Opens the Steam overlay invite dialog" : social?.Status;
+            lobbyInvite.tooltip = steam ? "Opens the Steam overlay invite dialog (if the overlay does not open, use Invite on a friend below)" : social?.Status;
+            if (lobbyFriendsBox != null) lobbyFriendsBox.style.display = steam ? DisplayStyle.Flex : DisplayStyle.None;
             bool pub = r != null && r.Public;
             lobbyVisibility.style.display = isHost ? DisplayStyle.Flex : DisplayStyle.None;
             UiKit.SetText(lobbyVisibility, pub ? "Public" : "Private");
@@ -1180,7 +1220,7 @@ namespace SE.Runtime.UI
             lobbyVisibility.tooltip = pub ? "Listed in Browse public lobbies (and for Steam players of this version). Click: private" : "Only players with the code, friends and invited players can join. Click: list it publicly";
             var sl = social?.Lobby;
             lobbySocial.text = !steam ? (pub ? "Listed in Browse public lobbies; friends can also join with the code" : "Share the match code; friends join with Multiplayer › Join by code")
-                : sl != null && sl.MatchCode == code ? $"Steam lobby open · {sl.Members.Count} member{(sl.Members.Count == 1 ? "" : "s")} · v{(string.IsNullOrEmpty(sl.Version) ? Application.version : sl.Version)} · {social.Status}"
+                : sl != null && sl.MatchCode == code ? $"Steam lobby open · {sl.Members.Count} member{(sl.Members.Count == 1 ? "" : "s")} · v{(string.IsNullOrEmpty(sl.Version) ? Application.version : sl.Version)} · {WithoutLobbyLead(social.Status)}"
                 : social.Status;
             lobbySocial.tooltip = lobbySocial.text;
 
@@ -1246,9 +1286,8 @@ namespace SE.Runtime.UI
                 if (host)
                 {
                     SmallButton("+ AI", () => game.SendLobby(LobbyMessages.AddAi(seat, "normal")), row, "Fill this seat with an AI");
-                    var close = SmallButton("Close", () => game.SendLobby(LobbyMessages.CloseSeat(seat, true)), row,
-                        random ? "Leave this seat out of the match (uneven sides: 2 v 1, 3 v 2 …)" : "A catalog map seats everyone; choose Random for uneven sides");
-                    close.SetEnabled(random);
+                    SmallButton("Close", () => game.SendLobby(LobbyMessages.CloseSeat(seat, true)), row,
+                        "Leave this seat out of the match (uneven sides: 2 v 1, 3 v 2 …)");
                 }
                 if (r.You >= 0) SmallButton("Sit", () => game.SendLobby(LobbyMessages.Seat(seat)), row, "Move to this seat");
                 else if (r.Spectator) SmallButton("Sit", () => game.SendLobby(LobbyMessages.Sit(seat)), row, "Leave the spectator seats and play here");
@@ -1325,8 +1364,62 @@ namespace SE.Runtime.UI
         void OnSocialChanged()
         {
             UpdateMultiplayer();
-            if (pages.Top == "lobby") UpdateLobby();
+            if (pages.Top == "lobby") { UpdateLobby(); FillLobbyFriends(); }
             if (pages.Top == "friends") FillFriends();
+        }
+
+        // ------------------------------------------------------------------ lobby: invite Steam friends directly
+        VisualElement lobbyFriendsBox, lobbyFriendRows;
+        Label lobbyFriendsHint;
+
+        void FillLobbyFriends()
+        {
+            if (lobbyFriendRows == null) return;
+            lobbyFriendRows.Clear();
+            var social = game.Social;
+            string code = lobby?.Code ?? lobbyCode;
+            if (!(social is IFriendInvites invites) || !social.Available)
+            {
+                lobbyFriendsHint.text = (social?.Status ?? "Steam is not available") + ". Friends join with Multiplayer › Join by code " + code;
+                return;
+            }
+            bool hasLobby = social.Lobby != null && social.Lobby.MatchCode == code;
+            lobbyFriendsHint.text = (hasLobby ? "Invite sends a Steam chat invite; your friend starts Shattered Empires first, then accepts it."
+                    : social.Busy ? "Opening the Steam lobby…" : "The Steam lobby opens with the match lobby…") +
+                " Or they use Multiplayer › Join by code " + code + "." + (invites.OverlayReady ? "" : " (Steam overlay unavailable in this game.)");
+            var friends = invites.OnlineFriends();
+            if (friends.Count == 0) { Line("No Steam friends online", "se-menu-empty", lobbyFriendRows); return; }
+            int shown = 0;
+            foreach (var fr in friends)
+            {
+                if (shown++ >= 12) break;
+                ulong id = fr.Id;
+                var row = Box("se-menu-friend", lobbyFriendRows);
+                var avatar = Box("se-menu-avatar", row);
+                avatar.Add(new IconElement("friends"));
+                var names = Box("se-menu-friend-names", row);
+                Line(fr.Name, "se-menu-friend-name", names);
+                Line(fr.InLobby ? "In this lobby" : fr.InGame ? "Playing Shattered Empires (Spacewar)" : "Online", "se-menu-friend-lobby", names);
+                if (fr.InLobby) continue;
+                var invite = Btn(fr.Invited ? "Invite again" : "Invite", () =>
+                {
+                    if (invites.InviteFriend(id)) SetStatus("Invite sent to " + fr.Name + "; or tell them the code " + code);
+                    else SetStatus(social.Status);
+                    FillLobbyFriends();
+                }, row, "invite", !fr.Invited);
+                invite.AddToClassList("se-menu-friend-join");
+                invite.AddToClassList("se-menu-friend-invite");
+                invite.SetEnabled(hasLobby);
+            }
+        }
+
+        // the lobby note already opens with "Steam lobby open · ...": drop the platform status's own lead-in
+        static string WithoutLobbyLead(string status)
+        {
+            const string lead = "Steam lobby open: ";
+            if (string.IsNullOrEmpty(status) || !status.StartsWith(lead, StringComparison.Ordinal)) return status ?? "";
+            string rest = status.Substring(lead.Length);
+            return rest.Length > 0 ? char.ToUpperInvariant(rest[0]) + rest.Substring(1) : rest;
         }
 
         void OnInviteAccepted(string friend) =>

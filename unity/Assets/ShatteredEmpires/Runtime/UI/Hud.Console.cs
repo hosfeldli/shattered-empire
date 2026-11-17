@@ -44,18 +44,16 @@ namespace SE.Runtime.UI
 
         void BuildConsole()
         {
-            console = El("se-console", root);
+            console = UiKit.Fx(El("se-console", root), "se-fx--up");   // eases up into place with the game interface
             console.pickingMode = PickingMode.Ignore;
-            console.style.display = DisplayStyle.None;
 
             // attack banner (above the minimap, left-aligned with it)
-            attackBanner = El("se-attack-banner", console);
+            attackBanner = UiKit.Fx(El("se-attack-banner", console), "se-fx--left");   // slides in from the left
             attackBanner.Add(new Glyph("dot", "se-attack-dot"));
             attackText = L("", "se-attack-text", attackBanner);
             attackHint = L("", "se-attack-hint", attackBanner);
             attackText.pickingMode = PickingMode.Ignore; attackHint.pickingMode = PickingMode.Ignore;
             attackBanner.RegisterCallback<ClickEvent>(e => JumpToAlert());
-            attackBanner.style.display = DisplayStyle.None;
 
             // the era badge over the circle's upper-left rim
             eraBadge = new HexBadge();
@@ -76,6 +74,7 @@ namespace SE.Runtime.UI
             idleButton = new Button(SelectIdle) { text = "", focusable = false };
             idleButton.AddToClassList("se-console-round");
             idleButton.AddToClassList("se-idle-button");
+            UiKit.Fx(idleButton, "se-fx--pop");
             idleButton.Add(new Glyph("person", "se-idle-glyph"));
             idleCount = L("0", "se-idle-count", idleButton);
             idleCount.pickingMode = PickingMode.Ignore;
@@ -85,6 +84,7 @@ namespace SE.Runtime.UI
             productionButton = new Button(() => SelectAllProduction()) { text = "", focusable = false };   // G's wheel then batch-queues across them
             productionButton.AddToClassList("se-console-round");
             productionButton.AddToClassList("se-production-button");
+            UiKit.Fx(productionButton, "se-fx--pop");
             productionButton.Add(new IconElement("barracks", "se-console-icon"));
             productionButton.tooltip = "All production\nSelect every production building: units queued from the wheel are spread across all of them.";
             console.Add(productionButton);
@@ -98,9 +98,8 @@ namespace SE.Runtime.UI
             if (Map != null) Map.UnderAttack = OnUnderAttack;
 
             // bottom centre: Build · B and Terrain · T
-            dock = El("se-dock", root);
+            dock = UiKit.Fx(El("se-dock", root), "se-fx--cup");   // rises into place (centred by translate -50%)
             dock.pickingMode = PickingMode.Ignore;
-            dock.style.display = DisplayStyle.None;
             dockBuild = DockButton("build", null, () => { if (DockBuildPressed != null) DockBuildPressed(); else ToggleBuildWheel(false); });
             dockTerrain = DockButton(null, "hex", () => { if (DockTerrainPressed != null) DockTerrainPressed(); else ToggleTerrainWheel(false); });
             // the wheels (G) keep clear of everything docked
@@ -130,23 +129,18 @@ namespace SE.Runtime.UI
         {
             if (console == null) return;
             bool action = on && session.ActionRts;
-            console.style.display = action ? DisplayStyle.Flex : DisplayStyle.None;
-            dock.style.display = action && !session.Spectator ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(console, action);
+            UiKit.SetShown(dock, action && !session.Spectator);
             // ruleset-scoped layout (SE.uss): the toast, banners and alert feed move clear of the clock and console
             root.EnableInClassList("se-hud--action", action);
-            if (!action) { attackBanner.style.display = DisplayStyle.None; attackUntil = 0; }
+            if (!action) { UiKit.HideNow(attackBanner); attackUntil = 0; }
             if (action)
             {
                 SetDockLabel(dockBuild, "Build · " + HudKey("build", "B"));
                 SetDockLabel(dockTerrain, "Terrain · " + HudKey("terrain", "T"));
                 dockBuild.tooltip = "Build\nDefenses, roads, trenches, outposts and new bases, placed in your own territory.";
-                dockTerrain.tooltip = "Terrain\nRaise, lower, flatten or smooth ground in your own territory.";
+                dockTerrain.tooltip = "Terrain (" + HudKey("terrain", "T") + ")\nPick raise, lower, flatten or smooth, then drag across your own territory like a brush (" + HudKey("brush_smaller", "[") + " " + HudKey("brush_larger", "]") + " or Ctrl + wheel: size). The cost grows with the hexes painted.";
                 zoomButton.tooltip = "Local view (" + HudKey("minimap_zoom", "Z") + ")\nSwitch the minimap between the whole map and the area around the camera.";
-                foreach (var el in new VisualElement[] { console, dock })
-                {
-                    el.style.opacity = 0;
-                    var e2 = el; e2.schedule.Execute(() => e2.style.opacity = 1).StartingIn(60);
-                }
             }
         }
 
@@ -159,12 +153,12 @@ namespace SE.Runtime.UI
         /// <summary>Per frame from Update (action ruleset): keys, the banner timer and the dock state; counts at 4 Hz.</summary>
         void UpdateConsole(float time)
         {
-            if (console == null || console.style.display == DisplayStyle.None) return;
+            if (console == null || !UiKit.IsShown(console)) return;
             // Z: whole map ⇄ local view (the minimap_zoom action; Z when it isn't bound)
             var zoomKey = InputFacade.KeyFor("minimap_zoom");
             if (InputFacade.Pressed(zoomKey == KeyCode.None ? KeyCode.Z : zoomKey) && Map != null) Map.ToggleZoom();
             if (Map != null && Map.Zoomed != zoomShown) { zoomShown = Map.Zoomed; zoomButton.EnableInClassList("selected", zoomShown); }
-            if (attackUntil > 0 && time > attackUntil) { attackUntil = 0; attackBanner.style.display = DisplayStyle.None; }
+            if (attackUntil > 0 && time > attackUntil) { attackUntil = 0; UiKit.Hide(attackBanner); }
             bool b = DockBuildActive?.Invoke() ?? BuildWheelOpen, t = DockTerrainActive?.Invoke() ?? TerrainWheelOpen;
             if (b != dockBuildShown) { dockBuildShown = b; dockBuild.EnableInClassList("selected", b); }
             if (t != dockTerrainShown) { dockTerrainShown = t; dockTerrain.EnableInClassList("selected", t); }
@@ -187,7 +181,7 @@ namespace SE.Runtime.UI
             if (idle != idleShown)
             {
                 idleShown = idle;
-                idleButton.style.display = player ? DisplayStyle.Flex : DisplayStyle.None;
+                UiKit.SetShown(idleButton, player);
                 idleCount.text = Mathf.Max(0, idle).ToString();
                 idleButton.EnableInClassList("se-console-round--empty", idle <= 0);
             }
@@ -196,7 +190,7 @@ namespace SE.Runtime.UI
             if (production != productionShown)
             {
                 productionShown = production;
-                productionButton.style.display = production > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+                UiKit.SetShown(productionButton, production > 0);
             }
         }
 
@@ -293,7 +287,7 @@ namespace SE.Runtime.UI
             }
             attackText.text = (string.IsNullOrEmpty(place) ? "FORCES" : place.ToUpperInvariant()) + " UNDER ATTACK";
             attackHint.text = HudKey("alert", "Space") + " to jump";
-            attackBanner.style.display = DisplayStyle.Flex;
+            UiKit.Show(attackBanner);
             attackUntil = now + 6f;
             game?.Audio?.Ui("alert");
         }

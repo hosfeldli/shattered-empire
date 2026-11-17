@@ -15,8 +15,8 @@ namespace SE.Runtime.UI
         {
             if (string.IsNullOrWhiteSpace(label)) return null;
             string text = label.ToLowerInvariant();
-            if (text.StartsWith("attack-move")) return "Attack-move\nClick a destination. The army advances and engages valid enemies along the route. Shift queues the order.";
-            if (text == "hold") return "Hold position\nStop and defend this position. Units fire at valid enemies in range and retain your placement instead of seeking a new position.";
+            if (text.StartsWith("attack-move")) return "Attack-move (" + InputFacade.KeyLabel("attack") + ")\nClick a destination. The army advances and engages valid enemies along the route. Shift queues the order.";
+            if (text == "hold") return "Hold position (" + InputFacade.KeyLabel("hold") + ")\nStop and defend this position. Units fire at valid enemies in range and retain your placement instead of seeking a new position.";
             if (text.StartsWith("retreat")) return "Retreat\nWithdraw to a friendly operational headquarters. Ground units prioritize movement rather than stopping to fight.";
             if (text.StartsWith("new campaign")) return "New Campaign\nStart a combat-first match. Scout, capture city ruins, develop headquarters and defeat the opposing military.";
             if (text.StartsWith("continue")) return "Continue operation\nReconnect to your current hosted match and resume your faction.";
@@ -26,7 +26,7 @@ namespace SE.Runtime.UI
             if (text.StartsWith("multiplayer")) return "Multiplayer\nCreate or join a hosted match. Select teams and opponents before launching.";
             if (text.StartsWith("field guide")) return "Field Guide\nLook up units, buildings, resources, counters, commands and asset credits.";
             if (text.StartsWith("settings")) return "Settings\nAdjust graphics, audio, interface scaling, accessibility and key bindings.";
-            if (text.StartsWith("field construction")) return "Build wheel (B)\nPlace defenses, roads, trenches, outposts or a New Base inside your territory. Your base engineers build them. Comma and period rotate a defense before placement.";
+            if (text.StartsWith("field construction")) return InputFacade.Expand("Build wheel ({build})\nPlace defenses (also on neutral ground; ×2 cost beyond your ring of influence), roads, trenches, outposts or a New Base inside your territory. Your base engineers build them. {rotate_left} and {rotate_right} rotate a defense before placement.");
             if (text.StartsWith("rally")) return "Rally point\nClick a world position. Newly recruited units move there automatically.";
             if (text.StartsWith("reinforce")) return "Reinforce an army\nSend compatible newly recruited units to the selected army group.";
             if (text.StartsWith("repeat")) return "Repeat production\nContinue recruiting this unit when resources and command capacity permit. Disable it to stop future recruitment.";
@@ -63,14 +63,14 @@ namespace SE.Runtime.UI
             {
                 if (text != helpText)
                 {
-                    if (runtimeHelpVisible) tooltip.style.display = DisplayStyle.None;
+                    if (runtimeHelpVisible) UiKit.Hide(tooltip);
                     runtimeHelpVisible = false; helpSince = time;
                 }
                 helpAnchor = element; helpText = text;
             }
             if (element == null || string.IsNullOrWhiteSpace(text) || InputFacade.LeftDown || InputFacade.RightDown)
             {
-                if (runtimeHelpVisible) tooltip.style.display = DisplayStyle.None;
+                if (runtimeHelpVisible) UiKit.Hide(tooltip);
                 runtimeHelpVisible = false; return;
             }
             if (time - helpSince < .35f) return;
@@ -86,7 +86,8 @@ namespace SE.Runtime.UI
                 }
             }
             tooltip.style.maxWidth = Mathf.Min(360, root.layout.width - 24);
-            tooltip.style.display = DisplayStyle.Flex; tooltip.BringToFront();
+            if (!runtimeHelpVisible) tooltip.BringToFront();
+            UiKit.Show(tooltip);
             float measured = tooltip.resolvedStyle.height;
             float height = float.IsNaN(measured) ? 150 : Mathf.Clamp(measured, 65, 260);
             tooltip.style.left = Mathf.Clamp(panelPoint.x + 16, 8, Mathf.Max(8, root.layout.width - TooltipWidth() - 16));

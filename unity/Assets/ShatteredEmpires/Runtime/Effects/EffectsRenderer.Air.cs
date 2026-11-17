@@ -5,7 +5,7 @@ namespace SE.Runtime.Effects
     /// <summary>
     /// Anti-aircraft flak (workstream D): the server's 'flak' event gives the burst centre at altitude and the
     /// offsets of each shell in the volley. Every shell is a short hot flash, a spray of shrapnel streaks and a
-    /// ragged black smoke puff that hangs in the sky for several seconds. `scale` grows with camera distance so
+    /// small charcoal puff that thins out over two to three seconds. `scale` grows with camera distance so
     /// volleys stay readable from mid zoom.
     /// </summary>
     public sealed partial class EffectsRenderer
@@ -14,23 +14,25 @@ namespace SE.Runtime.Effects
         public void FlakBurst(float3 p, float scale, bool close = false)
         {
             scale = math.max(.5f, scale);
-            // flash
-            Emit(p, float3.zero, .10f * scale, .55f * scale, .11f, new float3(1f, .9f, .62f), new float3(1f, .55f, .2f), 1f, true, 2.6f);
-            Emit(p, float3.zero, .05f * scale, .18f * scale, .22f, new float3(1f, .72f, .35f), new float3(.9f, .3f, .08f), .85f, true, 1.8f);
-            // shrapnel streaks
-            int streaks = close ? 9 : 6;
+            // flash: a hot white-gold pop with an orange bloom (the part that reads as "flak")
+            Emit(p, float3.zero, .12f * scale, .62f * scale, .10f, new float3(1f, .93f, .7f), new float3(1f, .55f, .2f), 1f, true, 3f);
+            Emit(p, float3.zero, .06f * scale, .24f * scale, .24f, new float3(1f, .72f, .35f), new float3(.9f, .3f, .08f), .85f, true, 2f);
+            // shrapnel streaks: a crisp starburst
+            int streaks = close ? 10 : 7;
             for (int k = 0; k < streaks; k++)
             {
-                var v = RandDir() * (1.3f + R() * .9f) * scale;
-                Emit(p, v, .006f * scale, 0, .22f + R() * .16f, new float3(1f, .85f, .5f), new float3(1f, .45f, .12f), 1f, true, 2f, 1.4f, -.6f, Streak, default, true);
+                var v = RandDir() * (1.4f + R() * 1f) * scale;
+                Emit(p, v, .006f * scale, 0, .2f + R() * .16f, new float3(1f, .88f, .55f), new float3(1f, .45f, .12f), 1f, true, 2.2f, 1.4f, -.6f, Streak, default, true);
             }
-            // the black puff: a dense core and two ragged lobes that drift and slowly spread
-            for (int k = 0; k < 3; k++)
+            // one small charcoal puff that thins out quickly (was three dense black puffs hanging 5–8 s,
+            // which blanketed the sky over long air fights); a direct hit leaves a second faint wisp
+            int puffs = close ? 2 : 1;
+            for (int k = 0; k < puffs; k++)
             {
-                float g = .045f + R() * .035f;
-                var offset = RandDir() * (.035f + k * .02f) * scale;
-                Emit(p + offset, RandDir() * .035f * scale + new float3(0, .01f, 0), (.11f + R() * .04f) * scale, .26f * scale, 5f + R() * 3f,
-                    new float3(g, g, g * 1.05f), new float3(.2f, .2f, .22f), k == 0 ? .92f : .78f, false, 0, .9f, .008f);
+                float g = .11f + R() * .05f;
+                var offset = k == 0 ? float3.zero : RandDir() * .04f * scale;
+                Emit(p + offset, RandDir() * .03f * scale + new float3(0, .012f, 0), (.07f + R() * .025f) * scale, .17f * scale, 2.2f + R() * 1.2f,
+                    new float3(g, g, g * 1.05f), new float3(.32f, .32f, .34f), k == 0 ? .55f : .35f, false, 0, .9f, .008f);
             }
         }
 

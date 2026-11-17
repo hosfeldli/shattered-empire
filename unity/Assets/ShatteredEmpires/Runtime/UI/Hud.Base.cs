@@ -22,9 +22,10 @@ namespace SE.Runtime.UI
     /// training (green progress ring and queued count per unit), missiles. Outer arc: rally, reinforce,
     /// repair, demolish. Several buildings (or bases) selected share one roster and batch-queue across them.</item>
     /// <item>Build wheel (B / dock button): trench, road, sandbags, watchtower, bunker, AT, AA, outpost, new base;
-    /// support emplacements on the outer arc. Placement is validated by the server (own territory only), and
+    /// support emplacements on the outer arc. Placement is validated by the server (own territory; defenses also on neutral ground,
+    /// at ×2 beyond the ring of influence), and
     /// the reason is shown at the cursor.</item>
-    /// <item>Terrain wheel (T / dock button): raise, lower, flatten, smooth (server command <c>terrain</c>).</item>
+    /// <item>Terrain wheel (T / dock button): raise, lower, flatten, smooth, painted as a brush stroke (server command <c>terrain</c> with points + radius; Commander.Terrain.cs).</item>
     /// <item>Unit wheel (C) and the secured-ruin wheel.</item>
     /// </list>
     /// Wheels never overlap the minimap console, the bottom-centre dock or the selection panel: see
@@ -170,8 +171,8 @@ namespace SE.Runtime.UI
             if (!active)
             {
                 CloseWheel();
-                if (toolChip != null) toolChip.style.display = DisplayStyle.None;
-                if (cursorReason != null) cursorReason.style.display = DisplayStyle.None;
+                if (toolChip != null) UiKit.Hide(toolChip);
+                if (cursorReason != null) UiKit.Hide(cursorReason);
                 commander.SuppressGroupKeys = false;
                 return;
             }
@@ -650,7 +651,7 @@ namespace SE.Runtime.UI
             int SlotsAt(int tier) => slots != null && slots.Count >= tier && tier >= 1 ? ProtocolDecoder.Int(slots[tier - 1]) : 1 + 2 * tier;
             return new RadialItem
             {
-                Id = "upgrade:tier", Icon = "upgrade", Hotkey = "U", Angle = 0f,
+                Id = "upgrade:tier", Icon = "upgrade", Hotkey = InputFacade.KeyLabel("upgrade_base"), Angle = 0f,
                 Name = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 ? $"Upgrade to Tier {TierLabels[Mathf.Clamp(s.Tier, 0, 2)]}" : "Tier III headquarters",
                 Cost = next?["cost"], Seconds = ProtocolDecoder.Int(next?["time"]),
                 Enabled = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 && HqOf(siteId).Project == null,
@@ -1279,6 +1280,10 @@ namespace SE.Runtime.UI
             string name = newBase ? "New base" : d != null ? NameOf("BUILDINGS", key) : key;
             string desc = ProtocolDecoder.Str(d?["desc"], newBase ? "Found a new base in your territory beside a road." : "Field defense.")
                 .Replace(" Q / E rotates before placement.", "");
+            // ring of influence (server DEFENSE_INFLUENCE): defenses far from your bases' own land cost more
+            var influence = Defs?["RULESET"]?["influence"];
+            if (ProtocolDecoder.Bool(d?["defense"]) && influence != null)
+                desc += $" Can also go on neutral ground; costs ×{ProtocolDecoder.Float(influence["factor"], 2):0.#} more than {ProtocolDecoder.Int(influence["reach"], 8)} hexes beyond your territory.";
             return new RadialItem
             {
                 Id = "build:" + key, Icon = newBase ? "new_base" : Icons.BuildingKind(key), Title = name,
@@ -1286,7 +1291,7 @@ namespace SE.Runtime.UI
                 Detail = () => desc,
                 Enabled = () => Defs?["BUILDINGS"]?[type] != null && tier <= Age + 1,
                 Reason = () => Defs?["BUILDINGS"]?[type] == null ? "Not available on this server" : tier > Age + 1 ? $"Requires Tier {Tier(tier)}"
-                    : newBase ? "Inside your territory, on or beside a road" : "Inside your territory · , . rotate",
+                    : newBase ? "Inside your territory, on or beside a road" : ProtocolDecoder.Bool(d?["defense"]) ? "Your land or neutral ground · , . rotate" : "Inside your territory · , . rotate",
                 Click = _ => { CloseWheel(); commander.BeginFieldConstruction(type); },
             };
         }
@@ -1305,19 +1310,20 @@ namespace SE.Runtime.UI
                 string title = o switch { "raise" => "Raise ground", "lower" => "Lower ground", "flatten" => "Flatten", "smooth" => "Smooth", _ => char.ToUpperInvariant(o[0]) + o.Substring(1) };
                 string detail = o switch
                 {
-                    "raise" => "Engineers heap up the ground around a point: high ground for defenses",
-                    "lower" => "Engineers dig the ground down around a point",
-                    "flatten" => "Level the ground around a point to the height at its centre",
-                    "smooth" => "Even out rough ground around a point for roads and movement",
-                    _ => "Reshape the ground around a point",
+                    "raise" => "Engineers heap up the ground along a stroke",
+                    "lower" => "Engineers dig the ground down along a stroke",
+                    "flatten" => "Levels a stroke to the height where it starts",
+                    "smooth" => "Evens out rough ground along a stroke",
+                    _ => "Paint a stroke to reshape the ground",
                 };
+                detail += " · " + InputFacade.KeyLabel("brush_smaller") + " " + InputFacade.KeyLabel("brush_larger") + " size";
                 list.Add(new RadialItem
                 {
                     Id = "terrain:" + o, Icon = "terrain_" + o, Title = title,
                     Cost = works?["cost"], Seconds = ProtocolDecoder.Int(works?["time"]),
                     Detail = () => detail,
                     Enabled = () => Defs?["RULESET"]?["terrain"] != null,
-                    Reason = () => Defs?["RULESET"]?["terrain"] == null ? "Terrain works are not available on this server" : "Then click a point in your territory",
+                    Reason = () => Defs?["RULESET"]?["terrain"] == null ? "Terrain works are not available on this server" : "Cost per 7 hexes · drag across your territory",
                     Click = _ => { CloseWheel(); commander.Begin(Commander.Mode.Target, "", new JObject { ["c"] = "terrain", ["op"] = o, ["tile"] = "@map" }); },
                 });
             }
@@ -1345,13 +1351,13 @@ namespace SE.Runtime.UI
             {
                 new RadialItem { Id = "move", Icon = "move", Title = "Move", Detail = () => "Click a destination · Shift queues",
                     Click = _ => commander.Begin(Commander.Mode.Target, "", new JObject { ["c"] = "move", ["units"] = "@units", ["tile"] = "@map" }) },
-                new RadialItem { Id = "attack_move", Icon = "attack_move", Title = "Attack-move", Hotkey = InputFacade.KeyFor("attack").ToString(),
+                new RadialItem { Id = "attack_move", Icon = "attack_move", Title = "Attack-move", Hotkey = InputFacade.KeyLabel("attack"),
                     Detail = () => "Advance and engage enemies along the route",
                     Click = _ => commander.Begin(Commander.Mode.Target, "", new JObject { ["c"] = "move", ["units"] = "@units", ["tile"] = "@map", ["attackMove"] = true }) },
-                new RadialItem { Id = "hold", Icon = "hold", Title = "Hold position", Hotkey = InputFacade.KeyFor("hold").ToString(),
+                new RadialItem { Id = "hold", Icon = "hold", Title = "Hold position", Hotkey = InputFacade.KeyLabel("hold"),
                     Detail = () => "Stop and defend this position",
                     Click = _ => commander.UnitCommand("hold", null, "Holding position") },
-                new RadialItem { Id = "withdraw", Icon = "withdraw", Title = "Withdraw", Hotkey = InputFacade.KeyFor("withdraw").ToString(),
+                new RadialItem { Id = "withdraw", Icon = "withdraw", Title = "Withdraw", Hotkey = InputFacade.KeyLabel("withdraw"),
                     Detail = () => "Fall back to the nearest friendly headquarters",
                     Click = _ => commander.UnitCommand("withdraw", null, "Retreat ordered") },
             };

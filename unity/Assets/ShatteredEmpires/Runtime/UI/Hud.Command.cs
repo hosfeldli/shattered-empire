@@ -22,22 +22,21 @@ namespace SE.Runtime.UI
 
         void BuildCommandGroups()
         {
-            groupsBar = El("se-groups", root);
+            groupsBar = UiKit.Fx(El("se-groups", root), "se-fx--fade");   // fades; its bottom glides with the panel (SE.uss)
             groupsBar.pickingMode = PickingMode.Ignore;
-            groupsBar.style.display = DisplayStyle.None;
         }
 
         void UpdateCommandGroups(float time)
         {
-            if (!session.ActionRts || session.Spectator) { groupsBar.style.display = DisplayStyle.None; return; }
+            if (!session.ActionRts || session.Spectator) { UiKit.Hide(groupsBar); return; }
             if (time < groupsAt) return;
             groupsAt = time + .25f;
             var list = groupList;
             list.Clear();
             foreach (var entry in commander.GroupSummary()) list.Add(entry);
-            groupsBar.style.display = list.Count > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.SetShown(groupsBar, list.Count > 0);
             // the chips sit just above the bottom-right selection panel (or in its place when nothing is selected)
-            float cardH = card != null && card.resolvedStyle.display == DisplayStyle.Flex ? card.resolvedStyle.height : 0f;
+            float cardH = card != null && UiKit.IsShown(card) ? card.resolvedStyle.height : 0f;
             float bottom = float.IsNaN(cardH) || cardH <= 0 ? 16f : 16f + cardH + 8f;
             if (Mathf.Abs(bottom - groupsBottom) > .5f) { groupsBottom = bottom; groupsBar.style.bottom = bottom; }
             // rebuild the chips only when a group or its strength changed (compared in place, no signature string)

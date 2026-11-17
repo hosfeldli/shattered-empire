@@ -19,8 +19,13 @@ namespace SE.Runtime.UI
         public MapPreviewData Preview;
 
         public int Teams => Mathf.Max(2, Players / Mathf.Max(1, TeamSize));
-        /// <summary>The lobby format id this map fixes ("2v2", "ffa4").</summary>
+        /// <summary>The lobby format id this map was drawn for ("2v2", "ffa4").</summary>
         public string Format => MapPreview.FormatId(TeamSize, Teams);
+        /// <summary>
+        /// Whether a match with this many seats can play here (maps wave 3): any format up to the map's starts.
+        /// The server seats the players on sensible starts and leaves the spare ones as neutral ruins.
+        /// </summary>
+        public bool Fits(int seats) => seats <= 0 || (seats >= 2 && seats <= Players);
 
         /// <summary>Parse one catalog entry; null for "random" or anything unusable.</summary>
         public static MapCatalogEntry Parse(JToken token)
@@ -79,6 +84,12 @@ namespace SE.Runtime.UI
         /// <summary>Row-major colours (row 0 = north), already resolved from the terrain classes.</summary>
         public Color32[] Colors;
         public readonly List<MapMarker> Starts = new List<MapMarker>(), Bases = new List<MapMarker>(), Outposts = new List<MapMarker>();
+        /// <summary>
+        /// Seating metrics of the starts (server actionMap.startMetrics, in preview order): ground steps between
+        /// starts and the mean steps from each to its three nearest neutral bases. Null on an older server.
+        /// </summary>
+        public double[,] StartSteps;
+        public double[] StartReach;
 
         public static MapPreviewData Parse(JToken token, MapCatalogEntry map)
         {
@@ -102,7 +113,28 @@ namespace SE.Runtime.UI
             Markers(o["starts"], p, map, p.Starts, ts);
             Markers(o["bases"] ?? o["sites"], p, map, p.Bases, 0);
             Markers(o["outposts"], p, map, p.Outposts, 0);
+            p.Metrics(o["startSteps"] as JArray, o["startReach"] as JArray);
             return p;
+        }
+
+        void Metrics(JArray steps, JArray reach)
+        {
+            int n = Starts.Count;
+            if (steps == null || reach == null || n < 2 || steps.Count != n || reach.Count != n) return;
+            var d = new double[n, n];
+            var r = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                if (!(steps[i] is JArray row) || row.Count != n) return;
+                for (int j = 0; j < n; j++)
+                {
+                    if (row[j].Type != JTokenType.Integer && row[j].Type != JTokenType.Float) return;
+                    d[i, j] = (double)row[j];
+                }
+                if (reach[i].Type != JTokenType.Integer && reach[i].Type != JTokenType.Float) return;
+                r[i] = (double)reach[i];
+            }
+            StartSteps = d; StartReach = r;
         }
 
         // value or character → class name (null: use the defaults)
@@ -334,12 +366,121 @@ namespace SE.Runtime.UI
             return tex;
         }
 
+        /// <summary>
+        /// The preview of a map as a match with <paramref name="seats"/> seats (teams of <paramref name="teamSize"/>,
+        /// <paramref name="closedMask"/> a bit per seat left empty) will play it: the starts the civs take in their
+        /// team colours, chosen exactly as the server does (<see cref="SeatStarts"/>), and the spare starts as
+        /// hollow neutral rings (they stay neutral city ruins). Without seats, or as drawn, the designed preview.
+        /// </summary>
+        public static Texture2D Texture(MapCatalogEntry map, int seats, int teamSize, ulong closedMask)
+        {
+            var p = map?.Preview;
+            if (p == null || p.Colors == null) return null;
+            int P = p.Starts.Count;
+            if (seats <= 0 || seats > P || P < 2) return Texture(map);
+            teamSize = Mathf.Max(1, teamSize);
+            // the server's seating (matches.js dropClosed / catalogTeams): closed seats leave, teams renumber in order
+            var colourTeam = new List<int>();
+            var order = new List<int>();
+            var teams = new List<int>();
+            for (int s = 0; s < seats && s < 64; s++)
+            {
+                if ((closedMask & (1UL << s)) != 0) continue;
+                int team = s / teamSize;
+                if (!order.Contains(team)) order.Add(team);
+                colourTeam.Add(team);
+                teams.Add(order.IndexOf(team));
+            }
+            if (teams.Count < 2) return Texture(map);
+            var civStart = SeatStarts(p, teams.ToArray(), map.TeamSize);
+            if (civStart != null && teams.Count == P)
+            {
+                bool designed = true;
+                for (int c = 0; c < civStart.Length && designed; c++) designed = civStart[c] == c && colourTeam[c] == p.Starts[c].Team;
+                if (designed) return Texture(map);
+            }
+            string key = map.Id + ":" + p.W + "x" + p.H + ":" + P + ":" + p.Colors.Length + ":" + Hash(p) + ":seated:" + string.Join(",", teams) + ":" + string.Join(",", colourTeam);
+            if (cache.TryGetValue(key, out var tex) && tex != null) return tex;
+            var seated = new int[P];
+            for (int i = 0; i < P; i++) seated[i] = -2;   // spare (all of them when the preview has no seating metrics)
+            if (civStart != null) for (int c = 0; c < civStart.Length; c++) seated[civStart[c]] = colourTeam[c];
+            tex = Render(p, seated);
+            cache[key] = tex;
+            return tex;
+        }
+
+        /// <summary>
+        /// Which start (preview order) each civ takes, exactly as the server's actionMap.chooseStarts: the
+        /// designed seating when the teams fill every start as drawn, otherwise the best-scoring assignment
+        /// (rivals on opposite sides and far apart, allies close, every civ's distances and reach alike).
+        /// Null when the preview has no seating metrics (an older server).
+        /// </summary>
+        public static int[] SeatStarts(MapPreviewData p, int[] teams, int designedTeamSize)
+        {
+            int P = p?.Starts.Count ?? 0, C = teams?.Length ?? 0;
+            if (C < 1 || C > P) return null;
+            var sides = new int[P];
+            for (int i = 0; i < P; i++) sides[i] = i / Mathf.Max(1, designedTeamSize);
+            bool designed = C == P;
+            for (int a = 0; a < C && designed; a++)
+                for (int b = 0; b < C && designed; b++) designed = (teams[a] == teams[b]) == (sides[a] == sides[b]);
+            if (designed) { var id = new int[C]; for (int i = 0; i < C; i++) id[i] = i; return id; }
+            if (p.StartSteps == null || p.StartReach == null) return null;
+            var D = p.StartSteps;
+            double sum = 0; int pairs = 0;
+            for (int i = 0; i < P; i++) for (int j = i + 1; j < P; j++) if (D[i, j] < 1e4) { sum += D[i, j]; pairs++; }
+            double unit = pairs > 0 ? sum / pairs : 1;
+            var reach = new double[P];
+            for (int i = 0; i < P; i++) reach[i] = p.StartReach[i] / unit;
+            bool teamSided = new HashSet<int>(sides).Count < P;
+            var pick = new int[C];
+            var used = new bool[P];
+            var near = new double[C];
+            int[] best = null;
+            double bestScore = double.PositiveInfinity;
+            double Score()
+            {
+                int side = 0, allies = 0; double close = 0;
+                for (int a = 0; a < C; a++) near[a] = double.PositiveInfinity;
+                for (int a = 0; a < C; a++)
+                    for (int b = a + 1; b < C; b++)
+                    {
+                        double d = D[pick[a], pick[b]] / unit;
+                        bool ally = teams[a] == teams[b];
+                        if (ally) { close += d; allies++; }
+                        else { near[a] = Math.Min(near[a], d); near[b] = Math.Min(near[b], d); }
+                        if (teamSided && ally != (sides[pick[a]] == sides[pick[b]])) side++;
+                    }
+                double eMax = double.NegativeInfinity, eMin = double.PositiveInfinity; int eCount = 0;
+                for (int a = 0; a < C; a++) if (!double.IsInfinity(near[a])) { eCount++; eMax = Math.Max(eMax, near[a]); eMin = Math.Min(eMin, near[a]); }
+                double rMax = double.NegativeInfinity, rMin = double.PositiveInfinity;
+                for (int a = 0; a < C; a++) { rMax = Math.Max(rMax, reach[pick[a]]); rMin = Math.Min(rMin, reach[pick[a]]); }
+                double spreadE = eCount > 0 ? eMax - eMin : 0, spreadR = rMax - rMin;
+                return side * 4 + spreadE * 3 + spreadR * 3 + (allies > 0 ? close / allies : 0) - (eCount > 0 ? eMin : 0) * 1.5;
+            }
+            void Walk(int c)
+            {
+                if (c == C)
+                {
+                    double v = Score();
+                    if (v < bestScore - 1e-9) { bestScore = v; best = (int[])pick.Clone(); }
+                    return;
+                }
+                for (int s = 0; s < P; s++)
+                    if (!used[s]) { used[s] = true; pick[c] = s; Walk(c + 1); used[s] = false; }
+            }
+            Walk(0);
+            return best;
+        }
+
         static int Hash(MapPreviewData p)
         {
             unchecked
             {
                 int h = 17;
                 for (int i = 0; i < p.Colors.Length; i += 7) h = h * 31 + p.Colors[i].r + (p.Colors[i].g << 8) + (p.Colors[i].b << 16);
+                // markers too: a map-builder sketch can move a base without changing its terrain
+                foreach (var m in p.Starts) h = h * 31 + Mathf.RoundToInt(m.U * 10000f) * 7919 + Mathf.RoundToInt(m.V * 10000f);
                 return h;
             }
         }
@@ -398,7 +539,13 @@ namespace SE.Runtime.UI
         }
 
         /// <summary>Upscaled terrain with start discs (team colours), base rings and outpost dots.</summary>
-        public static Texture2D Render(MapPreviewData p)
+        public static Texture2D Render(MapPreviewData p) => Render(p, null);
+
+        /// <summary>
+        /// As <see cref="Render(MapPreviewData)"/>; <paramref name="seated"/> (per start, preview order): the colour
+        /// team of the civ that takes it, or -2 for a spare start (a hollow neutral ring). Null: designed teams.
+        /// </summary>
+        public static Texture2D Render(MapPreviewData p, int[] seated)
         {
             int scale = Mathf.Clamp(256 / Mathf.Max(p.W, p.H), 1, 8);
             int th = p.H * scale, tw = Mathf.Max(1, Mathf.RoundToInt(p.W * scale * p.Aspect));
@@ -411,11 +558,35 @@ namespace SE.Runtime.UI
             float unit = Mathf.Max(tw, th) / 64f;
             foreach (var m in p.Outposts) Disc(px, tw, th, m, 1.4f * unit, new Color32(40, 40, 34, 255), new Color32(214, 200, 150, 255), 0.6f * unit);
             foreach (var m in p.Bases) Disc(px, tw, th, m, 2.2f * unit, new Color32(30, 30, 28, 255), new Color32(196, 188, 168, 255), 0.9f * unit);
-            foreach (var m in p.Starts) Disc(px, tw, th, m, 2.8f * unit, TeamColor(m.Team), new Color32(250, 246, 236, 255), 0.8f * unit);
+            for (int i = 0; i < p.Starts.Count; i++)
+            {
+                var m = p.Starts[i];
+                int team = seated == null || i >= seated.Length ? m.Team : seated[i];
+                if (team == -2)
+                {
+                    // a spare start stays a neutral city ruin: a hollow grey ring instead of a team disc
+                    Ring(px, tw, th, m, 2.6f * unit, 0.5f * unit, new Color32(30, 30, 28, 255));
+                    Ring(px, tw, th, m, 2.2f * unit, 0.8f * unit, new Color32(206, 200, 186, 255));
+                }
+                else Disc(px, tw, th, m, 2.8f * unit, TeamColor(team), new Color32(250, 246, 236, 255), 0.8f * unit);
+            }
             var tex = new Texture2D(tw, th, TextureFormat.RGBA32, false) { name = "MapPreview", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
             tex.SetPixels32(px);
             tex.Apply(false, false);
             return tex;
+        }
+
+        static void Ring(Color32[] px, int tw, int th, MapMarker m, float r, float width, Color32 colour)
+        {
+            float cx = m.U * (tw - 1), cy = (1f - m.V) * (th - 1);
+            int x0 = Mathf.Max(0, Mathf.FloorToInt(cx - r)), x1 = Mathf.Min(tw - 1, Mathf.CeilToInt(cx + r));
+            int y0 = Mathf.Max(0, Mathf.FloorToInt(cy - r)), y1 = Mathf.Min(th - 1, Mathf.CeilToInt(cy + r));
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++)
+                {
+                    float d = Mathf.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+                    if (d <= r && d > r - width) px[y * tw + x] = colour;
+                }
         }
 
         static void Disc(Color32[] px, int tw, int th, MapMarker m, float r, Color32 fill, Color32 rim, float rimWidth)
@@ -439,9 +610,10 @@ namespace SE.Runtime.UI
     }
 
     /// <summary>
-    /// The map picker used by New Skirmish, Host lobby and the lobby page: a list (Random, then catalog maps that
-    /// fit the seat count, or every map) beside a preview card (the catalog's preview grid with start positions,
-    /// or a plain card when the map has none). Read-only for lobby guests (preview only).
+    /// The map picker used by New Skirmish, Host lobby and the lobby page: a list (Random, then every catalog map
+    /// with at least as many starts as the match has seats, the ones drawn for this format first and marked
+    /// Recommended; or every map) beside a preview card (the catalog's preview grid with start positions, or a
+    /// plain card when the map has none). Read-only for lobby guests (preview only).
     /// </summary>
     public sealed class MapPicker : VisualElement
     {
@@ -452,7 +624,7 @@ namespace SE.Runtime.UI
         readonly Button fitButton, allButton;
         bool showAll;
 
-        /// <summary>Seats the match has (0: any); with "Fits" on, only maps drawn for <see cref="Format"/> (or this many players) are listed.</summary>
+        /// <summary>Seats the match has (0: any); with "Fits" on, only maps with at least this many starts are listed.</summary>
         public int Seats;
         /// <summary>The match format ("2v2", "ffa4"); null: filter by <see cref="Seats"/> only.</summary>
         public string Format;
@@ -502,8 +674,8 @@ namespace SE.Runtime.UI
             fitButton = new Button(() => { showAll = false; Refresh(); }) { text = "Fits" };
             allButton = new Button(() => { showAll = true; Refresh(); }) { text = "All maps" };
             foreach (var b in new[] { fitButton, allButton }) { b.AddToClassList("se-map-filter-option"); filterRow.Add(b); }
-            fitButton.tooltip = "Maps for this many players";
-            allButton.tooltip = "Every map; choosing one sets the format";
+            fitButton.tooltip = "Every map with a start for each seat (spare starts stay neutral)";
+            allButton.tooltip = "Every map; one with fewer starts than seats sets its own format";
             list = new VisualElement();
             list.AddToClassList("se-map-list");
             left.Add(list);
@@ -521,22 +693,42 @@ namespace SE.Runtime.UI
             filterRow.style.display = Editable && Seats > 0 ? DisplayStyle.Flex : DisplayStyle.None;
             fitButton.EnableInClassList("selected", !showAll);
             allButton.EnableInClassList("selected", showAll);
-            if (Seats > 0) fitButton.text = !string.IsNullOrEmpty(Format) ? MapPreview.FormatLabel(Format) + " maps" : $"{Seats} players";
+            if (Seats > 0) fitButton.text = $"Fits {Seats}";
             list.parent.style.display = Editable ? DisplayStyle.Flex : DisplayStyle.None;
+            UiKit.EnterAdded(list, list.childCount);   // rows a filter change adds ease in
             list.Clear();
             if (Editable)
             {
-                Row("random", "Random", "Any", "A new procedurally generated world each time.");
+                Row("random", "Random", "Any", "A new procedurally generated world each time.", false);
                 var maps = catalog?.Invoke();
                 if (maps != null)
-                    foreach (var m in maps)
-                        if (showAll || Seats <= 0 || (!string.IsNullOrEmpty(Format) ? m.Format == Format : m.Players == Seats) || m.Id == Selected)
-                            Row(m.Id, m.Name, MapPreview.FormatLabel(m.Format), m.Description);
+                {
+                    // the maps drawn for this format first (Recommended), then every other map that has room
+                    for (int pass = 0; pass < 2; pass++)
+                        foreach (var m in maps)
+                        {
+                            bool recommended = Recommended(m);
+                            if (recommended != (pass == 0)) continue;
+                            if (showAll || Seats <= 0 || m.Fits(Seats) || m.Id == Selected)
+                                Row(m.Id, m.Name, MapPreview.FormatLabel(m.Format) + " · designed for " + m.Players, Tip(m), recommended);
+                        }
+                }
             }
             ShowCard(Find(Selected));
         }
 
-        void Row(string id, string name, string mode, string tip)
+        /// <summary>Drawn for the match's format (or, without one, for exactly this many players).</summary>
+        bool Recommended(MapCatalogEntry m) => Seats > 0 && (!string.IsNullOrEmpty(Format) ? m.Format == Format : m.Players == Seats);
+
+        string Tip(MapCatalogEntry m)
+        {
+            string fit = Seats <= 0 ? "" : Recommended(m) ? "Recommended: drawn for this format. " : m.Fits(Seats)
+                ? $"Drawn for {MapPreview.FormatLabel(m.Format)} ({m.Players} players); {Seats} play here, the spare starts stay neutral. "
+                : $"Only {m.Players} starts: choosing it switches to {MapPreview.FormatLabel(m.Format)}. ";
+            return fit + m.Description;
+        }
+
+        void Row(string id, string name, string mode, string tip, bool recommended)
         {
             var row = new Button { text = "" };
             row.AddToClassList("se-map-option");
@@ -544,8 +736,23 @@ namespace SE.Runtime.UI
             var n = new Label(name);
             n.AddToClassList("se-map-name");
             row.Add(n);
+            if (recommended)
+            {
+                var badge = new Label("Recommended");
+                badge.style.fontSize = 11;
+                badge.style.color = (Color)new Color32(226, 182, 96, 255);
+                badge.style.backgroundColor = (Color)new Color32(226, 182, 96, 36);
+                badge.style.borderTopLeftRadius = badge.style.borderTopRightRadius = badge.style.borderBottomLeftRadius = badge.style.borderBottomRightRadius = 3;
+                badge.style.paddingLeft = badge.style.paddingRight = 5;
+                badge.style.marginLeft = badge.style.marginRight = 6;
+                badge.style.flexShrink = 0;
+                badge.style.unityTextAlign = TextAnchor.MiddleCenter;
+                row.Add(badge);
+            }
             var md = new Label(mode);
             md.AddToClassList("se-map-mode");
+            md.style.width = StyleKeyword.Auto;
+            md.style.minWidth = 48;
             row.Add(md);
             row.EnableInClassList("selected", id == Selected);
             row.clicked += () =>
@@ -560,7 +767,7 @@ namespace SE.Runtime.UI
         void ShowCard(MapCatalogEntry m)
         {
             bool unknownMap = m == null && !string.IsNullOrEmpty(Selected) && Selected != "random";
-            var tex = m != null ? MapPreview.Texture(m) : unknownMap ? null
+            var tex = m != null ? MapPreview.Texture(m, Seats, string.IsNullOrEmpty(Format) ? 1 : MapPreview.TeamSizeOf(Format), ClosedSeats) : unknownMap ? null
                 : MapPreview.RandomTexture(Mathf.Max(2, Seats), string.IsNullOrEmpty(Format) ? 1 : MapPreview.TeamSizeOf(Format), RandomStyle, ClosedSeats);
             image.style.backgroundImage = tex != null ? new StyleBackground(tex) : new StyleBackground(StyleKeyword.None);
             image.EnableInClassList("se-map-preview--none", tex == null);
@@ -569,7 +776,8 @@ namespace SE.Runtime.UI
             bool unknown = m == null && !string.IsNullOrEmpty(Selected) && Selected != "random";
             caption.text = m != null ? m.Name : unknown ? (string.IsNullOrEmpty(FallbackName) ? Selected : FallbackName) : "Random world";
             meta.text = m == null ? (!string.IsNullOrEmpty(Format) ? MapPreview.FormatLabel(Format) + " · " : "") + (Seats > 0 ? $"{Seats} players · procedural" : "Procedural") :
-                $"{MapPreview.FormatLabel(m.Format)} · {m.Players} players" + (m.Size > 0 ? $" · {m.Size}×{m.Size}" : "");
+                $"Designed for {MapPreview.FormatLabel(m.Format)} · {m.Players} starts" + (m.Size > 0 ? $" · {m.Size}×{m.Size}" : "") +
+                (Seats > 0 && Seats < m.Players && m.Fits(Seats) ? $" · {Seats} playing, spare starts stay neutral" : Recommended(m) ? " · recommended" : "");
             description.text = m != null ? m.Description : unknown ? "A map from the server's catalog." : "A new world generated for this match: choose its style and size below. The starts shown are illustrative.";
             description.tooltip = description.text;
         }

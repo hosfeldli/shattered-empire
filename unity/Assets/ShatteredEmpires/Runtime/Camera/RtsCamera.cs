@@ -6,8 +6,8 @@ using UnityEngine;
 namespace SE.Runtime.CameraControl
 {
     /// <summary>
-    /// Strategy camera: pan (arrow keys, screen edges, middle drag), zoom toward the cursor, rotate
-    /// (Alt + left or middle drag, or the rotate keys). WASD and Q/E are left free for commands.
+    /// Strategy camera: pan (the camera key scheme's pan keys, the arrows, screen edges, middle drag), zoom toward
+    /// the cursor, rotate (Alt + left or middle drag, or the rotate keys). In the default Arrow scheme WASD is free for orders.
     /// The focus is kept in map coordinates and in the base image: crossing the seam recentres
     /// by exactly one period, and because everything is drawn at the image nearest the camera nothing
     /// moves on screen. Camera motion only moves the view; it never rebuilds world data.
@@ -26,6 +26,8 @@ namespace SE.Runtime.CameraControl
         public bool UserControl = true;
         public bool PointerOverUi;
         public bool PlacementRotation;
+        /// <summary>Set while the terrain brush is armed: Ctrl + mouse wheel sizes the brush instead of zooming.</summary>
+        public bool BrushScroll;
         /// <summary>Degrees of yaw per pixel of Alt + drag.</summary>
         public float MouseRotateSpeed = .25f;
         /// <summary>True while an Alt + drag is turning the view (the commander ignores that click).</summary>
@@ -127,10 +129,12 @@ namespace SE.Runtime.CameraControl
             if (UserControl)
             {
                 float right = 0, forward = 0;
-                if (InputFacade.ActionHeld("pan_up") || InputFacade.Held(KeyCode.UpArrow)) forward += 1;
-                if (InputFacade.ActionHeld("pan_down") || InputFacade.Held(KeyCode.DownArrow)) forward -= 1;
-                if (InputFacade.ActionHeld("pan_left") || InputFacade.Held(KeyCode.LeftArrow)) right -= 1;
-                if (InputFacade.ActionHeld("pan_right") || InputFacade.Held(KeyCode.RightArrow)) right += 1;
+                // the pan keys follow the camera key scheme (Arrow keys or WASD); the arrows always pan as well
+                // unless the player bound one of them to an order
+                if (InputFacade.PanHeld("pan_up", KeyCode.UpArrow)) forward += 1;
+                if (InputFacade.PanHeld("pan_down", KeyCode.DownArrow)) forward -= 1;
+                if (InputFacade.PanHeld("pan_left", KeyCode.LeftArrow)) right -= 1;
+                if (InputFacade.PanHeld("pan_right", KeyCode.RightArrow)) right += 1;
                 var mp = InputFacade.MousePosition;
                 if (!PointerOverUi && EdgePan && Application.isFocused && mp.x >= 0 && mp.y >= 0 && mp.x <= Screen.width && mp.y <= Screen.height)
                 {
@@ -167,7 +171,7 @@ namespace SE.Runtime.CameraControl
                     Focus += new Vector3(dx * k, 0, dz * k);
                     if (jumping && dx * dx + dz * dz < 0.01f) jumping = false;
                 }
-                float scroll = PointerOverUi ? 0 : InputFacade.Scroll;
+                float scroll = PointerOverUi || (BrushScroll && InputFacade.Ctrl) ? 0 : InputFacade.Scroll;
                 if (Mathf.Abs(scroll) > 0.01f)
                 {
                     // zoom toward the point under the cursor

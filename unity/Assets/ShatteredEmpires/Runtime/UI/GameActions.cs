@@ -10,6 +10,8 @@ namespace SE.Runtime.UI
         public string StartRes = "standard";
         /// <summary>A hand-authored map id from the server catalog, or "random" (procedural).</summary>
         public string Map = "random";
+        /// <summary>With Map "custom": the map-builder sketch (MapSketch.Encode; server sketchMaps.js).</summary>
+        public Newtonsoft.Json.Linq.JObject Sketch;
         public int Rivals = 1;
         public bool Tutorial, Wrap;
         /// <summary>

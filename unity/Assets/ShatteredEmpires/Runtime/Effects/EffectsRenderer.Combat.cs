@@ -45,8 +45,9 @@ namespace SE.Runtime.Effects
         public void EngineTrail(float3 point, float3 velocity, bool damaged, bool dusty)
         {
             float speed = math.length(velocity);
-            if (damaged) Emit(point + new float3(0, .12f, 0), Wind * .12f + new float3(0, .12f, 0), .035f, .11f, 2.2f,
-                new float3(.13f, .14f, .14f), new float3(.40f), .42f, false, 0, .5f, .03f);
+            // smoke pass: a damaged vehicle trails 1.6 s puffs at .32 alpha (was 2.2 s at .42)
+            if (damaged) Emit(point + new float3(0, .12f, 0), Wind * .12f + new float3(0, .12f, 0), .035f, .11f, 1.6f,
+                new float3(.13f, .14f, .14f), new float3(.40f), .32f, false, 0, .5f, .03f);
             if (speed < .04f || !dusty) return;
             Emit(point - math.normalizesafe(velocity) * .16f + new float3(0, .018f, 0), Wind * .08f + new float3(0, .04f, 0), .024f, .075f, .7f,
                 new float3(.49f, .43f, .33f), new float3(.55f, .52f, .45f), .18f * math.min(1, speed), false, 0, .8f, .01f);

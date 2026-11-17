@@ -1,0 +1,6 @@
+<!-- Keep the Steam layer whole under managed code stripping: SE.Steam is referenced by nothing (it registers
+     itself with [RuntimeInitializeOnLoadMethod]) and Steamworks.NET binds its callbacks by reflection. -->
+<linker>
+  <assembly fullname="SE.Steam" preserve="all"/>
+  <assembly fullname="com.rlabrecque.steamworks.net" preserve="all"/>
+</linker>

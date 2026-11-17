@@ -110,7 +110,10 @@ namespace SE.Core.World
             if (Known[i] == 0 || IsSea(i) || IsLake(i) || IsRiver(i)) return 0f;
             switch (Biome[i])
             {
-                case 10: return 0.75f;   // peaks
+                // peaks: the high interior of a massif (authored maps lift it with its distance from lower
+                // ground) gets deeper crests and gullies, so a broad block of peaks is not a smooth snow table.
+                // Only this hex's own height decides it, so revealing a neighbour never changes it.
+                case 10: return 0.75f + Math.Min(1.1f, Math.Max(0f, Height[i] - 4.5f) * 1.0f);
                 case 9: return 0.48f;    // mountains
                 case 8: return 0.14f;    // hills
                 default: return 0f;

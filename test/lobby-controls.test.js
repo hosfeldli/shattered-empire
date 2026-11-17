@@ -166,35 +166,45 @@ test('format changes keep the seated players and their teams; too small a format
   assert.ok(mm.matches.get(code).slots.every((s, i) => s === mm.matches.get(code).slots[i]));
 });
 
-test('maps: the host picks any catalog map (it sets the format and size) or a random world', () => {
+test('maps: the host picks any catalog map that has a start for every seat (keeping the format) or a random world', () => {
   const { mm, host, code } = lobby('1v1');
   const guest = socket(mm);
   const byFormat = (players, teamSize) => MAP_CATALOG.find((d) => d.players === players && d.teamSize === teamSize);
   const duel = byFormat(2, 1), fours = byFormat(4, 2);
   assert.ok(duel && fours, 'the catalog has a 1v1 and a 2v2 map');
+  // a duel on a 2v2 map: the format stays (fewer players than it was drawn for)
   host.msg({ t: 'map', map: fours.id });
   let room = host.last('room');
   assert.equal(room.map, fours.id); assert.equal(room.mapName, fours.name); assert.equal(room.mapSize, fours.size);
-  assert.equal(room.slots.length, 4); assert.equal(room.teamSize, 2);
+  assert.equal(room.slots.length, 2); assert.equal(room.format, '1v1'); assert.equal(room.mapPlayers, 4); assert.equal(room.mapFormat, '2v2');
+  // its own format fits as well, and does not change the map
+  host.msg({ t: 'mode', mode: '2v2' });
+  room = host.last('room');
+  assert.equal(room.map, fours.id); assert.equal(room.slots.length, 4); assert.equal(room.teamSize, 2);
   assert.match(host.error({ t: 'map', map: 'atlantis' }), /Unknown map/);
   assert.match(host.error({ t: 'map', map: '__proto__' }), /Unknown map/);
   guest.msg({ t: 'join', match: code, name: 'Guest' });
   assert.match(guest.error({ t: 'map', map: duel.id }), /Only the host/);
-  // a format that does not fit the map falls back to a random world
+  // so does free-for-all for three on it; a format with more seats than starts falls back to a random world
   host.msg({ t: 'mode', mode: 'ffa3' });
   room = host.last('room');
-  assert.equal(room.map, 'random'); assert.equal(room.format, 'ffa3');
+  assert.equal(room.map, fours.id); assert.equal(room.format, 'ffa3');
+  host.msg({ t: 'mode', mode: '3v3' });
+  room = host.last('room');
+  assert.equal(room.map, 'random'); assert.equal(room.format, '3v3');
+  // a map with fewer starts than seats takes its own format
   host.msg({ t: 'map', map: duel.id });
   room = host.last('room');
-  assert.equal(room.map, duel.id); assert.equal(room.slots.length, 2);
+  assert.equal(room.map, duel.id); assert.equal(room.slots.length, 2); assert.equal(room.format, '1v1');
   // two players cannot squeeze onto a map that has fewer seats than are taken
   const big = MAP_CATALOG.find((d) => d.players >= 4);
   host.msg({ t: 'map', map: big.id });
+  host.msg({ t: 'mode', mode: '2v2' });
   const third = socket(mm); third.msg({ t: 'join', match: code, name: 'Third' });
   assert.match(host.error({ t: 'map', map: duel.id }), /players are seated/);
   host.msg({ t: 'map', map: 'random' });
   assert.equal(host.last('room').map, 'random');
-  assert.equal(host.last('room').slots.length, big.players, 'a random world keeps the seats');
+  assert.equal(host.last('room').slots.length, 4, 'a random world keeps the seats');
 });
 
 test('ready lobbies start when every seat is taken and every player is ready (or when the host starts)', () => {
@@ -274,13 +284,19 @@ test('closed seats make uneven teams on a random world; at least two sides remai
   mm.dropClosed(m);
   assert.equal(m.slots.length, 3);
   assert.deepEqual(m.teamOf, [0, 1, 1], 'the host alone against two AIs');
-  // a catalog map opens closed seats again and refuses closing
+  // uneven sides on a catalog map too: closed seats stay closed and seats can be closed there
   const second = lobby('2v2');
   second.host.msg({ t: 'closeSeat', seat: 3 });
   const map = MAP_CATALOG.find((d) => d.players === 4 && d.teamSize === 2);
   second.host.msg({ t: 'map', map: map.id });
-  assert.ok(second.host.last('room').slots.every((s) => !s.closed));
-  assert.match(second.host.error({ t: 'closeSeat', seat: 3 }), /catalog map/);
+  assert.equal(second.host.last('room').map, map.id);
+  assert.equal(second.host.last('room').slots[3].closed, true);
+  second.host.msg({ t: 'closeSeat', seat: 3, closed: false });
+  second.host.msg({ t: 'closeSeat', seat: 2 });
+  assert.equal(second.host.last('room').players, 3);
+  const sm = [...second.mm.matches.values()][0];
+  second.mm.dropClosed(sm); second.mm.catalogTeams(sm);
+  assert.deepEqual(sm.teamOf, [0, 0, 1], 'two against one on a 2v2 map');
   // New Skirmish: 'closed' seat indices at create (you and an ally against one AI)
   const solo = manager(), p = socket(solo); solo.start = () => {};
   p.msg({ t: 'create', mode: 'ai', name: 'Solo', ruleset: 'action-v2', format: '2v2', closed: [3] });
@@ -327,4 +343,39 @@ test('a random world size of auto follows the seat count again', () => {
   assert.equal(host.last('room').size, 'small'); assert.equal(host.last('room').mapSize, 104);
   host.msg({ t: 'options', size: 'auto' });
   assert.equal(host.last('room').size, null); assert.equal(host.last('room').mapSize, 208, 'six seats: the large world');
+});
+
+// Flexible player counts on catalog maps (maps wave 3): any format up to the map's number of starts, and
+// uneven sides; the simulation seats the civs on sensible starts (actionMap.assignStarts).
+test('catalog maps take fewer players and other teams than they were drawn for', () => {
+  const three = MAP_CATALOG.find((d) => d.players === 6 && d.teamSize === 3);
+  const ffa4 = MAP_CATALOG.find((d) => d.players === 4 && d.teamSize === 1);
+  const two = MAP_CATALOG.find((d) => d.players === 4 && d.teamSize === 2);
+  const solo = manager(), q = socket(solo); solo.start = (m) => { solo.catalogTeams(m); };
+  // New Skirmish: 1v1 on a 3v3 map, 2v2 on a free-for-all map, free-for-all for three on a six-start map
+  for (const [map, format, seats, teams] of [[three, '1v1', 2, [0, 1]], [ffa4, '2v2', 4, [0, 0, 1, 1]], [three, 'ffa3', 3, [0, 1, 2]], [two, 'ffa3', 3, [0, 1, 2]]]) {
+    q.msg({ t: 'create', mode: 'ai', name: 'Solo', ruleset: 'action-v2', map: map.id, format });
+    const m = solo.matches.get(q.last('joined').match);
+    assert.equal(m.map, map.id); assert.equal(m.mapSize, map.size); assert.equal(m.slots.length, seats, `${format} on ${map.id}`);
+    solo.catalogTeams(m);
+    assert.deepEqual(m.teamOf, teams);
+  }
+  // a format with more seats than the map has starts keeps the map's own
+  q.msg({ t: 'create', mode: 'ai', name: 'Solo', ruleset: 'action-v2', map: two.id, format: '3v3' });
+  const big = solo.matches.get(q.last('joined').match);
+  assert.equal(big.slots.length, 4); assert.equal(big.teamSize, 2);
+  // 1 v 2 on a 2v2 map (a closed seat)
+  q.msg({ t: 'create', mode: 'ai', name: 'Solo', ruleset: 'action-v2', map: two.id, format: '2v2', closed: [1] });
+  const uneven = solo.matches.get(q.last('joined').match);
+  solo.dropClosed(uneven);
+  assert.deepEqual(uneven.teamOf, [0, 1, 1]);
+  // lobby: the host switches formats on a map that still fits without losing it
+  const { host } = lobby('3v3');
+  host.msg({ t: 'map', map: three.id });
+  for (const mode of ['1v1', '2v2', 'ffa3', 'ffa4', 'ffa5', '3v3']) {
+    host.msg({ t: 'mode', mode });
+    assert.equal(host.last('room').map, three.id, `${mode} keeps the six-start map`);
+  }
+  host.msg({ t: 'mode', mode: '4v4' });
+  assert.equal(host.last('room').map, 'random', 'eight seats do not fit six starts');
 });

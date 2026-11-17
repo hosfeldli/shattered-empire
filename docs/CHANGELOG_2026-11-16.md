@@ -1610,3 +1610,677 @@ Screenshots: `D:/Projects/se_scratch/menus/` (outside the repo). Checked in play
 - Steam overlay invites, the Steam public list and joining a Steam lobby were not tested (no second PC). Those paths are unchanged, except that `Public` now follows the server's flag.
 - Starting resources and victory are not shown in the in-match HUD (only in the lobby and Skirmish screens).
 - Uneven sides need a random world: catalog maps have a fixed start for every seat.
+
+## UI transitions
+
+Files: `Runtime/UI/UiKit.cs` (motion helpers), `Resources/UI/SE.uss` ("UI transitions" block at the end), `SE.Menu.uss` (appended), `Hud.cs`, `Hud.Shell.cs`, `Hud.Console.cs`, `Hud.Action.cs`, `Hud.Command.cs`, `Hud.HoverCard.cs`, `Hud.DefenseBar.cs`, `Hud.Tooltips.cs`, `Hud.Base.cs` (two lines), `RadialMenu.cs`, `Minimap.cs`, `MainMenu.cs` (five one-line hooks), `MapPreview.cs` (one line), `SettingsView.cs`, `App/GameSettings.cs`.
+
+**How it works**
+- `UiKit.Fx(el, variant)` marks an element as transitioned (`.se-fx`, hidden look) and starts it hidden. `UiKit.Show` sets display Flex and adds `.se-in` one styled frame later; `UiKit.Hide` removes `.se-in` and sets display None only after the out-transition (`OutMs` + 20 ms). `SetShown`, `IsShown` (the logical state, false as soon as it starts fading), `HideNow` and `HideAndRemove` complete the set. Each element has one fader with two reusable scheduled items, so toggling allocates nothing and calling `Show` every frame is free.
+- Variants: `--up`, `--down`, `--left` (short slide), `--cdown` / `--cup` (for elements centred with translate −50 %), `--follow` (elements moved by translate every frame: their position is never transitioned), `--fade`, `--pop`, `--quick`.
+- `UiKit.Enter(el)` / `EnterChildren` / `EnterAdded(list, countBeforeClear)`: one-shot entrance (fade and rise 6 px), staggered at most 12 steps. `EnterAdded` animates only rows that a rebuild added, so periodic refreshes never flash.
+- `UiKit.PageStack` cross-fades pages: the old page fades out where it stands (absolutely placed, nothing shifts) while the new one eases in. Every PageStack gets it (main menu, pause menu).
+- `UiKit.SmoothResize`: a panel whose content is rebuilt eases from its old to its new height (overflow hidden while it runs).
+- `UiKit.Tween` (allocation-free value easing on unscaled time) and `UiKit.IntText` (cached "N0" strings, so a counting number makes no garbage).
+- Everything runs on real time: USS transitions use the panel clock, and code easing uses the bootstrap / unscaled clock, so it all plays while the game is paused.
+- **Settings › Interface › Reduce UI motion** (`GameSettings.ReduceUiMotion`): adds `.se-calm` to the panel root (all durations 0, no hover scale), makes `Show`/`Hide`, `Enter`, the tweens, the wheel hover and the minimap zoom instant. It is part of the Interface tab's restore defaults. The existing Camera "Reduced motion" also makes the wheels instant, as before.
+
+**What animates (in ≈ 180 ms ease-out, out ≈ 140 ms ease-in unless noted)**
+- Selection panel: fades and rises in, fades out. A new subject (or more units) cross-fades the content (rows staggered); casualties only resize it. Its height eases on rebuilds (180 ms). Condition, capture, construction and queue bars ease to the new value (300 ms).
+- Hover card (fade and scale, follow movement untouched), tooltip (90/120 ms), resource and observer popover (quick fade), placement card at the cursor, cursor refusal reason (quick fade).
+- Tool chip: rises in above the dock and fades out. The dock rises in, the minimap console rises in, the minimap eases in when the game appears.
+- Toast and critical banner slide down from above; the status pill and the Decisive Domination banner slide down; the pill, toast and banner glide to their new place (`top`) when the domination banner pushes them down.
+- Attack banner slides in from the left. Feed notices slide in from the left and fade out before removal; the fourth one fades out the oldest. The result card fades in and out (Dismiss, Go there, 15 s).
+- Idle and production buttons pop in and out; control-group chips fade and glide (`bottom`) with the selection panel's height. Tutorial coach, legacy side panel, loading strip fade.
+- Pause menu: the dimmer fades and the frame pops (0.96 → 1); it fades out before removal; page changes cross-fade; settings width/height change eases when Settings opens wide.
+- Main menu: the frame eases in when the menu opens and eases its width between narrow and wide pages (220 ms); page changes cross-fade and slide; settings tab rows stagger in; new lobby browse rows, friend rows, skirmish seats, lobby teams (first fill) and map rows ease in.
+- Radial wheels: open bloom 160 ms (scale 0.9 → 1, ease-out cubic), close 120 ms; a sub-ring or a page change re-blooms from half way; hover highlights (segment fill, glow and accent, the hub, outer-arc buttons) ease in about 90 ms; progress rings ease to a jump in value over about 0.3 s (small running steps are drawn as they come, so a training wheel is not repainted every frame).
+- Resource bars: Materials and Energy count smoothly to the new amount (about 0.45 s); the command load line eases (300 ms).
+- Minimap Z: the zoom eases over 0.3 s (smoothstep scale and view centre).
+- Buttons: colour eases, hover lifts to 1.03 (1.015 on wide list buttons, 1.04 dock, 1.06 round console buttons), press to 0.97; segmented controls, switches and menu rows ease colour.
+
+**Jumpiness fixed**
+- The selection panel rebuilt whenever any unit anywhere spawned or died (its signature used the global `Units.MembershipRevision`): in battles it was rebuilt several times a second. It now keys on the living selected units only.
+- The match clock box resized and re-centred every second (proportional digits, no width): fixed 42 px centred text slot.
+- The Decisive Domination banner resized every second as its countdown text changed (min/max width only): fixed 600 px.
+- The toast changed width with every message: a 220 px minimum.
+- The status pill text was rebuilt and reassigned every refresh: set only when it changes.
+- Resource amounts jumped at the 4 Hz refresh: they now count every frame from cached strings.
+- The pill, toast and banner snapped to their new `top` when the domination banner appeared; the group chips snapped up and down with the panel: both glide now.
+- The console, dock, top bar and minimap entered by setting inline opacity 0 → 1 after 60 ms with no transition on the console, dock and minimap (a pop): they now ease in.
+- Old pages and closing menus vanished in one frame (`Clear()` then rebuild): they cross-fade.
+
+**Verified**: dotnet type-check of Runtime/Core/Net (`D:/Projects/se_scratch/uicheck/check.csproj`), 0 errors. USS uses only properties Unity 6.3 supports (opacity, scale, translate, width, height, top, bottom, colours; descendant and class selectors, `:hover` / `:active` only).
+
+**Not verified (needs play in the editor)**
+- That `.se-in` added 20 ms after display Flex animates at every frame rate (it relies on one styled frame in the start state); and that hiding never leaves a faded element pickable for long (it is pickable for the 160 ms fade).
+- Selection panel: the smooth height on rebuild (GeometryChanged → fixed height → eased → released), with the group chips gliding above it; check no one-frame flash at the new size.
+- Text sharpness while scaled (hover 1.03 on buttons, wheel bloom); if it looks soft, drop the hover scale in SE.uss.
+- Page cross-fade in the main menu and the pause menu, especially Settings (wide) ↔ root and the lobby; Escape quickly twice.
+- Minimap Z ease on a wrapping map and on a non-wrapping one (view slide plus scale), and the dots and footprint during the ease.
+- Reduce UI motion on and off from both the main menu and the pause menu.
+- Wheel hover easing feel at 60 and 144 Hz; the progress ring when a unit finishes (snaps back to 0, by design).
+## Steam fix (two PCs could not play together through Steam)
+
+Files: `Steam/SteamInvites.cs`, `Steam/link.xml` (new), `Runtime/Social/SocialPlatform.cs`, `Runtime/Social/SocialPlatformPump.cs`, `ProjectSettings/ProjectSettings.asset` (Windows graphics APIs), and small Steam-only edits in `Runtime/UI/MainMenu.cs` (lobby friend list, Join by code on the Join a friend page). `server/matches.js` was reviewed and needed no change.
+
+**Root causes**
+- **The Steam overlay never appeared, so there was no way to invite.** The only invite path was `ActivateGameOverlayInviteDialog`, which needs the overlay. The player ran on Direct3D 12 (Unity 6 default, `m_BuildTargetGraphicsAPIs` was empty). A game that Steam did not launch gets its overlay from `gameoverlayrenderer64.dll`, which `SteamAPI.Init` loads after Unity has created the device and swap chain. The overlay frequently fails to hook D3D12 in that case, and the call then does nothing, silently.
+- **Failures were invisible.** `SteamInvites` never logged its init result, lobby results, callbacks or errors. The release `Player.log` had no Steam lines at all, so nobody could tell whether Steam started, a lobby existed, or an invite was sent.
+- Reviewed and found correct, unchanged: the provider registers in a player build (`RuntimeInitializeOnLoads.json` in the e298c4a build lists `SE.Steam.SteamInvites.RegisterPlatform`; `SE.Steam.dll`, the Steamworks.NET dll and `steam_api64.dll` ship; stripping is Disabled on Mono). The pump (`SocialPlatformPump`, DontDestroyOnLoad) calls `RunCallbacks` every frame in menus, lobby and match. The host sets `se_match` before any invite dialog opens. Lobby data is readable at `LobbyEnter_t`. The guest's `join` is queued until the server handshake, and both clients use `wss://game.liamhosfeld.com/ws` (the lobby's `se_server`, sanitised).
+
+**Fixes**
+- **Direct3D 11 first.** Windows standalone graphics APIs are now D3D11, then D3D12 as a fallback (automatic off). The overlay hooks D3D11 reliably when the game is started outside Steam.
+- **Steam starts earlier.** `SteamInvites` is constructed at `AfterAssembliesLoaded`, before the splash screen and the first scene, and handed to `SocialPlatform` at `BeforeSceneLoad`. Managed code still runs after the device exists, so this helps the overlay but does not replace D3D11.
+- **Invites without the overlay.** The lobby page has a new "Invite Steam friends" section. It lists online friends, those running the game first, each with an **Invite** button that calls `SteamMatchmaking.InviteUserToLobby`. The friend gets a Steam chat invite, and accepting it while Shattered Empires runs fires `GameLobbyJoinRequested_t`. The section also has "Copy match code" and a line that always says "Or they use Multiplayer › Join by code <code>". Invite stays disabled until the Steam lobby exists. When Steam is unavailable, the section says why.
+- **Join by code is reachable everywhere.** It is now in the Join a friend page's footer as well as on Multiplayer. Every Steam failure status ends with "use Join by code".
+- **Status line.** Multiplayer and the lobby note show "Steam: <name> · overlay ready (Shift+Tab)" or "· Steam overlay unavailable: invite friends from the lobby's friend list". The overlay is checked about 4 s after start-up and again on each invite. A `GameOverlayActivated_t` callback is logged and marks the overlay as working.
+- **Logging.** Every Steam log line starts with `[Steam]` in Player.log. The log covers:
+  - start-up: game version, graphics API, the Steam `+` launch arguments, and `InitEx` with its reason;
+  - the signed-in account: persona, SteamID, logged-on, app id, overlay enabled at init and after start-up, and the friend count;
+  - platform registration and the first `RunCallbacks` (with a heartbeat every 18000 frames);
+  - lobbies: `CreateLobby` (type, limit, code, server), `LobbyCreated` (result) and the lobby data as read back (code, version, server, limit, joinable, members);
+  - the invite dialog (overlay state), `InviteUserToLobby` (result), rich presence, `GameLobbyJoinRequested_t`, `GameRichPresenceJoinRequested_t` and connect lines;
+  - joining: `JoinLobby` and `LobbyEnter_t` (response and all `se_*` data), version or game mismatches, and the match code handed to the game, with its server;
+  - updates: `LobbyChatUpdate_t`, `LobbyMatchList_t` counts, friend lobbies found, leave and shutdown;
+  - errors: callback exceptions. The full command line is never logged, because the editor's contains an access token.
+- `link.xml` preserves `SE.Steam` and `com.rlabrecque.steamworks.net`, for when stripping is turned on later.
+- `SocialPlatform` logs which platform started, or that no platform assembly registered.
+
+**Tested on one PC (one Steam account)**
+- Editor play mode: `[Steam] SteamAPI.InitEx = OK`, signed in, app 480, 5 friends, platform `SteamInvites` registered, `RunCallbacks` pumping. The editor overlay is reported unavailable, as expected.
+- Standalone Steamworks harness (`D:/Projects/se_scratch/steam/harness`, the same Steamworks.NET and `steam_api64.dll` as the build), with three processes at once:
+  - Host process: `CreateLobby` OK; `se_match`, `se_server`, `se_version` and the limit read back; `SetLobbyJoinable` true.
+  - Second process: the filtered search (`se_game`, `se_version`, `se_status`, worldwide) found exactly that lobby.
+  - Third process: `JoinLobby` returned `Success`, with `se_match`, `se_server` and `se_version` readable at `LobbyEnter_t`.
+- Cloud server (`D:/Projects/se_scratch/steam/roomtest.js`): a host created a 1v1 `waitForReady` lobby the way the client does. A second connection joined with the code. Both received the same `room` (same code, both seats taken, `open 0`).
+- Release build (Build/Windows, 286 MB, 0 errors), started outside Steam with `-mode pvp` (log `D:/Projects/se_scratch/steam/hostA.log`):
+  - Graphics: `Direct3D 11.0 [level 11.1]`.
+  - Steam start-up: `InitEx = OK`, platform registered, `RunCallbacks` pumping.
+  - Overlay: `overlay enabled (after start-up) True`. It was False at init, and False in the D3D12 editor run. `GameOverlayActivated_t` was received.
+  - Lobby: `CreateLobby FriendsOnly max 2`, then `LobbyCreated OK`, then the lobby data read back as `se_match cf7460`, `se_version 1.0`, `se_server wss://game.liamhosfeld.com/ws`, `joinable True`.
+  - Overlay test: the lobby's "Invite Steam friends" button opened Steam's "Choose Friend to Invite" overlay (screenshot `D:/Projects/se_scratch/steam/overlay_invite_dialog_d3d11.png`). Shift+Tab toggled it, and a friend was shown as "Invited!".
+  - Not captured on screen: the new in-lobby friend list sits below the rules on the lobby page and was not scrolled into view, because the player was using the window at the time. Its `InviteUserToLobby` call has not been made to a real friend yet. The harness only checked that the call works against a live lobby, and an invalid id was refused as expected.
+- Not tested here (needs a second Steam account and PC): a friend accepting the invite and landing in the same server room through `GameLobbyJoinRequested_t`. Running both sides on one account would make the same account both host and guest.
+
+**Two-PC test procedure (Spacewar 480)**
+1. **Setup.**
+   - Both PCs use the same build (same `Application.version`; check the version in Player.log's `[Steam] starting · game v…` line).
+   - Two different Steam accounts that are friends, both signed in, Steam running on both. Keep Steam's in-game overlay on: *Steam › Settings › In Game › Enable the Steam Overlay while in-game*.
+2. **Start the game from its folder on both PCs before any invite.** Accepting an invite while the game is closed starts Spacewar itself.
+   - Multiplayer should show "Steam: <name> · overlay ready (Shift+Tab)" after a few seconds.
+   - Press Shift+Tab: the overlay should open.
+   - If the status says the overlay is unavailable, continue anyway (step 4b).
+3. **Host (A).** Multiplayer › Host a lobby.
+   - The lobby page shows the match code.
+   - The note reads "Steam lobby open · 1 member · v<ver>".
+   - "Invite Steam friends" lists B under Online or "Playing Shattered Empires (Spacewar)".
+4. **Invite.**
+   - a. With the overlay: click the top "Invite Steam friends" button, then invite B in the dialog.
+   - b. Without the overlay: click **Invite** next to B. The status says "Invite sent to B", and A's Player.log shows `InviteUserToLobby … = True`.
+5. **Guest (B).** In Steam chat (the Steam window, or the overlay), click the invite's Join.
+   - B's Player.log should show, in order: `GameLobbyJoinRequested_t`, `JoinLobby`, `LobbyEnter_t … Success … se_match <code> se_server wss://game.liamhosfeld.com/ws`, then `join match <code> … delivered`.
+   - B lands in A's lobby. A's note shows 2 members, and A's seat list shows B.
+6. **Fallbacks.**
+   - Join a friend on B should list A's lobby. Steam friends list › A › Join Game should also work.
+   - B can always use Multiplayer › Join by code with the code A reads off the lobby page.
+7. **Play.** Both press Ready (or A presses Start). The match starts on both PCs, and the game traffic goes through the cloud server.
+8. **If something fails**, send both Player.logs: `%USERPROFILE%/AppData/LocalLow/Shattered Empires/Shattered Empires/Player.log`. Every step above has a `[Steam]` line, so the log shows where the flow stopped.
+
+## Maps wave 3: choke points, mountains, seas, gimmick maps, flexible player counts
+
+Files: `server/sim/mapCatalog.js` (7 new maps), `server/sim/actionMap.js` (`assignStarts`, `seatStarts`; both authored builders), `server/sim/actionGame.js` (team size on catalog maps), `server/matches.js` (formats, maps and closed seats on catalog maps), `server/sim/mapPreviews.js` (regenerated), `tools/action-balance.mjs` (`--teams=`, time format fix). Client: `UI/MapPreview.cs` (`MapCatalogEntry.Fits`, picker list and card), `UI/MainMenu.cs` (skirmish and lobby rules, built-in map list), `App/GameBootstrap.cs` (sends `closed` for catalog maps too). Tests: new `test/action-maps-wave3.test.js` (5) and `test/action-flex-players.test.js` (5); `test/lobby-controls.test.js` updated, plus one new test.
+
+**New maps** (catalog: 17 maps, at least 2 per format, all 80 to 128)
+
+| Format | Map | Size | Idea |
+|---|---|---|---|
+| 1v1 | **Fortress Pass** | 84 | A wall of impassable peaks from coast to coast (the ends drop into the sea, so there is no shore path). One winding canyon with hill terraces leads to the Keep's bowl. Two narrow, roaded goat trails cross the heights in the far north and south. |
+| 1v1 | **Serpentine** | 80 | Coast-anchored ridges fold the valley into an S, and the Coil ridge sits in the middle. River fords and bridges cut both bends. A saddle lets infantry climb straight over (on foot 25 steps, by tank 87). |
+| 2v2 | **Stepping Stones** | 104 | Each capital has its own island, and allies share a causeway. Three lanes cross the sea: a north islet behind a fordable strait and a bridged one, Causeway Isle to Midsea Isle, and the mirrored south chain. About 70% sea, so air matters. |
+| 2v2 | **Fjordmark** | 108 | Two fjords cut in from opposite coasts, with cliffs on the outer reaches. The centre is reached around a fjord head or over the Narrows, a 2–3 hex rock bridge with a defence outpost. |
+| 3v3 | **Twin Continents** | 128 | Two continents across an inland sea. They are joined by thin isthmuses in the far north and south and by a causeway from each shore to Midsea. A coastal mountain spine separates the middle and south seats. Capital to capital takes 134–182 steps by land. |
+| FFA 3 | **Ring of Fire** | 104 | A ring of peaks around a caldera holding three forges and the Heart. Each of the three gates sits between two realms and has a defence outpost on its ramp. |
+| FFA 4 | **King of the Hill** | 104 | A flat plateau ringed by cliffs, with one stepped ramp facing each realm. The Summit metro and four radars are on top. Rivers split each realm from its clockwise march. |
+
+Checks (all in tests):
+- Every map: start-to-start and start-to-site reachability by heavy vehicles.
+- Team maps: exact half-turn symmetry.
+- FFA maps: E's route check per seat (Ring of Fire 64/66; King of the Hill sorted routes within 4 steps).
+- Walls: on foot is never shorter than by tank on Fortress Pass, Ring of Fire and King of the Hill, so nobody climbs the walls.
+- Each preview differs from every other map's in at least 20% of its land cells.
+- Contested points are at the chokes: defence or radar outposts at the canyon mouth, the gates, the ramps and the Narrows; outposts on the trails and straits; town or military sites at the isthmus heads and the march corners.
+
+**Sketches** (`node tools/map-previews.mjs --ascii`: one character per preview cell, every second row, all-sea rows dropped). Legend as in E: `~` sea, `-` shallows, `.` open, `f` forest, `,` marsh, `h` hills, `M`/`A` mountains/peaks, `=` river, `:` ford, `#` road, `H` bridge, digit = seat, `B` city ruin, `o` outpost.
+
+```
+Fortress Pass (fortress_pass, 84, 2 players)
+~~~~---.--.--..-.--~...M..M.~~~~~~~-~~~~~~~~~~~-...~~~~~~~~~~~~~
+~~~~-.................AhhMMAAAAMhhAAAAAAAA..........~~~~~~~~~~~~
+~~~~-.................hhhhhhhAAAAAAAhhhMhM.....#B.....==~~~~~~~~
+~~~~-...............##########hhhhhhh#hh####..#..#...=.....~~~~~
+~~~~-........B######..hhMMMhhhhhhhhhhMMMhh........H........-~~~~
+~~~~-.......#.........MAAAAAAMhMhAAAAAAAA.......=.f#........~~~~
+~~~~-......#..ff......AAAAAAAAAAAAAAAAAAAM...ff=ffff#......-~~~~
+~~~~-.....#ffffffff...AAAAAAAAAAAAAAAAAAAA..f=ffffff#......-~~~~
+~~~~......##fffffff...AAAAAAAAAAAAAAAAAAAA..::..fff.#......-~~~~
+~~~-..h.....#..fff....AAAAAAAAAAAAAAAAAAAAM........#........~~~~
+~~~-..h.....##........MAAAAAAAAAAAAAAAAAAAA.........#.....o-~~~~
+~~~-.........#...###...hhMAAAMMh..MMMAAAAAM..........#.....-~~~~
+~~~-...........##...#......Mh.........MAAhh..........#.....-~~~~
+~~~~.........###......##..........##o###.....o......1#.....-~~~~
+~~~~-......##...........#....###B......#...........#........~~~~
+~~~~-......#..........hMh................###...##...........-~~~
+~~~~-.....##.........MAAAMh.......hAAA.....##.##.#..........-~~~
+~~~~-.....#..........AAAAAAAAMMMMAAAAAAAAM...B....#......h..-~~~
+~~~~.......##........AAAAAAAAAAAAAAAAAAAAM.........#.....h..-~~~
+~~~~-.......#......:..AAAAAAAAAAAAAAAAAAAAM..fffffff#....h..-~~~
+~~~~-......#ffffff:f..MAAAAAAAAAAAAAAAAAAA...ffffffff#.o....~~~~
+~~~~-.....##fffff=ff..MAAAAAAAAAAAAAAAAAAM.....ffff.#.......~~~~
+~~~~-.......#ff::f....AAAAAAAAAAAAAAAAAAAA..........#......-~~~~
+~~~~-........#=........MAAAMMMhhhhhhMAAMMh.........#.......-~~~~
+~~~~-......==##...##..hhhh######o##hhhhhhh.##..............-~~~~
+~~~~~~...==....###....hh##hhhhMMMhhhhhhhhhh................-~~~~
+~~~~~~~~~~~...........MAMhMMAAAAAAAAMhhhhh.................-~~~~
+~~~~~~~~~~~~-..........hMMAMMh~~-hAAAAMMMA.................-~~~~
+
+Serpentine (serpentine, 80, 2 players)
+~~~~~~~~~~~~~~~..--...-..------------.-------.-------.------~~~~
+~~~~~~~~~~-........MAh..............=......................-~~~~
+~~~~~~~~~..........hMM..............=......................-~~~~
+~~~~-......#.......hMM....##........=......................-~~~~
+~~~~-......#....o..MMM..fff#ff......=...........#...ff.....-~~~~
+~~~~-......#.......MM...ffff#.......==.........#f..ffff....-~~~~
+~~~~-......#.......MA....fff#........=..#......#.fffffff...-~~~~
+~~~~o.....#........AM......##..o.....=##.......#...........-~~~~
+~~~~-......#......hAM.....#..........=#.......#............-~~~~
+~~~~-.....#.......MAM....##Mh........=#........#........o..-~~~~
+~~~~-.....#.......hAA.....#hAMh......=#....MAh.#............-~~~
+~~~~-.....##.......AM....#...MAM.....=#...hhMM..#........h..-~~~
+~~~~.......#......hAMh....#...hA.....:#...hhAM..#........h..-~~~
+~~~-........#.....hMAh...##....AM.....##.hhMAh...#.......h..-~~~
+~~~-..h......#...hMAAhh.o#.....MA.....#...MAMh....#.........-~~~
+~~~-..........#...hAMhh..#:....MA....#.....AMh.....#........~~~~
+~~~-..h.......#...MMhh...#:....MAM....#....hAh......#......-~~~~
+~~~-...........##.AMhh...#=......AAh.##....hA........1.....-~~~~
+~~~~............#.hMM....#=.......MAA#.....MM........#.....-~~~~
+~~~~-...........##.......#=..........#......A........#.....-~~~~
+~~~~-............#......#f:.........#......hAh.......#.....-~~~~
+~~~~-....f.fff..#.......#.=........#.......MA........#.....-~~~~
+~~~~-....fffffff#######B##H########.ffff..hAh........#.....-~~~~
+~~~~-....ffff..##.........==......f#fffff..MM.......##.....-~~~~
+~~~~.......f..#B..........==......f.#..f..MMM.......#......-~~~~
+~~~~-......................=........B#....MM........B...--.~~~~~
+~~~~-......................=..............AA...........~~~~~~~~~
+~~~~-......................=................h.......~~~~~~~~~~~~
+
+Stepping Stones (stepping_stones, 104, 4 players)
+~~~~~~~~~~~~~~~~~~-~~~~~~~~~~~~~~~~~~~~~~~~~~~~-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~-~~~...~~~~~~-~~~~~~~~~~~~~~~~~~~~~-~~~~~~~~
+~~~~~~....ff~~~~~~~.~.......ff.~~~~~~~~~~~~~~~~-~~~~~~.-.~~~~~~~
+~~~~o......fff~-~~::..#####B##########=~-~~~~~~~~~......fff~~~~~
+~~~~..............#o#~~~......~~~.....H####-~~~~~.......ffff~~~~
+~~~..h....###....~~-~~~~~~..~~~~~~~~~.=.....####...........f-~~~
+~~~..h...##......~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~.#.....3.....-~~~
+~~~......##......~~~~~~~~~~~~~~~~~~~~~~~~~~~~~-..#....#.....-~~~
+~~~~.....#.....o~~~~~~~--~~~~~~~~~~~~~~~--~~~~~..##...#.....~~~~
+~~~~~~~..#f.-~~~~~~~~~~~~~~~-~~~~-~~~~-~~~-.....#~-...#...-~~~~~
+~~~~~~~.##~~~~~~~~~~~~~~~~~~~~~--~~~~~~~~..###.~~~~~~.#.~~~~~~~~
+~~~~~-~..#~~~~~~~~~~~~~~~~~~~~...~~~~~....##..~~~~~~~.##~~~~~~~~
+~~~~~~~..#~~~~~~~~~~~~~~~~~~~~.....o....##...-~~~~~~~.##~~~~~~~~
+~~~~~~~~.#-~~~~~~~~~~~~~~~~~.......###~~~~~~~~~~~~~~~#..~~~-~~~~
+~~~~~~~~.#.~~~~~~~~~~~~~~~~.####B....~~~--~~~~~~~~~~~#o.~~~~~~~~
+~~~~-~~~.#..~~~~~~~~~~~~###........~~~~~~~~~~~~~~~~~~#...~~~~~~~
+~~~~~~~~#..~~~~~~~....##.......M..~~~~~~~~~~~~~~~~~~~~#..~-~~~~~
+~~~~~~~~#..~~~~~~~..B..-~~~~~~~..~~~~~~~~~~~~~~~~~~~~~#..~-~~~~~
+~~~~~~~~.#..~~~~###....~~-~~~~~~-~~--~~~~~~~~~~~~~~~~~##.~~~~~~~
+~~~~-o...######...--~~~--~~~~~-~~~~~~~~~~~~~~~~~~-...##....~~~~~
+~~~-.....#...##.-~~~~~~-~~~-~~~~~~~~~~~--~~~~~~~.....##.....~~~~
+~~~-.....#.....#.~~~~~~~~~~~~-~~~~~~~~~~~~~~~~~-.....#.......~~~
+~~~-............#....~~-~~~~~~~~~~~~~~~~~~~~~~~......#2...h..~~~
+~~~~fff.........~~.###...=...~~~~~~.....~~~~~#######........~~~~
+~~~~ffff.......~~~~~~~~~#H#...............##o:.............-~~~~
+~~~~~~.......~~~~~~~~~~-~=~~~~~..............:~~~~-fff....-~~~~~
+~~~~~~~~-~~~~~~~~~~~~~~~~~~~~~---~fff....-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~-~~~~~~~~~~~~~-~~~~~~~~~~~~-~~~~~~~~~~~~~~~~~~~~
+
+Fjordmark (fjordmark, 108, 4 players)
+~~~-........o.......M.~~~..h................................-~~~
+~~~-...............A..~~..AM................fhf.............-~~~
+~~~-...............f..~~~.AM..............ffffffff..........-~~~
+~~~-................Ah.~~.Ah..............ffffffff..........-~~~
+~~~-................A..~~...................................-~~~
+~~~-..................~~~...............####................-~~~
+~~~-.....#.........##..~~..............##...........##3.....-~~~
+~~~-......#.........####o######.......#..#...........##.....-~~~
+~~~-.......#...........~~~~....#.....#....#.........#.......-~~~
+~~~.......f.#ffffff....~~~~...#.....#....==H=..===:#........-~~~
+~~~.........#fffffff....~~~...##.o.#.~~~~..##.....#.........-~~~
+~~-..........##.f.......~~~...#...#.~~~~~....#...#...........~~~
+~~-...........#.........~~~~..#..#..~~~~~.....#.#............-~~
+~~~..........~~#.......-~~~....##....~~~~.....##..~-......ff.-~~
+~~-o.f......~~~..B.....~~~~....#B....~~~~.....##.~~..........-~~
+~~-.............##.....~~~~...###....~~~~.......#............-~~
+~~~............#..#....~~~~~..#..#..~~~~-........#...........-~~
+~~~...........#....#...~~~~.##..##...~~~.....fffff##.........~~~
+~~~-........##.....##.==~~.##.o.##...~~~..fffffffff##........~~~
+~~~-.......#....====.#....##....##....~~~......fff.##.......-~~~
+~~~-......#...........#..##....###....~-.........f..##......-~~~
+~~~-.....#.............#.#.................#..........#.....-~~~
+~~~-.......##########..##..............~~-..###B######2.....-~~~
+~~~-........f.........#B............Mh.~~..M................-~~~
+~~~-..........ffffff........o........M.~~~.M................-~~~
+~~~...........ffffffff..............AA.~~~.M................-~~~
+~~~-...........ffffff...............AA..~~.M................-~~~
+~~~-..........o.....................AM.~~~.A................-~~~
+~~~--.--.-..---.--..-.--.---.--.--.-..-~~-...-...-.--.--.--.-~~~
+
+Twin Continents (twin_continents, 128, 6 players)
+~~~................M......~~~~~~~~~~~~.......................~~~
+~~~...........o...........~~~~~~~~~~~.......................-~~~
+~~~-.....................-~...~~~~~~~.......................-~~~
+~~~-................#######~~~..o.#####..###B#####...........~~~
+~~~-....0##########B.....~~~~~~~~~~~~-..................#...-~~~
+~~~-...#............#.....~~~~~~~~~~~~.......fffff.......#...~~~
+~~~-..#........ffffff#....~~~~~~~~~~~~......ffffff........#.-~~~
+~~~-.#..........ffff##f...~~~~~~~~~~~~.....................#.~~~
+~~~~#..............##f....~~~~~~~~~~~~.............A........#~~~
+~~~~#.............##......=~~~~~~~~~~~................MA...A.#~~
+~~~-.#........::..#=====...~~~~~~~~~~~..................Mh..#~~~
+~~~-.#.............#......~~~~~~~~~~~......................#o~~~
+~~~..#........hh....#..#o##~~~~~~~~~~.....B#....hh##......##-~~~
+~~~-..#......hhh.....#.#..~~.#....~~~....##....hhhh...#...#.-~~~
+~~~..##.#....hhhh.....#....~~~.#B##~~~-.##.....hhhh.....#4..-~~~
+~~~-##....##.hhhh....#.....~~~~..o.###..#.#.....hhh......##..~~~
+~~~-#.........#######......~~~~~~~~~~~.....#..............#.-~~~
+~~~#............o.........-~~~~~~~~~~-......#.............#.-~~~
+~~##.MAA..................~~~~~~~~~~~====...=H:=:..........#.~~~
+~~~#.....AMhh.............~~~~~~~~~~~~......#..............#~~~~
+~~~.#.....................~~~~~~~~~~~~...ff#ffff..........##~~~~
+~~~..#....................~~~~~~~~~~~~....#fffff.........##.-~~~
+~~~-..#......fffffff.....-~~~~~~~~~~~~-....#ffff........##..-~~~
+~~~-...#.......f..........~~~~~~~~~~~~~.....#..........##...-~~~
+~~~-....2######............-...~~~~~~~~....##...............-~~~
+~~~...................####...#########......................-~~~
+~~~-.......................~~~~~~~~~~~......................-~~~
+~~~.........o.....h.......~~~~~~~~~~~~......M................~~~
+~~~-------..---...-..----.~~~~~~~~~~~~----.......------------~~~
+
+Ring of Fire (ring_of_fire, 104, 3 players)
+~~~~~~~~~~~~~~~~~~~~~~~~~-.-.~~~~~~..-~-~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~--........~~~..........~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~-.....................hhhhh...~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~...............B#######.hhhhhh..-~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~................##ffff...#....h.....~~~~~~~~~~~~~~
+~~~~~~~~~~~~-................#.fffff....1..........-~~~~~~~~~~~~
+~~~~~~~~~~~.==.........#B####...f........#..........-~~~~~~~~~~~
+~~~~~~~~~~...==........##.................#.ffff.....-~~~~~~~~~~
+~~~~~~~~~-......==....#..#.....M..........#fffff....==-~~~~~~~~~
+~~~~~~~~~.....fff.:..#.....o..hhhMMAMh....#fff.==......-~~~~~~~~
+~~~~~~~~......ffffffH:...A.#.........MAM.::H............~~~~~~~~
+~~~~~~~-......f.ff##.:.hAh##..........MAM...#...........-~~~~~~~
+~~~~~~~.........###....AA##......#...#.hA....#..........-~~~~~~~
+~~~~~~~..hh....#......hM..#.....#......#......#..........~~~~~~~
+~~~~~~~.hhhh.#0.......hA...B####B........o#####B.........~~~~~~~
+~~~~~~~..hhh.#.........A.........#......MM.....#.........~~~~~~~
+~~~~~~~~.o...#.........A..........B.....AM....#.........-~~~~~~~
+~~~~~~~~.....#.fffff...hAM.......#....MM......#.........~~~~~~~~
+~~~~~~~~~.....#f.fff....hA..#.h.h.hMAMh....ffff#.......-~~~~~~~~
+~~~~~~~~~......B####......##.MAAAAAMh......fff..B...-.~~~~~~~~~~
+~~~~~~~~~~~~~.........#..##................ffff#..-~~~~~~~~~~~~~
+~~~~~~~~~~~~~~.........#.#......:............##...~~~~~~~~~~~~~~
+~~~~~~~~~~~~~..................==ff####..##........-~~~~~~~~~~~~
+~~~~~~~~~~~~~..................=ffff..............-~~~~~~~~~~~~~
+~~~~~~~~~~~~~~-...............==.fff.......hhho..-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~.............=...f......hhhh..-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~...........=....o....hh...~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~--.....==...........~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~-~-=-.-.-~-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+King of the Hill (king_of_the_hill, 104, 4 players)
+~~~~~~~~~~~~~~~~~-.-.......................-.---~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~--..............hhhhhhh..............=.~~~~~~~~~~~~~
+~~~~~~~~~~-.............o.....................==.....-~~~~~~~~~~
+~~~~~~~~~-...................................==.......-~~~~~~~~~
+~~~~~~~~~==..........fff.fff..##...........==...........~~~~~~~~
+~~~~~~~~....=.........ffffff.#............=............-~~~~~~~~
+~~~~~~~-.....==.....#..fffff###..........=..............-~~~~~~~
+~~~~~~~~.......==...#...##o##..########H#####B..........-~~~~~~~
+~~~~~~~-........==.#.......B...##.....:.....##.fff......-~~~~~~~
+~~~~~~~-..........#:............#....:......#ffff.......-~~~~~~~
+~~~~~~~..........##...:......Ah#hAA........#fffff........~~~~~~~
+~~~~~~~..........#........MAhhhh#hhAAh.....##fffff.......~~~~~~~
+~~~~~~~..h......#.........AMhhhh#hhhhAA...##...f.....hh..~~~~~~~
+~~~~~~~.hhh....#........hMhhhhh#hhhhhhM......####....hh..~~~~~~~
+~~~~~~~.hhh...0#.##.....hhhhhhh#B########o###....#...hhh.~~~~~~~
+~~~~~~~.hhh......##......MMhhohh#hohhMA.........#....hhh.~~~~~~~
+~~~~~~~..h.....ff..##B...MAMhhh##hhhMA.........#......h..~~~~~~~
+~~~~~~~.......fffffo#......MAAMh#hMAM...:.....#.........-~~~~~~~
+~~~~~~~-...o...ffff##.........hh#h........:=.#.......o...~~~~~~~
+~~~~~~~-......ffff##.....:.....o#...........#H..........-~~~~~~~
+~~~~~~~-......fff##.....::.....##..#B########.==........-~~~~~~~
+~~~~~~~~...............:.........#.#.ff.....#....=......-~~~~~~~
+~~~~~~~~.............==...........#.ffffff.B......==....~~~~~~~~
+~~~~~~~~...........==............#.ffffffff.........==.-~~~~~~~~
+~~~~~~~~~.........==............3...ff..fff..........==~~~~~~~~~
+~~~~~~~~~~......==...................................-~~~~~~~~~~
+~~~~~~~~~~~-..==........o....hhhhhh.................-~~~~~~~~~~~
+~~~~~~~~~~~~~~=.............hhhhhhhh.............-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~-~---.--.-.........--.-.---~~~~~~~~~~~~~~~~~~~
+```
+
+**AI sims** (`tools/action-balance.mjs <maps> 1,2 30`: normal AI, personalities rotate per seat, 30-minute cap). No errors, no stuck or unreachable bases, and contact on every map.
+
+| Map | Seeds | First contact (mean) | First kill | 5th kill (first battle) | Units/player @3 @6 @9 @12 @18 @24 | Army value/player @12 | Kills/player (end) | Match length | Ended | Craters @end | Field works @end |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Fortress Pass | 2 | 5:44 | 5:49 | 6:27 | 14 / 19 / 26 / 32 / 40 / 45 | 2990 | 113 | 21:16 | 2/2 | 81 | 4 |
+| Serpentine | 2 | 6:57 | 7:02 | 7:54 | 14 / 19 / 25 / 36 / 50 / - | 3493 | 77 | 20:12 | 2/2 | 80 | 3 |
+| Stepping Stones | 2 | 5:03 | 7:26 | 9:42 | 14 / 16 / 24 / 39 / 59 / - | 3908 | 51 | 19:45 | 2/2 | 107 | 1 |
+| Fjordmark | 2 | 6:14 | 7:03 | 8:35 | 14 / 17 / 25 / 41 / 55 / 47 | 3979 | 90 | 24:07 | 2/2 | 137 | 5 |
+| Twin Continents | 2 | 8:06 | 8:11 | 10:48 | 14 / 16 / 22 / 35 / 43 / 49 | 3478 | 110 | 30:00 | 0/2 | 170 | 10 |
+| Ring of Fire | 2 | 4:38 | 4:44 | 7:29 | 14 / 17 / 28 / 38 / 52 / 39 | 3868 | 144 | 25:58 | 2/2 | 148 | 0 |
+| King of the Hill | 2 | 2:56 | 2:60 | 3:47 | 14 / 15 / 20 / 27 / 49 / 68 | 2648 | 143 | 30:00 | 0/2 | 178 | 2 |
+
+- Per run:
+  - Fortress Pass: 18 and 25 min.
+  - Serpentine: 20 and 21 min.
+  - Stepping Stones: 22 and 18 min.
+  - Fjordmark: 20 and 28 min.
+  - Ring of Fire: 26 and 26 min.
+  - Twin Continents: cap and cap. At 30 min the six armies were 25–101 units, so both teams were still fighting over the isthmuses. It is the largest and most sea-locked map, like Continental Divide before W2.
+  - King of the Hill: cap and cap, with two of the four players eliminated in each run (an FFA has no decisive-domination end with two left).
+- King of the Hill has the earliest contact (about 3 min): neighbours meet at the ramp feet and the marches.
+
+**Flexible player counts**
+- **Rule.** Any catalog map plays with any format whose seat count is from 2 up to the map's `players` (its starts). Any team arrangement up to that count also works, including uneven sides with closed seats, such as 2 v 1 or humans and AI against AI.
+- **Which starts the civs take** (`actionMap.assignStarts`). The choice is deterministic and depends only on the map and the teams.
+  - When the teams fill every start the way the map was drawn, seat *i* takes start *i*. Every existing preview and test is unchanged.
+  - Otherwise every civ → start assignment is scored, and the best one wins. The score counts:
+    - **side:** on team maps, allies on one authored side and rivals on the other;
+    - **fairness:** each civ's nearest-rival distance and its reach to the 3 nearest neutral bases are equal across civs, so symmetric twins score exactly the same;
+    - **spread:** rivals as far apart as possible;
+    - **closeness:** allies next to each other.
+  - Distances are ground steps over the painted terrain, counting rivers as crossable.
+  - Results:
+    - 1v1 on Continental Divide takes the half-turn twins Cape Harrow and Cape Lorne, the opposite corners.
+    - 2v2 on Crossroads puts allies on neighbouring starts.
+    - 1 v 2 on Saltmarsh puts the lone civ on one side and the pair on the other.
+    - FFA 3 on Iron Basin takes three spread starts.
+- **Unused starts** stay as **neutral city ruins**. They are capturable like any other base, with no head start: no HQ, units or start caches. This is the same on every map.
+- `w.starts` and `sites[0..civs-1]` are the civs' capitals, as before.
+- **Simulation.** A catalog map keeps its own team size only when played exactly as drawn. Otherwise `options.teamSize` / `teamOf` apply.
+- **Server** (`matches.js`):
+  - `create` takes `format` (or `teams`) on a catalog map when it fits. A format that does not fit falls back to the map's own. `closed` seats are accepted on catalog maps.
+  - `mode` keeps a catalog map while the format fits its starts, and switches to Random only when it does not.
+  - `map` keeps the current seats when they fit, and switches to the map's own format otherwise. It no longer reopens closed seats.
+  - `closeSeat` is allowed on catalog maps.
+  - At the start, a catalog map always gets an explicit `teamOf` (`catalogTeams`).
+  - `room` gains `mapPlayers` and `mapFormat`.
+- **Client.**
+  - The map list ("Fits N") shows every map with at least as many starts as there are seats. The maps drawn for the current format come first, with a **Recommended** badge, and every row reads "2v2 · designed for 4".
+  - The card says "Designed for 2v2 · 4 starts", and "· 3 playing, spare starts stay neutral" when the map is not full.
+  - "All maps" still lists the maps that are too small; choosing one switches to its format.
+  - Changing the format keeps a map that still fits.
+  - The ✕ (skirmish) and Close (lobby) buttons now work on catalog maps.
+  - The built-in fallback list has all 17 maps.
+- **Flexible sims** (`--teams=`, seed 3, 30 min). Every run had contact by 2–11 min and no errors.
+
+  | Teams | Map | Result |
+  |---|---|---|
+  | 1v1 | King of the Hill | 13 min |
+  | 1v1 | Fortress Pass | 13 min |
+  | 1v1 | Twin Continents | 20 min |
+  | 1v1 | Continental Divide | 20 min |
+  | 1v1 | Crossroads | cap |
+  | 2 v 1 | Stepping Stones | 19 min |
+  | 2 v 1 | Fjordmark | 20 min |
+  | 2 v 1 | Iron Basin | 20 min |
+  | 2 v 1 | Saltmarsh | cap (the lone AI led, 94 units to 48) |
+  | FFA 3 | Crossroads | 22 min |
+  | FFA 3 | Iron Basin | cap |
+  | FFA 3 | Twin Continents | cap |
+  | 2v2 | King of the Hill | 20 min |
+  | 2v2 | Crossroads | 20 min |
+  | 2v2 | Continental Divide | cap |
+
+**Verified**
+- `npm test`: 304 tests, 303 pass, 0 fail, 1 skipped.
+- The new tests cover: 1v1 on a 3v3 map (symmetric twins), 2v2 on an FFA 4 map, 1v2 on a 2v2 map, FFA 3 on a six-start map, every wave 3 map as a duel, and the matching lobby rules.
+- The Unity code (Runtime, Core, Net) type-checks with dotnet: 0 errors, 0 warnings.
+
+**Not verified / risks**
+- Nothing was checked in the Unity editor: the new maps in 3D, the badge and the row widths in the picker.
+- The preview still draws every authored start in its designed team colour, including spare ones.
+- With 2 seeds per map, the balance numbers are thin.
+- Twin Continents and King of the Hill reached the 30-minute cap in both designed runs.
+- An uneven side on a small map, such as 2 v 1 on a 1v1-sized map, is impossible by rule: seats can never exceed starts.
+
+## Verification (pre-release 3)
+
+Played in the Unity editor (play mode, local server on :8093, then PlayerPrefs `se.server` restored to `wss://game.liamhosfeld.com/ws`). Screenshots (1280×720) in `D:/Projects/se_scratch/verify/`.
+
+**Checked, working**
+- Compile: 0 errors (3 old warnings). Windows player graphics APIs: Direct3D11, then Direct3D12, automatic off.
+- Controls: Settings › Controls lists W/S/A/D for the four pan actions (`01_settings_controls_wasd.png`). In a match, injected D and Left Arrow keys panned the camera. No other action uses W, A, S or D. With the Join by code field focused, `InputFacade.Typing` is true, so no game key fires.
+- UI transitions: the menu page cross-fade (root, Skirmish, Settings, Lobby), the settings rows stagger, the HUD enters after the descent, the selection panel appears, the build wheel blooms and the dock button highlights, and the pause menu dims and pops in with its pages cross-fading. Nothing was left invisible or unclickable. The console showed no errors. Reduce UI motion adds and removes `.se-calm` on the panel root, and with it the wheel and the panels appear at once.
+- Flak (`06a`–`06d`): a burst is a bright flash with a short spray. A faint charcoal puff is visible at 1 s and almost gone at 3 s. After the sandbox `air` battle, no smoke stayed in the sky.
+- Maps:
+  - Fortress Pass, Twin Continents (1v1), Stepping Stones (1v2: 2v2 with one seat closed) and Ring of Fire (FFA 3) all started and rendered correctly: oceans, causeways, islands and chokepoints (`03`, `05`).
+  - The 1v1 on Twin Continents used the opposite corners. In the 1v2, the lone civ was alone on its side and the pair took the other side.
+  - The skirmish and lobby map lists show every fitting map, with Recommended and "designed for N" badges, and no row is cut off.
+- Steam lobby page (`07_lobby_steam_friends.png`): the Invite Steam friends section, Copy match code, the explanation line and a friend row with Invite all draw cleanly. Steam initialised in the editor (D3D11).
+
+**Fixed**
+- **Spare starts in the map preview.** The preview now draws the starts the match will really use, in each civ's team colour. Spare starts are hollow grey rings (`02`, `08`).
+  - The server's `assignStarts` is split into `startMetrics` (ground steps between starts, and each start's reach to neutral bases) and `chooseStarts`.
+  - `mapPreview` publishes `startSteps` and `startReach`, and `mapPreviews.js` was regenerated. Terrain cells are unchanged; checked against the wave 3 sketches.
+  - `MapPreview.SeatStarts` is a straight port of `chooseStarts`. The skirmish closed-seat mask now also applies to catalog maps.
+  - In 9 configurations, the preview's pick matched the real match exactly.
+  - An older server without these metrics draws every start as a spare ring when fewer seats play.
+- **Peaks were flat snow tables.** On the wave 3 walls, the broad peak blocks drew as flat white slabs (`04a`).
+  - Authored maps now raise peaks with their distance from lower ground, only from the second ring inward, so classes, routes and previews are unchanged.
+  - The client's peak relief grows with the hex's own height, up to +1.1 at the top.
+  - The ranges now read as rugged massifs (`04b`).
+  - This also slightly roughens high procedural peaks.
+- **Empty lobby frame over a skirmish start.** A skirmish is seated in a lobby for an instant before it starts, and with the menu fade this flashed an empty lobby frame over the descent. The "joined lobby" page is now shown only for lobby modes (`GameBootstrap.OnOther`).
+- **Loading card left on screen after a reconnect.** The early return in `OnWelcomed` for a reconnect now also closes the loading card.
+- **Menu section labels.** "Every AI", "Victory" and "Starting resources" lost their descenders (18 px box): 20 px, with no vertical padding.
+- **Lobby friend row.** The Invite button read "In…": the button is now 136 px. The Steam note no longer says "Steam lobby open" twice.
+
+**Build**
+- "Shattered Empires/Build Windows x64": `build Succeeded: 286 MB, 0 errors, 93 s -> Build/Windows/ShatteredEmpires.exe`.
+- I started the exe outside Steam. Player.log shows `Direct3D 11.0 [level 11.1]`, `[Steam] SteamAPI.InitEx = k_ESteamAPIInitResult_OK`, the platform registered, `RunCallbacks` pumping, and `overlay enabled (after start-up) True`. Then I closed the game.
+- `npm test`: 304 tests, 303 pass, 0 fail, 1 skipped; the load test passes.
+
+**Still open**
+- Not seen in play: Serpentine, Fjordmark and King of the Hill in 3D (King of the Hill only in the lobby preview). The previews and tests are fine.
+- The flash of a flak burst reads almost white rather than gold at close zoom.
+- The cloud server needs a deploy for the new maps, the peak heights and the preview metrics.
+- The two-PC Steam invite test is still pending.
+- Spectating your own running match from inside it (a developer-only path) briefly showed stale selection and base footprints.
+
+## 2026-11-17: Ring of influence for defenses, lighter combat and industry smoke
+
+**Ring of influence (server `DEFENSE_INFLUENCE` in `actionDefinitions.js`: reach 8, factor 2)**
+- Defensive structures (`def.defense`, meaning armed or a barricade) can now be placed on your own territory or on neutral ground. That covers the barricade, watchtower, bunker, anti-armor emplacement, AA battery, artillery emplacement and outpost.
+- Defenses are still refused in another player's territory, on protected city and base sites, and on ground that is not visible, blocked or not level. The refusal reads "In another player's territory" (code `territory`).
+- The radar post, repair station and New Base, plus trenches and roads, stay territory-only.
+- The ring of influence is your territory plus 8 hexes beyond its border. Inside the ring a defense costs its list price. Outside it, the defense costs ×2.
+- How it works:
+  - `actionBases.influenceRing` runs a BFS from every owned hex, capped at 9 and cached per civ per tick, and only when a placement asks.
+  - `placeableBy` holds the ground rule. `fieldCost` gives the price.
+  - The `fieldPreview` reply carries the surcharged `cost` plus `surcharge` and `note` ("Outside your influence: ×2 cost").
+  - A refusal for lack of funds names the surcharge (code `influence`).
+- The AI is unchanged apart from a price check: its emergency watchtower or turret is still placed about 3 hexes out from a base under attack (every 35 s at most) and only at list price. It never pays the surcharge, so it cannot scatter far-flung towers.
+- Client:
+  - Field placement validity is judged entirely by the server preview, so neutral ground shows as valid with no client change.
+  - The tool chip shows the server's quote and reason in the warning colour (`Hud.DefenseBar`, `Commander.FieldPreviewCost/Note`).
+  - The build wheel describes the defense rule and gives "Your land or neutral ground" as the placement hint; the Build tooltip and refusal text were updated (`Hud.Base`, `Hud.Tooltips`, `Commander.Markers`).
+- Tests:
+  - `test/action-influence.test.js` (5): defense flags, ring distances and cache, list price on own and neutral ground in the ring, ×2 beyond it as quoted and charged, enemy land refused, and the funds refusal.
+  - `action-bases-2026-11` now asserts that defenses may use neutral ground while the radar post, repair station and New Base may not.
+
+**Smoke pass (client effects, roughly half the smoke volume; flashes, debris, sparks and flames unchanged; flak air burst left as it was)**
+- Explosion and shell impact: 7 smoke puffs living 1.8–3.6 s (was 10 living 2.5–5 s). The big-blast column has 3 puffs, 5–8.5 s, alpha .36 (was 4, 7–12 s, .42). The dust skirt has 6 puffs at alpha .38 (was 8 at .45).
+- Heavy muzzle puff: 1.1 s at alpha .24 (was 1.6 s at .35). Damaged-vehicle trail: 1.6 s at .32 (was 2.2 s at .42).
+- Fire smoke column (burning buildings and wrecks): 2.3–3.3 s at alpha .19 (was 3.3–4.7 s at .26).
+- Industry (`Smoke`, also damaged-building breaches):
+  - Soot: 3.5–4.9 s at alpha .24, with growth .55 (was 5–7 s at .32, growth .7).
+  - Steam: 2.2–3.3 s at alpha .38 (was 3–4.5 s at .5).
+- Destruction:
+  - Collapse dust ring: 7 + 10r puffs, 2.6–4.4 s (was 10 + 14r, 3.5–6 s).
+  - Storey dust: 3 + 4r puffs, 3.5–6.5 s (was 4 + 6r, 5–9 s).
+  - Ruin smoke emitter: a puff every .42–.62 s living 6.5–9.5 s (was every .3–.45 s, 9–13 s).
+  - Wreck plume: puffs on about 65% of beats, 4.5–6.5 s (was every beat, 6–9 s).
+  - Cook-off: 2 smoke puffs, 3–4.5 s (was 3, 4–6 s).
+  - Wreck spawn: 2 puffs, 4.5 s (was 3, 6 s).
+- Not seen in play yet (Unity MCP disconnected). The type-check build is clean.
+
+**Camera key scheme (Settings › Controls › Camera keys: Arrow keys / WASD; default Arrow keys)**
+- There are now two complete default key sets (`InputFacade.ActionDef.Default` is the Arrow set and `.Wasd` is the WASD override):
+  - Arrow keys: the arrows pan. Orders use their natural letters: A attack move, S stance, W withdraw. D is free.
+  - WASD: W/A/S/D pan. Attack move, stance and withdraw move to F, V and X. Every other key is the same in both sets.
+- The arrow keys always pan as a fixed extra (`InputFacade.PanHeld`), unless the player binds an arrow to an order. `RtsCamera` no longer hard-wires them.
+- Switching sets (`InputFacade.SetWasdScheme`):
+  - The pan keys always follow the chosen set.
+  - Other custom binds are kept, unless their key is now a default of another action in the new set. Those binds reset, and the Settings note names them.
+  - The key list refreshes in place.
+- Rebinding an action to its set default clears the custom bind, so it follows later switches. "Restore defaults" on the Controls tab returns to the Arrow set.
+- Binding version 4 migration:
+  - Players with no custom binds land on the Arrow set.
+  - A v3 player who had custom binds keeps the WASD set, so their layout does not change.
+- The setting is persisted as `GameSettings.WasdCameraKeys`.
+- Help text shows the keys actually bound, via `InputFacade.Expand("{attack}")`, `KeyLabel` and `PanKeysText`. This covers the field guide, tooltips, tutorial steps, wheel key hints (including the base-upgrade U) and the legacy order buttons.
+
+**Terrain works as paint brushes**
+- Server, `terrain` command: `{op, points:[{x,z}…≤72], radius 0..2}` paints every hex within the radius of the stroke (`terrainStroke`).
+  - The stroke's points are joined by hex lines, so a fast drag leaves no gaps.
+  - The footprint is deduplicated and capped at 60 hexes (`TERRAIN_WORKS.maxHexes`).
+  - Each hex is validated: own territory, visible, open dry ground (not water, mountains, base or parcel tiles, structures or trenches), and not already being reshaped.
+  - Refused hexes are skipped and listed in `refused`. If none are left, the order is refused with the matching reason and code (territory / hidden / ground / busy).
+- Cost is 60 Materials per 7 hexes (minimum 10). Time is 6 s per 7 hexes.
+- Engineers walk the stroke step by step (`terrainWorkPoint`) and reshape it as they go (`advanceTerrain`).
+  - Raise and lower ease from a full step on the stroke to half a step at the brush edge.
+  - Flatten levels to the height of the stroke's first hex.
+- The preview reply carries `tiles`, `refused`, `cost`, `seconds`, `radius`, `truncated` and `afford`.
+- The legacy single-`point` order is unchanged: 7 hexes, flat 60 Materials, and refused as a whole on overlap.
+- Client (`Commander.Terrain.cs`):
+  - After you pick an op, the brush footprint follows the cursor and is previewed per hex.
+  - Drag to paint. The footprint shows green (accepted), red (skipped) or amber (not yet checked), with the stroke marked.
+  - [ and ] (rebindable) or Ctrl + wheel set the brush size. Ctrl + wheel does not zoom while the brush is armed (`RtsCamera.BrushScroll`).
+  - Releasing sends one order. Shift keeps the tool armed; right-click drops the stroke or cancels; Escape cancels.
+  - The tool chip shows the previewed cost, hexes, skipped hexes, time and the size keys. The refusal reason follows the cursor.
+  - The wheel details, dock tooltip and field guide were updated.
+- Tests: `test/action-terrain-brush.test.js` (4) covers the stroke footprint, preview, cost scaling, clamping, territory refusal, the per-hex charge, busy ground, the engineers finishing the stroke, and legacy compatibility.
+- Not playtested yet. The Unity compile is clean and `npm test` passes (320, 1 skipped).
+
+### Release automation and in-app updater (2026-11-17)
+
+**Added**
+- **`tools/release.ps1`: one-command release** (PowerShell 5.1). Usage is in [RELEASING.md](RELEASING.md).
+  - Switches: `-Server`, `-Client`, `-DryRun`, `-PackageOnly`, `-SkipBuild`, `-SkipTests`, `-Version`, `-AllowDirty`, `-Force`, `-FullVerify`, `-PushBranch`, `-GcloudConfig` (default `%LOCALAPPDATA%\se-gcloud`).
+  - **Checks:** the key files are ignored, untracked and unstaged, and absent from `gcloud meta list-files-for-upload`. The shipped files must equal HEAD. Then `npm test`.
+  - **Server:** Cloud Build with status polling, then the Cloud Run deploy with `APP_VERSION`. It waits until `/api/health` reports the new sha.
+  - **Client:**
+    - Runs a Unity batch build when the editor is closed (`SE.EditorTools.BuildScript.BuildWindows -buildId <sha>`). Otherwise it uses the existing build.
+    - Stages the build without the `*DoNotShip*` folders, stamps it and zips it with `/` separators.
+    - Uploads the ZIP and checks its size.
+    - Merges the manifest, keeping the other entries.
+    - Checks `/api/downloads` and `/download/file/<name>`.
+  - Each step is skipped when already done, so a re-run is safe.
+  - Tested with `-DryRun` (server and client) and `-PackageOnly` only (a 139 MB ZIP in the scratchpad). Nothing was deployed or uploaded.
+- **In-app updater** (`Runtime/App/Updater.cs`, `Runtime/UI/UpdateBanner.cs`). On startup, stamped Windows player builds check `/api/downloads`.
+  - **Banner:** "Update available — Update now / Later" above the main-menu footer.
+  - **Download:** to `persistentDataPath/Updates`, with progress and Cancel. The size and SHA-256 are checked, then the ZIP is extracted to staging.
+  - **Swap:** a runtime `.cmd` helper waits for the game to exit, backs up the replaced files, copies the new build over the install folder (it mirrors only `_Data`), restores the backup on failure and relaunches the game.
+  - **Failures:** no network shows nothing. A read-only install folder or a damaged download shows a message with a link to the download page.
+  - Settings (Interface) has a new "Check for updates on startup" toggle. `-noUpdateCheck` turns the check off. The editor never checks.
+  - The helper's batch logic was tested on a fake install folder: a user file was kept, stale `_Data` was removed, the backup was made, the game was relaunched and the helper deleted itself.
+- **Build stamp.** `BuildScript` now writes `build_id.txt` (`build=`, `version=`, `date=`) next to the exe. The menu footer shows the build.
+
+**Fixed**
+- **`tools/publish-downloads.mjs` failed on Windows.** It now starts `gcloud.cmd` through `cmd.exe` and keeps the other manifest entries.
+
+**Still open**
+- **The first updater-enabled ZIP must be installed by hand.** The current build e298c4a has no stamp and no updater.
+- **No real update has run yet.** The end-to-end in-game update (download → swap → relaunch) needs two published stamped builds.
+
+### Map builder (2026-11-17)
+
+**Added**
+- **Map builder page** (`Runtime/UI/MapBuilder.cs`, `Runtime/UI/MainMenu.Builder.cs`; styles `.se-builder-*` in `SE.Menu.uss`). You can open it from three places: the root menu, New Skirmish › Battlefield and the lobby host's rules.
+  - **Canvas:** a 64 × 64 paint grid over the whole world (drawn 1.1547 : 1). The default is all land inside an ocean border.
+  - **Tools:** Land, Ocean and Mountain brushes in four sizes; Place base and Remove base (2 to 8 bases, never in the sea, kept apart); map size (Small, Standard, Large, Huge); a name; Undo (also Ctrl+Z) and Clear.
+  - **Saving:** four save slots plus the last sketch used, as JSON in `persistentDataPath/map_sketches` (all file access is in try/catch).
+  - **Use:** in New Skirmish the sketch becomes the map "custom". In a lobby it is sent to the server, and every client draws the preview from the room's copy. The preview reuses `MapPicker`/`MapPreview` with a client-built preview grid. It also seats a format with fewer players than bases exactly as the server does: `MapSketch.Metrics` is a port of `sketchMetrics`.
+- **Server: `custom` map** (`server/sim/sketchMaps.js`).
+  - **Format:** a compact payload `{ v, name, size, w, h, cells: run-length "o130l60m4…", bases: [[u, v]…] }`.
+  - **Validation:** `parseSketch` validates and canonicalises it. The grid must be 16 to 128 a side; only known sizes; runs must add up exactly; at least 8% land; 2 to 8 bases, on the map and not in the sea; the name is cleaned and cut to 32 characters. Bad payloads are refused with a "Map sketch: …" error.
+  - **Generation:** `paintSketchWorld` blurs the classes into soft land and mountain fields and samples them per hex, with noise-warped coasts and beaches. Lowland gets swells and knolls; foothills rise into the painted ranges, with peaks only in their hearts. Then the normal pipeline runs: `World.finishTerrain` (split out of `generate`, unchanged for procedural worlds) for climate, rivers and lakes, forests and resources.
+  - **Rivers:** `World.flowScale` thins rivers on broad painted land.
+  - **Bases:** `buildActionMap` takes the nearest city site for each base and places neutral cities, outposts and roads around them as usual. Coast compaction is skipped. `chooseStarts` over the sketch metrics seats the civs; spare bases stay neutral cities.
+  - **Determinism:** the world seed drives the noise, so one seed gives one world.
+- **Lobby and match options** (`server/matches.js`).
+  - `create { map: 'custom', sketch }` and the lobby message `{ t: 'map', map: 'custom', sketch }` are accepted.
+  - The room message carries `sketch`, and the sketch name is the map name.
+  - Any format up to the number of bases fits. A format that does not fit falls back to a random world, as catalog maps do.
+  - The sketch is passed to the worker and kept in the saved match meta.
+- **Tests:** `test/map-builder.test.js` has 8 tests. They cover the encoding round-trip, canonicalisation, 27 bad payloads, metrics and preview, and class fidelity: more than 90% overall and more than 85% for each class; about 98% in practice. They also check that bases become starts and each civ holds its start, that spare bases stay neutral, determinism per seed, and lobby and skirmish creation. `npm test`: 320 pass, 1 skipped.
+
+**Unverified**
+- The builder UI has not been run in Unity. It type-checks with the dotnet check project, but painting, pointer capture inside the menu scroll view, and the layout at 880 px wide are untested.
+- A sketch that passes validation can still fail generation in the worker ("no room for base N", for example with a tiny landmass). No error is shown in the lobby before the match starts. Fuzz cases (a tiny blob with 8 bases, islands, mostly mountains, noise) all generated.
+
+## Verification (pre-release 4)
+
+Played in the Unity editor (play mode at 1280×720, local server on :8093). Mouse and keys were injected through the Input System, so clicks, drags and pointer capture went through the real UI. Afterwards the server was stopped and PlayerPrefs `se.server` was set back to `wss://game.liamhosfeld.com/ws`; the camera scheme was left on Arrow keys. Screenshots are in `D:/Projects/se_scratch/verify4/`.
+
+**Checked, working**
+- Compile: 0 errors. Every new file has its `.meta`.
+- **Map builder** (`02`–`10`):
+  - It opens from the root menu, from New Skirmish › Battlefield and from the lobby host's map list.
+  - All three brushes paint, at S, M, L and XL. A stroke keeps painting when the pointer leaves the canvas (pointer capture inside the menu scroll view).
+  - Place base and Remove base work. A click in the sea says "Bases stand on land".
+  - Undo works (button), as do Clear, and Save and Load on slot 1 (`persistentDataPath/map_sketches`).
+  - "Use in New Skirmish" selects the sketch. The preview shows a 1v1 on a sketch with 4 bases (two team-coloured starts, two spare rings).
+  - "Use in lobby" draws the preview of a 2v2 in the lobby (`15`).
+- **Custom map in 3D** (`12`, `13`): the painted channel became open sea between two continents with natural beaches. The painted range stands as a snowy ridge with foothills, running out to the north coast. The player started on the painted base. Spare bases were neutral cities, and neutral cities, outposts and roads filled both continents.
+- **Start failure** (`16`, `18`):
+  - A lobby whose sketch cannot be generated comes back to the lobby: seats, closed seats and the map are kept, and the status line shows "The match could not start: This custom map has too little open land for its bases: paint broader landmasses."
+  - A skirmish with that sketch returns to the main menu with the same reason.
+- **Camera keys** (`19`, `20`):
+  - In the Arrow scheme, Right Arrow panned the camera, D did nothing, and A/S/W are attack, stance and withdraw.
+  - Settings › Controls › WASD refreshed the key list in place (W/S/A/D pan; attack F, stance V, withdraw X), and A then panned.
+  - In WASD, attack and flip are both F. That is fine: `OrderKeys` returns while a battle line is drawn.
+- **Terrain brush** (`22`–`25`):
+  - Raise from the wheel, then ] for size 3, then a drag: the footprint previews green (accepted, own territory) and red (skipped, outside). The chip reads "86 Materials · 10 hexes (19 skipped) · 9s · [ ] size 3".
+  - On release, 86 Materials were charged and an engineer walked out to the stroke.
+- **Ring of influence** (`29`, `30`): a Watchtower on neutral ground just outside the border is quoted at its list price (100/15). Far out (sandbox, where everything is visible) it is quoted at 200/30 with "Outside your influence: ×2 cost" in the warning colour.
+- **Smoke** (`31`, `32`): in the sandbox battle, the plumes are thinner and shorter-lived, and impacts still read with flash, fire, craters and debris.
+- **Updater:** the editor logs `[updater] off: editor`. The main-menu footer shows `v1.0 · Windows preview`, and no banner appears in the editor.
+
+**Fixed**
+- **Bases on a second continent or an island.** The sketch generator took city sites only from the largest landmass, so a base painted on a smaller continent started on the large one. On the test sketch, both 1v1 starts were on the southern continent. `buildActionMap` now takes candidates from every landmass for a sketch (procedural worlds are unchanged). Test: "bases on two continents split by a sea…", which fails without the fix.
+- **A sketch that validates but cannot be generated.**
+  - `MatchManager.start` remembers the lobby state.
+  - When the worker throws before it is ready, `startFailed` takes over:
+    - a lobby returns to `lobby` with its seats, closed seats, `teamOf` and team size restored, every member gets `{t:'error', startFailed}`, and the room is resent;
+    - a skirmish, exhibition or sandbox is removed and its player gets `lobbyClosed` with the reason.
+  - The client now returns a solo match to the root menu instead of the Multiplayer page.
+  - The custom-map refusal now reads "This custom map has too little open land for its bases: paint broader landmasses."
+  - Test: "a sketch that fails generation returns the lobby…" (real worker).
+- **Map builder layout.** "Standard" in Map size was cut to "Stand…" (options are now 80 px). The help text is now a wrapping note instead of one cut line. The skirmish status reads "Map builder sketch in use: <name>" instead of "Custom map: Custom map".
+- **Wheel hub text.** The centre's detail and reason were centred vertically, so a long text was cut at both ends ("territory: drag a brush…"). They are now top-aligned, so only the end can be clipped. The terrain wheel's details are shorter, and "Cost per 7 hexes" moved to the reason line.
+
+**Build**
+- "Shattered Empires/Build Windows x64": `build Succeeded: 286 MB, 0 errors, 34 s -> Build/Windows/ShatteredEmpires.exe`. `build_id.txt` was written next to the exe (`build=e298c4a`, `version=` empty from the menu, `date=…`). The stamp is HEAD, and the working tree is uncommitted.
+- The exe started twice. Player.log shows `Direct3D 11.0 [level 11.1]`, `SteamAPI.InitEx = k_ESteamAPIInitResult_OK`, the Steam platform registered, and `overlay enabled (after start-up) True`. The menu drew. I closed the game both times.
+- `npm test`: 323 tests, 322 pass, 0 fail, 1 skipped; the load test passes.
+
+**Still open**
+- Both times the built exe started, Steam's overlay opened a "Choose Friend to Invite" dialog over the menu (Player.log: `[Steam] overlay opened` right after start-up). Neither the game nor the editor logged an `ActivateGameOverlayInviteDialog` call. It may be Steam re-showing a pending request for app 480 from the editor sessions, but check it on a clean start and with the real app ID.
+- Ctrl+Z in the builder could not be checked: injected keys do not reach UI Toolkit key events. The Undo button works.
+- The raised ground after a terrain stroke was not confirmed by eye, only the order, the charge and the engineer's walk. Server tests cover the reshaping.
+- Factory and industry smoke was not looked at separately, only combat, wreck and fire smoke.
+- A wheel detail longer than about three lines is still clipped at its end. The build wheel's defense texts with the influence sentence are the longest.
+- The cloud server needs a deploy for the sketch fixes (start failure, bases on other landmasses).

@@ -3,6 +3,8 @@
 // match length, kills, the no-man's-land (craters, wrecks, field works) and per-unit-type results.
 // Usage: node tools/action-balance.mjs [maps=all|id,id] [seeds=1,2,3] [minutes=30] [--out=file.json] [--workers=N]
 //   difficulty and personalities: --difficulty=normal, personalities rotate warlord/merchant/builder per seat.
+//   --teams=0,1 plays every map with those teams instead of the ones it was drawn for (fewer players, other
+//   sides: actionMap.assignStarts seats them), e.g. --teams=0,1 for duels or --teams=0,0,1 for 2 v 1.
 import fs from 'node:fs';
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -15,6 +17,7 @@ const maps = mapsArg === 'all' ? MAP_CATALOG : MAP_CATALOG.filter((m) => mapsArg
 const seeds = seedsArg.split(',').map(Number);
 const minutes = Number(minutesArg);
 const difficulty = flags.difficulty || 'normal';
+const teamOf = flags.teams ? String(flags.teams).split(',').map(Number) : null;
 const poolSize = Math.max(1, Number(flags.workers) || Math.max(1, os.cpus().length - 1));
 
 const RUN = `
@@ -23,8 +26,8 @@ globalThis.SE_MAP_SIZE = job.size; globalThis.SE_WRAP = false;
 const { ActionGame } = await import(job.sim + 'actionGame.js');
 const { ACTION_UNITS } = await import(job.sim + 'actionDefinitions.js');
 const P = ['warlord', 'merchant', 'builder'];
-const slots = Array.from({ length: job.players }, (_, i) => ({ human: false, difficulty: job.difficulty, personality: P[(i + job.seed) % 3] }));
-const g = new ActionGame({ id: 'bal-' + job.id + '-' + job.seed, seed: job.seed, map: job.id, slots });
+const slots = Array.from({ length: job.teamOf ? job.teamOf.length : job.players }, (_, i) => ({ human: false, difficulty: job.difficulty, personality: P[(i + job.seed) % 3] }));
+const g = new ActionGame({ id: 'bal-' + job.id + '-' + job.seed, seed: job.seed, map: job.id, slots, ...(job.teamOf ? { teamOf: job.teamOf, teamSize: Math.max(...job.teamOf.map((t) => job.teamOf.filter((x) => x === t).length)) } : {}) });
 const value = (type) => { const c = ACTION_UNITS[type]?.cost || {}; return (c.materials || 0) + (c.energy || 0); };
 const byType = {};
 const T = (type) => (byType[type] ??= { built: 0, lost: 0, kills: 0, killValue: 0, damage: 0, lostValue: 0 });
@@ -87,7 +90,7 @@ function run(job) {
 }
 
 const jobs = [];
-for (const def of maps) for (const seed of seeds) jobs.push({ id: def.id, size: def.size, players: def.players, teamSize: def.teamSize, seed, minutes, difficulty, sim: SIM });
+for (const def of maps) for (const seed of seeds) jobs.push({ id: def.id, size: def.size, players: teamOf ? teamOf.length : def.players, teamSize: def.teamSize, teamOf, seed, minutes, difficulty, sim: SIM });
 const results = [];
 let next = 0;
 await Promise.all(Array.from({ length: Math.min(poolSize, jobs.length) }, async () => {
@@ -100,7 +103,7 @@ await Promise.all(Array.from({ length: Math.min(poolSize, jobs.length) }, async 
   }
 }));
 
-function fmt(t) { return t == null || !Number.isFinite(t) ? '-' : `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`; }
+function fmt(t) { if (t == null || !Number.isFinite(t)) return '-'; const s = Math.round(t); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN);
 const at = (r, minute) => r.samples?.find((s) => s.t >= minute * 60) || null;
 const lines = [];

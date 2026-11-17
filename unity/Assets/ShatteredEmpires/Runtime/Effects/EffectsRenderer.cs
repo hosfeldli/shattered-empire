@@ -136,11 +136,12 @@ namespace SE.Runtime.Effects
                 var v = new float3(R() - 0.5f, R() * 0.8f + 0.2f, R() - 0.5f) * 0.9f * scale;
                 Emit(p + new float3(0, 0.04f, 0), v, 0.13f * scale, 0.5f * scale, 0.35f + R() * 0.25f, new float3(1f, 0.6f, 0.2f), new float3(0.5f, 0.12f, 0.04f), 0.9f, true, 1.5f, 3f);
             }
-            for (int k = 0; k < n + 3; k++)
+            // smoke pass (2026-11-17): 7 puffs living 1.8-3.6 s (was n + 3 = 10 living 2.5-5 s), about half the smoke
+            for (int k = 0; k < n; k++)
             {
                 var v = new float3(R() - 0.5f, R() * 0.5f + 0.3f, R() - 0.5f) * 0.45f * scale;
                 float g = R() * 0.07f;   // final pass: dusty grey-brown, not dark (heavy barrages stacked it into a black sheet)
-                Emit(p + new float3(0, 0.05f, 0), v, 0.15f * scale, 0.35f * scale, 2.5f + R() * 2.5f, new float3(0.47f + g, 0.42f + g, 0.35f + g), new float3(0.64f, 0.6f, 0.53f), 0.5f, false, 0, 1.2f, 0.12f);
+                Emit(p + new float3(0, 0.05f, 0), v, 0.15f * scale, 0.35f * scale, 1.8f + R() * 1.8f, new float3(0.47f + g, 0.42f + g, 0.35f + g), new float3(0.64f, 0.6f, 0.53f), 0.5f, false, 0, 1.2f, 0.12f);
             }
             for (int k = 0; k < n; k++)
             {
@@ -163,17 +164,18 @@ namespace SE.Runtime.Effects
             if (scale > .6f)
             {
                 // A lingering smoke column that drifts with the wind, and a low dust skirt rolling outward.
-                for (int k = 0; k < 4; k++)
+                // smoke pass: 3 column puffs living 5-8.5 s at .36 alpha (was 4 living 7-12 s at .42)
+                for (int k = 0; k < 3; k++)
                 {
                     float g = .40f + R() * .07f;   // dusty grey-brown column (was .07-.13: near-black)
                     Emit(p + new float3((R() - .5f) * .08f * scale, .1f * scale + k * .07f * scale, (R() - .5f) * .08f * scale), new float3(0, .12f + R() * .08f, 0) * scale,
-                        .22f * scale, .30f * scale, 7f + R() * 5f, new float3(g, g * .92f, g * .8f), new float3(.6f, .57f, .52f), .42f, false, 0, .35f, .05f);
+                        .22f * scale, .30f * scale, 5f + R() * 3.5f, new float3(g, g * .92f, g * .8f), new float3(.6f, .57f, .52f), .36f, false, 0, .35f, .05f);
                 }
-                for (int k = 0; k < 8; k++)
+                for (int k = 0; k < 6; k++)   // smoke pass: 6 skirt puffs at .38 alpha (was 8 at .45)
                 {
-                    float a = k / 8f * 6.283f + R() * .4f;
+                    float a = k / 6f * 6.283f + R() * .4f;
                     Emit(p + new float3(0, .02f, 0), new float3(math.cos(a), .03f, math.sin(a)) * .55f * scale, .10f * scale, .32f * scale, 1.8f + R(),
-                        new float3(.42f, .38f, .32f), new float3(.52f, .49f, .45f), .45f, false, 0, 1.6f, .01f);
+                        new float3(.42f, .38f, .32f), new float3(.52f, .49f, .45f), .38f, false, 0, 1.6f, .01f);
                 }
             }
             if (scale > .48f) GroundShock(p, scale * 1.65f, .65f + scale * .24f);
@@ -195,7 +197,8 @@ namespace SE.Runtime.Effects
             var forward = math.normalizesafe(direction,new float3(0,0,1));
             Emit(p + forward * (heavy ? .025f : .008f),float3.zero,heavy ? .022f : .008f,0,heavy ? .07f : .045f,
                 new float3(1,.79f,.37f),new float3(.85f,.24f,.035f),.95f,true,1.0f,0,0,Streak,forward * (heavy ? .15f : .055f));
-            if (heavy) Emit(p, new float3(0, 0.1f, 0), 0.09f, 0.4f, 1.6f, new float3(0.5f, 0.5f, 0.48f), new float3(0.62f, 0.62f, 0.6f), 0.35f, false, 0, 1f, 0.05f);
+            // smoke pass: the heavy-gun puff lives 1.1 s at .24 alpha (was 1.6 s at .35)
+            if (heavy) Emit(p, new float3(0, 0.1f, 0), 0.09f, 0.4f, 1.1f, new float3(0.5f, 0.5f, 0.48f), new float3(0.62f, 0.62f, 0.6f), 0.24f, false, 0, 1f, 0.05f);
         }
 
         /// <summary>A tracer or shell streak flying from a to b.</summary>
@@ -229,7 +232,7 @@ namespace SE.Runtime.Effects
             }
             float g = R() * 0.06f;
             Emit(p + new float3(0, size * .7f, 0), Wind * .07f + new float3((R() - .5f) * .05f, .20f, (R() - .5f) * .05f),
-                size * .42f, size * .55f, 3.3f + R() * 1.4f, new float3(.27f + g, .255f + g, .24f + g), new float3(.5f, .49f, .47f), .26f, false, 0, .35f, .055f);   // final pass: lighter again, many fires still stacked into black   // Review V: overlapping columns read as a black sheet at .08 / .46
+                size * .42f, size * .55f, 2.3f + R() * 1.0f, new float3(.27f + g, .255f + g, .24f + g), new float3(.5f, .49f, .47f), .19f, false, 0, .35f, .055f);   // smoke pass: 2.3-3.3 s at .19 (was 3.3-4.7 s at .26)   // final pass: lighter again, many fires still stacked into black   // Review V: overlapping columns read as a black sheet at .08 / .46
         }
 
         /// <summary>
@@ -264,13 +267,15 @@ namespace SE.Runtime.Effects
         /// </summary>
         public void Smoke(float3 p, float3 windMap, bool steam, float size)
         {
+            // smoke pass (2026-11-17): steam 2.2-3.3 s at .38 (was 3-4.5 s at .5); soot 3.5-4.9 s at .24 and a
+            // slower spread (was 5-7 s at .32): about half the haze over working industry and smouldering ruins
             float g = R() * 0.08f;
             if (steam)
-                Emit(p + new float3(R() - 0.5f, 0, R() - 0.5f) * size * 0.4f, new float3(windMap.x * 0.25f, 0.35f + R() * 0.15f, windMap.z * 0.25f), size * 0.5f, size * 0.9f, 3f + R() * 1.5f,
-                    new float3(0.92f, 0.92f, 0.9f), new float3(0.85f, 0.86f, 0.88f), 0.5f, false, 0, 0.6f, 0.05f);
+                Emit(p + new float3(R() - 0.5f, 0, R() - 0.5f) * size * 0.4f, new float3(windMap.x * 0.25f, 0.35f + R() * 0.15f, windMap.z * 0.25f), size * 0.5f, size * 0.9f, 2.2f + R() * 1.1f,
+                    new float3(0.92f, 0.92f, 0.9f), new float3(0.85f, 0.86f, 0.88f), 0.38f, false, 0, 0.6f, 0.05f);
             else
-                Emit(p, new float3(windMap.x * 0.3f, 0.3f + R() * 0.1f, windMap.z * 0.3f), size * 0.25f, size * 0.7f, 5f + R() * 2f,
-                    new float3(0.22f + g, 0.21f + g, 0.20f + g), new float3(0.46f, 0.45f, 0.44f), 0.32f, false, 0, 0.3f, 0.04f);
+                Emit(p, new float3(windMap.x * 0.3f, 0.3f + R() * 0.1f, windMap.z * 0.3f), size * 0.25f, size * 0.55f, 3.5f + R() * 1.4f,
+                    new float3(0.22f + g, 0.21f + g, 0.20f + g), new float3(0.46f, 0.45f, 0.44f), 0.24f, false, 0, 0.3f, 0.04f);
         }
 
         // ------------------------------------------------------------------ weather
@@ -302,7 +307,7 @@ namespace SE.Runtime.Effects
             var d = InstanceData.TRS(MapSpace.W(p), MapSpace.Yaw(yaw), new float3(scale), new float4(0.34f, 0.32f, 0.29f, 0));
             if (wrecks.Count < MaxWrecks) wrecks.Add(d);
             else { wrecks.Data[wreckHead] = d; wreckHead = (wreckHead + 1) % MaxWrecks; wrecks.MarkDirty(); }
-            for (int k = 0; k < 3; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 6f, new float3(0.2f, 0.19f, 0.18f), new float3(0.4f, 0.39f, 0.37f), 0.45f, false, 0, 0.4f, 0.06f);
+            for (int k = 0; k < 2; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 4.5f, new float3(0.2f, 0.19f, 0.18f), new float3(0.4f, 0.39f, 0.37f), 0.45f, false, 0, 0.4f, 0.06f);
             Scorch(p, scale * 1.3f);
             AddEmitter(p + new float3(0, .04f, 0), .15f, 30f + R() * 20f, EmitterWreck);
         }

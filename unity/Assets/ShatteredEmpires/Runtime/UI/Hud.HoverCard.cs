@@ -31,11 +31,10 @@ namespace SE.Runtime.UI
 
         void BuildHoverCard()
         {
-            hoverCard = El("se-hovercard", root);
+            hoverCard = UiKit.Fx(El("se-hovercard", root), "se-fx--follow");   // fades and scales; its follow translate is never transitioned
             hoverCard.pickingMode = PickingMode.Ignore;
             hoverCard.style.left = 0; hoverCard.style.top = 0;
             hoverCard.usageHints = UsageHints.DynamicTransform;
-            hoverCard.style.display = DisplayStyle.None;
             var head = El("se-hovercard-head", hoverCard);
             hoverName = L("", "se-hovercard-name", head);
             hoverDot = El("se-civ-dot se-hovercard-dot", head);
@@ -48,7 +47,7 @@ namespace SE.Runtime.UI
         void HideHoverCard()
         {
             hoverId = 0;
-            if (hoverCard != null && hoverShown) { hoverShown = false; hoverCard.style.display = DisplayStyle.None; }
+            if (hoverCard != null && hoverShown) { hoverShown = false; UiKit.Hide(hoverCard); }
         }
 
         /// <summary>Per frame from <see cref="DrawBattleOverlay"/> (which has the projection).</summary>
@@ -72,7 +71,7 @@ namespace SE.Runtime.UI
             var sp = toScreen(at.Value + new Vector3(0, .3f, 0));
             if (sp.z <= 0) { HideHoverCard(); return; }
             FillHoverCard(u);
-            if (!hoverShown) { hoverShown = true; hoverCard.style.display = DisplayStyle.Flex; hoverCard.BringToFront(); }
+            if (!hoverShown) { hoverShown = true; hoverCard.BringToFront(); UiKit.Show(hoverCard); }
             var p = ToPanel(sp);
             float w = root.layout.width, h = root.layout.height;
             if (float.IsNaN(w) || w <= 0) { w = 1920; h = 1080; }

@@ -8,6 +8,7 @@ namespace SE.Runtime.Social
     /// </summary>
     public sealed class SocialPlatformPump : MonoBehaviour
     {
+        // Update runs in every scene and phase (the object is DontDestroyOnLoad); unscaled by Time.timeScale
         void Update() => SocialPlatform.Created?.Tick();
         void OnApplicationQuit() => SocialPlatform.Created?.Shutdown();
     }

@@ -70,7 +70,7 @@
 .se-menu-action--primary { min-width: 140px; justify-content: center; }
 .se-menu-action IconElement { width: 18px; height: 18px; margin-right: 6px; }
 
-.se-menu-label { font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin: 12px 0 4px 0; height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.se-menu-label { font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin: 12px 0 2px 0; height: 20px; min-height: 20px; padding-top: 0; padding-bottom: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .se-menu-help-line { height: 20px; min-height: 20px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .se-menu-note { min-height: 20px; font-size: 13px; color: var(--se-text-dim, rgb(150, 164, 160)); margin: 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .se-menu-note--wrap { white-space: normal; }
@@ -99,6 +99,7 @@
 .se-menu-friend-lobby { font-size: 12px; color: var(--se-text-dim, rgb(150, 164, 160)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .se-menu-friend-slots { width: 44px; font-size: 13px; -unity-text-align: middle-right; flex-shrink: 0; }
 .se-menu-friend-join { width: 96px; min-width: 96px; }
+.se-menu-friend-join.se-menu-friend-invite { width: 136px; min-width: 136px; }
 
 /* join by code */
 .se-menu-code-field { height: 48px; min-height: 48px; font-size: 26px; letter-spacing: 4px; }
@@ -245,3 +246,42 @@
 .se-lobby-team-head .se-lobby-small { height: 22px; min-height: 22px; }
 .se-lobby-format-row { margin-bottom: 14px; }
 .se-menu-host-row .se-menu-item { margin: 0; }
+
+/* UI transitions (see SE.uss "UI transitions"): the frame eases between its narrow and wide widths; menu
+   buttons ease their colour, lift slightly on hover and press in on click; rows ease their border */
+.se-menu-frame { transition-property: width; transition-duration: 0.22s; transition-timing-function: ease-out; }
+.se-menu-item, .se-menu-action, .se-lobby-small, .se-cycle, .se-map-filter-option {
+    transition-property: background-color, border-color, color, scale; transition-duration: 0.12s; transition-timing-function: ease-out;
+}
+.se-menu-item:hover { scale: 1.02 1.02; }
+.se-menu-action:hover, .se-lobby-small:hover, .se-cycle:hover, .se-map-filter-option:hover { scale: 1.03 1.03; }
+.se-menu-item:active, .se-menu-action:active, .se-lobby-small:active, .se-cycle:active, .se-map-filter-option:active { scale: 0.97 0.97; }
+.se-map-option, .se-menu-friend, .se-ai-row { transition-property: background-color, border-color; transition-duration: 0.12s; transition-timing-function: ease-out; }
+.se-calm .se-menu-frame, .se-calm .se-menu-item, .se-calm .se-menu-action, .se-calm .se-lobby-small, .se-calm .se-cycle, .se-calm .se-map-filter-option { transition-duration: 0s; }
+.se-calm .se-menu-item:hover, .se-calm .se-menu-action:hover, .se-calm .se-lobby-small:hover, .se-calm .se-cycle:hover, .se-calm .se-map-filter-option:hover { scale: 1 1; }
+/* entrances (UiKit.Enter) on elements that have their own transitions above keep both */
+.se-menu-frame.se-enter-anim { transition-property: opacity, translate, width; transition-duration: 0.2s; transition-timing-function: ease-out; }
+.se-map-option.se-enter-anim, .se-menu-friend.se-enter-anim, .se-ai-row.se-enter-anim { transition-property: opacity, translate, background-color, border-color; transition-duration: 0.2s; transition-timing-function: ease-out; }
+.se-calm .se-menu-frame.se-enter-anim, .se-calm .se-map-option.se-enter-anim, .se-calm .se-menu-friend.se-enter-anim, .se-calm .se-ai-row.se-enter-anim { transition-duration: 0s; }
+
+/* map builder (MapBuilder.cs): paint canvas left (the world is 1.1547 : 1), tools right */
+.se-builder { flex-direction: column; flex-shrink: 0; }
+.se-builder-columns { flex-direction: row; justify-content: space-between; }
+.se-builder-left { width: 462px; flex-shrink: 0; flex-direction: column; }
+.se-builder-right { width: 330px; flex-shrink: 0; flex-direction: column; }
+.se-builder-canvas {
+    width: 460px; height: 398px; flex-shrink: 0; border-width: 1px; border-color: rgba(255, 255, 255, 0.18); border-radius: 4px;
+    background-color: rgb(32, 42, 38); -unity-background-scale-mode: stretch-to-fill; overflow: hidden;
+}
+.se-builder-markers { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+.se-builder-base {
+    position: absolute; width: 20px; height: 20px; margin-left: -10px; margin-top: -10px; border-radius: 10px;
+    border-width: 2px; border-color: rgb(250, 246, 236); font-size: 12px; -unity-font-style: bold; color: rgb(20, 20, 18);
+    -unity-text-align: middle-center; padding: 0;
+}
+.se-builder-info { font-size: 13px; margin-top: 6px; white-space: normal; color: var(--se-text-dim, rgb(150, 164, 160)); }
+.se-builder-info--warn { color: var(--se-warn, rgb(240, 188, 86)); }
+.se-builder-right .se-segmented { margin-bottom: 4px; }
+.se-builder-slot { align-items: center; min-height: 34px; }
+.se-builder-slot-name { flex-grow: 1; flex-shrink: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
+.se-builder-slot-btn { min-width: 60px; margin-left: 4px; }

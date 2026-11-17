@@ -113,7 +113,7 @@ const AUTO_TECH_ORDER = (() => {
 })();
 
 export class Game {
-  constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, style = null, ruleset = LEGACY_RULESET, map = null }) {
+  constructor({ id, seed = (Math.random() * 2 ** 31) | 0, slots, rebels = true, restore = null, style = null, ruleset = LEGACY_RULESET, map = null, sketch = null }) {
     this.id = id;
     this.ruleset = validateRuleset(ruleset);
     this.seed = seed;
@@ -122,7 +122,7 @@ export class Game {
     this.defs = { ...GAME_DEFS, RESOURCE_INFO, PLACE_INFO, SITE_HINT, LEDGER_CATS, AIR_STATES, MISSIONS, PATH_FAIL, PATH_FAIL_CODES, LEVELS: { max: MAX_LEVEL, jobs: LEVEL_JOBS, out: LEVEL_OUT, age: LEVEL_AGE, tiers: CITY_TIERS }, CITY_STATES, REBUILD_COST, BRIDGE_CLASSES, MISSILE: { cost: MISSILE.cost, build: MISSILE.build, store: MISSILE.store, range: MISSILE.range } };
     if (nativeRules(this)) this.defs = nativeDefinitions(this.defs, this.ruleset);
     this.rng = mulberry32(seed ^ 0x9e3779b9);
-    this.world = new World(seed, { style, map });
+    this.world = new World(seed, { style, map, sketch });
     this.world.generate(slots.length);
     this.roads = new RoadNet(this.world);
     this.time = 0; this.tickN = 0; this.nextId = 1; this.stats = { pathFail: 0, deadlocks: 0 };

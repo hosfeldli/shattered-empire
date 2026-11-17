@@ -18,11 +18,13 @@ the other. A running downloaded executable cannot hot-patch itself from changed 
 | `/api/downloads` | Published download manifest |
 | [deploy.yml](../.github/workflows/deploy.yml) | Test/e2e gates and main-branch server deployment |
 | [unity.yml](../.github/workflows/unity.yml) | Core/live checks and licensed Unity build/publish path |
-| [publish-downloads.mjs](../tools/publish-downloads.mjs) | Verify uploads and replace the Windows listing |
+| [publish-downloads.mjs](../tools/publish-downloads.mjs) | CI: verify uploads and list the Windows ZIP |
+| [release.ps1](../tools/release.ps1) | Local one-command release from Windows; see [RELEASING.md](RELEASING.md) |
 
 Offer Windows Unity only. Do not restore macOS/Godot listings or retired Electron installers.
-macOS remains a target platform requiring its own acceptance. Do not imply a Unity auto-updater
-exists because the old Electron client had one.
+macOS remains a target platform requiring its own acceptance. Windows builds that carry a
+`build_id.txt` stamp (made by `BuildScript` or `release.ps1`) can update themselves from the
+main menu. Older builds can't, so their players must download the new build once by hand.
 
 ## Prepare
 

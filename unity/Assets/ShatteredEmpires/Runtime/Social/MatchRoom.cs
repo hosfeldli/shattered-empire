@@ -44,6 +44,8 @@ namespace SE.Runtime.Social
         public string Format = "";
         /// <summary>Catalog map id ("random": a procedural world) and its display name.</summary>
         public string Map = "random", MapName = "";
+        /// <summary>With Map "custom": the host's map-builder sketch (server sketchMaps.js, canonical), for the preview.</summary>
+        public JObject Sketch;
         /// <summary>The match starts by itself only when every seat is taken and everyone is ready.</summary>
         public bool WaitForReady;
         /// <summary>Your seat index in <see cref="Seats"/>.</summary>
@@ -87,6 +89,7 @@ namespace SE.Runtime.Social
                 SizeKey = Str(raw["size"]),
                 Public = Bool(raw["public"]),
                 Spectator = Bool(raw["spectator"]),
+                Sketch = raw["sketch"] as JObject,
             };
             if (raw["spectators"] is JArray watchers)
                 foreach (var w in watchers) if (w is JObject wo) r.Spectators.Add(Str(wo["name"], "Spectator"));
@@ -178,6 +181,8 @@ namespace SE.Runtime.Social
         public static JObject Mode(string format) => new JObject { ["t"] = "mode", ["mode"] = format };
         /// <summary>Host: a catalog map id (sets the format) or "random".</summary>
         public static JObject Map(string map) => new JObject { ["t"] = "map", ["map"] = string.IsNullOrEmpty(map) ? "random" : map };
+        /// <summary>Host: play the map-builder sketch (MapSketch.Encode); the server validates it and sends it to everyone in the room.</summary>
+        public static JObject CustomMap(JObject sketch) => new JObject { ["t"] = "map", ["map"] = "custom", ["sketch"] = sketch };
         /// <summary>Host: one match rule: "objective", "startRes", "style", "size" (string values) or "public" (bool).</summary>
         public static JObject Option(string key, JToken value) => new JObject { ["t"] = "options", [key] = value };
         /// <summary>Host: leave an empty seat out of the match (uneven sides, random worlds) or open it again.</summary>

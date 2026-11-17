@@ -37,8 +37,11 @@ export class ActionGame extends Game {
     this.tutorial = !!options.tutorial;
     this.tutorialSite = 0;
     // a hand-authored map fixes the teams it was drawn for (mapCatalog.js); 'random' is procedural
-    this.mapId = this.world.mapDef?.id || 'random';
-    this.teamSize = this.world.mapDef ? this.world.mapDef.teamSize : Number.isInteger(options.teamSize) ? Math.min(4, Math.max(1, options.teamSize)) : 1;
+    this.mapId = this.world.mapDef?.id || (this.world.sketch ? 'custom' : 'random');
+    // A catalog map played as drawn keeps its team size; with fewer players (or explicit teams) the lobby's
+    // team size applies, and actionMap.assignStarts picks which authored starts the civs take.
+    const def = this.world.mapDef, asDrawn = def && this.civs.length === def.players && !Array.isArray(options.teamOf);
+    this.teamSize = asDrawn ? def.teamSize : Number.isInteger(options.teamSize) ? Math.min(4, Math.max(1, options.teamSize)) : 1;
     this.nav = new ActionNavigation(this);
     this.movers = new SpatialIndex(.76);
     this.targets = new SpatialIndex(3.2);
@@ -701,7 +704,11 @@ export class ActionGame extends Game {
       }
       case 'upgradeBuilding': return upgradeBuilding(this, civ, cmd.id);
       case 'upgradeDefenses': return upgradeDefenses(this, civ, site);
-      case 'terrain': return terrainOrder(this, civ, cmd.op, p, cmd.preview === true);
+      case 'terrain': {
+        // brush stroke: {points:[{x,z}…], radius}; legacy: a single point / tile
+        const stroke = Array.isArray(cmd.points) ? cmd.points.slice(0, 72).map((v) => this.point(v)).filter(Boolean) : null;
+        return terrainOrder(this, civ, cmd.op, p, cmd.preview === true, stroke, Number(cmd.radius));
+      }
       case 'missileBuild': return missileCommand(this, civ, cmd.id, null);
       case 'missileLaunch': return p ? missileCommand(this, civ, cmd.id, p) : { error: 'Choose a strategic target.' };
       case 'sandbox': return this.sandbox && cmd.op === 'scenario' ? this.stageScenario(cmd.key) : { error: 'This action requires the combat sandbox.' };

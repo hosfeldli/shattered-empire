@@ -385,6 +385,7 @@ namespace SE.Runtime.App
                     msg["objective"] = c.Objective; msg["wrap"] = c.Wrap; msg["tutorial"] = c.Tutorial;
                     if (!string.IsNullOrEmpty(c.StartRes)) msg["startRes"] = c.StartRes;
                     if (!string.IsNullOrEmpty(c.Map) && c.Map != "random") msg["map"] = c.Map;
+                    if (c.Map == "custom" && c.Sketch != null) msg["sketch"] = c.Sketch;   // the map builder's sketch
                     if (int.TryParse(c.Seed, out int s)) msg["seed"] = s;
                     msg["title"] = c.Tutorial ? "Tutorial" : $"{playerName} · {c.Style}";
                     // New Skirmish: a format (teams or free-for-all) and each AI's difficulty and personality, in seat order
@@ -404,10 +405,10 @@ namespace SE.Runtime.App
                             rivals.Add(rv);
                         }
                         msg["rivals"] = rivals;
-                        // seats left empty (uneven sides; random worlds only): seat i + 1 for AI entry i
+                        // seats left empty (uneven sides, on a random world or a catalog map): seat i + 1 for AI entry i
                         var closed = new JArray();
                         for (int i = 0; i < c.Ais.Count; i++) if (c.Ais[i].Closed) closed.Add(i + 1);
-                        if (closed.Count > 0 && (string.IsNullOrEmpty(c.Map) || c.Map == "random")) msg["closed"] = closed;
+                        if (closed.Count > 0) msg["closed"] = closed;
                     }
                 }
                 pendingCampaign = null;
@@ -435,6 +436,7 @@ namespace SE.Runtime.App
             {
                 // a reconnect: everything stays on screen, the selection and orders in progress included
                 commander.Say("Reconnected", true, time);
+                hud?.ShowLoading(-1);   // a reconnect started from StartMatch shows the loading card: close it
                 return;
             }
             terrain.SetSeed(session.Welcome.Seed);
@@ -487,7 +489,7 @@ namespace SE.Runtime.App
         {
             pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty,
                 Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective, Map = options.Map,
-                Format = options.Format, StartRes = options.StartRes };
+                Format = options.Format, StartRes = options.StartRes, Sketch = options.Sketch };
             if (options.Ais != null)
                 foreach (var ai in options.Ais) pendingCampaign.Ais.Add(new AiSeatOption { Difficulty = ai.Difficulty, Personality = ai.Personality, Closed = ai.Closed });
             StartMatch("ai", "");
@@ -557,7 +559,9 @@ namespace SE.Runtime.App
         void OnOther(ServerMessage m)
         {
             if (m.T == "error" && phase == Phase.Connecting) hud?.ShowMenu(true, m.Error);
-            if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby")
+            // a skirmish (ai), exhibition or sandbox is seated in a lobby for an instant before it starts: no lobby
+            // page for those (with the menu's fade it flashed an empty lobby frame over the descent)
+            if (m.T == "joined" && ProtocolDecoder.Str(m.Raw["status"]) == "lobby" && pendingMode != "ai" && pendingMode != "observe" && pendingMode != "sandbox")
             {
                 string code = ProtocolDecoder.Str(m.Raw["match"], "");
                 hud?.ShowMenu(true, "Waiting in the match lobby: share the code " + code + ", or invite friends on Steam");
@@ -610,8 +614,11 @@ namespace SE.Runtime.App
             lobbyClosed = null;
             if (phase != Phase.Connecting) return;
             net?.ForgetSession();
-            ShowMenu(why, false);   // drops the connection and leaves the Steam lobby
-            MenuView?.ShowMultiplayer();
+            // a skirmish, exhibition or sandbox whose world could not be built (server startFailed) has no lobby
+            // to go back to: the root menu with the reason; a closed lobby goes back to Multiplayer
+            bool solo = pendingMode == "ai" || pendingMode == "observe" || pendingMode == "sandbox";
+            ShowMenu(why, solo);   // drops the connection and leaves the Steam lobby
+            if (!solo) MenuView?.ShowMultiplayer();
         }
 
         void StageBattle()

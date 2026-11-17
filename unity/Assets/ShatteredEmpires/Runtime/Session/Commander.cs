@@ -103,7 +103,7 @@ namespace SE.Runtime.Session
             FieldYaw = 0; cam.PlacementRotation = mode == Mode.Target && ProtocolDecoder.Str(target?["c"]) == "fieldBuild";
             dragging = false; ClearRingPreview(); FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++;
             path.Clear(); preview = null; legal.Clear(); legalReady = false;
-            worldStroke.Clear(); actionTrenchPreview = null;
+            worldStroke.Clear(); actionTrenchPreview = null; ResetBrush();
             if (mode == Mode.Place && session.Net != null)
             {
                 int token = ++placementToken;
@@ -119,7 +119,7 @@ namespace SE.Runtime.Session
             else if (mode == Mode.Place) legalReady = false;
         }
 
-        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; worldStroke.Clear(); actionTrenchPreview = null; cam.PlacementRotation = false; FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++; }
+        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; worldStroke.Clear(); actionTrenchPreview = null; cam.PlacementRotation = false; FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++; ResetBrush(); }
 
         public bool Dragging(out Rect rect)
         {
@@ -187,7 +187,8 @@ namespace SE.Runtime.Session
                 case Mode.Trench: if (session.ActionRts) DrawActionTrench(time, pointerOverUi); else DrawMode(time, pointerOverUi); break;
                 case Mode.Road: if (session.ActionRts) DrawActionTrench(time, pointerOverUi); else DrawMode(time, pointerOverUi); break;
                 case Mode.Bridge: DrawMode(time, pointerOverUi); break;
-                case Mode.Growth: case Mode.Rally: case Mode.Target: PointMode(time, pointerOverUi); break;
+                case Mode.Target: if (TerrainBrushActive) TerrainBrushMode(time, pointerOverUi); else PointMode(time, pointerOverUi); break;   // terrain works paint (Commander.Terrain.cs)
+                case Mode.Growth: case Mode.Rally: PointMode(time, pointerOverUi); break;
             }
             Orders.RemoveAll(o => time - o.Time > (o.State == "pending" ? 8f : 1.5f));
             var stale = new List<int>();
@@ -691,7 +692,8 @@ namespace SE.Runtime.Session
                 }
                 if (linePreview?["invalid"] is JArray bad) foreach (var t in bad) Disc((int)t, new float4(0.95f, 0.3f, 0.25f, 0.55f));
             }
-            if ((Current == Mode.Growth || Current == Mode.Rally || Current == Mode.Target) && hoverTile >= 0) Ring(hoverTile, new float4(0.95f, 0.8f, 0.35f, 0.9f), 1.6f + 0.15f * Mathf.Sin(time * 6f));
+            DrawTerrainBrush(time);   // the terrain brush footprint (Commander.Terrain.cs)
+            if ((Current == Mode.Growth || Current == Mode.Rally || Current == Mode.Target) && !TerrainBrushActive && hoverTile >= 0) Ring(hoverTile, new float4(0.95f, 0.8f, 0.35f, 0.9f), 1.6f + 0.15f * Mathf.Sin(time * 6f));
             float pulse = 1.5f + 0.1f * Mathf.Sin(time * 8f);
             if (!session.ActionRts) foreach (var t in pendingSites.Keys) Ring(t, new float4(1f, 0.82f, 0.25f, 0.9f), pulse);
             if (!session.ActionRts) foreach (var t in refusedSites.Keys) Ring(t, new float4(1f, 0.3f, 0.25f, 0.9f), 1.6f);
@@ -735,7 +737,7 @@ namespace SE.Runtime.Session
                 case Mode.Trench: return "Drag the trench line · blocked hexes are skipped · release to dig";
                 case Mode.Growth: return "Click where the city should grow";
                 case Mode.Rally: return "Click the rally point";
-                case Mode.Target: return "Click the target on the map";
+                case Mode.Target: return TerrainBrushActive ? $"Drag to paint · {InputFacade.KeyLabel("brush_smaller")} {InputFacade.KeyLabel("brush_larger")} or Ctrl + wheel: brush size · release to order · Shift keeps the tool · Esc cancels" : "Click the target on the map";
                 default: return "";
             }
         }

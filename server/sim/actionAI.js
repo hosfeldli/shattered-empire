@@ -1,10 +1,10 @@
 import { T } from './constants.js';
 import { NB, disk } from './hex.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, MISSILE_PROJECT, TIERS } from './actionDefinitions.js';
-import { advanceBase, armyCapacity, canPay, construct, constructDefense, establish, facilitiesAt, fortifyBase, headquarters, openSlots, repairFacility, startUpgrade, train,
+import { advanceBase, armyCapacity, canPay, construct, constructDefense, establish, facilitiesAt, fieldCost, fortifyBase, headquarters, openSlots, repairFacility, startUpgrade, train,
   upgradeBuilding, upgradeDefenses } from './actionBases.js';
 import { CITY_DEFENSES, NEW_BASE_GAP } from './actionDefinitions.js';
-import { centerOf, distance } from './actionNavigation.js';
+import { centerOf, distance, tileAt } from './actionNavigation.js';
 import { moveGroup } from './actionOrders.js';
 
 const force = (u) => ACTION_UNITS[u.type].atk * Math.max(.25, u.hp / u.maxHp);
@@ -407,7 +407,9 @@ export function planActionAI(game, civ) {
       if (![...game.buildings.values()].some((b) => b.owner === civ.id && ACTION_BUILDINGS[b.type].field && distance(b, defended) < 4)) {
         const length = Math.max(.1, distance(defended, vanguard));
         const forward = game.lerpPoint(defended, vanguard, Math.min(.85, 3.2 / length));
-        constructDefense(game, civ, civ.age > 0 && enemiesNearHome.some((u) => ACTION_UNITS[u.type].move === 'tracked') ? 'turret' : 'guard_post', forward);
+        const type = civ.age > 0 && enemiesNearHome.some((u) => ACTION_UNITS[u.type].move === 'tracked') ? 'turret' : 'guard_post';
+        // never pay the ring-of-influence surcharge (DEFENSE_INFLUENCE) for an emergency tower: build it only at list price
+        if (fieldCost(game, civ, type, tileAt(forward.x, forward.z)).surcharge === 1) constructDefense(game, civ, type, forward);
       }
     }
     return;

@@ -176,7 +176,11 @@ namespace SE.Runtime.Session
             if (string.IsNullOrEmpty(code)) code = GuessErrorCode(error);
             switch (code)
             {
-                case "territory": return "Outside your territory · build only on your own land (defenses claim the hexes around them)";
+                case "territory":
+                    // defenses may also go on neutral ground (ring of influence): their refusal is only for another player's land
+                    return error.StartsWith("Defenses ", StringComparison.OrdinalIgnoreCase)
+                        ? "In another player's territory · defenses go on your own land or neutral ground"
+                        : "Outside your territory · build only on your own land (defenses claim the hexes around them)";
                 case "road": return "Not on a road · place a new base on or beside a road";
                 case "spacing": return "Too close to another base or outpost · choose a spot further away";
                 case "ring": return "No room for the base ring · " + error;

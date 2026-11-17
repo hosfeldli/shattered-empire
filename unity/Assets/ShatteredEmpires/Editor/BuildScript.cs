@@ -20,6 +20,25 @@ namespace SE.EditorTools
             return def;
         }
 
+        static string GitShortHead()
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --short=7 HEAD")
+                {
+                    WorkingDirectory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..")),
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true,
+                };
+                using (var p = System.Diagnostics.Process.Start(psi))
+                {
+                    string sha = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit(5000);
+                    return p.ExitCode == 0 ? sha : "";
+                }
+            }
+            catch { return ""; }
+        }
+
         [MenuItem("Shattered Empires/Build Windows x64")]
         public static void BuildWindows() => Build(BuildTarget.StandaloneWindows64, Arg("-buildOutput", "Build/Windows/ShatteredEmpires.exe"));
 
@@ -52,6 +71,18 @@ namespace SE.EditorTools
                 if (!uint.TryParse(appId, out uint parsedAppId) || parsedAppId == 0) appId = "480";
                 File.WriteAllText(Path.Combine(dir, "steam_appid.txt"), appId);
                 Debug.Log("steam_appid.txt = " + appId);
+
+                // build stamp for the in-app updater (Runtime/App/Updater.cs): -buildId <sha> (tools/release.ps1
+                // passes it), else SE_BUILD_ID, else the repository's short HEAD. tools/release.ps1 rewrites
+                // this file in the release ZIP with the published build id and date.
+                string buildId = Arg("-buildId", Environment.GetEnvironmentVariable("SE_BUILD_ID") ?? GitShortHead()).Trim();
+                string buildVersion = Arg("-buildVersion", Environment.GetEnvironmentVariable("SE_BUILD_VERSION") ?? "").Trim();
+                if (!string.IsNullOrEmpty(buildId))
+                {
+                    File.WriteAllText(Path.Combine(dir, "build_id.txt"),
+                        $"build={buildId}\nversion={buildVersion}\ndate={DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ}\n");
+                    Debug.Log("build_id.txt = " + buildId);
+                }
             }
             if (Application.isBatchMode) EditorApplication.Exit(s.result == BuildResult.Succeeded ? 0 : 1);
         }
