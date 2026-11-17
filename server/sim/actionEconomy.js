@@ -107,45 +107,77 @@ function crossesFoundation(game, a, b) {
     distance(s, { x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t }) < ROAD_FOUNDATION)) || null;
 }
 
+// Why a road edge was skipped (2026-11-17: a stroke builds every edge it can and skips the rest, like the
+// terrain brush; the order is refused only when no edge remains). Codes match the earlier whole-stroke refusals.
+const ROAD_SKIP = {
+  route: 'No suitable road or bridge route connects those locations.',
+  hidden: 'Scout the road route so its construction sites are currently visible.',
+  territory: 'Roads can only be built inside your own territory.',
+  hostile: 'Road construction cannot enter an active hostile headquarters compound.',
+  foundation: 'Roads cannot be built through a base foundation; the base links its own roads to the hub.',
+  blocked: 'The road route runs through a structure: draw it around the structure.',
+};
+
+/**
+ * Command `roadBuild`: lay a paved road along a drawn stroke. Every edge of the route that can be built is
+ * kept; edges that cannot (not visible, outside your territory, in a base foundation, through a building, a
+ * hostile compound) are skipped and listed in `skipped` ({ from, to, why }). Refused only when nothing remains.
+ */
 export function roadBuild(game, civ, points, preview = false) {
   if (points.length < 2) return { error: 'Draw a road between two known locations.' };
-  const edges = new Map(); let seenTiles = 0;
+  const edges = new Map(), skipped = [], why = {}, labels = {};
+  let seenTiles = 0;
+  const skip = (from, to, code, label) => {
+    skipped.push({ a: from, b: to, from: centerOf(from), to: centerOf(to), why: code });
+    why[code] = (why[code] || 0) + 1;
+    if (label) labels[code] ??= label;
+  };
   for (let i = 1; i < points.length; i++) {
     const a = tileAt(points[i - 1].x, points[i - 1].z), b = tileAt(points[i].x, points[i].z);
     if (a < 0 || b < 0 || distance(points[i - 1], points[i]) > 42) return { error: 'Choose a shorter road route on the map.' };
     const route = game.nav.strategic(a, b, HEAVY_GROUND, true);
-    if (!route) return { error: 'No suitable road or bridge route connects those locations.' };
+    if (!route) { why.route = (why.route || 0) + 1; continue; }
     for (let k = 1; k < route.length; k++) {
       const from = route[k - 1], to = route[k];
-      if (!civ.visible[from] || !civ.visible[to]) return { error: 'Scout the road route so its construction sites are currently visible.' };
-      if (game.world.owner[from] !== civ.id || game.world.owner[to] !== civ.id) return { error: 'Roads can only be built inside your own territory.', code: 'territory' };
-      if (game.sites.some((s) => s.hq && game.hostile(civ.id, s.owner) && (distance(s, centerOf(from)) < 2.7 || distance(s, centerOf(to)) < 2.7)))
-        return { error: 'Road construction cannot enter an active hostile headquarters compound.' };
+      const key = Math.min(from, to) + ':' + Math.max(from, to);
+      if (edges.has(key)) continue;
+      if (!civ.visible[from] || !civ.visible[to]) { skip(from, to, 'hidden'); continue; }
+      if (game.world.owner[from] !== civ.id || game.world.owner[to] !== civ.id) { skip(from, to, 'territory'); continue; }
+      if (game.sites.some((s) => s.hq && game.hostile(civ.id, s.owner) && (distance(s, centerOf(from)) < 2.7 || distance(s, centerOf(to)) < 2.7))) { skip(from, to, 'hostile'); continue; }
       const existing = game.roads.usable(from, to); if (existing?.type >= 2 && existing.cond >= 95) continue;
       const foundation = crossesFoundation(game, from, to);
       if (foundation) {
         if (existing) continue;   // a hub spoke already serves the base: the route joins it, nothing is laid inside
-        return { error: `Roads cannot be built through the ${foundation.name || 'base'} foundation; the base links its own roads to the hub.`, code: 'foundation' };
+        skip(from, to, 'foundation', `Roads cannot be built through the ${foundation.name || 'base'} foundation; the base links its own roads to the hub.`);
+        continue;
       }
       // nor through a building's walls (any owner, ruins too)
       const wall = structureOnSegment(game, centerOf(from), centerOf(to), .16, { outposts: false });
-      if (wall) return { error: `The road route runs through ${wall.label}: draw it around the structure.`, code: 'blocked' };
-      if (game.roadProjects.some((p) => p.edges.some((e) => e.a === from && e.b === to || e.a === to && e.b === from))) continue;
-      edges.set(Math.min(from, to) + ':' + Math.max(from, to), { a: from, b: to });
+      if (wall) { skip(from, to, 'blocked', `The road route runs through ${wall.label}: draw it around the structure.`); continue; }
+      if (game.roadProjects.some((p) => p.edges?.some((e) => e.a === from && e.b === to || e.a === to && e.b === from))) continue;
+      edges.set(key, { a: from, b: to });
       if (++seenTiles > 120) return { error: 'Draw the road in shorter sections.' };
     }
   }
+  if (!edges.size && (skipped.length || why.route)) {
+    // nothing buildable: refuse with the reason that covers most of the stroke
+    const code = Object.entries(why).sort((x, y) => y[1] - x[1])[0][0];
+    const refusal = { error: labels[code] || ROAD_SKIP[code], ...(['territory', 'foundation', 'blocked'].includes(code) && { code }) };
+    // a preview still carries the skipped edges so the client can draw them red under the refusal
+    return preview ? { ...refusal, reply: { t: 'ack', ...refusal, road: { positions: [], skipped, cost: { materials: 0 }, seconds: 0 } } } : refusal;
+  }
   const cost = edges.size * 15;
   const positions = [...edges.values()].map((e) => ({ ...e, from: centerOf(e.a), to: centerOf(e.b) }));
-  if (preview) return { reply: { t: 'ack', road: { positions, cost: { materials: cost }, seconds: Math.max(3, Math.min(14, edges.size * 1.1)) } } };
+  const seconds = Math.max(3, Math.min(14, edges.size * 1.1));
+  if (preview) return { reply: { t: 'ack', road: { positions, skipped, cost: { materials: cost }, seconds } } };
   if (!edges.size) return { error: 'That route already has an operational paved road or construction in progress.' };
   if (civ.res.materials < cost) return { error: `Road construction requires ${cost} Materials.` };
-  if (game.roadProjects.filter((p) => !p.auto && p.owner === civ.id && p.kind !== 'terrain').length >= 24)   // review S: per player, not shared by every player return { error: 'Finish an existing road project first.' };
+  // review S: the project limit is per player, not shared by every player
+  if (game.roadProjects.filter((p) => !p.auto && p.owner === civ.id && p.kind !== 'terrain').length >= 24) return { error: 'Finish an existing road project first.' };
   civ.res.materials -= cost;
   // built by the base engineers, edge by edge (actionEngineers.js)
-  const seconds = Math.max(3, Math.min(14, edges.size * 1.1));
   game.roadProjects.push({ id: game.id_(), owner: civ.id, edges: [...edges.values()], left: seconds, total: seconds });
-  return {};
+  return { edges: edges.size, skipped: skipped.length };
 }
 
 export function fieldEconomyStep(game, dt) {

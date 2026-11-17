@@ -699,7 +699,13 @@ namespace SE.Runtime.UI
                 item.Detail = () => "Four sandbag positions and two machine-gun turrets around the base. Uses no sites.";
                 item.Enabled = () => HqOf(siteId).Project == null;
                 item.Reason = () => PerimeterProject(HqOf(siteId).Project) ? $"Under construction · {HqOf(siteId).WorksPct}%" : HqOf(siteId).Project != null ? "The headquarters is busy" : null;
-                item.Click = _ => Send(new JObject { ["c"] = "baseDefenses", ["site"] = siteId }, "Construction started");
+                item.Click = _ => Send(new JObject { ["c"] = "baseDefenses", ["site"] = siteId }, "Construction started", r =>
+                {
+                    // blocked or contested outer lots are skipped (the rest are built and paid for pro rata)
+                    int skipped = ProtocolDecoder.Int(r.Raw?["skipped"]), placed = ProtocolDecoder.Int(r.Raw?["placed"]);
+                    if (r.Error == null && skipped > 0)
+                        commander.Say($"Perimeter: {placed} positions started · {skipped} blocked lots skipped (add them later)", true, Time.unscaledTime);
+                });
                 return item;
             }
             int level = PerimeterLevel(siteId), max = ProtocolDecoder.Int(upgrade?["max"], 1);

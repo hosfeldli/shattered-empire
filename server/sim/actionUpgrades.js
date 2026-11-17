@@ -54,25 +54,34 @@ export function armourDamage(game, target, d, weapon, damage) {
     if (d.move === 'tracked') return 0;
     if (d.move === 'wheeled') damage = Math.max(1, Math.round(damage * .5));
   }
+  // 2026-11-17: a save spares exactly ONE of the men the hit would kill (he is left at 1 HP); the rest of the
+  // hit still lands. Before, a save capped the hit at the first man's remaining HP, so a squad left on
+  // "n men + 1 HP" took 0 damage from every later lethal hit (tank shells, bunker bursts) until all its plates
+  // were used: an armoured rifle squad shrugged off about eight shells of any size.
   if (d.move === 'infantry' && techs.has('body_armor')) {
     const men = Math.max(1, d.men || 1), per = target.maxHp / men;
     const before = Math.ceil(target.hp / per - 1e-6), after = Math.ceil(Math.max(0, target.hp - damage) / per - 1e-6);
-    if (after < before && (target.plates || 0) < men) {
+    // a man already spared (left on 1 HP) is not spared twice: the save goes to the next man the hit kills
+    const spared = target.hp - (before - 1) * per <= 1 + 1e-6 ? 1 : 0;
+    if (before - after - spared > 0 && (target.plates || 0) < men) {
       target.plates = (target.plates || 0) + 1;
       target.armourSave = game.time;
-      damage = Math.max(0, Math.floor(target.hp - ((before - 1) * per + 1)));
+      damage = Math.max(0, Math.min(damage, Math.floor(target.hp - (after * per + 1))));
     }
   }
   return damage;
 }
 
-function lob(game, shooter, target, weapon, damage, radius, flag) {
+// Barracks kit numbers (2026-11-17 balance pass: rocket 34 dmg / 14 s -> 20 / 24 s).
+export const KIT = { grenade: { damage: 24, cooldown: 9 }, rocket: { damage: 20, cooldown: 24 } };
+
+function lob(game, shooter, target, weapon, damage, radius, flag, extra = {}) {
   const w = WEAPONS[weapon], t = tileAt(target.x, target.z);
   if (t < 0) return;
   const flight = (w.flight || .7) * .55 + Math.min(.5, distance(shooter, target) * .04);
   const id = game.id_();
   game.projectiles.set(id, { id, owner: shooter.owner, shooter: shooter.id, from: shooter.tile, ax: shooter.x, az: shooter.z, to: t,
-    x: target.x, z: target.z, weapon, damage, radius, arrive: game.time + flight, target: radius ? 0 : target.id || 0, air: false, small: true });
+    x: target.x, z: target.z, weapon, damage, radius, arrive: game.time + flight, target: radius ? 0 : target.id || 0, air: false, small: true, ...extra });
   emit(game, { k: 'launch', a: shooter.tile, b: t, s: shooter.id, t: target.id, w: VID[weapon], f: flight,
     ax: shooter.x, az: shooter.z, bx: target.x, bz: target.z, [flag]: 1 });
 }
@@ -89,13 +98,15 @@ export function infantryKit(game, actor, def, target, damageTarget) {
   if (enemy?.air) return;
   const range = distance(actor, target);
   if (techs.has('grenades') && (actor.grenadeReady || 0) <= game.time && range < 1.4 && (!enemy || enemy.move === 'infantry')) {
-    actor.grenadeReady = game.time + 9;
-    lob(game, actor, target, 'mortar', 24, .45, 'gr');
+    actor.grenadeReady = game.time + KIT.grenade.cooldown;
+    lob(game, actor, target, 'mortar', KIT.grenade.damage, .45, 'gr', { kit: 'grenade' });
   }
+  // 2026-11-17: one light rocket per squad, inside the squad's own rifle range (it outranged the tank's gun at
+  // 1.1x) and on a longer reload; six kitted squads one-shot a tank every 14 s before.
   if (techs.has('rocket_teams') && ROCKET_SQUADS.has(actor.type) && (actor.rocketReady || 0) <= game.time &&
-    (!enemy || enemy.move === 'tracked' || enemy.move === 'wheeled') && range <= def.range * 1.1) {
-    actor.rocketReady = game.time + 14;
-    lob(game, actor, target, 'atgun', 34, 0, 'rk');
+    (!enemy || enemy.move === 'tracked' || enemy.move === 'wheeled') && range <= def.range) {
+    actor.rocketReady = game.time + KIT.rocket.cooldown;
+    lob(game, actor, target, 'atgun', KIT.rocket.damage, 0, 'rk', { kit: 'rocket' });
   }
   if (techs.has('marksmen') && (actor.marksmanReady || 0) <= game.time) {
     const reach = def.range * 1.45, civ = game.civs[actor.owner];

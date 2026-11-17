@@ -37,6 +37,9 @@ export const ACTION_BUILDINGS = {
 };
 
 for (const [key, def] of Object.entries(ACTION_BUILDINGS)) if (!def.weapon) def.weapon = BUILDING_WEAPON[key];
+// Fortified structures resist small arms and light explosives (actionCombat.structureArmour, 2026-11-17).
+for (const key of ['town', 'barricade', 'city_turret', 'guard_post', 'bunker', 'turret', 'aa_battery', 'artillery_post', 'fort', 'missile_silo'])
+  ACTION_BUILDINGS[key].armor = 'fortified';
 // Ring of influence (2026-11-17). Defensive structures (`def.defense`: anything armed, plus barricades) may be
 // placed on your own territory or on neutral ground (never in another player's territory); every other build-wheel
 // structure stays territory-only. The ring of influence is your territory plus `reach` hexes beyond its border:
@@ -79,20 +82,22 @@ function unit(key, facility, tier, materials, energy, capacity, extra = {}) {
 }
 
 export const ACTION_UNITS = {
-  rifle_squad: unit('rifle_squad', 'barracks', 1, 70, 0, 2, { ability: 'cover', time: 12 }),
-  militia: unit('militia', 'barracks', 1, 48, 0, 2, { ability: 'cover', time: 10 }),
+  rifle_squad: unit('rifle_squad', 'barracks', 1, 80, 0, 2, { ability: 'cover', time: 12 }), // 2026-11-17: 70 -> 80 materials
+  militia: unit('militia', 'barracks', 1, 54, 0, 2, { ability: 'cover', time: 10 }), // 2026-11-17: 48 -> 54 materials (follows the rifle squad's 70 -> 80)
   // Not trainable: every base fields its own automatic engineers (actionEngineers.js), free and uncommandable.
   engineer: unit('engineer', 'barracks', 1, 100, 25, 2, { ability: 'repair', radius: .122, atk: 4, range: 1.2, weapon: 'pistol', defensiveOnly: true, time: 15, auto: true }),
   anti_armor: unit('anti_armor', 'barracks', 1, 100, 25, 3, { name: 'Anti-Armor Squad', glyph: 'AT', weapon: 'atgun', atk: 15, range: 3.25, antiBuilding: .72, ability: 'focused_fire', time: 18 }),
-  mortar_team: unit('mortar_team', 'barracks', 1, 120, 30, 3, { ability: 'bombard', time: 19 }),
+  // 2026-11-17: mortar 120/30 -> 150/45, fires every 4.5 s (was 3.0), 80 -> 120 HP (40 per man), shell atk 13 -> 15
+  // (sustained fire -23%: a heavier, slower bomb that still digs entrenched infantry out)
+  mortar_team: unit('mortar_team', 'barracks', 1, 150, 45, 3, { ability: 'bombard', time: 21, fireCooldown: 4.5, hp: 120, atk: 15 }),
   special_forces: unit('special_forces', 'barracks', 2, 125, 40, 4, { ability: 'infiltrate', time: 23, hp: Math.round(UNITS.special_forces.hp * 1.4) }),
-  exo_infantry: unit('exo_infantry', 'barracks', 3, 260, 135, 5, { ability: 'cover', time: 30 }),
+  exo_infantry: unit('exo_infantry', 'barracks', 3, 240, 120, 5, { ability: 'cover', time: 30, hp: 400, atk: 34 }), // 2026-11-17: 260/135 -> 240/120, hp 230 -> 400, atk 27 -> 34
   scout_buggy: unit('scout_buggy', 'barracks', 1, 85, 10, 3, { ability: 'scan', vision: 8.8, time: 17 }),
   armored_car: unit('armored_car', 'motor_works', 2, 125, 30, 4, { ability: 'scan', time: 21 }),
   supply_truck: unit('supply_truck', 'motor_works', 2, 140, 35, 3, { name: 'Support Truck', ability: 'repair', time: 21 }),
-  field_gun: unit('field_gun', 'heavy_weapons', 2, 170, 60, 4, { ability: 'focused_fire', time: 24, hp: 130 }), // W2: hp 90 -> 130
+  field_gun: unit('field_gun', 'heavy_weapons', 2, 170, 60, 4, { ability: 'focused_fire', time: 24, hp: 130, atk: 27 }), // W2: hp 90 -> 130; 2026-11-17: atk 24 -> 27 (tanks gained HP)
   mech_infantry: unit('mech_infantry', 'motor_works', 2, 195, 65, 5, { ability: 'focused_fire', time: 26 }),
-  tank: unit('tank', 'motor_works', 2, 235, 80, 6, { ability: 'focused_fire', radius: .25, time: 29 }),
+  tank: unit('tank', 'motor_works', 2, 235, 80, 6, { ability: 'focused_fire', radius: .25, time: 29, hp: 330, vsInfantry: 1.25 }), // 2026-11-17: hp 280 -> 330, HE vs infantry
   sp_artillery: unit('sp_artillery', 'heavy_weapons', 2, 250, 115, 6, { ability: 'bombard', time: 32 }),
   air_defense: unit('air_defense', 'heavy_weapons', 2, 180, 95, 4, { ability: 'intercept', time: 25 }),
   missile_battery: unit('missile_battery', 'heavy_weapons', 3, 310, 185, 7, { ability: 'bombard', time: 38 }),
@@ -101,7 +106,7 @@ export const ACTION_UNITS = {
   recon_drone: unit('recon_drone', 'airfield', 2, 115, 65, 2, { ability: 'scan', vision: 10.5, time: 19 }),
   bomber: unit('bomber', 'airfield', 3, 470, 250, 9, { ability: 'strike', time: 46 }),
   oneway_drone: unit('oneway_drone', 'advanced_lab', 3, 125, 80, 2, { ability: 'strike', time: 18 }),
-  autonomous_tank: unit('autonomous_tank', 'advanced_lab', 3, 340, 150, 8, { ability: 'focused_fire', radius: .255, time: 42, hp: 420 }),
+  autonomous_tank: unit('autonomous_tank', 'advanced_lab', 3, 340, 150, 8, { ability: 'focused_fire', radius: .255, time: 42, hp: 480, vsInfantry: 1.2 }), // 2026-11-17: hp 420 -> 480, HE vs infantry
   strike_swarm: unit('strike_swarm', 'advanced_lab', 3, 335, 210, 7, { ability: 'strike', time: 40 }),
 };
 // Aircraft cross the (larger) battlefield noticeably faster than any ground force, scaled by role:
@@ -145,8 +150,8 @@ export const ACTION_UPGRADES = {
   networked_command: { name: 'Networked Command', desc: 'Units share a vision net: every unit and structure sees 1.5 hexes further and spots hidden units within 2.5 hexes.', tier: 3, time: 52, cost: cost(340, 180) },
   // Barracks upgrades: kit the infantry carry, each shown on the soldiers (equipment bits 32, 64, 128, 256)
   grenades: { name: 'Hand Grenades', at: 'barracks', desc: 'Infantry close to enemy troops in cover, or to a structure, throw a grenade every 9 s: an area burst that reaches troops in trenches and cover.', tier: 1, time: 22, cost: cost(60, 110) },
-  rocket_teams: { name: 'Rocket Teams', at: 'barracks', desc: 'One man in each rifle squad, militia or special forces team fires an anti-tank rocket at vehicles or structures in range every 14 s.', tier: 1, time: 30, cost: cost(80, 150) },
-  body_armor: { name: 'Body Armour', at: 'barracks', desc: 'Plate carriers and helmets: each soldier survives one extra lethal hit.', tier: 2, time: 34, cost: cost(110, 190) },
+  rocket_teams: { name: 'Rocket Teams', at: 'barracks', desc: 'One man in each rifle squad, militia or special forces team fires a light anti-tank rocket at vehicles or structures in rifle range every 24 s.', tier: 1, time: 30, cost: cost(80, 150) },
+  body_armor: { name: 'Body Armour', at: 'barracks', desc: 'Plate carriers and helmets: once per soldier, a hit that would kill men spares one of them.', tier: 2, time: 34, cost: cost(110, 190) },
   marksmen: { name: 'Designated Marksmen', at: 'barracks', desc: 'A scoped marksman per squad picks off crews and squad leaders: every 12 s a long-range precision shot (1.45x range) at enemy crews and squads.', tier: 2, time: 32, cost: cost(100, 160) },
 };
 

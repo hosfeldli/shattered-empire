@@ -204,10 +204,19 @@ namespace SE.Runtime.UI
                 reason = commander.TerrainPreviewReason ?? "";
                 invalid = reason.Length > 0;
             }
-            else if (tool && (commander.Current == Commander.Mode.Trench || commander.Current == Commander.Mode.Road))
+            bool strokePartial = false;
+            if (!fieldBuild && !terrainBrush && tool && (commander.Current == Commander.Mode.Trench || commander.Current == Commander.Mode.Road))
             {
                 reason = commander.StrokePreviewReason ?? "";
                 invalid = reason.Length > 0;
+                // a stroke with some bad hexes is still built where it can be: an amber note, not a refusal
+                int skipped = commander.StrokePreviewSkipped;
+                if (!invalid && skipped > 0)
+                {
+                    bool road = commander.Current == Commander.Mode.Road;
+                    reason = $"!  {skipped} {(road ? (skipped == 1 ? "segment" : "segments") : (skipped == 1 ? "hex" : "hexes"))} skipped (red) · the rest will be built";
+                    invalid = strokePartial = true;
+                }
             }
             // a valid defense spot beyond the ring of influence: an amber "!" warning at the cursor with the price
             bool surcharged = false;
@@ -219,7 +228,7 @@ namespace SE.Runtime.UI
                 reason = $"!  ×{factor:0.#} cost here: outside your ring of influence{price}";
                 surcharged = invalid = true;
             }
-            cursorReason.EnableInClassList("se-cmd-cursor-reason--warn", surcharged);
+            cursorReason.EnableInClassList("se-cmd-cursor-reason--warn", surcharged || strokePartial);
             if (invalid && !IsPointerOverUi(InputFacade.MousePosition))
             {
                 if (cursorReason.text != reason) cursorReason.text = reason;

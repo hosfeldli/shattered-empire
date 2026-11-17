@@ -6,7 +6,7 @@ import { emit } from './combat.js';
 import { centerOf, distance, dxBetween, tileAt, trenchPosition } from './actionNavigation.js';
 import { chase, moveGroup, stanceOf, stopUnit } from './actionOrders.js';
 import { airStep, CITY_AA, cityHasAA, flakBurst } from './actionAir.js';
-import { armourDamage, infantryKit, squadFirepower, structureDamage, structureRange } from './actionUpgrades.js';
+import { armourDamage, infantryKit, SMALL_ARMS, squadFirepower, structureDamage, structureRange } from './actionUpgrades.js';
 
 const VID = Object.fromEntries(WEAPON_KEYS.map((key, index) => [key, index]));
 const unitOf = (obj) => obj?.isUnit ? ACTION_UNITS[obj.type] : null;
@@ -72,13 +72,28 @@ function armorShield(game, unit, source) {
   return null;
 }
 
+// Structure armour (2026-11-17). Fortified defenses (`def.armor === 'fortified'`: bunkers, outposts, gun and AA
+// emplacements, towers, sandbags, headquarters) shrug off most small-arms fire and light explosives; demolition
+// is the job of tanks, field guns, artillery, missiles and aircraft. `kit` is the barracks kit (grenade, rocket).
+// Other structures (ring facilities, support posts) take full damage. Applied after the shooter's antiBuilding.
+export const FORTIFIED_VS = { smallArms: .35, autocannon: .6, flak: .5, mortar: .65, grenade: .4, rocket: .55 };
+export function structureArmour(target, weapon, kit) {
+  if (ACTION_BUILDINGS[target.type]?.armor !== 'fortified') return 1;
+  if (kit) return FORTIFIED_VS[kit] ?? 1;
+  if (SMALL_ARMS.has(weapon)) return FORTIFIED_VS.smallArms;
+  return FORTIFIED_VS[weapon] ?? 1;
+}
+
 export function damageActionTarget(game, target, source, amount, weapon, indirect = false) {
   if (!alive(target) || !game.hostile(source.owner, target.owner)) return;
   const d = unitOf(target), profile = WEAPONS[weapon];
   let mult = profile ? weaponVs(weapon, d || { air: false }) : 1;
   if (!mult) return;
   if (d?.move === 'tracked' || d?.move === 'wheeled') mult *= profile?.vsArmor ?? 1;
+  // 2026-11-17: tracked armour shrugs off small arms (rifles, carbines, machine guns) at half their vehicle rate
+  if (d?.move === 'tracked' && SMALL_ARMS.has(weapon)) mult *= .5;
   else if (d?.move === 'infantry' && weapon === 'atgun') mult *= .58;
+  if (!d) mult *= structureArmour(target, weapon, source.kit);
   if (d) mult *= 1 - cover(game, target, source, indirect);
   // heavy_armor / body_armor are functional (actionUpgrades.armourDamage): small-arms immunity, one saved life per man
   const damage = armourDamage(game, target, d, weapon, Math.max(1, Math.round(amount * mult - (d?.def || 0) * .20)));
@@ -158,7 +173,7 @@ function resolveProjectiles(game, near) {
     const aim = (w.guided || w.airburst) && alive(target) && distance(p, target) < (w.airburst ? 3.8 : 2) + fast ? target : p;
     const t = tileAt(aim.x, aim.z);
     if (t < 0 || t >= N) continue;
-    const source = { id: p.shooter, owner: p.owner, tile: p.from, x: p.ax, z: p.az };
+    const source = { id: p.shooter, owner: p.owner, tile: p.from, x: p.ax, z: p.az, kit: p.kit };
     if (p.strategic) {
       const intercept = game.targets.query(aim.x, aim.z, 5, near).filter((v) => alive(v) && v.done && v.type === 'aa_battery' && game.hostile(p.owner, v.owner));
       if (intercept.length && game.rng() < 1 - .62 ** intercept.length) {
@@ -202,11 +217,13 @@ function fire(game, actor, def, target) {
   const w = WEAPONS[def.weapon];
   let damage = (def.atk ?? def.attack) * 1.65;
   if (!unitOf(target)) damage *= def.antiBuilding || .85;
+  // 2026-11-17: tanks fire high-explosive at infantry (def.vsInfantry: tank 1.25, autonomous tank 1.2)
+  else if (def.vsInfantry && unitOf(target).move === 'infantry') damage *= def.vsInfantry;
   if (actor.abilityUntil > game.time && (def.ability === 'focused_fire' || def.ability === 'intercept' && unitOf(target)?.air)) damage *= 1.40;
   // squads fire with the men still standing; era-upgraded defenses hit harder (B)
   damage *= (actor.isUnit ? squadFirepower(actor) : structureDamage(actor));
   if (actor.kills) damage *= 1 + Math.min(3, Math.floor(actor.kills / 4)) * .04;
-  actor.readyAt = game.time + w.cooldown;
+  actor.readyAt = game.time + (def.fireCooldown ?? w.cooldown);   // per-unit override (mortar team, 2026-11-17)
   actor.lastCombat = game.time;
   if (def.ability === 'infiltrate') actor.abilityUntil = 0;
   if (w.mode === 'projectile') projectile(game, actor, target, def.weapon, damage);

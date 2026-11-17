@@ -264,12 +264,17 @@ namespace SE.Runtime.Session
 
         /// <summary>Why the trench / road stroke being drawn was refused in preview (null while valid; shown at the cursor by the HUD).</summary>
         public string StrokePreviewReason { get; private set; }
+        /// <summary>
+        /// Hexes (trench) or road segments the previewed stroke skips (drawn red). The stroke is still built where it
+        /// can be: the server keeps the valid parts and skips the rest (2026-11-17), refusing only when nothing remains.
+        /// </summary>
+        public int StrokePreviewSkipped { get; private set; }
 
         void DrawActionTrench(float time, bool overUi)
         {
             if (InputFacade.RightDown) { Cancel(); return; }
             if (!overUi && InputFacade.LeftDown) { worldStroke.Clear(); previewAt = 0; dragging = true; }
-            if (!dragging) { StrokePreviewReason = null; return; }
+            if (!dragging) { StrokePreviewReason = null; StrokePreviewSkipped = 0; return; }
             if (!overUi && cam.TryGround(InputFacade.MousePosition, out var p)) AppendPoint(worldStroke, p, 72, .22f);
             bool commit = InputFacade.LeftUp || InputFacade.Pressed(KeyCode.Return);
             if (worldStroke.Count >= 2 && (commit || time >= previewAt))
@@ -280,11 +285,19 @@ namespace SE.Runtime.Session
                 var cmd = new JObject { ["c"] = operation, ["points"] = PointArray(worldStroke), ["preview"] = !commit };
                 session.Net?.Command(cmd, r =>
                 {
-                    if (commit) Say(ReadableError(r) ?? (operation == "roadBuild" ? "Road construction started" : "Trench construction started"), r.Error == null, Time.unscaledTime);
+                    bool road = operation == "roadBuild";
+                    if (commit)
+                    {
+                        int skipped = ProtocolDecoder.Int(r.Raw?["skipped"]);
+                        string done = (road ? "Road construction started" : "Trench construction started")
+                            + (skipped > 0 ? $" · {skipped} {(road ? (skipped == 1 ? "segment" : "segments") : (skipped == 1 ? "hex" : "hexes"))} skipped" : "");
+                        Say(ReadableError(r) ?? done, r.Error == null, Time.unscaledTime);
+                    }
                     else if (token == trenchToken && (Current == Mode.Trench || Current == Mode.Road))
                     {
-                        actionTrenchPreview = r.Raw?[operation == "roadBuild" ? "road" : "trench"] as JObject;
-                        StrokePreviewReason = ReadableError(r);   // e.g. outside your own territory, through a base foundation
+                        actionTrenchPreview = r.Raw?[road ? "road" : "trench"] as JObject;
+                        StrokePreviewReason = ReadableError(r);   // nothing buildable: e.g. outside your own territory, through a base foundation
+                        StrokePreviewSkipped = (actionTrenchPreview?["skipped"] as JArray)?.Count ?? 0;
                     }
                 });
             }
@@ -390,10 +403,16 @@ namespace SE.Runtime.Session
             else if (Current == Mode.Trench || Current == Mode.Road)
             {
                 for (int k = 1; k < worldStroke.Count; k++) Line(worldStroke[k - 1], worldStroke[k], Amber, .028f);
-                if (actionTrenchPreview?["positions"] is JArray trench) foreach (var p in trench)
+                // accepted parts green, skipped parts red (they are left out when the stroke is committed)
+                for (int pass = 0; pass < 2; pass++)
                 {
-                    if (Current == Mode.Road) Line(At(ProtocolDecoder.Float(p["from"]?["x"]), ProtocolDecoder.Float(p["from"]?["z"])), At(ProtocolDecoder.Float(p["to"]?["x"]), ProtocolDecoder.Float(p["to"]?["z"])), Valid, .023f);
-                    else Ring(ProtocolDecoder.Float(p["x"]), ProtocolDecoder.Float(p["z"]), .29f, Valid);
+                    if (!(actionTrenchPreview?[pass == 0 ? "positions" : "skipped"] is JArray parts)) continue;
+                    var color = pass == 0 ? Valid : Invalid;
+                    foreach (var p in parts)
+                    {
+                        if (Current == Mode.Road) Line(At(ProtocolDecoder.Float(p["from"]?["x"]), ProtocolDecoder.Float(p["from"]?["z"])), At(ProtocolDecoder.Float(p["to"]?["x"]), ProtocolDecoder.Float(p["to"]?["z"])), color, .023f);
+                        else Ring(ProtocolDecoder.Float(p["x"]), ProtocolDecoder.Float(p["z"]), .29f, color);
+                    }
                 }
             }
             else if (units.Selected.Count <= 16)

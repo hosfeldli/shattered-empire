@@ -84,7 +84,8 @@ namespace SE.Runtime.Session
         /// <summary>Positive messages worth a toast (spec B3); every other success is silent.</summary>
         static bool ToastWorthy(string text) =>
             text == "Construction started" || text == "Upgrade started" || text == "Rally point set" ||
-            text.Length > 7 && char.IsDigit(text[0]) && text.EndsWith(" queued");
+            text.Length > 7 && char.IsDigit(text[0]) && text.EndsWith(" queued") ||
+            text.Contains(" skipped");   // a stroke or perimeter built in part says what it left out (2026-11-17)
 
         /// <summary>Refusals and failures show for 3 s; only allow-listed successes show (1.5 s).</summary>
         public void Say(string text, bool good, float time)
@@ -733,7 +734,7 @@ namespace SE.Runtime.Session
             switch (Current)
             {
                 case Mode.Place: return "Click a highlighted site · drag to place several · Shift keeps placing · right-click or Esc to stop";
-                case Mode.Road: return "Drag the route · release to build · Esc to cancel";
+                case Mode.Road: return "Drag the route · blocked segments are skipped · release to build · Esc to cancel";
                 case Mode.Bridge: return "Drag from one bank to the other · release to build";
                 case Mode.Trench: return "Drag the trench line · blocked hexes are skipped · release to dig";
                 case Mode.Growth: return "Click where the city should grow";

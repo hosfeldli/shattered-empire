@@ -2284,3 +2284,170 @@ Played in the Unity editor (play mode at 1280×720, local server on :8093). Mous
 - Factory and industry smoke was not looked at separately, only combat, wreck and fire smoke.
 - A wheel detail longer than about three lines is still clipped at its end. The build wheel's defense texts with the influence sentence are the longest.
 - The cloud server needs a deploy for the sketch fixes (start failure, bases on other landmasses).
+
+## Playtest fixes and balance pass (2026-11-17)
+
+Playtest report: six rifle squads destroyed 2 outposts, 4 bunkers, 6 tanks and 2 autonomous tanks; trenches and roads refused whole strokes; base perimeters needed every outer lot in sight; mortars too strong.
+
+### Root cause: infantry beat armour and fortifications
+
+Reproduced headless (`D:/Projects/se_scratch/balance/duel.mjs`: flat arena, attack-move, 3 seeds). Without barracks upgrades, the rifles already lost. With the upgrades they won, through three separate faults:
+
+1. **A Body Armour bug (the main cause).** `armourDamage` capped a lethal hit at the top man's remaining HP. That left the squad on "n men + 1 HP", so every later lethal hit did **0** damage until the 8 plates ran out. In practice an armoured squad shrugged off about 8 tank shells or bunker bursts. The trace showed 28 of 54 tank shells with `d:0 ar:1`.
+   - Fix: a save now spares exactly one of the men the hit would kill, and the rest of the damage lands. A man already left on 1 HP is not spared again.
+2. **The Rocket Teams kit was a free AT squad.** Each rifle squad fired a 34-damage `atgun` rocket every 14 s, at 1.1× rifle range. That outranged the tank gun, and six squads one-shot a tank every volley. Rockets and grenades also hit structures at full strength.
+3. **Structures had no armour class.** Rifles, machine guns, rockets and grenades hit bunkers and outposts like any other building.
+
+With Body Armour alone, 3 rifle squads took a bunker to 5% HP. With Rocket Teams alone, 6 rifles (420) beat 2 tanks (630).
+
+### Fixes
+
+- **Structure armour** (`actionCombat.structureArmour`, `FORTIFIED_VS`). These are `armor: 'fortified'`: HQ, barricade, perimeter turret, watchtower, bunker, AT emplacement, AA battery, artillery emplacement, outpost and missile silo. Damage multipliers against them, applied after the shooter's `antiBuilding`:
+
+  | Weapon | Multiplier |
+  |---|---|
+  | Small arms | ×0.35 |
+  | Autocannon | ×0.6 |
+  | Flak | ×0.5 |
+  | Mortar | ×0.65 |
+  | Grenade kit | ×0.4 |
+  | Rocket kit | ×0.55 |
+  | Tank guns, field guns, fortress guns, howitzers, missiles, bombs, aircraft rockets and drones | ×1 |
+
+  Ring facilities and support posts are unchanged.
+- **Tracked armour against small arms:** ×0.5 on top of `vsArmor`. Heavy Armor still gives immunity.
+- **Tanks fire HE at infantry:** `vsInfantry` is 1.25 for the tank and 1.2 for the autonomous tank.
+- **Projectile `kit` tag:** projectiles carry a `kit` tag (`grenade` or `rocket`), so structure armour can tell the kit apart from a real AT gun.
+- **Per-unit fire cooldown:** new `def.fireCooldown` (used by the mortar).
+
+### Changed numbers
+
+| What | Before | After |
+|---|---|---|
+| Body Armour save | absorbs the whole lethal hit (bug) | spares one man per lethal hit, once per man |
+| Rocket Teams kit | 34 dmg / 14 s, range ×1.1 | 20 dmg / 24 s, rifle range (`KIT` in actionUpgrades.js) |
+| Small arms → fortified structures | ×1 | ×0.35 (other weapons per table above) |
+| Small arms → tracked vehicles | ×vsArmor | ×vsArmor ×0.5 |
+| Tank HP / vs infantry | 280 / ×1 | 330 / ×1.25 |
+| Autonomous tank HP / vs infantry | 420 / ×1 | 480 / ×1.2 |
+| Mortar team cost | 120 M / 30 E | 150 M / 45 E |
+| Mortar fire interval | 3.0 s | 4.5 s |
+| Mortar HP | 80 | 120 (40 per man) |
+| Mortar shell atk | 13 | 15 (sustained fire −23%) |
+| Mortar train time | 19 s | 21 s |
+| Rifle squad cost | 70 M | 80 M |
+| Militia cost | 48 M | 54 M (keeps rifle vs militia even) |
+| Exo-armoured infantry | 260/135, 230 HP, atk 27 | 240/120, 400 HP, atk 34 |
+| Field gun atk | 24 | 27 (keeps beating tanks at equal cost after the tank HP change) |
+
+### Before and after
+
+The headless duels below are means of 3 seeds. "Kit" is grenades, rockets, infantry training, body armour and marksmen.
+
+| Scenario | Before | After |
+|---|---|---|
+| 6 rifles vs 6 tanks + 2 autonomous tanks | tanks win, keep 99% | tanks win, keep 99% |
+| 6 kitted rifles vs 6 tanks + 2 autonomous tanks | tanks win, keep 75% (1 tank lost) | tanks win, keep 93% (none lost) |
+| 6 kitted rifles vs 2 tanks | **rifles win, keep 97% (no squad lost)** | tanks win, keep 59% |
+| 9 kitted rifles (equal cost) vs 2 tanks | – | about even (tanks win 2 of 3) |
+| 6 kitted rifles vs 4 bunkers + 2 outposts | 1 of 6 structures destroyed, rest at 69% | none destroyed, 93% left |
+| 5 kitted rifles vs 2 bunkers (about equal cost) | **rifles win, keep 62%** | bunkers win, keep 76% |
+| 3 kitted rifles vs 1 bunker | **rifles win, keep 65%** | bunker wins, keeps 69% |
+| 6 kitted rifles vs 1 outpost | **rifles win, keep 80%** | outpost wins, keeps 67% |
+| 9 kitted rifles vs 3 bunkers | **rifles win, keep 80%** | bunkers win, keep 65% |
+| 2 tanks vs 3 bunkers | tanks win, keep 52% | tanks win, keep 93% |
+| 3 field guns / 2 SP guns / 3 mortars vs 3 bunkers | attacker wins, no losses | attacker wins, no losses (mortars 58 s → 103 s) |
+| 5 AT vs 2 tanks | AT wins, keeps 59% | AT wins, keeps 42% |
+
+Equal-cost mirror results come from `tools/action-mirror.mjs 1800 120 3` and the extra pairs in `se_scratch/balance/pairs.txt`.
+
+| Pair (A vs B) | Before | After |
+|---|---|---|
+| Rifles vs tank | B 0.54 | B 0.88 |
+| Rifles vs mech infantry | even | B 0.82 |
+| Rifles vs militia | even | even |
+| Rifles vs mortar | even | even |
+| AT vs tank | A 0.59 | A 0.42 |
+| AT vs autonomous tank | A 0.58 | A 0.44 |
+| Tank vs field gun | B 0.32 | B 0.32 |
+| Autonomous tank vs field gun | even | even |
+| Exo infantry vs rifles | **B 0.75** | A 0.35 |
+| Exo infantry vs AT | A 0.74 | A 0.89 |
+| Mortar vs tank | B 0.52 | B 0.79 |
+| SP gun vs tank | A 0.30 | even |
+| Missile battery vs tank | A 0.59 | A 0.19 |
+
+AI balance sims (`tools/action-balance.mjs` on 6 maps, seeds 1 and 2, 22 min, `--teams=0,1`):
+- Match lengths and contact times are similar.
+- The rifle value ratio fell from 1.69 to 1.60, and the mortar's from 0.78 to 0.55.
+- The AI reaches Tier II late, so it fields almost no vehicles (11 to 33 tanks in 12 games). These sims say little about armour; the duels and mirrors above are the evidence.
+
+### Trenches and roads: forgiving strokes
+
+Both now match the terrain brush: the valid hexes or segments are built, the rest are skipped, and the order is refused only when nothing valid remains.
+
+**Server: trenches** (`actionBases.trenchLine`)
+- Each hex is checked separately. A hex is skipped for any of these reasons: `road`, `territory`, `hidden`, `dug`, `blocked` (walls crossed inside it), `ground`, `base` or `contested`.
+- The preview returns `positions` and `skipped` (`{tile, x, z, why}`).
+- A commit returns `{hexes, skipped}` and charges only for the dug hexes.
+- A preview with nothing valid still carries `skipped` beside the error and code.
+
+**Server: roads** (`actionEconomy.roadBuild`)
+- Each edge is checked separately. An edge is skipped for any of these reasons: `hidden`, `territory`, `hostile`, `foundation` or `blocked`. A stroke segment with no route is skipped too.
+- The preview returns `skipped` (`{a, b, from, to, why}`). A commit returns `{edges, skipped}`.
+- The per-player limit of 24 road projects was dead code: the `return` sat inside a comment. It is restored.
+
+**Server: acks**
+- `commandAck` now passes `hexes`, `edges`, `placed`, `skipped` and `crossings` through on success. Before, the terrain brush's "N skipped" never reached the client.
+
+**Client**
+- `Commander.Action`: accepted hexes and segments draw green, skipped ones red. `StrokePreviewSkipped` counts them. On commit the client says "Trench construction started · N hexes skipped" (or "N segments skipped" for roads).
+- `Commander.ToastWorthy` now shows any message that contains " skipped". Successes were silently dropped before, so the terrain brush's skipped note was never shown either.
+- `Hud.DefenseBar`: a stroke with some bad hexes shows an amber "!  N hexes skipped (red) · the rest will be built" at the cursor instead of a refusal.
+- The road hint now says that blocked segments are skipped.
+
+### Base defenses with a fogged settlement
+
+**Server**
+- `fortifyBase` no longer needs the outer lots in sight. A lot that is blocked or contested is skipped. The positions that fit are built and paid for pro rata, and the order is refused only when none fits. It returns `{placed, skipped}`.
+- `constructDefense` (build-wheel defenses): a site or footprint hex in your own territory no longer needs to be in sight. Neutral ground must still be scouted.
+
+**Client**
+- The perimeter item reports "Perimeter: N positions started · M blocked lots skipped".
+
+### Tests
+
+- New `test/action-balance-2026-11-17.test.js` (7 tests) covers:
+  - structure armour
+  - tracked armour against small arms and the tank changes
+  - the Body Armour regression
+  - the kit and mortar numbers, and that the mortar's fire interval is honoured
+  - a partial trench stroke
+  - a partial road stroke and a fogged road stroke
+  - the base perimeter and field defenses on fogged own ground
+- Updated tests:
+  - body armour now expects 7 men (one spared), and the next hit must still land;
+  - "trench and road lines are refused through a building" became "…skip the hexes of a building and build the rest". A stroke wholly inside the walls is still refused with code `blocked`.
+- `npm test`: 330 tests, 329 pass, 0 fail, 1 skipped; the load test passes.
+
+### Verified in Unity
+
+Play mode at 1280×720 against a local server on :8093. Mouse drags were injected through the Input System, one queued state event per frame. Afterwards `se.server` was restored to `wss://game.liamhosfeld.com/ws`, the input settings were restored, and the server was stopped. Screenshots are in `D:/Projects/se_scratch/verify1117/`.
+
+**Checked, working**
+- Compile: 0 errors.
+- A trench stroke wholly outside the territory previewed with red rings and the refusal "Outside your territory…". Releasing it was refused.
+- A trench stroke across the border showed one green ring and two red rings (`v1117_trench_partial.png`). On release the server dug the one valid hex: the client showed 1 trench and the engineers walked out.
+- A road stroke previewed green segments inside the territory and red ones outside (`v1117_road_partial.png`). On release the 3 valid segments were built for 45 Materials (`v1117_perimeter.png`).
+- Base perimeter on the home base: the ack was `{placed: 4, skipped: 2}`. Before, the whole order would have been refused with "Clear and scout the outer perimeter lots".
+
+**Build**
+- "Shattered Empires/Build Windows x64": `build Succeeded: 286 MB, 0 errors, 53 s -> Build/Windows/ShatteredEmpires.exe`. `build_id.txt` is 0c46064; the working tree is uncommitted.
+
+### Unverified
+
+- The "N hexes skipped" commit message was not seen on screen. In play I found that `Say` dropped every non-allow-listed success, so a success was never shown. I made " skipped" messages toast-worthy afterwards; that change compiles and is in the build, but was not re-run in play.
+- The amber cursor note was confirmed through its element state (text "!  … hexes skipped (red) · the rest will be built", warn class, displayed). It did not appear in the screenshots, because injected input does not move the UI pointer that places it.
+- The fogged-perimeter case is covered by a server test only. In play the base was in sight; the 2 lots skipped there were blocked lots.
+- Aircraft (helicopter, swarm, bomber) could not be judged in the mirror arena, which has no airfield, so they barely fight there. Their numbers are unchanged.
+- The cloud server needs a deploy for all of the above.

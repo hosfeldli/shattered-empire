@@ -182,13 +182,18 @@ test('functional upgrades change behaviour: heavy armor, body armour, men and sq
   assert.equal(menOf(squad), 8); assert.equal(squadFirepower(squad), 1);
   squad.hp = squad.maxHp / 2;
   assert.equal(menOf(squad), 4); assert.equal(squadFirepower(squad), .5);
-  // body armour: the hit that would kill a man is absorbed once per man
+  // body armour: a lethal hit spares one of the men it would kill, once per man (2026-11-17: not the whole hit)
   squad.hp = squad.maxHp;
   g.civs[0].techs.add('body_armor');
   const per = squad.maxHp / 8;
-  damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);
-  assert.equal(menOf(squad), 8, 'the lethal hit is absorbed');
+  damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);   // kills two men unarmoured (cover and def take the rest)
+  assert.equal(menOf(squad), 7, 'one of the two men is spared');
   assert.equal(squad.plates, 1);
+  // a spared man is not spared twice, and later hits still land (it used to absorb every hit until the plates ran out)
+  const before = squad.hp;
+  g.time += 1;
+  damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);
+  assert.ok(squad.hp <= before - per, 'the next lethal hit still kills men');
   const snap = g.unitSnapshot(g.civs[0], { god: true });
   const row = snap.units.find((r) => r[0] === squad.id);
   assert.equal(row[row.length - 1][8], menOf(squad), 'men count in the unit record extra[8]');
@@ -230,7 +235,7 @@ test('income accrues every tick at 10 Hz', () => {
   assert.ok(Math.abs(civ.res.materials - m - r * .1) < 1e-9);
 });
 
-test('trench and road lines are refused through a building (code blocked)', () => {
+test('trench and road strokes skip the hexes of a building and build the rest (refused only when nothing remains)', () => {
   const g = create(); rich(g);
   g.world.owner.fill(0);
   const p = spot(g, 0, 'bunker', null, (t) => !g.world.road[t] && [0, 3].every((d) => NB[t * 6 + d] >= 0 && !g.world.road[NB[t * 6 + d]]));
@@ -240,15 +245,23 @@ test('trench and road lines are refused through a building (code blocked)', () =
   const bunker = [...g.buildings.values()].find((b) => b.type === 'bunker' && distance(b, p) < .5);
   assert.ok(bunker, 'the bunker is on the map');
   const across = [{ x: bunker.x - 1.6, z: bunker.z }, { x: bunker.x + 1.6, z: bunker.z }];
-  for (const preview of [true, false]) {
-    const t = g.command(0, { c: 'trenchWorld', points: across, preview });
-    assert.equal(t.code, 'blocked', t.error);
-    assert.match(t.error, /runs through the bunker/i);
-  }
-  assert.ok(![...g.fieldworks.values()].length, 'nothing was dug');
-  // the same line moved clear of the walls is not refused for the building
-  const beside = g.command(0, { c: 'trenchWorld', points: across.map((q) => ({ x: q.x, z: q.z + 1.4 })), preview: true });
-  assert.notEqual(beside.code, 'blocked');
+  // 2026-11-17: the line across the bunker is dug either side of it; the bunker's hex is skipped (red in preview)
+  const bunkerTile = tileAt(bunker.x, bunker.z);
+  const plan = g.command(0, { c: 'trenchWorld', points: across, preview: true });
+  assert.ok(plan.reply?.trench, plan.error);
+  assert.ok(plan.reply.trench.positions.length >= 2, 'hexes either side of the bunker are kept');
+  assert.ok(plan.reply.trench.skipped.some((p) => p.tile === bunkerTile && p.why === 'blocked'), 'the bunker hex is skipped as blocked');
+  assert.ok(!plan.reply.trench.positions.some((p) => p.tile === bunkerTile));
+  const dug = g.command(0, { c: 'trenchWorld', points: across });
+  assert.ok(!dug.error, dug.error);
+  assert.equal(dug.hexes, plan.reply.trench.positions.length);
+  assert.ok(dug.skipped >= 1);
+  assert.ok(!g.fieldworks.has(bunkerTile), 'nothing dug inside the walls');
+  // a stroke that lies wholly inside the walls is refused (code blocked) and still previews its skipped hex
+  const inside = g.command(0, { c: 'trenchWorld', points: [{ x: bunker.x - .05, z: bunker.z }, { x: bunker.x + .05, z: bunker.z }], preview: true });
+  assert.equal(inside.code, 'blocked', inside.error);
+  assert.match(inside.error, /runs through the bunker/i);
+  assert.ok(inside.reply.trench.skipped.length >= 1);
   // a road through the building's hex
   const t = tileAt(bunker.x, bunker.z);
   const road = g.command(0, { c: 'roadBuild', points: [centerOf(NB[t * 6 + 3]), centerOf(NB[t * 6])], preview: true });

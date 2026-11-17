@@ -111,6 +111,8 @@ export function influenceRing(game, civ) {
   return ring;
 }
 /** Build-wheel ground: your own territory, and for defenses (def.defense) also neutral ground; never another player's land. */
+/** A build site counts as known when it is visible now or lies in your own territory. */
+const known = (game, civ, t) => !!civ.visible[t] || game.world.owner[t] === civ.id;
 export const placeableBy = (game, civ, def, t) => { const o = game.world.owner[t]; return o === civ.id || !!def.defense && o < 0; };
 /** The price of a build-wheel structure at a tile: defenses outside the ring of influence cost DEFENSE_INFLUENCE.factor ×. */
 export function fieldCost(game, civ, type, tile) {
@@ -127,7 +129,9 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
   const tile = tileAt(point.x, point.z);
   if (civ.age + 1 < def.tier) return { error: 'This defense requires more advanced global technology.' };
-  if (tile < 0 || !civ.visible[tile]) return { error: 'Scout the construction site so it is currently visible.' };
+  // 2026-11-17: ground in your own territory need not be in sight (fogged corners of a settlement no longer block
+  // its defenses); neutral ground must still be scouted.
+  if (tile < 0 || !known(game, civ, tile)) return { error: 'Scout the construction site so it is currently visible.' };
   if (!placeableBy(game, civ, def, tile)) return def.defense
     ? { error: 'Defenses go on your own territory or neutral ground, never in another player\'s territory.', code: 'territory' }
     : { error: 'Build only inside your own territory.', code: 'territory' };
@@ -141,7 +145,7 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
   if (def.width) for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1],[0,-1],[0,1],[-1,0],[1,0]]) {
     const x = point.x + sx * def.width * .5 * Math.cos(yaw) + sz * def.depth * .5 * Math.sin(yaw);
     const z = point.z - sx * def.width * .5 * Math.sin(yaw) + sz * def.depth * .5 * Math.cos(yaw), t = tileAt(x, z);
-    if (t < 0 || !civ.visible[t] || !placeableBy(game, civ, def, t) || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
+    if (t < 0 || !known(game, civ, t) || !placeableBy(game, civ, def, t) || !game.nav.canStand(x,z,{...LIGHT_GROUND,radius:.025}) || Math.abs(game.world.elev[t] - game.world.elev[tile]) > .10)
       return { error: 'The rotated footprint needs visible, level and unobstructed ground.' };
   }
   if (game.hasEnemyAt({ ...point, radius: .75 }, civ.id)) return { error: 'The position is contested.' };
@@ -242,8 +246,9 @@ export function fortifyBase(game, civ, site) {
   const existing = [...game.buildings.values()].filter((b) => b.owner === civ.id && b.site === site.id && b.perimeterSlot);
   const missing = Array.from({ length: 6 }, (_, i) => i + 1).filter((i) => !existing.some((b) => b.perimeterSlot === i));
   if (!missing.length) return { error: 'All six perimeter positions already exist. Repair damaged defenses from their controls.' };
-  const cost = Object.fromEntries(Object.entries(CITY_DEFENSES.cost).map(([key, value]) => [key, Math.ceil(value * missing.length / 6)]));
-  const error = affordable(civ, cost); if (error) return error;
+  // 2026-11-17: your own base's perimeter lots need not be in sight (a fogged outer lot no longer blocks the
+  // purchase), and a lot that is blocked or contested is skipped: the positions that fit are built and paid for
+  // pro rata; the rest can be added later. Refused only when none fits.
   const plans = [];
   for (const slot of missing) {
     const type = slot <= 4 ? 'barricade' : 'city_turret', def = ACTION_BUILDINGS[type];
@@ -252,14 +257,16 @@ export function fortifyBase(game, civ, site) {
     for (const offset of [0, .16, -.16]) for (const radius of [3.0, 3.35, 3.7]) {
       const a = angle + offset, p = { x: site.x + Math.sin(a) * radius, z: site.z + Math.cos(a) * radius, yaw: a };
       const tile = tileAt(p.x, p.z);
-      if (point || tile < 0 || !civ.visible[tile] || game.hasEnemyAt({ ...p, radius: .7 }, civ.id) ||
+      if (point || tile < 0 || game.hasEnemyAt({ ...p, radius: .7 }, civ.id) ||
         plans.some((q) => distance(q.point, p) < def.radius + ACTION_BUILDINGS[q.type].radius + .15) ||
         !game.nav.canStand(p.x, p.z, { ...LIGHT_GROUND, radius: def.radius })) continue;
       point = p;
     }
-    if (!point) return { error: 'Clear and scout the outer perimeter lots before purchasing defenses.' };
-    plans.push({ type, point, slot });
+    if (point) plans.push({ type, point, slot });
   }
+  if (!plans.length) return { error: 'Clear the outer perimeter lots before purchasing defenses.' };
+  const cost = Object.fromEntries(Object.entries(CITY_DEFENSES.cost).map(([key, value]) => [key, Math.ceil(value * plans.length / 6)]));
+  const error = affordable(civ, cost); if (error) return error;
   pay(civ, cost);
   for (const plan of plans) {
     const b = addFacility(game, civ, site, plan.type, tileAt(plan.point.x, plan.point.z), { point: plan.point, duration: CITY_DEFENSES.time });
@@ -267,7 +274,7 @@ export function fortifyBase(game, civ, site) {
     if (site.defenseLevel > 1) setLevel(b, site.defenseLevel);
   }
   hq.project = { kind: 'perimeter', total: CITY_DEFENSES.time, left: CITY_DEFENSES.time };
-  return {};
+  return { placed: plans.length, skipped: missing.length - plans.length };
 }
 
 export function startUpgrade(game, civ, key, buildingId = 0) {
@@ -520,39 +527,63 @@ export function productionStep(game, dt) {
 }
 
 export function trenchLine(game, civ, points, reverse, preview, { anywhere = false } = {}) {
-  const byTile = new Map();
+  const byTile = new Map(), walls = new Map();   // walls: tile -> the structure the stroke crosses inside it
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1], b = points[i];
     const len = distance(a, b);
     if (len > 38) return { error: 'Draw a shorter trench line on visible, buildable ground.' };
     const steps = Math.max(1, Math.ceil(len / .38));
+    let last = null;
     for (let n = 0; n <= steps; n++) {
       const p = game.lerpPoint(a, b, n / steps);
       const t = tileAt(p.x, p.z);
+      // the stretch of stroke since the last sample: a structure on it blocks the hexes at both ends
+      const wall = last && structureOnSegment(game, last, p, .14);
+      if (wall) for (const q of [last, p]) { const k = tileAt(q.x, q.z); if (k >= 0 && !walls.has(k)) walls.set(k, wall.label); }
+      last = p;
       if (t >= 0 && !byTile.has(t) && byTile.size < 22) {
         const front = Math.atan2(-(b.z - a.z), game.dx(a.x, b.x)) + (reverse ? Math.PI : 0);
         byTile.set(t, { tile: t, ...p, facing: front });
       }
     }
   }
-  // A trench line never cuts through a structure: a stroke across a building's walls or an outpost's compound is
-  // refused as a whole (2026-11-16: a line was accepted straight through a relay building).
-  for (let i = 1; i < points.length; i++) {
-    const hit = structureOnSegment(game, points[i - 1], points[i], .14);
-    if (hit) return { error: `The trench line runs through ${hit.label}: draw it around the structure.`, code: 'blocked' };
+  // 2026-11-17: forgiving strokes, like the terrain brush. Every hex of the line that can be dug is kept; the
+  // others are skipped and listed in `skipped` ({ tile, x, z, why }), and the order is refused only when no hex
+  // remains. Roads stay open as crossings (see trenchRoadMask); a hex inside a structure's walls or an outpost
+  // compound is skipped (before, a stroke across a building was refused as a whole).
+  const skipped = [], why = {};
+  let crossings = 0, outside = 0, blockedBy = null;
+  const valid = [];
+  for (const p of byTile.values()) {
+    let code = null;
+    if (p.tile < 0 || p.tile >= N) code = 'ground';
+    else if (game.world.road[p.tile]) { code = 'road'; crossings++; }
+    else if (!anywhere && game.world.owner[p.tile] !== civ.id) { code = 'territory'; outside++; }
+    else if (!civ.visible[p.tile]) code = 'hidden';
+    else if (game.fieldworks.has(p.tile)) code = 'dug';
+    else {
+      if (walls.has(p.tile)) { code = 'blocked'; blockedBy ??= walls.get(p.tile); }
+      else if (!game.nav.canStand(p.x, p.z, LIGHT_GROUND)) code = 'ground';
+      else if (game.sites.some((s) => distance(s, p) < s.radius + .25 || s.slots && s.parcels.some((lot) => distance(lot, p) < .75))) code = 'base';
+      else if (game.hasEnemyAt({ ...p, radius: .75 }, civ.id)) code = 'contested';
+    }
+    if (code) { skipped.push({ tile: p.tile, x: p.x, z: p.z, why: code }); why[code] = (why[code] || 0) + 1; }
+    else valid.push(p);
   }
-  // A trench line never cuts a road: tiles carrying a road (or a bridge) are left open as a crossing,
-  // and the trench sections either side end square at it (see trenchRoadMask).
-  const crossings = [...byTile.values()].filter((p) => p.tile >= 0 && game.world.road[p.tile]).length;
-  const outside = anywhere ? 0 : [...byTile.values()].filter((p) => p.tile >= 0 && game.world.owner[p.tile] !== civ.id).length;
-  const valid = [...byTile.values()].filter((p) => p.tile >= 0 && p.tile < N && !game.world.road[p.tile] && civ.visible[p.tile] && !game.fieldworks.has(p.tile) &&
-    (anywhere || game.world.owner[p.tile] === civ.id) &&
-    game.nav.canStand(p.x, p.z, LIGHT_GROUND) && !game.sites.some((s) => distance(s, p) < s.radius + .25 ||
-      s.slots && s.parcels.some((lot) => distance(lot, p) < .75)) && !game.hasEnemyAt({ ...p, radius: .75 }, civ.id));
   const cost = { materials: valid.length * 35 };
-  if (preview) return { reply: { t: 'ack', trench: { positions: valid.map((p) => ({ ...p, road: trenchRoadMask(game, p.tile) })), cost, crossings, outside } } };
-  if (!valid.length) return { error: outside ? 'Trenches can only be dug inside your own territory.' : crossings ? 'Trenches leave roads open: draw the line across open ground beside the road.' : 'Choose visible, clear ground outside protected city sites.',
-    code: outside ? 'territory' : undefined };
+  if (!valid.length) {
+    const code = Object.entries(why).sort((x, y) => y[1] - x[1])[0]?.[0];
+    const error = code === 'territory' ? 'Trenches can only be dug inside your own territory.'
+      : code === 'road' ? 'Trenches leave roads open: draw the line across open ground beside the road.'
+      : code === 'blocked' ? `The trench line runs through ${blockedBy}: draw it around the structure.`
+      : code === 'hidden' ? 'Scout the trench line so its ground is currently visible.'
+      : code === 'contested' ? 'The trench line is contested by enemy troops.'
+      : 'Choose visible, clear ground outside protected city sites.';
+    const refusal = { error, ...((code === 'territory' || code === 'blocked') && { code }) };
+    // a preview still carries the skipped hexes so the client can draw them red under the refusal
+    return preview ? { ...refusal, reply: { t: 'ack', ...refusal, trench: { positions: [], skipped, cost, crossings, outside } } } : refusal;
+  }
+  if (preview) return { reply: { t: 'ack', trench: { positions: valid.map((p) => ({ ...p, road: trenchRoadMask(game, p.tile) })), skipped, cost, crossings, outside } } };
   const error = affordable(civ, cost);
   if (error) return error;
   pay(civ, cost);
@@ -563,7 +594,7 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
       route, progress: 0, hp: 100, state: 'building' });
   }
   game.fwVer++;
-  return crossings ? { crossings } : {};
+  return { hexes: valid.length, skipped: skipped.length, ...(crossings && { crossings }) };
 }
 
 /**
