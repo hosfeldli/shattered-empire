@@ -51,8 +51,11 @@ namespace SE.Runtime.Session
         void TerrainBrushMode(float time, bool overUi)
         {
             cam.BrushScroll = true;   // Ctrl + wheel sizes the brush instead of zooming
-            if (InputFacade.RightDown && !brushDragging) { Cancel(); return; }
-            if (InputFacade.RightDown) { ResetBrush(); return; }   // right-click while painting drops the stroke
+            switch (StrokeRightClickInput(brushDragging))   // the shared stroke rules (Commander.Action.cs)
+            {
+                case StrokeRightClick.EndTool: Cancel(); return;
+                case StrokeRightClick.DropStroke: ResetBrush(); return;   // right-click while painting drops the stroke
+            }
             int max = MaxBrushRadius;
             int size = brushRadius;
             if (InputFacade.Action("brush_smaller")) size--;
@@ -109,8 +112,7 @@ namespace SE.Runtime.Session
         {
             if (brushStroke.Count == 0) { ResetBrush(); return; }
             SendBrush(false, time);
-            bool keep = InputFacade.Shift;
-            if (keep) { ResetBrush(); cam.BrushScroll = true; }
+            if (KeepToolAfterStroke) { ResetBrush(); cam.BrushScroll = true; }
             else Cancel();
         }
 

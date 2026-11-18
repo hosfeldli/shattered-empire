@@ -29,6 +29,8 @@ namespace SE.Runtime.Military
         // floating role glyphs: billboarded plates, no shadows
         InstanceBatch glyphs;
         byte[] menMax = new byte[0];
+        // per-slot ground ring diameter (set once when a slot is (re)assigned, see RingSizeOf)
+        float[] ringSize = new float[0];
         float3 figureTeam = new float3(.8f, .8f, .8f);
         quaternion cameraRotation = quaternion.identity;
         Func<int, float4> lastCivColor;
@@ -39,8 +41,8 @@ namespace SE.Runtime.Military
         /// </summary>
         public static int SquadMen(string type) => type switch
         {
-            "rifle_squad" => 8, "militia" => 6, "special_forces" => 5, "exo_infantry" => 4, "anti_armor" => 3,
-            "mortar_team" => 3, "engineer" => 1, _ => 6,
+            "rifle_squad" => 12, "militia" => 10, "special_forces" => 8, "anti_armor" => 5,   // exo_infantry: a vehicle (IFV) since 2026-11-18
+            "mortar_team" => 4, "engineer" => 1, _ => 6,
         };
 
         void CreateReadability()
@@ -56,6 +58,7 @@ namespace SE.Runtime.Military
         void EnsureReadability(int s)
         {
             if (menMax.Length < s) Array.Resize(ref menMax, s);
+            if (ringSize.Length < s) Array.Resize(ref ringSize, s);
         }
 
         void BeginReadability(Func<int, float4> civColor)
@@ -93,42 +96,72 @@ namespace SE.Runtime.Military
         /// <summary>Whether figure f of a full-strength squad has fallen (a fixed, id-seeded order, so the rest keep their places).</summary>
         static bool Fallen(int f, int id, int full, int alive) => (f * 7 + (id & 1023)) % full >= alive;
 
-        /// <summary>
-        /// The team outline circle under a ground unit. It keeps a minimum on-screen size as the camera pulls back,
-        /// so troops are easy to find at any zoom; the selection ring replaces it when selected.
-        /// </summary>
         /// <summary>World diameter of a squad's team ring (outer edge; the thin band's inner edge is 0.93 of it).</summary>
         const float SquadRingSize = .6f;
         /// <summary>The farthest a squad's man (his feet) may stand from the squad's centre: inside the ring's band, less his width.</summary>
         const float SquadRingReach = SquadRingSize * .465f - .035f;
 
         /// <summary>
+        /// The ground ring's world diameter by footprint (overhaul §27): a squad's ring holds its men (.6); a one-man
+        /// unit (the engineer) gets a ring his own size (.30) rather than an empty squad circle; vehicles follow their
+        /// drawn hulls (true-scale meshes, UnitRenderer.Update), so a tank's ring is wider than a buggy's.
+        /// Cached per slot when the slot is assigned (<see cref="ringSize"/>): nothing is looked up per frame.
+        /// </summary>
+        static float RingSizeOf(Kind kind, int men)
+        {
+            switch (kind)
+            {
+                case Kind.Infantry: case Kind.Mortar: case Kind.Exo: return men <= 1 ? .30f : SquadRingSize;
+                case Kind.AutoTank: return .40f;
+                case Kind.SpGun: return .38f;
+                case Kind.Tank: return .36f;
+                case Kind.Apc: case Kind.Launcher: return .34f;
+                case Kind.Ifv: return .35f;
+                case Kind.ArmoredCar: case Kind.AirDefense: return .33f;
+                case Kind.Truck: return .31f;
+                case Kind.FieldGun: return .29f;
+                case Kind.Buggy: return .27f;
+                default: return .30f;
+            }
+        }
+
+        /// <summary>How far a squad's men may stand from its centre: inside its own ring's band (a one-man ring is small).</summary>
+        float RingReach(int slot)
+        {
+            float size = slot < ringSize.Length && ringSize[slot] > 0 ? ringSize[slot] : SquadRingSize;
+            return Mathf.Min(SquadRingReach, size * .465f - .035f);
+        }
+
+        /// <summary>
         /// The height the flat team ring is laid at: the highest ground under its edge (four points), so on a
         /// slope the uphill side is not buried (it read as an open "C" with the men standing past it).
         /// </summary>
-        static float RingGround(in SE.Core.World.TerrainView view, float x, float ground, float z, Kind kind)
+        float RingGround(in SE.Core.World.TerrainView view, float x, float ground, float z, int slot)
         {
-            bool troop = kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo;
-            float r = (troop ? SquadRingSize : .30f) * .5f;
+            float r = (ringSize[slot] > 0 ? ringSize[slot] : .30f) * .5f;
             float h = ground;
             h = Mathf.Max(h, view.GroundHeight(x + r, z)); h = Mathf.Max(h, view.GroundHeight(x - r, z));
             h = Mathf.Max(h, view.GroundHeight(x, z + r)); h = Mathf.Max(h, view.GroundHeight(x, z - r));
             return h;
         }
 
-        void GroundRing(float x, float ground, float z, Kind kind, float4 team, bool selected, float camDist)
+        /// <summary>
+        /// The team outline circle under a ground unit. It keeps a minimum on-screen size as the camera pulls back,
+        /// so troops are easy to find at any zoom; the selection ring replaces it when selected.
+        /// </summary>
+        void GroundRing(float x, float ground, float z, int slot, float4 team, bool selected, float camDist)
         {
-            bool troop = kind == Kind.Infantry || kind == Kind.Mortar || kind == Kind.Exo;
-            // one fixed world size per kind, centred on the unit's (interpolated) position: it never follows the
-            // men's spread, casualties or formation. A squad's men are kept inside it (SquadRingReach, AddSquad).
-            // Only far out does a minimum on-screen size take over, and that changes only with the zoom.
-            float baseSize = troop ? SquadRingSize : .30f;
-            float size = Mathf.Max(baseSize, camDist * (troop ? .0105f : .0095f)) * (HighContrast ? 1.15f : 1f);
+            // one fixed world size per unit footprint (RingSizeOf), centred on the unit's (interpolated) position: it
+            // never follows the men's spread, casualties or formation. A squad's men are kept inside it (RingReach,
+            // AddSquad). Only far out does a minimum on-screen size take over, and that changes only with the zoom.
+            float baseSize = ringSize[slot] > 0 ? ringSize[slot] : .30f;
+            bool wide = baseSize >= .5f;
+            float size = Mathf.Max(baseSize, camDist * (wide ? .0105f : .0095f)) * (HighContrast ? 1.15f : 1f);
             float lift = .012f + camDist * .0004f;
             var colour = selected ? new float4(.54f, .92f, .62f, .35f)
                 : new float4(TeamWear(team.xyz), HighContrast ? .9f : .3f);
-            // a squad's ring is wide, so it uses the thin band (the same line weight as a vehicle's ring)
-            batches[(int)(troop ? Model.RingThin : Model.Ring)].Add(T(new float3(x, ground + lift, z), 0, new float3(selected && !troop ? size * 1.12f : size), colour));
+            // a wide (squad) ring uses the thin band, the same line weight as a vehicle's ring
+            batches[(int)(wide ? Model.RingThin : Model.Ring)].Add(T(new float3(x, ground + lift, z), 0, new float3(selected && !wide ? size * 1.12f : size), colour));
         }
 
         // ------------------------------------------------------------------ role glyphs
@@ -151,7 +184,7 @@ namespace SE.Runtime.Military
                 case Kind.Exo: return GlyphExo;
                 case Kind.Mortar: return GlyphMortar;
                 case Kind.Tank: case Kind.AutoTank: return GlyphArmor;
-                case Kind.Apc: return GlyphCarrier;
+                case Kind.Apc: case Kind.Ifv: return GlyphCarrier;
                 case Kind.ArmoredCar: case Kind.Buggy: return GlyphRecon;
                 case Kind.FieldGun: case Kind.SpGun: case Kind.Launcher: return GlyphArtillery;
                 case Kind.AirDefense: return GlyphAirDefense;
@@ -217,6 +250,7 @@ namespace SE.Runtime.Military
                     GlyphBar(centre + math.rotate(cameraRotation, new float3(s * .27f, 0, 0)), 0, w, s * .3f, L, th, ink);
                     if (kind == Kind.ArmoredCar || kind == Kind.Buggy) GlyphBar(centre, -diag, w * .8f, s * .9f, L * 1.4f, th, ink);
                     else if (kind == Kind.Apc) GlyphBar(centre, 0, w * .8f, s * .3f, L * 1.4f, th, ink);
+                    else if (kind == Kind.Ifv) { GlyphBar(centre, diag, w * .8f, s * .4f, L * 1.4f, th, ink); GlyphBar(centre, -diag, w * .8f, s * .4f, L * 1.4f, th, ink); }   // mechanised infantry: X in the tracks oval
                     break;
                 case GlyphArtillery:
                     GlyphBar(centre, .785f, s * .22f, s * .22f, L, th, ink); break;

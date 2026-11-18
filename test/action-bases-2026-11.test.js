@@ -37,10 +37,11 @@ test('build wheel placements: own territory only, except defenses also on neutra
   const r = g.command(0, { c: 'fieldBuild', type: 'bunker', point: hostile });
   assert.equal(r.code, 'territory', r.error);
   const neutral = [...Array(g.world.owner.length).keys()].find((t) => g.world.owner[t] < 0 && g.nav.canStand(centerOf(t).x, centerOf(t).z, ACTION_UNITS.rifle_squad));
-  // 2026-11-17: defenses may go on neutral ground (ring of influence, action-influence.test.js); other structures may not
+  // 2026-11-17: defenses may go on neutral ground (ring of influence, action-influence.test.js); W2: so may radar and
+  // repair posts (def.neutral, neutral-construction.test.js); a New Base may not
   g.civs[0].age = 1;   // radar and repair posts are Tier II
-  assert.equal(g.command(0, { c: 'fieldPreview', type: 'sensor_post', point: centerOf(neutral) }).code, 'territory');
-  assert.equal(g.command(0, { c: 'fieldPreview', type: 'repair_point', point: centerOf(neutral) }).code, 'territory');
+  assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'sensor_post', point: centerOf(neutral) }).code, 'territory');
+  assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'repair_point', point: centerOf(neutral) }).code, 'territory');
   assert.equal(g.command(0, { c: 'fieldPreview', type: 'base_site', point: centerOf(neutral) }).code, 'territory');
   assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'guard_post', point: centerOf(neutral) }).code, 'territory');
   // 2026-11-17: trenches may be dug on neutral ground too (roads likewise); enemy land stays refused
@@ -177,17 +178,17 @@ test('functional upgrades change behaviour: heavy armor, body armour, men and sq
   g.civs[0].techs.add('heavy_armor');
   damageActionTarget(g, tank, shooter, 40, 'rifle');
   assert.equal(tank.hp, tank.maxHp, 'tracked vehicles ignore small arms with Heavy Armor');
-  // squads: 8 men, firepower falls with casualties
-  assert.equal(ACTION_UNITS.rifle_squad.men, 8);
-  assert.equal(menOf(squad), 8); assert.equal(squadFirepower(squad), 1);
+  // squads: 12 men (W3 2026-11-17, R3 decision: more men per squad; was 8), firepower falls with casualties
+  assert.equal(ACTION_UNITS.rifle_squad.men, 12);
+  assert.equal(menOf(squad), 12); assert.equal(squadFirepower(squad), 1);
   squad.hp = squad.maxHp / 2;
-  assert.equal(menOf(squad), 4); assert.equal(squadFirepower(squad), .5);
+  assert.equal(menOf(squad), 6); assert.equal(squadFirepower(squad), .5);
   // body armour: a lethal hit spares one of the men it would kill, once per man (2026-11-17: not the whole hit)
   squad.hp = squad.maxHp;
   g.civs[0].techs.add('body_armor');
-  const per = squad.maxHp / 8;
+  const per = squad.maxHp / 12;
   damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);   // kills two men unarmoured (cover and def take the rest)
-  assert.equal(menOf(squad), 7, 'one of the two men is spared');
+  assert.equal(menOf(squad), 11, 'one of the two men is spared');
   assert.equal(squad.plates, 1);
   // a spared man is not spared twice, and later hits still land (it used to absorb every hit until the plates ran out)
   const before = squad.hp;

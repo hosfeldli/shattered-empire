@@ -61,6 +61,49 @@ namespace SE.Runtime.CameraControl
             }
         }
 
+        /// <summary>
+        /// How far (in hexes) the focus may be scrolled past the edge of the map at mid and far zoom (user request
+        /// 2026-11-18: "scroll just a little bit further past the edge"). The margin scales with the zoom, so close in
+        /// the map edge can come to about the middle of the screen, and the ocean horizon fills what lies beyond.
+        /// </summary>
+        public float OverscrollHexes = 5f;
+        public float OverscrollMargin => Mathf.Clamp(Distance * .35f, 1.5f, OverscrollHexes * 1.5f);
+
+        /// <summary>
+        /// The range the focus is kept in (map coordinates). It used to keep the telephoto frame on the map (or the
+        /// focus on it); it now reaches <see cref="OverscrollMargin"/> further on every non-wrapping side.
+        /// </summary>
+        void FocusLimits(out float x0, out float x1, out float z0, out float z1)
+        {
+            var g = world.Grid;
+            float m = OverscrollMargin, ex = 0f, ez = 0f;
+            if (Telephoto && !Cam.orthographic)
+            {
+                float k = Distance * .8f;   // proportional to the zoom, so zooming never jumps the focus
+                float halfWide = .36f * Mathf.Max(1f, Cam.aspect) * k, halfDeep = .36f / Mathf.Sin(BasePitch * Mathf.Deg2Rad) * k;
+                float c = Mathf.Abs(Mathf.Cos(Yaw * Mathf.Deg2Rad)), s = Mathf.Abs(Mathf.Sin(Yaw * Mathf.Deg2Rad));
+                ex = halfWide * c + halfDeep * s; ez = halfWide * s + halfDeep * c;
+            }
+            // a frame wider than the map stays centred (within the margin); the limits meet continuously at that point
+            if (ex * 2 < g.Period) { x0 = ex - m; x1 = g.Period - ex + m; } else { x0 = g.Period * .5f - m; x1 = g.Period * .5f + m; }
+            if (ez * 2 < g.Depth) { z0 = ez - m; z1 = g.Depth - ez + m; } else { z0 = g.Depth * .5f - m; z1 = g.Depth * .5f + m; }
+        }
+
+        /// <summary>Slows a pan as the focus nears its limit, so it comes to rest at the edge instead of stopping dead.</summary>
+        void EaseAtEdges(ref Vector3 v)
+        {
+            if (world == null || !world.Ready) return;
+            FocusLimits(out float x0, out float x1, out float z0, out float z1);
+            float soft = Mathf.Max(.5f, OverscrollMargin * .6f);
+            if (!world.Grid.Wrap)
+            {
+                if (v.x > 0) v.x *= Mathf.Clamp01((x1 - Focus.x) / soft);
+                else if (v.x < 0) v.x *= Mathf.Clamp01((Focus.x - x0) / soft);
+            }
+            if (v.z > 0) v.z *= Mathf.Clamp01((z1 - Focus.z) / soft);
+            else if (v.z < 0) v.z *= Mathf.Clamp01((Focus.z - z0) / soft);
+        }
+
         /// <summary>A fixed pitch for cinematic shots (negative: follow the zoom).</summary>
         public float PitchOverride = -1f;
         /// <summary>Camera shake amount (set from nearby blasts; decays in the effects system).</summary>
@@ -155,6 +198,7 @@ namespace SE.Runtime.CameraControl
                 if (manual) { FollowTarget = null; jumping = false; }   // the player's hand always wins
                 var want = dir * Distance * (InputFacade.Shift ? 2.4f : 1.1f) * PanSpeed;
                 velocity = Vector3.Lerp(velocity, want, 1f - Mathf.Exp(-dt * 10f));
+                EaseAtEdges(ref velocity);
                 Focus += velocity * dt;
                 if (InputFacade.MiddleHeld && !PointerOverUi && !mouseRotate)
                 {
@@ -199,20 +243,12 @@ namespace SE.Runtime.CameraControl
             {
                 var g = world.Grid;
                 if (g.Wrap) Focus.x = g.BaseX(Focus.x);   // seam: shift by whole periods (invisible)
-                else Focus.x = Mathf.Clamp(Focus.x, 0, g.Period);
-                Focus.z = Mathf.Clamp(Focus.z, 0, g.Depth);
-                if (Telephoto && !Cam.orthographic)
-                {
-                    // the frame is kept on the map at every zoom (a little of the far ocean may show at the
-                    // rim), so panning to a corner of a small map does not reveal the void past the ocean slab
-                    float k = Distance * .8f;   // proportional to the zoom, so zooming never jumps the focus
-                    float halfWide = .36f * Mathf.Max(1f, Cam.aspect) * k, halfDeep = .36f / Mathf.Sin(BasePitch * Mathf.Deg2Rad) * k;
-                    float c = Mathf.Abs(Mathf.Cos(Yaw * Mathf.Deg2Rad)), s = Mathf.Abs(Mathf.Sin(Yaw * Mathf.Deg2Rad));
-                    float ex = halfWide * c + halfDeep * s, ez = halfWide * s + halfDeep * c;
-                    if (!g.Wrap) Focus.x = ex * 2 < g.Period ? Mathf.Clamp(Focus.x, ex, g.Period - ex) : g.Period * .5f;
-                    Focus.z = ez * 2 < g.Depth ? Mathf.Clamp(Focus.z, ez, g.Depth - ez) : g.Depth * .5f;
-                }
-                float y = world.GroundHeight(Focus.x, Focus.z);
+                FocusLimits(out float x0, out float x1, out float z0, out float z1);
+                if (!g.Wrap) Focus.x = Mathf.Clamp(Focus.x, x0, x1);
+                Focus.z = Mathf.Clamp(Focus.z, z0, z1);
+                // past the edge the focus stands over the ocean (sea level), not a clamped edge hex
+                bool onMap = Focus.z >= 0 && Focus.z <= g.Depth && (g.Wrap || (Focus.x >= 0 && Focus.x <= g.Period));
+                float y = onMap ? world.GroundHeight(Focus.x, Focus.z) : 0f;
                 Focus.y = Mathf.Lerp(Focus.y, Mathf.Max(0, y), 0.2f);
             }
             // look north (+z in Unity space) and down; yaw turns the view

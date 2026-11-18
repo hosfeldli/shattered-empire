@@ -29,6 +29,8 @@ namespace SE.Runtime.UI
         static readonly JToken QuoteUnset = new JValue("unset");
         JObject terrainChipPlan;
         int terrainChipRadius = -1;
+        static readonly JObject StrokeUnset = new JObject();
+        JObject strokeChipPlan = StrokeUnset;
         Vector2 cursorReasonAt = new Vector2(float.NaN, float.NaN);
 
         /// <summary>Kept for callers of the old defense bar (Hud.ActionContext): B now toggles the Build wheel.</summary>
@@ -72,6 +74,13 @@ namespace SE.Runtime.UI
             UiKit.Text(ChipKey("rotate_left", ","), "se-cmd-keycap", toolChipKeys);
             UiKit.Text(ChipKey("rotate_right", "."), "se-cmd-keycap", toolChipKeys);
             UiKit.Text("rotate", "se-cmd-toolchip-cost", toolChipKeys);
+            // repeated placement (2026-11-18): Shift-click places one and keeps the tool for the next
+            var shiftKey = UiKit.Text("Shift", "se-cmd-keycap", toolChipKeys);
+            shiftKey.style.marginLeft = 8;
+            UiKit.Text("place several", "se-cmd-toolchip-cost", toolChipKeys);
+            toolChipKeys.tooltip = "Rotate with " + ChipKey("rotate_left", ",") + " / " + ChipKey("rotate_right", ".")
+                + "\nShift-click to place several: the tool stays armed, and a click on a taken spot snaps beside it."
+                + "\nA spot that is close but not allowed (a road, a slope, an obstacle) snaps to the nearest valid hex: the ghost shows where.";
             var close = UiKit.IconButton("close", () => commander.Cancel(), "Cancel (Esc)", toolChip, 28);
             close.style.flexShrink = 0;
             cursorReason = UiKit.Fx(UiKit.Text("", "se-cmd-cursor-reason", root), "se-fx--follow se-fx--quick");
@@ -161,7 +170,7 @@ namespace SE.Runtime.UI
                     }
                     toolChipIcon.Kind = icon;
                     toolChipName.text = title;
-                    toolChipCost.text = cost; toolChipQuote = QuoteUnset; toolChipCost.RemoveFromClassList("se-cmd-toolchip-cost--surcharge");
+                    toolChipCost.text = cost; toolChipQuote = QuoteUnset; strokeChipPlan = StrokeUnset; toolChipCost.RemoveFromClassList("se-cmd-toolchip-cost--surcharge");
                     toolChipCost.style.display = cost.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
                     toolChipKeys.style.display = fieldBuild ? DisplayStyle.Flex : DisplayStyle.None;
                 }
@@ -190,14 +199,30 @@ namespace SE.Runtime.UI
                 toolChipCost.style.display = DisplayStyle.Flex;
             }
             else if (!terrainBrush) { terrainChipPlan = null; terrainChipRadius = -1; }
+            // road / trench stroke (§28): the stroke's total (server preview cost, else accepted parts × unit price);
+            // rebuilt only when the preview changes
+            bool strokeTool = tool && session.ActionRts && (commander.Current == Commander.Mode.Road || commander.Current == Commander.Mode.Trench);
+            if (strokeTool && !ReferenceEquals(commander.StrokePreview, strokeChipPlan))
+            {
+                strokeChipPlan = commander.StrokePreview;
+                string text = commander.StrokeChipText();
+                if (toolChipCost.text != text) toolChipCost.text = text;
+                toolChipCost.style.display = DisplayStyle.Flex;
+            }
+            else if (!strokeTool) strokeChipPlan = StrokeUnset;
             // the invalid placement reason sits at the cursor, only while invalid: field builds (territory, footprint)
             // and trench / road strokes the server refused in preview
             string reason = "";
             bool invalid = false;
+            bool snappedNote = false;
             if (fieldBuild)
             {
                 reason = commander.FieldPreviewReason ?? "";
                 invalid = commander.FieldPreviewParcel != null && !commander.FieldPreviewValid && reason.Length > 0 && !reason.StartsWith("Checking");
+                // snapped (2026-11-18): allowed, but not where the cursor is: an amber note says why and where it goes
+                // ("On a road · will be placed beside it"); the ghost and its footprint already stand there
+                snappedNote = !invalid && commander.FieldPreviewParcel != null && commander.FieldPreviewValid && commander.FieldPreviewSnapped && reason.Length > 0;
+                if (snappedNote) { reason = SnapCursorText(reason); invalid = true; }
             }
             else if (terrainBrush)
             {
@@ -220,15 +245,13 @@ namespace SE.Runtime.UI
             }
             // a valid defense spot beyond the ring of influence: an amber "!" warning at the cursor with the price
             bool surcharged = false;
-            if (fieldBuild && !invalid && commander.FieldPreviewParcel != null
+            if (fieldBuild && (!invalid || snappedNote) && commander.FieldPreviewParcel != null
                 && (!string.IsNullOrEmpty(commander.FieldPreviewNote) || commander.PlacingSurchargedDefense))
             {
-                float factor = ProtocolDecoder.Float(Defs?["RULESET"]?["influence"]?["factor"], 3);
-                string price = commander.FieldPreviewCost != null && !string.IsNullOrEmpty(commander.FieldPreviewNote) ? " · " + CmdCostText(commander.FieldPreviewCost) : "";
-                reason = $"!  ×{factor:0.#} cost here: outside your ring of influence{price}";
+                reason = SurchargeCursorText(snappedNote ? reason : null);
                 surcharged = invalid = true;
             }
-            cursorReason.EnableInClassList("se-cmd-cursor-reason--warn", surcharged || strokePartial);
+            cursorReason.EnableInClassList("se-cmd-cursor-reason--warn", surcharged || strokePartial || snappedNote);
             if (invalid && !IsPointerOverUi(InputFacade.MousePosition))
             {
                 if (cursorReason.text != reason) cursorReason.text = reason;
@@ -240,6 +263,32 @@ namespace SE.Runtime.UI
                 UiKit.Show(cursorReason);
             }
             else UiKit.Hide(cursorReason);
+        }
+
+        // cursor texts composed only when their parts change (the placement preview runs every frame)
+        string snapTextFrom, snapText;
+        string surchargeTextSnap, surchargeTextNote, surchargeText;
+        JToken surchargeTextCost = QuoteUnset;
+        bool surchargeTextHas;
+
+        string SnapCursorText(string note)
+        {
+            if (!ReferenceEquals(note, snapTextFrom)) { snapTextFrom = note; snapText = "→  " + note; }
+            return snapText;
+        }
+
+        /// <summary>The ×3 warning at the cursor ("!  ×3 cost here: outside your ring of influence · 390 Materials"), under a snap note when given.</summary>
+        string SurchargeCursorText(string snapNote)
+        {
+            var cost = commander.FieldPreviewCost;
+            string note = commander.FieldPreviewNote;
+            if (surchargeTextHas && ReferenceEquals(cost, surchargeTextCost) && ReferenceEquals(note, surchargeTextNote) && ReferenceEquals(snapNote, surchargeTextSnap)) return surchargeText;
+            surchargeTextHas = true; surchargeTextCost = cost; surchargeTextNote = note; surchargeTextSnap = snapNote;
+            float factor = ProtocolDecoder.Float(Defs?["RULESET"]?["influence"]?["factor"], 3);
+            string price = cost != null && !string.IsNullOrEmpty(note) ? " · " + CmdCostText(cost) : "";
+            string text = $"!  ×{factor:0.#} cost here: outside your ring of influence{price}";
+            surchargeText = snapNote != null ? snapNote + "\n" + text : text;
+            return surchargeText;
         }
     }
 }

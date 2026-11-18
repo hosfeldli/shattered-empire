@@ -5,10 +5,15 @@
 .DESCRIPTION
   Windows PowerShell 5.1 compatible. See docs/RELEASING.md.
 
-    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -DryRun          # rehearse everything, change nothing
-    powershell -ExecutionPolicy Bypass -File tools\release.ps1                  # server + client
-    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Server          # server only
+    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Version 0.5.0 -DryRun   # rehearse everything, change nothing
+    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Version 0.5.0           # server + client
+    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Server                  # server only
     powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Client -Version 0.5.0
+
+  Release notes gate: a client release (not -PackageOnly) needs -Version and docs/releases/<Version>/notes.json
+  that passes `node tools/release-notes.mjs validate <Version>` (with --allow-draft under -DryRun). The check runs
+  before anything remote, and stops -DryRun too. The notes folder is uploaded to
+  gs://<bucket>/downloads/release-notes/<Version>/ and the manifest entry gets notes {version, url}.
 
   Steps (each one is skipped when it is already done, so re-running is safe):
     1. sanity: service-account keys are git-ignored, untracked, unstaged and excluded by .gcloudignore;
@@ -148,6 +153,27 @@ if ($DryRun) { Warn 'DRY RUN: nothing will be built, deployed, uploaded or pushe
 if ($PackageOnly) { Warn 'PACKAGE ONLY: the client ZIP is made locally; nothing is uploaded or deployed' }
 if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') { Fail "-Version '$Version' is not like 0.5.0" }
 
+# ------------------------------------------------------------------ release notes gate (local only, before any gcloud call)
+# Players see these notes after updating (Runtime/UI/ReleaseNotes.cs). A client release cannot go out without them.
+$NotesRef = $null; $NotesFiles = @(); $NotesSince = ''
+if ($Client -and -not $PackageOnly) {
+    Step 'Release notes'
+    if (-not $Version) { Fail "-Version is required for a client release: players are shown docs/releases/<Version>/notes.json after updating (start one with: node tools/release-notes.mjs draft <Version>)" }
+    $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
+    if (-not $nodeCmd) { Fail 'node.exe not found (needed to validate the release notes)' }
+    $notesTool = Join-Path $Repo 'tools\release-notes.mjs'
+    $nargs = @($notesTool, 'validate', $Version)
+    if ($DryRun) { $nargs += '--allow-draft' }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $nout = & $nodeCmd.Source @nargs 2>&1; $ncode = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+    foreach ($l in @($nout)) { if ($l) { Info ([string]$l) } }
+    if ($ncode -ne 0) { Fail "release notes for $Version are missing or invalid: fix docs/releases/$Version/notes.json (see docs/RELEASING.md)" }
+    $NotesFiles = @((& $nodeCmd.Source $notesTool 'files' $Version) | Where-Object { $_ })
+    $NotesSince = [string](Get-Prop (Get-Prop (Get-Content -Raw -Encoding UTF8 (Join-Path $Repo "docs\releases\$Version\notes.json") | ConvertFrom-Json) 'since') 'version')
+    $NotesRef = [ordered]@{ version = $Version; url = "$Site/api/release-notes/$Version" }
+    Ok ("docs/releases/$Version/notes.json is valid ({0} file(s) to upload, since $NotesSince)" -f $NotesFiles.Count)
+}
+
 $script:Gcloud = Find-Gcloud
 $env:CLOUDSDK_CONFIG = $GcloudConfig
 if (-not (Test-Path $GcloudConfig)) {
@@ -198,6 +224,7 @@ function Check-Dirty([string]$what, [string[]]$files) {
 }
 if ($Server) { Check-Dirty 'server' $dirtyServer }
 if ($Client) { Check-Dirty 'client' $dirtyClient }
+if ($NotesRef) { Check-Dirty 'release notes' @($dirty | Where-Object { $_ -like "docs/releases/$Version/*" }) }
 
 if ($SkipTests) { Warn 'npm test skipped (-SkipTests)' }
 else {
@@ -302,6 +329,7 @@ if ($Client) {
     Info "manifest version '$mVersion', unity build '$mBuild', $($oldFiles.Count) file entr$(if ($oldFiles.Count -eq 1) { 'y' } else { 'ies' })"
     $NewVersion = $mVersion
     if ($Version) { $NewVersion = $Version }
+    if ($NotesRef -and $mVersion -and $mVersion -ne $Version -and $NotesSince -ne $mVersion) { Warn "the notes say since $NotesSince but the published version is $mVersion" }
 
     $already = $published.Count -gt 0 -and $remoteSize -and ([long]$remoteSize -eq [long](Get-Prop $published[0] 'size')) -and $mBuild -eq $Sha -and -not $PackageOnly
     if ($already -and -not $Force) {
@@ -428,12 +456,29 @@ if ($Client) {
         }
     }
 
+    # 3c'. release notes next to the ZIP: downloads/release-notes/<Version>/ (notes.json and its images), re-uploaded
+    # every run (small); the manifest entry points at them so the client and /api/release-notes/latest find them
+    $notesListed = $true
+    if ($NotesRef) {
+        $NotesUrl = "gs://$Bucket/downloads/release-notes/$Version/"
+        Info ("release notes -> $NotesUrl ({0} file(s))" -f $NotesFiles.Count)
+        $null = Invoke-GCloud -GArgs (@('storage', 'cp') + $NotesFiles + @($NotesUrl, '--cache-control=no-cache')) -Mutating
+        if (-not $DryRun) {
+            $listedNotes = Invoke-GCloud -GArgs @('storage', 'ls', $NotesUrl)
+            if ($listedNotes -notmatch 'notes\.json') { Fail "release notes not found at $NotesUrl after the upload; manifest not changed" }
+            Ok 'release notes uploaded'
+        }
+        $notesListed = $published.Count -gt 0 -and [string](Get-Prop (Get-Prop $published[0] 'notes') 'version') -eq $Version
+        if ($entry -is [System.Collections.IDictionary]) { $entry['notes'] = $NotesRef }
+        else { $entry | Add-Member -NotePropertyName notes -NotePropertyValue ([pscustomobject]$NotesRef) -Force }
+    }
+
     # 3d. manifest merge: this build first, every other entry kept
     $entryDate = [string](Get-Prop ([pscustomobject]$entry) 'date')
     $others = @($oldFiles | Where-Object { (Get-Prop $_ 'name') -ne $ZipName })
     $newManifest = [ordered]@{ version = $NewVersion; unity = [ordered]@{ build = $Sha; date = $entryDate }; files = @(@($entry) + $others) }
     $newText = (ConvertTo-Json -InputObject $newManifest -Depth 8) + "`n"
-    if ($already -and -not $Force -and $NewVersion -eq $mVersion) { Ok 'manifest already lists this build' }
+    if ($already -and -not $Force -and $NewVersion -eq $mVersion -and $notesListed) { Ok 'manifest already lists this build' }
     else {
         $local = Join-Path $ReleaseDir "manifest-$Sha.json"
         if ($manifestText) { Write-Utf8 (Join-Path $ReleaseDir "manifest-before-$Sha.json") ($manifestText + "`n") }
@@ -450,7 +495,7 @@ if ($Client) {
 
     # 3e. public verification (the server caches the manifest for 60 s)
     if ($DryRun -or $PackageOnly) {
-        Dry "poll $Site/api/downloads until unity.build = $Sha, then GET $Site/download/file/$ZipName"
+        Dry "poll $Site/api/downloads until unity.build = $Sha, then GET $Site/download/file/$ZipName$(if ($NotesRef) { " and $Site/api/release-notes/$Version" })"
         try { $d = Get-Json "$Site/api/downloads"; Info ("public now: build '{0}', file '{1}'" -f (Get-Prop (Get-Prop $d 'unity') 'build'), (@($d.files) | Select-Object -First 1 | ForEach-Object { $_.name })) } catch { Warn "api/downloads: $($_.Exception.Message)" }
     } else {
         $deadline = (Get-Date).AddSeconds(150)
@@ -476,6 +521,11 @@ if ($Client) {
             if ($hdr -and [long]$hdr -ne [long](Get-Prop ([pscustomobject]$entry) 'size')) { Fail "$fileUrl reports size $hdr" }
         } finally { $resp.Close() }
         Ok "$fileUrl serves the ZIP"
+        if ($NotesRef) {
+            # not fatal: the ZIP is out; an old server without the route just shows no notes (deploy the server too)
+            try { $rn = Get-Json "$Site/api/release-notes/$Version"; if ([string](Get-Prop $rn 'version') -eq $Version) { Ok "$Site/api/release-notes/$Version serves the notes" } else { Warn "api/release-notes/$Version returned version '$(Get-Prop $rn 'version')'" } }
+            catch { Warn "api/release-notes/$Version`: $($_.Exception.Message) (is the server with the release-notes route deployed?)" }
+        }
         if ($FullVerify) {
             $tmpDl = Join-Path $env:TEMP "se-verify-$ZipName"
             Info 'downloading the published ZIP to compare its SHA-256 ...'

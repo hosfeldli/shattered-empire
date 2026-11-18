@@ -12,7 +12,7 @@ namespace SE.Runtime.Military
         int casualtyHead;
         public void NoteCasualty(int id, string type, int owner, float3 point, int epoch, float time)
         {
-            if (type != "rifle_squad" && type != "engineer" && type != "militia" && type != "anti_armor" && type != "special_forces" && type != "exo_infantry" && type != "mortar_team") return;
+            if (type != "rifle_squad" && type != "engineer" && type != "militia" && type != "anti_armor" && type != "special_forces" && type != "mortar_team") return;   // exo_infantry is a vehicle (IFV) since 2026-11-18
             float facing = id * 2.39996f;
             for (int s = 0; s < ids.Length; s++) if (ids[s] == id) { facing = yaw[s]; break; }
             casualties[casualtyHead++ % casualties.Length] = new Casualty { Epoch = epoch, Point = point, Facing = facing, At = time, Torso = Torso(type), Color = new float4(Paint(owner, Kind.Infantry, new float3(.40f, .42f, .35f)), 0),

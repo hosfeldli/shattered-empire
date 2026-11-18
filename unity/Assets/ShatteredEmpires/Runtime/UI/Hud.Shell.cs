@@ -12,7 +12,9 @@ namespace SE.Runtime.UI
     /// The shell (docs/UI_DESIGN_SPEC.md § B2, B3, B13, C6; 2026-11-16 mockup): in the action ruleset the top bar
     /// floats (the match clock top centre, pause / menu and the observer controls top right) and the slim resource
     /// bars live on the minimap console (Hud.Console.cs); the legacy ruleset keeps the 56-px top bar. Resource
-    /// bars show a 10-second average income rate and a pinnable breakdown; the status pill sits under the clock.
+    /// bars (Materials, Power = the server's 'energy', Units = command capacity) show the balance and a compact net
+    /// rate (EMA of Δamount/Δt beside the 10-second income EMA; consumption = income − net) with a pinnable
+    /// breakdown; the status pill sits under the clock.
     /// Also the toast, the pause menu with
     /// its page stack, and the Escape back-chain.
     /// </summary>
@@ -38,6 +40,10 @@ namespace SE.Runtime.UI
             public int ShownAmount = int.MinValue, ShownTenths = int.MinValue;   // what the labels show (format only on change)
             public int TargetAmount;           // the server's amount; the label counts toward it (no jumps)
             public UiKit.Tween AmountTween;
+            // §33 net rate: a second EMA (τ 10 s of match time) of Δamount / Δt; consumption = income − net
+            public float Net, NetSampledAt = -1f;
+            public int NetLastAmount, ShownNetTenths = int.MinValue, ShownNetSign = int.MinValue;
+            public float Consumption => Mathf.Max(0f, Mathf.Max(0f, Shown) - Net);
         }
 
         float tweenLast = -1f;
@@ -150,7 +156,7 @@ namespace SE.Runtime.UI
             };
             chip.Add(icon);
             rc.Amount = L("", "se-resbar-amount", chip);
-            rc.Rate = L(kind == "command" ? "" : "+0.0/s", "se-resbar-rate se-res-rate--zero", chip);
+            rc.Rate = L(kind == "command" ? "" : "0.0/s", "se-resbar-rate se-res-rate--zero", chip);
             if (kind == "command")
             {
                 var bar = El("se-resbar-load", chip);
@@ -277,6 +283,7 @@ namespace SE.Runtime.UI
                 float pickups = popoverKind == "materials" ? PickupIncome(now) : 0f;
                 sig = sig * 31 + Mathf.RoundToInt(avg * 10f);
                 sig = sig * 31 + Mathf.RoundToInt(pickups * 10f);
+                if (rc != null) sig = sig * 31 + rc.ShownNetTenths;
             }
             else if (popoverKind == "observer") sig = sig * 31 + session.CivId * 2 + (session.ObserverFog ? 1 : 0);
             return sig;
@@ -284,7 +291,27 @@ namespace SE.Runtime.UI
 
         static readonly string[] ChipKinds = { "materials", "energy" };
         int shownLoadPct = -1, shownLoadLevel = -1;
-        int shownUsed = int.MinValue, shownCap = int.MinValue, shownQueued = int.MinValue, shownRecovery = int.MinValue, shownHeld = int.MinValue;
+        int shownUsed = int.MinValue, shownCap = int.MinValue, shownQueued = int.MinValue, shownReserved = int.MinValue, shownRecovery = int.MinValue, shownHeld = int.MinValue;
+
+        /// <summary>
+        /// §33: the net rate, an EMA (τ 10 s) of Δamount/Δt over match time (the newest snapshot's clock), so a pause
+        /// or a 2×/4× speed neither zeroes nor doubles it. Sampled with the refresh (4 Hz); no allocation.
+        /// </summary>
+        void SampleNet(ResChip rc, int amount, float income)
+        {
+            float t = session.Units.NewestTime;
+            if (rc.NetSampledAt < 0f || t < rc.NetSampledAt - 1f)
+            {
+                // first sample (or a rejoin that rewound the clock): assume nothing is being spent yet
+                rc.Net = income; rc.NetSampledAt = t; rc.NetLastAmount = amount;
+                return;
+            }
+            float dt = t - rc.NetSampledAt;
+            if (dt < .2f) return;   // no new match time (paused, or no fresh snapshot): keep the last value
+            float instant = (amount - rc.NetLastAmount) / dt;
+            rc.Net += (instant - rc.Net) * (1f - Mathf.Exp(-dt / 10f));
+            rc.NetSampledAt = t; rc.NetLastAmount = amount;
+        }
 
         /// <summary>Materials Processors, relays and pickups: Materials income per second over the last minute of pickups.</summary>
         void TopBarAction()
@@ -302,23 +329,40 @@ namespace SE.Runtime.UI
                 else rc.Shown += (instant - rc.Shown) * (1f - Mathf.Exp(-Mathf.Max(0f, now - rc.SampledAt) / 10f));
                 rc.SampledAt = now;
                 float shown = Mathf.Max(0f, rc.Shown);
-                // the label shows tenths: format only when the shown tenth changes
-                int tenths = (int)Math.Round(shown * 10.0, MidpointRounding.AwayFromZero);
-                if (tenths != rc.ShownTenths) { rc.ShownTenths = tenths; rc.Rate.text = "+" + shown.ToString("0.0") + "/s"; }
-                rc.Rate.EnableInClassList("se-res-rate--zero", shown < 0.05f);
+                rc.ShownTenths = (int)Math.Round(shown * 10.0, MidpointRounding.AwayFromZero);   // the popover's signature
+                SampleNet(rc, amount, shown);
+                // the bar shows the net rate in tenths, signed: format only when the shown tenth changes
+                int netTenths = (int)Math.Round(rc.Net * 10.0, MidpointRounding.AwayFromZero);
+                if (netTenths != rc.ShownNetTenths)
+                {
+                    rc.ShownNetTenths = netTenths;
+                    float v = Mathf.Abs(netTenths) / 10f;
+                    rc.Rate.text = netTenths > 0 ? "+" + v.ToString("0.0") + "/s" : netTenths < 0 ? "-" + v.ToString("0.0") + "/s" : "0.0/s";
+                }
+                int sign = Math.Sign(netTenths);
+                if (sign != rc.ShownNetSign)
+                {
+                    rc.ShownNetSign = sign;
+                    rc.Rate.EnableInClassList("se-res-rate--zero", sign == 0);
+                    rc.Rate.EnableInClassList("se-res-rate--neg", sign < 0);
+                }
                 rc.Back?.SetState(popoverPinned && popoverKind == kind, now < rc.FlashUntil ? 2 : 0);
             }
             var capacity = Econ?["capacity"];
             int used = ProtocolDecoder.Int(capacity?["used"]), queued = ProtocolDecoder.Int(capacity?["queued"]), cap = ProtocolDecoder.Int(capacity?["limit"]);
+            // R3: population reserved before production starts (capacity.reserved once the server sends it; until
+            // then everything queued counts as reserved). The bar reads "used/cap" and "+reserved (+queued beyond it)".
+            int reserved = capacity?["reserved"] != null ? ProtocolDecoder.Int(capacity["reserved"]) : queued;
+            int extra = Mathf.Max(0, queued - reserved);
             var cmd = resChips["command"];
             if (used != shownUsed || cap != shownCap) { shownUsed = used; shownCap = cap; cmd.Amount.text = $"{used}/{cap}"; }
-            if (queued != shownQueued)
+            if (reserved != shownReserved || extra != shownQueued)
             {
-                shownQueued = queued;
-                cmd.Rate.text = queued > 0 ? "+" + queued : "";
-                cmd.Rate.EnableInClassList("se-res-rate--zero", queued <= 0);
+                shownReserved = reserved; shownQueued = extra;
+                cmd.Rate.text = reserved > 0 && extra > 0 ? $"+{reserved} (+{extra})" : reserved > 0 ? "+" + reserved : extra > 0 ? $"(+{extra})" : "";
+                cmd.Rate.EnableInClassList("se-res-rate--zero", reserved <= 0);
             }
-            float load = cap > 0 ? (used + queued) / (float)cap : 0f;
+            float load = cap > 0 ? (used + Mathf.Max(queued, reserved)) / (float)cap : 0f;
             int loadPct = cap > 0 ? Mathf.RoundToInt(Mathf.Clamp01(used / (float)cap) * 100f) : 0;
             int loadLevel = load >= 1f ? 2 : load >= .85f ? 1 : 0;
             if (loadPct != shownLoadPct || loadLevel != shownLoadLevel)
@@ -328,7 +372,7 @@ namespace SE.Runtime.UI
                 cmd.BarFill.style.backgroundColor = loadLevel == 2 ? UiKit.Token("bad") : loadLevel == 1 ? UiKit.Token("warn") : UiKit.Token("good");
             }
             bool flash = now < cmd.FlashUntil;
-            cmd.Back?.SetState(popoverPinned && popoverKind == "command", flash ? 2 : cap > 0 && used + queued >= cap ? 1 : 0);
+            cmd.Back?.SetState(popoverPinned && popoverKind == "command", flash ? 2 : cap > 0 && used + Mathf.Max(queued, reserved) >= cap ? 1 : 0);
 
             // the centred status pill: fixed width, hidden when empty (it is absolute: nothing shifts)
             int recovery = ProtocolDecoder.Int(Econ?["recovery"]), held = ProtocolDecoder.Int(Econ?["hold"]);
@@ -395,7 +439,8 @@ namespace SE.Runtime.UI
         void UpdateRightGroup()
         {
             bool spectator = session.Spectator;
-            bool showSpeed = spectator || session.Welcome?.Sandbox == true;
+            bool showSpeed = SpeedDirect;
+            UpdateSpeedVote();   // Hud.SpeedVote.cs: matches with several humans vote instead
             if (showSpeed && (speedControl == null || speedForSpectator != spectator))
             {
                 speedControl?.RemoveFromHierarchy();
@@ -420,7 +465,7 @@ namespace SE.Runtime.UI
             inviteButton.style.display = invite ? DisplayStyle.Flex : DisplayStyle.None;
             bool canPause = !showSpeed && game.CanPause;
             pauseButton.style.display = canPause ? DisplayStyle.Flex : DisplayStyle.None;
-            topDivider.style.display = showSpeed || spectator || invite ? DisplayStyle.Flex : DisplayStyle.None;
+            topDivider.style.display = showSpeed || spectator || invite || SpeedByVote ? DisplayStyle.Flex : DisplayStyle.None;
             if (pauseIcon == null) pauseIcon = UiKit.IconOf(pauseButton) as IconElement;
             if (pauseIcon != null) pauseIcon.Kind = session.Paused ? "play" : "pause";
             // the tooltip string is rebuilt only when the state or the binding changes
@@ -444,10 +489,17 @@ namespace SE.Runtime.UI
         }
 
         // ------------------------------------------------------------------ speed and pause
+        /// <summary>A match with exactly one human seat (a skirmish against AIs): its player sets the speed directly (§42, server W4).</summary>
+        bool SoloMatch => session.Welcome != null && !session.Spectator && HumanCount(session.Welcome.Civs) == 1;
+
+        /// <summary>The 1×/2×/4× (and pause) control: spectators (also 8×), the sandbox and single-player matches.</summary>
+        bool SpeedDirect => session.Spectator || session.Welcome?.Sandbox == true || SoloMatch;
+
         void SetSpeed(int s)
         {
             if (session.Spectator) { session.Net?.ObserverCommand(new JObject { ["c"] = "speed", ["speed"] = s }); return; }
-            if (s == 0) Cmd(new JObject { ["c"] = "pause", ["on"] = true }, "Paused");
+            if (s == 0 && game.CanPause) game.SetPaused(true);
+            else if (s == 0) Cmd(new JObject { ["c"] = "pause", ["on"] = true }, "Paused");
             else
             {
                 if (session.Paused) Cmd(new JObject { ["c"] = "pause", ["on"] = false }, "Resumed");
@@ -458,7 +510,7 @@ namespace SE.Runtime.UI
         /// <summary>P / the pause button: pause or resume where allowed (spectators and the sandbox use the speed control's pause).</summary>
         void TogglePause()
         {
-            if (session.Spectator || session.Welcome?.Sandbox == true) { SetSpeed(session.Paused ? Mathf.Max(1, Mathf.RoundToInt(session.PlayRate)) : 0); return; }
+            if (SpeedDirect) { SetSpeed(session.Paused ? Mathf.Max(1, Mathf.RoundToInt(session.PlayRate)) : 0); return; }
             if (game.CanPause) game.SetPaused(!session.Paused);
         }
 
@@ -530,7 +582,7 @@ namespace SE.Runtime.UI
             switch (popoverKind)
             {
                 case "materials": IncomeBreakdown("materials", "Materials"); break;
-                case "energy": IncomeBreakdown("energy", "Energy"); break;
+                case "energy": IncomeBreakdown("energy", "Power"); break;   // the server's 'energy', shown as Power (§33)
                 case "command": CommandBreakdown(); break;
                 case "observer": ObserverPopover(); break;
             }
@@ -566,17 +618,29 @@ namespace SE.Runtime.UI
             if (res == "materials") PopRow("Pickups (60 s)", Rate(pickups), "small");
             float total = ProtocolDecoder.Float(Econ?["rates"]?[res]) + pickups;
             PopRow("Total", $"{Rate(total)} · {total * 60f:0}/min", "small good");
-            if (resChips.TryGetValue(res, out var rc)) PopRow("10 s average", Rate(Mathf.Max(0, rc.Shown)), "small muted");
+            if (resChips.TryGetValue(res, out var rc))
+            {
+                PopRow("Income, 10 s average", Rate(Mathf.Max(0, rc.Shown)), "small muted");
+                float spend = rc.Consumption;
+                PopRow("Consumption, 10 s average", spend >= .05f ? "-" + spend.ToString("0.0") + "/s" : "0.0/s", spend >= .05f ? "small bad" : "small muted");
+                float net = rc.ShownNetTenths / 10f;
+                PopRow("Net", (net > 0 ? "+" : net < 0 ? "-" : "") + Mathf.Abs(net).ToString("0.0") + "/s", net < 0 ? "small bad" : net > 0 ? "small good" : "small muted");
+            }
         }
 
         void CommandBreakdown()
         {
-            L("Command", "heading", popover);
+            L("Units", "heading", popover);
+            L("Command capacity", "small muted", popover);
             var capacity = Econ?["capacity"];
             int used = ProtocolDecoder.Int(capacity?["used"]), queued = ProtocolDecoder.Int(capacity?["queued"]), cap = ProtocolDecoder.Int(capacity?["limit"]);
+            bool hasReserved = capacity?["reserved"] != null;
+            int reserved = hasReserved ? ProtocolDecoder.Int(capacity["reserved"]) : queued;
             PopRow("In the field", used.ToString(), "small");
-            PopRow("Reserved in production", queued.ToString(), "small");
+            PopRow("Reserved in production", reserved.ToString(), "small");
+            if (hasReserved && queued > reserved) PopRow("Queued, not yet reserved", (queued - reserved).ToString(), "small muted");
             PopRow("Capacity", cap.ToString(), "small");
+            PopRow("Free", Mathf.Max(0, cap - used - Mathf.Max(reserved, queued)).ToString(), "small muted");
             int tier = Mathf.Clamp(Age, 0, 2);
             string[] numerals = { "I", "II", "III" };
             string tierLine = $"Faction Tier {numerals[tier]} · cap {cap}" + (tier < 2 ? $" → Tier {numerals[tier + 1]}" : "");
@@ -586,7 +650,12 @@ namespace SE.Runtime.UI
             if (techs != null && techs.Count > 0)
             {
                 L("Upgrades", "small muted", popover).style.marginTop = 4;
-                var names = techs.Select(t => NameOf("TECHS", (string)t)).ToList();
+                // one per unit class (2026-11-18): a lined upgrade names its path ("Hand Grenades (infantry path)")
+                var names = techs.Select(t =>
+                {
+                    string line = ProtocolDecoder.UpgradeLineName(ProtocolDecoder.UpgradeLine(Defs?["TECHS"]?[(string)t]));
+                    return NameOf("TECHS", (string)t) + (line != null ? $" ({line.ToLowerInvariant()} path)" : "");
+                }).ToList();
                 var ul = L(string.Join(", ", names), "small", popover);
                 ul.style.whiteSpace = WhiteSpace.Normal;
             }

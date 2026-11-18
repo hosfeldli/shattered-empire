@@ -21,6 +21,9 @@ namespace SE.Runtime.Rendering
 
         public MeshBuilder Surface(SurfaceKind kind) { surface = kind; return this; }
 
+        /// <summary>Empty the builder, keeping its buffers (a builder reused for every street mesh allocates nothing once warm).</summary>
+        public void Clear() { v.Clear(); n.Clear(); c.Clear(); uv.Clear(); surfaces.Clear(); t.Clear(); surface = default; }
+
         public MeshBuilder Quad(Vector3 a, Vector3 b, Vector3 cc, Vector3 d, Color col)
         {
             var normal = Vector3.Cross(b - a, d - a).normalized;

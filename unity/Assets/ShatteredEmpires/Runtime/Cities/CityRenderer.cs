@@ -46,7 +46,11 @@ namespace SE.Runtime.Cities
         /// <summary>Diagnostics: base-cell composes, their total and worst time (ms), since the last reset.</summary>
         /// <summary>Diagnostics: compose time (ms) in streets+old world, base compounds, buildings, street mesh.</summary>
         public readonly double[] ComposeMs = new double[4];
+        /// <summary>Diagnostics: the per-hex loop of a compose split into streets / old-world sites / tree blocking (ms, cumulative).</summary>
+        public readonly double[] HexLoopMs = new double[3];
         public int BaseCellComposes; public float BaseCellComposeMsTotal, BaseCellComposeMsMax;
+        /// <summary>Diagnostics: worst single-frame time of the territory field, the district layer, and one plain (non-base) cell compose.</summary>
+        public double TerritoryMsMax, DistrictsMsMax, PlainComposeMsMax, TerritoryMs, DistrictsMs;
         public int Age = 1;
         /// <summary>Old-world ruin sites reported by the server, by tile.</summary>
         public readonly Dictionary<int, RuinRecord> Ruins = new Dictionary<int, RuinRecord>();
@@ -94,8 +98,10 @@ namespace SE.Runtime.Cities
             if (epoch != world.Epoch)
             {
                 epoch = world.Epoch;
+                AbandonComposeJob();   // a sliced compose of the old world is dropped (CityRenderer.Slicing.cs)
                 foreach (var c in cells.Values) DisposeCell(c);
                 cells.Clear();
+                DisposeBackCells();
                 Stacks.Clear();
                 hasBuilding = new bool[world.Grid.N];
                 streetParcels = new bool[world.Grid.N];
@@ -104,12 +110,15 @@ namespace SE.Runtime.Cities
                 RoadCurve.HiddenEdge = RedundantEntrance;
                 RoadCurve.CompoundLanes.Clear(); RoadCurve.LaneRevision++;
                 baseCache.Clear(); baseComposedOnce.Clear(); baseHold = 0;
+                streetCache.Clear();
                 roadRevision = -1;
             }
             // A change of who "we" are (or of the civ roster) recolours every team accent.
             Teams.LinearSource = ActionRts;
             if (Teams.Refresh()) for (int c = 0; c < world.ChunksW * world.ChunksH; c++) dirty.Add(c);
+            long tt0 = System.Diagnostics.Stopwatch.GetTimestamp();
             Territory.Update(world, objectiveByTile.Values, structures, Teams, ActionRts);
+            { double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - tt0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency; TerritoryMs += ms; if (ms > TerritoryMsMax) TerritoryMsMax = ms; }
             if (roadRevision != world.LayoutRevision)
             {
                 roadRevision = world.LayoutRevision;
@@ -123,8 +132,12 @@ namespace SE.Runtime.Cities
             // the district layer: when buildings or roads change, only hexes whose district relationships
             // changed are recomposed (a new house extends its neighbourhood, it does not re-roll it)
             Districts.WorldSeed = Seed;
+            long td0 = System.Diagnostics.Stopwatch.GetTimestamp();
             Districts.Update(dirty);
             InvalidateRingDistricts();
+            { double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - td0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency; DistrictsMs += ms; if (ms > DistrictsMsMax) DistrictsMsMax = ms; }
+            // perf pass 2: a compose in progress continues first, within this frame's budget (CityRenderer.Slicing.cs)
+            if (!ResumeComposeJob()) return;
             if (dirty.Count == 0) return;
             // nearest cells first, a bounded number per frame
             scratch.Clear();
@@ -148,7 +161,12 @@ namespace SE.Runtime.Cities
             int n = Math.Min(MaxCellsPerFrame, scratch.Count);
             Array.Clear(hasBuilding, 0, hasBuilding.Length);
             foreach (var b in structures.Buildings.Values) if (b.Tile >= 0 && b.Tile < hasBuilding.Length) hasBuilding[b.Tile] = true;
-            Array.Copy(hasBuilding, streetParcels, hasBuilding.Length);
+            // Streets wrap round a built hex's block (RoadCurve.Pieces); a field defense is not a block: the road
+            // keeps its natural line through the hex and the defense stands beside it (RoadsidePosition), so
+            // defenses never mark a street parcel (user request 2026-11-18: no roads bending round defenses).
+            Array.Clear(streetParcels, 0, streetParcels.Length);
+            foreach (var b in structures.Buildings.Values)
+                if (b.Tile >= 0 && b.Tile < streetParcels.Length && !DefenseKinds.ContainsKey(b.Type ?? "")) streetParcels[b.Tile] = true;
             if (ActionRts)
             {
                 foreach (var lot in historicalParcels.Values) streetParcels[lot.parcel.Tile] = true;
@@ -158,6 +176,7 @@ namespace SE.Runtime.Cities
             // heavy cells must not stall a frame (at least one cell always progresses)
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
             double budget = ComposeBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0;
+            if (!PerfFlags.LegacyCompose) { ScheduleSliced(n, terrain, clock, start); return; }
             for (int k = 0; k < n; k++)
             {
                 int c = scratch[k];
@@ -169,6 +188,7 @@ namespace SE.Runtime.Cities
                     float ms = (float)((System.Diagnostics.Stopwatch.GetTimestamp() - composeStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
                     BaseCellComposes++; BaseCellComposeMsTotal += ms; BaseCellComposeMsMax = Math.Max(BaseCellComposeMsMax, ms);
                 }
+                else PlainComposeMsMax = Math.Max(PlainComposeMsMax, (System.Diagnostics.Stopwatch.GetTimestamp() - composeStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
                 // base cells re-dirty each other through the ring invalidation: once the first is composed,
                 // the rest go in the same frame, or two neighbouring bases recompose each other forever
                 if (baseCells.Contains(c))
@@ -262,57 +282,11 @@ namespace SE.Runtime.Cities
             return (h & 0xffffff) / 16777216f;
         }
 
+        /// <summary>Compose a cell now, start to finish (the legacy path, and the menu/showcase world).</summary>
         void Compose(int cellId, Landscape.TerrainRenderer terrain)
         {
-            Recomposed++;
-            var cell = GetCell(cellId);
-            current = cell;
-            cell.Flags.Clear();
-            foreach (var b in cell.Batches) b.Clear();
-            BeginStreetMesh();
-            bmin = new float3(1e9f); bmax = new float3(-1e9f);
-            var g = world.Grid;
-            long tp0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            int cs = WorldModel.ChunkSize, cx = cellId % world.ChunksW, cy = cellId / world.ChunksW;
-            // streets and bridges of the cell's hexes (each edge drawn by its lower-index end)
-            for (int lr = 0; lr < cs; lr++)
-                for (int lq = 0; lq < cs; lq++)
-                {
-                    int q = cx * cs + lq, r = cy * cs + lr;
-                    if (q >= g.W || r >= g.H) continue;
-                    int t = r * g.W + q;
-                    if (world.Known[t] == 0) continue;
-                    if (world.Road[t] != 0 && !Showcase) ComposeStreets(t);
-                    if (world.Road[t] != 0 && world.IsUrban(t) && !ActionRts && !Showcase) StreetLife(t);
-                    if (world.IsUrban(t) && !hasBuildingAt(t) && !Ruins.ContainsKey(t) && !world.IsSea(t) && !world.IsLake(t)
-                        && !ActionRts && !Showcase) Infill(t);
-                    ComposeOldWorld(t);
-                    terrain.SetBlocked(t, IsBlocked(t));
-                }
-            long tp1 = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (ActionRts) foreach (var site in objectiveByTile.Values)
-                if (site.IsBase && world.ChunkOf(site.Tile) == cellId) ComposeCityDistrict(site);
-            long tp2 = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (ActionRts) foreach (var pickup in pickups.Values)
-                if (world.ChunkOf(pickup.Tile) == cellId) MaterialsPickup(pickup);
-            if (Showcase) ComposeShowcaseStreets(cellId);
-            foreach (var b in structures.Buildings.Values)
-            {
-                if (b.Tile < 0 || b.Tile >= g.N || world.ChunkOf(b.Tile) != cellId || world.Known[b.Tile] == 0) continue;
-                ComposeBuilding(b);
-                if (b.Done && !ActionRts && !Showcase) DistrictLinks(b.Tile);
-            }
-            long tp3 = System.Diagnostics.Stopwatch.GetTimestamp();
-            cell.Any = false;
-            foreach (var batch in cell.Batches) if (batch.Count > 0) cell.Any = true;
-            FinishStreetMesh(cell);
-            long tp4 = System.Diagnostics.Stopwatch.GetTimestamp();
-            double k = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-            ComposeMs[0] += (tp1 - tp0) * k; ComposeMs[1] += (tp2 - tp1) * k; ComposeMs[2] += (tp3 - tp2) * k; ComposeMs[3] += (tp4 - tp3) * k;
-            var bounds = new Bounds();
-            if (cell.Any) bounds.SetMinMax(new Vector3(bmin.x, bmin.y - 0.2f, bmin.z), new Vector3(bmax.x, bmax.y + 0.2f, bmax.z));
-            cell.Bounds = bounds;
-            foreach (var batch in cell.Batches) { batch.Bounds = bounds; batch.MarkDirty(); }
+            var steps = ComposeSteps(cellId, terrain, false);
+            while (steps.MoveNext()) { }
         }
 
         float Ground(float x, float z) => world.View.GroundHeight(x, z);
@@ -623,6 +597,8 @@ namespace SE.Runtime.Cities
             cx += (Hash(seed, 6) - 0.5f) * 0.06f; cz += (Hash(seed, 7) - 0.5f) * 0.06f;
             if (b.HasPosition) { cx = b.X; cz = b.Z; parcelScale = 1f; }
             if (b.HasYaw) yaw = b.Yaw;
+            // a defense near a road stands beside it, never on the carriageway (the barricade excepted)
+            if (b.HasPosition) { var side = RoadsidePosition(b, new float2(cx, cz)); cx = side.x; cz = side.y; }
             var district = Districts.At(b.Tile);
             styleSeed = district?.Seed ?? seed;
             float4 civ = CivColor(b.Owner);
@@ -1933,6 +1909,7 @@ namespace SE.Runtime.Cities
             foreach (var c in cells.Values) DisposeCell(c);
             if (ghost != null) DisposeCell(ghost);
             cells.Clear();
+            DisposeBackCells();
             activityBoxes?.Dispose();
             activityRotors?.Dispose(); activityDishes?.Dispose();
             DisposeTurrets();

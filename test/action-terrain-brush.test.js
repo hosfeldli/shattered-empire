@@ -49,7 +49,8 @@ test('a brush stroke previews its hexes and cost, skips refused hexes and scales
   assert.ok(wide.cost.materials > thin.cost.materials, 'cost grows with the hexes painted');
   assert.equal(wide.cost.materials, Math.max(TERRAIN_WORKS.minCost, Math.round(wide.tiles.length * TERRAIN_WORKS.cost.materials / 7)));
   assert.ok(wide.tiles.length <= TERRAIN_WORKS.maxHexes);
-  for (const t of wide.tiles) assert.equal(g.world.owner[t], 0, 'only own territory is painted');
+  // W2 (2026-11-17): own territory and neutral ground are painted, never another player's territory
+  for (const t of wide.tiles) assert.ok(g.world.owner[t] === 0 || g.world.owner[t] < 0, 'only own territory or neutral ground is painted');
   assert.equal(wide.radius, 2);
   // radius is clamped
   assert.equal(g.command(0, { c: 'terrain', op: 'raise', points, radius: 9, preview: true }).reply.terrain.radius, TERRAIN_WORKS.maxRadius);

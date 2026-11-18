@@ -89,6 +89,7 @@ namespace SE.Runtime.Cities
             Layouts().TryGetValue(type, out var layout);
             // heightScale: the headquarters stands taller with each tier (layout heights follow it)
             Put(part, new float3(c.X, c.GroundY, c.Z), c.Yaw, new float3(1, heightScale, 1), c.Tint);
+            FacilitySignature(c, type);   // per-type readability features (CityRenderer.Facilities.cs, workstream B)
             if (layout == null) return true;
             math.sincos(c.Yaw, out float sn, out float cs);
             foreach (var (at, size) in layout.Marks)

@@ -32,9 +32,32 @@ namespace SE.Runtime.App
         public const string Site = "https://game.liamhosfeld.com";
         public const string DownloadPage = Site + "/download";
 
-        public enum Phase { Idle, Checking, UpToDate, Available, Downloading, Verifying, Extracting, Installing, Failed }
+        /// <summary>
+        /// Ready (§45): the update is downloaded, verified and unpacked, and waits for the player to confirm the
+        /// restart (<see cref="RestartNow"/>), e.g. because a match started meanwhile. Appended last: code compares
+        /// Downloading..Installing as a range.
+        /// </summary>
+        public enum Phase { Idle, Checking, UpToDate, Available, Downloading, Verifying, Extracting, Installing, Failed, Ready }
 
         public static Phase State { get; private set; } = Phase.Idle;
+
+        /// <summary>
+        /// The game interface is showing a match (set by the HUD). The updater never closes the game while this
+        /// is true: an install finishes at <see cref="Phase.Ready"/> and restarts only from the menu, after the
+        /// player confirms (§45: never install mid-match silently).
+        /// </summary>
+        public static bool InMatch
+        {
+            get => inMatch;
+            set { if (inMatch == value) return; inMatch = value; Changed?.Invoke(); }
+        }
+        static bool inMatch;
+
+        /// <summary>
+        /// A match the player can return to after restarting (the main menu's Continue: PlayerPrefs se.match).
+        /// The confirmation tells them their match carries on on the server.
+        /// </summary>
+        public static bool HasResumableMatch => InMatch || PlayerPrefs.GetString("se.match", "") != "";
         /// <summary>A human-readable line for the current phase (failure reason, progress text).</summary>
         public static string Message { get; private set; } = "";
         /// <summary>The failure is best solved by downloading manually (the banner offers the download page).</summary>
@@ -129,6 +152,9 @@ namespace SE.Runtime.App
             if (CheckOnStartup) _ = Check();
         }
 
+        /// <summary>This start follows a successful in-app update (last-update.txt said ok).</summary>
+        public static bool JustUpdated { get; private set; }
+
         static void ReportLastUpdate()
         {
             try
@@ -137,6 +163,7 @@ namespace SE.Runtime.App
                 string r = File.ReadAllText(ResultFile).Trim();
                 File.Delete(ResultFile);
                 Debug.Log("[updater] last update: " + r);
+                JustUpdated = r.StartsWith("ok", StringComparison.OrdinalIgnoreCase);   // the "What's new" window opens (UI/ReleaseNotes.cs)
                 if (r.StartsWith("failed", StringComparison.OrdinalIgnoreCase))
                 {
                     OfferDownloadPage = true;
@@ -151,7 +178,7 @@ namespace SE.Runtime.App
         /// <summary>Fetch the manifest; silently Idle on any network or parse problem.</summary>
         public static async Task Check()
         {
-            if (State == Phase.Checking || State >= Phase.Downloading && State <= Phase.Installing) return;
+            if (State == Phase.Checking || State == Phase.Ready || State >= Phase.Downloading && State <= Phase.Installing) return;
             Set(Phase.Checking, "");
             try
             {
@@ -203,10 +230,10 @@ namespace SE.Runtime.App
         static UnityWebRequest active;
         static bool cancelled;
 
-        /// <summary>Dismiss the offer for this session.</summary>
+        /// <summary>Dismiss the offer for this session (an unpacked update is discarded at the next start).</summary>
         public static void Later()
         {
-            if (State == Phase.Available || State == Phase.Failed) Set(Phase.Idle, "");
+            if (State == Phase.Available || State == Phase.Failed || State == Phase.Ready) Set(Phase.Idle, "");
         }
 
         /// <summary>Stop a running download (the partial file is removed).</summary>
@@ -217,8 +244,16 @@ namespace SE.Runtime.App
             try { active?.Abort(); } catch { }
         }
 
-        /// <summary>Download, verify, extract, start the helper and quit.</summary>
-        public static async void InstallNow()
+        /// <summary>Download, verify and extract, then wait at <see cref="Phase.Ready"/> for a confirmed restart.</summary>
+        public static void InstallNow() => InstallNow(false);
+
+        /// <summary>
+        /// Download, verify and extract. <paramref name="restartConfirmed"/>: the player already confirmed "Update and
+        /// Restart" (UpdateBanner's confirmation step), so the helper starts and the game quits as soon as the build
+        /// is staged — unless a match is showing by then (<see cref="InMatch"/>), which stops at Ready instead.
+        /// Without it the update always stops at Ready: the game never closes without a confirmation.
+        /// </summary>
+        public static async void InstallNow(bool restartConfirmed)
         {
             if (offered == null || !(State == Phase.Available || State == Phase.Failed)) return;
             var file = offered;
@@ -287,23 +322,50 @@ namespace SE.Runtime.App
                 if (!File.Exists(stampPath))
                     File.WriteAllText(stampPath, $"build={AvailableBuild}\nversion={AvailableVersion}\ndate={(string)file["date"]}\n");
 
-                // 3. hand over to the helper and quit
-                Set(Phase.Installing, "Restarting to finish the update…", 1f);
-                string script = WriteHelper(staging, zip, AvailableBuild);
-                var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c \"\"" + script + "\"\"")
+                // 3. staged: restart now only when the player confirmed it and no match is showing
+                stagedDir = staging; stagedZip = zip;
+                if (!restartConfirmed || InMatch)
                 {
-                    UseShellExecute = true,
-                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-                    WorkingDirectory = WorkDir,
-                };
-                System.Diagnostics.Process.Start(psi);
-                Debug.Log("[updater] helper started: " + script);
-                await Task.Delay(400);
-                Application.Quit();
+                    Set(Phase.Ready, InMatch ? "Downloaded · installs when you return to the menu" : "Downloaded · restart to finish the update", 1f);
+                    return;
+                }
+                await Restart();
             }
             catch (UpdateError e) { active = null; OfferDownloadPage = e.Link; Set(Phase.Failed, e.Message); }
             catch (UnauthorizedAccessException e) { active = null; OfferDownloadPage = true; Set(Phase.Failed, "No permission to write the update (" + e.Message + "). Download it from the website instead."); }
             catch (Exception e) { active = null; OfferDownloadPage = true; Debug.LogException(e); Set(Phase.Failed, "The update failed: " + e.Message); }
+        }
+
+        static string stagedDir, stagedZip;
+
+        /// <summary>
+        /// From <see cref="Phase.Ready"/>, after the player confirmed "Update and Restart": start the swap helper and
+        /// quit. Refused while a match is showing (the in-match notice only says it installs from the menu).
+        /// </summary>
+        public static async void RestartNow()
+        {
+            if (State != Phase.Ready || InMatch) return;
+            try { await Restart(); }
+            catch (Exception e) { OfferDownloadPage = true; Debug.LogException(e); Set(Phase.Failed, "The update failed: " + e.Message); }
+        }
+
+        /// <summary>Hand over to the helper and quit (the only path to Application.Quit; always after a confirmation).</summary>
+        static async Task Restart()
+        {
+            if (string.IsNullOrEmpty(stagedDir) || !Directory.Exists(stagedDir) || !File.Exists(Path.Combine(stagedDir, ExeName)))
+                throw new UpdateError("The unpacked update is missing; please try again.", true);
+            Set(Phase.Installing, "Restarting to finish the update…", 1f);
+            string script = WriteHelper(stagedDir, stagedZip, AvailableBuild);
+            var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c \"\"" + script + "\"\"")
+            {
+                UseShellExecute = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                WorkingDirectory = WorkDir,
+            };
+            System.Diagnostics.Process.Start(psi);
+            Debug.Log("[updater] helper started: " + script);
+            await Task.Delay(400);
+            Application.Quit();
         }
 
         static volatile float progressFromWorker;

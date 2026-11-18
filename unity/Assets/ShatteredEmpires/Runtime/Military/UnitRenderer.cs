@@ -26,10 +26,10 @@ namespace SE.Runtime.Military
             Tank, Autonomous, Howitzer, Turret, RemoteTurret, HowitzerTurret, Barrel, HowitzerBarrel,
             Carrier, Scout, ArmoredCar, ArmoredCarMount, Truck, RocketTruck, AirDefense, FieldGun, Mortar, ReconDrone, StrikeDrone,
             Fighter, Bomber, Helicopter, Rotor, Wheel, RoadWheel, Rifle, Engineer, Militia, Special, Exo, AntiArmor, MortarCrew,
-            Thigh, Shin, UpperArm, Forearm, RifleWeapon, LauncherWeapon, PistolWeapon, Count
+            Thigh, Shin, UpperArm, Forearm, RifleWeapon, LauncherWeapon, PistolWeapon, Ifv, IfvTurret, Count
         }
 
-        enum Kind { Infantry, Exo, Tank, AutoTank, Apc, ArmoredCar, Buggy, Truck, FieldGun, SpGun, Launcher, AirDefense, Heli, Fighter, Bomber, Drone, Swarm, Mortar }
+        enum Kind { Infantry, Exo, Tank, AutoTank, Apc, ArmoredCar, Buggy, Truck, FieldGun, SpGun, Launcher, AirDefense, Heli, Fighter, Bomber, Drone, Swarm, Mortar, Ifv }   // Ifv: exo_infantry since 2026-11-18
 
         readonly InstanceBatch[] batches = new InstanceBatch[(int)Model.Count];
         readonly InstanceBatch[] details = new InstanceBatch[(int)Detail.Count];
@@ -55,7 +55,9 @@ namespace SE.Runtime.Military
         int[] coverArmor = new int[0];
         // per soldier (slot * MaxFigures + figure): the fold of ground each man picked when the squad went to ground
         float[] coverDx = new float[0], coverDz = new float[0];
-        const int MaxFigures = 10;   // the largest squad drawn man for man (see SquadMen)
+        const int MaxFigures = 12;   // the largest squad drawn man for man (see SquadMen)
+        /// <summary>Unit flag: the squad is garrisoned inside a structure (server actionGarrison.js).</summary>
+        public const int GarrisonedFlag = 16384;
         // armoured vehicles this frame (slots), for infantry sheltering behind them
         int[] armorSlots = new int[32];
         int armorCount;
@@ -86,6 +88,11 @@ namespace SE.Runtime.Military
         public int Instances { get; private set; }
         /// <summary>Last frame's cost by phase (diagnostics and stall attribution).</summary>
         public double PositionsMs, BuildMs, UploadMs;
+        /// <summary>Units skipped this frame because they are outside the view (perf pass 2; PerfFlags.LegacyUnitCull turns it off).</summary>
+        public int Culled { get; private set; }
+        /// <summary>How far outside the view frustum (world units) a unit is still built: shadows and the screen edge.</summary>
+        public static float CullMargin = 1.2f;
+        readonly Plane[] viewPlanes = new Plane[6];
         // (workstream A) badges take over at 52, not 75: between those zooms true-scale vehicles and squads were
         // only a few pixels tall and read as gone; a badge is always drawn at least a dozen pixels wide
         public float OperationalDistance = 26f, StrategicDistance = 52f;
@@ -128,14 +135,14 @@ namespace SE.Runtime.Military
                 MilitaryMeshes.RoadWheel, MilitaryMeshes.Torsos[0], MilitaryMeshes.Torsos[1], MilitaryMeshes.Torsos[2],
                 MilitaryMeshes.Torsos[3], MilitaryMeshes.Torsos[4], MilitaryMeshes.Torsos[5], MilitaryMeshes.Torsos[6],
                 MilitaryMeshes.Thigh, MilitaryMeshes.Shin, MilitaryMeshes.UpperArm, MilitaryMeshes.Forearm, MilitaryMeshes.Rifle, MilitaryMeshes.InfantryLauncher,
-                MilitaryMeshes.Pistol,
+                MilitaryMeshes.Pistol, MilitaryMeshes.Ifv, MilitaryMeshes.IfvTurret,
             };
             for (int i = 0; i < detailed.Length; i++)
                 details[i] = new InstanceBatch(detailed[i], RenderResources.Instanced, 64)
                 {
                     Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f),
                     Buffering = 3,
-                    Shadows = i >= (int)Detail.Wheel ? ShadowCastingMode.Off : ShadowCastingMode.On
+                    Shadows = i >= (int)Detail.Wheel && i < (int)Detail.Ifv ? ShadowCastingMode.Off : ShadowCastingMode.On
                 };
             for (int r = 0; r < rigs.Length; r++)
             {
@@ -165,7 +172,7 @@ namespace SE.Runtime.Military
                 case "bomber": return Kind.Bomber;
                 case "recon_drone": case "oneway_drone": return Kind.Drone;
                 case "strike_swarm": return Kind.Swarm;
-                case "exo_infantry": return Kind.Exo;
+                case "exo_infantry": return Kind.Ifv;   // an infantry fighting vehicle since 2026-11-18 (was the exo squad)
                 case "mortar_team": return Kind.Mortar;
                 default: return Kind.Infantry;
             }
@@ -177,7 +184,7 @@ namespace SE.Runtime.Military
         const float CarTrack = .27f, CarAxle = .31f, CarWheelY = .12f, CarWheelScale = 1.15f;
         static readonly float3 CarRing = new float3(0, .447f, -.06f);
 
-        static bool HasTurret(Kind k) => k == Kind.Tank || k == Kind.AutoTank || k == Kind.SpGun || k == Kind.ArmoredCar || k == Kind.AirDefense;
+        static bool HasTurret(Kind k) => k == Kind.Tank || k == Kind.AutoTank || k == Kind.SpGun || k == Kind.ArmoredCar || k == Kind.AirDefense || k == Kind.Ifv;
         static Detail Torso(string type) => type switch
         {
             "engineer" => Detail.Engineer, "militia" => Detail.Militia, "special_forces" => Detail.Special, "exo_infantry" => Detail.Exo,
@@ -288,6 +295,10 @@ namespace SE.Runtime.Military
             }
             Ensure(store.SlotCount);
             int level = camDist > StrategicDistance ? 0 : camDist > OperationalDistance ? 1 : 2;
+            var viewCam = Camera.main;
+            bool cullView = !PerfFlags.LegacyUnitCull && viewCam != null;
+            if (cullView) GeometryUtility.CalculateFrustumPlanes(viewCam, viewPlanes);
+            Culled = 0;
             float vehicleScale = WorldScale.Vehicle;
             float markerScale = Mathf.Clamp(camDist * 0.0065f, 0.3f, 2.4f);
             int drawn = 0;
@@ -305,6 +316,7 @@ namespace SE.Runtime.Military
                     kindOf[s] = Classify(type);
                     torsoOf[s] = Torso(type);
                     menMax[s] = (byte)Math.Min(MaxFigures, SquadMen(type));
+                    ringSize[s] = RingSizeOf(kindOf[s], menMax[s]);
                     strikeDrone[s] = type == "oneway_drone";
                     store.Heading(s, out float hx0, out float hz0);
                     yaw[s] = turret[s] = u.Motion.Present ? store.Facing(s) : hx0 != 0 || hz0 != 0 ? Mathf.Atan2(hx0, hz0) : (u.Id * 0.618f) % 6.283f;
@@ -334,7 +346,7 @@ namespace SE.Runtime.Military
                 {
                     stillFor[s] = speed[s] > .012f ? 0 : stillFor[s] + dt;
                     var k0 = kindOf[s];
-                    if (k0 == Kind.Tank || k0 == Kind.AutoTank || k0 == Kind.Apc || k0 == Kind.ArmoredCar || k0 == Kind.SpGun)
+                    if (k0 == Kind.Tank || k0 == Kind.AutoTank || k0 == Kind.Apc || k0 == Kind.ArmoredCar || k0 == Kind.SpGun || k0 == Kind.Ifv)
                     {
                         if (armorCount >= armorSlots.Length) Array.Resize(ref armorSlots, armorSlots.Length * 2);
                         armorSlots[armorCount++] = s;
@@ -346,20 +358,32 @@ namespace SE.Runtime.Military
             {
                 ref var u = ref store.Records[s];
                 if (!u.InUse) continue;
+                // garrisoned squads are inside their structure (server flag 16384, actionGarrison.js): not drawn
+                if ((u.Flags & GarrisonedFlag) != 0) continue;
                 var kind = kindOf[s];
                 float x = grid.NearX(px[s], camX), z = pz[s];
                 float fx = grid.DxWrap(focus.x, x), fz = z - focus.z;
                 bool close = level == 2 && fx * fx + fz * fz < (camDist + 3f) * (camDist + 3f);
-                float ground = view.GroundHeight(x, z);
                 int tile = u.Tile;
+                // perf pass 2: below strategic zoom every unit on the map used to be built as a detailed model or a
+                // squad of rigged figures (and drawn, with shadows) wherever it was; only those in view are now.
+                // The margin covers shadows cast into the frame and men stepping in at the screen edge.
+                if (cullView && level > 0 && !IsAir(kind))
+                {
+                    var wp = new Vector3(x, tile >= 0 && tile < grid.N ? view.Height[tile] : 0f, -z);
+                    bool inView = true;
+                    for (int k = 0; k < 6 && inView; k++) inView = viewPlanes[k].GetDistanceToPoint(wp) > -CullMargin;
+                    if (!inView) { Culled++; continue; }
+                }
+                float ground = view.GroundHeight(x, z);
                 // vehicles and troops cross bridges on the deck, not the river bed
                 if (tile >= 0 && tile < grid.N && world.Road[tile] != 0 && (world.IsRiver(tile) || view.Water[tile] > -1e8f))
                     ground = Mathf.Max(ground, RoadCurve.SupportHeight(world, x, z));
                 else if (tile >= 0 && tile < grid.N && world.Road[tile] != 0)
                     ground = Mathf.Max(ground, RoadCurve.SupportHeight(world, x, z));
                 else if (tile >= 0 && tile < grid.N && view.Water[tile] > ground) ground = view.Water[tile];   // embarked
-                // Troops in a trench stand on its floor: the shared ground height already carries the dug cut
-                // (TerrainView.DamageHeight), so nothing is subtracted here (an extra drop sank them into the ground).
+                // Troops in a trench stand on its floor, which is the shared ground height (TrenchRenderer draws the
+                // works standing on the terrain), so nothing is subtracted here (an extra drop sank them into the ground).
                 // facing: along the path when moving; toward the last target when engaging
                 store.Heading(s, out float hx, out float hz);
                 bool moving = hx != 0 || hz != 0;
@@ -403,7 +427,7 @@ namespace SE.Runtime.Military
                 if (level > 0 && (selectedUnit || !IsAir(kind)))
                 {
                     // whose unit it is, at a glance and at any zoom: the team outline circle (or the selection ring)
-                    GroundRing(x, RingGround(view, x, ground, z, kind), z, kind, team, selectedUnit, camDist);
+                    GroundRing(x, RingGround(view, x, ground, z, s), z, s, team, selectedUnit, camDist);
                     // and what it is, over every enemy: a role glyph
                     if (hostile) RoleGlyph(s, kind, p, team, camDist);
                 }
@@ -487,11 +511,16 @@ namespace SE.Runtime.Military
                         var tint = kind == Kind.AutoTank ? new float4(body.xyz, 0.05f) : body;
                         bool auto = kind == Kind.AutoTank;
                         batches[(int)(auto ? Model.AutoHull : Model.Hull)].Add(T(p, yaw[s], new float3(sc * k * .64f, sc * k, sc * k * 1.12f), tint));   // true proportions (see AddVehicle)
-                        batches[(int)(auto ? Model.AutoTurret : Model.Turret)].Add(T(p, turret[s], new float3(sc * k * .8f, sc * k, sc * k * (kind == Kind.SpGun ? 1.5f : 1f)), tint));
+                        batches[(int)(auto ? Model.AutoTurret : Model.Turret)].Add(T(p + RecoilOffset(turret[s], BarrelRecoil(kind, shotAge) * .4f * sc * k), turret[s], new float3(sc * k * .8f, sc * k, sc * k * (kind == Kind.SpGun ? 1.5f : 1f)), tint));   // recoil: UnitRenderer.Recoil.cs
                         break;
                     }
                     case Kind.Apc:
                         batches[(int)Model.Apc].Add(T(p, yaw[s], new float3(sc), body));
+                        break;
+                    case Kind.Ifv:
+                        // operational zoom: a shorter, taller tank hull under a small turret (the IFV mesh is drawn close up)
+                        batches[(int)Model.Hull].Add(T(p, yaw[s], new float3(sc * .64f, sc * 1.12f, sc * 1.0f), body));
+                        batches[(int)Model.Turret].Add(T(p + new float3(0, sc * .06f, 0), turret[s], new float3(sc * .55f, sc * .8f, sc * .62f), body));
                         break;
                     case Kind.ArmoredCar:
                     {
@@ -508,7 +537,7 @@ namespace SE.Runtime.Military
                         batches[(int)Model.Truck].Add(T(p, yaw[s], new float3(sc * 0.9f), body));
                         break;
                     case Kind.FieldGun:
-                        batches[(int)Model.Gun].Add(T(p, yaw[s], new float3(sc * 0.85f), body));
+                        batches[(int)Model.Gun].Add(T(p + RecoilOffset(yaw[s], BodyRecoil(kind, shotAge) * sc), yaw[s], new float3(sc * 0.85f), body));   // recoil: UnitRenderer.Recoil.cs
                         if (level == 2) AddCrew(u.Id, p, yaw[s], 3, body, time, view, x, z);
                         break;
                     case Kind.Launcher:
@@ -523,6 +552,7 @@ namespace SE.Runtime.Military
                         break;
                 }
             }
+            BuildingGlyphs(structures, world, civColor, camX, focus, camDist, time);   // §37 building-type cards (UnitRenderer.BuildingGlyphs.cs)
             DrawCasualties(time, world, focus, camDist);
             long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (var b in batches) b.Upload();
@@ -706,19 +736,14 @@ namespace SE.Runtime.Military
                 // every man stands inside the squad's fixed team ring (cover dashes, trench places and the slide out of
                 // walls included): pulled straight in toward the centre if he would stand beyond it
                 {
-                    float rx = fx - x, rz = fz - z, r2 = rx * rx + rz * rz;
-                    if (r2 > SquadRingReach * SquadRingReach) { float k = SquadRingReach / math.sqrt(r2); fx = x + rx * k; fz = z + rz * k; }
+                    float rx = fx - x, rz = fz - z, r2 = rx * rx + rz * rz, reach = RingReach(slot);
+                    if (r2 > reach * reach) { float k = reach / math.sqrt(r2); fx = x + rx * k; fz = z + rz * k; }
                 }
                 float fy = level == 2 || trench ? view.GroundHeight(fx, fz) : ground;
-                // manning a trench: stood on the floor of the cut behind the parapet, facing the enemy side. Each man
-                // drops in on his own beat with a little hop: until then he is held at the rim (the ground height there
-                // already includes the cut, so he never sinks below the drawn ground).
-                if (trench)
-                {
-                    int ft = HexMath.TileAt(fx, fz, view.W, view.H, view.Wrap != 0);
-                    float cut = view.TrenchNearest(ft, fx, fz, out _, out _, out _, out _, out _, out float cutDepth);
-                    bowl = cutDepth * Mathf.Clamp01((.11f - cut) / .035f);
-                }
+                // manning a trench: stood on its floor between the parapet and the parados, facing the enemy side. Each
+                // man drops in on his own beat with a little hop. 2026-11-18: the trench floor is the shared ground itself
+                // (TrenchRenderer stands the works on the terrain instead of cutting it), so no rim lift is added; bowl
+                // stays 0 and the line's banks hide the men to the chest.
                 float drop = trench ? math.saturate(trenchIn[slot] * 1.5f - order * .5f) : 0f;
                 float stand = trench ? Mathf.SmoothStep(0f, 1f, drop) * trenchBlend : 0f;
                 bool hopping = trenchShift && drop > .02f && drop < .98f;
@@ -1008,7 +1033,7 @@ namespace SE.Runtime.Military
             float r = view.GroundHeight(p.x + cs * h, p.z - sn * h) - view.GroundHeight(p.x - cs * h, p.z + sn * h);
             float pitch = Mathf.Clamp(-f / (h * 2), -.25f, .25f);
             float roll = Mathf.Clamp(r / (h * 2), -.24f, .24f);
-            bool tracked = kind == Kind.Tank || kind == Kind.AutoTank || kind == Kind.SpGun;
+            bool tracked = kind == Kind.Tank || kind == Kind.AutoTank || kind == Kind.SpGun || kind == Kind.Ifv;
             // Weight: the hull rides a spring-damper suspension instead of snapping to the ground. Heavy tracked
             // hulls are stiff and slow to settle; wheeled vehicles are softer and bounce. Acceleration squats the
             // tail, braking dips the nose, turning leans the body outward, and the main gun rocks the hull back.
@@ -1026,7 +1051,7 @@ namespace SE.Runtime.Military
                     kickedAt[slot] = Time.time;
                     // recoil: the hull pitches away from the gun's line of fire
                     float rel = Mathf.DeltaAngle(facing * Mathf.Rad2Deg, turret[slot] * Mathf.Rad2Deg) * Mathf.Deg2Rad;
-                    float power = kind == Kind.SpGun ? 1.6f : tracked ? 1.1f : kind == Kind.ArmoredCar ? .12f : .45f;   // the gun truck's MG barely rocks it
+                    float power = HullKick(kind, tracked);   // UnitRenderer.Recoil.cs: artillery hardest, the gun truck's MG barely
                     pitchRate[slot] -= Mathf.Cos(rel) * power;
                     rollRate[slot] -= Mathf.Sin(rel) * power;
                 }
@@ -1036,10 +1061,11 @@ namespace SE.Runtime.Military
                 suspensionRoll[slot] = Mathf.Clamp(suspensionRoll[slot] + rollRate[slot] * dt, -.3f, .3f);
             }
             var rot = quaternion.EulerZXY(suspensionPitch[slot], MapSpace.Yaw(facing), suspensionRoll[slot]);
+            p += RecoilOffset(HasTurret(kind) ? turret[slot] : facing, BodyRecoil(kind, shotAge) * scale);   // run-back (UnitRenderer.Recoil.cs)
             var at = MapSpace.W(p);
             Detail model = kind switch
             {
-                Kind.Tank => Detail.Tank, Kind.AutoTank => Detail.Autonomous, Kind.SpGun => Detail.Howitzer,
+                Kind.Tank => Detail.Tank, Kind.AutoTank => Detail.Autonomous, Kind.SpGun => Detail.Howitzer, Kind.Ifv => Detail.Ifv,
                 Kind.Apc => Detail.Carrier, Kind.ArmoredCar => Detail.ArmoredCar, Kind.Buggy => Detail.Scout, Kind.Truck => Detail.Truck,
                 Kind.Launcher => Detail.RocketTruck, Kind.AirDefense => Detail.AirDefense, _ => Detail.FieldGun
             };
@@ -1092,6 +1118,15 @@ namespace SE.Runtime.Military
                 var ring = at + math.rotate(rot, CarRing * scale);
                 details[(int)Detail.ArmoredCarMount].Add(InstanceData.TRS(ring, swivel, new float3(scale), paint));
             }
+            else if (kind == Kind.Ifv)
+            {
+                // IFV (2026-11-18): the autocannon turret (gun and missile box built in) turns on the hull's ring; the
+                // turret rocks back a touch with each burst instead of a barrel recoil
+                var swivel = math.mul(rot, quaternion.RotateY(facing - turret[slot]));
+                float kick = shotAge >= 0f && shotAge < .3f ? Mathf.Exp(-shotAge * 14f) * .012f : 0f;
+                var ring = at + math.rotate(swivel, new float3(0, 0, .02f - kick) * scale);
+                details[(int)Detail.IfvTurret].Add(InstanceData.TRS(ring, swivel, new float3(.86f, 1f, 1f) * scale, paint));
+            }
             else if (tracked)
             {
                 var swivel = math.mul(rot, quaternion.RotateY(facing - turret[slot]));
@@ -1100,7 +1135,7 @@ namespace SE.Runtime.Military
                 var ring = at;
                 details[(int)(kind == Kind.AutoTank ? Detail.RemoteTurret : kind == Kind.SpGun ? Detail.HowitzerTurret : Detail.Turret)].Add(InstanceData.TRS(ring, swivel, new float3(.8f, 1f, 1f) * (scale * k), paint));
                 // barrel recoil: a sharp run-back, then a slower return to battery
-                float recoil = shotAge >= 0f && shotAge < .6f ? Mathf.Exp(-shotAge * 7f) * (1 - Mathf.Exp(-shotAge * 120f)) * .16f : 0f;
+                float recoil = BarrelRecoil(kind, shotAge);   // UnitRenderer.Recoil.cs (effects pass): longer stroke, artillery more
                 var pivot = ring + math.rotate(swivel, new float3(0, y, .17f - recoil) * (scale * k));
                 DetailPart(kind == Kind.SpGun ? Detail.HowitzerBarrel : Detail.Barrel, pivot,
                     math.mul(swivel, quaternion.RotateX(kind == Kind.SpGun ? -.25f : -.02f)), scale * k, paint);

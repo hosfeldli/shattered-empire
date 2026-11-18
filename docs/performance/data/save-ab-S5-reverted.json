@@ -1,0 +1,291 @@
+{
+ "node": "v26.13.0",
+ "minutes": 40,
+ "identicalOutput": true,
+ "oldMedian": 5.64,
+ "newMedian": 5.41,
+ "oldMedianAfter20": 6.29,
+ "newMedianAfter20": 6.25,
+ "rows": [
+  {
+   "min": 1,
+   "units": 29,
+   "bytes": 1180691,
+   "oldMs": 3.63,
+   "newMs": 4.63
+  },
+  {
+   "min": 2,
+   "units": 44,
+   "bytes": 1200248,
+   "oldMs": 2.64,
+   "newMs": 2.91
+  },
+  {
+   "min": 3,
+   "units": 56,
+   "bytes": 1222659,
+   "oldMs": 3.04,
+   "newMs": 2.55
+  },
+  {
+   "min": 4,
+   "units": 54,
+   "bytes": 1232371,
+   "oldMs": 3.08,
+   "newMs": 3.05
+  },
+  {
+   "min": 5,
+   "units": 56,
+   "bytes": 1250175,
+   "oldMs": 3.03,
+   "newMs": 2.79
+  },
+  {
+   "min": 6,
+   "units": 64,
+   "bytes": 1272605,
+   "oldMs": 2.91,
+   "newMs": 3.19
+  },
+  {
+   "min": 7,
+   "units": 70,
+   "bytes": 1287812,
+   "oldMs": 2.95,
+   "newMs": 3.22
+  },
+  {
+   "min": 8,
+   "units": 73,
+   "bytes": 1313727,
+   "oldMs": 3.46,
+   "newMs": 3.33
+  },
+  {
+   "min": 9,
+   "units": 91,
+   "bytes": 1346464,
+   "oldMs": 3.58,
+   "newMs": 3.74
+  },
+  {
+   "min": 10,
+   "units": 84,
+   "bytes": 1372548,
+   "oldMs": 3.88,
+   "newMs": 4.17
+  },
+  {
+   "min": 11,
+   "units": 83,
+   "bytes": 1400571,
+   "oldMs": 4.19,
+   "newMs": 3.9
+  },
+  {
+   "min": 12,
+   "units": 101,
+   "bytes": 1436842,
+   "oldMs": 4.5,
+   "newMs": 4.36
+  },
+  {
+   "min": 13,
+   "units": 114,
+   "bytes": 1464138,
+   "oldMs": 4.99,
+   "newMs": 4.71
+  },
+  {
+   "min": 14,
+   "units": 122,
+   "bytes": 1497221,
+   "oldMs": 5.46,
+   "newMs": 5.17
+  },
+  {
+   "min": 15,
+   "units": 106,
+   "bytes": 1475297,
+   "oldMs": 4.41,
+   "newMs": 4.85
+  },
+  {
+   "min": 16,
+   "units": 114,
+   "bytes": 1500362,
+   "oldMs": 5.85,
+   "newMs": 5.19
+  },
+  {
+   "min": 17,
+   "units": 118,
+   "bytes": 1520615,
+   "oldMs": 5.72,
+   "newMs": 5.35
+  },
+  {
+   "min": 18,
+   "units": 115,
+   "bytes": 1494999,
+   "oldMs": 4.95,
+   "newMs": 5.32
+  },
+  {
+   "min": 19,
+   "units": 124,
+   "bytes": 1527183,
+   "oldMs": 5.02,
+   "newMs": 4.85
+  },
+  {
+   "min": 20,
+   "units": 138,
+   "bytes": 1550268,
+   "oldMs": 5.49,
+   "newMs": 5.41
+  },
+  {
+   "min": 21,
+   "units": 143,
+   "bytes": 1579706,
+   "oldMs": 5.95,
+   "newMs": 5.52
+  },
+  {
+   "min": 22,
+   "units": 138,
+   "bytes": 1554781,
+   "oldMs": 6.08,
+   "newMs": 5.27
+  },
+  {
+   "min": 23,
+   "units": 152,
+   "bytes": 1575874,
+   "oldMs": 5.41,
+   "newMs": 5.76
+  },
+  {
+   "min": 24,
+   "units": 169,
+   "bytes": 1635275,
+   "oldMs": 6.71,
+   "newMs": 6.93
+  },
+  {
+   "min": 25,
+   "units": 190,
+   "bytes": 1614511,
+   "oldMs": 6.71,
+   "newMs": 6.36
+  },
+  {
+   "min": 26,
+   "units": 208,
+   "bytes": 1671223,
+   "oldMs": 6.51,
+   "newMs": 6.51
+  },
+  {
+   "min": 27,
+   "units": 193,
+   "bytes": 1665323,
+   "oldMs": 6.29,
+   "newMs": 5.57
+  },
+  {
+   "min": 28,
+   "units": 193,
+   "bytes": 1649156,
+   "oldMs": 5.64,
+   "newMs": 6.25
+  },
+  {
+   "min": 29,
+   "units": 191,
+   "bytes": 1658917,
+   "oldMs": 6.45,
+   "newMs": 5.93
+  },
+  {
+   "min": 30,
+   "units": 192,
+   "bytes": 1640984,
+   "oldMs": 5.95,
+   "newMs": 6.52
+  },
+  {
+   "min": 31,
+   "units": 193,
+   "bytes": 1675891,
+   "oldMs": 6.15,
+   "newMs": 6.17
+  },
+  {
+   "min": 32,
+   "units": 181,
+   "bytes": 1662172,
+   "oldMs": 5.59,
+   "newMs": 6.59
+  },
+  {
+   "min": 33,
+   "units": 182,
+   "bytes": 1697213,
+   "oldMs": 6.92,
+   "newMs": 6.24
+  },
+  {
+   "min": 34,
+   "units": 173,
+   "bytes": 1710448,
+   "oldMs": 6.26,
+   "newMs": 6.48
+  },
+  {
+   "min": 35,
+   "units": 148,
+   "bytes": 1702409,
+   "oldMs": 6.53,
+   "newMs": 6.69
+  },
+  {
+   "min": 36,
+   "units": 134,
+   "bytes": 1687490,
+   "oldMs": 6.13,
+   "newMs": 5.94
+  },
+  {
+   "min": 37,
+   "units": 163,
+   "bytes": 1703971,
+   "oldMs": 6.59,
+   "newMs": 6.74
+  },
+  {
+   "min": 38,
+   "units": 160,
+   "bytes": 1747785,
+   "oldMs": 7.05,
+   "newMs": 7.36
+  },
+  {
+   "min": 39,
+   "units": 152,
+   "bytes": 1683450,
+   "oldMs": 6.25,
+   "newMs": 6.18
+  },
+  {
+   "min": 40,
+   "units": 147,
+   "bytes": 1685025,
+   "oldMs": 7.31,
+   "newMs": 6.24
+  }
+ ]
+}

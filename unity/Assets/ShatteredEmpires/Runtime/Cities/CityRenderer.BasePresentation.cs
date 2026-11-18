@@ -144,76 +144,9 @@ namespace SE.Runtime.Cities
 
         void ComposeBasePresentation(ObjectiveSite site, BaseParcel[] lots, float2[] nodes)
         {
-            bool held = site.Headquarters != 0 && site.Owner >= 0;
-            if (!held) return;
-            var origin = new float2(site.X, site.Z);
-            float memory = site.Memory ? .62f : 1f;
-            var team = CivColor(site.Owner).xyz;
-            int tier = Mathf.Clamp(Mathf.Max(site.Tier, 1), 1, 3);
-            float glow = site.Memory ? 0f : 1f;
-            float foundation = FoundationRadius(origin, lots);
-
-            // the shared round foundation, its kerb and a darker skirt where it meets the land
-            GroundSector(origin, 0, foundation, 0, 2 * math.PI, -.0050f, FoundationConcrete * memory, SurfaceKind.Concrete);
-            GroundSector(origin, foundation, foundation + .10f, 0, 2 * math.PI, -.0049f, new float3(.47f, .46f, .42f) * memory, SurfaceKind.Concrete);
-            GroundSector(origin, foundation - .055f, foundation - .02f, 0, 2 * math.PI, -.0048f, KerbConcrete * memory, SurfaceKind.Concrete);
-
-            // the hub: plaza, a dark collar round the HQ podium, the team ring and lamps
-            GroundSector(origin, 0, .92f, 0, 2 * math.PI, -.0035f, FoundationConcrete * .93f * memory, SurfaceKind.Concrete);
-            GroundSector(origin, .62f, .70f, 0, 2 * math.PI, -.0030f, PaintDark * 1.6f * memory, SurfaceKind.Asphalt);
-            GroundSector(origin, .71f, .78f, 0, 2 * math.PI, -.0015f, team * memory, SurfaceKind.Plain);
-            for (int k = 0; k < 8; k++)
-            {
-                float a = k * math.PI * .25f + math.PI * .125f;
-                GroundLight(origin + Polar(a) * .87f, a, new float3(.03f, .012f, .03f), team, .9f * glow);
-            }
-
-            var occupants = new Dictionary<int, BuildingRecord>();
-            foreach (var b in structures.Buildings.Values) if (b.City == site.Id && b.Slot > 0) occupants[b.Slot] = b;
-            float hubY = BuildingDatum(origin.x, origin.y, site.Parcels[0].Yaw);
-            // The server opens sockets in (parcel tier, ring index) order, `capacity` of them: 3 / 5 / 7 by base tier.
-            // A socket's rank in that order says from which base tier it opens; one past the last tier never does.
-            var order = (BaseParcel[])lots.Clone();
-            System.Array.Sort(order, (a, b) => a.Tier != b.Tier ? a.Tier.CompareTo(b.Tier) : a.Id.CompareTo(b.Id));
-            int RankOf(int id) { for (int r = 0; r < order.Length; r++) if (order[r].Id == id) return r; return order.Length; }
-            int capacity = site.Capacity > 0 ? site.Capacity : 0;
-            for (int i = 0; i < lots.Length; i++)
-            {
-                var lot = lots[i];
-                var center = new float2(lot.X, lot.Z);
-                bool built = occupants.TryGetValue(lot.Id, out var building);
-                int rank = RankOf(lot.Id);
-                int needs = capacity > 0 ? (rank < 3 ? 1 : rank < 5 ? 2 : rank < 7 ? 3 : 0) : (lot.Tier <= 3 ? lot.Tier : 0);
-                bool open = capacity > 0 ? rank < capacity : lot.Tier <= tier;
-                float w = lot.Width > .1f ? lot.Width : .95f, d = lot.Depth > .1f ? lot.Depth : .88f;
-                float alt = (i % 2) * .0002f;
-                if (built) SocketPad(center, lot.Yaw, w, d, building.Type, team, memory, alt);
-                else if (open) OpenSocket(center, lot.Yaw, w, d, team, glow, memory, alt);
-                else if (needs > 0) LockedSocket(center, lot.Yaw, w, d, needs, memory, alt);
-                if (built || open)
-                {
-                    DockingArm(origin, nodes[i], hubY, team, built && building.Done, glow, memory);
-                    // the identity glyph on the causeway, between the ring road and the threshold
-                    var front = Polar(lot.Yaw);
-                    var threshold = center + front * (d * .5f);
-                    var mark = threshold + math.normalizesafe(nodes[i] - threshold) * math.min(.12f, math.distance(nodes[i], threshold) * .33f);
-                    if (built) IdentityGlyph(mark, lot.Yaw + math.PI, building.Type, memory);
-                }
-                if (tier >= 2) SocketWall(center, lot.Yaw, w, d, tier, team, memory, glow, i);
-            }
-
-            // tier 3: plaza flags in the team colour
-            if (tier >= 3)
-            {
-                var c = new Ctx { X = site.X, Z = site.Z, Yaw = site.Parcels[0].Yaw, Seed = site.Id * 31 + 7, Tint = new float3(memory),
-                    Civ = team, Era = 1, Level = 1, Tier = tier, FixedGround = true, GroundY = Ground(site.X, site.Z) - .01f };
-                for (int k = 0; k < 4; k++)
-                {
-                    float a = k * math.PI * .5f + math.PI * .25f;
-                    math.sincos(a, out float s, out float co);
-                    Flag(c, s * .83f, co * .83f, .46f);
-                }
-            }
+            // one source for both paths (CityRenderer.Slicing.cs): it only yields inside a sliced compose
+            var steps = ComposeBasePresentationSteps(site, lots, nodes);
+            while (steps.MoveNext()) { }
         }
 
         /// <summary>

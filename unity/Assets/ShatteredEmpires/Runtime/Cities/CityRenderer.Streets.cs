@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using SE.Core.World;
 using SE.Runtime.Rendering;
 using Unity.Mathematics;
 using UnityEngine;
@@ -57,6 +58,12 @@ namespace SE.Runtime.Cities
                     list.Add(q);
                 }
             }
+
+            /// <summary>Empty every layer, keeping the lists and their capacity (a pooled instance: CityRenderer.Slicing.cs).</summary>
+            public void Reset() { foreach (var list in layers.Values) list.Clear(); current = null; Tap = null; }
+
+            /// <summary>The layers lowest first (a time-sliced build walks them itself: CityRenderer.Slicing.cs).</summary>
+            public SortedDictionary<int, List<QuadRecord>>.ValueCollection Layers => layers.Values;
 
             public Mesh Build(string name)
             {
@@ -137,7 +144,31 @@ namespace SE.Runtime.Cities
             if (tile < 0) return false;
             if (world.View.Water[tile] > Ground(point.x, point.y) + .006f) return true;
             if (!world.IsRiver(tile)) return false;
-            return math.distance(point, RoadCurve.Centre(world, tile)) < .32f;
+            return OnRiverChannel(tile, point, .06f);
+        }
+
+        /// <summary>The drawn river's half-width in hex t (ChunkMeshJob.ChannelWidth: the server's navigation width by flow bucket).</summary>
+        float RiverHalfWidth(int t) => math.min(.33f, .13f + (math.max(1, world.FlowBucket(t)) - 1) * .05f);
+
+        /// <summary>
+        /// Whether point lies on river hex t's channel (centre to its downstream edge and to each upstream inflow), its
+        /// ±15% natural bank variation and wet margin included, plus pad.
+        /// </summary>
+        bool OnRiverChannel(int t, float2 point, float pad)
+        {
+            float reach = RiverHalfWidth(t) * 1.45f + pad;
+            var c = new float2(world.Grid.NearX(world.Grid.CenterX(t), point.x), world.Grid.CenterZ(t));
+            if (math.distancesq(point, c) < reach * reach) return true;
+            int downstream = world.FlowDir(t);
+            for (int d = 0; d < 6; d++)
+            {
+                int n = world.Grid.Nb[t * 6 + d];
+                if (n < 0 || (d != downstream && !(world.IsRiver(n) && world.FlowDir(n) == (d + 3) % 6))) continue;
+                var e = new float2(HexMath.DirX[d], HexMath.DirZ[d]) * RoadCurve.Inradius;
+                float s = math.saturate(math.dot(point - c, e) / math.lengthsq(e));
+                if (math.distancesq(point, c + e * s) < reach * reach) return true;
+            }
+            return false;
         }
 
         void DrapeParcel(float2 center, float yaw, float width, float depth, float3 color, SurfaceKind surface)

@@ -6,21 +6,25 @@ import { Scheduler } from './scheduler.js';
 import { addCrater, addSmoke, battlefieldSnapshot, battlefieldStep, rememberBattlefield, smokeAt } from './battlefield.js';
 import { bridgesFor } from './bridges.js';
 import { actionDefinitions, ACTION_BUILDINGS, ACTION_UNITS, DOMINANCE, OUTPOST_TYPES } from './actionDefinitions.js';
-import { ActionNavigation, centerOf, distance, dxBetween, SpatialIndex, tileAt, wrapX } from './actionNavigation.js';
-import { buildActionMap } from './actionMap.js';
+import { ActionNavigation, centerOf, distance, dxBetween, SpatialIndex, tileAt, TILE_X, TILE_Z, wrapX } from './actionNavigation.js';
+import { baseStreets, buildActionMap, denseWire, markDenseForest } from './actionMap.js';
 import { deployLine, moveGroup, ownedUnits, reachQuery, STANCES, stanceOf, stopUnit, unitMotion } from './actionOrders.js';
 import { actionCombat, bombard, canEngage } from './actionCombat.js';
 import { airWire, patrolCommand, returnToBase } from './actionAir.js';
 import {
-  addFacility, advanceBase, armyCapacity, cancelTraining, connectSiteRoads, construct, constructDefense, demolish, establish, fortifyBase, headquarters,
-  missileCommand, openSlots, productionStep, repairFacility, startUpgrade, train, trenchLine, trenchRoadMask, useAbility,
-  cityAA, incomeStep, upgradeBuilding, upgradeDefenses,
+  addFacility, advanceBase, armyCapacity, cancelTraining, connectSiteRoads, construct, constructDefense, cancelConstruction, demolish, establish, fortifyBase, headquarters,
+  missileCommand, openSlots, productionStep, repairFacility, startUpgrade, cancelUpgrade, train, trenchLine, trenchRoadMask, useAbility,
+  cityAA, incomeStep, upgradeBuilding, upgradeDefenses, settlementCost,
+  cancelProduction, clearQueue, pauseProduction, productionWire, setPriority, setRepeat,
 } from './actionBases.js';
 import { planActionAI } from './actionAI.js';
 import { collectOrder, fieldEconomyStep, roadBuild, seedMaterialCaches, visibleCaches } from './actionEconomy.js';
 import { staffBase, terrainOrder } from './actionEngineers.js';
 import { menOf } from './actionUpgrades.js';
 import { emit } from './combat.js';
+import { captureStep } from './actionCapture.js';
+import { ejectAll, garrisonCommand, garrisonRally, garrisonStep, garrisonWire, leaveBuilding, ungarrisonCommand } from './actionGarrison.js';
+import { voteWire } from './speedVote.js';
 
 const round = (n, f = 100) => Math.round(n * f) / f;
 const VALID_SCENARIOS = new Set(['domination', 'control', 'operation']);
@@ -72,6 +76,10 @@ export class ActionGame extends Game {
     }
     if (options.restore) return;
     this.setSites(buildActionMap(this));
+    // 2026-11-18 (ROADS_AND_CLAIMS.md): the starting bases get their own compound streets; no road leaves them
+    for (const civ of this.civs) for (const e of baseStreets(this, this.sites[civ.id])) this.roads.set(e.a, e.b, 2);
+    this.nav.invalidate();
+    markDenseForest(this);   // §30: infantry-proof forest cores, with an infantry connectivity guarantee (actionMap.js)
     // buildActionMap reshapes terrain after Game built the weather's static climate (sea, relief,
     // rivers per cell); recompute it so a live match and a restored save (which calls climate()
     // on the saved terrain) evolve identical weather. This was the save-determinism divergence.
@@ -90,6 +98,9 @@ export class ActionGame extends Game {
     this.refreshTerritory();
     this.refreshVisibility();
   }
+
+  /** §30 dense-forest bitset for the welcome message (actionMap.denseWire). */
+  denseWire() { return denseWire(this.world); }
 
   setSites(sites) {
     this.sites = sites;
@@ -155,6 +166,7 @@ export class ActionGame extends Game {
     this.tileB[b.tile] = this.buildingAtTile(b.tile)?.id ?? -1;
     this.world.touch(b.tile);
     this.nav.invalidate();
+    if (b.garrison?.length) ejectAll(this, b);   // W4: occupants step out (hurt when it was destroyed)
   }
 
   dx(a, b) { return dxBetween(a, b); }
@@ -205,8 +217,8 @@ export class ActionGame extends Game {
     const site = this.siteById.get(b.site);
     if (b.slot && site) (site.history ??= {})[b.slot] = { type: b.type, owner: b.owner, at: this.time };
     this.removeBuilding(b);
+    // removeBuilding has already invalidated the nav caches; addRuin touches no navigation state
     this.addRuin(b.tile, b.type === 'town' ? site.ruin : b.type, b.owner, site?.name || 'Field position');
-    this.nav.invalidate();
     if (b.type !== 'town') return;
     this.notify(b.owner, `${site.name} headquarters lost.`, { kind: 'loss', level: 'critical', tile: site.tile });
     for (const other of [...this.buildings.values()]) if (other.site === site.id && !ACTION_BUILDINGS[other.type].field) {
@@ -314,53 +326,8 @@ export class ActionGame extends Game {
     }
   }
 
-  captureStep(dt) {
-    let ownershipChanged = false;
-    for (const site of this.sites) {
-      if (site.hq) continue;
-      const nearby = this.movers.query(site.x, site.z, site.radius, this.search).filter((u) => u.hp > 0 && !u.auto && this.civs[u.owner].alive);
-      const teams = new Set(nearby.map((u) => this.civs[u.owner].team));
-      site.contested = teams.size > 1;
-      if (site.contested) {
-        site.last = this.time;
-        if (site.owner >= 0 && (site.contestedNotice ?? -20) + 18 < this.time) {
-          site.contestedNotice = this.time;
-          this.notify(site.owner, `${site.name} is contested.`, { kind: 'warning', tile: site.tile });
-        }
-        continue;
-      }
-      const claimant = nearby.find((u) => u.owner === site.by && ACTION_UNITS[u.type].capture) ||
-        nearby.find((u) => ACTION_UNITS[u.type].capture && (site.owner < 0 || this.hostile(site.owner, u.owner)));
-      if (!claimant || site.owner >= 0 && !this.hostile(site.owner, claimant.owner)) {
-        if (this.time - site.last > 3.5) {
-          site.progress = Math.max(0, site.progress - dt * 1.45);
-          if (!site.progress) site.by = -1;
-        }
-        continue;
-      }
-      if (site.by !== claimant.owner && (site.by < 0 || !this.allied(site.by, claimant.owner))) site.progress = 0;
-      site.by = claimant.owner;
-      site.last = this.time;
-      site.progress += dt;
-      if (site.progress + .00001 < site.captureTime) continue;
-      const prev = site.owner;
-      site.owner = claimant.owner;
-      if (!site.reclaimed) {
-        site.reclaimed = true;
-        this.civs[site.owner].res.materials += site.slots ? 75 : 30;
-      }
-      site.claimedAt = this.time;
-      emit(this, { k: 'capture', b: site.tile, bx: site.x, bz: site.z, ow: site.owner });
-      site.progress = 0;
-      site.by = -1;
-      ownershipChanged = true;
-      this.notify(site.owner, site.slots ? `${site.name} secured. Establish a headquarters.` : `${site.name} secured. ${OUTPOST_TYPES[site.kind].benefit}.`,
-        { kind: 'capture', site: site.id, tile: site.tile, level: 'major' });
-      if (prev >= 0) this.notify(prev, `${site.name} was captured.`, { kind: 'loss', tile: site.tile });
-      if (!site.slots) connectSiteRoads(this, site);
-    }
-    if (ownershipChanged) this.refreshTerritory();
-  }
+  // W2 (R7, 2026-11-17): capture rules live in actionCapture.js (20 s / 12 s, gradual decay, rival claims drain first).
+  captureStep(dt) { captureStep(this, dt); }
 
   refreshTerritory() {
     const next = new Int8Array(N).fill(-1);
@@ -386,48 +353,67 @@ export class ActionGame extends Game {
   sees(civ, entity) {
     if (!civ || entity.hp <= 0) return false;
     if (this.allied(civ.id, entity.owner) || this.sandboxReveal && civ.human) return true;
+    if (entity.inside) return false;   // W4: squads inside a structure are hidden from rivals (the structure is the target)
     if (!civ.visible[entity.tile]) return false;
     const stealth = entity.type === 'special_forces' && entity.abilityUntil > this.time;
     return !entity.isUnit || (!stealth && smokeAt(this, entity.tile) < .55) || !!civ.detect[entity.tile];
   }
 
-  reveal(source, radius, buffer) {
-    const reach = Math.ceil(radius / 1.49) + 1;
-    const quantX = Math.round(source.x * 2), quantZ = Math.round(source.z * 2);
-    const key = `${source.tile}:${quantX}:${quantZ}:${radius}`;
+  // The tiles a source at this position reveals within radius (cached: the disk around the source's tile,
+  // filtered against its position quantised to half a unit). The cache key carries every input of that
+  // computation, so a hit is exactly the tiles a fresh computation would give.
+  fogTiles(source, radius) {
+    const quantX = Math.round(source.x * 2), quantZ = Math.round(source.z * 2), tile = source.tile;
+    const radii = this.fogRadii ??= new Map();
+    let ri = radii.get(radius);
+    if (ri === undefined && radii.size < 256) radii.set(radius, ri = radii.size);
+    const key = ri !== undefined && tile >= 0 && quantX >= 0 && quantX < 4096 && quantZ >= 0 && quantZ < 4096
+      ? ((ri * N + tile) * 4096 + quantX) * 4096 + quantZ : `${tile}:${quantX}:${quantZ}:${radius}`;
     let tiles = this.fogCache.get(key);
     if (!tiles) {
-      tiles = disk(source.tile, reach).filter((t) => distance({ x: quantX * .5, z: quantZ * .5 }, centerOf(t)) <= radius + .38);
-      if (this.fogCache.size >= 3500) this.fogCache.delete(this.fogCache.keys().next().value);
+      const around = disk(tile, Math.ceil(radius / 1.49) + 1), cx = quantX * .5, cz = quantZ * .5, limit = radius + .38;
+      const keep = new Int32Array(around.length);
+      let n = 0;
+      // same arithmetic as distance({ x: cx, z: cz }, centerOf(t)) <= limit
+      for (let i = 0; i < around.length; i++) { const t = around[i]; if (Math.hypot(dxBetween(cx, TILE_X[t]), TILE_Z[t] - cz) <= limit) keep[n++] = t; }
+      tiles = keep.slice(0, n);
+      if (this.fogCache.size >= 6000) this.fogCache.delete(this.fogCache.keys().next().value);
       this.fogCache.set(key, tiles);
     }
-    for (const t of tiles) buffer[t] = 1;
+    return tiles;
+  }
+
+  reveal(source, radius, buffer) {
+    const tiles = this.fogTiles(source, radius);
+    for (let i = 0; i < tiles.length; i++) buffer[tiles[i]] = 1;
     buffer[source.tile] = 1;
   }
 
+  // S2 (perf): every source used to be stamped into each living member of its team. Each team's vision
+  // is now stamped once (into its first living member's arrays) and copied to the other members; civs
+  // with no living team member see nothing, as before. The result is byte-identical (test/visibility-equivalence).
   refreshVisibility() {
-    for (const civ of this.civs) { civ.visible.fill(0); civ.detect.fill(0); }
-    const sources = [...this.units.values(), ...this.buildings.values()];
-    for (const source of sources) {
-      const own = this.civs[source.owner], d = source.isUnit ? ACTION_UNITS[source.type] : ACTION_BUILDINGS[source.type];
-      let vision = d.vision || 5.1;
-      if (!d.air && this.world.terr[source.tile] === T.HILLS) vision += 1.05;
-      if (this.weather.fogAt(source.tile) > .55) vision -= .9;
-      const scan = d.ability === 'scan' && source.abilityUntil > this.time;
-      if (scan) vision += 3.5;
-      const net = own.techs.has('networked_command');   // B: shared vision net
-      if (net) vision += 1.5;
-      for (const civ of this.civs) if (civ.alive && civ.team === own.team) {
-        this.reveal(source, vision, civ.visible);
-        this.reveal(source, scan ? vision : net ? 2.5 : 1.52, civ.detect);
-      }
+    const teams = this.visTeams ??= new Map();
+    teams.clear();
+    for (const civ of this.civs) {
+      if (!civ.alive) { civ.visible.fill(0); civ.detect.fill(0); continue; }
+      const lead = teams.get(civ.team);
+      if (lead) continue;
+      civ.visible.fill(0); civ.detect.fill(0);
+      teams.set(civ.team, civ);
     }
+    for (const source of this.units.values()) this.revealSource(source, teams);
+    for (const source of this.buildings.values()) this.revealSource(source, teams);
     for (const s of this.sites) if (s.owner >= 0) {
+      const lead = teams.get(this.civs[s.owner]?.team);
+      if (!lead) continue;
       const radar = !s.slots && OUTPOST_TYPES[s.kind].vision;
-      for (const civ of this.civs) if (civ.alive && this.allied(civ.id, s.owner)) {
-        this.reveal(s, radar || (s.slots ? 3.8 : 2.5), civ.visible);
-        if (radar) this.reveal(s, radar, civ.detect);
-      }
+      this.reveal(s, radar || (s.slots ? 3.8 : 2.5), lead.visible);
+      if (radar) this.reveal(s, radar, lead.detect);
+    }
+    for (const civ of this.civs) if (civ.alive) {
+      const lead = teams.get(civ.team);
+      if (lead !== civ) { civ.visible.set(lead.visible); civ.detect.set(lead.detect); }
     }
     for (const civ of this.civs) {
       if (!civ.alive) continue;
@@ -444,6 +430,21 @@ export class ActionGame extends Game {
     }
   }
 
+  revealSource(source, teams) {
+    const own = this.civs[source.owner], lead = teams.get(own.team);
+    if (!lead) return;
+    const d = source.isUnit ? ACTION_UNITS[source.type] : ACTION_BUILDINGS[source.type];
+    let vision = d.vision || 5.1;
+    if (!d.air && this.world.terr[source.tile] === T.HILLS) vision += 1.05;
+    if (this.weather.fogAt(source.tile) > .55) vision -= .9;
+    const scan = d.ability === 'scan' && source.abilityUntil > this.time;
+    if (scan) vision += 3.5;
+    const net = own.techs.has('networked_command');   // B: shared vision net
+    if (net) vision += 1.5;
+    this.reveal(source, vision, lead.visible);
+    this.reveal(source, scan ? vision : net ? 2.5 : 1.52, lead.detect);
+  }
+
   tick() {
     if (this.over) return;
     this.tickN++;
@@ -452,6 +453,7 @@ export class ActionGame extends Game {
       { name: 'navigation', fn: () => unitMotion(this), budget: 15 },
       { name: 'combat', fn: () => actionCombat(this), budget: 15 },
       { name: 'capture', every: 2, fn: () => this.captureStep(DT * 2), budget: 4 },
+      { name: 'garrison', every: 2, phase: 1, fn: () => garrisonStep(this), budget: 1 },
       { name: 'income', fn: () => incomeStep(this, DT), budget: 1 },
       { name: 'field economy', every: 2, fn: () => fieldEconomyStep(this, DT * 2), budget: 4 },
       { name: 'production', every: 3, phase: 1, fn: () => productionStep(this, DT * 3), budget: 4 },
@@ -570,7 +572,11 @@ export class ActionGame extends Game {
     if (!civ?.alive || this.over) return { error: 'Your faction is no longer active.' };
     // base engineers (u.auto) are automatic: player and AI orders never move them
     const p = this.point(cmd.point || cmd, cmd.tile), group = ownedUnits(this, civ, cmd.units).filter((u) => !u.auto);
-    if (['move', 'capture', 'attack', 'hold', 'withdraw', 'deploy', 'collect'].includes(cmd.c)) for (const u of group) u.supportTask = null;
+    if (['move', 'capture', 'attack', 'hold', 'withdraw', 'deploy', 'collect'].includes(cmd.c)) for (const u of group) {
+      u.supportTask = null; u.enter = 0;
+      // W4: a garrisoned squad given a field order steps out first ('hold' keeps it inside)
+      if (u.inside && cmd.c !== 'hold') leaveBuilding(this, u);
+    }
     const site = this.siteById.get(cmd.site) || this.siteById.get(this.buildings.get(cmd.id)?.site);
     switch (cmd.c) {
       case 'move': return p ? moveGroup(this, group, p, { mode: cmd.attackMove ? 'assault' : 'move', queue: cmd.queue === true }) : { error: 'Choose a destination.' };
@@ -638,16 +644,17 @@ export class ActionGame extends Game {
       }
       case 'advance': return advanceBase(this, civ, site);
       case 'research': return startUpgrade(this, civ, cmd.tech, cmd.id || 0);
-      case 'batchTrain': return train(this, civ, cmd.buildings, cmd.unit, cmd.count, cmd.policy === 'each');
-      case 'train': return train(this, civ, [cmd.id ?? cmd.building], cmd.unit, cmd.count ?? 1);
-      case 'cancelTrain': return cancelTraining(this, civ, cmd.id ?? cmd.building, cmd.index ?? 0);
-      case 'repeat': {
-        const b = this.buildings.get(cmd.id), d = ACTION_UNITS[cmd.unit];
-        if (b?.owner !== civ.id || !b.done || cmd.unit != null && (!d || d.facility !== b.type))
-          return { error: 'Select a valid production facility and unit.' };
-        b.repeat = cmd.unit || null;
-        return {};
-      }
+      case 'cancelResearch': return cancelUpgrade(this, civ, cmd.tech);
+      // W1 production commands (docs/gameplay-overhaul/PRODUCTION_SCHEDULER.md); legacy forms keep working
+      case 'batchTrain': return train(this, civ, cmd.buildings, cmd.unit ?? cmd.type, cmd.count, cmd.policy === 'each', cmd.priority);
+      case 'train': return train(this, civ, Array.isArray(cmd.ids) ? cmd.ids : [cmd.id ?? cmd.building], cmd.type ?? cmd.unit, cmd.count ?? 1, false, cmd.priority);
+      case 'cancelTrain': return cmd.index == null && (cmd.type ?? cmd.unit) != null
+        ? cancelProduction(this, civ, cmd.id ?? cmd.building, cmd.type ?? cmd.unit, cmd.all === true || cmd.count === 'all' ? 'all' : cmd.count ?? 1)
+        : cancelTraining(this, civ, cmd.id ?? cmd.building, cmd.index ?? 0);
+      case 'setPriority': return setPriority(this, civ, cmd.id ?? cmd.building, cmd.type ?? cmd.unit, cmd.priority);
+      case 'clearQueue': return clearQueue(this, civ, cmd.id ?? cmd.building);
+      case 'pauseTrain': return pauseProduction(this, civ, cmd.id ?? cmd.building, cmd.type ?? cmd.unit, cmd.on !== false);
+      case 'repeat': return setRepeat(this, civ, cmd.id ?? cmd.building, cmd.unit ?? cmd.type ?? null);
       case 'detach': {
         const ids = new Set(group.map((u) => u.id));
         for (const roster of civ.groups.values()) roster.units = roster.units.filter((id) => !ids.has(id));
@@ -670,7 +677,12 @@ export class ActionGame extends Game {
         return {};
       }
       case 'repair': return repairFacility(this, civ, cmd.id);
+      // W4 garrisons (actionGarrison.js): enter, step out, exit rally point
+      case 'garrison': return garrisonCommand(this, civ, group, cmd.building ?? cmd.id);
+      case 'ungarrison': return ungarrisonCommand(this, civ, cmd.building ?? cmd.id, cmd.all === true ? null : cmd.units);
+      case 'garrisonRally': return garrisonRally(this, civ, cmd.building ?? cmd.id, cmd.clear === true ? null : this.point(cmd.point || cmd, cmd.tile));
       case 'demolish': return demolish(this, civ, cmd.id);
+      case 'cancelConstruction': return cancelConstruction(this, civ, cmd.id ?? cmd.building);
       case 'rally': {
         if (!p) return { error: 'Choose a rally point.' };
         const ids = Array.isArray(cmd.buildings) ? cmd.buildings.slice(0, 40) : [cmd.id ?? cmd.building];
@@ -783,7 +795,7 @@ export class ActionGame extends Game {
       const target = this.units.get(u.target) || this.buildings.get(u.target);
       units.push([u.id, u.owner, u.type, u.tile, -1, 0, Math.round(u.hp / u.maxHp * 100), 100,
         (this.time - u.lastCombat < 1.5 ? 1 : 0) | (u.blocked > 9 ? 16 : 0) | (d.cat === 'artillery' && !u.goal ? 64 : 0) | (u.waitingCrossing ? 128 : 0) | (u.assisting ? 256 : 0) |
-          (u.deployed ? 512 : 0) | (u.setupUntil ? 1024 : 0) | (u.braced && !u.goal ? 2048 : 0) | (u.auto ? 4096 : 0) | (u.hasteUntil > this.time ? 8192 : 0),
+          (u.deployed ? 512 : 0) | (u.setupUntil ? 1024 : 0) | (u.braced && !u.goal ? 2048 : 0) | (u.auto ? 4096 : 0) | (u.hasteUntil > this.time ? 8192 : 0) | (u.inside ? 16384 : 0),
         own ? u.mode : null, STANCES.indexOf(stanceOf(u)), own && target && (view.god || this.sees(civ, target)) ? u.target : 0, 0, 100, Math.min(3, Math.floor(u.kills / 4)), 0, 0, 0,
         d.air ? airWire(u, own, this) : null, -1,
         [round(u.x, 1000), round(u.z, 1000), round(u.yaw, 1000), round(u.vx), round(u.vz), own ? round(Math.max(0, u.abilityReady - this.time), 2) : 0,
@@ -797,7 +809,7 @@ export class ActionGame extends Game {
     const hq = headquarters(this, s);
     const own = s.owner === civ.id;
     return { id: s.id, tile: s.tile, x: s.x, z: s.z, name: s.name, kind: s.kind, base: !!s.slots, radius: s.radius, owner: s.owner,
-      by: live ? s.by : -1, capture: live ? round(s.progress / s.captureTime * 100, 1) : 0, contested: live && s.contested,
+      by: live ? s.by : -1, capture: live ? round(s.progress / s.captureTime * 100, 1) : 0, contested: live && s.contested, decaying: live && !!s.decaying,
       hq: hq?.id || 0, operational: !!hq?.done, build: hq ? round(hq.progress * 100, 1) : 0, tier: s.tier,
       defenseCount: own ? [...this.buildings.values()].filter((b) => b.site === s.id && b.owner === civ.id && b.perimeterSlot).length : undefined,
       slots: own && s.slots ? openSlots(this, s) : undefined, capacity: s.slots ? Math.min(7, 3 + (s.tier - 1) * 2) : undefined,
@@ -812,7 +824,15 @@ export class ActionGame extends Game {
       // Occupancy and available construction slots remain owner-only information.
       parcels: s.parcels ? s.parcels.map((p) => [p.tile, p.x, p.z, p.yaw, p.id, p.tier, p.width, p.depth,
         own || god || civ.visible[p.tile] ? s.history?.[p.id]?.type || null : civ.siteIntel.get(s.id)?.parcels?.find((v) => v[4] === p.id)?.[8] || null]) : undefined,
-      memory: !live, starting: s.start !== undefined };
+      memory: !live, starting: s.start !== undefined,
+      // 2026-11-18 (ROADS_AND_CLAIMS.md): an own captured city without a headquarters shows its settlement price, the
+      // claim road included ({ materials, energy, road: segments, to: base name }); the plan cached at capture time
+      settle: own && s.slots && !s.hq ? this.settleWire(s, civ) : undefined };
+  }
+
+  settleWire(s, civ) {
+    const plan = s.claimRoad?.owner === civ.id && s.claimRoad.edges.length ? s.claimRoad : null, cost = settlementCost(this, civ, plan);
+    return { materials: cost.materials || 0, energy: cost.energy || 0, road: plan?.edges.length || 0, to: plan?.name || undefined };
   }
 
   viewerSnapshot(civ, view, full, econ) {
@@ -824,7 +844,7 @@ export class ActionGame extends Game {
     msg.sites = this.sites.flatMap((s) => {
       if (view.god || s.owner === civ.id || view.vis[s.tile]) return [this.siteWire(s, civ, true, view.god)];
       const memory = civ.siteIntel.get(s.id);
-      return memory ? [{ ...memory, slots: undefined, by: -1, capture: 0, contested: false, memory: true }] : [];
+      return memory ? [{ ...memory, slots: undefined, by: -1, capture: 0, contested: false, decaying: false, memory: true }] : [];
     });
     if (econ) msg.trenchWorld = [...this.fieldworks.values()].filter((f) => view.god || f.owner === civ.id || view.vis[f.tile])
       .map((f) => [f.tile, f.x, f.z, f.facing, trenchRoadMask(this, f.tile)]);
@@ -836,13 +856,15 @@ export class ActionGame extends Game {
     const buildings = [];
     for (const b of this.buildings.values()) {
       if (!god && b.owner !== civ.id && !vis[b.tile]) continue;
-      const own = god || b.owner === civ.id, site = this.siteById.get(b.site), q = b.queue[0], p = b.project;
+      const own = god || b.owner === civ.id, site = this.siteById.get(b.site), q = b.queues?.length, p = b.project;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, px: b.x, pz: b.z, yaw: b.yaw, hp: round(b.hp / b.maxHp * 100, 1),
         d: b.done ? 1 : 0, p: round(b.progress * 100, 1), st: b.state, lv: b.level, ea: b.era, ti: site?.tier || this.civs[b.owner].age + 1, slot: b.slot,
         f: b.fire > 0 ? 1 : 0, a: b.done && (ACTION_BUILDINGS[b.type].materials || ACTION_BUILDINGS[b.type].energy || q) ? 1 : 0,
-        ...(own ? { c: b.site, s: 1, q: b.queue.map((q) => [q.unit, Math.ceil(q.left)]), tr: q ? round((1 - q.left / q.total) * 100, 1) : 0,
+        ...(own ? { c: b.site, s: 1, ...(ACTION_BUILDINGS[b.type].trains ? productionWire(this, b) : { q: [], tr: 0 }),
           wk: p ? [p.kind === 'repair' ? 'r' : 'u', round((1 - p.left / p.total) * 100, 1)] : undefined, project: p?.kind,
-          mi: b.missiles, rp: b.repeat, rg: b.rallyGroup, ra: b.rally ? [round(b.rally.x), round(b.rally.z), b.rallyMode === 'move' ? 0 : 1] : undefined, rc: b.done && b.hp < b.maxHp ? Math.ceil(20 + (1 - b.hp / b.maxHp) * 70) : 0 } : {}) });
+          mi: b.missiles, rp: b.repeat, rg: b.rallyGroup, ra: b.rally ? [round(b.rally.x), round(b.rally.z), b.rallyMode === 'move' ? 0 : 1] : undefined, rc: b.done && b.hp < b.maxHp ? Math.ceil(20 + (1 - b.hp / b.maxHp) * 70) : 0,
+          // W4 garrison: occupant unit ids in entry order (the first def.firingSlots fire) and the exit rally point
+          gar: garrisonWire(this, b), ge: b.exitRally ? [round(b.exitRally.x), round(b.exitRally.z)] : undefined } : {}) });
     }
     if (!god && civ.seenB) for (const b of civ.seenB.values()) if (!vis[b.t]) buildings.push({ ...b, mem: 1 });
     const cities = this.sites.filter((s) => s.slots && s.hq && (god || s.owner === civ.id || vis[s.tile])).map((s) =>
@@ -857,6 +879,8 @@ export class ActionGame extends Game {
       research: [...this.buildings.values()].filter((b) => b.owner === civ.id && b.project?.kind === 'upgrade')
         .map((b) => ({ key: b.project.key, progress: round((1 - b.project.left / b.project.total) * 100, 1) })),
       groups: [...civ.groups.values()].map((g) => ({ id: g.id, units: g.units.filter((id) => this.units.has(id)) })),
+      // W4 / R6: the open multiplayer speed vote (speedVote.js, MULTIPLAYER_RULES.md), absent when none is open
+      speedVote: voteWire(this),
     };
     const civs = this.civs.map((c) => ({ id: c.id, name: c.name, color: c.color, team: c.team, alive: c.alive, human: c.human,
       ...(c.id === civ.id || god ? { age: c.age, summary: this.civSummary(c), posture: c.aiPlan?.state } : {}) }));

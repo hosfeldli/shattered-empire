@@ -52,8 +52,8 @@ namespace SE.Runtime.Session
         {
             SelectedObjective = placementBase = ActionMoveOrders = ActionFormations = 0;
             SelectedPickup = SelectedRingSlot = 0; ClearRingPreview();
-            rightPress = lineDrag = false;
-            worldLine.Clear();
+            rightPress = lineDrag = rallyPlacing = false;
+            worldLine.Clear(); ClearLinePreview();
             SelectedBuildings.Clear();
             SelectedCity = -1;
         }
@@ -108,6 +108,7 @@ namespace SE.Runtime.Session
             var point = new Vector3(x, session.World.GroundHeight(x, z), z);
             var cmd = new JObject { ["c"] = "move", ["units"] = new JArray(units.Selected.ToArray()), ["tile"] = tile };
             if (session.ActionRts) { cmd["point"] = Point(point); cmd["queue"] = queue; }
+            DenseForestHint(tile, Time.unscaledTime);
             var order = new Order { MapPoint = point, Time = Time.unscaledTime };
             Orders.Add(order);
             NoteIssued("move", point);
@@ -179,7 +180,65 @@ namespace SE.Runtime.Session
             if (lineDrag && worldLine.Count >= 2) DeployActionLine(false, time);
             else ActionContextOrder(lineStartScreen, lineStartGround, time);
             lineDrag = false;
-            linePreview = null;
+            ClearLinePreview();
+        }
+
+        // ------------------------------------------------------------------ formation preview cache (§23)
+        // The server's dry-run positions are parsed once per reply into this array (the overlay used to walk the
+        // JArray every frame). Until the first reply arrives the selection is spread evenly along the drawn line as
+        // dim placeholder rings, so the drag answers immediately.
+        struct LineSlot { public float X, Z, Face; public int State; }
+        LineSlot[] lineSlots = new LineSlot[64];
+        int lineSlotCount, linePlaced;
+
+        void SetLinePreview(JObject plan)
+        {
+            linePreview = plan;
+            lineSlotCount = 0;
+            linePlaced = ProtocolDecoder.Int(plan?["placed"]);
+            if (!(plan?["positions"] is JArray positions)) return;
+            if (lineSlots.Length < positions.Count) lineSlots = new LineSlot[Mathf.NextPowerOfTwo(positions.Count)];
+            foreach (var token in positions)
+                if (token is JArray p && p.Count >= 5)
+                    lineSlots[lineSlotCount++] = new LineSlot { X = ProtocolDecoder.Float(p[1]), Z = ProtocolDecoder.Float(p[2]), Face = ProtocolDecoder.Float(p[3]), State = ProtocolDecoder.Int(p[4]) };
+        }
+
+        void ClearLinePreview() { linePreview = null; lineSlotCount = 0; linePlaced = 0; }
+
+        /// <summary>Placeholder slots: the selected count spread evenly along the drawn polyline (wrap-aware).</summary>
+        void DrawLinePlaceholders()
+        {
+            var w = session.World;
+            int n = Mathf.Min(units.Selected.Count, 256);
+            if (n == 0 || worldLine.Count < 2) return;
+            var g = session.World.Grid;
+            float total = 0;
+            for (int k = 1; k < worldLine.Count; k++)
+            {
+                float dx = g.DxWrap(worldLine[k - 1].x, worldLine[k].x), dz = worldLine[k].z - worldLine[k - 1].z;
+                total += Mathf.Sqrt(dx * dx + dz * dz);
+            }
+            if (total < .01f) return;
+            var dim = new float4(.78f, .86f, .82f, .22f);
+            int seg = 1; float segStart = 0;
+            for (int i = 0; i < n; i++)
+            {
+                float at = (i + .5f) / n * total;
+                // walk forward to the segment holding this distance (slots are in order, so the walk is linear overall)
+                while (seg < worldLine.Count)
+                {
+                    var a = worldLine[seg - 1]; var b = worldLine[seg];
+                    float dx = g.DxWrap(a.x, b.x), dz = b.z - a.z, len = Mathf.Sqrt(dx * dx + dz * dz);
+                    if (at <= segStart + len || seg == worldLine.Count - 1)
+                    {
+                        float f = len > 1e-4f ? Mathf.Clamp01((at - segStart) / len) : 0;
+                        float x = a.x + dx * f, z = a.z + dz * f;
+                        rings.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + .034f, z)), 0, new float3(.22f, 1, .22f), dim));
+                        break;
+                    }
+                    segStart += len; seg++;
+                }
+            }
         }
 
         void DeployActionLine(bool previewOnly, float time)
@@ -196,7 +255,7 @@ namespace SE.Runtime.Session
             session.Net?.Command(cmd, r =>
             {
                 var plan = r.Raw?["deploy"] as JObject;
-                if (previewOnly) { if (token == lineToken && lineDrag) linePreview = plan; return; }
+                if (previewOnly) { if (token == lineToken && lineDrag) SetLinePreview(plan); return; }
                 Resolve(order, r);
                 if (r.Error != null) return;
                 ActionFormations++;
@@ -233,6 +292,7 @@ namespace SE.Runtime.Session
             {
                 cmd["c"] = "move"; cmd["point"] = Point(point);
                 cmd["attackMove"] = InputFacade.Ctrl; cmd["queue"] = InputFacade.Shift;
+                DenseForestHint(tile, time);   // §30: infantry cannot enter dense forest (Commander.Orders.cs)
             }
             string kind = (string)cmd["c"] == "move" && InputFacade.Ctrl ? "attackMove" : (string)cmd["c"];
             var order = new Order { MapPoint = point, Time = time, Kind = kind };
@@ -270,11 +330,86 @@ namespace SE.Runtime.Session
         /// </summary>
         public int StrokePreviewSkipped { get; private set; }
 
+        // ------------------------------------------------------------------ shared stroke-tool rules (§28)
+        // Road, trench and terrain brush strokes behave the same: right-click mid-stroke drops only that stroke (the
+        // tool stays armed), right-click otherwise puts the tool away, Escape cancels, and after a committed stroke
+        // Shift keeps the tool armed for the next one.
+        enum StrokeRightClick { None, DropStroke, EndTool }
+
+        static StrokeRightClick StrokeRightClickInput(bool stroking) =>
+            !InputFacade.RightDown ? StrokeRightClick.None : stroking ? StrokeRightClick.DropStroke : StrokeRightClick.EndTool;
+
+        /// <summary>After a stroke is sent: Shift keeps the tool (only the stroke resets), otherwise the tool ends.</summary>
+        static bool KeepToolAfterStroke => InputFacade.Shift;
+
+        struct StrokePart { public float Ax, Az, Bx, Bz; public bool Ok, Segment; }
+        StrokePart[] strokeParts = new StrokePart[64];
+        int strokePartCount, strokeAccepted;
+        string lineHint = "";
+        int lineHintCount;
+
+        /// <summary>The road / trench stroke's server preview (cost, positions, skipped), or null.</summary>
+        public JObject StrokePreview => actionTrenchPreview;
+
+        /// <summary>Accepted road links or trench hexes in the current preview.</summary>
+        public int StrokeAccepted => strokeAccepted;
+
+        void SetStrokePreview(JObject plan, bool road)
+        {
+            actionTrenchPreview = plan;
+            strokePartCount = strokeAccepted = 0;
+            if (plan == null) return;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                if (!(plan[pass == 0 ? "positions" : "skipped"] is JArray parts)) continue;
+                if (pass == 0) strokeAccepted = parts.Count;
+                if (strokeParts.Length < strokePartCount + parts.Count) System.Array.Resize(ref strokeParts, Mathf.NextPowerOfTwo(strokePartCount + parts.Count));
+                foreach (var p in parts)
+                    strokeParts[strokePartCount++] = road
+                        ? new StrokePart { Ax = ProtocolDecoder.Float(p["from"]?["x"]), Az = ProtocolDecoder.Float(p["from"]?["z"]), Bx = ProtocolDecoder.Float(p["to"]?["x"]), Bz = ProtocolDecoder.Float(p["to"]?["z"]), Ok = pass == 0, Segment = true }
+                        : new StrokePart { Ax = ProtocolDecoder.Float(p["x"]), Az = ProtocolDecoder.Float(p["z"]), Ok = pass == 0 };
+            }
+        }
+
+        /// <summary>Drop the stroke being drawn (or just sent) but keep the road / trench tool armed.</summary>
+        void ResetStroke()
+        {
+            worldStroke.Clear(); trenchToken++;
+            SetStrokePreview(null, false);
+            StrokePreviewReason = null; StrokePreviewSkipped = 0;
+        }
+
+        /// <summary>Road / trench list prices per accepted link or hex (the server's roadBuild / trenchLine).</summary>
+        public const int RoadLinkPrice = 15, TrenchHexPrice = 35;
+
+        /// <summary>
+        /// The tool chip's cost line for a road or trench stroke: the server preview's total when present, else the
+        /// accepted parts × the unit price; with no stroke yet, the list price.
+        /// </summary>
+        public string StrokeChipText()
+        {
+            bool road = Current == Mode.Road;
+            int unit = road ? RoadLinkPrice : TrenchHexPrice;
+            string per = road ? "link" : "segment";
+            var plan = actionTrenchPreview;
+            if (plan == null || worldStroke.Count < 2) return $"{unit} Materials / {per}";
+            int cost = plan["cost"] is JObject c ? ProtocolDecoder.Int(c["materials"], strokeAccepted * unit) : strokeAccepted * unit;
+            string text = $"{cost} Materials · {strokeAccepted} {(strokeAccepted == 1 ? per : per + "s")}";
+            if (StrokePreviewSkipped > 0) text += $" ({StrokePreviewSkipped} skipped)";
+            float seconds = ProtocolDecoder.Float(plan["seconds"]);
+            if (seconds > 0) text += $" · {seconds:0}s";
+            return text + " · Shift keeps the tool";
+        }
+
         void DrawActionTrench(float time, bool overUi)
         {
-            if (InputFacade.RightDown) { Cancel(); return; }
-            if (!overUi && InputFacade.LeftDown) { worldStroke.Clear(); previewAt = 0; dragging = true; }
-            if (!dragging) { StrokePreviewReason = null; StrokePreviewSkipped = 0; return; }
+            switch (StrokeRightClickInput(dragging))
+            {
+                case StrokeRightClick.DropStroke: ResetStroke(); dragging = false; return;
+                case StrokeRightClick.EndTool: Cancel(); return;
+            }
+            if (!overUi && InputFacade.LeftDown) { ResetStroke(); previewAt = 0; dragging = true; }
+            if (!dragging) return;
             if (!overUi && cam.TryGround(InputFacade.MousePosition, out var p)) AppendPoint(worldStroke, p, 72, .22f);
             bool commit = InputFacade.LeftUp || InputFacade.Pressed(KeyCode.Return);
             if (worldStroke.Count >= 2 && (commit || time >= previewAt))
@@ -295,13 +430,17 @@ namespace SE.Runtime.Session
                     }
                     else if (token == trenchToken && (Current == Mode.Trench || Current == Mode.Road))
                     {
-                        actionTrenchPreview = r.Raw?[road ? "road" : "trench"] as JObject;
+                        SetStrokePreview(r.Raw?[road ? "road" : "trench"] as JObject, road);
                         StrokePreviewReason = ReadableError(r);   // nothing buildable: e.g. outside your own territory, through a base foundation
                         StrokePreviewSkipped = (actionTrenchPreview?["skipped"] as JArray)?.Count ?? 0;
                     }
                 });
             }
-            if (commit) { dragging = false; Cancel(); }
+            if (!commit) return;
+            // a click without a stroke sends nothing and keeps the tool; a sent stroke ends it unless Shift is held
+            dragging = false;
+            if (worldStroke.Count < 2 || KeepToolAfterStroke) ResetStroke();
+            else Cancel();
         }
 
         void DrawActionOverlay(WrapImages images, float time)
@@ -371,8 +510,24 @@ namespace SE.Runtime.Session
                 }
             }
             if (Current == Mode.Target && FieldPreviewParcel != null) foreach (var lot in newBaseRing) Corners(lot.x, lot.z, lot.y, .9f, .9f, Valid);   // New Base ring footprint
-            foreach (int id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var selected))
-                Corners(selected.X, selected.Z, selected.Yaw, 1.02f, 1.02f, new float4(.43f, .77f, .65f, .5f));
+            // 2026-11-18: the build-wheel structure's real footprint under its ghost (green allowed, red refused): the
+            // rotated rectangle for walls with width × depth (the server's level-check outline), else its radius; when the
+            // ghost was snapped away from the cursor, an amber lead from the cursor to where it will really stand
+            if (Current == Mode.Target && FieldPreviewParcel is BaseParcel ghost && newBaseRing.Count == 0 && ProtocolDecoder.Str(TargetCommand?["c"]) == "fieldBuild")
+            {
+                var def = session.Defs?["BUILDINGS"]?[Option];
+                var footprint = FieldPreviewValid ? Valid : Invalid;
+                float fw = ProtocolDecoder.Float(def?["width"]), fd = ProtocolDecoder.Float(def?["depth"]), fr = ProtocolDecoder.Float(def?["radius"], .3f);
+                if (fw > 0f && fd > 0f) Fill(ghost.X, ghost.Z, ghost.Yaw, fw, fd, footprint);
+                else { Ring(ghost.X, ghost.Z, fr * 2f, footprint); Ring(ghost.X, ghost.Z, fr * 2f + .06f, new float4(footprint.xyz, footprint.w * .5f)); }
+                if (FieldPreviewSnapped)
+                {
+                    var c = FieldPreviewCursor;
+                    Line(At(c.x, c.z), At(ghost.X, ghost.Z), Amber, .014f);
+                    Ring(c.x, c.z, .22f, Amber);
+                }
+            }
+            DrawSelectedBuildingRings();   // footprint-fitted building / turret rings (Commander.Selection.cs, C-D §36)
             foreach (var s in session.Objectives.Values)
             {
                 if (s.Operational && s.Headquarters != 0) continue;
@@ -390,29 +545,25 @@ namespace SE.Runtime.Session
             if (lineDrag)
             {
                 for (int k = 1; k < worldLine.Count; k++) Line(worldLine[k - 1], worldLine[k], Amber, .024f);
-                if (linePreview?["positions"] is JArray positions) foreach (var token in positions)
-                    if (token is JArray p && p.Count >= 5)
-                    {
-                        float x = ProtocolDecoder.Float(p[1]), z = ProtocolDecoder.Float(p[2]), face = ProtocolDecoder.Float(p[3]);
-                        int state = ProtocolDecoder.Int(p[4]);
-                        var color = state == 0 ? Invalid : state == 1 ? Valid : Amber;
-                        Ring(x, z, .25f, color);
-                        if (state > 0) Line(At(x, z), At(x + Mathf.Sin(face) * .23f, z + Mathf.Cos(face) * .23f), color, .028f);
-                    }
+                if (linePreview == null) DrawLinePlaceholders();   // until the server's dry run answers
+                for (int i = 0; i < lineSlotCount; i++)
+                {
+                    ref var p = ref lineSlots[i];
+                    var color = p.State == 0 ? Invalid : p.State == 1 ? Valid : Amber;
+                    Ring(p.X, p.Z, .25f, color);
+                    if (p.State > 0) Line(At(p.X, p.Z), At(p.X + Mathf.Sin(p.Face) * .23f, p.Z + Mathf.Cos(p.Face) * .23f), color, .028f);
+                }
             }
             else if (Current == Mode.Trench || Current == Mode.Road)
             {
                 for (int k = 1; k < worldStroke.Count; k++) Line(worldStroke[k - 1], worldStroke[k], Amber, .028f);
-                // accepted parts green, skipped parts red (they are left out when the stroke is committed)
-                for (int pass = 0; pass < 2; pass++)
+                // accepted parts green, skipped parts red (they are left out when the stroke is committed); parsed once per reply
+                for (int i = 0; i < strokePartCount; i++)
                 {
-                    if (!(actionTrenchPreview?[pass == 0 ? "positions" : "skipped"] is JArray parts)) continue;
-                    var color = pass == 0 ? Valid : Invalid;
-                    foreach (var p in parts)
-                    {
-                        if (Current == Mode.Road) Line(At(ProtocolDecoder.Float(p["from"]?["x"]), ProtocolDecoder.Float(p["from"]?["z"])), At(ProtocolDecoder.Float(p["to"]?["x"]), ProtocolDecoder.Float(p["to"]?["z"])), color, .023f);
-                        else Ring(ProtocolDecoder.Float(p["x"]), ProtocolDecoder.Float(p["z"]), .29f, color);
-                    }
+                    ref var p = ref strokeParts[i];
+                    var color = p.Ok ? Valid : Invalid;
+                    if (p.Segment) Line(At(p.Ax, p.Az), At(p.Bx, p.Bz), color, .023f);
+                    else Ring(p.Ax, p.Az, .29f, color);
                 }
             }
             else if (units.Selected.Count <= 16)
@@ -442,8 +593,8 @@ namespace SE.Runtime.Session
         string ActionModeHint()
         {
             if (!lineDrag) return "";
-            int count = ProtocolDecoder.Int(linePreview?["placed"]);
-            return count > 0 ? $"{count} positions" : "";
+            if (linePlaced != lineHintCount) { lineHintCount = linePlaced; lineHint = linePlaced > 0 ? $"{linePlaced} positions" : ""; }
+            return lineHint;
         }
     }
 }

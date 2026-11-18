@@ -45,6 +45,12 @@ Shader "SE/Terrain"
         TEXTURE2D(_SE_TerritoryTex); SAMPLER(sampler_SE_TerritoryTex);
         TEXTURE2D(_SE_BaseGroundTex);
         float4 _SE_TerritoryParams;
+        // Ring of influence edge (TerritoryField, 2026-11-18): _SE_InfluenceTex r = signed distance to the edge of the local
+        // player's defense ring of influence (0.5 = the edge, inside > 0.5), same encoding as the territory alpha.
+        // _SE_InfluenceParams: x strength (0 off, faint when idle, 1 while placing a defense), y range. _SE_InfluenceColor: sRGB team colour.
+        TEXTURE2D(_SE_InfluenceTex);
+        float4 _SE_InfluenceParams;
+        float4 _SE_InfluenceColor;
 
         float SE_Hash(float2 p) { return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
         float SE_Noise(float2 p)
@@ -317,6 +323,23 @@ Shader "SE/Terrain"
                         half3 team = SRGBToLinear(tt.rgb);
                         color = lerp(color, team * .55h, edge * .30h * zoom);
                         color += team * (edge * .32h * pulse + inner * .07h) * zoom;
+                    }
+                    // the ring of influence edge, drawn with the same glowing border line (no inward wash)
+                    if (_SE_InfluenceParams.x > .001)
+                    {
+                        half inf = SAMPLE_TEXTURE2D_LOD(_SE_InfluenceTex, sampler_SE_TerritoryTex, SE_MapUV(wp), 0).r;
+                        if (inf > .004h && inf < .996h)
+                        {
+                            float d = (inf - .5) * 2.0 * _SE_InfluenceParams.y;
+                            float width = clamp(camDist * .0045, .045, .40);
+                            half edge = 1.0h - smoothstep(0.0h, (half)width, (half)abs(d));
+                            half zoom = lerp(.30h, 1.0h, smoothstep(6.0h, 32.0h, (half)camDist));
+                            half pulse = .88h + .12h * (half)sin(_Time.y * 1.3 - d * 2.0);
+                            half3 team = SRGBToLinear((half3)_SE_InfluenceColor.rgb);
+                            half k = (half)saturate(_SE_InfluenceParams.x);
+                            color = lerp(color, team * .55h, edge * .30h * zoom * k);
+                            color += team * (edge * .32h * pulse) * zoom * k;
+                        }
                     }
                 }
 

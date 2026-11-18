@@ -435,7 +435,7 @@ namespace SE.Runtime.UI
 
         // ------------------------------------------------------------------ tile readout (only while Alt is held)
         Label tileInfo;
-        int tileInfoFor = -2;
+        int tileInfoFor = -2, tileInfoDense = -1;
 
         void TileReadout()
         {
@@ -450,15 +450,17 @@ namespace SE.Runtime.UI
             if (!Input.InputFacade.Alt || IsPointerOverUi(mouse)) { tileInfo.style.display = DisplayStyle.None; tileInfoFor = -2; return; }
             int t = commander.HoverTile();
             if (t < 0 || session.World.Known[t] == 0) { tileInfo.style.display = DisplayStyle.None; return; }
-            if (t != tileInfoFor)
+            if (t != tileInfoFor || session.World.DenseRevision != tileInfoDense)
             {
-                tileInfoFor = t;
+                tileInfoFor = t; tileInfoDense = session.World.DenseRevision;
                 var w = session.World;
                 var sb = new System.Text.StringBuilder();
                 string terrain = TerrainName(w.Terrain[t], w.Biome[t]);
                 sb.Append(terrain);
                 if (w.IsRiver(t)) sb.Append(" · river");
                 if ((w.GeoFlags[t] & 128) != 0) sb.Append(" · stream");
+                // §30 dense forest (welcome world.dense): infantry-class units cannot cross it off-road
+                if (w.IsDense(t)) sb.Append('\n').Append("Dense forest · infantry cannot pass (tanks can clear it)");
                 int owner = w.Owner[t];
                 sb.Append('\n').Append(owner < 0 ? "Unclaimed" : owner == session.CivId ? "Your territory" : CivName(owner) + " territory");
                 if (w.Resource[t] != 0) sb.Append('\n').Append("Resource: ").Append(ResourceName(w.Resource[t]));
@@ -706,6 +708,10 @@ namespace SE.Runtime.UI
                 if (text.StartsWith("(earlier)")) continue;
                 bool outcome = meta.Kind == "result" || !string.IsNullOrEmpty(meta.Title);
                 if (outcome && !session.ActionRts) ResultCard(meta.Title ?? "Outcome", text, meta.Tile);
+                // §30: a unit that gave up on its destination (server quiet note after 60 s, e.g. infantry facing dense
+                // forest) is order feedback: it toasts like a refusal instead of going only to the chronicle
+                if (session.ActionRts && meta.Kind == "unit" && text.IndexOf("could not reach", StringComparison.Ordinal) >= 0)
+                    commander.Say(text, false, now);
                 if (level != "critical" && level != "major" && !(outcome && session.ActionRts)) continue;
                 int tile = meta.Tile;
                 string title = meta.Title ?? "Outcome", body = text;

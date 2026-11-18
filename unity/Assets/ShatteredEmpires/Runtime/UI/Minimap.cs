@@ -107,6 +107,23 @@ namespace SE.Runtime.UI
         /// <summary>Z: switch between the whole map (default) and the local view around the camera.</summary>
         public void ToggleZoom() { zoomed = !zoomed; zoomDirty = true; }
 
+        /// <summary>The disc's outer diameter including the bezel (panel units; SE.Minimap.uss places it at 240).</summary>
+        public const float Diameter = Outer;
+
+        /// <summary>
+        /// The rightmost x of the bezel's outer circle over the horizontal band [<paramref name="top"/>,
+        /// <paramref name="bottom"/>] (both measured from the minimap's top edge), relative to its left edge:
+        /// r + sqrt(r² − dy²) with dy the band's distance from the centre row (0 when it straddles it). Things
+        /// docked to the right of the disc (the console's resource bars) start here plus a gap, so they follow
+        /// the chord instead of overlapping the bezel. A band clear of the disc returns 0.
+        /// </summary>
+        public static float RightEdgeOver(float top, float bottom)
+        {
+            float r = Outer * .5f;
+            float dy = top > r ? top - r : bottom < r ? r - bottom : 0f;
+            return dy >= r ? 0f : r + Mathf.Sqrt(r * r - dy * dy);
+        }
+
         public Minimap(ClientSession s)
         {
             session = s;

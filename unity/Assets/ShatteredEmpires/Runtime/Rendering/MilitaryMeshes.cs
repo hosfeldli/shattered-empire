@@ -14,6 +14,10 @@ namespace SE.Runtime.Rendering
         public static Mesh[] Torsos;
         public static Mesh Thigh, Shin, UpperArm, Forearm;
         public static Mesh Rifle, InfantryLauncher, Pistol;
+        /// <summary>Infantry fighting vehicle (unit exo_infantry since 2026-11-18): a tall, boxy tracked hull with a rear
+        /// ramp on the tank's running gear, and a two-man turret (origin on the hull's turret ring) carrying the
+        /// autocannon along +z and a twin anti-tank missile box on its left cheek.</summary>
+        public static Mesh Ifv, IfvTurret;
         static readonly Color Paint = new Color(.88f, .90f, .84f);
         static readonly Color Edge = new Color(.70f, .72f, .66f);
         static readonly Color Dark = new Color(.24f, .26f, .24f);
@@ -28,6 +32,8 @@ namespace SE.Runtime.Rendering
             Tank = Tracked(0).Build("Main battle tank hull");
             Autonomous = Tracked(1).Build("Autonomous tank hull");
             Howitzer = Tracked(2).Build("Self-propelled gun hull");
+            Ifv = IfvHull().Build("Infantry fighting vehicle hull");
+            IfvTurret = IfvTurretBody().Build("IFV turret, autocannon and missile launcher");
             Turret = TurretBody(0).Build("Manned turret");
             RemoteTurret = TurretBody(1).Build("Remote turret and sensors");
             HowitzerTurret = TurretBody(2).Build("Howitzer cabin");
@@ -90,6 +96,70 @@ namespace SE.Runtime.Rendering
             Fighter = ModelLibrary.Or("Fighter", Fighter); Bomber = ModelLibrary.Or("Bomber", Bomber);
             Helicopter = ModelLibrary.Or("Helicopter", Helicopter); Rotor = ModelLibrary.Or("Rotor", Rotor);
             Rifle = ModelLibrary.Or("Rifle", Rifle);
+            Ifv = ModelLibrary.Or("Ifv", Ifv); IfvTurret = ModelLibrary.Or("IfvTurret", IfvTurret);
+        }
+
+        /// <summary>
+        /// The IFV hull, in the tracked hulls' units (UnitRenderer draws it .64 wide x 1.12 long like the tank, on the same
+        /// tracks and road wheels): taller and squarer than the tank (deck at .42), a steep glacis with a trim vane, armour
+        /// skirt tiles, firing ports along the troop compartment and a rear ramp with its door.
+        /// </summary>
+        static MeshBuilder IfvHull()
+        {
+            const float deck = .42f;
+            var m = new MeshBuilder().Surface(SurfaceKind.Armor)
+                .Armor(P(0, .11f, -.05f), P(.64f, deck - .11f, .98f), V(.61f, .90f), .05f, Paint)
+                .Wedge(P(0, .14f, .39f), P(.60f, .25f, .22f), .07f, Edge)
+                .Box(P(0, .19f, .515f), P(.50f, .07f, .018f), Steel)                       // trim vane
+                .Box(P(0, deck, -.28f), P(.40f, .018f, .30f), Edge)                         // troop hatch
+                .Box(P(.17f, deck, .26f), P(.13f, .03f, .12f), Paint)                       // driver's hatch
+                .Box(P(0, .14f, -.555f), P(.44f, .27f, .025f), Edge)                        // rear ramp
+                .Box(P(.09f, .19f, -.57f), P(.12f, .17f, .01f), Dark);                       // ramp door
+            for (int side = -1; side <= 1; side += 2)
+            {
+                float x = side * .365f;
+                m.Surface(SurfaceKind.Rubber).Armor(P(x, .028f, -.02f), P(.145f, .164f, 1.03f), V(.145f, 1.11f), .07f, Dark);
+                m.Surface(SurfaceKind.Armor).Armor(P(x, .167f, -.02f), P(.179f, .12f, 1.10f), V(.160f, 1.02f), .06f, Paint);
+                for (int i = 0; i < 6; i++)   // bolt-on armour tiles over the skirt
+                    m.Box(P(side * .452f, .17f, -.43f + i * .165f), P(.022f, .095f, .15f), i % 2 == 0 ? Edge : Paint);
+                for (int i = 0; i < 3; i++)   // firing ports along the troop compartment
+                    m.Box(P(side * .305f, .32f, -.38f + i * .17f), P(.012f, .03f, .05f), Dark);
+                m.Box(P(x * .82f, .30f, .47f), P(.07f, .04f, .02f), Dark)
+                    .Surface(SurfaceKind.Glass).Box(P(x * .82f, .305f, .482f), P(.05f, .025f, .008f), Light)
+                    .Box(P(x * .9f, .25f, -.568f), P(.05f, .03f, .008f), Tail)
+                    .Surface(SurfaceKind.Armor);
+                m.Box(P(side * .24f, deck, -.50f), P(.07f, .05f, .07f), Steel)               // stowage bins
+                    .Beam(P(side * .29f, deck + .045f, -.46f), P(side * .29f, deck + .045f, .05f), .007f, .007f, 5, Steel);
+            }
+            m.Cylinder(P(0, deck, .02f), .17f, .17f, .012f, 14, Edge);                   // turret ring
+            return m;
+        }
+
+        /// <summary>IFV turret about its ring (origin): a low angular two-man turret, the autocannon with its muzzle
+        /// brake along +z at y .51, a coaxial MG, a twin missile box on the left cheek and the commander's sight.</summary>
+        static MeshBuilder IfvTurretBody()
+        {
+            const float y = .43f;
+            var m = new MeshBuilder().Surface(SurfaceKind.Armor)
+                .Cylinder(P(0, y - .01f, .02f), .165f, .16f, .025f, 12, Dark)
+                .Armor(P(.02f, y, -.02f), P(.38f, .11f, .38f), V(.31f, .29f), .05f, Paint)
+                .Wedge(P(.02f, y, .19f), P(.30f, .10f, .10f), .04f, Edge)
+                .Box(P(.02f, y + .03f, .245f), P(.10f, .07f, .05f), Steel)                    // mantlet
+                .Tube(P(.02f, y + .065f, .25f), .36f, .015f, 8, Steel)                        // autocannon
+                .Tube(P(.02f, y + .065f, .30f), .10f, .021f, 8, Paint)                        // barrel shroud
+                .Tube(P(.02f, y + .065f, .585f), .045f, .022f, 8, Dark)                       // muzzle brake
+                .Tube(P(.085f, y + .045f, .23f), .10f, .007f, 6, Dark)                        // coaxial MG
+                .Box(P(-.235f, y + .03f, -.01f), P(.10f, .10f, .28f), Edge)                    // missile launcher box
+                .Box(P(-.235f, y + .045f, .132f), P(.085f, .075f, .008f), Dark)
+                .Box(P(.11f, y + .11f, -.08f), P(.07f, .06f, .07f), Dark)                     // commander's sight
+                .Surface(SurfaceKind.Glass).Box(P(.11f, y + .13f, -.044f), P(.05f, .025f, .008f), Optic)
+                .Surface(SurfaceKind.Armor).Box(P(-.07f, y + .11f, -.12f), P(.09f, .02f, .09f), Edge);   // hatch
+            for (int i = 0; i < 2; i++)   // the missile tubes' two caps
+                m.Tube(P(-.235f + (i - .5f) * .045f, y + .075f, .13f), .012f, .017f, 8, Steel);
+            for (int side = -1; side <= 1; side += 2)   // smoke dischargers
+                for (int i = 0; i < 2; i++)
+                    m.Beam(P(side * .16f + .02f, y + .07f + i * .022f, .15f), P(side * .19f + .02f, y + .085f + i * .022f, .20f), .010f, .010f, 6, Dark);
+            return m;
         }
 
         static MeshBuilder InfantryWeapon(bool launcher)

@@ -10,8 +10,8 @@ namespace SE.Runtime.UI
 {
     /// <summary>
     /// The minimap console and the bottom-centre dock (workstream F, docs/design/hud_mockup_2026-11-16.png).
-    /// Bottom-left, docked to the minimap: the Era hexagon badge, the slim Materials / Energy / Command bars with
-    /// their rates, the idle-units button, an all-production button, the local-view (Z) toggle, and the attack
+    /// Bottom-left, docked to the minimap: the Era hexagon badge, the slim Materials / Power / Units bars with
+    /// their net rates (their left edges follow the bezel), the idle-units button, an all-production button, the local-view (Z) toggle, and the attack
     /// banner ("CINDERHOLD UNDER ATTACK · Space to jump") raised with a minimap ping on every new attack.
     /// Bottom centre: the Build (B) and Terrain (T) buttons, which toggle workstream G's radial wheels
     /// (Hud.Base.cs: ToggleBuildWheel / ToggleTerrainWheel, BuildWheelOpen / TerrainWheelOpen); the console, dock and
@@ -69,6 +69,7 @@ namespace SE.Runtime.UI
             AddResourceChip("materials", bars);
             AddResourceChip("energy", bars);
             AddResourceChip("command", bars);
+            LayoutResourceBars();
 
             // idle units, all production, local view
             idleButton = new Button(SelectIdle) { text = "", focusable = false };
@@ -104,7 +105,36 @@ namespace SE.Runtime.UI
             dockTerrain = DockButton(null, "hex", () => { if (DockTerrainPressed != null) DockTerrainPressed(); else ToggleTerrainWheel(false); });
             // the wheels (G) keep clear of everything docked
             RegisterWheelKeepOut(console); RegisterWheelKeepOut(dock); RegisterWheelKeepOut(card);
+
+            // §45: a small "update available — installs from the menu" notice while a match shows (UpdateBanner.cs)
+            updateNotice = UpdateNotice.Attach(root);
         }
+
+        UpdateNotice updateNotice;
+
+        // the resource bars' rows (console units): a compact stack over the disc's upper-right quadrant
+        const float ResRowTop = 108f, ResRowHeight = 22f, ResRowGap = 3f, ResChordGap = 4f;
+
+        /// <summary>
+        /// §33: the Materials / Power / Units bars form one unit with the 240-px minimap. Each row's left edge follows
+        /// the bezel's chord at that row (minimapLeft + r + sqrt(r² − dy²) + gap; Minimap.RightEdgeOver) instead of
+        /// a fixed column that overlapped the bezel by 7–15 px. Placed once (the console has a fixed size).
+        /// </summary>
+        void LayoutResourceBars()
+        {
+            float mapTop = ConsoleHeight - Minimap.Diameter;   // the disc sits at the console's bottom-left
+            int row = 0;
+            foreach (var kind in ResRowOrder)
+            {
+                if (!resChips.TryGetValue(kind, out var rc)) continue;
+                float top = ResRowTop + row++ * (ResRowHeight + ResRowGap);
+                float left = Minimap.RightEdgeOver(top - mapTop, top + ResRowHeight - mapTop) + ResChordGap;
+                rc.Chip.style.top = top;
+                rc.Chip.style.left = Mathf.Round(left);
+            }
+        }
+
+        static readonly string[] ResRowOrder = { "materials", "energy", "command" };
 
         Button DockButton(string icon, string glyph, Action click)
         {
@@ -128,6 +158,7 @@ namespace SE.Runtime.UI
         void ShowConsole(bool on)
         {
             if (console == null) return;
+            if (updateNotice != null) updateNotice.InMatch = on;   // both rulesets; also tells the updater (never restarts mid-match)
             bool action = on && session.ActionRts;
             UiKit.SetShown(console, action);
             UiKit.SetShown(dock, action && !session.Spectator);

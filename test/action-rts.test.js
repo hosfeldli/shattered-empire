@@ -211,7 +211,7 @@ test('a re-established headquarters is linked to the nearest friendly base by an
   productionStep(g, 40);
   const project = g.roadProjects.find((p) => p.auto && p.owner === 0);
   assert.ok(project && project.edges.length > 2, 'an automatic road project is queued');
-  for (let i = 0; i < 40; i++) g.tick();
+  for (let i = 0; i < 400 && g.roadProjects.includes(project); i++) g.tick();   // the claim road and the compound streets (ROADS_AND_CLAIMS.md)
   assert.ok(!g.roadProjects.includes(project));
   assert.ok(project.edges.every((e) => g.roads.usable(e.a, e.b)?.type >= 2), 'the road is laid along the planned route');
   assert.ok(project.edges.every((e) => !g.world.lake[e.a] && !g.world.lake[e.b]), 'roads avoid open water');
@@ -252,6 +252,10 @@ test('trench lines leave roads open and mark the sections that meet them', async
   civ.res.materials = 5000; civ.visible.fill(1); g.units.clear(); reindex(g);
   g.world.owner.fill(0);   // trenches are dug only inside the builder's territory
   const clear = (t) => g.sites.every((s) => distance(s, centerOf(t)) > 4.5);
+  // a match starts without country roads (ROADS_AND_CLAIMS.md): lay one between two cities first
+  const { connect } = await import('../server/sim/actionMap.js');
+  const cities = g.sites.filter((s) => s.slots);
+  for (let i = 1; i < cities.length; i++) connect(g, cities[0].tile, cities[i].tile);
   const edge = [...g.roads.edges.values()].find((e) => e.cond > 0 && clear(e.a) && clear(e.b) && !g.world.river[e.a] && !g.world.river[e.b]);
   assert.ok(edge, 'a country road away from the bases');
   const a = centerOf(edge.a), b = centerOf(edge.b), len = Math.hypot(b.x - a.x, b.z - a.z);
@@ -282,8 +286,12 @@ test('new roads join the network at base hubs instead of shadowing existing road
   const NB = (t, d) => nb[t * 6 + d];
   const g = create();
   const hubs = hubTiles(g);
-  assert.ok(hubs.length >= 3 && hubs.every((h) => g.roads.edgesOf(h).length > 0), 'every base hub carries a road');
+  // 2026-11-18 (ROADS_AND_CLAIMS.md): a match starts without roads between its sites
+  const unclaimed = g.sites.filter((s) => s.slots && s.owner < 0).map((s) => s.tile);
+  assert.ok(hubs.length >= 3 && unclaimed.length >= 1 && unclaimed.every((h) => g.roads.edgesOf(h).length === 0), 'no unclaimed city hub starts with a road');
   const [a, b] = g.sites.filter((s) => s.slots).slice(0, 2);
+  assert.ok(connect(g, a.tile, b.tile).length > 1, 'the first connection');
+  g.nav.invalidate();
   const before = g.roads.edges.size;
   const route = connect(g, a.tile, b.tile);
   assert.ok(route.length > 1);

@@ -29,11 +29,11 @@ namespace SE.Runtime.App
                 return source + new float3(0, .13f, 0);
             }
             string type = session.Units.Types.Name(u.TypeIndex);
-            bool infantry = type == "militia" || type == "rifle_squad" || type == "engineer" || type == "special_forces" || type == "anti_armor" || type == "exo_infantry";
+            bool infantry = type == "militia" || type == "rifle_squad" || type == "engineer" || type == "special_forces" || type == "anti_armor";   // exo_infantry is the IFV since 2026-11-18
             // gun truck: the roof-ring HMG muzzle (ring (0, .447, -.06) + gun (0, .145, .33) in model units, x WorldScale.Vehicle,
             // above the .06 event lift); the mount turns onto the target, so the muzzle leads along the line of fire
             if (type == "armored_car") return source + dir * .065f + new float3(0, .08f, 0);
-            float length = infantry ? .035f : type.Contains("tank") || type == "sp_artillery" ? .30f : .12f;
+            float length = infantry ? .035f : type.Contains("tank") || type == "sp_artillery" ? .30f : type == "exo_infantry" ? .2f : .12f;
             return source + dir * length + new float3(0, infantry ? .035f : .04f, 0);
         }
     }

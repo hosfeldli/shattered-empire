@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
 import { MAPS_BY_ID, mapList, mapMode } from './sim/mapCatalog.js';
-import { parseSketch } from './sim/sketchMaps.js';
+import { baseOwnersProblem, parseSketch, sketchForTeams } from './sim/sketchMaps.js';
 
 const PARKED_TTL_MS = +(process.env.PARKED_TTL_HOURS || 168) * 3600 * 1000;
 const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 4));
@@ -126,7 +126,12 @@ export class MatchManager {
     // lobby (pvp): the size the host asked for (random maps re-size with the seat count), and whether the
     // match waits for everyone to be ready (Unity lobby) instead of starting when the last seat is taken
     m.sizeKey = Object.hasOwn(ACTION_SIZES, opts.mapSize) ? opts.mapSize : null;
-    if (sketch) m.sketch = sketch;
+    if (sketch) {
+      // a sketch that assigns its bases to teams must give every seat a base (MAP_BUILDER_TEAMS.md)
+      const why = baseOwnersProblem(sketch, slots, teamSize);
+      if (why) throw new Error(why);
+      m.sketch = sketch;
+    }
     m.waitForReady = pvp && opts.waitForReady === true;
     m.public = pvp && opts.public === true;   // listed in /api/lobbies (the in-game lobby browser)
     this.matches.set(id, m);
@@ -158,13 +163,20 @@ export class MatchManager {
     if (m.status === 'running' && m.worker) return;
     // the lobby as it was, so a world that cannot be generated (a sketch with no room for a base) hands it back
     const before = restoreBuf ? null : { slots: m.slots.map((s) => [s, { ...s }]), teamOf: m.teamOf, teamSize: m.teamSize };
+    // a custom map's team-owned bases: every seat keeps a base, and the owners follow the teams' renumbering
+    let startSketch = m.map === 'custom' ? m.sketch : null;
+    if (!restoreBuf && startSketch?.owners) {
+      const why = baseOwnersProblem(startSketch, m.slots, m.teamSize);
+      if (why) throw new Error(why);
+      startSketch = sketchForTeams(startSketch, m.slots, m.teamSize);
+    }
     if (!restoreBuf) { this.dropClosed(m); this.catalogTeams(m); }
     if (!restoreBuf) for (const s of m.slots) if (s.human && !s.token) { s.human = false; s.name = 'AI'; s.personality = 'builder'; s.difficulty = s.difficulty || 'normal'; s.fairPlay = s.fairPlay !== false; }
     m.slots.forEach((s, i) => { s.civId = i; });
     m.status = 'running';
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
-        teamSize: m.teamSize, map: m.map || 'random', sketch: m.map === 'custom' ? m.sketch : null, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
+        teamSize: m.teamSize, map: m.map || 'random', sketch: startSketch || null, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });

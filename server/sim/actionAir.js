@@ -26,6 +26,33 @@ export const AIR = {
   maxWaypoints: 8,
 };
 export const AIR_MISSIONS = ['patrol', 'route', 'intercept', 'scout', 'support', 'strike', 'return', 'orbit'];
+// Weather and relief for aircraft (§31, W3 2026-11-17). All checks are O(1) per airborne aircraft per tick
+// (one weather-cell lookup and one elevation read at its own hex):
+//  - storm cells (weather.stormAt >= storm): aircraft do not take off from, or land at, a base under a storm
+//    (they wait on the pad, or divert to another base); aircraft flying inside a storm are slowed (stormPace of
+//    top speed) and burn fuel stormBurn times as fast.
+//  - high relief: low-flying aircraft (helicopters, drones: alt !== 'high') crossing hexes above `ridge` elevation
+//    climb over them, slowed to ridgePace and burning ridgeBurn fuel; they cannot hold a patrol or station
+//    waypoint over such peaks (the command is refused with feedback).
+export const AIR_WEATHER = { storm: .5, stormPace: .6, stormBurn: 1.6, ridge: .66, ridgePace: .7, ridgeBurn: 1.3 };
+const stormAt = (game, t) => t >= 0 && game.weather ? game.weather.stormAt(t) : 0;
+export const stormy = (game, t) => stormAt(game, t) >= AIR_WEATHER.storm;
+const lowFlyer = (d) => d.air && d.alt !== 'high';
+/** Whether a low-flying aircraft can hold station over this point (not above the ridge line). */
+export function overRidge(game, d, p) {
+  const t = tileAt(wrapX(p.x), p.z);
+  return lowFlyer(d) && t >= 0 && game.world.elev[t] > AIR_WEATHER.ridge;
+}
+/**
+ * Whether an air order to `p` is possible for this aircraft type, with a reason when it is not or a warning
+ * when it is but the weather is bad. {ok, error?, note?}. Used by patrolCommand; other commands may call it too.
+ */
+export function airAccess(game, d, p) {
+  if (overRidge(game, d, p)) return { ok: false, error: `${d.name} cannot hold station over high mountains.` };
+  const t = tileAt(wrapX(p.x), p.z);
+  if (stormy(game, t)) return { ok: true, note: 'A storm covers that area: aircraft there fly slower and burn more fuel.' };
+  return { ok: true };
+}
 // The state code in the unit snapshot's air array (own aircraft; other viewers see 0 grounded / 2 airborne).
 export const AIR_STATE = { grounded: 0, refuelling: 1, airborne: 2, returning: 3, dry: 4 };
 // Built-in AA of a headquarters whose city defenses were upgraded (the trigger is set by workstream B).
@@ -60,7 +87,8 @@ export function nearestRefuel(game, u, from = u) {
   let best = null, score = Infinity;
   for (const b of game.buildings.values()) {
     if (!refuels(b, u)) continue;
-    const s = distance(from, b) + (b.type === 'airfield' ? 0 : 1.5);
+    // a base under a storm cannot take landings (§31): it is only the choice when every base is storm-bound
+    const s = distance(from, b) + (b.type === 'airfield' ? 0 : 1.5) + (stormy(game, b.tile) ? 1e4 : 0);
     if (s < score || s === score && b.id < best.id) { score = s; best = b; }
   }
   return best;
@@ -244,6 +272,7 @@ export function airStep(game, u) {
   const full = maxFuel(game, u);
   if (u.fuel == null) u.fuel = full;
   if (u.grounded) {
+    u.onPad = true;   // the next airborne tick is the take-off (§31 storm hold)
     const base = game.buildings.get(u.airBase);
     if (!base?.done || base.owner !== u.owner) { u.grounded = false; u.airOrder = null; return true; }
     if (u.altitude < .16) {
@@ -252,6 +281,7 @@ export function airStep(game, u) {
     }
     if (u.fuel >= full) {
       u.bingo = false;
+      if (stormy(game, base.tile)) return true;   // storm-bound: no take-off until the storm passes (§31)
       // AI aircraft go back up once serviced: the planner only commands airborne aircraft.
       if (!u.airResume && !game.civs[u.owner]?.human && u.hp >= u.maxHp * .9) u.airResume = { kind: 'orbit', point: { x: base.x, z: base.z } };
       if (u.airResume) relaunch(game, u, base);
@@ -259,9 +289,28 @@ export function airStep(game, u) {
     return true;
   }
   if (u.airResume) u.airResume = null;   // ordered off the pad before it finished refuelling
+  // §31 weather and relief: one storm-cell lookup and one elevation read at the aircraft's own hex
+  const storm = stormy(game, u.tile);
+  if (u.onPad && storm) {
+    // ordered off the pad under a storm: hold on the ground, order kept, until it passes
+    const x = wrapX(u.x - u.vx * DT), z = u.z - u.vz * DT, t = tileAt(x, z);
+    if (t >= 0) { u.x = x; u.z = z; u.tile = t; }
+    u.vx = u.vz = 0; u.altitude = .045;
+    if (!u.stormHeld && game.civs[u.owner]?.human) game.notify(u.owner, `${d.name} is grounded by a storm and will take off when it passes.`, { kind: 'warning', tile: u.tile, level: 'minor' });
+    u.stormHeld = true;
+    return true;
+  }
+  u.stormHeld = false; u.onPad = false;
+  const ridge = lowFlyer(d) && game.world.elev[u.tile] > AIR_WEATHER.ridge;
+  const pace = (storm ? AIR_WEATHER.stormPace : 1) * (ridge ? AIR_WEATHER.ridgePace : 1);
+  if (pace < 1 && (u.vx || u.vz)) {
+    const k = 1 - pace;
+    const x = wrapX(u.x - u.vx * DT * k), z = u.z - u.vz * DT * k, t = tileAt(x, z);
+    if (t >= 0) { u.x = x; u.z = z; u.tile = t; u.vx *= pace; u.vz *= pace; }
+  }
   // burn
   const wasDry = u.fuel <= 0;
-  u.fuel = Math.max(0, u.fuel - DT);
+  u.fuel = Math.max(0, u.fuel - DT * (storm ? AIR_WEATHER.stormBurn : 1) * (ridge ? AIR_WEATHER.ridgeBurn : 1));
   const order = u.airOrder;
   if (u.fuel <= 0) {
     // limping: undo part of this tick's movement so the aircraft crawls at minimum speed
@@ -310,7 +359,13 @@ export function airStep(game, u) {
   } else if (current.kind === 'return') {
     const base = game.buildings.get(current.base);
     if (!base?.done || base.owner !== u.owner) returnToBase(game, u, current.resume);
-    else {
+    else if (stormy(game, base.tile) && u.fuel > AIR.reserve) {
+      // §31: no landing under a storm. Divert to a clear base, or hold off in an orbit until it passes
+      // (an aircraft down to its fuel reserve makes an emergency landing anyway).
+      const other = nearestRefuel(game, u);
+      if (other && other.id !== base.id && !stormy(game, other.tile)) returnToBase(game, u, current.resume);
+      else { u.airOrder = { kind: 'orbit', point: { x: base.x, z: base.z }, phase: 0 }; u.bingo = false; }
+    } else {
       u.grounded = true; u.airBase = base.id; u.airOrder = null; u.target = 0; u.attack = null;
       u.airResume = current.resume || null;
     }
@@ -340,8 +395,14 @@ export function patrolCommand(game, civ, group, cmd) {
   const air = group.filter((u) => ACTION_UNITS[u.type].air && u.type !== 'oneway_drone');
   if (!air.length) return { error: group.some((u) => u.type === 'oneway_drone') ? 'One-way drones cannot patrol.' : 'Select aircraft to patrol.' };
   const raw = Array.isArray(cmd.points) ? cmd.points.slice(0, AIR.maxWaypoints) : [cmd.point || null];
-  const points = raw.map((p, i) => game.point(p, i === 0 && !Array.isArray(cmd.points) ? cmd.tile : undefined)).filter(Boolean);
-  if (!points.length) return { error: 'Choose patrol waypoints.' };
+  const asked = raw.map((p, i) => game.point(p, i === 0 && !Array.isArray(cmd.points) ? cmd.tile : undefined)).filter(Boolean);
+  if (!asked.length) return { error: 'Choose patrol waypoints.' };
+  // §31: low flyers cannot hold station over high mountains; storms are allowed, with a warning
+  const low = air.some((u) => lowFlyer(ACTION_UNITS[u.type]));
+  const points = asked.filter((p) => !air.some((u) => overRidge(game, ACTION_UNITS[u.type], p)));
+  if (!points.length) return { error: low ? 'Helicopters and drones cannot patrol over high mountains: choose lower ground.' : 'Choose patrol waypoints.' };
+  const dropped = asked.length - points.length;
+  const stormNote = points.some((p) => stormy(game, tileAt(wrapX(p.x), p.z))) ? 'A storm covers part of that patrol: aircraft there fly slower and burn more fuel.' : null;
   let patrol = 0, clamped = 0, range = Infinity, shown = null;
   for (const u of air) {
     let n = 0;
@@ -358,7 +419,10 @@ export function patrolCommand(game, civ, group, cmd) {
   if (!patrol) return { error: 'No selected aircraft can fly that patrol.' };
   const out = { patrol, waypoints: points.length, clamped, range: Math.round(range * 10) / 10,
     route: shown.map((p) => [Math.round(p.x * 100) / 100, Math.round(p.z * 100) / 100]),
-    ...(clamped ? { note: `${clamped} waypoint${clamped > 1 ? 's' : ''} pulled back within fuel range.` } : {}) };
+    ...(dropped ? { dropped } : {}) };
+  const notes = [clamped ? `${clamped} waypoint${clamped > 1 ? 's' : ''} pulled back within fuel range.` : null,
+    dropped ? `${dropped} waypoint${dropped > 1 ? 's' : ''} over high mountains skipped.` : null, stormNote].filter(Boolean);
+  if (notes.length) out.note = notes.join(' ');
   // the worker sends only `reply` back to the client
   return { ...out, reply: { t: 'ack', patrol: out } };
 }

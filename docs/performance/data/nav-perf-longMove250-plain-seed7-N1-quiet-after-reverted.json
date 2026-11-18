@@ -1,0 +1,1097 @@
+{
+ "generated": "2026-11-18T03:49:39.529Z",
+ "node": "v26.13.0",
+ "seed": 7,
+ "flags": {
+  "sizes": "250",
+  "plain": true,
+  "out": "<scratch>/perfout/quiet/T1",
+  "tag": "longMove250"
+ },
+ "results": [
+  {
+   "scenario": "longMove",
+   "n": 250,
+   "map": "crossroads",
+   "size": 104,
+   "seed": 7,
+   "plain": true,
+   "simSeconds": 90,
+   "setup": {
+    "distance": 66.4,
+    "initial": {
+     "t": 0,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 0,
+     "stalled40": 0,
+     "ghosting": 0,
+     "tacticalResume": 0,
+     "meanPathPts": 14.8,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 108,
+     "flows": 3
+    }
+   },
+   "headline": {
+    "units": 274,
+    "navP50": 4.377,
+    "navP95": 7.273,
+    "navP99": 8.578,
+    "navMax": 10.07,
+    "routePerSec": null,
+    "arrivedPct": 0,
+    "commandMs": 135.578
+   },
+   "commands": {
+    "count": 1,
+    "ms": {
+     "n": 1,
+     "mean": 135.578,
+     "median": 135.578,
+     "p95": 135.578,
+     "p99": 135.578,
+     "max": 135.578
+    },
+    "placed": [
+     250
+    ]
+   },
+   "arrival": {
+    "ordered": 250,
+    "arrived": 0,
+    "stoppedShort": 0,
+    "stillMoving": 250,
+    "dead": 0,
+    "arrivedPct": 0,
+    "arriveTickP50": null,
+    "arriveTickP90": null,
+    "shortDistP50": null,
+    "remainingP50": 53.315
+   },
+   "navStats": {
+    "blocked": 2133,
+    "stall": 381,
+    "same": 1264,
+    "failed": 0
+   },
+   "perTick": {
+    "navigation": {
+     "n": 900,
+     "mean": 4.538,
+     "median": 4.377,
+     "p95": 7.273,
+     "p99": 8.578,
+     "max": 10.07
+    },
+    "combat": {
+     "n": 900,
+     "mean": 0.059,
+     "median": 0.054,
+     "p95": 0.09,
+     "p99": 0.128,
+     "max": 0.311
+    },
+    "capture": {
+     "n": 450,
+     "mean": 0.025,
+     "median": 0.019,
+     "p95": 0.039,
+     "p99": 0.06,
+     "max": 0.344
+    },
+    "income": {
+     "n": 900,
+     "mean": 0.003,
+     "median": 0.003,
+     "p95": 0.004,
+     "p99": 0.007,
+     "max": 0.019
+    },
+    "field economy": {
+     "n": 450,
+     "mean": 0.093,
+     "median": 0.084,
+     "p95": 0.114,
+     "p99": 0.21,
+     "max": 1.453
+    },
+    "production": {
+     "n": 300,
+     "mean": 0.022,
+     "median": 0.013,
+     "p95": 0.062,
+     "p99": 0.362,
+     "max": 0.739
+    },
+    "tick": {
+     "n": 900,
+     "mean": 4.928,
+     "median": 4.76,
+     "p95": 7.714,
+     "p99": 9.363,
+     "max": 13.855
+    },
+    "visibility": {
+     "n": 225,
+     "mean": 0.987,
+     "median": 0.842,
+     "p95": 1.537,
+     "p99": 2.483,
+     "max": 9.14
+    },
+    "ai": {
+     "n": 300,
+     "mean": 0.001,
+     "median": 0.001,
+     "p95": 0.002,
+     "p99": 0.024,
+     "max": 0.051
+    },
+    "warzone": {
+     "n": 90,
+     "mean": 0.023,
+     "median": 0.019,
+     "p95": 0.029,
+     "p99": 0.386,
+     "max": 0.386
+    },
+    "weather": {
+     "n": 90,
+     "mean": 0.035,
+     "median": 0.002,
+     "p95": 0.233,
+     "p99": 0.779,
+     "max": 0.779
+    },
+    "victory": {
+     "n": 90,
+     "mean": 0.006,
+     "median": 0.003,
+     "p95": 0.005,
+     "p99": 0.193,
+     "max": 0.193
+    },
+    "units": {
+     "n": 900,
+     "mean": 27.4,
+     "median": 0,
+     "p95": 274,
+     "p99": 274,
+     "max": 274
+    },
+    "moving": {
+     "n": 900,
+     "mean": 25,
+     "median": 0,
+     "p95": 250,
+     "p99": 250,
+     "max": 250
+    }
+   },
+   "windows": [],
+   "samples": [
+    {
+     "t": 5,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 25,
+     "stalled40": 0,
+     "ghosting": 0,
+     "tacticalResume": 0,
+     "meanPathPts": 14.8,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 120,
+     "flows": 3,
+     "navP50": 2.355,
+     "navP95": 6.519,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 0,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 0,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {},
+      "blockedTicks": null
+     }
+    },
+    {
+     "t": 10,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 128,
+     "stalled40": 0,
+     "ghosting": 7,
+     "tacticalResume": 0,
+     "meanPathPts": 14.7,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 140,
+     "flows": 3,
+     "navP50": 3.396,
+     "navP95": 4.928,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 23,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 23,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 22,
+       "tracked": 1
+      },
+      "blockedTicks": {
+       "median": 17,
+       "max": 50
+      }
+     }
+    },
+    {
+     "t": 15,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 163,
+     "stalled40": 1,
+     "ghosting": 18,
+     "tacticalResume": 0,
+     "meanPathPts": 14.4,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 194,
+     "flows": 3,
+     "navP50": 5.584,
+     "navP95": 7.626,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 35,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 35,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 30,
+       "tracked": 4,
+       "wheeled": 1
+      },
+      "blockedTicks": {
+       "median": 17,
+       "max": 56
+      }
+     }
+    },
+    {
+     "t": 20,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 147,
+     "stalled40": 2,
+     "ghosting": 29,
+     "tacticalResume": 0,
+     "meanPathPts": 14.1,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 254,
+     "flows": 3,
+     "navP50": 5.913,
+     "navP95": 8.124,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 42,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 42,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 30,
+       "tracked": 7,
+       "wheeled": 5
+      },
+      "blockedTicks": {
+       "median": 21,
+       "max": 49
+      }
+     }
+    },
+    {
+     "t": 25,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 114,
+     "stalled40": 4,
+     "ghosting": 44,
+     "tacticalResume": 0,
+     "meanPathPts": 13.9,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 311,
+     "flows": 3,
+     "navP50": 5.978,
+     "navP95": 7.989,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 47,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 47,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 42,
+       "tracked": 3,
+       "wheeled": 2
+      },
+      "blockedTicks": {
+       "median": 24,
+       "max": 60
+      }
+     }
+    },
+    {
+     "t": 30,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 135,
+     "stalled40": 5,
+     "ghosting": 31,
+     "tacticalResume": 0,
+     "meanPathPts": 13.7,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 363,
+     "flows": 3,
+     "navP50": 4.79,
+     "navP95": 7.626,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 63,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 62,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "wheeled": 10,
+       "tracked": 13,
+       "infantry": 40
+      },
+      "blockedTicks": {
+       "median": 23,
+       "max": 45
+      }
+     }
+    },
+    {
+     "t": 35,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 163,
+     "stalled40": 5,
+     "ghosting": 26,
+     "tacticalResume": 0,
+     "meanPathPts": 13.5,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 4.901,
+     "navP95": 7.548,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 58,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 57,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 33,
+       "wheeled": 6,
+       "tracked": 19
+      },
+      "blockedTicks": {
+       "median": 21,
+       "max": 42
+      }
+     }
+    },
+    {
+     "t": 40,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 119,
+     "stalled40": 1,
+     "ghosting": 54,
+     "tacticalResume": 0,
+     "meanPathPts": 13.3,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 5.174,
+     "navP95": 7.476,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 39,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 37,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 29,
+       "tracked": 7,
+       "wheeled": 3
+      },
+      "blockedTicks": {
+       "median": 20,
+       "max": 35
+      }
+     }
+    },
+    {
+     "t": 45,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 94,
+     "stalled40": 0,
+     "ghosting": 47,
+     "tacticalResume": 0,
+     "meanPathPts": 13.1,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 4.89,
+     "navP95": 7.891,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 29,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 27,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "tracked": 12,
+       "infantry": 15,
+       "wheeled": 2
+      },
+      "blockedTicks": {
+       "median": 32,
+       "max": 58
+      }
+     }
+    },
+    {
+     "t": 50,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 145,
+     "stalled40": 5,
+     "ghosting": 21,
+     "tacticalResume": 0,
+     "meanPathPts": 12.9,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 4.345,
+     "navP95": 8.209,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 58,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 55,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 40,
+       "tracked": 14,
+       "wheeled": 4
+      },
+      "blockedTicks": {
+       "median": 25,
+       "max": 51
+      }
+     }
+    },
+    {
+     "t": 55,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 129,
+     "stalled40": 4,
+     "ghosting": 24,
+     "tacticalResume": 0,
+     "meanPathPts": 12.7,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 4.408,
+     "navP95": 6.325,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 31,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 31,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 1,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 22,
+       "tracked": 8,
+       "wheeled": 1
+      },
+      "blockedTicks": {
+       "median": 21,
+       "max": 63
+      }
+     }
+    },
+    {
+     "t": 60,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 117,
+     "stalled40": 3,
+     "ghosting": 27,
+     "tacticalResume": 0,
+     "meanPathPts": 12.5,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 4.514,
+     "navP95": 6.849,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 38,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 33,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "wheeled": 3,
+       "infantry": 18,
+       "tracked": 17
+      },
+      "blockedTicks": {
+       "median": 24,
+       "max": 39
+      }
+     }
+    },
+    {
+     "t": 65,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 106,
+     "stalled40": 4,
+     "ghosting": 29,
+     "tacticalResume": 0,
+     "meanPathPts": 12.2,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 4.232,
+     "navP95": 5.936,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 25,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 25,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 20,
+       "tracked": 4,
+       "wheeled": 1
+      },
+      "blockedTicks": {
+       "median": 25,
+       "max": 56
+      }
+     }
+    },
+    {
+     "t": 70,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 110,
+     "stalled40": 3,
+     "ghosting": 22,
+     "tacticalResume": 0,
+     "meanPathPts": 12,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 3.749,
+     "navP95": 5.543,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 27,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 25,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 22,
+       "tracked": 5
+      },
+      "blockedTicks": {
+       "median": 25,
+       "max": 52
+      }
+     }
+    },
+    {
+     "t": 75,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 124,
+     "stalled40": 2,
+     "ghosting": 16,
+     "tacticalResume": 0,
+     "meanPathPts": 11.8,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 3.769,
+     "navP95": 5.256,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 52,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 47,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 29,
+       "tracked": 17,
+       "wheeled": 6
+      },
+      "blockedTicks": {
+       "median": 24,
+       "max": 48
+      }
+     }
+    },
+    {
+     "t": 80,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 101,
+     "stalled40": 2,
+     "ghosting": 18,
+     "tacticalResume": 0,
+     "meanPathPts": 11.5,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 3.833,
+     "navP95": 5.258,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 31,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 31,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "infantry": 21,
+       "tracked": 8,
+       "wheeled": 2
+      },
+      "blockedTicks": {
+       "median": 17,
+       "max": 48
+      }
+     }
+    },
+    {
+     "t": 85,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 112,
+     "stalled40": 0,
+     "ghosting": 14,
+     "tacticalResume": 0,
+     "meanPathPts": 11.3,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 3.506,
+     "navP95": 5.011,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 35,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 35,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "wheeled": 3,
+       "infantry": 23,
+       "tracked": 9
+      },
+      "blockedTicks": {
+       "median": 22,
+       "max": 37
+      }
+     }
+    },
+    {
+     "t": 90,
+     "units": 274,
+     "ground": 274,
+     "moving": 250,
+     "blocked": 95,
+     "stalled40": 4,
+     "ghosting": 26,
+     "tacticalResume": 0,
+     "meanPathPts": 11,
+     "buildings": 4,
+     "fieldworks": 0,
+     "wrecks": 0,
+     "roadEdges": 335,
+     "corridors": 384,
+     "flows": 3,
+     "navP50": 3.474,
+     "navP95": 5.102,
+     "routeCalls": 0,
+     "invalidations": 0,
+     "blockedDiag": {
+      "n": 21,
+      "wedged": 0,
+      "wreckNear": 0,
+      "buildingNear": 0,
+      "crowded": 18,
+      "nearGoal": 0,
+      "enemyNear": 0,
+      "longBlocked": 0,
+      "idleFriendNear": 0,
+      "byMove": {
+       "tracked": 5,
+       "infantry": 12,
+       "wheeled": 4
+      },
+      "blockedTicks": {
+       "median": 19,
+       "max": 54
+      }
+     }
+    }
+   ],
+   "final": {
+    "t": 90,
+    "units": 274,
+    "ground": 274,
+    "moving": 250,
+    "blocked": 95,
+    "stalled40": 4,
+    "ghosting": 26,
+    "tacticalResume": 0,
+    "meanPathPts": 11,
+    "buildings": 4,
+    "fieldworks": 0,
+    "wrecks": 0,
+    "roadEdges": 335,
+    "corridors": 384,
+    "flows": 3
+   },
+   "fn": {},
+   "search": {
+    "heapPops": {},
+    "strategicCalls": 0,
+    "strategicNull": 0,
+    "corridorHits": 0,
+    "flowUses": 0,
+    "flowBuilds": 0,
+    "flowBuildPops": 0,
+    "flowReuse": 0,
+    "routeNull": 0,
+    "routeNullByPhase": {},
+    "localRouteNull": 0,
+    "routeByCaller": {}
+   },
+   "invalidation": {
+    "count": 0,
+    "perMin": 0,
+    "by": {},
+    "rebuild": {
+     "components": {
+      "n": 0,
+      "ms": 0
+     },
+     "gradient": {
+      "n": 0,
+      "ms": 0
+     }
+    }
+   },
+   "replansPerUnit": {
+    "units": 0,
+    "n": 0,
+    "mean": null,
+    "median": null,
+    "p95": null,
+    "p99": null,
+    "max": null
+   },
+   "scheduler": {
+    "navigation": {
+     "p50": 3.7,
+     "p95": 5.26,
+     "p99": 6.17,
+     "max": 10.07,
+     "calls": 901,
+     "over": 0,
+     "deferred": 0
+    },
+    "combat": {
+     "p50": 0.05,
+     "p95": 0.08,
+     "p99": 0.11,
+     "max": 0.81,
+     "calls": 901,
+     "over": 0,
+     "deferred": 0
+    },
+    "capture": {
+     "p50": 0.02,
+     "p95": 0.04,
+     "p99": 0.08,
+     "max": 0.34,
+     "calls": 450,
+     "over": 0,
+     "deferred": 0
+    },
+    "income": {
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0.08,
+     "calls": 901,
+     "over": 0,
+     "deferred": 0
+    },
+    "field economy": {
+     "p50": 0.08,
+     "p95": 0.11,
+     "p99": 0.13,
+     "max": 1.46,
+     "calls": 450,
+     "over": 0,
+     "deferred": 0
+    },
+    "production": {
+     "p50": 0.01,
+     "p95": 0.06,
+     "p99": 0.09,
+     "max": 0.74,
+     "calls": 300,
+     "over": 0,
+     "deferred": 0
+    },
+    "visibility": {
+     "p50": 0.84,
+     "p95": 1.54,
+     "p99": 2.48,
+     "max": 9.15,
+     "calls": 225,
+     "over": 1,
+     "deferred": 0
+    },
+    "weather": {
+     "p50": 0,
+     "p95": 0.23,
+     "p99": 0.78,
+     "max": 0.78,
+     "calls": 90,
+     "over": 0,
+     "deferred": 0
+    },
+    "warzone": {
+     "p50": 0.02,
+     "p95": 0.03,
+     "p99": 0.39,
+     "max": 0.39,
+     "calls": 90,
+     "over": 0,
+     "deferred": 0
+    },
+    "ai": {
+     "p50": 0,
+     "p95": 0,
+     "p99": 0.01,
+     "max": 0.06,
+     "calls": 300,
+     "over": 0,
+     "deferred": 0
+    },
+    "victory": {
+     "p50": 0,
+     "p95": 0.01,
+     "p99": 0.2,
+     "max": 0.2,
+     "calls": 90,
+     "over": 0,
+     "deferred": 0
+    },
+    "tick": {
+     "p50": 4.02,
+     "p95": 5.72,
+     "p99": 6.41,
+     "max": 13.85,
+     "calls": 901,
+     "over": 0,
+     "deferred": 0
+    }
+   },
+   "wallSeconds": 4.9
+  }
+ ]
+}

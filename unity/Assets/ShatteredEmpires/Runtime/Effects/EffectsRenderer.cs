@@ -22,7 +22,7 @@ namespace SE.Runtime.Effects
     /// Combat and weather presentation from the server's event stream: muzzle flashes and tracers,
     /// explosions with fireballs, dust and rising smoke, flak air bursts, building fires with flames and
     /// embers, the strategic-strike and reactor sequences (flash, fireball, mushroom cloud, ground
-    /// shockwaves), rain streaks and splashes, persistent craters and wrecks. A fixed particle budget
+    /// shockwaves), rain streaks and splashes, fading craters and wrecks. A fixed particle budget
     /// (pooled, two draws per frame, triple-buffered uploads) keeps cost bounded however large the
     /// battle; when the budget is reached new cosmetic particles are skipped, never state. The API takes
     /// map coordinates (x east, z south); conversion to Unity space happens inside.
@@ -54,9 +54,14 @@ namespace SE.Runtime.Effects
         int frameSlot;
         readonly MaterialPropertyBlock addBlock = new MaterialPropertyBlock(), alphaBlock = new MaterialPropertyBlock();
         int addCount, alphaCount;
-        readonly InstanceBatch craters, wrecks;
-        int craterHead, wreckHead;
-        const int MaxCraters = 4000, MaxWrecks = 800;
+        // Client-only marks with lifetimes (destruction pass, 2026-11-18: these were ring buffers that never
+        // faded, so a long match carried 4000 scorch decals, 2400 rubble boxes and 900 blood splashes for good).
+        // Lifetimes are game seconds (paused while the game is): hold, then fade. See FadingMarks.
+        readonly FadingMarks craters, wrecks;
+        const int MaxCraters = 1500, MaxWrecks = 300;
+        const float CraterHold = 60f, CraterFade = 120f, WreckHold = 180f, WreckFade = 60f;
+        /// <summary>Game time (seconds, scaled by the simulation rate) that the mark lifetimes run on.</summary>
+        float markClock;
         readonly System.Random rng = new System.Random(5);
         public int Live => count;
         public int Skipped { get; private set; }
@@ -88,16 +93,13 @@ namespace SE.Runtime.Effects
                 craterTexture = SE.Runtime.Battlefields.WarzoneRenderer.ScorchTexture();
                 craterMaterial = new Material(decal) { name = "SE scorch decals", enableInstancing = true };
                 craterMaterial.SetTexture("_MainTex", craterTexture);
-                craterQuad = new Mesh { name = "SE crater quad" };
-                craterQuad.SetVertices(new[] { new Vector3(-.5f, 0, -.5f), new Vector3(-.5f, 0, .5f), new Vector3(.5f, 0, .5f), new Vector3(.5f, 0, -.5f) });
-                craterQuad.SetUVs(0, new[] { new Vector2(0, 0), new Vector2(0, 1), new Vector2(1, 1), new Vector2(1, 0) });
-                craterQuad.SetNormals(new[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up });
-                craterQuad.SetTriangles(new[] { 0, 1, 2, 0, 2, 3 }, 0);
-                craters = new InstanceBatch(craterQuad, craterMaterial, MaxCraters) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, ReceiveShadows = true };
+                craterQuad = FadingMarks.Quad("SE crater quad");
+                craters = new FadingMarks(FadingMarks.NewBatch(craterQuad, craterMaterial, MaxCraters, false), MaxCraters, CraterHold, CraterFade, sink: false);
             }
-            else craters = new InstanceBatch(MeshKit.Disc, RenderResources.Instanced, MaxCraters) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off };
-            wrecks = new InstanceBatch(MeshKit.Wreck, RenderResources.Instanced, MaxWrecks) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
-            rubble = new InstanceBatch(MeshKit.Box, RenderResources.Instanced, MaxRubble) { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f) };
+            // the opaque disc fallback has no alpha: it sinks away instead
+            else craters = new FadingMarks(FadingMarks.NewBatch(MeshKit.Disc, RenderResources.Instanced, MaxCraters, false), MaxCraters, CraterHold, CraterFade, sink: true);
+            wrecks = new FadingMarks(FadingMarks.NewBatch(MeshKit.Wreck, RenderResources.Instanced, MaxWrecks, true), MaxWrecks, WreckHold, WreckFade, sink: true);
+            rubble = new FadingMarks(FadingMarks.NewBatch(MeshKit.Box, RenderResources.Instanced, MaxRubble, true), MaxRubble, RubbleHold, RubbleFade, sink: true);
         }
 
         float R() => (float)rng.NextDouble();
@@ -252,13 +254,11 @@ namespace SE.Runtime.Effects
             }
             // The stem, cap and roll are simulated over half a minute (EffectsRenderer.Mushroom).
             MushroomCloud(p, scale);
-            GroundShock(p, 22 * scale, 2.4f);
-            for (int k = 0; k < 48; k++)
-            {
-                float a = k * 6.283f / 48;
-                var v = new float3(math.cos(a), 0.05f, math.sin(a)) * (6f + R() * 2f) * scale;
-                Emit(p + new float3(0, 0.12f, 0), v, .18f * scale, .18f * scale, 2.3f + R() * .6f, new float3(.6f, .55f, .47f), new float3(.55f, .52f, .48f), .36f, false, 0, .7f, .02f);
-            }
+            // effects pass (2026-11-18): the blast front follows the ground (EffectsRenderer.TerrainShock): it runs down
+            // valleys, dies on mountain sides and weakens behind ridges, instead of a flat ring and a uniform dust spray.
+            // A short flat ring stays for the first instant around ground zero.
+            TerrainShock(p, scale);
+            GroundShock(p, 5 * scale, .9f);
         }
 
         /// <summary>
@@ -298,15 +298,13 @@ namespace SE.Runtime.Effects
         public void Crater(float3 p, float size)
         {
             var d = InstanceData.TRS(MapSpace.W(p) + new float3(0, 0.006f, 0), R() * 6.28f, new float3(size, 1, size * (0.8f + R() * 0.4f)) * MarkScale, MarkColor(new float3(0.27f, 0.22f, 0.16f), .7f));   // turned earth, not a black blob
-            if (craters.Count < MaxCraters) craters.Add(d);
-            else { craters.Data[craterHead] = d; craterHead = (craterHead + 1) % MaxCraters; craters.MarkDirty(); }
+            craters.Add(d, markClock);
         }
 
         public void Wreck(float3 p, float yaw, float scale)
         {
             var d = InstanceData.TRS(MapSpace.W(p), MapSpace.Yaw(yaw), new float3(scale), new float4(0.34f, 0.32f, 0.29f, 0));
-            if (wrecks.Count < MaxWrecks) wrecks.Add(d);
-            else { wrecks.Data[wreckHead] = d; wreckHead = (wreckHead + 1) % MaxWrecks; wrecks.MarkDirty(); }
+            wrecks.Add(d, markClock);
             for (int k = 0; k < 2; k++) Emit(p, new float3(0, 0.15f, 0), 0.1f, 0.4f, 4.5f, new float3(0.2f, 0.19f, 0.18f), new float3(0.4f, 0.39f, 0.37f), 0.45f, false, 0, 0.4f, 0.06f);
             Scorch(p, scale * 1.3f);
             AddEmitter(p + new float3(0, .04f, 0), .15f, 30f + R() * 20f, EmitterWreck);
@@ -316,8 +314,9 @@ namespace SE.Runtime.Effects
         {
             craters.Clear(); wrecks.Clear(); ClearDecals(); missileBodies?.Clear(); missileBodies?.MarkDirty();
             ClearDestruction();
-            craterHead = wreckHead = 0; count = flightCount = waveCount = waveVertexCount = 0;
+            count = flightCount = waveCount = waveVertexCount = 0;
             mushroomCount = distortionCount = 0;
+            ClearTerrainShocks();
             Flash = Shake = 0;
             addCount = alphaCount = 0;
             for (int i = 0; i < flashLights.Length; i++) { flashLife[i] = 0; if (flashLights[i] != null) flashLights[i].enabled = false; }
@@ -328,6 +327,9 @@ namespace SE.Runtime.Effects
             UpdateFlights(dt * simulationRate);
             UpdateDestruction(dt * simulationRate);
             UpdateGroundWaves(dt * simulationRate);
+            UpdateTerrainShocks(dt * simulationRate);
+            markClock += Mathf.Max(0f, dt * simulationRate);
+            craters.Refresh(markClock); wrecks.Refresh(markClock); rubble.Refresh(markClock); RefreshDecals(markClock);
             for (int i = 0; i < flashLights.Length; i++) if (flashLights[i] != null && flashLife[i] > 0)
             { flashLife[i] -= dt; flashLights[i].intensity *= math.exp(-dt * 22); if (flashLife[i] <= 0) flashLights[i].enabled = false; }
             addCount = alphaCount = 0;
@@ -386,11 +388,12 @@ namespace SE.Runtime.Effects
 
         public void Draw(WrapImages images)
         {
-            craters.DrawImages(images);
+            craters.Draw(images);
             DrawDecals(images);
-            wrecks.DrawImages(images);
-            rubble.DrawImages(images);
+            wrecks.Draw(images);
+            rubble.Draw(images);
             DrawGroundWaves(images);
+            DrawTerrainShocks(images);
             DrawDistortions(images);
             missileBodies?.DrawImages(images);
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
@@ -414,7 +417,7 @@ namespace SE.Runtime.Effects
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
             craters.Dispose(); if (craterMaterial != null) UnityEngine.Object.Destroy(craterMaterial); if (craterTexture != null) UnityEngine.Object.Destroy(craterTexture); if (craterQuad != null) UnityEngine.Object.Destroy(craterQuad); wrecks.Dispose(); rubble.Dispose(); DisposeDecals(); DisposeDistortions();
-            missileBodies?.Dispose();
+            missileBodies?.Dispose(); DisposeTerrainShocks();
             if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
             if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);
             if (lightRoot != null) UnityEngine.Object.Destroy(lightRoot);

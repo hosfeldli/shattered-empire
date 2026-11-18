@@ -81,47 +81,139 @@ namespace SE.Runtime.UI
         }
 
         Updater.Phase shownPhase = (Updater.Phase)(-1);
-        bool shownLink;
+        bool shownLink, shownConfirm;
+        /// <summary>§45: "Update and Restart" first shows what happens; only "Restart now" starts it.</summary>
+        bool confirming;
+
+        /// <summary>What a restart does to the player's session (shown on the confirmation step).</summary>
+        static string RestartEffects() => "The game will close and reopen." + (Updater.HasResumableMatch
+            ? " Your current match continues on the server; you can rejoin it after restarting."
+            : " Your settings are kept.");
+
+        void Confirm(bool on) { confirming = on; Refresh(); }
+
+        /// <summary>The confirmed "Restart now": downloads (if needed), then closes and reopens the game.</summary>
+        void ConfirmedRestart()
+        {
+            confirming = false;
+            if (Updater.State == Updater.Phase.Ready) Updater.RestartNow();
+            else Updater.InstallNow(true);
+            Refresh();
+        }
 
         void Refresh()
         {
             var p = Updater.State;
             bool visible = p == Updater.Phase.Available || p == Updater.Phase.Downloading || p == Updater.Phase.Verifying
-                || p == Updater.Phase.Extracting || p == Updater.Phase.Installing || p == Updater.Phase.Failed;
+                || p == Updater.Phase.Extracting || p == Updater.Phase.Installing || p == Updater.Phase.Failed || p == Updater.Phase.Ready;
             style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
-            if (!visible) { shownPhase = p; return; }
+            if (!visible) { shownPhase = p; confirming = false; return; }
+            bool canConfirm = p == Updater.Phase.Available || p == Updater.Phase.Ready || p == Updater.Phase.Failed && !string.IsNullOrEmpty(Updater.AvailableBuild);
+            if (!canConfirm) confirming = false;
 
             string size = Updater.AvailableSize > 0 ? $" · {Updater.AvailableSize / 1048576} MB" : "";
             string ver = string.IsNullOrEmpty(Updater.AvailableVersion) ? "" : "v" + Updater.AvailableVersion + " · ";
             bool busy = p == Updater.Phase.Downloading || p == Updater.Phase.Verifying || p == Updater.Phase.Extracting || p == Updater.Phase.Installing;
-            title.text = p == Updater.Phase.Failed ? "Update not installed" : busy ? "Updating Shattered Empires" : "Update available";
-            title.style.color = p == Updater.Phase.Failed ? Bad : Text;
-            detail.text = p == Updater.Phase.Available
-                ? $"{ver}build {Updater.AvailableBuild}{size} (you have {(string.IsNullOrEmpty(Updater.CurrentBuild) ? "an older build" : Updater.CurrentBuild)})"
+            title.text = confirming ? "Update and Restart?"
+                : p == Updater.Phase.Failed ? "Update not installed"
+                : busy ? "Updating Shattered Empires"
+                : p == Updater.Phase.Ready ? "Update ready to install" : "Update available";
+            title.style.color = p == Updater.Phase.Failed && !confirming ? Bad : Text;
+            detail.text = confirming ? RestartEffects()
+                : p == Updater.Phase.Available
+                ? $"{ver}build {Updater.AvailableBuild}{size} (you have {(string.IsNullOrEmpty(Updater.CurrentBuild) ? "an older build" : Updater.CurrentBuild)}). The game restarts to install it."
+                : p == Updater.Phase.Ready ? $"{ver}build {Updater.AvailableBuild} is downloaded. The game restarts to install it."
                 : Updater.Message;
             bar.style.display = busy ? DisplayStyle.Flex : DisplayStyle.None;
             barFill.style.width = Length.Percent(Mathf.Clamp01(Updater.Progress) * 100f);
 
-            // rebuild the buttons only when the phase (or link offer) changes, not on every progress tick
-            if (p == shownPhase && Updater.OfferDownloadPage == shownLink) return;
-            shownPhase = p; shownLink = Updater.OfferDownloadPage;
+            // rebuild the buttons only when the phase, link offer or confirmation step changes, not on every progress tick
+            if (p == shownPhase && Updater.OfferDownloadPage == shownLink && confirming == shownConfirm) return;
+            shownPhase = p; shownLink = Updater.OfferDownloadPage; shownConfirm = confirming;
             buttons.Clear();
-            switch (p)
+            if (confirming)
+            {
+                AddButton("Restart now", ConfirmedRestart, true);
+                AddButton("Cancel", () => Confirm(false), false);
+            }
+            else switch (p)
             {
                 case Updater.Phase.Available:
-                    AddButton("Update now", Updater.InstallNow, true);
+                case Updater.Phase.Ready:
+                    AddButton("Update and Restart", () => Confirm(true), true);
                     AddButton("Later", Updater.Later, false);
                     break;
                 case Updater.Phase.Downloading:
                     AddButton("Cancel", Updater.Cancel, false);
                     break;
                 case Updater.Phase.Failed:
-                    if (!string.IsNullOrEmpty(Updater.AvailableBuild)) AddButton("Try again", Updater.InstallNow, true);
+                    if (!string.IsNullOrEmpty(Updater.AvailableBuild)) AddButton("Try again", () => Confirm(true), true);
                     if (Updater.OfferDownloadPage) AddButton("Download page", () => Application.OpenURL(Updater.DownloadPage), false);
                     AddButton("Dismiss", Updater.Later, false);
                     break;
             }
             buttons.style.display = buttons.childCount > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+    }
+
+    /// <summary>
+    /// §45, in a match: a small, non-blocking notice ("Update available — installs when you return to the menu")
+    /// while an update is on offer or downloaded. It never installs or restarts anything; the main menu's banner
+    /// does that after a confirmation. Dismissable for the session (the menu banner still shows the offer).
+    /// The HUD sets <see cref="InMatch"/> when the game interface shows or hides (which also tells the updater).
+    /// </summary>
+    public sealed class UpdateNotice : VisualElement
+    {
+        readonly Label text;
+        bool inMatch, dismissed;
+        string shown;
+
+        public static UpdateNotice Attach(VisualElement parent)
+        {
+            var n = new UpdateNotice();
+            parent.Add(n);
+            return n;
+        }
+
+        UpdateNotice()
+        {
+            AddToClassList("se-update-notice");
+            pickingMode = PickingMode.Position;
+            style.display = DisplayStyle.None;
+            text = new Label { pickingMode = PickingMode.Ignore };
+            text.AddToClassList("se-update-notice-text");
+            Add(text);
+            var close = UiKit.IconButton("close", () => { dismissed = true; Refresh(); }, "Hide until the menu", this, 22);
+            close.AddToClassList("se-update-notice-close");
+            close.focusable = false;
+            RegisterCallback<AttachToPanelEvent>(_ => { Updater.Changed += Refresh; Refresh(); });
+            RegisterCallback<DetachFromPanelEvent>(_ => Updater.Changed -= Refresh);
+        }
+
+        /// <summary>The game interface (a match) is showing; leaving it re-arms a dismissed notice.</summary>
+        public bool InMatch
+        {
+            get => inMatch;
+            set
+            {
+                if (inMatch == value) return;
+                inMatch = value;
+                if (!value) dismissed = false;
+                Updater.InMatch = value;
+                Refresh();
+            }
+        }
+
+        void Refresh()
+        {
+            var p = Updater.State;
+            string msg = p == Updater.Phase.Available ? "Update available — installs when you return to the menu"
+                : p == Updater.Phase.Ready ? "Update downloaded — installs when you return to the menu"
+                : p >= Updater.Phase.Downloading && p <= Updater.Phase.Extracting ? "Downloading an update — installs when you return to the menu"
+                : null;
+            bool show = inMatch && !dismissed && msg != null;
+            style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            if (show && msg != shown) { shown = msg; text.text = msg; }
         }
     }
 }

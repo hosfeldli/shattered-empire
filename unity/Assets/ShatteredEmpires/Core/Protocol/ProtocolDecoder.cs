@@ -19,13 +19,56 @@ namespace SE.Core.Protocol
             LineInfoHandling = LineInfoHandling.Ignore,
         };
 
+        /// <summary>
+        /// Perf pass 2 (GC): the decode on the network worker threads was the largest allocator in a late-match profile
+        /// (about 180 KB per frame). Property names are interned per thread (every snapshot repeats the same few hundred
+        /// keys) and the reader's char buffers are pooled; the parsed tree is identical. Set by -perf-legacy decode.
+        /// </summary>
+        public static bool LegacyDecode;
+        [ThreadStatic] static InternTable names;
+
+        /// <summary>
+        /// Interns property names as they are first seen (Newtonsoft's table only looks names up). Numeric keys (unit and
+        /// path ids) are left out, and the table stops growing at 4096 names, so it stays small for a whole match.
+        /// </summary>
+        sealed class InternTable : JsonNameTable
+        {
+            readonly DefaultJsonNameTable table = new DefaultJsonNameTable();
+            int count;
+            public override string Get(char[] key, int start, int length)
+            {
+                var s = table.Get(key, start, length);
+                if (s != null || length == 0 || length > 40 || count >= 4096 || (key[start] >= '0' && key[start] <= '9') || key[start] == '-') return s;
+                s = new string(key, start, length);
+                table.Add(s);
+                count++;
+                return s;
+            }
+        }
+        [ThreadStatic] static CharPool chars;
+
+        /// <summary>A per-thread pool of the reader's char buffers (they are rented and returned within one decode).</summary>
+        sealed class CharPool : IArrayPool<char>
+        {
+            readonly Stack<char[]> free = new Stack<char[]>();
+            public char[] Rent(int minimumLength)
+            {
+                while (free.Count > 0) { var a = free.Pop(); if (a.Length >= minimumLength) return a; }
+                return new char[Math.Max(minimumLength, 1024)];
+            }
+            public void Return(char[] array) { if (array != null && free.Count < 8) free.Push(array); }
+        }
+
         public static ServerMessage Decode(string text)
         {
             var sw = Stopwatch.StartNew();
             var m = new ServerMessage { Bytes = text.Length };
             JObject o;
             using (var reader = new JsonTextReader(new System.IO.StringReader(text)) { DateParseHandling = DateParseHandling.None, FloatParseHandling = FloatParseHandling.Double })
+            {
+                if (!LegacyDecode) { reader.PropertyNameTable = names ??= new InternTable(); reader.ArrayPool = chars ??= new CharPool(); }
                 o = JObject.Load(reader, LoadSettings);
+            }
             m.Raw = o;
             m.T = Str(o["t"], "");
             m.Rid = Int(o["rid"], -1);
@@ -87,6 +130,24 @@ namespace SE.Core.Protocol
             return def;
         }
 
+        /// <summary>
+        /// The upgrade line of a <c>defs.TECHS</c> entry (2026-11-18, docs/gameplay-overhaul/UPGRADES.md): "infantry",
+        /// "vehicle" or "air" — one upgrade per line per player per match — or null for an unrestricted upgrade.
+        /// </summary>
+        public static string UpgradeLine(JToken techDef)
+        {
+            string line = Str(techDef?["line"]);
+            return string.IsNullOrEmpty(line) ? null : line;
+        }
+
+        /// <summary>"Infantry", "Vehicle", "Air" (an unknown line is capitalised as sent).</summary>
+        public static string UpgradeLineName(string line) => line switch
+        {
+            "infantry" => "Infantry", "vehicle" => "Vehicle", "air" => "Air",
+            null => null, "" => null,
+            _ => char.ToUpperInvariant(line[0]) + line.Substring(1),
+        };
+
         static BaseParcel[] BaseParcels(JToken t)
         {
             if (!(t is JArray a)) return Array.Empty<BaseParcel>();
@@ -97,6 +158,46 @@ namespace SE.Core.Protocol
                     Width = p.Count > 6 ? Float(p[6]) : .94f, Depth = p.Count > 7 ? Float(p[7]) : .88f,
                     PreviousType = p.Count > 8 ? Str(p[8]) : null });
             return records.ToArray();
+        }
+
+        /// <summary>W1 <c>qs: [[unit, count, priority, progressPct, state, repeat01], ...]</c> (PRODUCTION_SCHEDULER.md).</summary>
+        static ProductionQueue[] ProductionQueues(JArray a)
+        {
+            var r = new ProductionQueue[a.Count];
+            int n = 0;
+            foreach (var token in a)
+            {
+                if (!(token is JArray e) || e.Count < 2) continue;
+                r[n++] = new ProductionQueue
+                {
+                    Unit = Str(e[0], ""), Count = Int(e[1]), Priority = e.Count > 2 ? Int(e[2], 1) : 1,
+                    Progress = e.Count > 3 ? Float(e[3]) : 0f, State = e.Count > 4 ? StateName(Str(e[4])) : null, Repeat = e.Count > 5 && Int(e[5]) != 0,
+                };
+            }
+            if (n < r.Length) Array.Resize(ref r, n);
+            return r;
+        }
+
+        /// <summary>The known queue states as interned constants (the UI compares them by reference-equal strings).</summary>
+        static string StateName(string s) => s switch
+        {
+            "producing" => "producing", "resources" => "resources", "capacity" => "capacity", "prerequisites" => "prerequisites",
+            "exit" => "exit", "paused" => "paused", "waiting" => "waiting", "idle" => "idle", _ => s,
+        };
+
+        /// <summary>Older servers: the flattened FIFO <c>q</c> grouped by unit type in first-seen order; the head item carries <c>tr</c>.</summary>
+        static ProductionQueue[] LegacyQueues(string[] flat, float headProgress, string repeat)
+        {
+            var list = new List<ProductionQueue>(4);
+            for (int i = 0; i < flat.Length; i++)
+            {
+                string unit = flat[i];
+                int at = -1;
+                for (int k = 0; k < list.Count; k++) if (list[k].Unit == unit) { at = k; break; }
+                if (at < 0) list.Add(new ProductionQueue { Unit = unit, Count = 1, Priority = 1, Progress = i == 0 ? headProgress : 0f, Repeat = unit == repeat });
+                else { var e = list[at]; e.Count++; list[at] = e; }
+            }
+            return list.ToArray();
         }
 
         static int[] IntArray(JToken t)
@@ -163,11 +264,13 @@ namespace SE.Core.Protocol
                         Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
                         Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]), DefenseLevel = Int(st["defenseLevel"]),
                         X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
-                        IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Operational = Bool(st["operational"]),
+                        IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Decaying = Bool(st["decaying"]), Operational = Bool(st["operational"]),
                         Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
                         Slots = IntArray(st["slots"]),
                         Parcels = BaseParcels(st["parcels"]),
                         RingVersion = Int(st["ringVersion"]), DevelopedAt = Float(st["developedAt"]), Tenure = Float(st["tenure"]), Maturity = Float(st["maturity"]), VisualTier = Int(st["visualTier"], 1),
+                        SettleMaterials = Int(st["settle"]?["materials"]), SettleEnergy = Int(st["settle"]?["energy"]), SettleRoad = Int(st["settle"]?["road"]),
+                        SettleTo = Str(st["settle"]?["to"], ""),
                     });
                 s.Objectives = records.ToArray();
             }
@@ -213,6 +316,7 @@ namespace SE.Core.Protocol
                         Amount = Int(e["amount"]), Resource = Str(e["resource"]),
                         Altitude = Float(e["y"]), Bursts = Floats(e["p"]),
                         Grenade = Int(e["gr"]) == 1, Rocket = Int(e["rk"]) == 1, Marksman = Int(e["mk"]) == 1, Armoured = Int(e["ar"]) == 1,
+                        BurstRound = Int(e["bu"]), Tow = Int(e["tw"]) == 1,
                     };
                 }
             }
@@ -266,6 +370,13 @@ namespace SE.Core.Protocol
                             for (int qi = 0; qi < q.Count; qi++) types[qi] = q[qi] is JArray qa && qa.Count > 0 ? Str(qa[0], "") : "";
                             s.Buildings[k].Queue = types;
                         }
+                        // W1 production scheduler: per-type queues and the shared capacity (legacy q/tr/rp for older servers)
+                        s.Buildings[k].ProductionCapacity = Float(b["cap"]);
+                        if (b["qs"] is JArray qs) { s.Buildings[k].Queues = ProductionQueues(qs); s.Buildings[k].QueuesFromServer = true; }
+                        else if (q != null && q.Count > 0) s.Buildings[k].Queues = LegacyQueues(s.Buildings[k].Queue, Float(b["tr"]), s.Buildings[k].Repeat);
+                        // W4 garrison: occupants and the exit rally point
+                        if (b["gar"] is JArray gar && gar.Count > 0) s.Buildings[k].Garrison = IntArray(gar);
+                        if (b["ge"] is JArray ge && ge.Count >= 2) { s.Buildings[k].HasGarrisonExit = true; s.Buildings[k].GarrisonExitX = Float(ge[0]); s.Buildings[k].GarrisonExitZ = Float(ge[1]); }
                         if (b["ra"] is JArray ra && ra.Count >= 2) { s.Buildings[k].HasRally = true; s.Buildings[k].RallyX = Float(ra[0]); s.Buildings[k].RallyZ = Float(ra[1]); s.Buildings[k].RallyAttackMove = ra.Count < 3 || Int(ra[2], 1) != 0; }
                         if (b["wk"] is JArray wk && wk.Count >= 2) { s.Buildings[k].WorksKind = Str(wk[0]) == "r" ? "repair" : "upgrade"; s.Buildings[k].WorksPct = Int(wk[1]); }
                     }
@@ -359,6 +470,7 @@ namespace SE.Core.Protocol
                 CivId = Int(o["civId"]), Seed = Int(o["seed"]), Spectator = Bool(o["spectator"]), Sandbox = Bool(o["sandbox"]),
                 Paused = Bool(o["paused"]), CanPause = Bool(o["canPause"]), Start = Int(o["start"], -1), Defs = defs,
                 W = Int(defs?["W"], 128), H = Int(defs?["H"], 128), Wrap = world?["wrap"]?.Type != JTokenType.Boolean || (bool)world["wrap"],
+                Dense = world?["dense"]?.Type == JTokenType.String ? Base64(world["dense"]) : null,
             };
             if (o["civs"] is JArray civs)
             {

@@ -6,6 +6,7 @@ import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, til
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
 import { applyTerrain, engineerStep as baseEngineers } from './actionEngineers.js';
+import { ROAD_EDGE_COST } from './actionMap.js';
 
 export function seedMaterialCaches(game) {
   const add = (site, index, amount, radius, replenishes = false) => {
@@ -168,7 +169,7 @@ export function roadBuild(game, civ, points, preview = false) {
     // a preview still carries the skipped edges so the client can draw them red under the refusal
     return preview ? { ...refusal, reply: { t: 'ack', ...refusal, road: { positions: [], skipped, cost: { materials: 0 }, seconds: 0 } } } : refusal;
   }
-  const cost = edges.size * 15;
+  const cost = edges.size * ROAD_EDGE_COST;
   const positions = [...edges.values()].map((e) => ({ ...e, from: centerOf(e.a), to: centerOf(e.b) }));
   const seconds = Math.max(3, Math.min(14, edges.size * 1.1));
   if (preview) return { reply: { t: 'ack', road: { positions, skipped, cost: { materials: cost }, seconds } } };

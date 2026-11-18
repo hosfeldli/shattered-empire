@@ -51,6 +51,34 @@ namespace SE.Runtime.Session
 
         /// <summary>Raised before terrain arrays change (renderers must finish jobs reading them).</summary>
         public Action BeforeGeometryChange;
+        /// <summary>
+        /// True while terrain jobs are reading the world's geometry arrays (craters, trenches, heights). Geometry
+        /// updates that arrive meanwhile are queued, in arrival order, and applied by <see cref="FlushGeometry"/> once
+        /// the jobs have finished on their own, instead of blocking the main thread on them (perf 2026-11-17:
+        /// waiting here cost 0.3-1.2 s frames in late-match combat).
+        /// </summary>
+        public Func<bool> GeometryBusy;
+        readonly List<Action> deferredGeometry = new List<Action>();
+        public bool GeometryDeferred => deferredGeometry.Count > 0;
+
+        /// <summary>Apply queued geometry updates; unless forced, only when no terrain job is reading the arrays.</summary>
+        public void FlushGeometry(bool force)
+        {
+            if (deferredGeometry.Count == 0) return;
+            if (!force && GeometryBusy != null && GeometryBusy()) return;
+            if (force) BeforeGeometryChange?.Invoke();
+            // an action may not queue another (the queue is drained in one go)
+            var batch = deferredGeometry.ToArray();
+            deferredGeometry.Clear();
+            foreach (var a in batch) a();
+        }
+
+        /// <summary>Run a geometry update now when the arrays are free (and nothing is queued ahead of it), else queue it.</summary>
+        void Geometry(Action apply)
+        {
+            if (PerfFlags.LegacyGeometry || deferredGeometry.Count == 0 && (GeometryBusy == null || !GeometryBusy())) apply();
+            else deferredGeometry.Add(apply);
+        }
         public event Action Welcomed;
         public event Action<ServerMessage> Other;
 
@@ -76,6 +104,16 @@ namespace SE.Runtime.Session
         public long NotesTotal;
         Dictionary<int, float4> civColors = new Dictionary<int, float4>();
         readonly System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
+        /// <summary>Diagnostics: cumulative and worst apply time per part (0 geo, 1 units+tiles, 2 trenches, 3 impacts, 4 buildings+cities).</summary>
+        public readonly double[] PartMs = new double[5], PartMax = new double[5];
+        long partAt;
+        void PartStart() => partAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        void PartEnd(int k)
+        {
+            double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - partAt) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            PartMs[k] += ms; if (ms > PartMax[k]) PartMax[k] = ms;
+            partAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        }
 
         /// <summary>
         /// The colour of a civilization (linear rgb, w = 0). The action ruleset colours by relation to the
@@ -229,6 +267,7 @@ namespace SE.Runtime.Session
                 return;
             }
             softGeo = false;
+            deferredGeometry.Clear();   // updates for the world being replaced
             Objectives.Clear(); Pickups.Clear(); ActionPlan = null; Econ = null; Age = 0;
             Trenches =System.Array.Empty<TrenchRecord>(); Ruins = System.Array.Empty<RuinRecord>(); Battlefield = new BattlefieldState(); Weather = null;
             TrenchRevision++; RuinRevision++; BattlefieldRevision++; WeatherRevision++;
@@ -240,6 +279,7 @@ namespace SE.Runtime.Session
             RebuildCivColors();
             World.ActionLandscape = w.Ruleset == "action-v2";
             World.Reset(w.W, w.H, w.Wrap);
+            World.SetDense(w.Dense);   // §30 dense forest (welcome world.dense)
             Units.Reset(World.Grid);
             Structures.Clear();
             Events.Clear();
@@ -247,22 +287,28 @@ namespace SE.Runtime.Session
             Welcomed?.Invoke();
         }
 
-        public void ApplyGeo(GeoMessage g)
+        public void ApplyGeo(GeoMessage g) => Geometry(() => ApplyGeoNow(g));
+
+        void ApplyGeoNow(GeoMessage g)
         {
+            PartStart();
             BeforeGeometryChange?.Invoke();
             GeoMessages++;
             bool keep = softGeo && g.Full;
             if (g.Full) softGeo = false;
             foreach (int c in World.ApplyGeo(g, keep)) { DirtyChunks.Add(c); DirtyCells.Add(c); }
+            PartEnd(0);
         }
 
         public void ApplySnapshot(SnapshotMessage s)
         {
             Snapshots++;
+            PartStart();
             if (s.Reset)
             {
                 // the server re-sent the view (e.g. a spectator changed whose fog they watch); keep the camera
                 BeforeGeometryChange?.Invoke();
+                deferredGeometry.Clear();   // the server re-sends the view after a reset
                 World.Reset(World.Grid.W, World.Grid.H, World.Grid.Wrap);
                 Units.Reset(World.Grid);
                 Structures.Clear();
@@ -287,20 +333,29 @@ namespace SE.Runtime.Session
             { Pickups.Clear(); foreach (var pickup in s.Pickups) Pickups[pickup.Id] = pickup; }
             if (s.Events != null) Events.AddRange(s.Events);
             if (s.WeatherState != null) { Weather = s.WeatherState; WeatherRevision++; }
+            PartEnd(1);
             if (s.HasEcon)
             {
-                if (s.Trenches != null) { Trenches = s.Trenches; TrenchRevision++; World.ApplyTrenches(Trenches, BeforeGeometryChange, DirtyChunks, DirtyCells); }
+                if (s.Trenches != null)
+                {
+                    var trenches = s.Trenches;
+                    Geometry(() => { Trenches = trenches; TrenchRevision++; World.ApplyTrenches(trenches, BeforeGeometryChange, DirtyChunks, DirtyCells); });
+                }
+                PartEnd(2);
                 if (s.Ruins != null && (s.Ruins.Length != Ruins.Length || RuinsChanged(s.Ruins))) { Ruins = s.Ruins; RuinRevision++; }
                 if (s.BattlefieldState != null)
                 {
-                    Battlefield = s.BattlefieldState; BattlefieldRevision++;
-                    World.ApplyImpacts(Battlefield.Impacts, BeforeGeometryChange, DirtyChunks, DirtyCells);
+                    // the battlefield and its craters change together (the warzone draws both)
+                    var bf = s.BattlefieldState;
+                    Geometry(() => { Battlefield = bf; BattlefieldRevision++; World.ApplyImpacts(bf.Impacts, BeforeGeometryChange, DirtyChunks, DirtyCells); });
                 }
+                PartEnd(3);
                 Econ = s.Econ;
                 ActionPlan = s.ActionPlan;
                 if (Econ != null) Age = ProtocolDecoder.Int(Econ["age"], Age);
                 if (s.Buildings != null) Structures.ApplyBuildings(s.Buildings, World, DirtyCells);
                 if (s.Cities != null) Structures.ApplyCities(s.Cities, World, DirtyCells);
+                PartEnd(4);
             }
             // between econ frames the stockpile still arrives every snapshot, so the bars fill smoothly
             else if (s.Res != null && Econ != null) Econ["res"] = s.Res.DeepClone();

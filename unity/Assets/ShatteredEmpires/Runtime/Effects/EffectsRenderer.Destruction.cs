@@ -7,22 +7,23 @@ namespace SE.Runtime.Effects
     /// <summary>
     /// Destruction: buildings that collapse storey by storey (a dust burst rolling out from the base, masonry
     /// chunks falling on ballistic arcs that land, bounce and rest, then lingering smoke columns and fires over
-    /// a rubble spill that persists), vehicles that blow apart (hull pieces thrown, a scorched patch, a burning
+    /// a rubble spill that settles into the ground over two minutes), vehicles that blow apart (hull pieces thrown, a scorched patch, a burning
     /// wreck pouring oily smoke and cooking off secondary explosions) and charred scorch marks. Everything is
-    /// pooled in fixed arrays (timed stages, long-lived emitters, a rubble ring buffer) and emits through the
+    /// pooled in fixed arrays (timed stages, long-lived emitters, a fading rubble ring) and emits through the
     /// shared particle budget, so nothing allocates per frame and cost stays bounded however much is destroyed.
     /// </summary>
     public sealed partial class EffectsRenderer
     {
-        const int MaxRubble = 2400, MaxPending = 96, MaxEmitters = 48;
+        const int MaxRubble = 1600, MaxPending = 96, MaxEmitters = 48;
+        // rubble and vehicle fragments settle into the ground and are gone two minutes after they fell
+        const float RubbleHold = 45f, RubbleFade = 75f;
         const byte StageCollapse = 0, StageSecondary = 1;
         const byte EmitterSmoke = 0, EmitterFire = 1, EmitterWreck = 2;
 
         struct Pending { public float At, Scale, Floor; public float3 Point; public byte Kind; }
         struct Emitter { public float3 Point; public float Size, Age, Life, Next; public byte Kind; }
 
-        readonly InstanceBatch rubble;
-        int rubbleHead;
+        readonly FadingMarks rubble;
         readonly Pending[] pending = new Pending[MaxPending];
         int pendingCount;
         readonly Emitter[] emitters = new Emitter[MaxEmitters];
@@ -115,15 +116,14 @@ namespace SE.Runtime.Effects
             Shake = Mathf.Max(Shake, .05f);
         }
 
-        /// <summary>A charred blast mark on the ground (persists with the craters).</summary>
+        /// <summary>A charred blast mark on the ground (fades out over three minutes, like the crater marks).</summary>
         public void Scorch(float3 p, float radius)
         {
             float y = GroundOr(p);
             float shade = .2f + R() * .04f;   // burnt earth (a near-black disc read as a hole in the map)
             var d = InstanceData.TRS(MapSpace.W(new float3(p.x, y, p.z)) + new float3(0, .007f, 0), R() * 6.28f,
                 new float3(radius * 2f, 1, radius * 2f * (.75f + R() * .4f)) * MarkScale, MarkColor(new float3(shade, shade * .9f, shade * .78f), .8f));
-            if (craters.Count < MaxCraters) craters.Add(d);
-            else { craters.Data[craterHead] = d; craterHead = (craterHead + 1) % MaxCraters; craters.MarkDirty(); }
+            craters.Add(d, markClock);
         }
 
         void SpillRubble(float3 g, float r, int n, bool metal)
@@ -141,8 +141,7 @@ namespace SE.Runtime.Effects
                 else if (R() < .22f) { float c = .2f + R() * .08f; color = new float3(c, c * .9f, c * .8f); }   // charred timber
                 else { float c = .36f + R() * .2f; color = new float3(c, c * .95f, c * (.85f + R() * .1f)); }   // masonry, brick dust
                 var d = InstanceData.TRS(MapSpace.W(new float3(x, y, z)), rot, size, new float4(color, 0));
-                if (rubble.Count < MaxRubble) rubble.Add(d);
-                else { rubble.Data[rubbleHead] = d; rubbleHead = (rubbleHead + 1) % MaxRubble; rubble.MarkDirty(); }
+                rubble.Add(d, markClock);
             }
         }
 
@@ -249,7 +248,7 @@ namespace SE.Runtime.Effects
 
         void ClearDestruction()
         {
-            rubble.Clear(); rubbleHead = 0;
+            rubble.Clear();
             pendingCount = 0; emitterCount = 0;
         }
     }

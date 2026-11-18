@@ -50,8 +50,8 @@ namespace SE.Runtime.UI
         readonly List<VisualElement> wheelKeepOut = new List<VisualElement>();
 
         const float MinimapRadius = 136f;
-        /// <summary>Base wheel segments for the sites (the top is the tier upgrade, 200° the perimeter).</summary>
-        static readonly int[] SocketSegments = { 1, 2, 3, 4, 6, 7, 8 };
+        /// <summary>Segments of the pads sub-ring (all nine: the pads have the ring to themselves since §11).</summary>
+        static readonly int[] SocketSegments = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
         const float PerimeterAngle = 200f;
 
         /// <summary>
@@ -78,7 +78,7 @@ namespace SE.Runtime.UI
             CloseWheel();
             wheelKind = "build";
             wheel.Open("Build", "build", BuildWheelItems(), DockAnchor, null, BuildWheelSupport(), keyboard);
-            wheel.SubjectDetail = () => "Defenses and improvements · your territory only";
+            wheel.SubjectDetail = () => "Defenses and improvements · your land or neutral ground";
         }
 
         /// <summary>The Terrain wheel (T or the dock's Terrain button): pay engineers to reshape ground in your territory.</summary>
@@ -138,6 +138,68 @@ namespace SE.Runtime.UI
             commander.SelectionChanged += () => selectionEvent = true;
             commander.Refused += FlashForRefusal;
             BuildToolChip();
+            // §12 pad hover: what the pad under the cursor holds and what a click does (follows the cursor by translate)
+            padHint = UiKit.Text("", "se-cmd-cursor-reason", root);
+            padHint.pickingMode = PickingMode.Ignore;
+            padHint.style.position = Position.Absolute; padHint.style.left = 0; padHint.style.top = 0;
+            padHint.style.whiteSpace = WhiteSpace.Normal; padHint.style.maxWidth = 340;
+            padHint.style.color = UiKit.Token("text");
+            padHint.usageHints = UsageHints.DynamicTransform;
+            padHint.style.display = DisplayStyle.None;
+        }
+
+        // ------------------------------------------------------------------ pad hover hint (§12)
+        Label padHint;
+        string padHintText = "";
+        int padHintSite, padHintSlot, padHintSnap = -1;
+        bool padHintShown;
+        Vector2 padHintAt = new Vector2(float.NaN, float.NaN);
+
+        /// <summary>
+        /// The pad under the cursor (any own base, selected or not): its state, the facility on it and its
+        /// construction progress, and what a click does. Text is rebuilt only when the pad or the snapshot changes.
+        /// </summary>
+        void UpdatePadHint(Vector2 pointer, Vector2 mouse)
+        {
+            int siteId = commander.HoverPadSite, slot = commander.HoverPadSlot;
+            bool show = siteId != 0 && slot != 0 && commander.Current == Commander.Mode.Select && !(wheel.IsOpen && wheel.Hot) && !IsPointerOverUi(mouse);
+            if (show && (siteId != padHintSite || slot != padHintSlot || padHintSnap != session.Snapshots))
+            {
+                padHintSite = siteId; padHintSlot = slot; padHintSnap = session.Snapshots;
+                string text = PadHintText(siteId, slot);
+                if (text != padHintText) { padHintText = text; padHint.text = text; }
+            }
+            show &= padHintText.Length > 0;
+            if (show)
+            {
+                var at = new Vector2(pointer.x + 18, pointer.y + 14);
+                if (!((at - padHintAt).sqrMagnitude <= .0025f)) { padHintAt = at; padHint.style.translate = new Translate(at.x, at.y); }
+            }
+            if (show != padHintShown) { padHintShown = show; padHint.style.display = show ? DisplayStyle.Flex : DisplayStyle.None; }
+        }
+
+        string PadHintText(int siteId, int slot)
+        {
+            if (!session.Objectives.TryGetValue(siteId, out var site) || site.Parcels == null) return "";
+            BaseParcel parcel = default;
+            foreach (var p in site.Parcels) if (p.Id == slot) { parcel = p; break; }
+            if (parcel.Id == 0) return "";
+            BuildingRecord occupant = default;
+            foreach (var b in session.Structures.Buildings.Values)
+                if (b.City == siteId && b.Slot == slot && b.Owner == session.CivId) { occupant = b; break; }
+            var (used, open, _) = PadCounts(siteId);
+            if (occupant.Id != 0)
+            {
+                string name = NameOf("BUILDINGS", occupant.Type);
+                if (!occupant.Done)
+                    return $"{name} · under construction {occupant.Progress}%" + (CanCancelConstruction ? " · click, then right-click its pad wedge to cancel" : " · click to open");
+                if (occupant.QueueLength > 0) return $"{name} · {occupant.QueueLength} in production · click for its queue and upgrades";
+                return $"{name}" + (occupant.Hp < 100 ? $" · condition {occupant.Hp}%" : "") + " · click for production and upgrades";
+            }
+            if (parcel.Tier > site.Tier) return $"Locked pad · unlocks at base Tier {Tier(parcel.Tier)}";
+            if (!site.Operational) return "Pad · the headquarters must be rebuilt first";
+            if (site.Slots != null && Array.IndexOf(site.Slots, slot) >= 0) return $"Empty pad · click to choose a facility ({used}/{open} pads used)";
+            return "Pad not available";
         }
 
         /// <summary>True while digits belong to the command UI (a hot wheel).</summary>
@@ -173,6 +235,7 @@ namespace SE.Runtime.UI
                 CloseWheel();
                 if (toolChip != null) UiKit.Hide(toolChip);
                 if (cursorReason != null) UiKit.Hide(cursorReason);
+                if (padHintShown) { padHintShown = false; padHint.style.display = DisplayStyle.None; }
                 commander.SuppressGroupKeys = false;
                 return;
             }
@@ -199,8 +262,9 @@ namespace SE.Runtime.UI
                     if (!wheel.IsOpen) AutoOpen(subject);
                     if (wheelKind == "base") SocketFromSelection();
                 }
-                // right-click orders in the world close the unit wheel
-                if (wheelKind == "unit" && InputFacade.RightDown && !IsPointerOverUi(mouse)) CloseWheel();
+                // §40 click-away (C-C hook): a world click outside an open unit / build / terrain wheel only closes it;
+                // the commander skips that frame's click (no move, build or selection)
+                if ((wheelKind == "unit" || wheelKind == "build" || wheelKind == "terrain") && (InputFacade.LeftDown || InputFacade.RightDown) && !IsPointerOverUi(mouse)) { CloseWheel(); commander.ConsumedClickFrame = Time.frameCount; }
             }
             if (wheel.IsOpen) RefreshWheel();
             CommandKeys(time);
@@ -208,6 +272,7 @@ namespace SE.Runtime.UI
             wheel.Pointer = pointer;
             wheel.Tick(time, safe, minimapCentre, MinimapRadius);
             UpdateToolChip(pointer);
+            UpdatePadHint(pointer, mouse);
             commander.SuppressGroupKeys = CommandUiCapturesDigits;
             if (!(wheel.IsOpen && wheelKind == "base")) commander.HoverRingSlot = 0;
         }
@@ -369,7 +434,9 @@ namespace SE.Runtime.UI
 
         // the structure strings depend only on server state: rebuilt once per snapshot, not every frame
         int wheelStructureSnap = -1;
-        int highlightSlot;
+        int highlightSlot, highlightDepth;
+        /// <summary>Which base-wheel sub-ring was entered last ("pads" or "garrison"): only the pads ring is rebuilt with the base.</summary>
+        string baseSubRing;
         string highlightId;
 
         void RefreshWheel()
@@ -385,14 +452,22 @@ namespace SE.Runtime.UI
                     {
                         wheelStructure = structure;
                         wheel.ReplaceRoot(BaseItems(site), BaseOuterArc(site));
+                        // the pads sub-ring (depth 1) follows the base too: a pad filled, freed or unlocked
+                        if (wheel.Depth >= 1 && baseSubRing == "pads") wheel.ReplaceLevel(1, PadItems(site.Id));
                     }
                 }
                 AssignSocketAngles(site);
+                // a pad hovered in the world lights its wedge in the pads ring, or the Pads wedge on the root ring
                 int fromWorld = commander.HoverRingSlotFromWorld;
-                if (fromWorld != highlightSlot) { highlightSlot = fromWorld; highlightId = fromWorld != 0 ? "socket:" + fromWorld : null; }
+                int depth = wheel.Depth;
+                if (fromWorld != highlightSlot || depth != highlightDepth)
+                {
+                    highlightSlot = fromWorld; highlightDepth = depth;
+                    highlightId = fromWorld == 0 ? null : depth == 0 ? "pads" : "socket:" + fromWorld;
+                }
                 wheel.HighlightId = highlightId;
-                // left an empty site's facility ring: drop its world preview and the site selection
-                if (wheelEnteredSlot != 0 && wheel.Depth == 0)
+                // left an empty pad's facility ring (depth 2): drop its world preview and the pad selection
+                if (wheelEnteredSlot != 0 && wheel.Depth < 2)
                 {
                     wheelEnteredSlot = 0;
                     commander.ClearRingPreview();
@@ -495,7 +570,8 @@ namespace SE.Runtime.UI
             {
                 if (!session.Objectives.TryGetValue(siteId, out var s)) return "";
                 int used = Mathf.Max(0, s.Capacity - (s.Slots?.Length ?? 0));
-                return $"Tier {Tier(s.Tier)} base · {used}/{s.Capacity} sites used";
+                var hq = HqOf(siteId);
+                return $"Tier {Tier(s.Tier)} base · {used}/{s.Capacity} pads used" + (hq.Id != 0 ? $" · HQ {hq.Hp}%" : "");
             };
             AssignSocketAngles(site);
             SocketFromSelection();
@@ -503,12 +579,281 @@ namespace SE.Runtime.UI
 
         BuildingRecord HqOf(int siteId) => session.Objectives.TryGetValue(siteId, out var s) && session.Structures.Buildings.TryGetValue(s.Headquarters, out var b) ? b : default;
 
-        /// <summary>The base wheel: tier upgrade on top, the sites, the perimeter near the bottom.</summary>
+        // base wheel segment angles (§11): upgrades and status on the root ring; construction is on the pads (§12)
+        const float PadsAngle = 40f, EconomyAngle = 80f, GarrisonAngle = 120f, ProductionAngle = 160f, StatusAngle = 240f, AllProductionAngle = 280f;
+
+        /// <summary>
+        /// The base wheel (§11): the tier upgrade on top, then pads (a sub-ring of the base's pads pointing at their
+        /// parcels; construction is normally started by clicking a pad in the world, §12), economy, garrison (when the
+        /// server offers it), this base's production, the perimeter near the bottom, headquarters status / repair and
+        /// every base's production. Outer arc: rally point.
+        /// </summary>
         List<RadialItem> BaseItems(ObjectiveSite site)
         {
-            socketItems.Clear(); socketParcels.Clear();
             int siteId = site.Id;
-            var list = new List<RadialItem> { BaseUpgrade(site), PerimeterItem(site) };
+            var list = new List<RadialItem> { BaseUpgrade(site), PadsItem(siteId), EconomyItem(siteId), ProductionItem(siteId), PerimeterItem(site), StatusItem(siteId), AllProductionItem() };
+            var garrison = GarrisonItem(siteId);
+            if (garrison != null) list.Add(garrison);
+            return list;
+        }
+
+        /// <summary>Pads used / open on a base (open = the tier's pads; free = still empty).</summary>
+        (int used, int open, int free) PadCounts(int siteId)
+        {
+            if (!session.Objectives.TryGetValue(siteId, out var s)) return (0, 0, 0);
+            int free = s.Slots?.Length ?? 0;
+            return (Mathf.Max(0, s.Capacity - free), s.Capacity, free);
+        }
+
+        RadialItem PadsItem(int siteId) => new RadialItem
+        {
+            Id = "pads", Icon = "build", Angle = PadsAngle,
+            Name = () => { var (used, open, _) = PadCounts(siteId); return $"Pads · {used}/{open} used"; },
+            Caption = () => { var (_, _, free) = PadCounts(siteId); return free > 0 ? free + " free" : null; },
+            Detail = () => "Click a pad on the base to build there, or pick one here",
+            Children = () => { baseSubRing = "pads"; return PadItems(siteId); },
+        };
+
+        RadialItem EconomyItem(int siteId) => new RadialItem
+        {
+            Id = "economy", Icon = "materials", Title = "Economy", Angle = EconomyAngle,
+            Caption = () => { var (m, _) = BaseIncome(siteId); return m > 0 ? "+" + m.ToString("0.#") : null; },
+            Detail = () =>
+            {
+                var (m, e) = BaseIncome(siteId);
+                return $"This base: +{m:0.0}/s Materials · +{e:0.0}/s Energy · stock {ResourceHave("materials")} Materials, {ResourceHave("energy")} Energy";
+            },
+        };
+
+        RadialItem ProductionItem(int siteId) => new RadialItem
+        {
+            Id = "production", Icon = "barracks", Title = "Base production", Angle = ProductionAngle,
+            Detail = () =>
+            {
+                int queued = 0, buildings = 0;
+                var defs = Defs?["BUILDINGS"];
+                foreach (var b in session.Structures.Buildings.Values)
+                    if (b.City == siteId && b.Owner == session.CivId && b.Done && defs?[b.Type]?["trains"] is JArray) { buildings++; queued += b.QueueLength; }
+                return $"{buildings} production {(buildings == 1 ? "building" : "buildings")} · {queued} queued · one shared roster";
+            },
+            Badge = () =>
+            {
+                int queued = 0;
+                foreach (var b in session.Structures.Buildings.Values) if (b.City == siteId && b.Owner == session.CivId) queued += b.QueueLength;
+                return queued;
+            },
+            Visible = () => HasTrainersAt(siteId),
+            Click = _ => commander.SelectProduction(TrainersAt(siteId)),
+        };
+
+        RadialItem AllProductionItem() => new RadialItem
+        {
+            Id = "allproduction", Icon = "army", Title = "All production", Angle = AllProductionAngle,
+            Detail = () => "Every production building at every base: units queue across all of them",
+            Visible = TrainersAtSeveralBases,
+            Click = _ => SelectEveryProduction(),
+        };
+
+        /// <summary>Headquarters status (condition, tier, pads); a damaged headquarters is repaired from here.</summary>
+        RadialItem StatusItem(int siteId) => new RadialItem
+        {
+            Id = "status", Icon = "hq", Angle = StatusAngle,
+            Name = () => HqOf(siteId).RepairCost > 0 ? "Repair headquarters" : "Headquarters",
+            Caption = () => { var h = HqOf(siteId); return h.Id != 0 ? h.Hp + "%" : null; },
+            Detail = () =>
+            {
+                var h = HqOf(siteId);
+                var (used, open, free) = PadCounts(siteId);
+                int tier = session.Objectives.TryGetValue(siteId, out var s) ? s.Tier : 1;
+                return $"Condition {h.Hp}% · Tier {Tier(tier)} · pads {used}/{open} used, {free} free";
+            },
+            Progress = () => HqOf(siteId).WorksKind == "repair" ? HqOf(siteId).WorksPct / 100f : -1f,
+            Reason = () =>
+            {
+                var h = HqOf(siteId);
+                if (h.RepairCost <= 0) return null;
+                return h.Project != null ? "The headquarters is busy" : $"Click to repair · {h.RepairCost} Materials";
+            },
+            Click = _ =>
+            {
+                var h = HqOf(siteId);
+                if (h.Id != 0 && h.RepairCost > 0 && h.Project == null) Send(new JObject { ["c"] = "repair", ["id"] = h.Id }, "Repairs started");
+            },
+        };
+
+        /// <summary>The headquarters garrison (W4, R4) on the base wheel; null when the server has no garrisons.</summary>
+        RadialItem GarrisonItem(int siteId)
+        {
+            var hq = HqOf(siteId);
+            if (hq.Id == 0 || GarrisonCapacity(hq.Type) <= 0) return null;
+            return GarrisonWedge(hq.Id, GarrisonAngle);
+        }
+
+        // ------------------------------------------------------------------ garrison (W4, R4; CAPTURE_AND_GARRISON.md)
+        /// <summary>Unit flag bit: the unit is inside a structure (its model is hidden by the renderer).</summary>
+        public const int InsideFlag = 16384;
+
+        int GarrisonCapacity(string buildingType) => ProtocolDecoder.Int(Defs?["BUILDINGS"]?[buildingType]?["garrison"]);
+        int FiringSlots(string buildingType) => ProtocolDecoder.Int(Defs?["BUILDINGS"]?[buildingType]?["firingSlots"]);
+
+        /// <summary>Capture-capable infantry squads (defs UNITS capture:true, not auto) may garrison.</summary>
+        bool CanGarrison(string unitType)
+        {
+            var d = Defs?["UNITS"]?[unitType];
+            return ProtocolDecoder.Bool(d?["capture"]) && !ProtocolDecoder.Bool(d?["auto"]);
+        }
+
+        int OccupantCount(int buildingId) => session.Structures.Buildings.TryGetValue(buildingId, out var b) ? b.Garrison?.Length ?? 0 : 0;
+
+        string UnitTypeOf(int unitId) => session.Units.TryGet(unitId, out var u) ? session.Units.Types.Name(u.TypeIndex) : null;
+
+        /// <summary>"2/4 inside · 2 firing · exit rally set" for a structure.</summary>
+        string GarrisonSummary(int buildingId)
+        {
+            if (!session.Structures.Buildings.TryGetValue(buildingId, out var b)) return "";
+            int n = b.Garrison?.Length ?? 0, cap = GarrisonCapacity(b.Type), slots = FiringSlots(b.Type);
+            int firing = Mathf.Min(n, slots);
+            string fire = slots == 0 ? "shelter only, no firing slots" : $"{firing} firing, {n - firing} sheltered";
+            return $"{n}/{cap} inside · {fire}" + (b.HasGarrisonExit ? " · exit rally set" : "");
+        }
+
+        void Ungarrison(int buildingId, int unitId = 0)
+        {
+            var cmd = new JObject { ["c"] = "ungarrison", ["building"] = buildingId };
+            if (unitId != 0) cmd["units"] = new JArray(unitId); else cmd["all"] = true;
+            session.Net?.Command(cmd, r =>
+            {
+                int n = ProtocolDecoder.Int(r.Raw?["ungarrisoned"], unitId != 0 ? 1 : 0);
+                commander.Say(Commander.ReadableError(r) ?? (n == 1 ? "1 squad stepped out" : $"{n} squads stepped out"), r.Error == null, Time.unscaledTime);
+                cmdCardSignature = "";
+            });
+        }
+
+        void BeginGarrisonExitRally(int buildingId) =>
+            commander.Begin(Commander.Mode.Target, "", new JObject { ["c"] = "garrisonRally", ["building"] = buildingId });
+
+        void ClearGarrisonExitRally(int buildingId) =>
+            Send(new JObject { ["c"] = "garrisonRally", ["building"] = buildingId, ["clear"] = true }, "Exit rally cleared");
+
+        /// <summary>Send squads into a structure (only the eligible ones are sent; the server walks the others in).</summary>
+        void GarrisonInto(int buildingId, IList<int> unitIds)
+        {
+            var ids = new JArray();
+            foreach (int id in unitIds) { string t = UnitTypeOf(id); if (t != null && CanGarrison(t)) ids.Add(id); }
+            if (ids.Count == 0) { commander.Say("Only infantry squads can garrison structures", false, Time.unscaledTime); return; }
+            session.Net?.Command(new JObject { ["c"] = "garrison", ["units"] = ids, ["building"] = buildingId }, r =>
+            {
+                if (r.Error != null) { commander.Say(Commander.ReadableError(r), false, Time.unscaledTime); return; }
+                int entered = ProtocolDecoder.Int(r.Raw?["entered"]), moving = ProtocolDecoder.Int(r.Raw?["moving"]), refused = ProtocolDecoder.Int(r.Raw?["refused"]);
+                string text = entered > 0 && moving > 0 ? $"{entered} inside, {moving} moving in" : entered > 0 ? $"{entered} inside" : $"{moving} moving in";
+                if (refused > 0) text += $" · {refused} refused (full or not infantry)";
+                commander.Say(text, entered + moving > 0, Time.unscaledTime);
+            });
+        }
+
+        /// <summary>A structure's garrison wedge: occupants as the badge; its sub-ring lists them and the exit commands.</summary>
+        RadialItem GarrisonWedge(int buildingId, float? angle) => new RadialItem
+        {
+            Id = "garrison", Icon = "bunker", Angle = angle,
+            Name = () => session.Structures.Buildings.TryGetValue(buildingId, out var b) ? $"Garrison · {b.Garrison?.Length ?? 0}/{GarrisonCapacity(b.Type)}" : "Garrison",
+            Detail = () => GarrisonSummary(buildingId) + " · select infantry and use Garrison on their wheel to enter",
+            Badge = () => OccupantCount(buildingId),
+            Children = () => { baseSubRing = "garrison"; return GarrisonItems(buildingId); },
+        };
+
+        /// <summary>The garrison sub-ring: eject all, exit rally (set / clear) and one wedge per occupant (click selects it, right-click ejects it).</summary>
+        List<RadialItem> GarrisonItems(int buildingId)
+        {
+            var list = new List<RadialItem>
+            {
+                new RadialItem
+                {
+                    Id = "garrison:eject", Icon = "withdraw", Title = "Eject all",
+                    Detail = () => GarrisonSummary(buildingId),
+                    Enabled = () => OccupantCount(buildingId) > 0,
+                    Reason = () => OccupantCount(buildingId) > 0 ? null : "Nobody is inside",
+                    Click = _ => Ungarrison(buildingId),
+                },
+                new RadialItem
+                {
+                    Id = "garrison:rally", Icon = "rally", Title = "Exit rally point",
+                    Detail = () => "Click the ground where squads go when they step out",
+                    Click = _ => { CloseWheel(); BeginGarrisonExitRally(buildingId); },
+                },
+                new RadialItem
+                {
+                    Id = "garrison:rallyclear", Icon = "close", Title = "Clear exit rally",
+                    Detail = () => "Squads step out beside the structure",
+                    Visible = () => session.Structures.Buildings.TryGetValue(buildingId, out var b) && b.HasGarrisonExit,
+                    Click = _ => ClearGarrisonExitRally(buildingId),
+                },
+            };
+            if (!session.Structures.Buildings.TryGetValue(buildingId, out var building)) return list;
+            int cap = Mathf.Clamp(GarrisonCapacity(building.Type), 0, 6), slots = FiringSlots(building.Type);
+            for (int k = 0; k < cap; k++)
+            {
+                int index = k;
+                int Occupant() => session.Structures.Buildings.TryGetValue(buildingId, out var b) && b.Garrison != null && index < b.Garrison.Length ? b.Garrison[index] : 0;
+                string type = building.Garrison != null && k < building.Garrison.Length ? UnitTypeOf(building.Garrison[k]) : null;
+                list.Add(new RadialItem
+                {
+                    Id = "garrison:unit:" + k, Icon = type ?? "rifle_squad",
+                    Name = () => { string t = UnitTypeOf(Occupant()); return t != null ? NameOf("UNITS", t) : "Occupant"; },
+                    Detail = () => index < slots ? "In a firing slot: shoots from the structure (+range, +damage)" : "Sheltered: protected, not firing",
+                    Caption = () => index < slots ? "fire" : null,
+                    Reason = () => "Click selects · right-click ejects",
+                    Visible = () => Occupant() != 0,
+                    Click = _ => { int id = Occupant(); if (id != 0) commander.SelectUnits(new[] { id }); },
+                    RightClickWith = _ => { int id = Occupant(); if (id != 0) Ungarrison(buildingId, id); },
+                });
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// The unit wheel's Garrison sub-ring: the nearest own finished structures with free garrison room (up to
+        /// eight), nearest first. Picking one sends the selected infantry squads in.
+        /// </summary>
+        List<RadialItem> GarrisonTargets(int[] selected)
+        {
+            var list = new List<RadialItem>();
+            float cx = 0, cz = 0; int n = 0;
+            foreach (int id in selected) if (session.Units.TryGet(id, out var u) && u.Motion.Present) { cx += u.Motion.X; cz += u.Motion.Z; n++; }
+            if (n > 0) { cx /= n; cz /= n; }
+            var candidates = new List<(float d, BuildingRecord b)>();
+            foreach (var b in session.Structures.Buildings.Values)
+            {
+                if (b.Owner != session.CivId || !b.Done || !b.HasPosition) continue;
+                int cap = GarrisonCapacity(b.Type);
+                if (cap <= 0 || (b.Garrison?.Length ?? 0) >= cap) continue;
+                float dx = session.World.Grid.DxWrap(cx, b.X), dz = b.Z - cz;
+                candidates.Add((dx * dx + dz * dz, b));
+            }
+            candidates.Sort((a, c) => a.d.CompareTo(c.d));
+            for (int k = 0; k < candidates.Count && k < 8; k++)
+            {
+                var b = candidates[k].b;
+                int bid = b.Id;
+                float dist = Mathf.Sqrt(candidates[k].d);
+                list.Add(new RadialItem
+                {
+                    Id = "enter:" + bid, Icon = Icons.BuildingKind(b.Type), Title = NameOf("BUILDINGS", b.Type),
+                    Detail = () => GarrisonSummary(bid) + $" · {dist:0} away",
+                    Badge = () => OccupantCount(bid),
+                    Click = _ => { GarrisonInto(bid, selected); CloseWheel(); },
+                });
+            }
+            if (list.Count == 0)
+                list.Add(new RadialItem { Id = "enter:none", Icon = "bunker", Title = "No room", Enabled = () => false, Reason = () => "No own structure with free garrison room" });
+            return list;
+        }
+
+        /// <summary>The pads sub-ring: one wedge per pad, pointed toward its parcel (empty pads open the facility ring).</summary>
+        List<RadialItem> PadItems(int siteId)
+        {
+            socketItems.Clear(); socketParcels.Clear();
+            var list = new List<RadialItem>();
+            if (!session.Objectives.TryGetValue(siteId, out var site)) return list;
             foreach (var parcel in (site.Parcels ?? Array.Empty<BaseParcel>()).Where(p => p.Id > 0).OrderBy(p => p.Id))
             {
                 int slot = parcel.Id, parcelTier = parcel.Tier;
@@ -525,7 +870,7 @@ namespace SE.Runtime.UI
                 };
                 if (locked)
                 {
-                    item.Icon = "lock"; item.Title = "Locked site";
+                    item.Icon = "lock"; item.Title = "Locked pad";
                     item.Caption = () => Tier(parcelTier);
                     item.Enabled = () => false;
                     item.Reason = () => $"Unlocks at base Tier {Tier(parcelTier)}";
@@ -548,15 +893,19 @@ namespace SE.Runtime.UI
                     item.Detail = () =>
                     {
                         if (!session.Structures.Buildings.TryGetValue(occupantId, out var b)) return "";
-                        if (!b.Done) return $"Construction {b.Progress}%";
+                        if (!b.Done) return $"Under construction {b.Progress}% · engineers are building it";
                         if (b.QueueLength > 0) return $"{b.QueueLength} in queue";
                         return b.Hp < 100 ? $"Condition {b.Hp}%" : "Open its wheel: production and upgrades";
                     };
+                    // cancel a facility still under construction (right-click): only when the server offers it
+                    item.Reason = () => session.Structures.Buildings.TryGetValue(occupantId, out var b) && !b.Done
+                        ? CanCancelConstruction ? "Right-click cancels construction" : null : null;
+                    if (CanCancelConstruction) item.RightClickWith = _ => CancelConstruction(occupantId);
                     item.Click = _ => commander.SelectRingSlot(siteId, slot);
                 }
                 else if (empty)
                 {
-                    item.Icon = "plus"; item.Title = "Empty site"; item.Pulse = true;
+                    item.Icon = "plus"; item.Title = "Empty pad"; item.Pulse = true;
                     item.Detail = () => "Choose a facility to build here";
                     item.Children = () =>
                     {
@@ -567,15 +916,29 @@ namespace SE.Runtime.UI
                 }
                 else
                 {
-                    item.Icon = "plus"; item.Title = "Site";
+                    item.Icon = "plus"; item.Title = "Pad";
                     item.Enabled = () => false;
-                    item.Reason = () => "Site not available";
+                    item.Reason = () => "Pad not available";
                 }
                 socketParcels[id] = parcel;
                 socketItems.Add(item);
                 list.Add(item);
             }
             return list;
+        }
+
+        /// <summary>
+        /// Cancelling a facility under construction needs a server command the action ruleset does not have yet
+        /// (actionBases.demolish refuses unfinished structures). The client hook is live once the server advertises
+        /// <c>RULESET.cancelConstruction</c> (command <c>{c:'cancelConstruction', id}</c>); until then it is hidden.
+        /// </summary>
+        bool CanCancelConstruction => ProtocolDecoder.Bool(Defs?["RULESET"]?["cancelConstruction"]);
+
+        void CancelConstruction(int buildingId)
+        {
+            if (!CanCancelConstruction) return;
+            if (!session.Structures.Buildings.TryGetValue(buildingId, out var b) || b.Done || b.Owner != session.CivId) return;
+            Send(new JObject { ["c"] = "cancelConstruction", ["id"] = buildingId }, "Construction cancelled");
         }
 
         // per-frame socket assignment scratch (no allocations: the camera moves every frame)
@@ -585,8 +948,8 @@ namespace SE.Runtime.UI
         static readonly Func<bool> NoWedge = () => false;
 
         /// <summary>
-        /// Point each site wedge at its parcel: greedy nearest-angle assignment of parcels to the seven site
-        /// segments (the top is the upgrade, 200° the perimeter). Also sizes the base wheel to the base on screen.
+        /// Point each pad wedge (pads sub-ring) at its parcel: greedy nearest-angle assignment of parcels to the
+        /// nine segments. Also sizes the base wheel to the base on screen.
         /// </summary>
         void AssignSocketAngles(ObjectiveSite site)
         {
@@ -677,7 +1040,7 @@ namespace SE.Runtime.UI
 
         static bool PerimeterProject(string project) => project == "perimeter" || project == "defenses" || project == "upgradeDefenses" || project == "defenseUpgrade";
 
-        /// <summary>Near the bottom of the base wheel: build, rebuild or upgrade the city perimeter.</summary>
+        /// <summary>Near the bottom of the base wheel: build, rebuild or upgrade the city perimeter (its defense upgrades).</summary>
         RadialItem PerimeterItem(ObjectiveSite site)
         {
             int siteId = site.Id;
@@ -775,28 +1138,6 @@ namespace SE.Runtime.UI
                     Visible = () => HasTrainersAt(siteId),
                     Click = _ => commander.Begin(Commander.Mode.Rally),
                 },
-                new RadialItem
-                {
-                    Id = "arc:production", Icon = "barracks", Title = "Base production",
-                    Detail = () => "Every production building at this base: one shared roster",
-                    Visible = () => HasTrainersAt(siteId),
-                    Click = _ => commander.SelectProduction(TrainersAt(siteId)),
-                },
-                new RadialItem
-                {
-                    Id = "arc:allproduction", Icon = "army", Title = "All production",
-                    Detail = () => "Every production building at every base: units queue across all of them",
-                    Visible = TrainersAtSeveralBases,
-                    Click = _ => SelectEveryProduction(),
-                },
-                new RadialItem
-                {
-                    Id = "arc:repair", Icon = "repair", Title = "Repair headquarters",
-                    Visible = () => HqOf(siteId).RepairCost > 0,
-                    Enabled = () => HqOf(siteId).Project == null,
-                    Reason = () => HqOf(siteId).Project != null ? "The headquarters is busy" : $"Costs {HqOf(siteId).RepairCost} Materials",
-                    Click = _ => Send(new JObject { ["c"] = "repair", ["id"] = HqOf(siteId).Id }, "Repairs started"),
-                },
             };
         }
 
@@ -805,10 +1146,13 @@ namespace SE.Runtime.UI
             if (!session.Objectives.TryGetValue(siteId, out var site)) return;
             wheelKind = "ruin"; wheelSite = siteId;
             JToken cost = ProtocolDecoder.Int(Econ?["recovery"]) > 0 ? new JObject { ["materials"] = 140 } : Defs?["BUILDINGS"]?["town"]?["cost"];
+            // 2026-11-18: the server's settlement price includes the road to the nearest own base (ROADS_AND_CLAIMS.md)
+            if (site.SettleMaterials > 0) cost = new JObject { ["materials"] = site.SettleMaterials, ["energy"] = site.SettleEnergy };
             var establish = new RadialItem
             {
                 Id = "establish", Icon = "hq", Title = "Establish base", Cost = cost, Seconds = ProtocolDecoder.Int(Defs?["BUILDINGS"]?["town"]?["time"]),
-                Detail = () => ProtocolDecoder.Str(SiteDefinition(site)?["bonus"], "Build a headquarters on this ruin"),
+                Detail = () => (site.SettleRoad > 0 ? $"Includes the road to {site.SettleTo} ({site.SettleRoad} segments) · " : "")
+                    + ProtocolDecoder.Str(SiteDefinition(site)?["bonus"], "Build a headquarters on this ruin"),
                 Enabled = () => session.Objectives.TryGetValue(siteId, out var s) && !s.Contested,
                 Reason = () => session.Objectives.TryGetValue(siteId, out var s) && s.Contested ? "Contested · clear hostile ground forces" : null,
                 Click = _ => Send(new JObject { ["c"] = "establish", ["site"] = siteId }, "Construction started"),
@@ -818,15 +1162,15 @@ namespace SE.Runtime.UI
         }
 
         // ------------------------------------------------------------------ an empty site's facility sub-ring
-        /// <summary>A site picked in the world (or by the selection) opens its facility ring.</summary>
+        /// <summary>A pad clicked in the world (§12, or picked by the selection) opens its facility ring: Pads → pad.</summary>
         void SocketFromSelection()
         {
             int slot = commander.SelectedRingSlot;
-            if (slot == 0 || wheelKind != "base" || slot == wheelEnteredSlot && wheel.Depth > 0) return;
+            if (slot == 0 || wheelKind != "base" || slot == wheelEnteredSlot && wheel.Depth > 1) return;
             if (!session.Objectives.TryGetValue(wheelSite, out var site) || site.Slots == null || Array.IndexOf(site.Slots, slot) < 0) return;
             while (wheel.Depth > 0) wheel.Back();
             wheelEnteredSlot = slot;   // set first: the item's Children re-selects the same slot
-            if (!wheel.EnterItem("socket:" + slot)) wheelEnteredSlot = 0;
+            if (!wheel.EnterItem("pads") || !wheel.EnterItem("socket:" + slot)) wheelEnteredSlot = 0;
         }
 
         /// <summary>The nine facilities for an empty site: name, description and cost in the centre; hover previews it in the world.</summary>
@@ -910,7 +1254,17 @@ namespace SE.Runtime.UI
                 if (current.Length == 0) return "";
                 if (current.Any(b => !b.Done)) return $"Construction {current.First(b => !b.Done).Progress}%";
                 int queued = current.Sum(b => b.QueueLength);
-                if (queued > 0) return $"{queued} in queue";
+                if (queued > 0)
+                {
+                    // the shared production budget (R1): more queues share it, they never add speed
+                    float cap = 0f; int producing = 0;
+                    foreach (var b in current)
+                    {
+                        cap += b.ProductionCapacity;
+                        if (b.Queues != null) foreach (var q in b.Queues) if (q.State == "producing") producing++;
+                    }
+                    return cap > 0f ? $"{queued} in queue · capacity {cap:0.##}/s shared by {producing} producing" : $"{queued} in queue";
+                }
                 var busy = current.FirstOrDefault(b => b.Project != null);
                 if (busy.Id != 0) return $"{ProjectName(busy.Project)} {busy.WorksPct}%";
                 int level = current.Max(b => b.Level);
@@ -934,6 +1288,8 @@ namespace SE.Runtime.UI
                 if (b.Done && Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray trains)
                     foreach (var t in trains) { string key = (string)t; if (!types.Contains(key)) types.Add(key); }
             foreach (string type in types) items.Add(TrainItem(type, trainers));
+            // W4 garrison: one garrisonable structure selected (bunker, watchtower, outpost, barracks)
+            if (own.Length == 1 && own[0].Done && GarrisonCapacity(own[0].Type) > 0) items.Add(GarrisonWedge(own[0].Id, null));
             // 3. strategic missile
             var silo = own.FirstOrDefault(b => b.Type == "missile_silo" && b.Done);
             if (silo.Id != 0)
@@ -980,6 +1336,14 @@ namespace SE.Runtime.UI
                     Id = "reinforce", Icon = "army", Title = "Reinforce group",
                     Detail = () => "New units from here join a control group",
                     Children = () => GroupItems(trainers),
+                });
+            if (trainers.Length > 0)
+                items.Add(new RadialItem
+                {
+                    Id = "clearqueue", Icon = "close", Title = trainers.Length == 1 ? "Clear queue" : $"Clear {trainers.Length} queues", Confirm = true,
+                    Detail = () => "Cancel everything queued here · resources already spent are not refunded",
+                    Visible = () => AnyQueued(HostsFor(trainers, null)),
+                    Click = _ => QueueClear(HostsFor(trainers, null)),
                 });
             items.Add(new RadialItem
             {
@@ -1041,7 +1405,8 @@ namespace SE.Runtime.UI
                 return new RadialItem
                 {
                     Id = "upgrades", Icon = "upgrade", Title = "Upgrades",
-                    Detail = () => (hostTypes.Contains("barracks") && !hostTypes.Contains("armory") ? "Infantry equipment" : "Faction-wide military upgrades") + (level != null ? " and the building's era level" : ""),
+                    Detail = () => (hostTypes.Contains("barracks") && !hostTypes.Contains("armory") ? "Infantry equipment" : "Faction-wide military upgrades") + (level != null ? " and the building's era level" : "")
+                        + (ProtocolDecoder.Bool(Defs?["RULESET"]?["upgradeLines"]) ? " · one upgrade per unit class (infantry, vehicle, air) per match" : ""),
                     Children = () =>
                     {
                         var list = new List<RadialItem>();
@@ -1103,71 +1468,337 @@ namespace SE.Runtime.UI
             return item;
         }
 
+        /// <summary>
+        /// A unit type's training wedge (W1 production, §7–9): its queue across every compatible selected building.
+        /// The badge is the queued count, the green ring the current item's progress, the glyph at the top-right the
+        /// queue state when it is not producing. Queueing never needs the resources up front (the order waits).
+        /// Click +1 · Shift +5 · Alt one per building · Ctrl repeat. Right-click −1 · Shift+right all of this type ·
+        /// Ctrl+right pause / resume · Alt+right priority (low → normal → high). Cancelling never refunds what was spent.
+        /// </summary>
         RadialItem TrainItem(string type, int[] trainers)
         {
             var d = Defs?["UNITS"]?[type];
             int tier = ProtocolDecoder.Int(d?["tier"], 1);
             string facility = ProtocolDecoder.Str(d?["facility"]);
-            BuildingRecord[] Hosts() => OwnBuildings(trainers).Where(b => b.Done && b.Type == facility).ToArray();
+            var cost = d?["cost"];
+            BuildingRecord[] Hosts() => HostsFor(trainers, facility);
             return new RadialItem
             {
-                Id = "train:" + type, Icon = type, Title = NameOf("UNITS", type), Cost = d?["cost"], Seconds = ProtocolDecoder.Int(d?["time"]),
-                Detail = () => UnitRole(type) + $" · {ProtocolDecoder.Int(d?["capacity"])} command" + (Hosts().Length > 1 ? $" · queues across {Hosts().Length} buildings" : ""),
-                Enabled = () => tier <= Age + 1 && Hosts().Length > 0,
-                Reason = () => tier > Age + 1 ? $"Requires Tier {Tier(tier)}" : Hosts().Length == 0 ? "Needs " + NameOf("BUILDINGS", facility)
-                    : Hosts().Length > 1 ? "Shift ×5 · Alt one each · right-click cancels" : "Shift ×5 · right-click cancels · Ctrl repeats",
-                Badge = () =>
+                Id = "train:" + type, Icon = type, Title = NameOf("UNITS", type), Cost = cost, Seconds = ProtocolDecoder.Int(d?["time"]),
+                CostAdvisory = true,
+                Detail = () =>
                 {
-                    int n = 0;
-                    foreach (var b in Hosts()) if (b.Queue != null) foreach (var q in b.Queue) if (q == type) n++;
-                    return n;
+                    var hosts = Hosts();
+                    var s = SummarizeQueue(hosts, type);
+                    if (s.Count == 0)
+                        return UnitRole(type) + $" · {ProtocolDecoder.Int(d?["capacity"])} command" + (hosts.Length > 1 ? $" · queues across {hosts.Length} buildings" : "");
+                    return $"{s.Count} queued · {Mathf.RoundToInt(s.Progress)}% · {PriorityName(s.Priority)} priority" + (s.Hosts > 1 ? $" · {s.Hosts} buildings" : "")
+                        + " · cancelling never refunds spent resources";
                 },
+                Enabled = () => tier <= Age + 1 && Hosts().Length > 0,
+                Reason = () =>
+                {
+                    if (tier > Age + 1) return $"Requires Tier {Tier(tier)}";
+                    var hosts = Hosts();
+                    if (hosts.Length == 0) return "Needs " + NameOf("BUILDINGS", facility);
+                    var s = SummarizeQueue(hosts, type);
+                    if (s.Count == 0) return hosts.Length > 1 ? "Shift ×5 · Alt one each · Ctrl repeat" : "Shift ×5 · Ctrl repeat";
+                    if (s.State == "producing" || s.State == null) return "Right-click -1 · Shift all · Ctrl pause · Alt priority";
+                    return QueueStateText(s.State, type);
+                },
+                Badge = () => SummarizeQueue(Hosts(), type).Count,
                 Progress = () =>
                 {
-                    float best = -1f;
-                    foreach (var b in Hosts()) if (b.Queue != null && b.Queue.Length > 0 && b.Queue[0] == type) best = Mathf.Max(best, b.TrainProgress / 100f);
-                    return best;
+                    var s = SummarizeQueue(Hosts(), type);
+                    return s.Count > 0 ? s.Progress / 100f : -1f;
                 },
-                Active = () => Hosts().Any(b => b.Repeat == type),
+                StatusIcon = () =>
+                {
+                    var s = SummarizeQueue(Hosts(), type);
+                    return s.Count > 0 ? QueueStateIcon(s.State, type) : null;
+                },
+                Active = () =>
+                {
+                    foreach (var b in Hosts()) if (b.Repeat == type) return true;
+                    return false;
+                },
                 Click = c =>
                 {
                     var hosts = Hosts();
                     if (hosts.Length == 0) return;
                     if (c.Ctrl)
                     {
-                        bool on = !hosts.Any(b => b.Repeat == type);
+                        bool on = true;
+                        foreach (var b in hosts) if (b.Repeat == type) { on = false; break; }
                         foreach (var b in hosts)
                             session.Net?.Command(new JObject { ["c"] = "repeat", ["id"] = b.Id, ["unit"] = on ? type : null },
                                 r => { if (r.Error != null) commander.Say(r.Error, false, Time.unscaledTime); });
                         return;
                     }
-                    // batch production: the server spreads the count over the hosts; Alt queues one in every host
-                    bool each = c.Alt && hosts.Length > 1;
-                    int count = each ? hosts.Length : c.Shift ? 5 : 1;
-                    var cmd = new JObject { ["c"] = "batchTrain", ["buildings"] = new JArray(hosts.Select(b => b.Id).ToArray()), ["unit"] = type, ["count"] = each ? 1 : count };
-                    if (each) cmd["policy"] = "each";
-                    session.Net?.Command(cmd, r =>
-                    {
-                        int n = ProtocolDecoder.Int(r.Raw?["training"]?["queued"], count);
-                        string why = ProtocolDecoder.Str(r.Raw?["training"]?["reason"], "");
-                        if (r.Error != null) commander.Say(r.Error, false, Time.unscaledTime);
-                        else if (n <= 0 && why.Length > 0) commander.Say(why, false, Time.unscaledTime);
-                        else commander.Say($"{n} queued", true, Time.unscaledTime);
-                        cmdCardSignature = "";
-                    });
+                    QueueTrain(hosts, type, c.Shift ? 5 : 1, c.Alt && hosts.Length > 1);
                 },
-                RightClick = () =>
+                RightClickWith = c =>
                 {
-                    foreach (var b in Hosts())
-                    {
-                        if (b.Queue == null) continue;
-                        int index = Array.LastIndexOf(b.Queue, type);
-                        if (index < 0) continue;
-                        Send(new JObject { ["c"] = "cancelTrain", ["id"] = b.Id, ["index"] = index }, "Queue entry cancelled");
-                        return;
-                    }
+                    var hosts = Hosts();
+                    if (c.Ctrl) QueuePause(hosts, type, SummarizeQueue(hosts, type).PausedHosts < SummarizeQueue(hosts, type).Hosts);
+                    else if (c.Alt) QueuePriority(hosts, type, (SummarizeQueue(hosts, type).Priority + 1) % 3);
+                    else QueueCancel(hosts, type, c.Shift);
                 },
             };
+        }
+
+        // ------------------------------------------------------------------ production queues (W1 contract, §7–9)
+        // Hosts per (trainer list, facility), rebuilt once per snapshot: the wheel and the card poll them at 10 Hz
+        int hostCacheSnap = -1;
+        readonly Dictionary<(int[] ids, string facility), BuildingRecord[]> hostCache = new Dictionary<(int[], string), BuildingRecord[]>();
+
+        /// <summary>The finished own buildings of <paramref name="facility"/> among <paramref name="ids"/> (null facility: any producer).</summary>
+        BuildingRecord[] HostsFor(int[] ids, string facility)
+        {
+            if (hostCacheSnap != session.Snapshots) { hostCache.Clear(); hostCacheSnap = session.Snapshots; }
+            var key = (ids, facility ?? "");
+            if (hostCache.TryGetValue(key, out var cached)) return cached;
+            var list = new List<BuildingRecord>(ids.Length);
+            var defs = Defs?["BUILDINGS"];
+            foreach (int id in ids)
+                if (session.Structures.Buildings.TryGetValue(id, out var b) && b.Owner == session.CivId && b.Done
+                    && (facility == null ? defs?[b.Type]?["trains"] is JArray : b.Type == facility)) list.Add(b);
+            var hosts = list.ToArray();
+            hostCache[key] = hosts;
+            return hosts;
+        }
+
+        /// <summary>One unit type's queue summed over several buildings.</summary>
+        struct QueueSummary
+        {
+            public int Count, Hosts, Priority, PausedHosts;
+            /// <summary>Best current-item progress, 0..100.</summary>
+            public float Progress;
+            /// <summary>The most telling state among the hosts (producing first, then the blocking reasons).</summary>
+            public string State;
+            public bool Legacy;
+        }
+
+        static int StateRank(string state) => state switch
+        {
+            "producing" => 0, "exit" => 1, "resources" => 2, "capacity" => 3, "prerequisites" => 4, "waiting" => 5, "paused" => 6, "idle" => 7, _ => 8
+        };
+
+        static QueueSummary SummarizeQueue(BuildingRecord[] hosts, string type)
+        {
+            var s = new QueueSummary { Priority = -1 };
+            int rank = int.MaxValue;
+            foreach (var b in hosts)
+            {
+                if (b.Queues == null) continue;
+                foreach (var q in b.Queues)
+                {
+                    if (q.Unit != type || q.Count <= 0) continue;
+                    s.Count += q.Count; s.Hosts++;
+                    if (q.Progress > s.Progress) s.Progress = q.Progress;
+                    if (q.Priority > s.Priority) s.Priority = q.Priority;
+                    if (q.State == "paused") s.PausedHosts++;
+                    if (!b.QueuesFromServer) s.Legacy = true;
+                    int r = StateRank(q.State);
+                    if (r < rank) { rank = r; s.State = q.State; }
+                }
+            }
+            if (s.Priority < 0) s.Priority = 1;
+            return s;
+        }
+
+        static string PriorityName(int priority) => priority >= 2 ? "High" : priority <= 0 ? "Low" : "Normal";
+
+        /// <summary>The resource a queue waits for ("Materials", "Energy"), from the unit's cost against the stockpile.</summary>
+        string ShortResource(string unitType)
+        {
+            if (!(Defs?["UNITS"]?[unitType]?["cost"] is JObject cost)) return null;
+            foreach (var p in cost.Properties())
+                if (ProtocolDecoder.Float(p.Value) > 0 && ResourceHave(p.Name) < 1) return p.Name == "materials" ? "Materials" : p.Name == "energy" ? "Energy" : p.Name;
+            return null;
+        }
+
+        /// <summary>A queue state as the player should read it (PRODUCTION_SCHEDULER.md, qs[i][4]).</summary>
+        string QueueStateText(string state, string unitType) => state switch
+        {
+            "producing" => "Producing",
+            "resources" => ShortResource(unitType) is string r ? "Waiting for funds (" + r + ")" : "Waiting for funds",
+            "capacity" => "Waiting for unit capacity",
+            "prerequisites" => "Prerequisites missing",
+            "exit" => "Exit blocked · clear the exit",
+            "paused" => "Paused",
+            "waiting" => "Waiting for production capacity",
+            "idle" => "Idle",
+            _ => "Queued",
+        };
+
+        /// <summary>The state glyph (never colour only): null while producing.</summary>
+        string QueueStateIcon(string state, string unitType) => state switch
+        {
+            "resources" => ShortResource(unitType) == "Energy" ? "energy" : "materials",
+            "capacity" => "command",
+            "prerequisites" => "lock",
+            "exit" => "close",
+            "paused" => "pause",
+            "waiting" => "queued",
+            _ => null,
+        };
+
+        /// <summary>Queue <paramref name="count"/> (or one per building with <paramref name="each"/>); accepted without resources, it then waits.</summary>
+        void QueueTrain(BuildingRecord[] hosts, string type, int count, bool each)
+        {
+            if (hosts.Length == 0) return;
+            var ids = new JArray();
+            foreach (var b in hosts) ids.Add(b.Id);
+            if (each) count = hosts.Length;
+            var cmd = new JObject { ["c"] = "batchTrain", ["buildings"] = ids, ["unit"] = type, ["count"] = each ? 1 : count };
+            if (each) cmd["policy"] = "each";
+            session.Net?.Command(cmd, r =>
+            {
+                int n = ProtocolDecoder.Int(r.Raw?["training"]?["queued"], count);
+                string why = ProtocolDecoder.Str(r.Raw?["training"]?["reason"], "");
+                string waiting = "";
+                if (r.Raw?["training"]?["waiting"] is JArray wait && wait.Count > 0)
+                {
+                    bool res = false, cap = false;
+                    foreach (var w in wait) { string k = (string)w; res |= k == "resources"; cap |= k == "capacity"; }
+                    waiting = res && cap ? " · waiting for funds and unit capacity" : res ? " · waiting for funds" : cap ? " · waiting for unit capacity" : "";
+                }
+                if (r.Error != null) commander.Say(Commander.ReadableError(r), false, Time.unscaledTime);
+                else if (n <= 0 && why.Length > 0) commander.Say(why, false, Time.unscaledTime);
+                else commander.Say($"{n} × {NameOf("UNITS", type)} queued{waiting}", true, Time.unscaledTime);
+                cmdCardSignature = "";
+            });
+        }
+
+        /// <summary>The "lost" part of a cancel reply as text ("30 Materials, 5 Energy already spent were lost").</summary>
+        static string LostText(JToken lost)
+        {
+            int m = Mathf.RoundToInt(ProtocolDecoder.Float(lost?["materials"])), e = Mathf.RoundToInt(ProtocolDecoder.Float(lost?["energy"]));
+            if (m <= 0 && e <= 0) return "nothing had been spent yet";
+            string what = m > 0 && e > 0 ? $"{m} Materials and {e} Energy" : m > 0 ? $"{m} Materials" : $"{e} Energy";
+            return what + " already spent are not refunded";
+        }
+
+        void CancelReply(ServerMessage r, string what)
+        {
+            if (r.Error != null) { commander.Say(Commander.ReadableError(r), false, Time.unscaledTime); return; }
+            var lost = r.Raw?["cancelled"]?["lost"];
+            commander.Say(lost != null ? $"{what} · {LostText(lost)}" : what, true, Time.unscaledTime);
+            cmdCardSignature = "";
+        }
+
+        /// <summary>
+        /// Cancel one item of <paramref name="type"/> (on the building with the most queued, so an unstarted item goes
+        /// first) or, with <paramref name="all"/>, the whole type on every host. Spent resources are never refunded.
+        /// </summary>
+        void QueueCancel(BuildingRecord[] hosts, string type, bool all)
+        {
+            BuildingRecord best = default; int bestCount = 0;
+            foreach (var b in hosts)
+            {
+                if (b.Queues == null) continue;
+                foreach (var q in b.Queues)
+                {
+                    if (q.Unit != type || q.Count <= 0) continue;
+                    if (all)
+                    {
+                        if (!b.QueuesFromServer) { LegacyCancel(b, type, q.Count); continue; }
+                        session.Net?.Command(new JObject { ["c"] = "cancelTrain", ["id"] = b.Id, ["type"] = type, ["all"] = true },
+                            r => CancelReply(r, $"{NameOf("UNITS", type)} queue cancelled"));
+                    }
+                    else if (q.Count > bestCount) { bestCount = q.Count; best = b; }
+                }
+            }
+            if (all || best.Id == 0) return;
+            if (!best.QueuesFromServer) { LegacyCancel(best, type, 1); return; }
+            session.Net?.Command(new JObject { ["c"] = "cancelTrain", ["id"] = best.Id, ["type"] = type, ["count"] = 1 },
+                r => CancelReply(r, $"1 × {NameOf("UNITS", type)} cancelled"));
+        }
+
+        /// <summary>Older servers: cancel by index into the flattened queue (from the back).</summary>
+        void LegacyCancel(BuildingRecord b, string type, int count)
+        {
+            if (b.Queue == null) return;
+            int sent = 0;
+            for (int i = b.Queue.Length - 1; i >= 0 && sent < count; i--)
+                if (b.Queue[i] == type) { Send(new JObject { ["c"] = "cancelTrain", ["id"] = b.Id, ["index"] = i }, "Queue entry cancelled"); sent++; }
+        }
+
+        void QueuePause(BuildingRecord[] hosts, string type, bool on)
+        {
+            foreach (var b in hosts)
+            {
+                if (b.Queues == null || !b.QueuesFromServer) continue;
+                foreach (var q in b.Queues)
+                    if (q.Unit == type && q.Count > 0)
+                        session.Net?.Command(new JObject { ["c"] = "pauseTrain", ["id"] = b.Id, ["type"] = type, ["on"] = on },
+                            r => { commander.Say(Commander.ReadableError(r) ?? (on ? $"{NameOf("UNITS", type)} paused" : $"{NameOf("UNITS", type)} resumed"), r.Error == null, Time.unscaledTime); cmdCardSignature = ""; });
+            }
+        }
+
+        void QueuePriority(BuildingRecord[] hosts, string type, int priority)
+        {
+            priority = Mathf.Clamp(priority, 0, 2);
+            foreach (var b in hosts)
+            {
+                if (b.Queues == null || !b.QueuesFromServer) continue;
+                foreach (var q in b.Queues)
+                    if (q.Unit == type && q.Count > 0)
+                        session.Net?.Command(new JObject { ["c"] = "setPriority", ["id"] = b.Id, ["type"] = type, ["priority"] = priority },
+                            r => { commander.Say(Commander.ReadableError(r) ?? $"{NameOf("UNITS", type)}: {PriorityName(priority)} priority", r.Error == null, Time.unscaledTime); cmdCardSignature = ""; });
+            }
+        }
+
+        /// <summary>Drop every queue of every host (clearQueue). Spent resources are never refunded.</summary>
+        void QueueClear(BuildingRecord[] hosts)
+        {
+            foreach (var b in hosts)
+            {
+                if (b.QueueLength <= 0 && (b.Queues == null || b.Queues.Length == 0)) continue;
+                if (!b.QueuesFromServer) { if (b.Queue != null) for (int i = b.Queue.Length - 1; i >= 0; i--) Send(new JObject { ["c"] = "cancelTrain", ["id"] = b.Id, ["index"] = i }, "Queue cleared"); continue; }
+                session.Net?.Command(new JObject { ["c"] = "clearQueue", ["id"] = b.Id }, r => CancelReply(r, "Queue cleared"));
+            }
+        }
+
+        /// <summary>True when any host has something queued (allocation-free, polled at 10 Hz).</summary>
+        static bool AnyQueued(BuildingRecord[] hosts)
+        {
+            foreach (var b in hosts) if (b.QueueLength > 0 || b.Queues != null && b.Queues.Length > 0) return true;
+            return false;
+        }
+
+        /// <summary>True when every queuing host speaks the W1 contract (priority and pause need it).</summary>
+        static bool QueuesModern(BuildingRecord[] hosts)
+        {
+            foreach (var b in hosts) if (b.Queues != null && b.Queues.Length > 0 && !b.QueuesFromServer) return false;
+            return true;
+        }
+
+        /// <summary>The server takes <c>cancelResearch</c> (RULESET.cancelResearch, 2026-11-18).</summary>
+        bool CanCancelResearch => ProtocolDecoder.Bool(Defs?["RULESET"]?["cancelResearch"]);
+
+        /// <summary>
+        /// The upgrade that already holds <paramref name="line"/> for this player, other than <paramref name="except"/>:
+        /// researched (econ <c>techs</c>) or in progress (econ <c>research</c>), as the server's upgradeLineHolder; or null.
+        /// </summary>
+        string UpgradeLineHolder(string line, string except)
+        {
+            var defs = Defs?["TECHS"];
+            if (line == null || defs == null) return null;
+            if (Econ?["techs"] is JArray done)
+                foreach (var t in done)
+                {
+                    string k = ProtocolDecoder.Str(t);
+                    if (k != null && k != except && ProtocolDecoder.UpgradeLine(defs[k]) == line) return k;
+                }
+            if (Econ?["research"] is JArray running)
+                foreach (var t in running)
+                {
+                    string k = ProtocolDecoder.Str(t["key"]);
+                    if (k != null && k != except && ProtocolDecoder.UpgradeLine(defs[k]) == line) return k;
+                }
+            return null;
         }
 
         List<RadialItem> TechItems(int[] ids, HashSet<string> hostTypes)
@@ -1188,24 +1819,50 @@ namespace SE.Runtime.UI
                 }
                 JToken Active() => (Econ?["research"] as JArray)?.FirstOrDefault(t => ProtocolDecoder.Str(t["key"]) == key);
                 bool Complete() => Techs().Contains(key);
+                // one upgrade per unit class (2026-11-18, UPGRADES.md): the line's other upgrades lock once one is chosen
+                string line = ProtocolDecoder.UpgradeLine(d), lineName = ProtocolDecoder.UpgradeLineName(line);
+                string Holder() => line == null ? null : UpgradeLineHolder(line, key);
+                bool Chosen() => Complete() || Active() != null;
+                string desc = ProtocolDecoder.Str(d["desc"], "");
                 list.Add(new RadialItem
                 {
                     Id = "tech:" + key, Title = NameOf("TECHS", key), Cost = d["cost"], Seconds = ProtocolDecoder.Int(d["time"]),
                     Icon = Complete() ? "check" : "upgrade",
-                    Detail = () => ProtocolDecoder.Str(d["desc"], ""),
-                    Enabled = () => !Complete() && Active() == null && tier <= Age + 1 && Host().Id != 0 && Host().Project == null,
+                    Caption = line == null ? null : (Func<string>)(() => lineName),
+                    // a free line asks for a second click ("Confirm"): the choice is permanent for the match
+                    Confirm = line != null,
+                    Detail = () =>
+                    {
+                        if (line == null) return desc;
+                        if (Chosen()) return $"{lineName} path · " + desc;
+                        string holder = Holder();
+                        if (holder != null) return $"{lineName} path: {NameOf("TECHS", holder)} · " + desc;
+                        return $"Permanent choice: your only {lineName.ToLowerInvariant()} upgrade this match, the other {lineName.ToLowerInvariant()} upgrades lock · " + desc;
+                    },
+                    Enabled = () => !Complete() && Active() == null && Holder() == null && tier <= Age + 1 && Host().Id != 0 && Host().Project == null,
                     Reason = () =>
                     {
-                        if (Complete()) return "Complete";
+                        if (Complete()) return line != null ? $"{lineName} path · complete" : "Complete";
                         var running = Active();
-                        if (running != null) return $"Researching · {ProtocolDecoder.Int(running["progress"])}%";
+                        if (running != null)
+                            return $"Researching · {ProtocolDecoder.Int(running["progress"])}%" + (CanCancelResearch ? " · Shift+right-click cancels (no refund)" : "");
+                        string holder = Holder();
+                        if (holder != null) return $"Locked · {lineName} path: {NameOf("TECHS", holder)} · one upgrade per unit class";
                         if (tier > Age + 1) return $"Requires Tier {Tier(tier)}";
                         if (Host().Id == 0) return "Needs " + NameOf("BUILDINGS", at);
                         if (Host().Project != null) return "The facility is busy";
+                        if (line != null) return $"Choose your {lineName.ToLowerInvariant()} path · click twice to confirm";
                         return null;
                     },
                     Progress = () => { var running = Active(); return running != null ? ProtocolDecoder.Int(running["progress"]) / 100f : -1f; },
                     Click = _ => Send(new JObject { ["c"] = "research", ["tech"] = key, ["id"] = Host().Id }, "Upgrade started"),
+                    // cancelResearch (server-advertised): abandons it, the cost is not refunded, and its line is free again
+                    RightClickWith = c =>
+                    {
+                        if (!c.Shift || !CanCancelResearch || Active() == null) return;
+                        session.Net?.Command(new JObject { ["c"] = "cancelResearch", ["tech"] = key },
+                            r => CancelReply(r, $"{NameOf("TECHS", key)} cancelled" + (line != null ? $" · {lineName.ToLowerInvariant()} path free again" : "")));
+                    },
                 });
             }
             return list;
@@ -1288,8 +1945,14 @@ namespace SE.Runtime.UI
                 .Replace(" Q / E rotates before placement.", "");
             // ring of influence (server DEFENSE_INFLUENCE): defenses far from your bases' own land cost more
             var influence = Defs?["RULESET"]?["influence"];
-            if (ProtocolDecoder.Bool(d?["defense"]) && influence != null)
+            // W2: neutral infrastructure (sensor post, repair station) also goes on neutral ground, same surcharge
+            bool neutralGround = ProtocolDecoder.Bool(d?["defense"]) || ProtocolDecoder.Bool(d?["neutral"]);
+            if (neutralGround && influence != null)
                 desc += $" Can also go on neutral ground; costs ×{ProtocolDecoder.Float(influence["factor"], 2):0.#} more than {ProtocolDecoder.Int(influence["reach"], 8)} hexes beyond your territory.";
+            // 2026-11-18 road rule: every defense but the sandbag barricade stands beside roads (a click on one snaps off it)
+            bool offRoad = !newBase && key != "barricade" && ProtocolDecoder.Bool(d?["defense"]);
+            if (offRoad) desc += " Not on roads: a click on one places it beside the road.";
+            else if (key == "barricade") desc += " May block a road.";
             return new RadialItem
             {
                 Id = "build:" + key, Icon = newBase ? "new_base" : Icons.BuildingKind(key), Title = name,
@@ -1297,7 +1960,7 @@ namespace SE.Runtime.UI
                 Detail = () => desc,
                 Enabled = () => Defs?["BUILDINGS"]?[type] != null && tier <= Age + 1,
                 Reason = () => Defs?["BUILDINGS"]?[type] == null ? "Not available on this server" : tier > Age + 1 ? $"Requires Tier {Tier(tier)}"
-                    : newBase ? "Inside your territory, on or beside a road" : ProtocolDecoder.Bool(d?["defense"]) ? "Your land or neutral ground · , . rotate" : "Inside your territory · , . rotate",
+                    : newBase ? "Inside your territory, on or beside a road" : neutralGround ? "Your land or neutral ground · , . rotate · Shift places several" : "Inside your territory · , . rotate · Shift places several",
                 Click = _ => { CloseWheel(); commander.BeginFieldConstruction(type); },
             };
         }
@@ -1401,6 +2064,18 @@ namespace SE.Runtime.UI
             if (types.Any(t => ProtocolDecoder.Str(Defs?["UNITS"]?[t]?["move"]) == "infantry"))
                 items.Add(new RadialItem { Id = "fortify", Icon = "fortify", Title = "Dig in", Detail = () => "Brace and hold this ground",
                     Click = _ => commander.UnitCommand("fortify", null, "Digging in") });
+            // W4 garrison: infantry squads enter a nearby own structure; squads already inside can step out
+            var inside = selected.Where(id => session.Units.TryGet(id, out var u) && (u.Flags & InsideFlag) != 0).ToArray();
+            if (inside.Length > 0)
+                items.Add(new RadialItem { Id = "ungarrison", Icon = "withdraw", Title = "Leave structure", Detail = () => $"{inside.Length} inside · step out (to the exit rally point when one is set)",
+                    Click = _ =>
+                    {
+                        session.Net?.Command(new JObject { ["c"] = "ungarrison", ["units"] = new JArray(inside) },
+                            r => commander.Say(Commander.ReadableError(r) ?? $"{ProtocolDecoder.Int(r.Raw?["ungarrisoned"], inside.Length)} stepped out", r.Error == null, Time.unscaledTime));
+                    } });
+            else if (types.Any(CanGarrison) && Defs?["RULESET"]?["garrison"] != null)
+                items.Add(new RadialItem { Id = "garrison", Icon = "bunker", Title = "Garrison", Detail = () => "Enter a nearby structure: protection, and firing slots where it has them",
+                    Children = () => GarrisonTargets(selected) });
             if (Econ?["groups"] is JArray saved && saved.Any(g => g["units"] is JArray members && members.Any(m => selected.Contains(ProtocolDecoder.Int(m)))))
                 items.Add(new RadialItem { Id = "detach", Icon = "detach", Title = "Detach", Detail = () => "Leave their reinforcement groups",
                     Click = _ => commander.UnitCommand("detach", null, "Detached") });

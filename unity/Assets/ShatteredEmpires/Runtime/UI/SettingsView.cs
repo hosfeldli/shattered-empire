@@ -206,8 +206,9 @@ namespace SE.Runtime.UI
         static string SchemeNote(List<string> reset)
         {
             string s = InputFacade.WasdScheme
-                ? "WASD: W/A/S/D pan (the arrow keys too); attack move, stance and withdraw move to F, V and X."
-                : "Arrow keys: the arrows pan; orders use their natural letters (A attack move, S stance, W withdraw).";
+                ? "WASD: W/A/S/D pan (the arrow keys too); Q selects the units on screen (Ctrl+Q every unit); stance and withdraw move to V and X."
+                : "Arrow keys: the arrows pan; A selects the units on screen (Ctrl+A every unit); S stance, W withdraw.";
+            s += " Both: F attack move, E production buildings (Ctrl+E every building), Ctrl + double-click a building selects that type everywhere.";
             s += " Switching keeps your own keys unless the new set needs them.";
             if (reset != null && reset.Count > 0) s += "\nReset to the new set (their key was taken): " + string.Join("; ", reset) + ".";
             return s;

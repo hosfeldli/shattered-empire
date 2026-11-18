@@ -199,6 +199,19 @@ namespace SE.Runtime.Cities
         public static readonly Dictionary<int, Lane[]> CompoundLanes = new Dictionary<int, Lane[]>();
         public static int LaneRevision;
 
+        /// <summary>Whether two lane sets are identical (same order, widths and points).</summary>
+        public static bool SameLanes(Lane[] a, Lane[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++)
+            {
+                var pa = a[i].Points; var pb = b[i].Points;
+                if (a[i].Half != b[i].Half || pa == null || pb == null || pa.Length != pb.Length) return false;
+                for (int k = 0; k < pa.Length; k++) if (!pa[k].Equals(pb[k])) return false;
+            }
+            return true;
+        }
+
         static void Nearest(float2 p, float2 a, float2 b, float half, ref float best, ref float2 axis, ref float bestHalf)
         {
             var d = b - a; float len2 = math.lengthsq(d);

@@ -85,7 +85,65 @@ export function parseSketch(raw) {
   }
   const name = typeof raw.name === 'string' ? raw.name.replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, nameMax).trim() : '';
   sk.name = name || 'Custom map';
+  // 2026-11-18 (MAP_BUILDER_TEAMS.md): optional team ownership of the bases, one entry per base: a team index
+  // (0-based, the lobby's team = seat / team size) or -1 for a base that stays neutral. Absent: automatic seating.
+  if (raw.owners != null) {
+    if (!Array.isArray(raw.owners) || raw.owners.length !== sk.bases.length) fail('owners must give one team per base');
+    if (!raw.owners.every((t) => Number.isInteger(t) && t >= -1 && t < maxBases)) fail(`a base owner must be a team 1..${maxBases} or neutral`);
+    if (raw.owners.some((t) => t >= 0)) sk.owners = raw.owners.slice();
+  }
   return sk;
+}
+
+/** Team n (0-based) as the lobby names it. */
+const teamName = (t, ts, ffa) => (ffa ? `Player ${t + 1}` : `Team ${t + 1}`);
+
+/**
+ * Why a sketch's base ownership cannot seat these slots (a readable sentence), or null. `slots`: the lobby seats
+ * (closed ones are left out), team = seat / teamSize. Every team with an active seat needs at least as many bases
+ * assigned to it as it has active seats (each seat keeps at least one base); a base may not name a team the
+ * format does not have.
+ */
+export function baseOwnersProblem(sk, slots, teamSize = 1) {
+  if (!sk?.owners) return null;
+  const ts = Math.max(1, teamSize | 0), teams = Math.ceil(slots.length / ts), ffa = ts === 1 && teams > 2;
+  const seats = new Array(teams).fill(0), bases = new Array(teams).fill(0);
+  slots.forEach((s, i) => { if (!s.closed) seats[Math.floor(i / ts)]++; });
+  for (const [b, t] of sk.owners.entries()) {
+    if (t < 0) continue;
+    if (t >= teams) return `Base ${b + 1} belongs to ${teamName(t, ts, ffa)}, which this format does not have: reassign it in the team window.`;
+    bases[t]++;
+  }
+  for (let t = 0; t < teams; t++)
+    if (seats[t] > bases[t]) return `${teamName(t, ts, ffa)} has ${seats[t]} player${seats[t] === 1 ? '' : 's'} but ${bases[t] ? 'only ' + bases[t] : 'no'} starting base${bases[t] === 1 ? '' : 's'}: give every player a base in the team window.`;
+  return null;
+}
+
+/**
+ * The sketch the simulation receives: base owners renumbered like the teams when closed seats leave
+ * (matches.js dropClosed keeps teams in order); a base of a team with no seat left stays neutral.
+ */
+export function sketchForTeams(sk, slots, teamSize = 1) {
+  if (!sk?.owners) return sk;
+  const ts = Math.max(1, teamSize | 0), order = [];
+  slots.forEach((s, i) => { const t = Math.floor(i / ts); if (!s.closed && !order.includes(t)) order.push(t); });
+  return { ...sk, owners: sk.owners.map((t) => (t < 0 ? -1 : order.indexOf(t))) };
+}
+
+/**
+ * Which base each civ starts on when the sketch assigns bases to teams: the k-th civ of team T (in civ order)
+ * takes T's k-th base (in base order); a team's surplus bases and neutral bases stay neutral city ruins.
+ * Returns civ -> base index; throws when a civ has no base left (baseOwnersProblem refuses that earlier).
+ */
+export function ownedStarts(owners, teams) {
+  const next = new Map();
+  return teams.map((team, civ) => {
+    const from = next.get(team) ?? 0;
+    const b = owners.findIndex((t, i) => i >= from && t === team);
+    if (b < 0) throw new Error(`This custom map gives no starting base to player ${civ + 1} (team ${team + 1}).`);
+    next.set(team, b + 1);
+    return b;
+  });
 }
 
 /** The class grid of a canonical sketch. */
@@ -133,7 +191,7 @@ export function sketchPreview(sk) {
   return { w: sk.w, h: sk.h, aspect: +(Math.sqrt(3) / 1.5).toFixed(4),
     classes: ['deep', 'shallow', 'open', 'forest', 'marsh', 'hills', 'mountains', 'peaks', 'river', 'ford', 'road', 'bridge'],
     cells: Buffer.from(cells).toString('base64'), starts: sk.bases.map(([u, v], i) => ({ seat: i, u, v, name: `Base ${i + 1}` })),
-    bases: [], outposts: [], startSteps: m.steps, startReach: m.reach };
+    bases: [], outposts: [], startSteps: m.steps, startReach: m.reach, ...(sk.owners && { startOwners: sk.owners }) };
 }
 
 // ---------------------------------------------------------------------------------------------------

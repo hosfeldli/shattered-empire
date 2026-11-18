@@ -7,16 +7,16 @@ namespace SE.Runtime.Effects
 {
     /// <summary>
     /// Ground decals where infantry fell: photographed blood splatter (Workshop/Textures/Blood*, from the
-    /// owner's Asset Store decal pack) on flat instanced quads, persistent in a ring buffer like craters.
+    /// owner's Asset Store decal pack) on flat instanced quads; each fades out 90 s after it was made.
     /// Absent when the workshop media has not been ingested; nothing else depends on them.
     /// </summary>
     public sealed partial class EffectsRenderer
     {
-        const int MaxDecals = 900;
+        const int MaxDecals = 600;
+        const float BloodHold = 40f, BloodFade = 50f;
         static readonly string[] BloodTextures = { "Blood1", "Blood3", "Blood5", "Blood7" };
-        InstanceBatch[] decals;
+        FadingMarks[] decals;
         Material[] decalMaterials;
-        int[] decalHeads;
         Mesh decalQuad;
         bool decalsTried;
 
@@ -37,16 +37,11 @@ namespace SE.Runtime.Effects
             }
             if (list.Count == 0) return;
             decalMaterials = list.ToArray();
-            decalQuad = new Mesh { name = "SE decal quad" };
-            decalQuad.SetVertices(new[] { new Vector3(-.5f, 0, -.5f), new Vector3(-.5f, 0, .5f), new Vector3(.5f, 0, .5f), new Vector3(.5f, 0, -.5f) });
-            decalQuad.SetUVs(0, new[] { new Vector2(0, 0), new Vector2(0, 1), new Vector2(1, 1), new Vector2(1, 0) });
-            decalQuad.SetNormals(new[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up });
-            decalQuad.SetTriangles(new[] { 0, 1, 2, 0, 2, 3 }, 0);
-            decals = new InstanceBatch[decalMaterials.Length];
-            decalHeads = new int[decalMaterials.Length];
+            decalQuad = FadingMarks.Quad("SE decal quad");
+            decals = new FadingMarks[decalMaterials.Length];
+            int each = MaxDecals / decalMaterials.Length;
             for (int i = 0; i < decals.Length; i++)
-                decals[i] = new InstanceBatch(decalQuad, decalMaterials[i], 64)
-                { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Shadows = ShadowCastingMode.Off, ReceiveShadows = true };
+                decals[i] = new FadingMarks(FadingMarks.NewBatch(decalQuad, decalMaterials[i], each, false), each, BloodHold, BloodFade, sink: false);
         }
 
         /// <summary>A blood mark on the ground at a map position (infantry casualty). size in world units.</summary>
@@ -55,25 +50,28 @@ namespace SE.Runtime.Effects
             EnsureDecals();
             if (decals == null) return;
             int k = rng.Next(decals.Length);
-            var b = decals[k];
             float s = size * (.8f + R() * .5f);
             var d = InstanceData.TRS(MapSpace.W(mapPos) + new float3(0, .004f, 0), R() * 6.28f, new float3(s, 1, s * (.75f + R() * .5f)),
                 new float4(.55f + R() * .15f, .5f, .5f, .62f + R() * .25f));
-            if (b.Count < MaxDecals / decals.Length) b.Add(d);
-            else { b.Data[decalHeads[k]] = d; decalHeads[k] = (decalHeads[k] + 1) % (MaxDecals / decals.Length); b.MarkDirty(); }
+            decals[k].Add(d, markClock);
         }
 
         void DrawDecals(WrapImages images)
         {
             if (decals == null) return;
-            foreach (var b in decals) b.DrawImages(images);
+            foreach (var b in decals) b.Draw(images);
         }
 
         void ClearDecals()
         {
             if (decals == null) return;
             foreach (var b in decals) b.Clear();
-            for (int i = 0; i < decalHeads.Length; i++) decalHeads[i] = 0;
+        }
+
+        void RefreshDecals(float now)
+        {
+            if (decals == null) return;
+            foreach (var b in decals) b.Refresh(now);
         }
 
         void DisposeDecals()

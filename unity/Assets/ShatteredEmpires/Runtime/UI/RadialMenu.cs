@@ -48,6 +48,15 @@ namespace SE.Runtime.UI
         public Func<bool> Visible;
         /// <summary>A slow brass pulse on the outer stroke (empty sockets glow).</summary>
         public bool Pulse;
+        /// <summary>
+        /// The cost is information, not a gate (W1 production: an order queues without resources and waits): a
+        /// shortfall neither disables the wedge nor blocks the click; the centre circle says it will wait.
+        /// </summary>
+        public bool CostAdvisory;
+        /// <summary>Right-click with modifiers (preferred over <see cref="RightClick"/> when set).</summary>
+        public Action<RadialClick> RightClickWith;
+        /// <summary>A small state glyph at the icon's top-right (a queue waiting for resources, paused, exit blocked); null hides it.</summary>
+        public Func<string> StatusIcon;
 
         public string TitleText => Name?.Invoke() ?? Title ?? "";
     }
@@ -110,13 +119,13 @@ namespace SE.Runtime.UI
         /// <summary>One of the nine segments: an item, the next-page segment, or empty.</summary>
         struct Slot { public RadialItem Item; public float Mid; public bool More, Empty; public int Key; }
         /// <summary>The item callbacks sampled at 10 Hz (painting and the children read these, never the callbacks).</summary>
-        struct SlotState { public bool Usable, Active; public int Badge; public float Cooldown, Progress; public string Caption; }
+        struct SlotState { public bool Usable, Active; public int Badge; public float Cooldown, Progress; public string Caption, Status; }
 
         readonly Func<string, int> have;
         readonly List<Level> levels = new List<Level>();
         readonly Slot[] slots = new Slot[Segments];
         readonly List<(RadialItem item, float angle)> arc = new List<(RadialItem, float)>();
-        readonly IconElement[] icons = new IconElement[Segments], locks = new IconElement[Segments];
+        readonly IconElement[] icons = new IconElement[Segments], locks = new IconElement[Segments], statusIcons = new IconElement[Segments];
         readonly Label[] badges = new Label[Segments], captions = new Label[Segments];
         readonly int[] badgeShown = new int[Segments];
         readonly List<IconElement> arcIcons = new List<IconElement>();
@@ -226,6 +235,8 @@ namespace SE.Runtime.UI
                 slots[i] = new Slot { Empty = true, Mid = SegmentAngle(i) };
                 var icon = new IconElement("", "se-radial-icon"); Add(icon); icons[i] = icon;
                 var lockIcon = new IconElement("lock", "se-radial-lock") { Tint = Warn }; Add(lockIcon); locks[i] = lockIcon;
+                var statusIcon = new IconElement("", "se-radial-lock") { Tint = Warn, pickingMode = PickingMode.Ignore }; Add(statusIcon); statusIcons[i] = statusIcon;
+                statusIcon.style.display = DisplayStyle.None;
                 var badge = new Label("") { pickingMode = PickingMode.Ignore }; badge.AddToClassList("se-radial-badge"); Add(badge); badges[i] = badge; badgeShown[i] = -1;
                 badge.style.position = Position.Absolute; badge.style.width = 24; badge.style.height = 15;
                 var caption = new Label("") { pickingMode = PickingMode.Ignore }; caption.AddToClassList("se-radial-caption"); Add(caption); captions[i] = caption;
@@ -349,6 +360,14 @@ namespace SE.Runtime.UI
             levels[0].Items = items ?? new List<RadialItem>();
             outerArc = outerArcItems;
             if (hubItem != null) hub = hubItem;
+            layoutValid = false;
+        }
+
+        /// <summary>Replace the items of an open sub-ring (depth 1 = the first sub-ring) without leaving it; deeper rings are kept.</summary>
+        public void ReplaceLevel(int depth, IList<RadialItem> items)
+        {
+            if (!IsOpen || depth < 1 || depth >= levels.Count) return;
+            levels[depth].Items = items ?? new List<RadialItem>();
             layoutValid = false;
         }
 
@@ -691,11 +710,13 @@ namespace SE.Runtime.UI
                 var s = slots[i];
                 bool show = !s.Empty;
                 Show(icons[i], show);
-                if (!show) { Show(locks[i], false); Show(badges[i], false); Show(captions[i], false); continue; }
+                if (!show) { Show(locks[i], false); Show(statusIcons[i], false); Show(badges[i], false); Show(captions[i], false); continue; }
                 var ip = At(IconRadius, s.Mid);
                 Place(icons[i], ip.x, ip.y, IconSize);
                 icons[i].Kind = s.More ? "more" : s.Item.Icon ?? "";
                 Place(locks[i], ip.x + 14f, ip.y - 14f, 12);
+                Place(statusIcons[i], ip.x + 15f, ip.y - 15f, 13);
+                if (s.More || s.Item.StatusIcon == null) Show(statusIcons[i], false);
                 // the queued count sits at the bottom of the item, just below the progress ring
                 badges[i].style.left = ip.x - 12f; badges[i].style.top = ip.y + ProgressRadius + 1f;
                 captions[i].style.left = ip.x - 18f; captions[i].style.top = ip.y + ProgressRadius;
@@ -730,9 +751,11 @@ namespace SE.Runtime.UI
                     Cooldown = item.Cooldown?.Invoke() ?? 0f,
                     Progress = item.Progress?.Invoke() ?? -1f,
                     Caption = item.Caption?.Invoke(),
+                    Status = item.StatusIcon?.Invoke(),
                 };
                 ref var prev = ref state[i];
-                if (prev.Usable != next.Usable || prev.Active != next.Active || prev.Cooldown != next.Cooldown || prev.Progress != next.Progress) changed = true;
+                if (prev.Usable != next.Usable || prev.Active != next.Active || prev.Cooldown != next.Cooldown || prev.Progress != next.Progress
+                    || prev.Status != next.Status) changed = true;
                 prev = next;
                 if (item.Pulse) anyPulse = true;
             }
@@ -761,6 +784,10 @@ namespace SE.Runtime.UI
                 if (!st.Usable) tint.a = .4f;
                 icons[i].Tint = tint;
                 Show(locks[i], !st.Usable && item.Icon != "lock");
+                // a state glyph (waiting for resources, paused, exit blocked …) where the lock would sit; the lock wins
+                bool status = st.Usable && !string.IsNullOrEmpty(st.Status);
+                if (status) statusIcons[i].Kind = st.Status;
+                Show(statusIcons[i], status);
                 int badge = st.Badge > 99 ? 99 : st.Badge;
                 if (badge > 0 && badgeShown[i] != badge) { badgeShown[i] = badge; badges[i].text = "×" + badge; }
                 Show(badges[i], badge > 0);
@@ -795,7 +822,7 @@ namespace SE.Runtime.UI
         {
             if (item == null) return false;
             if (!(item.Enabled?.Invoke() ?? true)) return false;
-            return Affordable(item.Cost, out _);
+            return item.CostAdvisory || Affordable(item.Cost, out _);
         }
 
         string ReasonFor(RadialItem item)
@@ -803,7 +830,13 @@ namespace SE.Runtime.UI
             if (item == null) return "";
             bool enabled = item.Enabled?.Invoke() ?? true;
             if (!enabled) return item.Reason?.Invoke() ?? "Unavailable";
-            if (!Affordable(item.Cost, out var shortfall)) return shortfall;
+            if (!Affordable(item.Cost, out var shortfall))
+            {
+                if (!item.CostAdvisory) return shortfall;
+                // advisory: the order is still accepted and waits; the item's own reason (its queue state) follows
+                string own = item.Reason?.Invoke();
+                return string.IsNullOrEmpty(own) ? shortfall + " · queues and waits for funds" : shortfall + " · queues and waits for funds · " + own;
+            }
             return item.Reason?.Invoke() ?? "";
         }
 
@@ -860,7 +893,8 @@ namespace SE.Runtime.UI
             {
                 if (hit == HubHit || hit == NoHit) { if (!Back()) Close(); return; }
                 var item = ItemAt(hit);
-                if (item?.RightClick != null) { item.RightClick(); forceSample = true; }
+                if (item?.RightClickWith != null) { item.RightClickWith(new RadialClick { Shift = e.shiftKey, Ctrl = e.ctrlKey, Alt = e.altKey }); forceSample = true; }
+                else if (item?.RightClick != null) { item.RightClick(); forceSample = true; }
                 else if (!Back()) Close();
                 return;
             }

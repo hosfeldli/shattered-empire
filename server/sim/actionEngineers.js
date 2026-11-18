@@ -11,9 +11,9 @@
 // 'p<id>' road or terrain project, 'u<id>' vehicle) or null. Snapshot flag 4096 marks them.
 import { N, T, isWater } from './constants.js';
 import { disk, dist as hexDist, hexLine } from './hex.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, RUIN_TYPES, TERRAIN_WORKS } from './actionDefinitions.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, CAPTURE, RUIN_TYPES, TERRAIN_WORKS } from './actionDefinitions.js';
 import { centerOf, distance, tileAt } from './actionNavigation.js';
-import { planRing } from './actionMap.js';
+import { baseStreets, planRing } from './actionMap.js';
 import { addFacility, canPay, connectSiteRoads, headquarters } from './actionBases.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
@@ -255,12 +255,15 @@ function foundBase(game, b) {
   const { id, ring } = plan, kind = RUIN_TYPES[0];
   const used = new Set(game.sites.map((s) => s.name));
   const name = BASE_NAMES.find((n) => !used.has(n)) || `Forward Base ${id}`;
-  const site = { id, tile, x: c.x, z: c.z, name, kind: kind.key, ruin: kind.ruin, radius: 1.35, captureTime: 16, owner: civ.id, by: -1,
+  const site = { id, tile, x: c.x, z: c.z, name, kind: kind.key, ruin: kind.ruin, radius: 1.35, captureTime: CAPTURE.base, owner: civ.id, by: -1,
     progress: 0, last: 0, contested: false, hq: 0, tier: 1, slots: [...ring].sort((a, b) => a.tier - b.tier || a.index - b.index).map((p) => p.id),
     core: 4, ringVersion: 1, developedAt: game.time, visualTier: 1, founded: true, reclaimed: true, everEstablished: true, claimedAt: game.time,
     parcels: [{ id: 0, index: -1, tile, x: c.x, z: c.z, yaw: ring[0].yaw, tier: 1, width: 1.12, depth: 1.12 }, ...ring] };
   game.setSites([...game.sites, site]);
   addFacility(game, civ, site, 'town', tile, { instant: true });
+  // 2026-11-18 (ROADS_AND_CLAIMS.md): its own compound streets, laid with the headquarters
+  for (const e of baseStreets(game, site)) game.roads.set(e.a, e.b, 2);
+  game.nav.invalidate();
   staffBase(game, site);
   game.refreshTerritory();
   connectSiteRoads(game, site);
@@ -271,21 +274,25 @@ function foundBase(game, b) {
 
 // ---- terrain works ---------------------------------------------------------------------------
 
+/** W2 (2026-11-17): terrain works go on your own territory or, with TERRAIN_WORKS.neutral, on neutral ground;
+ *  never on another player's land. Neutral ground must be in sight (refusal: 'hidden'). */
+const workable = (game, civ, t) => { const o = game.world.owner[t]; return o === civ.id || !!TERRAIN_WORKS.neutral && o < 0; };
+
 function editable(game, civ, t) {
   const w = game.world;
-  return t >= 0 && t < N && w.owner[t] === civ.id && !isWater(w.terr[t]) && !w.lake[t] && !w.river[t] && w.terr[t] < T.MOUNTAIN &&
+  return t >= 0 && t < N && workable(game, civ, t) && !isWater(w.terr[t]) && !w.lake[t] && !w.river[t] && w.terr[t] < T.MOUNTAIN &&
     !game.reservedTiles.has(t) && !game.buildingAtTile(t) && !game.fieldworks.has(t);
 }
 
 /** Why a hex cannot be reshaped by this civ ('territory' | 'hidden' | 'ground'), or null when it can. */
 function refusal(game, civ, t) {
-  if (t < 0 || t >= N || game.world.owner[t] !== civ.id) return 'territory';
+  if (t < 0 || t >= N || !workable(game, civ, t)) return 'territory';
   if (civ.visible && !civ.visible[t]) return 'hidden';
   return editable(game, civ, t) ? null : 'ground';
 }
 
 const TERRAIN_REASONS = {
-  territory: 'Terrain can only be reshaped inside your own territory.',
+  territory: 'Terrain can only be reshaped in your own territory or on neutral ground.',
   hidden: 'Paint over ground you can see.',
   ground: 'Choose open dry ground: not water, mountains, bases, structures or trenches.',
   busy: 'Engineers are already reshaping that ground.',
@@ -337,14 +344,16 @@ export function terrainOrder(game, civ, op, point, preview = false, stroke = nul
   for (const p of game.roadProjects) if (p.kind === 'terrain') for (const t of p.tiles) busy.add(t);
   if (legacy) {
     // unchanged single-point rules (whole order refused)
-    if (first < 0 || game.world.owner[first] !== civ.id) return { error: TERRAIN_REASONS.territory, code: 'territory' };
-    if (!editable(game, civ, first)) return { error: TERRAIN_REASONS.ground };
-    if (footprint.some((t) => busy.has(t) && editable(game, civ, t))) return { error: TERRAIN_REASONS.busy };
+    if (first < 0 || !workable(game, civ, first)) return { error: TERRAIN_REASONS.territory, code: 'territory' };
+    if (game.world.owner[first] !== civ.id && civ.visible && !civ.visible[first]) return { error: TERRAIN_REASONS.hidden, code: 'hidden' };
+    if (!editable(game, civ, first)) return { error: TERRAIN_REASONS.ground, code: 'ground' };
+    if (footprint.some((t) => busy.has(t) && editable(game, civ, t))) return { error: TERRAIN_REASONS.busy, code: 'busy' };
   }
   const tiles = [], refused = [], why = {};
   for (const t of footprint) {
     const no = busy.has(t) ? 'busy' : refusal(game, civ, t);
-    if (no && !(legacy && no === 'hidden')) { refused.push(t); why[no] = (why[no] || 0) + 1; }
+    // a legacy point order may include fogged hexes of your own territory (never fogged neutral ground)
+    if (no && !(legacy && no === 'hidden' && game.world.owner[t] === civ.id)) { refused.push(t); why[no] = (why[no] || 0) + 1; }
     else tiles.push(t);
   }
   if (!tiles.length) {

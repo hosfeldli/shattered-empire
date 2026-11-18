@@ -45,12 +45,18 @@ namespace SE.Runtime.Landscape
         [NativeDisableUnsafePtrRestriction] public byte* ImpactCounts;
         [NativeDisableUnsafePtrRestriction] public float* Trenches;
         [NativeDisableUnsafePtrRestriction] public byte* Geo;
+        [NativeDisableUnsafePtrRestriction] public byte* Dense;   // §30 dense forest (WorldModel.Dense), 1 per hex; null: none
         public int W, H, WrapFlag, Cx, Cy, Cs, Seed;
         public float Period, OriginX, TreeDensity;
 
         public Mesh.MeshDataArray Meshes;                 // 0 detailed ground, 1 coarse ground, 2 water
         [ReadOnly] public NativeArray<VertexAttributeDescriptor> Layout;   // TerrainVertex layout (Burst needs a native array)
         [ReadOnly] public NativeArray<byte> Blocked;       // chunk-local: no trees (towns, roads, buildings)
+        // chunk-local, read and extended (perf pass 2): tree / groundcover slots already destroyed by a crater or a
+        // trench stay gone even after the server forgets that crater (TerrainRenderer.TreeScars); 0 = legacy
+        public NativeArray<uint> TreeScars;
+        public NativeArray<ulong> GrassScars;
+        public int StickyScars;
         public NativeArray<InstanceData> TreesA;           // broadleaf
         public NativeArray<InstanceData> TreesB;           // conifer
         public NativeArray<InstanceData> Grass, Understory;
@@ -240,8 +246,33 @@ namespace SE.Runtime.Landscape
             return math.normalizesafe(ahead - behind, new float2(1, 0));
         }
 
+        /// <summary>
+        /// Half-width of the water ribbon. Rivers follow the server's navigation width (actionNavigation.riverAt:
+        /// .12 + .049·log2(flow/42), at most .37) by flow bucket (terrainGeo: 1..4), so what looks like water is
+        /// where wading slows units and deep rivers stop vehicles (2026-11-18: rivers were drawn at about half that).
+        /// </summary>
         float ChannelWidth(int tile) => (GeoFlags[tile] & 1) != 0
-            ? .075f + (Geo[tile * 6 + 4] >> 4) * .018f : .028f;
+            ? math.min(.33f, .13f + (math.max(1, Geo[tile * 6 + 4] >> 4) - 1) * .05f) : .04f;
+
+        /// <summary>Whether (x, z) lies on (or at the wet margin of) river hex i's channel: no trees or plants there.</summary>
+        bool OnChannel(int i, float x, float z)
+        {
+            if ((GeoFlags[i] & 1) == 0) return false;
+            float cx = HexMath.CenterX(i, W), cz = HexMath.CenterZ(i, W);
+            float reach = ChannelWidth(i) * 1.45f + .05f;
+            var p = new float2(x, z); var c = new float2(cx, cz);
+            if (math.distancesq(p, c) < reach * reach) return true;
+            for (int d = 0; d < 6; d++)
+            {
+                int n = Nb[i * 6 + d];
+                // the downstream reach, and every upstream river flowing in through this edge
+                if (n < 0 || (d != Geo[i * 6 + 5] - 1 && !(IsChannel(n) && Geo[n * 6 + 5] - 1 == (d + 3) % 6))) continue;
+                var m = c + new float2(HexMath.DirX[d], HexMath.DirZ[d]) * .8660254f;
+                var e = m - c; float t = math.saturate(math.dot(p - c, e) / math.lengthsq(e));
+                if (math.distancesq(p, c + e * t) < reach * reach) return true;
+            }
+            return false;
+        }
 
         bool HasChannelUpstream(int tile)
         {
@@ -359,8 +390,11 @@ namespace SE.Runtime.Landscape
                     float reach = math.saturate((1.75f - d) / .6f) * math.saturate((d - .9f) / .15f);
                     float clod = math.saturate((clodField - .62f) / .2f) * reach;
                     relief += depth * .22f * clod;
-                    scorch = math.max(scorch, math.saturate((1.02f - d) / .35f) * (.7f + .3f * torn));
-                    spoil = math.max(spoil, math.max(lip, clod * .8f + reach * .25f));
+                    // healing (server-replicated, encoded in the depth): the thrown spoil weathers away in the first
+                    // half of the heal, the burnt floor fades with the bowl itself
+                    float fresh = math.saturate(depth / (radius * TerrainView.ImpactDepthPerRadius));
+                    scorch = math.max(scorch, math.saturate((1.02f - d) / .35f) * (.7f + .3f * torn) * fresh);
+                    spoil = math.max(spoil, math.max(lip, clod * .8f + reach * .25f) * math.saturate(fresh * 2f - 1f));
                 }
             }
             return relief;
@@ -487,6 +521,10 @@ namespace SE.Runtime.Landscape
                     float groveNoise = noise.snoise(new float2(cx, cz) * .095f + Seed * .013f) * .5f + .5f;
                     float grove = math.smoothstep(.40f, .72f, groveNoise);
                     float count = b == 4 ? 5.5f + grove * 4 : b == 6 ? 1.3f : b == 7 ? 2 : b == 8 ? 1 + grove * 2 : b == 9 ? .8f : b == 2 ? .12f + grove * 2.4f : b == 3 ? grove * 1.25f : 0;
+                    // §30 dense forest (infantry cannot pass): a closed canopy of darker trees over thick undergrowth.
+                    // Only interior forest hexes are dense, and every extra tree goes through the same LOD bands.
+                    bool dense = b == 4 && Dense != null && Dense[i] != 0;
+                    if (dense) count = 11f + grove;
                     count *= TreeDensity;
                     int whole = (int)count;
                     if (Hash(i, Seed + 5) < count - whole) whole++;
@@ -500,9 +538,11 @@ namespace SE.Runtime.Landscape
                         u *= 0.9f; w *= 0.9f;
                         float x = cx + u * HexMath.CornerX[k] + w * HexMath.CornerX[k2];
                         float z = cz + u * HexMath.CornerZ[k] + w * HexMath.CornerZ[k2];
-                        if ((GeoFlags[i] & 1) != 0 && u + w < 0.35f) continue;   // keep river channels clear
+                        if (OnChannel(i, x, z)) continue;   // keep river channels and their wet margins clear
+                        uint treeBit = StickyScars != 0 && t < 32 ? 1u << t : 0u;
+                        if ((TreeScars[lr * Cs + lq] & treeBit) != 0) continue;   // destroyed earlier: stays destroyed (perf pass 2)
                         float y = v.GroundHeight(x, z);
-                        if (math.abs(v.DamageHeight(i, x, z)) > .012f) continue;
+                        if (math.abs(v.DamageHeight(i, x, z)) > .012f || v.OnTrenchWorks(i, x, z)) { TreeScars[lr * Cs + lq] |= treeBit; continue; }
                         // The detailed tree library is normalized to about one unit tall.
                         // Mature canopy needs a comparable scale to the command buildings.
                         float s = 0.38f + Hash(i * 23 + t, Seed + 4) * 0.23f;
@@ -512,6 +552,7 @@ namespace SE.Runtime.Landscape
                         float autumn = Hash(groveId, Seed + 11) < .055f ? 1f : 0f;
                         var col = conifer ? new float4(.26f + g * .04f, .35f + g * .05f, .25f, 0)
                             : new float4(.36f + g * .07f + autumn * .14f, .44f + g * .06f - autumn * .04f, .29f + g * .025f, 0);
+                        if (dense) col.xyz *= .82f;   // dense forest reads darker at every zoom
                         var inst = InstanceData.TRS(MapSpace.W(x, y - 0.01f, z), MapSpace.Yaw(Hash(i * 31 + t, Seed) * 6.283f), new float3(s, s * (0.9f + g * 0.4f), s), col);
                         if (conifer) { if (treeB < TreesB.Length) TreesB[treeB++] = inst; }
                         else if (treeA < TreesA.Length) TreesA[treeA++] = inst;
@@ -526,14 +567,17 @@ namespace SE.Runtime.Landscape
                         if (u + v2 > 1) { u = 1 - u; v2 = 1 - v2; }
                         float x = cx + u * HexMath.CornerX[k] + v2 * HexMath.CornerX[k2];
                         float z = cz + u * HexMath.CornerZ[k] + v2 * HexMath.CornerZ[k2];
-                        if ((GeoFlags[i] & 1) != 0 && u + v2 < .55f) continue;
-                        if (math.abs(v.DamageHeight(i, x, z)) > .006f) continue;
+                        if (OnChannel(i, x, z)) continue;
+                        ulong plantBit = StickyScars != 0 && t < 64 ? 1ul << t : 0ul;
+                        if ((GrassScars[lr * Cs + lq] & plantBit) != 0) continue;
+                        if (math.abs(v.DamageHeight(i, x, z)) > .006f || v.OnTrenchWorks(i, x, z)) { GrassScars[lr * Cs + lq] |= plantBit; continue; }
                         float y = v.GroundHeight(x, z), variation = Hash(i * 61 + t, Seed + 34);
                         float scale = .68f + variation * .47f;
                         var color = new float4(.47f + variation * .10f, .53f + variation * .07f, .31f + variation * .065f, 0);
                         var plant = InstanceData.TRS(MapSpace.W(x, y - .0007f, z), MapSpace.Yaw(variation * 6.283f), new float3(scale), color);
                         if (grass < Grass.Length) Grass[grass++] = plant;
-                        if (t < 3 && (b == 4 || b == 7 || groveNoise > .63f) && variation > .38f && understory < Understory.Length)
+                        if (dense) color.xyz *= .78f;   // shaded forest floor
+                        if ((t < 3 || dense && t < 6) && (b == 4 || b == 7 || groveNoise > .63f) && (variation > .38f || dense) && understory < Understory.Length)
                             Understory[understory++] = InstanceData.TRS(MapSpace.W(x, y, z), MapSpace.Yaw(variation * 6.283f), new float3(.55f + variation * .40f), color);
                     }
                 }
@@ -609,7 +653,8 @@ namespace SE.Runtime.Landscape
                         // a channel: banks at the shoreline (depth 0, so they fade into the ground) and
                         // a deeper middle; r = 1 marks running water (silty colour, little foam)
                         var bank = Pack(new float3(1, 1, 1), 0);
-                        var mid = Pack(new float3(1, 1, 1), stream ? 0.18f : 0.42f);
+                        // deep rivers (flow bucket 2+, about the server's vehicle ford limit) read darker in the middle
+                        var mid = Pack(new float3(1, 1, 1), stream ? 0.18f : (Geo[i * 6 + 4] >> 4) >= 2 ? 0.56f : 0.42f);
                         for (int s = 0; s <= 12; s++)
                         {
                             float t = s / 12f, t2 = t * t, t3 = t2 * t;
@@ -621,8 +666,14 @@ namespace SE.Runtime.Landscape
                             float head = math.saturate(t / .22f), tail = math.saturate((1 - t) / .22f);
                             float taper = (source ? math.sqrt(math.max(0, 1 - (1 - head) * (1 - head))) : 1f)
                                 * (fadeEnd ? math.sqrt(math.max(0, 1 - (1 - tail) * (1 - tail))) : 1f);
-                            float marginVariation = 1 + .055f * math.sin(p.x * 8.7f + p.y * 5.3f) + .028f * math.sin(p.x * 17.2f - p.y * 11.1f);
-                            var side = new float2(-dir.y, dir.x) * math.lerp(half, endHalf, t) * taper * marginVariation;
+                            // natural variation: each bank wanders on its own (broad pools and narrows plus a finer
+                            // ripple), sampled from the map position so neighbouring ribbons meet exactly; the
+                            // ribbon's middle moves to midway between the two banks
+                            float leftVariation = 1 + .14f * math.sin(p.x * 2.3f + p.y * 1.7f) + .05f * math.sin(p.x * 8.7f + p.y * 5.3f) + .02f * math.sin(p.x * 17.2f - p.y * 11.1f);
+                            float rightVariation = 1 + .14f * math.sin(p.x * 1.9f - p.y * 2.6f + 1.3f) + .05f * math.sin(p.x * 8.3f - p.y * 6.1f) + .02f * math.sin(p.x * 15.7f + p.y * 12.3f);
+                            var across = new float2(-dir.y, dir.x) * math.lerp(half, endHalf, t) * taper;
+                            p += across * (rightVariation - leftVariation) * .5f;
+                            var side = across * (leftVariation + rightVariation) * .5f;
                             float px = p.x, pz = p.y;
                             float y = v.GroundHeight(px, pz) + .014f;
                             int waterTile = HexMath.TileAt(px, pz, W, H, WrapFlag != 0);

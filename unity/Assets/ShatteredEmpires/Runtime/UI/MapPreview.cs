@@ -90,6 +90,11 @@ namespace SE.Runtime.UI
         /// </summary>
         public double[,] StartSteps;
         public double[] StartReach;
+        /// <summary>
+        /// A map-builder sketch's team ownership of its bases (preview order; team index, -1 neutral), or null for
+        /// automatic seating (2026-11-18, MAP_BUILDER_TEAMS.md: server sketchMaps.ownedStarts).
+        /// </summary>
+        public int[] StartOwners;
 
         public static MapPreviewData Parse(JToken token, MapCatalogEntry map)
         {
@@ -114,6 +119,11 @@ namespace SE.Runtime.UI
             Markers(o["bases"] ?? o["sites"], p, map, p.Bases, 0);
             Markers(o["outposts"], p, map, p.Outposts, 0);
             p.Metrics(o["startSteps"] as JArray, o["startReach"] as JArray);
+            if (o["startOwners"] is JArray owners && owners.Count == p.Starts.Count)
+            {
+                p.StartOwners = new int[owners.Count];
+                for (int i = 0; i < owners.Count; i++) p.StartOwners[i] = MapPreview.Int(owners[i], -1);
+            }
             return p;
         }
 
@@ -392,21 +402,43 @@ namespace SE.Runtime.UI
                 teams.Add(order.IndexOf(team));
             }
             if (teams.Count < 2) return Texture(map);
-            var civStart = SeatStarts(p, teams.ToArray(), map.TeamSize);
-            if (civStart != null && teams.Count == P)
+            // team-owned bases (a map-builder sketch): each lobby team on its own bases, in base order
+            var civStart = p.StartOwners != null ? OwnedStarts(p.StartOwners, colourTeam) : SeatStarts(p, teams.ToArray(), map.TeamSize);
+            if (civStart != null && teams.Count == P && p.StartOwners == null)
             {
                 bool designed = true;
                 for (int c = 0; c < civStart.Length && designed; c++) designed = civStart[c] == c && colourTeam[c] == p.Starts[c].Team;
                 if (designed) return Texture(map);
             }
-            string key = map.Id + ":" + p.W + "x" + p.H + ":" + P + ":" + p.Colors.Length + ":" + Hash(p) + ":seated:" + string.Join(",", teams) + ":" + string.Join(",", colourTeam);
+            string key = map.Id + ":" + p.W + "x" + p.H + ":" + P + ":" + p.Colors.Length + ":" + Hash(p) + ":seated:" + string.Join(",", teams) + ":" + string.Join(",", colourTeam)
+                + (p.StartOwners != null ? ":owners:" + string.Join(",", p.StartOwners) : "");
             if (cache.TryGetValue(key, out var tex) && tex != null) return tex;
             var seated = new int[P];
             for (int i = 0; i < P; i++) seated[i] = -2;   // spare (all of them when the preview has no seating metrics)
-            if (civStart != null) for (int c = 0; c < civStart.Length; c++) seated[civStart[c]] = colourTeam[c];
+            if (civStart != null) for (int c = 0; c < civStart.Length; c++) if (civStart[c] >= 0) seated[civStart[c]] = colourTeam[c];
             tex = Render(p, seated);
             cache[key] = tex;
             return tex;
+        }
+
+        /// <summary>
+        /// Which base each civ takes when the sketch assigns bases to teams (server sketchMaps.ownedStarts): the k-th
+        /// civ of a team on that team's k-th base; -1 for a civ its team has no base left for (the start is refused).
+        /// </summary>
+        public static int[] OwnedStarts(int[] owners, IList<int> teams)
+        {
+            var result = new int[teams.Count];
+            var next = new Dictionary<int, int>();
+            for (int c = 0; c < teams.Count; c++)
+            {
+                next.TryGetValue(teams[c], out int from);
+                int b = -1;
+                for (int i = from; i < owners.Length; i++) if (owners[i] == teams[c]) { b = i; break; }
+                result[c] = b;
+                if (b >= 0) next[teams[c]] = b + 1;
+                else next[teams[c]] = owners.Length;
+            }
+            return result;
         }
 
         /// <summary>

@@ -1,0 +1,872 @@
+{
+ "key": "B",
+ "desc": "Developed world, peace: 4 civs, all bases built out, 60 units each parked at home, AI off",
+ "kind": "developed",
+ "map": "crossroads",
+ "size": 104,
+ "players": 4,
+ "seed": 7,
+ "deep": false,
+ "node": "v26.13.0",
+ "ticks": 900,
+ "summary": {
+  "tick": {
+   "n": 900,
+   "mean": 2.038,
+   "p50": 1.339,
+   "p95": 5.658,
+   "p99": 9.821,
+   "max": 56.358
+  },
+  "systems": {
+   "navigation": {
+    "n": 900,
+    "mean": 0.285,
+    "p50": 0.082,
+    "p95": 1.152,
+    "p99": 3.567,
+    "max": 8.582
+   },
+   "combat": {
+    "n": 900,
+    "mean": 0.813,
+    "p50": 0.448,
+    "p95": 2.522,
+    "p99": 6.397,
+    "max": 33.377
+   },
+   "capture": {
+    "n": 900,
+    "mean": 0.016,
+    "p50": 0.016,
+    "p95": 0.028,
+    "p99": 0.079,
+    "max": 1.328
+   },
+   "income": {
+    "n": 900,
+    "mean": 0.008,
+    "p50": 0.004,
+    "p95": 0.008,
+    "p99": 0.013,
+    "max": 3.141
+   },
+   "field economy": {
+    "n": 900,
+    "mean": 0.29,
+    "p50": 0.118,
+    "p95": 0.699,
+    "p99": 2.708,
+    "max": 38.04
+   },
+   "production": {
+    "n": 900,
+    "mean": 0.114,
+    "p50": 0,
+    "p95": 0.284,
+    "p99": 1.818,
+    "max": 12.236
+   },
+   "visibility": {
+    "n": 900,
+    "mean": 0.465,
+    "p50": 0,
+    "p95": 2.337,
+    "p99": 5.238,
+    "max": 13.91
+   },
+   "ai": {
+    "n": 900,
+    "mean": 0.001,
+    "p50": 0,
+    "p95": 0.004,
+    "p99": 0.005,
+    "max": 0.086
+   },
+   "warzone": {
+    "n": 900,
+    "mean": 0.009,
+    "p50": 0,
+    "p95": 0.028,
+    "p99": 0.036,
+    "max": 3.051
+   },
+   "weather": {
+    "n": 900,
+    "mean": 0.007,
+    "p50": 0,
+    "p95": 0.003,
+    "p99": 0.096,
+    "max": 1.709
+   },
+   "victory": {
+    "n": 900,
+    "mean": 0.009,
+    "p50": 0,
+    "p95": 0.018,
+    "p99": 0.025,
+    "max": 3.567
+   }
+  },
+  "extra": {
+   "snap.build": {
+    "n": 450,
+    "mean": 0.349,
+    "p50": 0.2,
+    "p95": 1.181,
+    "p99": 2.695,
+    "max": 10.896
+   },
+   "snap.encode+stringify": {
+    "n": 450,
+    "mean": 0.136,
+    "p50": 0.069,
+    "p95": 0.206,
+    "p99": 2.238,
+    "max": 6.084
+   },
+   "snap.geo": {
+    "n": 450,
+    "mean": 0.11,
+    "p50": 0.048,
+    "p95": 0.099,
+    "p99": 1.829,
+    "max": 7
+   },
+   "snapBytes": {
+    "n": 450,
+    "mean": 4179.167,
+    "p50": 2464,
+    "p95": 9788,
+    "p99": 17634,
+    "max": 18034
+   },
+   "snapBytes(econ)": {
+    "n": 90,
+    "mean": 10583.867,
+    "p50": 9749,
+    "p95": 17634,
+    "p99": 18034,
+    "max": 18034
+   },
+   "nav.route (ms/tick)": {
+    "n": 900,
+    "mean": 0.05,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0.641,
+    "max": 10.634
+   },
+   "refreshTerritory (ms/tick)": {
+    "n": 900,
+    "mean": 0.003,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0.087,
+    "max": 0.676
+   },
+   "vis.reveal (ms/tick)": {
+    "n": 900,
+    "mean": 0.276,
+    "p50": 0,
+    "p95": 1.028,
+    "p99": 3.713,
+    "max": 9.934
+   },
+   "siteWire (ms/tick)": {
+    "n": 900,
+    "mean": 0.083,
+    "p50": 0.025,
+    "p95": 0.196,
+    "p99": 1.341,
+    "max": 4.437
+   },
+   "vis.rememberStructures (ms/tick)": {
+    "n": 900,
+    "mean": 0.001,
+    "p50": 0,
+    "p95": 0.003,
+    "p99": 0.008,
+    "max": 0.374
+   }
+  },
+  "gc": {
+   "totalMs": 115.5,
+   "count": 52,
+   "inTickMs": 113.8,
+   "ticksWithGc": 47,
+   "tickExGc": {
+    "n": 900,
+    "mean": 1.911,
+    "p50": 1.274,
+    "p95": 5.121,
+    "p99": 9.305,
+    "max": 55.957
+   }
+  },
+  "visibilityTicks": {
+   "total": {
+    "n": 225,
+    "mean": 1.861,
+    "p50": 1.172,
+    "p95": 4.971,
+    "p99": 7.285,
+    "max": 13.91
+   },
+   "reveal": {
+    "n": 225,
+    "mean": 1.103,
+    "p50": 0.654,
+    "p95": 3.129,
+    "p99": 6.838,
+    "max": 9.934
+   },
+   "siteWire": {
+    "n": 225,
+    "mean": 0.281,
+    "p50": 0.141,
+    "p95": 0.848,
+    "p99": 3.186,
+    "max": 4.437
+   },
+   "rememberStructures": {
+    "n": 225,
+    "mean": 0.005,
+    "p50": 0.003,
+    "p95": 0.008,
+    "p99": 0.022,
+    "max": 0.374
+   },
+   "revealCalls": {
+    "n": 225,
+    "mean": 808,
+    "p50": 808,
+    "p95": 808,
+    "p99": 808,
+    "max": 808
+   },
+   "fogCacheMisses": {
+    "n": 225,
+    "mean": 1.467,
+    "p50": 0,
+    "p95": 11,
+    "p99": 16,
+    "max": 17
+   },
+   "siteWireCalls": {
+    "n": 225,
+    "mean": 10,
+    "p50": 10,
+    "p95": 10,
+    "p99": 10,
+    "max": 10
+   }
+  }
+ },
+ "callTotals": {
+  "nav.route": 66,
+  "refreshTerritory": 18,
+  "vis.reveal": 181800,
+  "siteWire": 2700,
+  "vis.rememberStructures": 225,
+  "fogCacheMiss": 330
+ },
+ "windows": [
+  {
+   "counts": {
+    "heapMb": 52,
+    "events": 2,
+    "eventSeq": 2,
+    "craters": 0,
+    "wrecks": 0,
+    "smoke": 0,
+    "intensity": 0,
+    "impacts": 0,
+    "scorch": 0,
+    "wear": 29,
+    "scars": 0,
+    "fieldPos": 0,
+    "fieldworks": 0,
+    "bfMemory": 0,
+    "seenB": 0,
+    "fogCache": 1121,
+    "engagements": 0,
+    "reports": 0,
+    "roadProjects": 0,
+    "ruins": 25,
+    "caches": 25,
+    "siteIntel": 2,
+    "cacheIntel": 4,
+    "log": 0,
+    "convoys": 0,
+    "deploysDone": 0,
+    "aliveCivs": 4
+   },
+   "t0": 0.2,
+   "t1": 60.1,
+   "tick": {
+    "n": 600,
+    "mean": 2.273,
+    "p50": 1.503,
+    "p95": 6.061,
+    "p99": 12.122,
+    "max": 56.358
+   },
+   "gcInTickMs": 97,
+   "fogMissPerVisTick": 2.2,
+   "sysMean": {
+    "navigation": 0.36,
+    "combat": 0.852,
+    "capture": 0.017,
+    "income": 0.01,
+    "field economy": 0.333,
+    "production": 0.133,
+    "visibility": 0.516,
+    "ai": 0.001,
+    "warzone": 0.012,
+    "weather": 0.006,
+    "victory": 0.007
+   },
+   "visTick": {
+    "n": 150,
+    "mean": 2.065,
+    "p50": 1.26,
+    "p95": 5.351,
+    "p99": 11.792,
+    "max": 13.91
+   },
+   "revealTick": {
+    "n": 150,
+    "mean": 1.221,
+    "p50": 0.665,
+    "p95": 3.856,
+    "p99": 9.868,
+    "max": 9.934
+   },
+   "siteWireTick": {
+    "n": 150,
+    "mean": 0.297,
+    "p50": 0.142,
+    "p95": 1.131,
+    "p99": 3.882,
+    "max": 4.437
+   },
+   "remStructTick": {
+    "n": 150,
+    "mean": 0.006,
+    "p50": 0.003,
+    "p95": 0.008,
+    "p99": 0.022,
+    "max": 0.374
+   },
+   "routeMsPerTick": 0.076,
+   "routeCalls": 66,
+   "snapBuild": {
+    "n": 300,
+    "mean": 0.394,
+    "p50": 0.205,
+    "p95": 1.403,
+    "p99": 2.902,
+    "max": 10.896
+   },
+   "snapBytes": {
+    "n": 300,
+    "mean": 4210.62,
+    "p50": 2482,
+    "p95": 9935,
+    "p99": 17638,
+    "max": 18034
+   },
+   "snapEnc": {
+    "n": 300,
+    "mean": 0.165,
+    "p50": 0.073,
+    "p95": 0.371,
+    "p99": 3.484,
+    "max": 6.084
+   },
+   "units": 288,
+   "buildings": 112,
+   "projectiles": 0
+  },
+  {
+   "counts": {
+    "heapMb": 25,
+    "events": 2,
+    "eventSeq": 2,
+    "craters": 0,
+    "wrecks": 0,
+    "smoke": 0,
+    "intensity": 0,
+    "impacts": 0,
+    "scorch": 0,
+    "wear": 4,
+    "scars": 0,
+    "fieldPos": 0,
+    "fieldworks": 0,
+    "bfMemory": 0,
+    "seenB": 0,
+    "fogCache": 1121,
+    "engagements": 0,
+    "reports": 0,
+    "roadProjects": 0,
+    "ruins": 25,
+    "caches": 25,
+    "siteIntel": 2,
+    "cacheIntel": 4,
+    "log": 0,
+    "convoys": 0,
+    "deploysDone": 0,
+    "aliveCivs": 4
+   },
+   "t0": 60.2,
+   "t1": 90.1,
+   "tick": {
+    "n": 300,
+    "mean": 1.567,
+    "p50": 1.12,
+    "p95": 4.363,
+    "p99": 7.285,
+    "max": 10.457
+   },
+   "gcInTickMs": 16.8,
+   "fogMissPerVisTick": 0,
+   "sysMean": {
+    "navigation": 0.134,
+    "combat": 0.735,
+    "capture": 0.014,
+    "income": 0.004,
+    "field economy": 0.203,
+    "production": 0.076,
+    "visibility": 0.363,
+    "ai": 0.001,
+    "warzone": 0.003,
+    "weather": 0.007,
+    "victory": 0.014
+   },
+   "visTick": {
+    "n": 75,
+    "mean": 1.452,
+    "p50": 1.097,
+    "p95": 3.622,
+    "p99": 4.971,
+    "max": 4.971
+   },
+   "revealTick": {
+    "n": 75,
+    "mean": 0.867,
+    "p50": 0.636,
+    "p95": 2.568,
+    "p99": 3.448,
+    "max": 3.448
+   },
+   "siteWireTick": {
+    "n": 75,
+    "mean": 0.248,
+    "p50": 0.141,
+    "p95": 0.848,
+    "p99": 2.527,
+    "max": 2.527
+   },
+   "remStructTick": {
+    "n": 75,
+    "mean": 0.004,
+    "p50": 0.003,
+    "p95": 0.004,
+    "p99": 0.063,
+    "max": 0.063
+   },
+   "routeMsPerTick": 0,
+   "routeCalls": 0,
+   "snapBuild": {
+    "n": 150,
+    "mean": 0.258,
+    "p50": 0.188,
+    "p95": 0.403,
+    "p99": 2.213,
+    "max": 2.425
+   },
+   "snapBytes": {
+    "n": 150,
+    "mean": 4116.26,
+    "p50": 2436,
+    "p95": 9760,
+    "p99": 17605,
+    "max": 17649
+   },
+   "snapEnc": {
+    "n": 150,
+    "mean": 0.077,
+    "p50": 0.063,
+    "p95": 0.122,
+    "p99": 0.363,
+    "max": 0.416
+   },
+   "units": 288,
+   "buildings": 112,
+   "projectiles": 0
+  }
+ ],
+ "probes": [
+  {
+   "t": 5,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.018,
+   "bfBytes": 78,
+   "unitSnapshot": 0.059,
+   "unitBytes": 7941,
+   "econSnapshot": 0.126,
+   "econBytes": 7307,
+   "spectatorEcon": 0.417,
+   "spectatorEconBytes": 27419,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6197,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 78
+   }
+  },
+  {
+   "t": 15,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.008,
+   "bfBytes": 78,
+   "unitSnapshot": 0.072,
+   "unitBytes": 8055,
+   "econSnapshot": 0.114,
+   "econBytes": 7309,
+   "spectatorEcon": 3.167,
+   "spectatorEconBytes": 27450,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6199,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 78
+   }
+  },
+  {
+   "t": 25,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.015,
+   "bfBytes": 155,
+   "unitSnapshot": 0.071,
+   "unitBytes": 7926,
+   "econSnapshot": 0.103,
+   "econBytes": 7324,
+   "spectatorEcon": 0.255,
+   "spectatorEconBytes": 27465,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 155
+   }
+  },
+  {
+   "t": 35,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.015,
+   "bfBytes": 155,
+   "unitSnapshot": 0.058,
+   "unitBytes": 7926,
+   "econSnapshot": 0.072,
+   "econBytes": 7324,
+   "spectatorEcon": 0.159,
+   "spectatorEconBytes": 27476,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 155
+   }
+  },
+  {
+   "t": 45,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.021,
+   "bfBytes": 155,
+   "unitSnapshot": 0.053,
+   "unitBytes": 7926,
+   "econSnapshot": 0.079,
+   "econBytes": 7324,
+   "spectatorEcon": 0.181,
+   "spectatorEconBytes": 27476,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 155
+   }
+  },
+  {
+   "t": 55,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.015,
+   "bfBytes": 155,
+   "unitSnapshot": 0.069,
+   "unitBytes": 7926,
+   "econSnapshot": 0.06,
+   "econBytes": 7324,
+   "spectatorEcon": 0.155,
+   "spectatorEconBytes": 27476,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 155
+   }
+  },
+  {
+   "t": 65,
+   "rememberBattlefield": 0.003,
+   "battlefieldSnapshot": 0.012,
+   "bfBytes": 144,
+   "unitSnapshot": 0.059,
+   "unitBytes": 7926,
+   "econSnapshot": 0.056,
+   "econBytes": 7313,
+   "spectatorEcon": 0.189,
+   "spectatorEconBytes": 27454,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 144
+   }
+  },
+  {
+   "t": 75,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.016,
+   "bfBytes": 144,
+   "unitSnapshot": 0.056,
+   "unitBytes": 7926,
+   "econSnapshot": 0.072,
+   "econBytes": 7313,
+   "spectatorEcon": 0.183,
+   "spectatorEconBytes": 27454,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 144
+   }
+  },
+  {
+   "t": 85,
+   "rememberBattlefield": 0.004,
+   "battlefieldSnapshot": 0.006,
+   "bfBytes": 68,
+   "unitSnapshot": 0.055,
+   "unitBytes": 7926,
+   "econSnapshot": 0.063,
+   "econBytes": 7237,
+   "spectatorEcon": 0.148,
+   "spectatorEconBytes": 27201,
+   "econParts": {
+    "econ": 318,
+    "buildings": 6137,
+    "cities": 121,
+    "civs": 501,
+    "ruins": 2,
+    "bridges": 2,
+    "ms": 2,
+    "projects": 2,
+    "bf": 68
+   }
+  }
+ ],
+ "saves": [
+  {
+   "t": 60,
+   "ms": 5.73,
+   "bytes": 1324487,
+   "units": 288,
+   "buildings": 112
+  }
+ ],
+ "final": {
+  "units": 288,
+  "buildings": 112,
+  "heapMb": 41,
+  "events": 2,
+  "eventSeq": 2,
+  "craters": 0,
+  "wrecks": 0,
+  "smoke": 0,
+  "intensity": 0,
+  "impacts": 0,
+  "scorch": 0,
+  "wear": 2,
+  "scars": 0,
+  "fieldPos": 0,
+  "fieldworks": 0,
+  "bfMemory": 0,
+  "seenB": 0,
+  "fogCache": 1121,
+  "engagements": 0,
+  "reports": 0,
+  "roadProjects": 0,
+  "ruins": 25,
+  "caches": 25,
+  "siteIntel": 2,
+  "cacheIntel": 4,
+  "log": 0,
+  "convoys": 0,
+  "deploysDone": 0,
+  "aliveCivs": 4,
+  "over": false,
+  "time": 90
+ },
+ "schedMetrics": {
+  "navigation": {
+   "p50": 0.07,
+   "p95": 0.15,
+   "p99": 2.66,
+   "max": 8.58,
+   "calls": 901,
+   "over": 0,
+   "deferred": 0
+  },
+  "combat": {
+   "p50": 0.44,
+   "p95": 2.04,
+   "p99": 6.58,
+   "max": 33.38,
+   "calls": 901,
+   "over": 1,
+   "deferred": 0
+  },
+  "capture": {
+   "p50": 0.02,
+   "p95": 0.03,
+   "p99": 0.82,
+   "max": 1.33,
+   "calls": 450,
+   "over": 0,
+   "deferred": 0
+  },
+  "income": {
+   "p50": 0,
+   "p95": 0.01,
+   "p99": 0.01,
+   "max": 3.14,
+   "calls": 901,
+   "over": 1,
+   "deferred": 0
+  },
+  "field economy": {
+   "p50": 0.35,
+   "p95": 0.86,
+   "p99": 2.03,
+   "max": 38.05,
+   "calls": 450,
+   "over": 6,
+   "deferred": 0
+  },
+  "production": {
+   "p50": 0.18,
+   "p95": 0.59,
+   "p99": 2.89,
+   "max": 12.24,
+   "calls": 300,
+   "over": 1,
+   "deferred": 0
+  },
+  "visibility": {
+   "p50": 1.17,
+   "p95": 4.98,
+   "p99": 7.29,
+   "max": 13.92,
+   "calls": 225,
+   "over": 2,
+   "deferred": 0
+  },
+  "weather": {
+   "p50": 0,
+   "p95": 0.27,
+   "p99": 1.71,
+   "max": 1.71,
+   "calls": 90,
+   "over": 0,
+   "deferred": 0
+  },
+  "warzone": {
+   "p50": 0.03,
+   "p95": 0.05,
+   "p99": 3.06,
+   "max": 3.06,
+   "calls": 90,
+   "over": 0,
+   "deferred": 0
+  },
+  "ai": {
+   "p50": 0,
+   "p95": 0.01,
+   "p99": 0.01,
+   "max": 0.09,
+   "calls": 300,
+   "over": 0,
+   "deferred": 0
+  },
+  "victory": {
+   "p50": 0.02,
+   "p95": 0.08,
+   "p99": 3.57,
+   "max": 3.57,
+   "calls": 90,
+   "over": 0,
+   "deferred": 0
+  },
+  "tick": {
+   "p50": 1.14,
+   "p95": 4.42,
+   "p99": 7.28,
+   "max": 56.35,
+   "calls": 901,
+   "over": 0,
+   "deferred": 0
+  }
+ },
+ "wallSeconds": 3
+}

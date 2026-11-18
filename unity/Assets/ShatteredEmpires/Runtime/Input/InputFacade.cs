@@ -27,9 +27,11 @@ namespace SE.Runtime.Input
 
         /// <summary>Every remappable shortcut, in the order the settings list shows them.</summary>
         /// <remarks>
-        /// Two complete default sets (Settings › Controls › Camera keys). Arrow keys (the default): the arrows pan and
-        /// the orders keep their natural letters (A attack move, S stance, W withdraw). WASD: W/A/S/D pan, and the orders
-        /// that would collide move to F, V and X. In the WASD scheme the arrows pan too (unless one is bound to an order).
+        /// Two complete default sets (Settings › Controls › Camera keys). Arrow keys (the default): the arrows pan,
+        /// A selects the units on screen (Ctrl+A every unit), the orders keep natural letters (S stance, W withdraw)
+        /// and attack move is F. WASD: W/A/S/D pan, Q selects (Ctrl+Q every unit), and the orders that would collide
+        /// move to V and X. Both: F attack move (it flips a battle line only while one is drawn), E production
+        /// buildings (Ctrl+E every building). In the WASD scheme the arrows pan too (unless one is bound to an order).
         /// </remarks>
         public static readonly ActionDef[] Actions =
         {
@@ -49,7 +51,9 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "group_7", Label = "Control group 7 (Ctrl: assign)", Default = KeyCode.Alpha7 },
             new ActionDef { Id = "group_8", Label = "Control group 8 (Ctrl: assign)", Default = KeyCode.Alpha8 },
             new ActionDef { Id = "group_9", Label = "Control group 9 (Ctrl: assign)", Default = KeyCode.Alpha9 },
-            new ActionDef { Id = "attack", Label = "Attack move, then click (twice: units on screen; Ctrl: whole army)", Default = KeyCode.A, Wasd = KeyCode.F },
+            new ActionDef { Id = "select_local", Label = "Select your units on screen (Ctrl: every unit; Shift adds)", Default = KeyCode.A, Wasd = KeyCode.Q },
+            new ActionDef { Id = "select_production", Label = "Select every production building (Ctrl: every building; Shift adds)", Default = KeyCode.E },
+            new ActionDef { Id = "attack", Label = "Attack move, then click (twice: units on screen; Ctrl: whole army)", Default = KeyCode.F },
             new ActionDef { Id = "stance", Label = "Cycle stance: aggressive, defensive, hold fire", Default = KeyCode.S, Wasd = KeyCode.V },
             new ActionDef { Id = "hold", Label = "Hold position", Default = KeyCode.H },
             new ActionDef { Id = "withdraw", Label = "Withdraw", Default = KeyCode.W, Wasd = KeyCode.X },
@@ -80,23 +84,52 @@ namespace SE.Runtime.Input
         // 2026-11-17 (v3): WASD panning by default (arrows hard-wired), so saved pan keys reset again.
         // 2026-11-17 (v4): two schemes, Arrow keys (default) and WASD. Players without custom binds land on the
         // Arrow scheme; a v3 player who had custom binds keeps the WASD scheme, so their layout does not change.
-        const int BindingVersion = 4;
+        // 2026-11-17 (v5): selection hotkeys. Arrow scheme: A selects the units on screen (Ctrl+A all) and attack move
+        // moves from A to F (as in the WASD scheme); WASD scheme: Q selects. E selects production in both. A player's
+        // own binds are never overwritten: a new or moved default that lands on a key the player already gave to
+        // another action is pinned instead (attack move stays on A, a new select action starts unbound).
+        const int BindingVersion = 5;
         static bool migrated;
         static void Migrate()
         {
             migrated = true;
             int saved = PlayerPrefs.GetInt("se.keys.version", 1);
             if (saved >= BindingVersion) return;
-            string[] reset = saved < 2
-                ? new[] { "pan_up", "pan_down", "pan_left", "pan_right", "rotate_left", "rotate_right", "attack", "follow", "build" }
-                : saved < 3 ? PanActions : new string[0];
-            foreach (var id in reset)
-                PlayerPrefs.DeleteKey("se.key." + id);
-            bool custom = false;
-            foreach (var a in Actions) if (PlayerPrefs.HasKey("se.key." + a.Id)) custom = true;
-            SE.Runtime.App.GameSettings.WasdCameraKeys = saved == 3 && custom;
+            if (saved < 4)
+            {
+                string[] reset = saved < 2
+                    ? new[] { "pan_up", "pan_down", "pan_left", "pan_right", "rotate_left", "rotate_right", "attack", "follow", "build" }
+                    : saved < 3 ? PanActions : new string[0];
+                foreach (var id in reset)
+                    PlayerPrefs.DeleteKey("se.key." + id);
+                bool custom = false;
+                foreach (var a in Actions) if (PlayerPrefs.HasKey("se.key." + a.Id)) custom = true;
+                SE.Runtime.App.GameSettings.WasdCameraKeys = saved == 3 && custom;
+            }
+            MigrateSelectionKeys(SE.Runtime.App.GameSettings.WasdCameraKeys);
             PlayerPrefs.SetInt("se.keys.version", BindingVersion);
             PlayerPrefs.Save();
+        }
+
+        /// <summary>v5: keep every custom bind; pin the moved attack key and the new select keys where they would collide.</summary>
+        static void MigrateSelectionKeys(bool wasd)
+        {
+            KeyCode SchemeDefault(ActionDef a) => wasd && a.Wasd != KeyCode.None ? a.Wasd : a.Default;
+            bool TakenByCustom(string self, KeyCode key)
+            {
+                foreach (var a in Actions)
+                    if (a.Id != self && PlayerPrefs.HasKey("se.key." + a.Id) && (KeyCode)PlayerPrefs.GetInt("se.key." + a.Id, 0) == key) return true;
+                return false;
+            }
+            // attack move (Arrow scheme only: A → F; F is shared on purpose with "flip", which acts only while a line is drawn)
+            if (!wasd && !PlayerPrefs.HasKey("se.key.attack") && TakenByCustom("attack", KeyCode.F) && !TakenByCustom("attack", KeyCode.A))
+                PlayerPrefs.SetInt("se.key.attack", (int)KeyCode.A);
+            foreach (var id in new[] { "select_local", "select_production" })
+            {
+                var a = Def(id);
+                if (a == null || PlayerPrefs.HasKey("se.key." + id)) continue;
+                if (TakenByCustom(id, SchemeDefault(a))) PlayerPrefs.SetInt("se.key." + id, (int)KeyCode.None);
+            }
         }
 
         /// <summary>True when the WASD camera scheme is chosen (Settings › Controls › Camera keys; default: Arrow keys).</summary>

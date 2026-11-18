@@ -35,6 +35,8 @@ const X = new Float32Array(N), Z = new Float32Array(N);
 for (let i = 0; i < N; i++) [X[i], Z[i]] = center(i);
 
 export const centerOf = (t) => ({ x: X[t], z: Z[t] });
+/** Tile centre coordinates as flat arrays (centerOf without the allocation). */
+export const TILE_X = X, TILE_Z = Z;
 export const wrapX = (x) => WRAP ? ((x % PERIOD) + PERIOD) % PERIOD : x;
 export const dxBetween = (a, b) => { const d = b - a; return WRAP ? d - Math.round(d / PERIOD) * PERIOD : d; };
 export const distance = (a, b) => Math.hypot(dxBetween(a.x, b.x), b.z - a.z);
@@ -168,6 +170,8 @@ function visualHeight(e) {
 }
 // Interactive route searches scale gently with the world so cross-map orders on large maps still resolve.
 const STRATEGIC_LIMIT = Math.max(4300, Math.round(N / 7));
+// route(): coarse re-searches around a corridor tile the fine stage could not thread, and that tile's weight factor
+const ROUTE_RETRIES = 2, AVOID_PENALTY = 8;
 export const LIGHT_GROUND = { move: 'infantry', radius: .13 };
 export const HEAVY_GROUND = { move: 'tracked', radius: .22 };
 
@@ -181,7 +185,43 @@ export class ActionNavigation {
     this.crossings = new Map(); this.crossingVersion = -1;
     this.terrainVersion = 0;
   }
+  /**
+   * Item 7 (perf): a group order routes every member through the same corridor, and route()'s fine
+   * stage (portal/hub snapping, straight-line checks, local detours) is a pure function of its points
+   * while the world is unchanged. Between beginBatch() and endBatch() those results are memoised, keyed
+   * on the coarse tiles (snaps) or on the identity of the shared points (lines, detours); a unit whose
+   * path joins the corridor reuses the work of the members before it. Results are identical to unbatched
+   * routing (test/group-route-equivalence). `batchOff` disables it (test harness only).
+   */
+  beginBatch() { this.batch = this.batchOff ? null : { snap: new Map(), line: new Map(), local: new Map(), ids: new WeakMap(), next: 1, hits: 0 }; }
+  endBatch() { const b = this.batch; this.batch = null; return b ? b.hits : 0; }
+  snapAt(B, key, x, z, def, max) {
+    const k = key + ':' + def.move + ':' + def.radius;
+    if (B.snap.has(k)) { B.hits++; return B.snap.get(k); }
+    const p = this.nearest({ x, z }, def, max);
+    if (p) B.ids.set(p, B.next++);
+    B.snap.set(k, p);
+    return p;
+  }
+  lineB(a, b, def) {
+    const B = this.batch, ia = B && B.ids.get(a), ib = ia && B.ids.get(b);
+    if (!ib) return this.line(a, b, def);
+    const k = ia + ':' + ib + ':' + def.move + ':' + def.radius;
+    let v = B.line.get(k);
+    if (v === undefined) B.line.set(k, v = this.line(a, b, def)); else B.hits++;
+    return v;
+  }
+  localRouteB(a, b, def, budget, grid, step) {
+    const B = this.batch, ia = B && B.ids.get(a), ib = ia && B.ids.get(b);
+    if (!ib) return this.localRoute(a, b, def, budget, grid, step);
+    const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + ':' + budget;
+    if (B.local.has(k)) { B.hits++; return B.local.get(k); }
+    const r = this.localRoute(a, b, def, budget, grid, step);
+    B.local.set(k, r);
+    return r;
+  }
   invalidate() {
+    if (this.batch) this.beginBatch();
     this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.gradient = null;
     this.roadOnlyCache = null; this.crowdCache = null; this.components = null;
   }
@@ -200,6 +240,8 @@ export class ActionNavigation {
       let only = isWater(w.terr[t]) || !!w.lake[t] || !Number.isFinite(TERRAIN_COST[def.move]?.[w.terr[t]] ?? Infinity);
       if (!only && w.river[t] && w.flow[t] >= 94 && def.move !== 'infantry') only = true;
       if (!only && this.gradientOf(t) > (MAX_GRADIENT[def.move] ?? .5)) only = true;
+      // dense forest (actionMap.markDenseForest): infantry enter it only along a road
+      if (!only && def.move === 'infantry' && w.dense?.[t] && w.terr[t] === T.FOREST) only = true;
       v = cache[t] = only ? 2 : 1;
     }
     return v === 2;
@@ -432,6 +474,9 @@ export class ActionNavigation {
     let base = TERRAIN_COST[def.move][terrain];
     const river = this.riverAt(t, x, z);
     const road = this.roadAt(t, x, z, def, river);
+    // §30 (2026-11-18): ordinary infantry cannot pass dense forest (world.dense, actionMap.markDenseForest) off a
+    // road; vehicles can, and heavy hulls clear it to grass (battlefield.js FOREST_CLEAR), which reopens it.
+    if (!road && terrain === T.FOREST && def.move === 'infantry' && w.dense?.[t]) return Infinity;
     // Mountain faces: impassable beyond the class's climb limit unless a road cuts the slope;
     // below it, climbing costs grow with the gradient so routes prefer valleys and passes.
     const gradient = this.gradientOf(t), limit = MAX_GRADIENT[def.move] ?? .5;
@@ -527,9 +572,11 @@ export class ActionNavigation {
 
   // `limit` bounds the A* expansion. Unit orders keep the interactive default; one-off planners
   // (road layout between distant bases) pass a larger bound so long routes on big worlds resolve.
-  strategic(from, to, def, buildingRoads = false, skipFlow = false, limit = STRATEGIC_LIMIT) {
+  // `avoid` (route's retry, 2026-11-18): coarse tiles whose fine corridor could not be threaded cost AVOID_PENALTY ×;
+  // such a search neither reads nor fills the corridor cache and ignores flow fields.
+  strategic(from, to, def, buildingRoads = false, skipFlow = false, limit = STRATEGIC_LIMIT, avoid = null) {
     if (from === to) return [to];
-    const flow = !buildingRoads && !skipFlow && this.activeFlows.get(def.move);
+    const flow = !buildingRoads && !skipFlow && !avoid && this.activeFlows.get(def.move);
     if (flow && dist(to, flow.goal) <= 4 && flow.next[from] >= 0) {
       const route = [from]; let t = from;
       while (t !== flow.goal && dist(t, to) > 3 && route.length < 4300) { t = flow.next[t]; if (t < 0) break; route.push(t); }
@@ -539,7 +586,7 @@ export class ActionNavigation {
       }
     }
     const key = `${def.move}:${from}:${to}`;
-    if (!buildingRoads && this.corridors.has(key)) return this.corridors.get(key);
+    if (!buildingRoads && !avoid && this.corridors.has(key)) return this.corridors.get(key);
     const heap = new MinHeap(), best = new Map([[from, 0]]), parents = new Map(), closed = new Set();
     heap.push(from, 0);
     let result = null;
@@ -571,6 +618,7 @@ export class ActionNavigation {
             if (m >= 0 && m !== t && w.road[m] && !(t >= 0 && w.road[t] && this.roads.usable(t, m))) { weight *= 1.3; break; }
           }
         } else if (this.roads.usable(t, n)) weight *= .94;
+        if (avoid?.has(n)) weight *= AVOID_PENALTY;
         const cost = best.get(t) + weight;
         if (cost >= (best.get(n) ?? Infinity)) continue;
         best.set(n, cost);
@@ -578,46 +626,68 @@ export class ActionNavigation {
         heap.push(n, cost + dist(n, to) * .59);
       }
     }
-    if (!buildingRoads) {
+    if (!buildingRoads && !avoid) {
       if (this.corridors.size >= 384) this.corridors.delete(this.corridors.keys().next().value);
       this.corridors.set(key, result);
     }
     return result;
   }
 
+  /**
+   * A continuous path from `from` to `to`. The coarse tile route guides a fine corridor through portals and hubs.
+   * 2026-11-18 (stuck recovery): a corridor step that no local detour can thread (a heavy hull among a base's
+   * facilities, perimeter and HQ) no longer fails the whole route. Its coarse tile is penalised and the coarse search
+   * runs again, at most ROUTE_RETRIES times, so the unit leaves by another side of the compound. Before this, a tank
+   * spawned on the far side of a facility could be refused every exit even though an open way out existed.
+   */
   route(from, to, def) {
     if (!this.canStand(to.x, to.z, def)) return null;
     if (def.air || (distance(from, to) < 12 && this.line(from, to, def))) return [to];
     const a = tileAt(from.x, from.z), b = tileAt(to.x, to.z);
     if (a < 0 || b < 0) return null;
-    const coarse = this.strategic(a, b, def);
+    let coarse = this.strategic(a, b, def), avoid = null;
     if (!coarse) return this.line(from, to, def) ? [to] : null;
-    const points = [from];
+    for (let attempt = 0; ; attempt++) {
+      const r = this.fineRoute(from, to, def, coarse);
+      if (r.path) return r.path;
+      if (attempt >= ROUTE_RETRIES || r.fail < 0 || r.fail === a || r.fail === b) return null;
+      (avoid ??= new Set()).add(r.fail);
+      const stats = this.game.navStats ??= {};
+      stats.routeRetry = (stats.routeRetry || 0) + 1;
+      coarse = this.strategic(a, b, def, false, true, STRATEGIC_LIMIT, avoid);
+      if (!coarse) return null;
+    }
+  }
+
+  /** The fine stage of route(): { path } or { fail: the coarse tile of the step no detour could thread }. */
+  fineRoute(from, to, def, coarse) {
+    const points = [from], tiles = [coarse[0]];
     for (let i = 0; i < coarse.length - 1; i++) {
       const t = coarse[i], n = coarse[i + 1];
       // Portals stay continuous. A coarse cell only guides the corridor search.
       const x = X[t] + dxBetween(X[t], X[n]) * .5, z = (Z[t] + Z[n]) * .5;
-      const portal = this.nearest({ x, z }, def, .65);
-      if (portal) points.push(portal);
+      const B = this.batch;
+      const portal = B ? this.snapAt(B, 'p' + t + ':' + n, x, z, def, .65) : this.nearest({ x, z }, def, .65);
+      if (portal) { points.push(portal); tiles.push(n); }
       if (i + 2 < coarse.length) {
-        const hub = this.nearest(centerOf(n), def, .89);
-        if (hub) points.push(hub);
+        const hub = B ? this.snapAt(B, 'h' + n, X[n], Z[n], def, .89) : this.nearest(centerOf(n), def, .89);
+        if (hub) { points.push(hub); tiles.push(n); }
       }
     }
-    points.push(to);
+    points.push(to); tiles.push(coarse[coarse.length - 1]);
     const path = [];
     let i = 0;
     while (i < points.length - 1) {
       let j = Math.min(points.length - 1, i + 7);
-      for (; j > i; j--) if (this.line(points[i], points[j], def)) break;
+      for (; j > i; j--) if (this.lineB(points[i], points[j], def)) break;
       if (j === i) {
         // A blocked corridor step (a facility, a wreck, a tight gap between buildings): search a fine
         // local grid, first cheaply, then wider and toward the next waypoint too, so one badly placed
         // portal inside a compound does not fail the whole order.
-        let detour = this.localRoute(points[i], points[i + 1], def), skip = 1;
-        if (!detour && i + 2 < points.length) { detour = this.localRoute(points[i], points[i + 2], def, 900, 37, .2); skip = 2; }
-        if (!detour) { detour = this.localRoute(points[i], points[i + 1], def, 1400, 45, .18); skip = 1; }
-        if (!detour) return null;
+        let detour = this.localRouteB(points[i], points[i + 1], def, 220, 25, .24), skip = 1;
+        if (!detour && i + 2 < points.length) { detour = this.localRouteB(points[i], points[i + 2], def, 900, 37, .2); skip = 2; }
+        if (!detour) { detour = this.localRouteB(points[i], points[i + 1], def, 1400, 45, .18); skip = 1; }
+        if (!detour) return { fail: tiles[i + 1] === tiles[0] && i + 2 < points.length ? tiles[i + 2] : tiles[i + 1] };
         path.push(...detour);
         i += skip;
       } else {
@@ -625,7 +695,7 @@ export class ActionNavigation {
         i = j;
       }
     }
-    return path;
+    return { path };
   }
 
   localRoute(a, b, def, budget = 220, grid = 25, step = .24) {

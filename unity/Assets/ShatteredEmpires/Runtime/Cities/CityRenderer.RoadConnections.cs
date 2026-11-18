@@ -17,6 +17,15 @@ namespace SE.Runtime.Cities
             public bool Closed, Pavement = true;
             public float3 EndColor = new float3(.286f, .288f, .296f), BaseColor = new float3(.286f, .288f, .296f);
             public SurfaceKind Surface = SurfaceKind.Asphalt;
+            /// <summary>A junction apron (radius) at Points[0] instead of a lane: drawn as a disc, not published as a lane.</summary>
+            public float Apron;
+        }
+
+        /// <summary>The hex base height under a map point (no craters or relief: a stable input for road layout).</summary>
+        float HexHeightAt(float2 p)
+        {
+            int tile = world.Grid.TileAt(p.x, p.y);
+            return tile >= 0 ? world.Height[tile] : 0f;
         }
 
         static float2 Cubic(float2 a, float2 b, float2 c, float2 d, float t)
@@ -104,6 +113,10 @@ namespace SE.Runtime.Cities
                 var trunk = new float2[24];
                 for (int k = 0; k < trunk.Length; k++) trunk[k] = math.lerp(mouth, hub, k / (float)(trunk.Length - 1));
                 result.Add(new CompoundRoute { Points = trunk });
+                // where the trunk leaves the ring road and where its approaches fork: a junction apron, so the
+                // mouths read as real intersections rather than lanes overlapping at a point
+                result.Add(new CompoundRoute { Points = new[] { mouth }, Apron = .17f });
+                if (entry.Value.Count > 1) result.Add(new CompoundRoute { Points = new[] { hub }, Apron = .16f });
                 foreach (var anchor in entry.Value)
                 {
                     var end = RoadCurve.Mid(world, anchor.tile, anchor.direction);
@@ -111,11 +124,30 @@ namespace SE.Runtime.Cities
                     float reach = math.distance(hub, end);
                     var a = hub + radial * Mathf.Min(.75f, reach * .45f);
                     var b = end - outward * Mathf.Min(.5f, reach * .38f);
+                    // Varied bends: past the foundation an approach swings to one side, the side that keeps it
+                    // nearest level ground (hex heights, so craters never re-route it), with a stable per-entrance
+                    // preference; short approaches stay nearly straight.
+                    var lateral = new float2(-radial.y, radial.x);
+                    float swing = Mathf.Min(.42f, reach * .2f) * (.55f + .45f * Hash(site.Id * 131 + anchor.tile, anchor.direction + 17));
+                    float bias = Hash(site.Id * 137 + anchor.tile, anchor.direction + 29) - .5f;
+                    float best = float.MaxValue, chosen = 0;
+                    for (int option = -1; option <= 1; option++)
+                    {
+                        var ca = a + lateral * (option * swing); var cb = b + lateral * (option * swing * .55f);
+                        float climb = 0, previous = HexHeightAt(hub);
+                        for (int k = 1; k <= 6; k++) { float h = HexHeightAt(Cubic(hub, ca, cb, end, k / 6f)); climb += math.abs(h - previous); previous = h; }
+                        // a straight run is the default only on flat ground; otherwise the bend with less climbing wins
+                        float cost = climb + (option == 0 ? 0 : .02f - .005f * option * math.sign(bias));
+                        if (cost < best - 1e-5f) { best = cost; chosen = option; }
+                    }
+                    if (chosen == 0 && math.abs(bias) > .18f) chosen = math.sign(bias) * .5f;   // gentle bend on flat ground
+                    a += lateral * (chosen * swing); b += lateral * (chosen * swing * .55f);
                     var points = new float2[40];
                     for (int k = 0; k < points.Length; k++) points[k] = Cubic(hub, a, b, end, k / (float)(points.Length - 1));
                     int cls = world.RoadClass(anchor.tile, anchor.direction);
+                    // country roads (class 1) arrive as kerbless lanes in their own surface colour; streets keep the verge
                     result.Add(new CompoundRoute { Points = points, EndWidth = RoadCurve.Width(cls),
-                        EndPavement = Sidewalked(anchor.tile) && cls >= 2 ? .048f : 0,
+                        EndPavement = Sidewalked(anchor.tile) && cls >= 2 ? .048f : 0, Pavement = cls >= 2,
                         EndColor = StreetColor(anchor.tile, -1, cls, false) });
                 }
             }
@@ -176,54 +208,9 @@ namespace SE.Runtime.Cities
 
         void DrawCompoundRoadNetwork(List<CompoundRoute> routes, bool restored)
         {
-            // A small spatial hash clips verges at REAL junction mouths. Sidewalks
-            // follow the union's edge instead of continuing across an intersecting lane.
-            const float cell = .35f;
-            var buckets = new Dictionary<long, List<(int route, int segment)>>();
-            long Key(int x, int z) => ((long)x << 32) ^ (uint)z;
-            for (int r = 0; r < routes.Count; r++) for (int k = 0; k + 1 < routes[r].Points.Length; k++)
-            {
-                var route = routes[r]; var a = route.Points[k]; var b = route.Points[k + 1];
-                float half = Mathf.Max(RouteHalf(route, k), RouteHalf(route, k + 1)) + .025f;
-                int2 lo = (int2)math.floor((math.min(a, b) - half) / cell), hi = (int2)math.floor((math.max(a, b) + half) / cell);
-                for (int x = lo.x; x <= hi.x; x++) for (int z = lo.y; z <= hi.y; z++)
-                { long key = Key(x, z); if (!buckets.TryGetValue(key, out var list)) buckets[key] = list = new List<(int, int)>(); list.Add((r, k)); }
-            }
-            bool CrossesLane(float2 point, int own)
-            {
-                var key = (int2)math.floor(point / cell);
-                if (!buckets.TryGetValue(Key(key.x, key.y), out var list)) return false;
-                foreach (var segment in list)
-                {
-                    if (segment.route == own) continue;
-                    var route = routes[segment.route]; var a = route.Points[segment.segment]; var delta = route.Points[segment.segment + 1] - a;
-                    float t = math.saturate(math.dot(point - a, delta) / Mathf.Max(.000001f, math.lengthsq(delta)));
-                    if (math.distance(point, a + delta * t) < RouteHalf(route, segment.segment + t) + .018f) return true;
-                }
-                return false;
-            }
-            for (int r = 0; r < routes.Count; r++)
-            {
-                var route = routes[r];
-                for (int k = 0; k + 1 < route.Points.Length; k++)
-                {
-                    var a = route.Points[k]; var b = route.Points[k + 1]; var sa = RouteSide(route, k); var sb = RouteSide(route, k + 1);
-                    float ha = RouteHalf(route, k), hb = RouteHalf(route, k + 1), t = (k + .5f) / (route.Points.Length - 1);
-                    var color = math.lerp(route.BaseColor, route.EndColor, math.smoothstep(.3f, 1, t));
-                    if (!restored) color = math.lerp(color, new float3(.36f, .35f, .31f), .30f);
-                    CompoundBand(a, b, sa, sb, -ha, ha, -hb, hb, 0, color, route.Surface);
-                    if (!route.Pavement) continue;
-                    float pavement = math.lerp(.05f, route.EndPavement, math.smoothstep(.65f, 1, t));
-                    if (pavement < .003f) continue;
-                    for (int side = -1; side <= 1; side += 2)
-                    {
-                        var middle = (a + b + (sa * (ha + .025f) + sb * (hb + .025f)) * side) * .5f;
-                        if (CrossesLane(middle, r)) continue;
-                        CompoundBand(a, b, sa, sb, side * ha, side * (ha + pavement), side * hb, side * (hb + pavement), .0045f, new float3(.55f, .56f, .52f), SurfaceKind.Concrete);
-                        CompoundBand(a, b, sa, sb, side * ha, side * (ha + .006f), side * hb, side * (hb + .006f), .0055f, new float3(.63f, .64f, .59f), SurfaceKind.Concrete);
-                    }
-                }
-            }
+            // one source for both paths (CityRenderer.Slicing.cs): it only yields inside a sliced compose
+            var steps = DrawCompoundRoadNetworkSteps(routes, restored);
+            while (steps.MoveNext()) { }
         }
     }
 }

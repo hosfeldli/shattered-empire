@@ -1,0 +1,614 @@
+{
+  "schema": 1,
+  "version": "0.5.0",
+  "date": "2026-11-18",
+  "title": "Smooth late game, living battlefields",
+  "summary": "Long matches no longer slow to a crawl: late-game frame rate is up to three times higher and the second-long freezes are gone. Craters, wrecks and debris now heal and fade, trenches follow the ground as one connected work, bases grow yards and camps instead of houses, and new cities must be claimed before a road reaches them.",
+  "since": {
+    "version": "0.4.3",
+    "commit": "4bd3f1d"
+  },
+  "sections": [
+    {
+      "heading": "Smoother late-game battles",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "As a match went on, the game used to redo whole-map work every time a crater, trench, road or border changed, and it waited for the terrain to finish rebuilding. That work is now cached, deferred or moved off the main thread. The GPU was never the problem."
+        },
+        {
+          "type": "chart",
+          "kind": "bar",
+          "title": "Frame rate, camera on the busiest area",
+          "unit": "FPS",
+          "better": "higher",
+          "labels": [
+            "0-5 min",
+            "5-10",
+            "10-20",
+            "20-30",
+            "30-45"
+          ],
+          "series": [
+            {
+              "name": "Old code paths",
+              "values": [
+                188,
+                144,
+                95,
+                54,
+                30
+              ]
+            },
+            {
+              "name": "0.5.0",
+              "values": [
+                206,
+                171,
+                108,
+                93,
+                87
+              ]
+            }
+          ],
+          "caption": "Game minutes of a 4-AI match (seed 7). At 30-45 minutes there are about 190 units on the map.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        },
+        {
+          "type": "chart",
+          "kind": "line",
+          "title": "Slowest 1% of frames (p99)",
+          "unit": "ms",
+          "better": "lower",
+          "labels": [
+            "0-5 min",
+            "5-10",
+            "10-20",
+            "20-30",
+            "30-45"
+          ],
+          "series": [
+            {
+              "name": "Old code paths",
+              "values": [
+                9.9,
+                15.2,
+                73.7,
+                416,
+                839
+              ]
+            },
+            {
+              "name": "0.5.0",
+              "values": [
+                8.4,
+                10.8,
+                21,
+                39.3,
+                48.8
+              ]
+            }
+          ],
+          "caption": "Lower is better. The old paths spent almost a second on their slowest frames late in a match.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        },
+        {
+          "type": "chart",
+          "kind": "bar",
+          "title": "Worst single frame",
+          "unit": "ms",
+          "better": "lower",
+          "labels": [
+            "0-5 min",
+            "5-10",
+            "10-20",
+            "20-30",
+            "30-45"
+          ],
+          "series": [
+            {
+              "name": "Old code paths",
+              "values": [
+                536,
+                475,
+                644,
+                1256,
+                1484
+              ]
+            },
+            {
+              "name": "0.5.0",
+              "values": [
+                297,
+                201,
+                264,
+                394,
+                354
+              ]
+            }
+          ],
+          "caption": "The longest freeze seen in each stretch of the match, static camera.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        },
+        {
+          "type": "chart",
+          "kind": "line",
+          "title": "Frame rate while panning across the map",
+          "unit": "FPS",
+          "better": "higher",
+          "labels": [
+            "0-5 min",
+            "5-10",
+            "10-20",
+            "20-30",
+            "30-45"
+          ],
+          "series": [
+            {
+              "name": "Old code paths",
+              "values": [
+                269,
+                127,
+                112,
+                55,
+                38
+              ]
+            },
+            {
+              "name": "0.5.0",
+              "values": [
+                291,
+                155,
+                136,
+                119,
+                105
+              ]
+            }
+          ],
+          "caption": "Scrolling no longer stutters as the battlefield fills up.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        },
+        {
+          "type": "comparison",
+          "title": "Late match, about 190 units",
+          "columns": [
+            "Old code paths",
+            "0.5.0"
+          ],
+          "rows": [
+            {
+              "label": "Frame rate, static camera",
+              "before": "30 FPS",
+              "after": "87 FPS"
+            },
+            {
+              "label": "Slowest 5% of frames (p95)",
+              "before": "255 ms",
+              "after": "15 ms"
+            },
+            {
+              "label": "Slowest 1% of frames (p99)",
+              "before": "839 ms",
+              "after": "49 ms"
+            },
+            {
+              "label": "Worst frame",
+              "before": "1.48 s",
+              "after": "0.35 s"
+            },
+            {
+              "label": "Frame rate, panning",
+              "before": "38 FPS",
+              "after": "105 FPS"
+            },
+            {
+              "label": "Panning p99",
+              "before": "716 ms",
+              "after": "42 ms"
+            },
+            {
+              "label": "Memory churn per frame",
+              "before": "1-2.7 MB",
+              "after": "0.25-0.3 MB"
+            }
+          ],
+          "caption": "One PC (i5-8600K, RX 7600 XT) at 1080p Ultra, VSync off, the same match back to back with the old client code switched back on.",
+          "source": "docs/performance/FINAL_REPORT.md"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Not measured yet: other resolutions, weaker PCs, and the online server after these changes."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Smooth at every zoom",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Close and middle zoom used to be the slowest views: every unit on the map was drawn, even off screen, and trees in fought-over ground kept popping in and out. Off-screen units are now skipped, a destroyed tree stays gone, and rebuilding a base is spread over several frames instead of freezing one."
+        },
+        {
+          "type": "chart",
+          "kind": "bar",
+          "title": "Frame rate by camera distance, late game",
+          "unit": "FPS",
+          "better": "higher",
+          "labels": [
+            "Pan 2.5",
+            "Static 2.5",
+            "Pan 12",
+            "Static 12",
+            "Pan 30",
+            "Static 30",
+            "Pan 80",
+            "Static 80"
+          ],
+          "series": [
+            {
+              "name": "Old code paths",
+              "values": [
+                114,
+                95,
+                125,
+                107,
+                120,
+                81,
+                141,
+                79
+              ]
+            },
+            {
+              "name": "0.5.0",
+              "values": [
+                206,
+                152,
+                220,
+                159,
+                221,
+                119,
+                163,
+                100
+              ]
+            }
+          ],
+          "caption": "Game minute 20 onward, about 200 units. 2.5 is the closest zoom, 30 is play zoom, 80 is strategic.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        },
+        {
+          "type": "chart",
+          "kind": "bar",
+          "title": "Longest freeze by camera distance, late game",
+          "unit": "ms",
+          "better": "lower",
+          "labels": [
+            "Pan 2.5",
+            "Static 2.5",
+            "Pan 12",
+            "Static 12",
+            "Pan 30",
+            "Static 30",
+            "Pan 80",
+            "Static 80"
+          ],
+          "series": [
+            {
+              "name": "Old code paths",
+              "values": [
+                557,
+                901,
+                628,
+                574,
+                589,
+                873,
+                535,
+                925
+              ]
+            },
+            {
+              "name": "0.5.0",
+              "values": [
+                24,
+                31,
+                35,
+                27,
+                29,
+                40,
+                30,
+                60
+              ]
+            }
+          ],
+          "caption": "The slowest single frame in each stretch of the match.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        },
+        {
+          "type": "comparison",
+          "columns": [
+            "Old code paths",
+            "0.5.0"
+          ],
+          "rows": [
+            {
+              "label": "Frames over 33 ms per 15 s",
+              "before": "4.8-10.4",
+              "after": "0-0.3"
+            },
+            {
+              "label": "Trees regrowing per 15 s",
+              "before": "115-257",
+              "after": "0"
+            },
+            {
+              "label": "Memory churn per frame",
+              "before": "139-265 KB",
+              "after": "34-78 KB"
+            }
+          ],
+          "caption": "Same build and match back to back on an idle PC (i5-8600K, RX 7600 XT, 1080p)."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A rebuilt base may take up to about a second to appear; the old one stays drawn until then."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "A faster server",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Server hitches delay updates, which looks like a freeze on your screen. The server now works out visibility per team, checks unreachable orders before routing them, and routes group orders together. The simulation itself is unchanged."
+        },
+        {
+          "type": "comparison",
+          "title": "Server timings (headless, local)",
+          "columns": [
+            "Before",
+            "0.5.0"
+          ],
+          "rows": [
+            {
+              "label": "Visibility pass p50 / p95, 1,000 units",
+              "before": "2.77 / 8.63 ms",
+              "after": "1.59 / 3.95 ms"
+            },
+            {
+              "label": "Unreachable order, 1,000 units",
+              "before": "1,030 / 1,738 ms",
+              "after": "215 / 361 ms"
+            },
+            {
+              "label": "Repeat group order, 250 units",
+              "before": "179 ms",
+              "after": "29 ms"
+            },
+            {
+              "label": "Repeat group order, 1,000 units",
+              "before": "1,252 ms",
+              "after": "677 ms"
+            },
+            {
+              "label": "Economy update size (median)",
+              "before": "44.4 KB",
+              "after": "33.3 KB"
+            }
+          ],
+          "caption": "Battles of 500-1000 units are still heavy on the server; that is the next target.",
+          "source": "docs/performance/BENCHMARK_RESULTS.md"
+        }
+      ]
+    },
+    {
+      "heading": "Battlefields that heal",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Craters hold for a minute, then fill in over four minutes and disappear. The whole map heals on the same 30-second beat, so it costs almost nothing.",
+            "Cratered ground slows vehicles and gives cover for less time: a level softens every 3 minutes (90 s on roads) instead of every 15.",
+            "Wrecks rust away after 10 minutes instead of 25, and at most 400 stay on the map.",
+            "Scorch marks, rubble and blood fade out instead of piling up. Rubble sinks into the ground.",
+            "Shelled no-man's-land recovers in about 8 minutes. Cleared forest stays cleared."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Trenches that follow the ground",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "A trench line is now one connected work: no broken pits, no triangles at hex corners, and a new line drawn up to an old one joins it.",
+            "Floors, firing steps, sandbagged parapets and banks follow slopes, ridges and valleys. Nothing floats.",
+            "Corners, T and X junctions open into one pit. A line ends square at a road verge, with steel plates across the road.",
+            "Troops stand on the trench floor with head and shoulders over the parapet. Reinforced lines get concrete-grey revetments and wire.",
+            "Digging rules, cost and cover are unchanged."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Bases, roads and rivers",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Defences stand beside roads, and roads keep their line instead of swerving around them. Only the sandbag barricade may sit on a road.",
+            "A held base grows over time: service yards, transformer yards, camps and, later, a water tower. The little houses next to cities are gone.",
+            "Rivers are drawn as wide as the ground units actually wade through, with banks that wander naturally. Trees no longer stand in the water.",
+            "Base entrances bend with the terrain, junctions have proper aprons, and country roads arrive without kerbs."
+          ]
+        },
+        {
+          "type": "image",
+          "image": "base_closeup.png",
+          "caption": "A developed base with its yards and camps.",
+          "alt": "Base close-up"
+        },
+        {
+          "type": "image",
+          "image": "base_overview.png",
+          "caption": "The same base from further out.",
+          "alt": "Base overview"
+        },
+        {
+          "type": "image",
+          "image": "defenses_road.png",
+          "caption": "Defences beside the road; the road runs straight past.",
+          "alt": "Defences beside a road"
+        }
+      ]
+    },
+    {
+      "heading": "Claim a city, build its road",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "New matches start without roads between cities, so you can't follow a road to find one. Bridges over wide rivers are still there, so armour can always cross. When you establish a headquarters in a captured city, the road to your nearest base is built as part of the price."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Price: the headquarters plus 15 Materials per new road segment. Roads you already have are reused for free.",
+            "The ruin's Establish base button shows the full price and which base the road goes to.",
+            "Outposts still get their free road on capture. Older saves keep every road they have."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Units and combat",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Exo infantry is now an Infantry Fighting Vehicle built at the Vehicle Works: tracked, with an autocannon that shreds infantry and an anti-tank missile every 10 seconds.",
+            "Line infantry are cheaper, quicker to train and frailer: a rifle squad costs 65 instead of 90 and dies fast. Specialists stay valuable.",
+            "Bunkers fire sustained machine-gun bursts instead of single volleys.",
+            "Tanks, guns, launchers and turret heads recoil when they fire.",
+            "Missiles climb, cruise and dive with long smoke trails. Air defences visibly shoot them down.",
+            "A nuclear blast sends a dust wall along the ground that follows the terrain: it runs down valleys, fades behind ridges, and flattens the forest. Nothing stands at ground zero."
+          ]
+        },
+        {
+          "type": "image",
+          "image": "army.png",
+          "caption": "A combined-arms army at mid zoom.",
+          "alt": "Army"
+        }
+      ]
+    },
+    {
+      "heading": "Building, upgrades and the economy",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "One upgrade per unit class (infantry, vehicle, air) per match. The choice is confirmed first; cancelling frees the class, but nothing is refunded.",
+            "Units queue even without resources or past the population cap, and start when funds arrive.",
+            "A building's production is shared across its queues, with priorities and pause.",
+            "Spent resources are never refunded, including when you cancel construction.",
+            "Strategic missiles cost three times as much.",
+            "The ring of influence reaches 3 hexes past your border. Radar posts, repair stations and terrain works may go on neutral ground in sight.",
+            "Placing a defence shows where it will really go: near-misses snap to the nearest valid spot (off the road, onto level ground), and a refusal says exactly why. Shift places several.",
+            "Defences other than the sandbag barricade stand beside roads, never on them."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Forests, capture and garrisons",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Tanks and self-propelled guns flatten forest after three passes, and it stays flat for the rest of the match.",
+            "Dense forest cores block infantry unless they follow a road. Lanes and fringes keep every map connected; the worst detour is 8% longer.",
+            "Capture progress drains when nobody holds the site, and pauses while it is contested.",
+            "Infantry can garrison buildings.",
+            "In multiplayer, the game speed changes only when every player votes for it."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Units get unstuck",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Blocked units used to re-plan their route forever. They now climb a short ladder: slip past friends, try another way, take an escape step, and finally give up with a notice after a minute."
+        },
+        {
+          "type": "comparison",
+          "title": "250 units, 2,400 server ticks",
+          "columns": [
+            "Before",
+            "0.5.0"
+          ],
+          "rows": [
+            {
+              "label": "Converging armies: units arrived",
+              "before": "100",
+              "after": "106"
+            },
+            {
+              "label": "Converging armies: peak units blocked",
+              "before": "35",
+              "after": "25"
+            },
+            {
+              "label": "Long march: units arrived",
+              "before": "106",
+              "after": "115"
+            },
+            {
+              "label": "Long march: route calculations",
+              "before": "5,490",
+              "after": "3,653"
+            }
+          ],
+          "source": "docs/performance/IMPLEMENTATION_LOG.md"
+        }
+      ]
+    },
+    {
+      "heading": "Map builder: choose who starts where",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "After drawing a map, open the team window to give each starting base to a team, or leave it as a neutral city to capture. The lobby shows the same assignment to everyone and says what to fix before the match can start."
+        }
+      ]
+    }
+  ],
+  "fixes": [
+    "Base pads can be clicked without selecting the base first.",
+    "The base wheel now focuses on upgrades and status.",
+    "Shift-click sets a rally point.",
+    "New selection shortcuts: A, Ctrl+A, E and Ctrl+double-click.",
+    "A formation preview shows while you give a move order.",
+    "Clicking away closes open menus.",
+    "Roads and trenches use the same stroke tool and show their cost.",
+    "Selection rings fit each unit, building and turret.",
+    "Base facilities carry team colours and have distinct silhouettes.",
+    "Building-type signs show at mid zoom.",
+    "Cursors change with what you point at.",
+    "The resource bar fits the minimap and shows net income.",
+    "Update and Restart asks first, and never installs during a match.",
+    "Single-player games have a speed control.",
+    "Storms and mountains affect aircraft.",
+    "Trees and grass no longer grow on trench works.",
+    "A \"What's new\" window like this one opens after each update; reopen it from the main menu.",
+    "Defences and base buildings are easier to tell apart and to click, with a highlight before you click.",
+    "The camera can scroll a little past the map edge.",
+    "Dense forest looks visibly thicker.",
+    "No more little houses springing up around cities.",
+    "Attack-move is now on F (A selects units); custom key bindings are kept."
+  ]
+}

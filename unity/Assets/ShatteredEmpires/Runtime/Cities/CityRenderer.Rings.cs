@@ -58,8 +58,23 @@ namespace SE.Runtime.Cities
             float dim = pickup.Memory ? .56f : 1;
             var c = new Ctx { X = pickup.X, Z = pickup.Z, Yaw = Hash(pickup.Id, 5) * 1.3f, Seed = pickup.Id,
                 Tint = new float3(dim), Civ = new float3(.5f), FixedGround = true, GroundY = Ground(pickup.X, pickup.Z), Era = 1, Level = 1 };
+            // §38: a compact ground ring by type, baked with the cell like the crates (no per-frame cost):
+            // materials an amber square, energy a cyan hexagon, so shape tells them apart as well as colour
+            bool energy = pickup.Resource == "energy";
+            PickupRing(new float2(pickup.X, pickup.Z), c.Yaw, energy ? 6 : 4, energy ? new float3(.30f, .80f, .92f) : new float3(.93f, .68f, .22f), dim);
             Module(c, Part.Siding, 0, 0, new float3(.25f, .018f, .19f), new float3(.46f, .40f, .29f));
             int count = pickup.Amount >= 100 ? 3 : 2;
+            if (energy)
+            {
+                // energy: upright cells with glowing caps rather than crates
+                for (int i = 0; i < count + 1; i++)
+                {
+                    float x = (i - count * .5f) * .07f;
+                    Module(c, Part.Cylinder, x, 0, new float3(.055f, .10f, .055f), new float3(.30f, .36f, .40f), 0, .018f);
+                    Module(c, Part.Cylinder, x, 0, new float3(.035f, .014f, .035f), new float3(.40f, .86f, .96f), 0, .118f, .5f);
+                }
+                return;
+            }
             for (int i = 0; i < count; i++)
             {
                 float x = i == 2 ? 0 : (i - .5f) * .112f, lift = i == 2 ? .10f : .02f;
@@ -70,11 +85,25 @@ namespace SE.Runtime.Cities
             }
         }
 
+        /// <summary>A thin draped polygon band (sides 4: a square, 6: a hexagon) around a pickup, in the cell's ground mesh.</summary>
+        void PickupRing(float2 p, float yaw, int sides, float3 colour, float dim)
+        {
+            if (OverWater(p)) return;
+            const float Outer = .205f, Inner = .178f;
+            float turn = yaw + math.PI / sides;   // a flat side faces the crates' front
+            for (int k = 0; k < sides; k++)
+            {
+                float a = turn + k * 2 * math.PI / sides, b = turn + (k + 1) * 2 * math.PI / sides;
+                RoadStrip(p, p, Polar(a), Polar(b), Inner, Outer, float.NegativeInfinity, -.0012f, colour * dim, SurfaceKind.Plain);
+            }
+        }
+
         void UpdateCityMaturation()
         {
             foreach (var site in objectiveByTile.Values)
             {
-                int stage = Mathf.Clamp(Mathf.FloorToInt(site.Maturity / 5), 0, 7);
+                // (the development stage by tenure regrows the base dressing, CityRenderer.BaseDevelopment.cs)
+                int stage = DevelopmentStage(site.Tenure);   // (maturity only grew the removed settlement houses)
                 if (maturityStages.TryGetValue(site.Id, out int old) && old == stage) continue;
                 maturityStages[site.Id] = stage;
                 dirty.Add(world.ChunkOf(site.Tile));
@@ -119,34 +148,9 @@ namespace SE.Runtime.Cities
 
         void ComposeCityDistrict(ObjectiveSite site)
         {
-            if (site.Parcels == null || site.Parcels.Length < MinRingParcels) return;
-            // sockets in ring order (3, 5 or 7 open by tier; the server may send any count up to the ring size)
-            var lots = site.Parcels.Where(p => p.Id > 0).OrderBy(p => p.Id).ToArray();
-            if (lots.Length < MinRingParcels - 1 || lots.Length > 12) return;
-            // The compound only changes with its own state (CityRenderer.BaseCache.cs): shells, damage and units
-            // inside the cell replay the recorded compound instead of composing it again.
-            ulong key = BaseSignature(site, lots);
-            if (RoadCurve.CompoundLanes.ContainsKey(site.Id) && ReplayBase(site.Id, key)) return;
-            var record = BeginBaseRecord(key, out var outerMin, out var outerMax, out int flagStart);
-            var origin = new float2(site.X, site.Z);
-            var nodes = lots.Select(p => origin + (new float2(p.X, p.Z) - origin) * .57f).ToArray();
-            bool restored = site.Headquarters != 0;
-            var network = BuildCompoundRoadNetwork(site, lots, nodes);
-            // published for the road queries (trench crossings follow the roads actually drawn)
-            RoadCurve.CompoundLanes[site.Id] = network.Select(r => new RoadCurve.Lane { Points = r.Points, Half = Mathf.Max(r.Width, r.EndWidth) * .5f }).ToArray();
-            RoadCurve.LaneRevision++;
-            DrawCompoundRoadNetwork(network, restored);
-            ComposeBasePresentation(site, lots, nodes);
-            // A held base keeps clean sockets; only an unclaimed compound still shows the old town's ruins.
-            bool held = site.Headquarters != 0 && site.Owner >= 0;
-            for (int i = 0; i < lots.Length && !held; i++)
-            {
-                var parcel = lots[i];
-                bool occupied = structures.Buildings.Values.Any(b => b.City == site.Id && b.Slot == parcel.Id);
-                if (!occupied) HistoricalBlock(parcel, site.Kind);
-            }
-            ComposeCityAccessories(site, lots);
-            EndBaseRecord(site.Id, record, outerMin, outerMax, flagStart);
+            // one source for both paths: the staged form (CityRenderer.Slicing.cs) never yields outside a sliced job
+            var steps = ComposeCityDistrictSteps(site);
+            while (steps.MoveNext()) { }
         }
 
         // The complete compound graph is owned by its headquarters chunk. Outside
@@ -163,78 +167,25 @@ namespace SE.Runtime.Cities
             return false;
         }
 
-        /// <summary>The ring of street-front houses outside the foundation is off (user request 2026-11-16:
-        /// it cluttered the clean compound); flip to true to restore it.</summary>
-        static readonly bool SettlementHouses = false;
-
-        void ComposeCityAccessories(ObjectiveSite site, BaseParcel[] lots)
-        {
-            if (!SettlementHouses) return;
-            int established = Mathf.Max(site.VisualTier, site.Tier);
-            float development = math.saturate(site.Maturity / 35f);
-            int seed = DistrictPlanner.StableHash(Seed, site.Id, 2803);
-            // outside the round foundation (the base itself stays one clean compound)
-            float outside = FoundationRadius(new float2(site.X, site.Z), lots) + .45f;
-            // A few inherited street fronts: compact blocks, shared setbacks and roof families.
-            // Identity depends on the site and lot, never on the capturing faction.
-            for (int i = 0; i < 7; i++)
-            {
-                var lot = lots[(i * 3 + 1) % lots.Length];
-                float2 radial = math.normalizesafe(new float2(lot.X - site.X, lot.Z - site.Z));
-                float2 side = new float2(-radial.y, radial.x);
-                var point = new float2(site.X, site.Z) + radial * (outside + Hash(seed, i) * .15f) + side * ((i % 2 == 0 ? -1 : 1) * .17f);
-                int tile = world.Grid.TileAt(point.x, point.y);
-                if (tile < 0 || world.Known[tile] == 0 || world.IsSea(tile) || world.IsLake(tile) || world.IsRiver(tile) || world.Biome[tile] >= 9) continue;
-                bool overlaps = structures.Buildings.Values.Any(b => b.HasPosition && math.distance(point, new float2(b.X, b.Z)) < .84f);
-                if (overlaps) continue;
-                // nor on a road: the hex streets and compound entrances around the base keep a clear carriageway
-                if (RoadCurve.RoadDistance(world, point, out _, out _) < .26f) continue;
-                int threshold = i < 2 ? 1 : i < 4 ? 2 : 3;
-                float progress = established < threshold ? 0 : established > threshold ? 1 : math.saturate((development - i * .045f) * 1.55f);
-                var c = new Ctx { X = point.x, Z = point.y, Yaw = lot.Yaw, Seed = seed + i * 71, Tint = new float3(1), Civ = CivColor(site.Owner).xyz,
-                    Era = 1, Level = 1, Tier = established, Kind = DistrictKind.Residential, Scale = .70f,
-                    FixedGround = true, GroundY = BuildingDatum(point.x, point.y, lot.Yaw) };
-                if (progress < .25f)
-                {
-                    Module(c, Part.Shell, 0, -.04f, new float3(.53f, .22f, .47f), new float3(.88f, .87f, .82f));
-                    if (progress > 0) AccessoryScaffold(c, .30f);
-                    continue;
-                }
-                var facility = structures.Buildings.Values.FirstOrDefault(b => b.City == site.Id && b.Slot == lot.Id);
-                bool service = facility.Type == "depot" || facility.Type == "motor_works" || facility.Type == "heavy_weapons" || facility.Type == "power_plant";
-                float height = (.20f + Hash(seed, i + 29) * .085f) * math.saturate(progress * 1.8f);
-                var plaster = math.lerp(new float3(.69f, .67f, .60f), new float3(.61f, .64f, .62f), Hash(seed, i + 17));
-                Module(c, service ? Part.Siding : Part.Brick, 0, -.06f, new float3(.57f, height, .44f), plaster);
-                Facade(c, 0, -.06f, .57f, .44f, height, 0, c.Seed, service);
-                if (progress < .85f) AccessoryScaffold(c, height + .06f);
-                else
-                {
-                    Module(c, service ? Part.MetalRoof : Part.Roof, 0, -.06f, new float3(.60f, service ? .035f : .105f, .47f),
-                        new float3(.36f, .38f, .35f), 0, height);
-                    Module(c, Part.Tree, -.42f, .14f, new float3(.17f, .24f, .17f), new float3(.43f, .51f, .37f), Hash(seed, i + 70) * 6f);
-                    if (established >= 2 && Hash(seed, i + 90) > .40f) Parked(c, .26f, .31f, math.PI * .5f, c.Seed, false);
-                }
-                // Small connected service frontage, with no independent economic or collision record.
-                var curb = point + radial * -.35f;
-                DrapeParcel(curb, lot.Yaw, .57f, .11f, new float3(.51f, .52f, .49f), SurfaceKind.Concrete);
-            }
-        }
-
-        void AccessoryScaffold(in Ctx c, float height)
-        {
-            for (int side = -1; side <= 1; side += 2)
-            {
-                for (int j = -1; j <= 1; j++) Module(c, Part.Cylinder, j * .31f, side * .26f - .06f, new float3(.009f, height, .009f), SteelGrey);
-                for (int k = 1; k <= 2; k++) Module(c, Part.Siding, 0, side * .26f - .06f, new float3(.64f, .014f, .045f), SteelGrey, 0, k * height * .45f);
-            }
-        }
+        // (The ring of street-front settlement houses that grew outside the foundation with maturity was removed
+        // for good, user request 2026-11-18: no dynamically built houses next to cities or bases.)
 
         void HeavyWeaponsFacility(in Ctx c)
         {
-            Arsenal(c);
+            Arsenal(c, true);
             Module(c, Part.Crane, .33f, -.35f, new float3(.27f, .36f, .27f), Hazard, -.18f);
             Module(c, Part.Concrete, -.37f, -.30f, new float3(.26f, .18f, .30f), new float3(.56f, .58f, .53f));
             for (int k = 0; k < 3; k++) Module(c, Part.Cylinder, -.43f + k * .065f, -.28f, new float3(.041f, .17f, .041f), Olive, 0, .18f);
+            // §34 silhouette: a yellow gantry crane straddles the loading yard with a gun barrel in its slings
+            // (the armoury's yard holds earth-bermed magazines instead)
+            for (int i = 0; i < 2; i++)
+                for (int j = 0; j < 2; j++)
+                    Module(c, Part.Cylinder, -.36f + i * .50f, .20f + j * .20f, new float3(.016f, .27f, .016f), Hazard);
+            for (int j = 0; j < 2; j++) Module(c, Part.Box, -.11f, .20f + j * .20f, new float3(.54f, .024f, .024f), Hazard, 0, .27f);
+            for (int i = 0; i < 2; i++) Module(c, Part.Box, -.36f + i * .50f, .30f, new float3(.024f, .024f, .22f), Hazard * .9f, 0, .27f);
+            Module(c, Part.Box, -.05f, .30f, new float3(.07f, .035f, .23f), Dark, 0, .25f);                         // trolley
+            Module(c, Part.Cylinder, -.05f, .30f, new float3(.004f, .10f, .004f), SteelGrey, 0, .15f);                 // hoist line
+            Module(c, Part.Box, -.05f, .30f, new float3(.24f, .022f, .022f), Olive * .8f, 0, .13f);                    // the barrel
         }
 
         void PerimeterTurret(in Ctx original)
@@ -246,6 +197,7 @@ namespace SE.Runtime.Cities
             Module(c, Part.Box, -.027f, .105f, new float3(.014f, .014f, .12f), new float3(.22f, .23f, .22f), 0, .14f);
             Module(c, Part.Box, .055f, .015f, new float3(.055f, .038f, .07f), new float3(.40f, .41f, .34f), 0, .13f);
             Module(c, Part.Glass, .025f, .088f, new float3(.035f, .025f, .012f), new float3(.24f, .32f, .34f), 0, .145f);
+            Module(c, Part.Cylinder, 0, 0, new float3(.125f, .012f, .125f), c.Civ, 0, .098f, TeamGlow);   // §35 team band (fallback when the authored turret is missing)
         }
 
         void FieldBarricades(in Ctx c)

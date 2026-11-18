@@ -26,6 +26,9 @@ namespace SE.Runtime.Cities
         static readonly int TerritoryTexId = Shader.PropertyToID("_SE_TerritoryTex");
         static readonly int BaseGroundTexId = Shader.PropertyToID("_SE_BaseGroundTex");
         static readonly int ParamsId = Shader.PropertyToID("_SE_TerritoryParams");
+        static readonly int InfluenceTexId = Shader.PropertyToID("_SE_InfluenceTex");
+        static readonly int InfluenceParamsId = Shader.PropertyToID("_SE_InfluenceParams");
+        static readonly int InfluenceColorId = Shader.PropertyToID("_SE_InfluenceColor");
         public const float TexelsPerUnit = 3f;
         /// <summary>Signed-distance encoding range (world units on each side of the border).</summary>
         public const float Range = 2.5f;
@@ -33,11 +36,38 @@ namespace SE.Runtime.Cities
         public float CorridorReach = 13f;
         public bool Enabled = true;
 
+        // ---- Ring of influence edge (2026-11-18; server DEFENSE_INFLUENCE, actionBases.influenceRing) ----
+        // A third map texture, _SE_InfluenceTex (R8: signed distance to the edge of InfluenceCiv's ring of influence, the
+        // hexes within InfluenceReach of its territory), drawn by SE/Terrain with the territory border's own line in the
+        // civ's team colour. Built in the same worker rebuild as the territory, so it changes only when ownership, the civ
+        // or the reach does. Sides facing another player's territory are left to that border.
+        /// <summary>Whose ring of influence is drawn (the local civ; -1: none).</summary>
+        public int InfluenceCiv = -1;
+        /// <summary>Hexes beyond the territory border (server RULESET.influence.reach; 0: none).</summary>
+        public int InfluenceReach;
+        float influenceStrength = -1f;
+        /// <summary>How strongly the edge is drawn: faint while idle, full while placing a defense. Cheap: a shader global, set only on change.</summary>
+        public void SetInfluenceStrength(float strength)
+        {
+            if (!Enabled || InfluenceCiv < 0 || InfluenceReach <= 0) strength = 0;
+            if (Mathf.Abs(strength - influenceStrength) < .005f) return;
+            influenceStrength = strength;
+            Shader.SetGlobalVector(InfluenceParamsId, new Vector4(strength, Range, 0, 0));
+        }
+        Texture2D influence;
+        byte[] ipx = Array.Empty<byte>(), hexInfluence = Array.Empty<byte>();
+        float[] ibest = Array.Empty<float>();
+        int[] influenceQueue = Array.Empty<int>();
+        int builtInfluenceCiv = -1, builtInfluenceReach;
+        Color builtInfluenceColour = Color.white;
+
         Texture2D territory, ground;
         Color32[] tpx, gpx;
         float[] best, apron, plaza, tier, upkeep, hexScore = Array.Empty<float>();
         int[] owner, texOwner = Array.Empty<int>(), hexOwner = Array.Empty<int>();
         int tw, th, epoch = -1;
+        int[] texTile = new int[0];
+        int texTileEpoch = -1, texTileW;
         float sx, sz;
         long signature = long.MinValue;
         bool tileMode;
@@ -49,7 +79,7 @@ namespace SE.Runtime.Cities
             var g = world.Grid;
             long sig = 17;
             void Mix(long v) { unchecked { sig = sig * 1000003L ^ v; } }
-            Mix(world.Epoch); Mix(teams.Key); Mix(Enabled ? 1 : 0); Mix(actionRts ? 1 : 0);
+            Mix(world.Epoch); Mix(teams.Key); Mix(Enabled ? 1 : 0); Mix(actionRts ? 1 : 0); Mix(InfluenceCiv); Mix(InfluenceReach);
             claims.Clear();
             if (actionRts)
             {
@@ -74,10 +104,59 @@ namespace SE.Runtime.Cities
             var own = world.Owner;
             for (int i = 0; i < own.Length && i < g.N; i++) if (own[i] >= 0) { Mix(i); Mix(own[i]); tileMode = true; }
             Mix(tileMode ? 1 : 0);
+            // (perf 2026-11-17) the rebuild walks every texel (~300k) and cost 60-130 ms on the main thread at each
+            // ownership change: it now runs on a worker thread from a snapshot of its inputs, and the finished
+            // textures are uploaded here. One rebuild at a time; a change meanwhile starts the next one after it.
+            if (pendingBuild != null)
+            {
+                if (!pendingBuild.IsCompleted) return;
+                var done = pendingBuild; pendingBuild = null;
+                if (done.IsFaulted) Debug.LogException(done.Exception);
+                else if (builtEpoch == epoch && territory != null) Upload(builtActionRts);
+            }
             if (sig == signature && territory != null && epoch == world.Epoch) return;
             signature = sig;
             Allocate(g, world.Epoch);
-            Rebuild(world, sites, teams, actionRts);
+            ResolveHexOwners(world, actionRts);
+            EnsureTexTiles(g);
+            // inputs the worker reads: the hex owners (copied), the base sites and the team colours
+            if (ownerSnapshot.Length != hexOwner.Length) ownerSnapshot = new int[hexOwner.Length];
+            Array.Copy(hexOwner, ownerSnapshot, hexOwner.Length);
+            siteSnapshot.Clear();
+            if (actionRts)
+                foreach (var s in sites)
+                    if (s.IsBase && s.Parcels != null && s.Parcels.Length >= 4) siteSnapshot.Add((s.X, s.Z, s.Headquarters != 0, s.Tier));
+            colourSnapshot.Clear();
+            foreach (int o in ownerSnapshot)
+                if (o >= 0 && !colourSnapshot.ContainsKey(o))
+                {
+                    var c = math.saturate(teams.Color(o).xyz);
+                    colourSnapshot[o] = new Color32((byte)(c.x * 255f), (byte)(c.y * 255f), (byte)(c.z * 255f), 255);
+                }
+            builtEpoch = epoch; builtActionRts = actionRts;
+            builtInfluenceCiv = actionRts ? InfluenceCiv : -1; builtInfluenceReach = InfluenceReach;
+            if (builtInfluenceCiv >= 0) { var ic = math.saturate(teams.Color(builtInfluenceCiv).xyz); builtInfluenceColour = new Color(ic.x, ic.y, ic.z, 1); }
+            bool enabled = Enabled;
+            if (PerfFlags.LegacyTerritory) { Rebuild(g, enabled); Upload(actionRts); return; }
+            pendingBuild = System.Threading.Tasks.Task.Run(() => Rebuild(g, enabled));
+        }
+
+        System.Threading.Tasks.Task pendingBuild;
+        int builtEpoch = -1; bool builtActionRts;
+        int[] ownerSnapshot = Array.Empty<int>();
+        readonly List<(float x, float z, bool hq, int tier)> siteSnapshot = new List<(float, float, bool, int)>();
+        readonly Dictionary<int, Color32> colourSnapshot = new Dictionary<int, Color32>();
+
+        void Upload(bool actionRts)
+        {
+            territory.SetPixels32(tpx); territory.Apply(false, false);
+            ground.SetPixels32(gpx); ground.Apply(false, false);
+            Shader.SetGlobalTexture(TerritoryTexId, territory);
+            Shader.SetGlobalTexture(BaseGroundTexId, ground);
+            Shader.SetGlobalVector(ParamsId, new Vector4(Enabled ? 1 : 0, Range, actionRts ? 1 : 0, 0));
+            influence.SetPixelData(ipx, 0); influence.Apply(false, false);
+            Shader.SetGlobalTexture(InfluenceTexId, influence);
+            Shader.SetGlobalColor(InfluenceColorId, builtInfluenceColour);
         }
 
         void Allocate(HexGrid g, int worldEpoch)
@@ -100,6 +179,14 @@ namespace SE.Runtime.Cities
                     best = new float[n]; apron = new float[n]; plaza = new float[n]; tier = new float[n]; upkeep = new float[n];
                     owner = new int[n];
                 }
+                if (influence == null || influence.width != w || influence.height != h)
+                {
+                    if (influence != null) UnityEngine.Object.Destroy(influence);
+                    influence = new Texture2D(w, h, TextureFormat.R8, false, true)
+                    { name = "SE ring of influence", filterMode = FilterMode.Bilinear, wrapModeV = TextureWrapMode.Clamp };
+                    ipx = new byte[w * h]; ibest = new float[w * h];
+                }
+                influence.wrapModeU = wrapU;
                 territory.wrapModeU = wrapU; ground.wrapModeU = wrapU;
                 epoch = worldEpoch;
             }
@@ -124,9 +211,27 @@ namespace SE.Runtime.Cities
             }
         }
 
-        void Rebuild(WorldModel world, IEnumerable<ObjectiveSite> sites, TeamPalette teams, bool actionRts)
+        void EnsureTexTiles(HexGrid g)
         {
-            var g = world.Grid;
+            int n = tw * th;
+            if (texOwner.Length != n) texOwner = new int[n];
+            // the hex under each texel never changes for a given texture and map: computed once, not per rebuild
+            if (texTile.Length != n || texTileEpoch != epoch || texTileW != tw)
+            {
+                if (texTile.Length != n) texTile = new int[n];
+                texTileEpoch = epoch; texTileW = tw;
+                for (int j = 0; j < th; j++)
+                {
+                    float mz = (j + .5f) / sz;
+                    for (int i = 0; i < tw; i++) texTile[j * tw + i] = g.TileAt((i + .5f) / sx, mz);
+                }
+            }
+        }
+
+        /// <summary>Worker thread: the texel fields and pixels from the snapshot (no Unity API, no world access).</summary>
+        void Rebuild(HexGrid g, bool enabled)
+        {
+            var hexOwner = ownerSnapshot;
             bool wrap = g.Wrap;
             int n = tw * th;
             for (int k = 0; k < n; k++)
@@ -134,19 +239,9 @@ namespace SE.Runtime.Cities
                 best[k] = Range; owner[k] = -1;
                 apron[k] = plaza[k] = tier[k] = upkeep[k] = 0;
             }
-            ResolveHexOwners(world, actionRts);
             // every texel takes the owner of the hex that holds its centre
-            if (texOwner.Length != n) texOwner = new int[n];
-            for (int j = 0; j < th; j++)
-            {
-                float mz = (j + .5f) / sz;
-                for (int i = 0; i < tw; i++)
-                {
-                    int t = g.TileAt((i + .5f) / sx, mz);
-                    texOwner[j * tw + i] = t >= 0 ? hexOwner[t] : -1;
-                }
-            }
-            if (Enabled)
+            for (int k = 0; k < n; k++) { int t = texTile[k]; texOwner[k] = t >= 0 ? hexOwner[t] : -1; }
+            if (enabled)
             {
                 // The border follows the hex sides exactly: every side between two different owners (or an owner
                 // and no one) is stamped as a segment, and each texel keeps its distance to the nearest side of
@@ -180,15 +275,13 @@ namespace SE.Runtime.Cities
                         }, wrap);
                     }
                 }
-                if (actionRts)
-                    foreach (var s in sites)
+                foreach (var s in siteSnapshot)
                     {
-                        if (!s.IsBase || s.Parcels == null || s.Parcels.Length < 4) continue;
-                        bool hq = s.Headquarters != 0;
-                        int t = Mathf.Clamp(s.Tier, 1, 3);
+                        bool hq = s.hq;
+                        int t = Mathf.Clamp(s.tier, 1, 3);
                         float radius = hq ? 2.55f + .32f * (t - 1) : 2.35f;
                         float tierValue = hq ? t / 3f : 0f, keep = hq ? 1f : .3f;
-                        float ox = s.X, oz = s.Z;
+                        float ox = s.x, oz = s.z;
                         Stamp(ox, oz, radius + .8f, (k, mx, mz) =>
                         {
                             // compounds are slightly oval like their parcel ring (x 1.055, z .965)
@@ -200,30 +293,84 @@ namespace SE.Runtime.Cities
                         }, wrap);
                     }
             }
-            var colours = new Dictionary<int, Color32>();
+            RebuildInfluence(g, enabled && builtActionRts, builtInfluenceCiv, builtInfluenceReach);
+            var colours = colourSnapshot;
             for (int k = 0; k < n; k++)
             {
-                int to = Enabled ? texOwner[k] : -1;
+                int to = enabled ? texOwner[k] : -1;
                 int o = to >= 0 ? to : owner[k];
-                if (o < 0 || !Enabled) { tpx[k] = new Color32(0, 0, 0, 0); }
+                if (o < 0 || !enabled) { tpx[k] = new Color32(0, 0, 0, 0); }
                 else
                 {
                     float d = to >= 0 ? best[k] : -best[k];
-                    if (!colours.TryGetValue(o, out var col))
-                    {
-                        var c = math.saturate(teams.Color(o).xyz);
-                        colours[o] = col = new Color32((byte)(c.x * 255f), (byte)(c.y * 255f), (byte)(c.z * 255f), 255);
-                    }
+                    if (!colours.TryGetValue(o, out var col)) col = new Color32(255, 255, 255, 255);
                     col.a = (byte)(math.saturate(.5f + d / (2f * Range)) * 255f);
                     tpx[k] = col;
                 }
                 gpx[k] = new Color32((byte)(apron[k] * 255f), (byte)(plaza[k] * 255f), (byte)(tier[k] * 255f), (byte)(upkeep[k] * 255f));
             }
-            territory.SetPixels32(tpx); territory.Apply(false, false);
-            ground.SetPixels32(gpx); ground.Apply(false, false);
-            Shader.SetGlobalTexture(TerritoryTexId, territory);
-            Shader.SetGlobalTexture(BaseGroundTexId, ground);
-            Shader.SetGlobalVector(ParamsId, new Vector4(Enabled ? 1 : 0, Range, actionRts ? 1 : 0, 0));
+        }
+
+        /// <summary>
+        /// Worker thread: the ring of influence edge (ipx). A BFS from every hex <paramref name="civ"/> owns, through any hex,
+        /// capped at reach + 1 (as actionBases.influenceRing), marks the ring: hexes within reach that no other player owns.
+        /// Each hex side between the ring and unowned ground outside it is stamped as a segment, and every texel near it keeps
+        /// its distance, signed positive inside the ring and encoded like the territory alpha (0.5 = the edge).
+        /// </summary>
+        void RebuildInfluence(HexGrid g, bool enabled, int civ, int reach)
+        {
+            int n = tw * th;
+            if (!enabled || civ < 0 || reach <= 0) { Array.Clear(ipx, 0, n); return; }
+            var hexOwner = ownerSnapshot;
+            int hexes = Math.Min(g.N, hexOwner.Length);
+            if (hexInfluence.Length != g.N) { hexInfluence = new byte[g.N]; influenceQueue = new int[g.N]; }
+            int head = 0, tail = 0, cap = Math.Min(254, reach + 1);
+            for (int i = 0; i < g.N; i++)
+            {
+                bool own = i < hexes && hexOwner[i] == civ;
+                hexInfluence[i] = own ? (byte)0 : (byte)255;
+                if (own) influenceQueue[tail++] = i;
+            }
+            while (head < tail)
+            {
+                int t = influenceQueue[head++], d = hexInfluence[t] + 1;
+                if (d > cap) continue;
+                for (int k = 0; k < 6; k++)
+                {
+                    int nb = g.Nb[t * 6 + k];
+                    if (nb >= 0 && hexInfluence[nb] > d) { hexInfluence[nb] = (byte)d; influenceQueue[tail++] = nb; }
+                }
+            }
+            bool Inside(int t) => t >= 0 && t < hexes && hexInfluence[t] <= reach && (hexOwner[t] < 0 || hexOwner[t] == civ);
+            for (int k = 0; k < n; k++) ibest[k] = Range;
+            bool wrap = g.Wrap;
+            const float Half = HexMath.Sqrt3 * .5f;
+            for (int i = 0; i < hexes; i++)
+            {
+                if (!Inside(i)) continue;
+                float cx = g.CenterX(i), cz = g.CenterZ(i);
+                for (int d = 0; d < 6; d++)
+                {
+                    int nb = g.Nb[i * 6 + d];
+                    if (nb < 0 || Inside(nb) || nb < hexes && hexOwner[nb] >= 0) continue;   // map edge, ring interior, another border
+                    var mid = new float2(cx + HexMath.DirX[d] * Half, cz + HexMath.DirZ[d] * Half);
+                    var along = new float2(-HexMath.DirZ[d], HexMath.DirX[d]) * .5f;
+                    var a = mid - along; var ab = along * 2;
+                    Stamp(mid.x, mid.y, .5f + Range, (k, mx, mz) =>
+                    {
+                        var p = new float2(mx, mz);
+                        float s = math.saturate(math.dot(p - a, ab) / math.lengthsq(ab));
+                        float dist = math.distance(p, a + ab * s);
+                        if (dist < ibest[k]) ibest[k] = dist;
+                    }, wrap);
+                }
+            }
+            for (int k = 0; k < n; k++)
+            {
+                if (ibest[k] >= Range) { ipx[k] = 0; continue; }   // far from the edge: nothing to draw
+                float d = Inside(texTile[k]) ? ibest[k] : -ibest[k];
+                ipx[k] = (byte)Mathf.Clamp(Mathf.RoundToInt((.5f + d / (2f * Range)) * 255f), 1, 254);
+            }
         }
 
         /// <summary>
@@ -281,9 +428,13 @@ namespace SE.Runtime.Cities
 
         public void Dispose()
         {
+            try { pendingBuild?.Wait(); } catch (Exception) { }
+            pendingBuild = null;
             if (territory != null) UnityEngine.Object.Destroy(territory);
             if (ground != null) UnityEngine.Object.Destroy(ground);
-            territory = ground = null;
+            if (influence != null) UnityEngine.Object.Destroy(influence);
+            territory = ground = influence = null;
+            Shader.SetGlobalVector(InfluenceParamsId, Vector4.zero);
             Shader.SetGlobalVector(ParamsId, Vector4.zero);
         }
     }

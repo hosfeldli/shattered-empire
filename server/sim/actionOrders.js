@@ -63,7 +63,9 @@ function startOrder(game, u, order) {
   u.destinationFacing = order.facing;
   u.blocked = 0;
   u.convoy = order.convoy || 0; u.convoySpeed = order.convoySpeed || 0;
-  u.stall = 0; u.stallLen = -1; u.stallBest = Infinity;
+  // stuck recovery (stallCheck): a fresh order starts a fresh ladder
+  u.stall = 0; u.stallAx = u.x; u.stallAz = u.z; u.stallWx = u.stallWz = null; u.stallBest = Infinity;
+  u.stuckReplans = 0; u.blockedReplans = 0; u.stuckEpisodes = 0; u.navVer = game.nav.terrainVersion; u.goalBest = Infinity; u.goalStall = 0;
 }
 
 export function stopUnit(game, u, advance = false) {
@@ -91,22 +93,54 @@ export function stopUnit(game, u, advance = false) {
   }
 }
 
-function candidate(game, u, point, reserved, max, start = u, preview = false) {
+// N5 (perf): an order onto ground cut off from the unit (another island, across an unbridged river) made
+// every unit exhaust a full A* search, twice. Once one route of a group order has failed, the connected
+// land regions (nav.componentOf, built lazily) are consulted: when the unit and its slot lie in different
+// regions the coarse search cannot succeed, so route() would only fall back to a straight line; that line
+// test is all that is run. The result is identical to route()'s, without the search.
+function groupRoute(game, from, to, d, ctx) {
+  if (ctx && !d.air && (ctx.failed || game.nav.components?.[d.move])) {
+    const ca = game.nav.componentOf(tileAt(from.x, from.z), d), cb = game.nav.componentOf(tileAt(to.x, to.z), d);
+    if (ca >= 0 && cb >= 0 && ca !== cb) {
+      const stats = game.navStats ??= {};
+      stats.cutOff = (stats.cutOff || 0) + 1;
+      return game.nav.canStand(to.x, to.z, d) && game.nav.line(from, to, d) ? [to] : null;
+    }
+  }
+  const path = game.nav.route(from, to, d);
+  if (!path && ctx && !d.air) ctx.failed = true;
+  return path;
+}
+
+function candidate(game, u, point, reserved, max, start = u, preview = false, ctx = null) {
   const d = ACTION_UNITS[u.type], near = [];
   if (d.move === 'infantry') point = trenchPosition(game, point, u.owner, .55) || point;
-  const slot = game.nav.nearest(point, d, max, (x, z) => {
-    if (d.air) return true;
-    return reserved.query(x, z, .65, near).every((o) => distance(o, { x, z }) >= o.radius + d.radius + .06);
-  });
-  if (!slot) return null;
-  const path = game.nav.route(start, slot, d);
-  if (!path) return null;
-  if (!d.air && !preview) reserved.add({ ...slot, radius: d.radius });
-  return { slot, path };
+  // 2026-11-18: in a crowded court (a developed base) the nearest free spot can be a pocket between
+  // structures that this hull cannot drive into. Try a few other spots (each failed one excluded) before
+  // leaving the unit behind; bounded, so an unreachable order still costs at most `tries` searches.
+  const failed = [], tries = d.air ? 1 : 3;
+  for (let k = 0; k < tries; k++) {
+    const slot = game.nav.nearest(point, d, max, (x, z) => {
+      if (d.air) return true;
+      if (failed.some((f) => (x - f.x) ** 2 + (z - f.z) ** 2 < .36)) return false;
+      return reserved.query(x, z, .65, near).every((o) => distance(o, { x, z }) >= o.radius + d.radius + .06);
+    });
+    if (!slot) return null;
+    const path = groupRoute(game, start, slot, d, ctx);
+    if (!path) { failed.push(slot); continue; }
+    if (!d.air && !preview) reserved.add({ ...slot, radius: d.radius });
+    return { slot, path };
+  }
+  return null;
 }
 
 export function moveGroup(game, group, point, opts = {}) {
   if (!group.length) return { error: 'Select units to give an order.' };
+  game.nav.beginBatch();
+  try { return moveGroupBatched(game, group, point, opts); } finally { game.nav.endBatch(); }
+}
+
+function moveGroupBatched(game, group, point, opts) {
   game.nav.primeGroup(group, point);
   const ground = group.filter((u) => !ACTION_UNITS[u.type].air), air = group.filter((u) => ACTION_UNITS[u.type].air);
   // The formation faces from the group's centre to the destination (not from whichever unit was listed first).
@@ -134,12 +168,13 @@ export function moveGroup(game, group, point, opts = {}) {
   const convoy = ground.length > 1 && !opts.formation ? (game.nextConvoy = (game.nextConvoy || 0) + 1) : 0;
   const convoySpeed = convoy ? Math.min(...ground.map((u) => ACTION_UNITS[u.type].speed)) * GROUND_PACE : 0;
   const orderOpts = convoy ? { ...opts, convoy, convoySpeed } : opts;
+  const routing = { failed: false };
   for (let i = 0; i < ground.length; i++) {
     const u = ground[i], row = Math.floor(i / cols), width = Math.min(cols, ground.length - row * cols);
     const side = (i % cols - (width - 1) * .5) * spacing, forward = ((rows - 1) * .5 - row) * spacing;
     const p = { x: point.x + sideX * side + fx * forward, z: point.z + sideZ * side + fz * forward };
     // a crowded destination (a base court, a bridgehead) widens the slot search instead of leaving the unit behind
-    const pick = candidate(game, u, p, reserved, opts.exact ? .45 : 1.55) || (!opts.exact && candidate(game, u, p, reserved, 3.1));
+    const pick = candidate(game, u, p, reserved, opts.exact ? .45 : 1.55, u, false, routing) || (!opts.exact && candidate(game, u, p, reserved, 3.1, u, false, routing));
     if (!pick) continue;
     if (assign(game, u, pick.slot, orderOpts, pick.path)) placed++;
   }
@@ -195,6 +230,11 @@ function frontPoint(front, t, rear, reverse) {
 }
 
 export function deployLine(game, group, points, opts) {
+  game.nav.beginBatch();
+  try { return deployLineBatched(game, group, points, opts); } finally { game.nav.endBatch(); }
+}
+
+function deployLineBatched(game, group, points, opts) {
   const line = polyline(points);
   if (line.length < .12 || line.length > 145) return { error: 'Draw a battle line across valid ground.' };
   game.nav.primeGroup(group, points[Math.floor(points.length / 2)]);
@@ -203,7 +243,7 @@ export function deployLine(game, group, points, opts) {
     const d = ACTION_UNITS[u.type];
     if (!d.air) rows[d.cat === 'artillery' || d.cat === 'support' && !d.capture ? 2 : d.move === 'infantry' ? 0 : 1].push(u);
   }
-  const reserved = new SpatialIndex(.7), placements = [], overflow = [];
+  const reserved = new SpatialIndex(.7), placements = [], overflow = [], routing = { failed: false };
   let unreachable = 0, placed = 0;
   for (let row = 0; row < rows.length; row++) {
     const list = rows[row];
@@ -219,7 +259,7 @@ export function deployLine(game, group, points, opts) {
       const at = fit === 1 ? line.length * .5 : (line.length - width) * .5 + i * width / (fit - 1);
       const p = frontPoint(line, at, row === 0 ? 0 : row === 1 ? .64 : 1.3, opts.reverse);
       const start = opts.queue && u.goal ? u.goal : u;
-      const pick = candidate(game, u, p, reserved, .52, start);
+      const pick = candidate(game, u, p, reserved, .52, start, false, routing);
       if (!pick) { placements.push([u.id, p.x, p.z, p.facing, 0]); unreachable++; continue; }
       placements.push([u.id, pick.slot.x, pick.slot.z, p.facing, distance(p, pick.slot) > .15 ? 2 : 1]);
       placed++;
@@ -250,10 +290,11 @@ export function chase(game, u, target, range) {
 export function unitMotion(game) {
   const near = [], index = game.movers;
   index.clear();
-  for (const u of game.units.values()) if (!ACTION_UNITS[u.type].air) index.add(u);
+  for (const u of game.units.values()) if (!ACTION_UNITS[u.type].air && !u.inside) index.add(u);
   const phase = game.tickN;
   game.nav.beginTraffic(game.units);
   for (const u of game.units.values()) {
+    if (u.inside) continue;   // W4: garrisoned squads do not move (actionGarrison.js)
     u.waitingCrossing = false;
     const def = ACTION_UNITS[u.type];
     if (u.tacticalResume && game.time >= u.tacticalUntil) stopUnit(game, u, true);
@@ -361,7 +402,7 @@ export function unitMotion(game) {
       u.x = nx; u.z = nz;
       u.vx = dxBetween(ox, nx) / DT; u.vz = (nz - oz) / DT;
       const nextTile = tileAt(nx, nz);
-      if (nextTile !== u.tile && !def.air) addWear(game, nextTile, def.move);
+      if (nextTile !== u.tile && !def.air) addWear(game, nextTile, def.move, def);
       u.tile = nextTile;
       if (!def.air) index.moved(u, ox, oz);
       u.blocked = 0;
@@ -387,34 +428,176 @@ export function unitMotion(game) {
       }
       if (u.blocked >= 7 && distance(u, u.goal) < .25) stopUnit(game, u, true);
       else if (u.blocked > 12 && (phase + u.id) % 13 === 0) {
-        const route = game.nav.route(u, u.goal, def);
-        if (route) u.path = route;
-        else if (u.blocked > 60) stopUnit(game, u, true);
+        // capped between progress (stallCheck resets the count): past the cap the stuck ladder takes over
+        u.blockedReplans = (u.blockedReplans || 0) + 1;
+        if (u.blockedReplans > STUCK.blockedReplans) { if (u.blockedReplans === STUCK.blockedReplans + 1) stuckStats(game).blockedCapped++; }
+        else {
+          const route = game.nav.route(u, u.goal, def);
+          if (route) { u.path = route; u.navVer = game.nav.terrainVersion; }
+          else if (u.blocked > 60) stopUnit(game, u, true);
+        }
       }
     }
     if (!def.air && u.goal) stallCheck(game, u, def);
   }
 }
 
-// Progress watchdog. Sidesteps keep `blocked` at zero while a unit jiggles in place, so progress is
-// measured against the current waypoint instead: no gain for 2.5 s near the destination means the
-// slot is taken (halt there, the formation is close enough); no gain for 4 s elsewhere means a jam
-// (ghost through allies and re-plan); a minute with no progress gives up.
+// Stuck recovery (directive §24/§25/§30, 2026-11-18). The old watchdog measured progress against the current
+// waypoint and reset whenever the path changed length. A blocked unit re-routes every 1.3 s, and each re-route
+// returns a slightly different path, so the counter kept resetting: a jammed unit never ghosted, never stepped out
+// of a wedge and never gave up. It just re-planned forever, and N1's backoff could not help because the resets were
+// what kept it in that loop. Progress is now displacement: the unit has moved STUCK.move from its anchor, or has
+// closed in on the same waypoint. A path change alone is not progress. With no progress the unit climbs a bounded
+// ladder, one rung at a time, all O(1) per unit per tick apart from the rung's own (rate-limited) route call:
+//   near     close to the goal: the slot is taken, halt there (as before)
+//   ghost    ghost through allies for 2.5 s (mutual blocking, congested formations); step out of a wedge (a wreck or
+//            structure placed on it); replan at once if the path predates a terrain change (path invalidation)
+//   replan   one controlled replan; if the goal itself is now unreachable or occupied, an alternate goal nearby
+//   escape   a local escape waypoint to the side (narrow passages, dynamic obstacles), then on to the goal
+//   unstick  vehicles pinned by terrain or structures: move to the nearest free standing spot within
+//            unstickRadius. At most once per unstickCooldown ticks, never in combat, never across a region boundary.
+//   every    after that, ghost + replan every `every` ticks, at most `replans` per order
+//   giveUp   no progress at all for a minute: halt and tell the owner (quiet notice, rate-limited)
+//   close    (independent of the ladder) within closeRadius of the goal with no closeGain net approach for closeTicks:
+//            arrived. A unit wandering in a crowded court keeps resetting the displacement watchdog, so this catches it.
+// Collision re-routes (unitMotion, blocked > 12) are kept, because N1 showed they nudge jams apart. They are
+// capped at blockedReplans between progress, so a wedged unit never asks for paths without end. Counters are in
+// game.navStats.stuck; the last give-ups are in game.navStats.stuckLog.
+export const STUCK = Object.freeze({ move: .5, near: 25, ghost: 30, replan: 55, escape: 90, unstick: 130, every: 60, replans: 6,
+  giveUp: 600, blockedReplans: 10, unstickRadius: .9, unstickCooldown: 300, closeRadius: 1.5, closeGain: .15, closeTicks: 60 });
+const stuckStats = (game) => (game.navStats ??= {}).stuck ??= { ghost: 0, wedge: 0, invalidated: 0, replan: 0, replanFail: 0, altGoal: 0,
+  escape: 0, unstick: 0, gaveUp: 0, arrivedNear: 0, repeat: 0, blockedCapped: 0 };
+
+function relocate(game, u, spot) {
+  const ox = u.x, oz = u.z;
+  u.x = spot.x; u.z = spot.z; u.tile = tileAt(u.x, u.z); game.movers.moved(u, ox, oz);
+}
+
+function replan(game, u, def, S) {
+  u.stuckReplans = (u.stuckReplans || 0) + 1;
+  S.replan++;
+  const route = game.nav.route(u, u.goal, def);
+  u.navVer = game.nav.terrainVersion;
+  if (route) { u.path = route; return true; }
+  S.replanFail++;
+  const alt = alternateGoal(game, u, def);
+  if (!alt) return false;
+  S.altGoal++;
+  u.goal = alt.goal; u.path = alt.path; u.goalBest = Infinity; u.goalStall = 0;
+  return true;
+}
+
+/** A standable goal within 1.35 of the current one, reachable in the unit's region: at most two route searches. */
+function alternateGoal(game, u, def) {
+  const nav = game.nav, home = nav.componentOf(tileAt(u.x, u.z), def);
+  let tries = 0;
+  for (const r of [.45, .9, 1.35]) for (let k = 0; k < 8; k++) {
+    const a = k * Math.PI / 4 + (r === .9 ? Math.PI / 8 : 0);
+    const p = { x: wrapX(u.goal.x + Math.sin(a) * r), z: u.goal.z + Math.cos(a) * r };
+    if (!nav.canStand(p.x, p.z, def)) continue;
+    const c = nav.componentOf(tileAt(p.x, p.z), def);
+    if (home >= 0 && c >= 0 && c !== home) continue;
+    if (++tries > 2) return null;
+    const path = nav.route(u, p, def);
+    if (path) return { goal: p, path };
+  }
+  return null;
+}
+
+/** A free spot .6 or 1.0 to the side of (or behind) the unit's heading, in a straight line from it. */
+function escapePoint(game, u, def) {
+  const wp = u.path[0] || u.goal, heading = Math.atan2(dxBetween(u.x, wp.x), wp.z - u.z), side = u.id % 2 ? 1 : -1, near = [];
+  for (const off of [Math.PI / 2, -Math.PI / 2, 2.3, -2.3, Math.PI]) for (const r of [.6, 1.0]) {
+    const a = heading + off * side, p = { x: wrapX(u.x + Math.sin(a) * r), z: u.z + Math.cos(a) * r };
+    if (!game.nav.canStand(p.x, p.z, def) || !game.nav.line(u, p, def)) continue;
+    game.movers.query(p.x, p.z, def.radius + .3, near);
+    if (near.some((v) => v !== u && v.hp > 0 && distance(v, p) < def.radius + ACTION_UNITS[v.type].radius + .02)) continue;
+    return p;
+  }
+  return null;
+}
+
+/** Pinned by terrain or structures (not by units): it cannot stand where it is, or no short step is open. */
+function pinned(game, u, def) {
+  if (!game.nav.canStand(u.x, u.z, def)) return true;
+  for (let k = 0; k < 8; k++) {
+    const a = k * Math.PI / 4, x = wrapX(u.x + Math.sin(a) * .2), z = u.z + Math.cos(a) * .2;
+    if (game.nav.canMove(u, x, z, def)) return false;
+  }
+  return true;
+}
+
 function stallCheck(game, u, def) {
   const wp = u.path[0] || u.goal, d = distance(u, wp);
-  if (u.path.length !== u.stallLen || d < (u.stallBest ?? Infinity) - .04) { u.stallLen = u.path.length; u.stallBest = d; u.stall = 0; return; }
-  u.stall = (u.stall || 0) + 1;
+  // Close to the goal but circling it (a crowded court, the slot taken, paths that keep wandering): moving resets
+  // the displacement watchdog, so net progress toward the goal itself is tracked as well. Within STUCK.closeRadius
+  // and no STUCK.closeGain closer for STUCK.closeTicks, the unit has arrived (as near as the crowd allows).
+  const toGoalNow = distance(u, u.goal);
+  if (u.goalBx !== u.goal.x || u.goalBz !== u.goal.z) { u.goalBx = u.goal.x; u.goalBz = u.goal.z; u.goalBest = Infinity; }   // any new goal (order, resume, chase)
+  if (!(toGoalNow > (u.goalBest ?? Infinity) - STUCK.closeGain)) { u.goalBest = toGoalNow; u.goalStall = 0; }
+  else if ((u.goalStall = (u.goalStall || 0) + 1) >= STUCK.closeTicks && toGoalNow < STUCK.closeRadius + def.radius * 2) {
+    stuckStats(game).arrivedNear++; stopUnit(game, u, true); return;
+  }
+  let progress = u.stallAx == null || dxBetween(u.stallAx, u.x) ** 2 + (u.z - u.stallAz) ** 2 > STUCK.move * STUCK.move;
+  if (u.stallWx !== wp.x || u.stallWz !== wp.z) { u.stallWx = wp.x; u.stallWz = wp.z; u.stallBest = d; }   // a new waypoint is not progress by itself
+  else if (d < (u.stallBest ?? Infinity) - .04) { u.stallBest = d; progress = true; }
+  if (progress) {
+    u.stallAx = u.x; u.stallAz = u.z; u.stall = 0; u.blockedReplans = 0;
+    return;
+  }
+  const S = stuckStats(game), n = u.stall = (u.stall || 0) + 1;
   const toGoal = distance(u, u.goal);
-  if (u.stall >= 25 && toGoal < .9 + def.radius * 2) { stopUnit(game, u, true); return; }
-  if (u.stall % 40 === 0) {
+  if (n >= STUCK.near && toGoal < .9 + def.radius * 2) { S.arrivedNear++; stopUnit(game, u, true); return; }
+  if (n === STUCK.ghost) {
+    S.ghost++;
     u.ghostUntil = game.time + 2.5;
+    u.stuckEpisodes = (u.stuckEpisodes || 0) + 1;
+    if (u.stuckEpisodes === 3) S.repeat++;   // the same order got stuck three times: repeated movement failure
     // wedged against a structure (a new wreck or building placed on top of it): step to the nearest free spot
     if (!game.nav.canStand(u.x, u.z, def)) {
       const spot = game.nav.nearest(u, def, .7);
-      if (spot) { const ox = u.x, oz = u.z; u.x = spot.x; u.z = spot.z; u.tile = tileAt(u.x, u.z); game.movers.moved(u, ox, oz); }
+      if (spot) { S.wedge++; relocate(game, u, spot); }
     }
-    const route = game.nav.route(u, u.goal, def);
-    if (route) { u.path = route; u.stallLen = route.length; u.stallBest = distance(u, route[0]); }
+    // the path was planned before a terrain change (forest cleared, crater, trench, building): plan it again
+    if (u.navVer !== game.nav.terrainVersion) { S.invalidated++; replan(game, u, def, S); }
+    return;
   }
-  if (u.stall > 600) stopUnit(game, u, true);
+  if (n === STUCK.replan) { replan(game, u, def, S); return; }
+  if (n === STUCK.escape) {
+    const p = escapePoint(game, u, def);
+    if (p) {
+      S.escape++;
+      const onward = game.nav.route(p, u.goal, def);
+      u.path = onward ? [p, ...onward] : [p, ...u.path];
+      u.ghostUntil = game.time + 3;
+    }
+    return;
+  }
+  if (n === STUCK.unstick && def.move !== 'infantry' && game.tickN - (u.unstuckAt ?? -Infinity) >= STUCK.unstickCooldown &&
+    !(game.time - (u.lastCombat ?? -Infinity) < 3) && pinned(game, u, def)) {
+    const home = game.nav.componentOf(tileAt(u.goal.x, u.goal.z), def);
+    const spot = game.nav.nearest(u, def, STUCK.unstickRadius, (x, z) => {
+      const c = game.nav.componentOf(tileAt(x, z), def);
+      return (home < 0 || c < 0 || c === home) && !pinned(game, { ...u, x, z }, def);
+    });
+    if (spot) { S.unstick++; u.unstuckAt = game.tickN; relocate(game, u, spot); replan(game, u, def, S); }
+    return;
+  }
+  if (n > STUCK.unstick && (n - STUCK.unstick) % STUCK.every === 0 && (u.stuckReplans || 0) < STUCK.replans) {
+    u.ghostUntil = game.time + 2.5;
+    replan(game, u, def, S);
+    return;
+  }
+  if (n > STUCK.giveUp) {
+    S.gaveUp++;
+    const log = game.navStats.stuckLog ??= [];
+    log.push({ t: Math.round(game.time), id: u.id, type: u.type, tile: u.tile, goal: tileAt(u.goal.x, u.goal.z), replans: u.stuckReplans || 0 });
+    if (log.length > 32) log.shift();
+    const civ = game.civs[u.owner];
+    if (civ?.human && game.time - (civ.stuckNoteAt ?? -Infinity) >= 10) {
+      civ.stuckNoteAt = game.time;
+      game.notify(u.owner, `${ACTION_UNITS[u.type].name} could not reach its destination and halted.`, { kind: 'unit', quiet: true, tile: u.tile, unit: u.id });
+    }
+    stopUnit(game, u, true);
+  }
 }

@@ -31,6 +31,8 @@ namespace SE.Runtime.Landscape
             public JobHandle Handle;
             public Mesh.MeshDataArray Meshes;
             public NativeArray<byte> Blocked;
+            public NativeArray<uint> TreeScars;
+            public NativeArray<ulong> GrassScars;
             public NativeArray<InstanceData> TreesA, TreesB, Grass, Understory;
             public NativeArray<int> Counts;
             public NativeArray<float> Bounds;
@@ -53,7 +55,12 @@ namespace SE.Runtime.Landscape
         public int ChunksBuilt { get; private set; }
         public int DrawnChunks { get; private set; }
         public int DirtyCount { get; private set; }
-        int epoch = -1, seed;
+        /// <summary>Diagnostics (perf soak): main-thread time collecting finished chunks (total, worst), chunks finished, tree instances drawn and of those casting shadows.</summary>
+        public double FinishMsTotal, FinishMsMax;
+        public int ChunksFinished, TreeInstancesDrawn, TreeShadowInstances;
+        /// <summary>Diagnostics: chunk tree refills, the net tree count change summed over them, and trees that came back (a refill with more trees than before).</summary>
+        public int TreeRefills, TreeChurn, TreesRegrown;
+        int epoch = -1, seed, denseRevision = -1;
 
         NativeArray<VertexAttributeDescriptor> layout;
         Mesh oceanHorizon;
@@ -81,6 +88,7 @@ namespace SE.Runtime.Landscape
                 chunks[i] = new Chunk { OriginX = cx * WorldModel.ChunkSize * HexMath.Sqrt3 };
             }
             if (Blocked.Length != world.Grid.N) Blocked = new byte[world.Grid.N];
+            TreeScars = new uint[world.Grid.N]; GrassScars = new ulong[world.Grid.N];   // a new world: nothing destroyed yet
             BuildOceanHorizon();
         }
 
@@ -116,14 +124,52 @@ namespace SE.Runtime.Landscape
         }
 
         /// <summary>Set the no-tree flag of a tile; rebuilds its chunk only when the flag changes.</summary>
-        public void SetBlocked(int tile, bool blocked)
+        public void SetBlocked(int tile, bool blocked) => SetBlockBit(tile, BlockCity, blocked);
+
+        /// <summary>
+        /// Mark a tile as battle wasteland (no trees). Perf pass 2: this used to share the town flag, so the ground
+        /// field (wasteland: blocked) and every city cell recompose (no road or building: not blocked) flipped it back
+        /// and forth in battle areas; each flip rebuilt the chunk and its trees popped in and out. The two sources are
+        /// now separate bits (PerfFlags.LegacyTrees restores the shared flag).
+        /// </summary>
+        public void SetWasteland(int tile, bool wasteland) => SetBlockBit(tile, PerfFlags.LegacyTrees ? BlockCity : BlockWaste, wasteland);
+
+        const byte BlockCity = 1, BlockWaste = 2;
+
+        void SetBlockBit(int tile, byte bit, bool on)
         {
             EnsureLayout();
             if (tile < 0 || tile >= Blocked.Length) return;
-            byte b = blocked ? (byte)1 : (byte)0;
-            if (Blocked[tile] == b) return;
+            byte was = Blocked[tile];
+            byte b = on ? (byte)(was | bit) : (byte)(was & ~bit);
+            if (was == b) return;
             Blocked[tile] = b;
-            chunks[world.ChunkOf(tile)].Dirty = true;
+            if ((was != 0) != (b != 0)) chunks[world.ChunkOf(tile)].Dirty = true;   // only a change of "trees may grow" rebuilds
+        }
+
+        /// <summary>
+        /// Per tile, the tree (bit t of TreeScars) and groundcover (GrassScars) slots a crater or trench has destroyed
+        /// (perf pass 2). The server keeps only the newest few craters per tile, so older bowls drop out of the impact
+        /// list as new shells land; trees used to be re-derived from the current list and grew back under every
+        /// forgotten crater, then vanished under the next (continuous popping, and a chunk rebuild each time).
+        /// A destroyed tree now stays destroyed for the life of the world. Off with PerfFlags.LegacyTrees.
+        /// </summary>
+        public uint[] TreeScars = new uint[0];
+        public ulong[] GrassScars = new ulong[0];
+
+        /// <summary>While set, no new chunk jobs start (geometry updates are waiting for the running ones to finish).</summary>
+        public bool HoldScheduling;
+
+        /// <summary>Collect finished jobs without waiting; true while any job is still reading the world's arrays.</summary>
+        public bool PollBusy()
+        {
+            for (int k = pending.Count - 1; k >= 0; k--)
+            {
+                if (!pending[k].Handle.IsCompleted) continue;
+                Finish(pending[k]);
+                pending.RemoveAt(k);
+            }
+            return pending.Count > 0;
         }
 
         /// <summary>Wait for running jobs (call before the world's arrays change).</summary>
@@ -144,13 +190,15 @@ namespace SE.Runtime.Landscape
                 Finish(pending[k]);
                 pending.RemoveAt(k);
             }
+            // §30: a new dense-forest set (welcome) regrows every chunk's trees
+            if (denseRevision != world.DenseRevision) { denseRevision = world.DenseRevision; foreach (var c in chunks) c.Dirty = true; }
             // schedule the nearest dirty chunks
             order.Clear();
             int dirty = 0;
             for (int i = 0; i < chunks.Length; i++)
                 if (chunks[i].Dirty && !chunks[i].Building) { order.Add(i); dirty++; }
             DirtyCount = dirty;
-            if (order.Count == 0 || pending.Count >= MaxJobs) return;
+            if (order.Count == 0 || pending.Count >= MaxJobs || HoldScheduling) return;
             float period = world.Grid.Period;
             sortCamera = cameraPos; sortPeriod = period;
             sortByDistance ??= (a, b) => ChunkDistance(a, sortCamera, sortPeriod).CompareTo(ChunkDistance(b, sortCamera, sortPeriod));
@@ -178,10 +226,12 @@ namespace SE.Runtime.Landscape
                 Chunk = c,
                 Meshes = Mesh.AllocateWritableMeshData(3),
                 Blocked = new NativeArray<byte>(cs * cs, Allocator.Persistent),
-                TreesA = new NativeArray<InstanceData>(cs * cs * 10, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
-                TreesB = new NativeArray<InstanceData>(cs * cs * 10, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
+                TreeScars = new NativeArray<uint>(cs * cs, Allocator.Persistent),
+                GrassScars = new NativeArray<ulong>(cs * cs, Allocator.Persistent),
+                TreesA = new NativeArray<InstanceData>(cs * cs * 12, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
+                TreesB = new NativeArray<InstanceData>(cs * cs * 12, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
                 Grass = new NativeArray<InstanceData>(cs * cs * 64, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
-                Understory = new NativeArray<InstanceData>(cs * cs * 4, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
+                Understory = new NativeArray<InstanceData>(cs * cs * 6, Allocator.Persistent, NativeArrayOptions.UninitializedMemory),
                 Counts = new NativeArray<int>(4, Allocator.Persistent),
                 Bounds = new NativeArray<float>(6, Allocator.Persistent),
             };
@@ -189,24 +239,39 @@ namespace SE.Runtime.Landscape
                 for (int lq = 0; lq < cs; lq++)
                 {
                     int q = cx * cs + lq, r = cy * cs + lr;
-                    if (q < world.Grid.W && r < world.Grid.H) p.Blocked[lr * cs + lq] = Blocked[r * world.Grid.W + q];
+                    if (q < world.Grid.W && r < world.Grid.H)
+                    {
+                        int t = r * world.Grid.W + q;
+                        p.Blocked[lr * cs + lq] = Blocked[t];
+                        p.TreeScars[lr * cs + lq] = TreeScars[t];
+                        p.GrassScars[lr * cs + lq] = GrassScars[t];
+                    }
                 }
             // the model pins its arrays for the life of the world; jobs read them in place
             var v = world.View;
             var job = new ChunkMeshJob
             {
-                Height = v.Height, Water = v.Water, Known = v.Known, GeoFlags = v.GeoFlags, Biome = v.Biome, Nb = v.Nb, Geo = world.GeoPtr,
+                Height = v.Height, Water = v.Water, Known = v.Known, GeoFlags = v.GeoFlags, Biome = v.Biome, Nb = v.Nb, Geo = world.GeoPtr, Dense = world.DensePtr,
                 Impacts = v.Impacts, ImpactCounts = v.ImpactCounts,
                 Trenches = v.Trenches,
                 W = world.Grid.W, H = world.Grid.H, WrapFlag = world.Grid.Wrap ? 1 : 0, Period = world.Grid.Period,
                 Cx = cx, Cy = cy, Cs = cs, Seed = seed, OriginX = ch.OriginX, TreeDensity = TreeDensity,
-                Meshes = p.Meshes, Layout = layout, Blocked = p.Blocked, TreesA = p.TreesA, TreesB = p.TreesB, Grass = p.Grass, Understory = p.Understory, Counts = p.Counts, BoundsOut = p.Bounds,
+                Meshes = p.Meshes, Layout = layout, Blocked = p.Blocked, TreeScars = p.TreeScars, GrassScars = p.GrassScars, StickyScars = PerfFlags.LegacyTrees ? 0 : 1, TreesA = p.TreesA, TreesB = p.TreesB, Grass = p.Grass, Understory = p.Understory, Counts = p.Counts, BoundsOut = p.Bounds,
             };
             p.Handle = job.Schedule();
             pending.Add(p);
         }
 
         void Finish(Pending p)
+        {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            FinishCore(p);
+            double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            FinishMsTotal += ms; if (ms > FinishMsMax) FinishMsMax = ms;
+            ChunksFinished++;
+        }
+
+        void FinishCore(Pending p)
         {
             p.Handle.Complete();
             var ch = p.Chunk < chunks.Length ? chunks[p.Chunk] : null;
@@ -240,15 +305,30 @@ namespace SE.Runtime.Landscape
                     ch.Grass = new InstanceBatch(MeshKit.Grass, RenderResources.GroundCover, 512);
                     ch.Understory = new InstanceBatch(MeshKit.Understory, RenderResources.Foliage, 128);
                 }
+                int oldTrees = ch.TreesA.Count + ch.TreesB.Count, newTrees = p.Counts[0] + p.Counts[1];
+                if (oldTrees > 0 || newTrees > 0) { TreeRefills++; TreeChurn += System.Math.Abs(newTrees - oldTrees); if (newTrees > oldTrees && ch.HasMesh) TreesRegrown += newTrees - oldTrees; }
                 Fill(ch.TreesA, p.TreesA, p.Counts[0], bounds);
                 Fill(ch.TreesB, p.TreesB, p.Counts[1], bounds);
                 Fill(ch.Grass, p.Grass, p.Counts[2], bounds);
                 Fill(ch.Understory, p.Understory, p.Counts[3], bounds);
+                // keep what the job destroyed (scars only ever gain bits; this chunk owns these tiles)
+                {
+                    int cs = WorldModel.ChunkSize, cx = p.Chunk % world.ChunksW, cy = p.Chunk / world.ChunksW;
+                    for (int lr = 0; lr < cs; lr++)
+                        for (int lq = 0; lq < cs; lq++)
+                        {
+                            int q = cx * cs + lq, r = cy * cs + lr;
+                            if (q >= world.Grid.W || r >= world.Grid.H) continue;
+                            int t = r * world.Grid.W + q;
+                            TreeScars[t] |= p.TreeScars[lr * cs + lq];
+                            GrassScars[t] |= p.GrassScars[lr * cs + lq];
+                        }
+                }
                 ch.Building = false;
                 ChunksBuilt++;
             }
             else p.Meshes.Dispose();
-            p.Blocked.Dispose(); p.TreesA.Dispose(); p.TreesB.Dispose(); p.Grass.Dispose(); p.Understory.Dispose(); p.Counts.Dispose(); p.Bounds.Dispose();
+            p.Blocked.Dispose(); p.TreeScars.Dispose(); p.GrassScars.Dispose(); p.TreesA.Dispose(); p.TreesB.Dispose(); p.Grass.Dispose(); p.Understory.Dispose(); p.Counts.Dispose(); p.Bounds.Dispose();
         }
 
         static void Fill(InstanceBatch batch, NativeArray<InstanceData> src, int count, Bounds bounds)
@@ -263,7 +343,7 @@ namespace SE.Runtime.Landscape
 
         public void Draw(WrapImages images, Vector3 cameraPos)
         {
-            DrawnChunks = 0;
+            DrawnChunks = 0; TreeInstancesDrawn = 0; TreeShadowInstances = 0;
             if (ViewLod.Valid) cameraPos = ViewLod.Eye;   // detail bands follow the zoom, not the telephoto eye
             var terrainParams = new RenderParams(RenderResources.Terrain) { shadowCastingMode = ShadowCastingMode.On, receiveShadows = true };
             var waterParams = new RenderParams(RenderResources.Water) { shadowCastingMode = ShadowCastingMode.Off, receiveShadows = true };
@@ -298,6 +378,8 @@ namespace SE.Runtime.Landscape
                         var shadows = dist < TreeShadowDistance ? ShadowCastingMode.On : ShadowCastingMode.Off;
                         if (dist >= TreeDistance) dist = Mathf.Max(dist, TreeSpeckDistance);
                         ch.TreesA.Shadows = shadows; ch.TreesB.Shadows = shadows;
+                        int trees = ch.TreesA.Count + ch.TreesB.Count;
+                        TreeInstancesDrawn += trees; if (shadows == ShadowCastingMode.On) TreeShadowInstances += trees;
                         ch.TreesA.Draw(off, k, meshOverride: dist < TreeLoDistance ? null : dist < TreeFarDistance ? MeshKit.DeciduousLo : dist < TreeSpeckDistance ? MeshKit.DeciduousFar : MeshKit.DeciduousSpeck);
                         ch.TreesB.Draw(off, k, meshOverride: dist < TreeLoDistance ? null : dist < TreeFarDistance ? MeshKit.ConiferLo : dist < TreeSpeckDistance ? MeshKit.ConiferFar : MeshKit.ConiferSpeck);
                     }

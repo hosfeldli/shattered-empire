@@ -83,7 +83,7 @@ namespace SE.Runtime.Session
 
         /// <summary>Positive messages worth a toast (spec B3); every other success is silent.</summary>
         static bool ToastWorthy(string text) =>
-            text == "Construction started" || text == "Upgrade started" || text == "Rally point set" ||
+            text.StartsWith("Construction started", StringComparison.Ordinal) || text == "Upgrade started" || text == "Rally point set" ||
             text.Length > 7 && char.IsDigit(text[0]) && text.EndsWith(" queued") ||
             text.Contains(" skipped");   // a stroke or perimeter built in part says what it left out (2026-11-17)
 
@@ -102,9 +102,9 @@ namespace SE.Runtime.Session
             Current = mode; Option = option ?? ""; TargetCommand = target;
             CancelPatrol();   // another tool (F, a wheel item) ends patrol planning instead of leaving it armed underneath
             FieldYaw = 0; cam.PlacementRotation = mode == Mode.Target && ProtocolDecoder.Str(target?["c"]) == "fieldBuild";
-            dragging = false; ClearRingPreview(); FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++;
+            dragging = false; ClearRingPreview(); FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++; ResetFieldPreview();
             path.Clear(); preview = null; legal.Clear(); legalReady = false;
-            worldStroke.Clear(); actionTrenchPreview = null; ResetBrush();
+            ResetStroke(); ResetBrush();
             if (mode == Mode.Place && session.Net != null)
             {
                 int token = ++placementToken;
@@ -120,7 +120,7 @@ namespace SE.Runtime.Session
             else if (mode == Mode.Place) legalReady = false;
         }
 
-        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; worldStroke.Clear(); actionTrenchPreview = null; cam.PlacementRotation = false; FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++; ResetBrush(); }
+        public void Cancel() { Current = Mode.Select; Option = ""; TargetCommand = null; path.Clear(); preview = null; legal.Clear(); PlacementSite = null; siteTile = -1; ResetStroke(); cam.PlacementRotation = false; FieldPreviewParcel = null; FieldPreviewValid = false; fieldPreviewToken++; ResetFieldPreview(); ResetBrush(); }
 
         public bool Dragging(out Rect rect)
         {
@@ -175,10 +175,13 @@ namespace SE.Runtime.Session
             // Time.unscaledTime, and the bootstrap clock lags it after any hitch (it accumulates clamped dt)
             time = Time.unscaledTime;
             var mouse = InputFacade.MousePosition;
+            // §40: the HUD used this frame's world click to close an open wheel; nothing in the world acts on it
+            if (ConsumedClickFrame == Time.frameCount) pointerOverUi = true;
             hoverTile = pointerOverUi ? -1 : TileUnderCursor();
             if (session.ActionRts) UpdateFieldPreview(time, pointerOverUi);
             HoverRingSlotFromWorld = session.ActionRts && Current == Mode.Select && !pointerOverUi ? WorldParcelUnderCursor() : 0;
-            if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { EscapeFrame = Time.frameCount; rightPress = false; lineDrag = false; linePreview = null; Say("Battle line cancelled", true, time); return; }
+            if (InputFacade.Pressed(KeyCode.Escape) && rightPress) { EscapeFrame = Time.frameCount; rightPress = false; lineDrag = false; ClearLinePreview(); Say("Battle line cancelled", true, time); return; }
+            if (InputFacade.Pressed(KeyCode.Escape) && rallyPlacing) { EscapeFrame = Time.frameCount; rallyPlacing = dragging = false; return; }
             if (InputFacade.Pressed(KeyCode.Escape) && Current != Mode.Select) { EscapeFrame = Time.frameCount; Cancel(); return; }
             OrderKeys(time, pointerOverUi);   // F attack move, V stance, the order cursor (Commander.Orders.cs)
             switch (Current)
@@ -191,18 +194,60 @@ namespace SE.Runtime.Session
                 case Mode.Target: if (TerrainBrushActive) TerrainBrushMode(time, pointerOverUi); else PointMode(time, pointerOverUi); break;   // terrain works paint (Commander.Terrain.cs)
                 case Mode.Growth: case Mode.Rally: PointMode(time, pointerOverUi); break;
             }
-            Orders.RemoveAll(o => time - o.Time > (o.State == "pending" ? 8f : 1.5f));
-            var stale = new List<int>();
-            foreach (var kv in refusedSites) if (time - kv.Value.at > 2.5f) stale.Add(kv.Key);
-            foreach (var t in stale) refusedSites.Remove(t);
-            stale.Clear();
-            foreach (var kv in pendingSites) if (time - kv.Value > 10f || (session.ActionRts ? session.Structures.Buildings.Values.Any(b => b.Slot == kv.Key) : BuildingAt(kv.Key) != null)) stale.Add(kv.Key);
-            foreach (var t in stale) pendingSites.Remove(t);
+            // expiry without per-frame garbage (no closures, no LINQ, one reused scratch list)
+            for (int i = Orders.Count - 1; i >= 0; i--)
+                if (time - Orders[i].Time > (Orders[i].State == "pending" ? 8f : 1.5f)) Orders.RemoveAt(i);
+            if (refusedSites.Count > 0)
+            {
+                staleScratch.Clear();
+                foreach (var kv in refusedSites) if (time - kv.Value.at > 2.5f) staleScratch.Add(kv.Key);
+                foreach (var t in staleScratch) refusedSites.Remove(t);
+            }
+            if (pendingSites.Count > 0)
+            {
+                staleScratch.Clear();
+                foreach (var kv in pendingSites) if (time - kv.Value > 10f || (session.ActionRts ? BuildingInSlot(kv.Key) : BuildingAt(kv.Key) != null)) staleScratch.Add(kv.Key);
+                foreach (var t in staleScratch) pendingSites.Remove(t);
+            }
         }
+
+        readonly List<int> staleScratch = new List<int>(8);
+
+        bool BuildingInSlot(int slot)
+        {
+            foreach (var b in session.Structures.Buildings.Values) if (b.Slot == slot) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// §40: the frame on which the HUD used the world click to close an open wheel (click-away). The commander
+        /// treats that frame as if the pointer were over the interface, so no order, build or selection follows.
+        /// </summary>
+        public int ConsumedClickFrame = -1;
 
         void SelectMode(float time, Vector2 mouse, bool overUi)
         {
-            if (!overUi && InputFacade.LeftDown && !InputFacade.Alt && !cam.MouseRotating) { dragStart = mouse; dragging = true; }   // Alt + drag turns the camera
+            if (!overUi && InputFacade.LeftDown && !InputFacade.Alt && !cam.MouseRotating)   // Alt + drag turns the camera
+            {
+                dragStart = mouse; dragging = true;
+                // §22: Shift + click on open ground with production selected places its rally point: the press shows
+                // the preview, the release sets it (a Shift + drag that becomes a box still adds the boxed units)
+                rallyPlacing = InputFacade.Shift && RallyCapable && !session.Spectator && GroundClear(mouse);
+            }
+            bool rightUsed = false;
+            if (rallyPlacing)
+            {
+                bool boxed = Mathf.Abs(mouse.x - dragStart.x) > 6 && Mathf.Abs(mouse.y - dragStart.y) > 6;
+                if (!dragging) rallyPlacing = false;
+                else if (InputFacade.RightDown) { rallyPlacing = dragging = false; rightUsed = true; }   // right-click drops the placement
+                else if (InputFacade.LeftUp && !boxed)
+                {
+                    rallyPlacing = dragging = false;
+                    int rallyTile = TileUnderCursor();
+                    if (rallyTile >= 0) SetRally(rallyTile, time);
+                }
+                else if (InputFacade.LeftUp) rallyPlacing = false;   // became a box: the release below selects
+            }
             if (dragging && InputFacade.LeftUp)
             {
                 dragging = false;
@@ -224,6 +269,10 @@ namespace SE.Runtime.Session
                     float d = (sp - mouse).sqrMagnitude;
                     if (d < bestD) { bestD = d; best = u.Id; bestType = u.TypeIndex; }
                 }
+                // Ctrl + double-click: the same type everywhere, not only on screen
+                // a click well inside a structure's drawn body selects the structure, not a unit standing beside it
+                if (best >= 0 && !box && session.ActionRts && bestD > 9f * 9f && StructureFirmlyUnderCursor(mouse)) best = -1;
+                bool everywhere = doubleClick && InputFacade.Ctrl;
                 if (best >= 0)
                 {
                     units.Selected.Add(best);
@@ -231,12 +280,20 @@ namespace SE.Runtime.Session
                         for (int s = 0; s < st.SlotCount; s++)
                         {
                             ref var u = ref st.Records[s];
-                            if (u.InUse && u.Owner == session.CivId && (u.Flags & AutoEngineerFlag) == 0 && u.TypeIndex == bestType && ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) units.Selected.Add(u.Id);
+                            if (u.InUse && u.Owner == session.CivId && (u.Flags & AutoEngineerFlag) == 0 && u.TypeIndex == bestType
+                                && (everywhere || ScreenOf(s, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height)) units.Selected.Add(u.Id);
                         }
                 }
                 else if (!box && session.ActionRts && (SelectActionPickup(mouse) || SelectActionRing(mouse, doubleClick) || SelectActionObjective(mouse, tile)))
                 {
-                    // Objective cards cover both secured and undeveloped sites.
+                    // Objective cards cover both secured and undeveloped sites. A double-click on a building selected its
+                    // type on screen (Commander.Rings.cs); with Ctrl it widens to the whole map.
+                    if (everywhere && SelectedBuildings.Count > 0 && units.Selected.Count == 0)
+                    {
+                        string type = null;
+                        foreach (int id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var picked)) { type = picked.Type; break; }
+                        SelectSameTypeEverywhere(type);
+                    }
                 }
                 else if (!box && doubleClick && tile >= 0 && BuildingAt(tile) == null && cam.TryGround(mouse, out var centre))
                     cam.JumpTo(centre);   // double-click on open ground: centre the view there
@@ -250,22 +307,22 @@ namespace SE.Runtime.Session
                     SelectedBuildings.Add(b.Id);
                     if (doubleClick)
                         foreach (var o in session.Structures.Buildings.Values)
-                            if (o.Owner == b.Owner && o.Type == b.Type && TileScreen(o.Tile, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height) SelectedBuildings.Add(o.Id);
+                            if (o.Owner == b.Owner && o.Type == b.Type && (everywhere || TileScreen(o.Tile, out var sp) && sp.x >= 0 && sp.y >= 0 && sp.x <= Screen.width && sp.y <= Screen.height)) SelectedBuildings.Add(o.Id);
                 }
                 SelectionChanged?.Invoke();
             }
             units.Selected.RemoveWhere(id => !session.Units.SlotOf.ContainsKey(id));
             SelectedBuildings.RemoveWhere(id => !session.Structures.Buildings.ContainsKey(id));
             // right button: a click moves (on release); a drag draws a battle line
-            if (!session.Spectator && !overUi && InputFacade.RightDown && units.Selected.Count > 0 && cam.TryGround(mouse, out var ground))
+            if (!session.Spectator && !overUi && !rightUsed && InputFacade.RightDown && units.Selected.Count > 0 && cam.TryGround(mouse, out var ground))
             {
-                rightPress = true; lineDrag = false; lineReverse = false; linePreview = null;
+                rightPress = true; lineDrag = false; lineReverse = false; ClearLinePreview();
                 lineStartScreen = mouse; lineStartGround = ground; linePath.Clear();
                 worldLine.Clear(); worldLine.Add(ground); linePreviewAt = 0;
                 int t0 = session.World.Grid.TileAt(ground.x, ground.z);
                 if (t0 >= 0) linePath.Add(t0);
             }
-            else if (!session.Spectator && !overUi && InputFacade.RightDown && (SelectedBuildings.Count > 0 || SelectedObjective > 0) && units.Selected.Count == 0)
+            else if (!session.Spectator && !overUi && !rightUsed && InputFacade.RightDown && (SelectedBuildings.Count > 0 || SelectedObjective > 0) && units.Selected.Count == 0)
             {
                 int tile = TileUnderCursor();
                 if (tile >= 0) SetRally(tile, time);
@@ -278,6 +335,28 @@ namespace SE.Runtime.Session
                 if (!lineDrag && InputFacade.Action("follow")) ToggleFollow(time);
             }
             ControlGroups(time);
+            SelectionKeys();   // A / Ctrl+A (WASD: Q), E / Ctrl+E (Commander.Groups.cs)
+        }
+
+        // ------------------------------------------------------------------ Shift-click rally (§22)
+        bool rallyPlacing;
+
+        /// <summary>True while a Shift-click rally placement is held (its preview shows; release sets it, Esc cancels).</summary>
+        public bool PlacingRally => rallyPlacing;
+
+        /// <summary>Nothing a click would select under the cursor: no own unit, building, pickup or base parcel.</summary>
+        bool GroundClear(Vector2 mouse)
+        {
+            var st = session.Units;
+            for (int s = 0; s < st.SlotCount; s++)
+            {
+                ref var u = ref st.Records[s];
+                if (!u.InUse || !Selectable(u)) continue;
+                if (ScreenOf(s, out var sp) && (sp - mouse).sqrMagnitude < 18f * 18f) return false;
+            }
+            if (session.ActionRts) return SpatialBuildingAt(mouse) == null && !PickupAt(mouse, out _) && HoverRingSlotFromWorld == 0;
+            int tile = TileUnderCursor();
+            return tile >= 0 && BuildingAt(tile) == null;
         }
 
         // ------------------------------------------------------------------ battle lines
@@ -291,7 +370,8 @@ namespace SE.Runtime.Session
         JObject linePreview;
         float linePreviewAt;
         int lineToken;
-        public bool DrawingLine => lineDrag;
+        /// <summary>True while the commander owns Escape for a pointer gesture: a battle line (pressed or drawn) or a Shift-click rally.</summary>
+        public bool DrawingLine => lineDrag || rightPress || rallyPlacing;
 
         void BattleLine(float time, Vector2 mouse)
         {
@@ -313,7 +393,7 @@ namespace SE.Runtime.Session
                 if (tile >= 0) Move(tile, lineStartGround, InputFacade.Shift || InputFacade.Ctrl, time);
             }
             lineDrag = false;
-            linePreview = null;
+            ClearLinePreview();
         }
 
         void DeployCommand(bool preview, float time)
@@ -481,7 +561,11 @@ namespace SE.Runtime.Session
         void DrawMode(float time, bool overUi)
         {
             if (overUi && !dragging) return;
-            if (InputFacade.RightDown) { Cancel(); return; }
+            switch (StrokeRightClickInput(dragging))   // the shared stroke rules (Commander.Action.cs)
+            {
+                case StrokeRightClick.DropStroke: path.Clear(); preview = null; dragging = false; return;
+                case StrokeRightClick.EndTool: Cancel(); return;
+            }
             if (InputFacade.LeftDown && !overUi) { path.Clear(); preview = null; dragging = true; }
             if (dragging && hoverTile >= 0 && (path.Count == 0 || path[path.Count - 1] != hoverTile))
             {
@@ -545,25 +629,21 @@ namespace SE.Runtime.Session
                 IssueAttackMove(tile, time);
                 if (InputFacade.Shift) return;   // Shift keeps attack move armed for more waypoints
             }
+            else if (Current == Mode.Target && TargetCommand != null && ProtocolDecoder.Str(TargetCommand["c"]) == "fieldBuild")
+            {
+                FieldBuildClick(time);   // Commander.Rings.cs: snapped like the ghost; Shift keeps the tool; ends on the server's yes
+                return;
+            }
             else if (Current == Mode.Target && TargetCommand != null)
             {
                 var cmd = (JObject)TargetCommand.DeepClone();
-                if (ProtocolDecoder.Str(cmd["c"]) == "fieldBuild")
-                {
-                    if (!FieldPreviewValid) { Say(FieldPreviewReason, false, time); return; }
-                    cmd["yaw"] = FieldYaw;
-                }
                 Bind(cmd, tile);
                 if (session.ActionRts && cam.TryGround(InputFacade.MousePosition, out var p))
                 {
                     cmd["point"] = Point(p);
                     if (ProtocolDecoder.Str(cmd["c"]) == "move") { cmd["queue"] = InputFacade.Shift; ActionMoveOrders++; }
                 }
-                string sent = ProtocolDecoder.Str(cmd["c"]);
-                string ok = sent == "fieldBuild" ? "Construction started" : "Order accepted";
-                session.Net?.Command(cmd, r => Say(ReadableError(r) ?? ok, r.Error == null, Time.unscaledTime));
-                // Shift keeps a build-wheel placement armed for the next one (the preview re-checks the new spot)
-                if (sent == "fieldBuild" && InputFacade.Shift) { FieldPreviewValid = false; fieldPreviewType = null; return; }
+                session.Net?.Command(cmd, r => Say(ReadableError(r) ?? "Order accepted", r.Error == null, Time.unscaledTime));
             }
             Cancel();
         }
@@ -739,7 +819,7 @@ namespace SE.Runtime.Session
                 case Mode.Trench: return "Drag the trench line · blocked hexes are skipped · release to dig";
                 case Mode.Growth: return "Click where the city should grow";
                 case Mode.Rally: return "Click the rally point";
-                case Mode.Target: return TerrainBrushActive ? $"Drag to paint · {InputFacade.KeyLabel("brush_smaller")} {InputFacade.KeyLabel("brush_larger")} or Ctrl + wheel: brush size · release to order · Shift keeps the tool · Esc cancels" : PlacingDefense(out int inf) ? $"Click to place · past the amber line ({inf} hexes beyond your territory) defenses cost ×{ProtocolDecoder.Float(session.Defs?["RULESET"]?["influence"]?["factor"], 3):0.#}" : "Click the target on the map";
+                case Mode.Target: return TerrainBrushActive ? $"Drag to paint · {InputFacade.KeyLabel("brush_smaller")} {InputFacade.KeyLabel("brush_larger")} or Ctrl + wheel: brush size · release to order · Shift keeps the tool · Esc cancels" : PlacingDefense(out int inf) ? $"Click to place · past your ring of influence border ({inf} hexes beyond your territory) defenses cost ×{ProtocolDecoder.Float(session.Defs?["RULESET"]?["influence"]?["factor"], 3):0.#}" : "Click the target on the map";
                 default: return "";
             }
         }

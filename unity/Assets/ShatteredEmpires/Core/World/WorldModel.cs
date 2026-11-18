@@ -28,6 +28,23 @@ namespace SE.Core.World
         public byte[] Geo = Array.Empty<byte>();
         public byte[] Known = Array.Empty<byte>();
         public byte[] Biome = Array.Empty<byte>();
+        /// <summary>
+        /// §30 dense forest from the welcome (world.dense), 1 per hex. A hex is dense while this is set AND it is still
+        /// forest (<see cref="IsDense"/>): cleared forest becomes grass. Kept across view resets of the same match.
+        /// </summary>
+        public byte[] Dense = Array.Empty<byte>();
+        public byte* DensePtr { get; private set; }
+        public int DenseRevision { get; private set; }
+        public bool IsDense(int t) => t >= 0 && t < Dense.Length && Dense[t] != 0 && Biome[t] == 4;
+
+        /// <summary>Unpack the welcome's dense-forest bitset (hex t = bit (t &amp; 7) of byte t &gt;&gt; 3); null clears it.</summary>
+        public void SetDense(byte[] bits)
+        {
+            if (Grid == null) return;
+            for (int t = 0; t < Dense.Length; t++)
+                Dense[t] = bits != null && (t >> 3) < bits.Length && (bits[t >> 3] & (1 << (t & 7))) != 0 ? (byte)1 : (byte)0;
+            DenseRevision++;
+        }
         public byte[] GeoFlags = Array.Empty<byte>();
         public float[] Height = Array.Empty<float>();
         public float[] Water = Array.Empty<float>();
@@ -71,6 +88,7 @@ namespace SE.Core.World
                 Geo = new byte[n * GeoStride];
                 Known = new byte[n];
                 Biome = new byte[n];
+                Dense = new byte[n];
                 GeoFlags = new byte[n];
                 Height = new float[n];
                 Water = new float[n];
@@ -119,6 +137,7 @@ namespace SE.Core.World
                 Trenches = (float*)PinArray(TrenchGeometry),
             };
             GeoPtr = (byte*)PinArray(Geo);
+            DensePtr = (byte*)PinArray(Dense);
             // ridge-noise cache for main-thread height queries (pure function of position: never stale)
             ridgeCache = new float[Grid.N * 42];
             ridgeFilled = new byte[Grid.N];
@@ -159,8 +178,9 @@ namespace SE.Core.World
             if (!Ready) return;
             var next = new Dictionary<int, TrenchRecord>();
             foreach (var r in records) if (r.HasPosition && r.Tile >= 0 && r.Tile < Grid.N && r.Progress > 0) next[r.Tile] = r;
-            // Which neighbouring nodes each dug node is joined to (the rule WarzoneRenderer draws links by), so the
-            // ground cut and its scar follow the drawn line and stop where it stops (TerrainView.TrenchNearest).
+            // Which neighbouring nodes each dug node is joined to (TrenchNetwork.Linked, the rule TrenchRenderer draws
+            // links by), so troops, the works' footprint and its scar follow the drawn line and stop where it stops
+            // (TerrainView.TrenchNearest).
             var links = new Dictionary<int, int>();
             foreach (var kv in next)
             {
@@ -170,8 +190,7 @@ namespace SE.Core.World
                     int nb = Grid.Nb[kv.Key * 6 + d];
                     if (nb < 0 || !next.TryGetValue(nb, out var o) || o.Owner != r.Owner) continue;
                     float lx = Grid.DxWrap(r.X, o.X), lz = o.Z - r.Z, len = (float)Math.Sqrt(lx * lx + lz * lz);
-                    bool routed = (r.Route & (1 << d)) != 0 || (o.Route & (1 << ((d + 3) % 6))) != 0;
-                    if (len >= .02f && len <= (routed ? 2.2f : 1.35f)) mask |= 1 << d;
+                    if (TrenchNetwork.Linked(r, o, d, len)) mask |= 1 << d;
                 }
                 links[kv.Key] = mask;
             }
@@ -195,30 +214,42 @@ namespace SE.Core.World
             if (changed) GeometryRevision++;
         }
 
+        // ApplyImpacts scratch (reused: this runs on every econ frame and allocated per tile before)
+        readonly Dictionary<int, List<ImpactRecord>> impactNext = new Dictionary<int, List<ImpactRecord>>();
+        readonly Stack<List<ImpactRecord>> impactLists = new Stack<List<ImpactRecord>>();
+        readonly HashSet<int> impactCandidates = new HashSet<int>();
+        readonly float[] impactValues = new float[24];
+
         public void ApplyImpacts(ImpactRecord[] records, Action beforeChange, HashSet<int> chunks, HashSet<int> cells)
         {
             if (!Ready) return;
-            var next = new Dictionary<int, List<ImpactRecord>>();
+            var next = impactNext;
+            foreach (var l in next.Values) { l.Clear(); impactLists.Push(l); }
+            next.Clear();
             foreach (var r in records)
             {
                 if (r.Tile < 0 || r.Tile >= Grid.N) continue;
-                if (!next.TryGetValue(r.Tile, out var list)) next[r.Tile] = list = new List<ImpactRecord>(6);
+                if (!next.TryGetValue(r.Tile, out var list)) next[r.Tile] = list = impactLists.Count > 0 ? impactLists.Pop() : new List<ImpactRecord>(6);
                 if (list.Count < 6) list.Add(r);
             }
-            var candidates = new HashSet<int>(impactTiles); candidates.UnionWith(next.Keys);
+            var candidates = impactCandidates; candidates.Clear(); candidates.UnionWith(impactTiles); candidates.UnionWith(next.Keys);
             bool changed = false;
+            var values = impactValues;
             foreach (int tile in candidates)
             {
                 next.TryGetValue(tile, out var list);
                 int count = list?.Count ?? 0, offset = tile * 24;
-                var values = new float[24];
+                Array.Clear(values, 0, 24);
                 for (int k = 0; k < count; k++)
                 {
                     var r = list[k];
                     float power = r.Class == "strategic" ? 1f : r.Class == "bomb" || r.Class == "missile" ? .72f : r.Class == "mortar" ? .28f : .47f;
                     values[k * 4] = r.X; values[k * 4 + 1] = r.Z;
-                    values[k * 4 + 2] = .15f + power * .35f + r.Severity * .08f;
-                    values[k * 4 + 3] = .035f + power * .10f;
+                    float radius = .15f + power * .35f + r.Severity * .08f;
+                    // the bowl fills in as the server heals it (Heal steps every 30 s map-wide, so this re-meshes
+                    // a cratered chunk at most that often); the radius stays put so the crater does not creep
+                    values[k * 4 + 2] = radius;
+                    values[k * 4 + 3] = radius * TerrainView.ImpactDepthPerRadius * Math.Max(0f, Math.Min(1f, r.Heal));
                 }
                 bool same = ImpactCounts[tile] == count;
                 for (int k = 0; k < 24 && same; k++) same = Impacts[offset + k] == values[k];

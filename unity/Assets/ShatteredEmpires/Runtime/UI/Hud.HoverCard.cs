@@ -64,7 +64,9 @@ namespace SE.Runtime.UI
                 int found = PickHoverUnit(toScreen, unitAt, mouse);
                 if (found != hoverId) { hoverId = found; hoverCardSince = time; if (found == 0) HideHoverCard(); }
             }
+            if (hoverId == 0 && BuildingHoverCard(toScreen, time)) return;   // no unit: the structure under the cursor (below)
             if (hoverId == 0 || !session.Units.TryGet(hoverId, out var u)) { HideHoverCard(); return; }
+            hoverBuildingFilled = -1;
             if (time - hoverCardSince < .15f) return;   // a short settle so sweeping the cursor across an army doesn't flicker
             var at = unitAt(hoverId);
             if (at == null) { HideHoverCard(); return; }
@@ -128,6 +130,86 @@ namespace SE.Runtime.UI
             hoverStatus.text = status;
             hoverStatus.EnableInClassList("warn", u.Hp <= 60 && u.Hp > 30);
             hoverStatus.EnableInClassList("bad", u.Hp <= 30);
+        }
+
+        // ---- structures (workstream B, 2026-11-18): with no unit under the cursor, the card names the structure the
+        // commander's pick has under it (Commander.HoverBuildingId: the same footprint pick a click uses, so the card
+        // never names something a click would not select). Text is rebuilt only when the structure or its values change.
+        int hoverBuilding, hoverBuildingFilled = -1, hoverBuildingHp = -1, hoverBuildingLevel = -1, hoverBuildingProgress = -1;
+        float hoverBuildingSince;
+
+        bool BuildingHoverCard(Func<Vector3, Vector3> toScreen, float time)
+        {
+            int id = commander.HoverBuildingId;
+            if (id != hoverBuilding) { hoverBuilding = id; hoverBuildingSince = time; }
+            if (id == 0 || !session.Structures.Buildings.TryGetValue(id, out var b) || !b.HasPosition) { HideHoverCard(); return true; }
+            if (time - hoverBuildingSince < .2f) { HideHoverCard(); return true; }
+            var sp = toScreen(new Vector3(b.X, session.World.GroundHeight(b.X, b.Z) + .45f, b.Z));
+            if (sp.z <= 0) { HideHoverCard(); return true; }
+            FillBuildingHoverCard(b);
+            if (!hoverShown) { hoverShown = true; hoverCard.BringToFront(); UiKit.Show(hoverCard); }
+            var p = ToPanel(sp);
+            float w = root.layout.width, h = root.layout.height;
+            if (float.IsNaN(w) || w <= 0) { w = 1920; h = 1080; }
+            var pos = new Vector2(p.x + 30, p.y - 40);
+            if (pos.x + 330 > w - 8) pos.x = p.x - 30 - 330;
+            pos.y = Mathf.Clamp(pos.y, 48, h - 120);
+            if (!((pos - hoverAt).sqrMagnitude <= .0025f)) { hoverAt = pos; hoverCard.style.translate = new Translate(pos.x, pos.y); }
+            return true;
+        }
+
+        void FillBuildingHoverCard(in BuildingRecord b)
+        {
+            int progress = b.Done ? 100 : b.Progress;
+            if (hoverBuildingFilled == b.Id && hoverBuildingHp == b.Hp && hoverBuildingLevel == b.Level && hoverBuildingProgress == progress) return;
+            hoverFilledFor = -1;   // the unit card refills when it is next shown
+            if (hoverBuildingFilled != b.Id)
+            {
+                hoverName.text = NameOf("BUILDINGS", b.Type ?? "");
+                hoverOwner.text = b.Memory ? OwnerLine(b.Owner) + " · last seen" : OwnerLine(b.Owner);
+                var rel = UiKit.RelationColor(session, b.Owner);
+                hoverOwner.style.color = rel;
+                hoverDot.style.backgroundColor = rel;
+                hoverRole.text = StructureRole(b.Type);
+            }
+            hoverBuildingFilled = b.Id; hoverBuildingHp = b.Hp; hoverBuildingLevel = b.Level; hoverBuildingProgress = progress;
+            string status = b.Done ? $"Condition {b.Hp}%" : $"Under construction {progress}%";
+            if (b.Done && b.Level > 1) status += $" · Level {b.Level}";
+            hoverStatus.text = status;
+            hoverStatus.EnableInClassList("warn", b.Done && b.Hp <= 60 && b.Hp > 30);
+            hoverStatus.EnableInClassList("bad", b.Done && b.Hp <= 30);
+        }
+
+        /// <summary>A one-line role: what the structure is for and, for defenses, what it is good and weak against.</summary>
+        string StructureRole(string type)
+        {
+            switch (type)
+            {
+                case "town": return "Headquarters · trains engineers, unlocks ring sites";
+                case "barracks": case "camp": return "Trains infantry and scout buggies";
+                case "motor_works": return "Builds armored cars, carriers and tanks";
+                case "heavy_weapons": case "heavy_assembly": return "Builds artillery, missile vehicles and mobile AA";
+                case "airfield": return "Builds and services aircraft";
+                case "depot": return "Generates materials";
+                case "power_plant": return "Generates energy";
+                case "armory": return "Faction-wide upgrades";
+                case "advanced_lab": return "Autonomous systems and specialist units";
+                case "missile_silo": return "Strategic missiles";
+                case "barricade": case "sandbags": return "Low cover · infantry fire over it";
+                case "city_turret": return "MG turret · strong vs infantry, weak vs armor";
+                case "guard_post": case "watchtower": return "MG watchtower · spots and claims ground";
+                case "bunker": return "Bunker · holds against infantry and shellfire";
+                case "turret": case "at_emplacement": return "Anti-armor gun · strong vs vehicles";
+                case "aa_battery": return "Anti-air · engages aircraft only";
+                case "artillery_post": return "Howitzer · long range, slow to traverse";
+                case "fort": case "outpost": return "Outpost · heavy gun, claims ground";
+                case "sensor_post": return "Radar · wide vision";
+                case "repair_point": return "Repairs nearby vehicles";
+                default:
+                    var desc = ProtocolDecoder.Str(Defs?["BUILDINGS"]?[type ?? ""]?["desc"], "");
+                    int stop = desc.IndexOf('.');
+                    return stop > 0 ? desc.Substring(0, stop) : desc;
+            }
         }
 
         bool IsAircraft(int typeIndex) => ProtocolDecoder.Bool(Defs?["UNITS"]?[session.Units.Types.Name(typeIndex)]?["air"]);

@@ -143,6 +143,8 @@ namespace SE.Runtime.App
         void Awake()
         {
             opts = LaunchOptions.FromCommandLine();
+            PrepareReleaseShots();   // GameBootstrap.ReleaseShots.cs (-release-shots)
+            PerfFlags.Parse(opts.Get("perf-legacy"));
             // Review/benchmark launches can explicitly choose a small window. Ordinary
             // desktop startup always fills the current display without an exclusive mode switch.
             if (!Application.isEditor && !opts.Has("screen-fullscreen") && !opts.Has("review") && !opts.Has("perf"))
@@ -188,6 +190,7 @@ namespace SE.Runtime.App
             rts.Bind(session.World);
             commander = new Commander(session, rts, units);
             session.BeforeGeometryChange = terrain.CompleteAll;
+            session.GeometryBusy = terrain.PollBusy;
             session.Welcomed += OnWelcomed;
             session.Other += OnOther;
             if (!bench) audioDirector = new AudioDirector(cam);
@@ -748,7 +751,7 @@ namespace SE.Runtime.App
             gcLast = gcNow; gc1Last = System.GC.CollectionCount(1);
             long tn = Stopwatch.GetTimestamp();
             int before = session.Snapshots + session.GeoMessages;
-            net?.Update(4.0);
+            using (NetMarker.Auto()) net?.Update(4.0);
             stallNet = Ms(tn); stallMsgs = session.Snapshots + session.GeoMessages - before;
             if (phase == Phase.Connecting && net != null && net.State == GameConnection.Status.Retrying) hud?.ShowMenu(true, "Cannot reach " + serverUrl + "; retrying…");
             else if (phase == Phase.Connecting && !(hud?.MenuVisible ?? true)) hud?.ShowLoading(LoadingStage());
@@ -763,7 +766,11 @@ namespace SE.Runtime.App
             if (!reviewStarted && opts.Has("review") && time > 5 && (phase == Phase.Menu || phase == Phase.Playing && session.Snapshots >= 8))
             { reviewStarted = true; StartCoroutine(ReviewScenes()); }
             stallPresent = Ms(tp);
-            hud?.Update(time);
+            long th = Stopwatch.GetTimestamp();
+            using (HudMarker.Auto()) hud?.Update(time);
+            stallHud = Ms(th);
+            StepSoak();
+            StepReleaseShots();
             if (perfRunning && net != null && net.State == GameConnection.Status.Ready && time > probeAt)
             {
                 probeAt = time + 0.5f;
@@ -771,13 +778,19 @@ namespace SE.Runtime.App
             }
             double frameMs = Time.unscaledDeltaTime * 1000.0;
             recent.Add(frameMs);
-            perf.Sample(frameMs, (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency);
+            double mainMs = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+            perf.Sample(frameMs, mainMs);
+            SoakSample(frameMs, mainMs);
         }
 
         void Present(float dt)
         {
             var world = session.World;
             session.Units.AdvanceClock(dt, session.PlayRate, session.Paused);
+            // queued geometry (craters, trenches, heights) goes in once the terrain jobs reading it are done;
+            // meanwhile no new jobs start, so the queue drains within a few frames without a blocking wait
+            session.FlushGeometry(false);
+            terrain.HoldScheduling = session.GeometryDeferred;
             if (session.DirtyChunks.Count > 0) { terrain.MarkDirty(session.DirtyChunks); session.DirtyChunks.Clear(); }
             if (session.DirtyCells.Count > 0) { city.MarkDirty(session.DirtyCells); session.DirtyCells.Clear(); }
             if (ruinRev != session.RuinRevision)
@@ -799,11 +812,12 @@ namespace SE.Runtime.App
             units.HighContrast = GameSettings.HighContrastMarkers;
             if (phase == Phase.Playing && !reviewCapturing) commander.Update(time, overUi);
             long tq = Stopwatch.GetTimestamp();
+            PhaseMarkers[0].Begin();
             PresentEvents();
             Mark(0, ref tq);
             fog.Update(world);
             if (ground.Update(world, session.Battlefield, session.BattlefieldRevision, session.Weather, session.WeatherRevision, world.UrbanRevision))
-                for (int i = 0; i < world.Grid.N; i++) if (ground.IsWasteland(i)) terrain.SetBlocked(i, true);
+                for (int i = 0; i < world.Grid.N; i++) if (ground.IsWasteland(i)) terrain.SetWasteland(i, true);   // its own bit: city recomposes no longer clear it (perf pass 2)
             Mark(1, ref tq);
             var camMap = rts.MapPosition;
             long ts = Stopwatch.GetTimestamp();
@@ -814,6 +828,10 @@ namespace SE.Runtime.App
             city.SimulationTime = session.Units.RenderTime;
             if (city.ActionRts) city.SetObjectives(session.Objectives.Values);
             city.SetPickups(session.Pickups.Values);
+            // ring of influence edge (TerritoryField, 2026-11-18): our ring, drawn faintly always and fully while placing a defense
+            city.Territory.InfluenceCiv = city.ActionRts ? session.CivId : -1;
+            city.Territory.InfluenceReach = city.ActionRts ? ProtocolDecoder.Int(session.Defs?["RULESET"]?["influence"]?["reach"], 0) : 0;
+            city.Territory.SetInfluenceStrength(phase == Phase.Playing && commander.PlacingInfluencedStructure ? 1f : .3f);
             city.Update(camMap, terrain);
             // the building being placed, drawn where it would stand (green: allowed, red: not)
             if (phase == Phase.Playing && commander.RingPreviewParcel is BaseParcel ringParcel) city.SetGhost(commander.RingPreviewType, ringParcel.Tile, session.CivId, true, ringParcel);
@@ -827,8 +845,9 @@ namespace SE.Runtime.App
             stallCity = Ms(ts); ts = Stopwatch.GetTimestamp();
             var cam = rts.Cam;
             float camX = SE.Runtime.Rendering.ViewLod.EyeOr(cam).x;   // the logical eye: the telephoto camera stands far back
-            units.Update(session.Units, world, session.CivColor, camX, rts.Focus, rts.Distance, time, dt, session.Structures);
-            city.Animate(time, session.Units.RenderTime, rts.Focus, rts.Distance, atmosphere.WindMap);
+            using (UnitsMarker.Auto()) units.Update(session.Units, world, session.CivColor, camX, rts.Focus, rts.Distance, time, dt, session.Structures);
+            using (AnimateMarker.Auto()) city.Animate(time, session.Units.RenderTime, rts.Focus, rts.Distance, atmosphere.WindMap);
+            HudOverlayMarker.Begin();
             hud?.BadgeCounts(units.Badges, p => rts.ToScreen(new Vector3(p.x, p.y, p.z)));
             hud?.DrawObjectives(s =>
             {
@@ -842,6 +861,7 @@ namespace SE.Runtime.App
                 float ux = world.Grid.NearX(up.x, rts.Focus.x);
                 return new Vector3(ux, world.GroundHeight(ux, up.y), up.y);
             }, time, rts.Distance);
+            HudOverlayMarker.End();
             stallUnits = Ms(ts);
             Mark(6, ref tq);
             atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);
@@ -854,16 +874,22 @@ namespace SE.Runtime.App
             Mark(8, ref tq);
             if (audioDirector != null) UpdateAudio(dt);
             images.Begin(cam, world.Grid.Period, world.Grid.Wrap);
+            long td = Stopwatch.GetTimestamp();
             terrain.Draw(images, cam.transform.position);
+            DrawMark(0, ref td);
             shroud?.Draw(cam, phase == Phase.Playing && world.Ready, fog.Enabled, world.Grid.Wrap, new Vector2(atmosphere.WindMap.x, atmosphere.WindMap.z), dt, atmosphere.Dim);
             atmosphere.NeedsDepth = shroud != null && shroud.Active;
             Shader.SetGlobalFloat("_SE_SoftParticles", atmosphere.NeedsDepth ? 1 : 0);
             city.Draw(images);
+            DrawMark(1, ref td);
             warzone.Draw(images);
+            DrawMark(2, ref td);
             units.Draw();
+            DrawMark(3, ref td);
             fx.Draw(images);
             wildlife?.Draw(images);
             if (phase == Phase.Playing) commander.DrawOverlay(images, time);
+            DrawMark(4, ref td);
             Mark(9, ref tq);
             phaseFrames++;
         }
@@ -872,8 +898,23 @@ namespace SE.Runtime.App
         static readonly string[] PhaseNames = { "events", "fog+ground", "terrain", "city", "warzone", "traffic", "units", "atmosphere", "fx", "draw" };
         readonly double[] phaseMs = new double[10], phaseSum = new double[10], phaseMax = new double[10];
         long phaseFrames;
+        // split of the "draw" phase (perf pass 2): terrain, city, warzone, units, fx+overlay submission
+        static readonly string[] DrawNames = { "terrain", "city", "warzone", "units", "fx" };
+        readonly double[] drawMs = new double[5];
+        void DrawMark(int k, ref long since)
+        {
+            long now = Stopwatch.GetTimestamp();
+            drawMs[k] = (now - since) * 1000.0 / Stopwatch.Frequency;
+            since = now;
+        }
+        // profiler markers per phase (perf pass 2: GC attribution in a profiler capture); free without a profiler
+        static readonly Unity.Profiling.ProfilerMarker[] PhaseMarkers = System.Array.ConvertAll(PhaseNames, n => new Unity.Profiling.ProfilerMarker("SE.Present." + n));
+        static readonly Unity.Profiling.ProfilerMarker NetMarker = new Unity.Profiling.ProfilerMarker("SE.Net"), HudMarker = new Unity.Profiling.ProfilerMarker("SE.Hud"),
+            UnitsMarker = new Unity.Profiling.ProfilerMarker("SE.Units.Update"), AnimateMarker = new Unity.Profiling.ProfilerMarker("SE.City.Animate"), HudOverlayMarker = new Unity.Profiling.ProfilerMarker("SE.Hud.Overlays");
         void Mark(int k, ref long since)
         {
+            PhaseMarkers[k].End();
+            if (k + 1 < PhaseMarkers.Length) PhaseMarkers[k + 1].Begin();
             long now = Stopwatch.GetTimestamp();
             double ms = (now - since) * 1000.0 / Stopwatch.Frequency;
             since = now;
@@ -973,9 +1014,9 @@ namespace SE.Runtime.App
                         if (store.TryGet(e.Shooter, out var shooter))
                         {
                             var type = store.Types.Name(shooter.TypeIndex);
-                            heavy = type.Contains("tank") || type == "field_gun" || type == "sp_artillery" || type == "armored_car";
+                            heavy = type.Contains("tank") || type == "field_gun" || type == "sp_artillery" || type == "armored_car" || type == "exo_infantry";   // exo_infantry: the IFV autocannon (2026-11-18)
                             aa = type == "air_defense";
-                            sound = type == "engineer" ? "pistol" : type.Contains("tank") || type == "field_gun" ? "cannon" : type == "armored_car" || type == "scout_buggy" ? "mg" : type == "mech_infantry" ? "autocannon" : aa ? "flak" : "rifle";
+                            sound = type == "engineer" ? "pistol" : type.Contains("tank") || type == "field_gun" ? "cannon" : type == "armored_car" || type == "scout_buggy" ? "mg" : type == "mech_infantry" || type == "exo_infantry" ? "autocannon" : aa ? "flak" : "rifle";
                         }
                         else if (session.Structures.Buildings.TryGetValue(e.Shooter, out var emplacement))
                         {
@@ -987,6 +1028,14 @@ namespace SE.Runtime.App
                         p = WeaponMuzzle(e.Shooter, p, target);
                         fx.Muzzle(p, heavy, target-p);
                         if (e.Marksman) { NoteUpgradeFx(2, p); fx.MarksmanShot(p, target); }   // Designated Marksmen: one long precision shot (J)
+                        else if (e.BurstRound > 0)
+                        {
+                            // a bunker MG burst (server def.burst, 2026-11-18): each round is a heavy tracer pair from the embrasure, the
+                            // second a hair behind and off-line, so the six rounds read as one sustained stream rather than single shots
+                            fx.Tracer(p, target, true);
+                            var spread = new float3(UnityEngine.Random.value - .5f, UnityEngine.Random.value * .5f, UnityEngine.Random.value - .5f) * .06f;
+                            fx.Tracer(p + (target - p) * .05f, target + spread, false);
+                        }
                         else fx.Tracer(p, target, heavy);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(sound, p, heavy ? 0.9f : 0.5f, heavy ? 4f : 1.5f, heavy ? 2 : 1, rts.Distance);
@@ -1008,6 +1057,7 @@ namespace SE.Runtime.App
                         // barracks kit (server event flags, J): a lobbed grenade, or a squad's anti-tank rocket
                         if (e.Grenade) { weapon = "grenade"; NoteUpgradeFx(0, p); }
                         else if (e.Rocket) { weapon = "at_rocket"; NoteUpgradeFx(1, p); fx.RocketBackBlast(p, target); }
+                        else if (e.Tow) fx.RocketBackBlast(p, target);   // the IFV anti-tank missile (server fireAtgm, 2026-11-18)
                         if (!e.Grenade) fx.Muzzle(p, true, target-p);
                         fx.Projectile(e.Grenade ? p + new float3(0, .02f, 0) : p, target, weapon, e.Flight);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
@@ -1066,7 +1116,7 @@ namespace SE.Runtime.App
                         p.y = world.GroundHeight(p.x, p.z);
                         var t = e.UnitType ?? "";
                         units.NoteCasualty(e.Target, t, e.Owner, p, world.Epoch, time);
-                        if (t.Contains("tank") || t.Contains("car") || t.Contains("truck") || t.Contains("buggy") || t.Contains("artillery") || t == "mech_infantry" || t == "air_defense" || t == "missile_battery")
+                        if (t.Contains("tank") || t.Contains("car") || t.Contains("truck") || t.Contains("buggy") || t.Contains("artillery") || t == "mech_infantry" || t == "exo_infantry" || t == "air_defense" || t == "missile_battery")
                         {
                             if (!session.ActionRts) fx.Wreck(p, UnityEngine.Random.value * 6.28f, 0.16f);
                             if (Near(p, reach))
@@ -1094,9 +1144,11 @@ namespace SE.Runtime.App
                         // a strategic warhead or (half strength) a destroyed reactor: seen and heard from afar
                         var p = EventPoint(e, false, 0);
                         fx.Strategic(p, e.Half ? 0.5f : 1f);
+                        KnockTrees(fx.LastShock);   // GameBootstrap.Shock.cs (effects pass)
                         audioDirector?.Play("strategic", p, 1f, 60f, 5, rts.Distance);
                         break;
                     }
+                    case "mintercept": PresentIntercept(e); break;   // GameBootstrap.Shock.cs (effects pass)
                 }
             }
             session.Events.Clear();

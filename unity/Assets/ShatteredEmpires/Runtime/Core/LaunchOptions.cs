@@ -39,6 +39,8 @@ namespace SE.Runtime.App
         }
 
         public bool Has(string key) => values.ContainsKey(key);
+        /// <summary>Sets <paramref name="key"/> unless the command line gave it (e.g. -release-shots implies -mode observe).</summary>
+        public void Default(string key, string value) { if (!values.ContainsKey(key)) values[key] = value; }
         public string Get(string key, string def = "") => values.TryGetValue(key, out var v) ? v : def;
 
         public float Float(string key, float def)

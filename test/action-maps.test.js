@@ -34,7 +34,25 @@ const unreachable = g.sites.filter((s) => !g.nav.strategic(starts[0].tile, s.til
 let fords = 0, bridges = 0, rivers = 0;
 for (let i = 0; i < N; i++) if (w.river[i]) { rivers++; if (w.flow[i] < 94) fords++; if (w.road[i]) bridges++; }
 // fairness: every seat's heavy-vehicle route lengths to the other seats and to the main sites
-const route = (a, b) => g.nav.strategic(a, b, HEAVY_GROUND, false, true, 1e9)?.length ?? Infinity;
+// 2026-11-18: the shortest heavy-vehicle drive between two sites in hexes of ground distance: the path the units
+// drive (nav.route, pulled taut), direct or by way of one other main site, whichever is shorter. A match now starts
+// without country roads (ROADS_AND_CLAIMS.md), so counting coarse planner tiles (which followed the roads) no longer
+// measures the ground: on a turned sector a straight run counts more hex steps along a zigzag bearing than along a
+// hex axis, and the tile-count planner can prefer a detour to the straight way over a central objective.
+const { centerOf, distance } = await import(workerData.sim + 'actionNavigation.js');
+const drives = new Map();
+const drive = (a, b) => {
+  const key = Math.min(a, b) * N + Math.max(a, b);
+  if (drives.has(key)) return drives.get(key);
+  let len = Infinity;
+  const p = g.nav.nearest(centerOf(a), HEAVY_GROUND, 3), q = g.nav.nearest(centerOf(b), HEAVY_GROUND, 3);
+  const path = p && q && g.nav.strategic(a, b, HEAVY_GROUND, false, true, 1e9) && g.nav.route(p, q, HEAVY_GROUND);
+  if (path) { len = 0; let at = p; for (const pt of path) { len += distance(at, pt); at = pt; } len /= Math.sqrt(3); }
+  drives.set(key, len);
+  return len;
+};
+const hubs = g.sites.filter((s) => s.slots).map((s) => s.tile);
+const route = (a, b) => Math.round(Math.min(drive(a, b), ...hubs.filter((m) => m !== a && m !== b).map((m) => drive(a, m) + drive(m, b))));
 const seats = [...starts].sort((a, b) => a.start - b.start);
 const rivals = seats.map((s) => seats.filter((o) => o !== s).map((o) => route(s.tile, o.tile)).sort((a, b) => a - b));
 const preview = mapPreview(g);

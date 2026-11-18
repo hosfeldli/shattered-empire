@@ -61,9 +61,73 @@ namespace SE.Runtime.Cities
         }
 
         readonly Dictionary<int, TurretMount> mounts = new Dictionary<int, TurretMount>();
+        /// <summary>Headless MG positions (the bunker, 2026-11-18): the embrasure centre per building id (map space). Its
+        /// sustained bursts (server def.burst) leave the firing slit facing the target instead of the roof.</summary>
+        readonly Dictionary<int, float3> embrasures = new Dictionary<int, float3>();
+        const float EmbrasureReach = .24f, EmbrasureHeight = .11f;
         readonly Dictionary<string, InstanceBatch> headBatches = new Dictionary<string, InstanceBatch>();
         readonly List<int> staleMounts = new List<int>();
         float turretClock = float.NaN;
+
+        /// <summary>Whether a structure type is kept off the carriageway: every field defense except the sandbag barricade.</summary>
+        static bool RoadsideDefense(string type)
+            => type != null && type != "barricade" && type != "sandbags" && DefenseKinds.ContainsKey(type);
+
+        /// <summary>How far a defense's body reaches from its centre (its plinth / blast ring), for the roadside offset.</summary>
+        static float DefenseClearance(string type)
+        {
+            if (type == "fort" || type == "outpost") return .40f;
+            if (type == "artillery_post") return .36f;
+            var kind = DefenseKinds[type];
+            return kind.Ring > 0 ? kind.Ring * .78f : .22f;
+        }
+
+        /// <summary>
+        /// Roads keep their natural line; a defense never deflects them (it marks no street parcel, CityRenderer.Update).
+        /// Instead a defense whose body would reach onto a drawn carriageway (hex streets or compound roads,
+        /// <see cref="RoadCurve.RoadDistance"/>) is drawn beside it: pushed square off the road to the side it already
+        /// leans to (a building exactly on the crown line picks a side from its id), at most <see cref="MaxRoadsideShift"/>.
+        /// The server refuses or snaps defense placement on road tiles, so this is normally a few centimetres; it
+        /// covers older saves and the half-streets that cross into a neighbouring hex. Deterministic: it depends only
+        /// on the drawn roads (hex roads, built parcels and the published compound lanes) and the building id.
+        /// The sandbag barricade may sit on or across a road and is never moved.
+        /// </summary>
+        float2 RoadsidePosition(in BuildingRecord b, float2 p)
+        {
+            if (!RoadsideDefense(b.Type)) return p;
+            float clear = DefenseClearance(b.Type) + .03f;
+            var start = p;
+            for (int pass = 0; pass < 3; pass++)
+            {
+                float distance = RoadCurve.RoadDistance(world, p, out var axis, out _);
+                if (!(distance < clear)) break;
+                var normal = new float2(-axis.y, axis.x);
+                float plus = RoadCurve.RoadDistance(world, p + normal * .04f, out _, out _);
+                float minus = RoadCurve.RoadDistance(world, p - normal * .04f, out _, out _);
+                float sign = math.abs(plus - minus) < 1e-4f ? (Hash(b.Id, 911) < .5f ? 1f : -1f) : plus > minus ? 1f : -1f;
+                p += normal * sign * (clear - distance + .01f);
+            }
+            var shift = p - start;
+            float length = math.length(shift);
+            return length > MaxRoadsideShift ? start + shift * (MaxRoadsideShift / length) : p;
+        }
+
+        const float MaxRoadsideShift = .55f;
+
+        /// <summary>Re-dirty the cells of roadside defenses within reach of a compound whose lanes changed (not its own cell).</summary>
+        void DirtyRoadsideDefenses(in ObjectiveSite site)
+        {
+            int home = world.ChunkOf(site.Tile);
+            var origin = new float2(site.X, site.Z);
+            foreach (var b in structures.Buildings.Values)
+            {
+                if (!b.HasPosition || b.Tile < 0 || b.Tile >= world.Grid.N || !RoadsideDefense(b.Type)) continue;
+                var at = new float2(world.Grid.NearX(b.X, site.X), b.Z);
+                if (math.distancesq(at, origin) > 7.5f * 7.5f) continue;
+                int cell = world.ChunkOf(b.Tile);
+                if (cell != home) dirty.Add(cell);
+            }
+        }
 
         /// <summary>A defense's ground datum: low enough that its plinth meets the slope, not the corner peaks.</summary>
         float DefenseDatum(float x, float z, float radius)
@@ -132,6 +196,8 @@ namespace SE.Runtime.Cities
                 if (recording != null) foreach (var w in layout.Walls) if (!recording.Contains(w)) recording.Add(w);
             }
             if (kind.Ring > 0 && level >= 2) BlastRing(c, kind.Ring, level, team);
+            if (b.Type == "bunker" && b.Id >= 0) embrasures[b.Id] = new float3(c.X, c.GroundY + EmbrasureHeight, c.Z);
+            DefenseSignature(c, b, level);   // per-type silhouette features and team rim (CityRenderer.Facilities.cs, workstream B)
             // the tracking head (drawn per frame by AnimateTurrets)
             if (kind.Head != null && b.Id >= 0)
             {
@@ -177,7 +243,17 @@ namespace SE.Runtime.Cities
         public bool TryMuzzle(int shooter, float3 target, out float3 muzzle)
         {
             muzzle = default;
-            if (!mounts.TryGetValue(shooter, out var m)) return false;
+            if (!mounts.TryGetValue(shooter, out var m))
+            {
+                // a bunker: the slit on the side facing the target (a demolished bunker's entry is dropped here)
+                if (!embrasures.TryGetValue(shooter, out var slit)) return false;
+                if (!structures.Buildings.ContainsKey(shooter)) { embrasures.Remove(shooter); return false; }
+                float ex = world.Grid.DxWrap(slit.x, target.x), ez = target.z - slit.z, el = math.sqrt(ex * ex + ez * ez);
+                if (el < 1e-4f) return false;
+                muzzle = slit + new float3(ex / el * EmbrasureReach, 0, ez / el * EmbrasureReach);
+                muzzle.x = world.Grid.NearX(muzzle.x, target.x);
+                return true;
+            }
             // an AA mount (a battery, or the city AA on an HQ that also fires its own ground weapon) only takes air targets
             if (m.Kind == TurretKind.AntiAir && target.y < m.Pivot.y + .2f) return false;
             float dx = world.Grid.DxWrap(m.Pivot.x, target.x), dz = target.z - m.Pivot.z;
@@ -238,9 +314,28 @@ namespace SE.Runtime.Cities
                 float delta = Mathf.DeltaAngle(m.Aim * Mathf.Rad2Deg, want * Mathf.Rad2Deg) * Mathf.Deg2Rad;
                 float step = slew * dt;
                 m.Aim += math.clamp(delta, -step, step);
-                batch.Add(InstanceData.TRS(MapSpace.W(m.Pivot), MapSpace.Yaw(m.Aim), new float3(1), new float4(m.Color, 0)));
+                // recoil (effects pass, 2026-11-18): the head runs back along its aim on each shot, then returns
+                float back = m.Memory ? 0 : HeadRecoil(m.Kind, time - m.ShotAt);
+                var pivot = m.Pivot - new float3(math.sin(m.Aim), 0, math.cos(m.Aim)) * back;
+                batch.Add(InstanceData.TRS(MapSpace.W(pivot), MapSpace.Yaw(m.Aim), new float3(1), new float4(m.Color, 0)));
             }
             foreach (int id in staleMounts) mounts.Remove(id);
+        }
+
+        /// <summary>Turret-head run-back (world units) at `age` seconds after a shot: sharp kick, slower return; guns more than MGs.</summary>
+        static float HeadRecoil(TurretKind kind, float age)
+        {
+            float amount, settle;
+            switch (kind)
+            {
+                case TurretKind.Artillery: amount = .055f; settle = 4f; break;
+                case TurretKind.Fortress: amount = .04f; settle = 5.5f; break;
+                case TurretKind.AntiTank: amount = .03f; settle = 6.5f; break;
+                case TurretKind.AntiAir: amount = .012f; settle = 12f; break;
+                default: amount = .006f; settle = 18f; break;   // machine gun: a shudder
+            }
+            if (age < 0f || age > 6f / settle) return 0f;
+            return amount * math.exp(-age * settle) * (1f - math.exp(-age * 120f));
         }
 
         void DrawTurrets(WrapImages images)

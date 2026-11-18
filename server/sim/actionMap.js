@@ -1,10 +1,10 @@
 import { N, T, W, H, isWater } from './constants.js';
 import { NB, disk, dist, hexLine, rOf, qOf, WRAP } from './hex.js';
 import { hash2 } from './rng.js';
-import { OUTPOST_TYPES, RUIN_TYPES } from './actionDefinitions.js';
-import { centerOf, distance, dxBetween, HEAVY_GROUND, tileAt } from './actionNavigation.js';
+import { CAPTURE, OUTPOST_TYPES, RUIN_TYPES } from './actionDefinitions.js';
+import { centerOf, distance, dxBetween, HEAVY_GROUND, LIGHT_GROUND, tileAt } from './actionNavigation.js';
 import { MAP_SEED, mapPoint, mirrorTile, rotatePoint, rotateTile, siteTiles, symmetryOf, tileOf } from './authoredMaps.js';
-import { sketchMetrics } from './sketchMaps.js';
+import { ownedStarts, sketchMetrics } from './sketchMaps.js';
 
 const NAMES = ['Ironford', 'Ashby Crossing', 'Gantry', 'Saltreach', 'Signal Point', 'Northlight', 'Hollowgate',
   'Cinderhold', 'Pylon Ridge', 'Dry Dock', 'Ember Station', 'Scrapton', 'Clearwater', 'Terminal', 'Quarry Nine',
@@ -87,6 +87,101 @@ function massifs(w) {
   }
   for (const t of touched) { w.classify(t); w.touch(t); }
 }
+
+// Dense forest (directive §30, 2026-11-18). Ordinary infantry (move class 'infantry') cannot enter a dense-forest
+// hex (actionNavigation.cost / roadOnly); vehicles can, and heavy hulls clear it as before (battlefield.js
+// FOREST_CLEAR), after which the hex is grass and open to everyone. A road through dense forest stays open along it.
+// Which hexes are dense is decided once, at map creation, and saved (world.dense, persist.js):
+//  - interior forest only: a FOREST hex whose six neighbours are all FOREST, so every dense core sits inside a
+//    passable fringe of ordinary (lighter) forest and a detour around it is always short;
+//  - never on a road, river or lake hex, nor within `siteGap` hexes of a base or outpost;
+//  - every `lane`-th hex row and column stays open (a footpath grid), which splits large forests into groves of at
+//    most (lane - 1) hexes across: the longest possible detour around one is a few hexes;
+//  - cores smaller than `minCore` hexes are dropped (no scattered single dense hexes);
+//  - on authored (symmetric) maps a hex stays dense only if all its symmetric images are (no seat is favoured);
+//  - guarantee: infantry connectivity is unchanged. Every hex infantry could reach from another before still
+//    reaches it: any pocket the cores would enclose has its surrounding cores opened (repeated until none remain).
+// Cleared or terrain-changed hexes stop being dense because the check also requires terr === FOREST.
+export const DENSE_FOREST = Object.freeze({ siteGap: 3, lane: 5, minCore: 3, rounds: 12 });
+export function markDenseForest(game) {
+  const w = game.world, nav = game.nav, dense = new Uint8Array(N), { siteGap, lane, minCore } = DENSE_FOREST;
+  const keep = new Uint8Array(N);
+  for (const s of game.sites || []) for (const t of disk(s.tile, siteGap)) if (t >= 0) keep[t] = 1;
+  const roadTile = (t) => { for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && game.roads.get(t, n)) return true; } return false; };
+  for (let t = 0; t < N; t++) {
+    if (w.terr[t] !== T.FOREST || keep[t] || w.river[t] || w.lake[t] || qOf(t) % lane === 0 || rOf(t) % lane === 0 || roadTile(t)) continue;
+    let interior = true;
+    for (let d = 0; d < 6 && interior; d++) { const n = NB[t * 6 + d]; if (n < 0 || w.terr[n] !== T.FOREST) interior = false; }
+    if (interior) dense[t] = 1;
+  }
+  // drop small cores
+  const seen = new Uint8Array(N), stack = [], group = [];
+  for (let s = 0; s < N; s++) {
+    if (!dense[s] || seen[s]) continue;
+    group.length = 0; seen[s] = 1; stack.push(s);
+    while (stack.length) {
+      const t = stack.pop(); group.push(t);
+      for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && dense[n] && !seen[n]) { seen[n] = 1; stack.push(n); } }
+    }
+    if (group.length < minCore) for (const t of group) dense[t] = 0;
+  }
+  symmetrize(w, dense);
+  // connectivity guarantee: infantry regions before (no dense forest) and after
+  w.dense = null; nav.invalidate();
+  nav.componentOf(0, LIGHT_GROUND);
+  const before = nav.components.infantry;
+  w.dense = dense;
+  for (let round = 0; round <= DENSE_FOREST.rounds; round++) {
+    nav.invalidate();
+    nav.componentOf(0, LIGHT_GROUND);
+    const after = nav.components.infantry;
+    // the main post-dense region of each pre-dense region: the one holding most of its hexes (ties: lower id)
+    const tally = new Map();
+    for (let t = 0; t < N; t++) if (before[t] > 0 && after[t] > 0) { const k = before[t] * 4194304 + after[t]; tally.set(k, (tally.get(k) || 0) + 1); }
+    const main = new Map();
+    for (const [k, n] of tally) {
+      const b = Math.floor(k / 4194304), a = k % 4194304, m = main.get(b);
+      if (!m || n > m.n || n === m.n && a < m.a) main.set(b, { a, n });
+    }
+    let opened = 0;
+    for (let t = 0; t < N; t++) {
+      if (!(before[t] > 0) || dense[t] && w.terr[t] === T.FOREST || after[t] === main.get(before[t])?.a) continue;
+      // t is cut off: open the dense hexes around it (the last round opens every core that touches a pocket)
+      for (let d = 0; d < 6; d++) {
+        const n = NB[t * 6 + d];
+        if (n < 0 || !dense[n]) continue;
+        if (round < DENSE_FOREST.rounds) { dense[n] = 0; opened++; continue; }
+        stack.push(n); dense[n] = 0; opened++;
+        while (stack.length) { const c = stack.pop(); for (let e = 0; e < 6; e++) { const m = NB[c * 6 + e]; if (m >= 0 && dense[m]) { dense[m] = 0; opened++; stack.push(m); } } }
+      }
+    }
+    if (!opened) break;
+  }
+  symmetrize(w, dense);   // opening never encloses anything, so connectivity still holds
+  nav.invalidate();
+  return dense;
+}
+
+// Authored maps are symmetric (mirror, or 3- / 4-fold rotation); the lane grid is not. A hex stays dense only when
+// all its symmetric images are dense too, so no seat gets a different forest.
+function symmetrize(w, dense) {
+  if (!w.mapDef) return;
+  const n = symmetryOf(w.mapDef), drop = [];
+  for (let t = 0; t < N; t++) if (dense[t]) for (let k = 1; k < n; k++) { const m = rotateTile(t, k, n); if (m < 0 || !dense[m]) { drop.push(t); break; } }
+  for (const t of drop) dense[t] = 0;
+}
+
+/** Wire form of world.dense for the welcome message (`world.dense`): base64 of a bitset, hex t = bit (t & 7) of byte
+ *  t >> 3. Sent once; a hex is dense while its bit is set AND its terrain is still FOREST (clearing only removes). */
+export function denseWire(w) {
+  if (!w.dense) return undefined;
+  const bits = new Uint8Array((N + 7) >> 3);
+  for (let t = 0; t < N; t++) if (w.dense[t] && w.terr[t] === T.FOREST) bits[t >> 3] |= 1 << (t & 7);
+  return Buffer.from(bits).toString('base64');
+}
+
+/** Whether infantry are barred from hex t by dense forest (world.dense, still FOREST). */
+export const denseForest = (w, t) => !!w.dense?.[t] && w.terr[t] === T.FOREST;
 
 export function buildActionMap(game) {
   const { world: w, civs, seed } = game;
@@ -203,7 +298,8 @@ export function buildActionMap(game) {
     // Seat the civs on the bases (chooseStarts over the sketch's own metrics, as the lobby preview does):
     // their starts first in civ order, the spare bases next as neutral cities, then everything else.
     const { steps, reach: baseReach } = sketchMetrics(sketch);
-    const civStart = chooseStarts(steps, baseReach, sketch.bases.map((_, i) => i), civs.map((c) => c.team));
+    // 2026-11-18: a sketch that assigns its bases to teams seats each team on its own bases (MAP_BUILDER_TEAMS.md)
+    const civStart = sketch.owners ? ownedStarts(sketch.owners, civs.map((c) => c.team)) : chooseStarts(steps, baseReach, sketch.bases.map((_, i) => i), civs.map((c) => c.team));
     const taken = new Set(civStart);
     const bases = locations.slice(0, starts), rest = locations.slice(starts);
     locations.length = 0;
@@ -220,7 +316,7 @@ export function buildActionMap(game) {
     for (const lot of ring) occupied.add(lot.tile);
     const name = NAMES[(i + Math.abs(seed % NAMES.length)) % NAMES.length];
     return { id: i + 1, tile: p.tile, x: p.x, z: p.z, name, kind: kind.key, ruin: kind.ruin, start: p.start,
-      radius: 1.35, captureTime: 16, owner: -1, by: -1, progress: 0, last: 0, contested: false, hq: 0, tier: 1,
+      radius: 1.35, captureTime: CAPTURE.base, owner: -1, by: -1, progress: 0, last: 0, contested: false, hq: 0, tier: 1,
       slots, core: 4, ringVersion: 1, developedAt: 0, visualTier: 1,
       parcels: [{ id: 0, index: -1, tile: p.tile, x: p.x, z: p.z, yaw: ring[0].yaw, tier: 1, width: 1.12, depth: 1.12 }, ...ring], claimedAt: -1 };
   });
@@ -245,14 +341,17 @@ export function buildActionMap(game) {
     const kind = i < starts ? 'energy' : outposts[(i - starts + 1) % outposts.length], info = OUTPOST_TYPES[kind];
     occupied.add(p.tile);
     sites.push({ id: sites.length + 1, tile: p.tile, x: p.x, z: p.z, name: info.name, kind, ruin: info.ruin,
-      radius: .91, captureTime: 10, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
+      radius: .91, captureTime: CAPTURE.outpost, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
   }
 
   w.starts = sites.slice(0, civs.length).map((s) => s.tile);
   const main = sites.filter((s) => s.slots);
   const corridors = [];
   const hubs = main.map((s) => s.tile);
-  const link = (a, b) => corridors.push(...connect(game, a, b, 2, hubs));
+  // 2026-11-18 (roads & claims, docs/gameplay-overhaul/ROADS_AND_CLAIMS.md): the corridors between the cities
+  // are planned (they still shape the coast) but not paved: no road leads to an unclaimed city, so roads cannot
+  // be followed to find one. Only the crossings are laid: bridges, marsh causeways and cuttings (layCrossings).
+  const link = (a, b) => corridors.push(...layCrossings(game, hubRoute(w, game.nav.strategic(a, b, HEAVY_GROUND, true, false, ROAD_SEARCH), hubs)));
   const linked = new Set([main.find((s) => s.tile === central.tile) || main[0]]);
   while (linked.size < main.length) {
     let pair = null, best = Infinity;
@@ -292,10 +391,64 @@ function reachable(game, from, def) {
 }
 
 export const ROAD_SEARCH = N;
+/** Materials per paved road segment (hex edge): player roads (actionEconomy.roadBuild) and claim roads (actionBases). */
+export const ROAD_EDGE_COST = 15;
 
 export const hubTiles = (game) => (game.sites || []).filter((s) => s.slots).map((s) => s.tile);
 const HUB_REACH = 2;
 const spokeTile = (w, t) => t >= 0 && !isWater(w.terr[t]) && !w.lake[t] && w.terr[t] < T.MOUNTAIN;
+
+/**
+ * 2026-11-18 (ROADS_AND_CLAIMS.md): a base's own compound streets. Three straight spokes from the hub along alternate
+ * hex directions, each COMPOUND_SPOKE hexes long: they end just past the compound edge (the client's 3.6 skip
+ * radius), so heavy hulls have drivable corridors between the facilities, and they point at nothing (the same
+ * star at every base; the triple with more buildable spokes, ties by a hash of the tile). Returns the missing edges
+ * [{ a, b }]; the caller lays them (map start) or queues them (a newly established base).
+ */
+export const COMPOUND_SPOKE = 3;
+export function compoundSpokes(game, site) {
+  const w = game.world, spokes = [];
+  for (let d = 0; d < 6; d++) {
+    const line = [site.tile];
+    for (let k = 0; k < COMPOUND_SPOKE; k++) { const n = NB[line[line.length - 1] * 6 + d]; if (!spokeTile(w, n)) break; line.push(n); }
+    spokes.push(line.length === COMPOUND_SPOKE + 1 ? line : null);
+  }
+  const count = (from) => [0, 2, 4].filter((k) => spokes[from + k]).length;
+  // ties: the triple with a spoke toward the map centre, so a half-turned twin base takes the half-turned star
+  const c = centerOf(site.tile), mid = { x: W * Math.sqrt(3) / 2, z: H * .75 };
+  let inward = 0, top = -Infinity;
+  for (let d = 0; d < 6; d++) {
+    const n = NB[site.tile * 6 + d]; if (n < 0) continue;
+    const p = centerOf(n), dot = dxBetween(c.x, p.x) * dxBetween(c.x, mid.x) + (p.z - c.z) * (mid.z - c.z);
+    if (dot > top) { top = dot; inward = d; }
+  }
+  const first = count(0) !== count(1) ? (count(0) > count(1) ? 0 : 1) : inward % 2;
+  const edges = [];
+  for (const k of [0, 2, 4]) {
+    const line = spokes[first + k]; if (!line) continue;
+    for (let i = 1; i < line.length; i++) {
+      const e = game.roads.get(line[i - 1], line[i]);
+      if (!(e && e.cond >= 60 && e.type >= 2)) edges.push({ a: line[i - 1], b: line[i] });
+    }
+  }
+  return edges;
+}
+
+/**
+ * The compound streets a held base lays (map start, establish, New Base): the canonical star (compoundSpokes), the
+ * same at every base, so it points at nothing (the old spokes ran toward the neighbouring cities, which on a small
+ * map covered half the way to the nearest one). An edge within a hex of another site is dropped, so no street
+ * touches a city or outpost. Returns the missing or ruined edges [{ a, b }].
+ */
+export function baseStreets(game, site) {
+  const edges = compoundSpokes(game, site);
+  const others = (game.sites || []).filter((s) => s !== site);
+  return edges.filter(({ a, b }) => {
+    const e = game.roads.get(a, b);
+    if (e && e.cond >= 60 && e.type >= 2) return false;
+    return others.every((s) => dist(s.tile, a) > 1 && dist(s.tile, b) > 1);
+  });
+}
 
 // Roads meet a base at its hub. Inside a compound (two hexes of the centre) a route runs as a straight
 // spoke to the centre tile and leaves by another spoke, so every road that reaches a base joins the
@@ -325,6 +478,33 @@ export function hubRoute(w, route, hubs) {
     if (k >= 0) clean.length = k + 1; else clean.push(t);
   }
   return clean;
+}
+
+// A river hex a road crosses by a bridge (a lake is open water, never bridged by the road planner), and a hex wheels
+// can cross only on a road (marsh, or a slope steeper than the wheeled climb limit: actionNavigation.roadOnly).
+const WHEELED_GROUND = { move: 'wheeled', radius: .2 };
+const riverCrossing = (w, t) => !!w.river[t] && !w.lake[t] && !isWater(w.terr[t]);
+
+/**
+ * 2026-11-18: of a planned country road, lay only its crossings: bridges (each edge with a river end, bank to bank),
+ * causeways over marsh and cuttings through slopes too steep for wheels (each edge with a road-only end for wheeled
+ * vehicles). A match starts without roads between its sites, yet every vehicle class reaches every site it could
+ * reach on the old road network (a wide river, flow >= 94, is road-only for all vehicles, marsh and steep ground for
+ * wheels) and the maps keep their bridges and fords. A crossing is a few hexes long and leads nowhere. `mirror` lays the half-turn of each edge too (authored team maps). Returns the
+ * route (or [] without one) for the corridor list.
+ */
+export function layCrossings(game, route, mirror = null) {
+  if (!route) return [];
+  const w = game.world;
+  // terrain-only tests (never the road just laid on the previous edge), so a crossing is laid whole
+  const hard = (t) => riverCrossing(w, t) || game.nav.roadOnly(t, WHEELED_GROUND);
+  for (let i = 1; i < route.length; i++) {
+    const a = route[i - 1], b = route[i];
+    if (!hard(a) && !hard(b)) continue;
+    game.roads.set(a, b, 2);
+    if (mirror) game.roads.set(mirror(a), mirror(b), 2);
+  }
+  return route;
 }
 
 export function connect(game, a, b, kind = 2, hubs = hubTiles(game)) {
@@ -425,7 +605,7 @@ function mirroredRing(ring, mid, id) {
 function mainSite(id, tile, x, z, name, kindKey, start, ring) {
   const kind = RUIN_BY_KEY[kindKey] || RUIN_TYPES[0];
   const slots = [...ring].sort((a, b) => a.tier - b.tier || a.index - b.index).map((p) => p.id);
-  return { id, tile, x, z, name, kind: kind.key, ruin: kind.ruin, start, radius: 1.35, captureTime: 16, owner: -1, by: -1, progress: 0, last: 0,
+  return { id, tile, x, z, name, kind: kind.key, ruin: kind.ruin, start, radius: 1.35, captureTime: CAPTURE.base, owner: -1, by: -1, progress: 0, last: 0,
     contested: false, hq: 0, tier: 1, slots, core: 4, ringVersion: 1, developedAt: 0, visualTier: 1,
     parcels: [{ id: 0, index: -1, tile, x, z, yaw: ring[0].yaw, tier: 1, width: 1.12, depth: 1.12 }, ...ring], claimedAt: -1 };
 }
@@ -578,7 +758,7 @@ function buildAuthoredMap(game, def) {
     const key = OUTPOST_TYPES[kind] ? kind : 'supply', info = OUTPOST_TYPES[key], c = centerOf(tile);
     occupied.add(tile);
     sites.push({ id: sites.length + 1, tile, x: c.x, z: c.z, name: name || info.name, kind: key, ruin: info.ruin,
-      radius: .91, captureTime: 10, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
+      radius: .91, captureTime: CAPTURE.outpost, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
   };
   for (const o of def.outposts || []) {
     const tile = nearestLand(w, tileOf(o.at), (t) => drivable(t) && !occupied.has(t) && !occupied.has(mirrorTile(t)) && mirrorTile(t) !== t);
@@ -599,10 +779,9 @@ function buildAuthoredMap(game, def) {
     for (let i = 1; i < tiles.length; i++) {
       const path = hubRoute(w, game.nav.strategic(tiles[i - 1], tiles[i], HEAVY_GROUND, true, false, ROAD_SEARCH), hubs);
       if (!path) throw new Error(`${def.name}: no road route between ${JSON.stringify(road[i - 1])} and ${JSON.stringify(road[i])}`);
-      for (let k = 1; k < path.length; k++) {
-        game.roads.set(path[k - 1], path[k], 2);
-        game.roads.set(mirrorTile(path[k - 1]), mirrorTile(path[k]), 2);
-      }
+      // 2026-11-18: the authored roads are validated and their wide-river bridges laid; the rest is built when a
+      // city is claimed (ROADS_AND_CLAIMS.md)
+      layCrossings(game, path, mirrorTile);
       game.nav.invalidate();
     }
   }
@@ -674,7 +853,7 @@ function buildRotatedMap(game, def) {
     const key = OUTPOST_TYPES[kind] ? kind : 'supply', info = OUTPOST_TYPES[key], c = centerOf(tile);
     occupied.add(tile);
     sites.push({ id: sites.length + 1, tile, x: c.x, z: c.z, name: name || info.name, kind: key, ruin: info.ruin,
-      radius: .91, captureTime: 10, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
+      radius: .91, captureTime: CAPTURE.outpost, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
   };
   const turnUV = (uv, k) => { const p = rotatePoint(mapPoint(uv), k, n); return tileAt(p.x, p.z); };
   for (const o of def.outposts || []) for (let k = 0; k < (o.center ? 1 : n); k++) {
@@ -699,7 +878,7 @@ function buildRotatedMap(game, def) {
     for (let i = 1; i < tiles.length; i++) {
       const path = hubRoute(w, game.nav.strategic(tiles[i - 1], tiles[i], HEAVY_GROUND, true, false, ROAD_SEARCH), hubs);
       if (!path) throw new Error(`${def.name}: no road route between ${JSON.stringify(road[i - 1])} and ${JSON.stringify(road[i])} (turn ${k})`);
-      for (let j = 1; j < path.length; j++) game.roads.set(path[j - 1], path[j], 2);
+      layCrossings(game, path);   // 2026-11-18: crossings only (see the team-map loop above)
       game.nav.invalidate();
     }
   }

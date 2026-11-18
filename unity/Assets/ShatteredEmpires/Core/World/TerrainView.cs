@@ -33,6 +33,12 @@ namespace SE.Core.World
 
         public const float NoWater = -1e9f;
         public const float LakeDepth = 0.14f;
+        /// <summary>
+        /// A fresh crater's bowl depth per unit of its radius (WorldModel.ApplyImpacts). The stored depth is this
+        /// times the radius times the server's heal level, so depth / (radius * this) recovers the heal level
+        /// (1 fresh .. 0 filled in) for the crater's scorch and spoil colour without widening the impact record.
+        /// </summary>
+        public const float ImpactDepthPerRadius = 0.25f;
 
         // SECTOR_UV and SECTOR_TRIS from WorldState.gd
         public static readonly float[] SectorU = { 0f, 1f, 0f, 0.5f, 0.5f, 0f, 0.25f };
@@ -385,6 +391,13 @@ namespace SE.Core.World
             return best;
         }
 
+        /// <summary>How far either side of a dug trench line its works (cut, parapet, parados and spoil) reach.</summary>
+        public const float TrenchWorksReach = .17f;
+
+        /// <summary>Whether (x, z) in tile t lies on a dug trench's works (no trees or groundcover grow there).</summary>
+        public bool OnTrenchWorks(int t, float x, float z)
+            => Trenches != null && t >= 0 && TrenchNearest(t, x, z, out _, out _, out _, out _, out _, out _) < TrenchWorksReach + .02f;
+
         /// <summary>The run a → b (relative to the query point x, z): keeps it when nearer than the best so far.</summary>
         static void NearestOnRun(float ax, float az, float bx, float bz, float a, float d, float x, float z,
             ref float best, ref float px, ref float pz, ref float dirX, ref float dirZ, ref float facing, ref float depth)
@@ -402,13 +415,12 @@ namespace SE.Core.World
         public float DamageHeight(int t, float x, float z)
         {
             if (ImpactCounts == null || Impacts == null) return 0;
+            // 2026-11-18: trenches no longer cut the shared ground. The terrain mesh is far too coarse for a 1.5 m
+            // slot (vertices ~.17 apart), so the cut showed as random dents with the works buried under the ground
+            // beside them. The trench is now drawn as its own mesh standing on the terrain (TrenchRenderer: floor
+            // at grade between revetted parapet and parados banks), and the ground here stays the floor troops
+            // stand on. See docs/gameplay-overhaul/TRENCHES.md.
             float bowl = 0, rim = 0;
-            if (Trenches != null)
-            {
-                // the dug cut: a narrow flat-bottomed channel along the drawn line, no longer than the line itself
-                float across = TrenchNearest(t, x, z, out _, out _, out _, out _, out _, out float trenchDepth);
-                if (across < .11f) bowl = -trenchDepth * Math.Max(0, Math.Min(1, (.11f - across) / .035f));
-            }
             for (int cell = -1; cell < 6; cell++)
             {
                 int n = cell < 0 ? t : Nb[t * 6 + cell];

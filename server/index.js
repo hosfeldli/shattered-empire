@@ -12,6 +12,7 @@ import { mapList } from './sim/mapCatalog.js';
 import { makeStore } from './storage.js';
 import { continentPreview } from './png.js';
 import { makeDownloads } from './downloads.js';
+import { makeReleaseNotes } from './releaseNotes.js';
 import { Admin } from './admin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,7 @@ const log = {
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.webp': 'image/webp' };
 const manager = new MatchManager(log, makeStore(log));
 const downloads = makeDownloads(log);
+const releaseNotes = makeReleaseNotes(log, downloads);
 manager.restoreAll().catch((e) => log.error('restore failed', e));
 
 // The desktop client runs on its own origin (app://game): the API answers cross-origin reads.
@@ -50,6 +52,7 @@ const server = http.createServer((req, res) => {
   // the public site: a downloader for the desktop app (same host, same service)
   if ((url.pathname === '/' && !SERVE_CLIENT) || url.pathname === '/index.html' && !SERVE_CLIENT || url.pathname === '/download' || url.pathname === '/download/') { downloads.page(res, req.headers['user-agent'] || '').catch((e) => { log.error('download page', e); res.writeHead(500); res.end(); }); return; }
   if (url.pathname === '/api/downloads') { downloads.manifest().then((m) => { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(m)); }); return; }
+  if (url.pathname.startsWith('/api/release-notes/')) { releaseNotes.handle(url.pathname, res).catch((e) => { log.error('release notes', e); if (!res.headersSent) res.writeHead(502); res.end(); }); return; }
   if (url.pathname.startsWith('/download/file/')) { downloads.file(decodeURIComponent(url.pathname.slice(15)), res).catch((e) => { log.error('download', e); if (!res.headersSent) res.writeHead(502); res.end(); }); return; }
   if (url.pathname === '/api/preview') {
     const seed = (+url.searchParams.get('seed') || 1) % 1000000, scale = Math.max(2, Math.min(12, +url.searchParams.get('scale') || 6));

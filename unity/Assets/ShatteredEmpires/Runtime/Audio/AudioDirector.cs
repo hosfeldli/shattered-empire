@@ -416,7 +416,7 @@ namespace SE.Runtime.Audio
         {
             switch (type)
             {
-                case "tank": case "autonomous_tank": case "mech_infantry": case "sp_artillery": return "tank";
+                case "tank": case "autonomous_tank": case "mech_infantry": case "exo_infantry": case "sp_artillery": return "tank";
                 case "armored_car": case "supply_truck": case "scout_buggy": case "field_gun": case "missile_battery": case "air_defense": return "truck";
                 case "fighter": case "bomber": return "jet";
                 case "helicopter": return "rotor";

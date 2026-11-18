@@ -39,6 +39,9 @@ namespace SE.Runtime.Cities
             var keep = current;
             var keepStreets = streetGeometry;
             int keepStreetQuads = streetQuads;
+            // a time-sliced compose may be waiting mid-record (CityRenderer.Slicing.cs): keep its bounds and tap
+            var keepMin = bmin; var keepMax = bmax; var keepTap = instanceTap; int keepComposing = composing;
+            instanceTap = null;
             current = ghost;
             foreach (var b in ghost.Batches) b.Clear();
             BeginStreetMesh();
@@ -48,9 +51,11 @@ namespace SE.Runtime.Cities
             FinishStreetMesh(ghost);
             current = keep;
             streetGeometry = keepStreets; streetQuads = keepStreetQuads;
+            var ghostMin = bmin; var ghostMax = bmax;
+            bmin = keepMin; bmax = keepMax; instanceTap = keepTap; composing = keepComposing;
             var tintTo = valid ? new float3(0.45f, 1f, 0.55f) : new float3(1f, 0.35f, 0.3f);
             var bounds = new Bounds();
-            bounds.SetMinMax(new Vector3(bmin.x, bmin.y - 0.2f, bmin.z), new Vector3(bmax.x, bmax.y + 0.2f, bmax.z));
+            bounds.SetMinMax(new Vector3(ghostMin.x, ghostMin.y - 0.2f, ghostMin.z), new Vector3(ghostMax.x, ghostMax.y + 0.2f, ghostMax.z));
             foreach (var b in ghost.Batches)
             {
                 for (int i = 0; i < b.Count; i++)

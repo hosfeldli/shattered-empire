@@ -30,6 +30,67 @@ namespace SE.Runtime.UI
         /// <summary>Map size key: "small", "medium", "large", "huge" (server ACTION_SIZES).</summary>
         public string Size = "small";
         public string Name = "Custom map";
+        /// <summary>
+        /// Team ownership of the bases (2026-11-18, MAP_BUILDER_TEAMS.md): one entry per base, a team index (0-based,
+        /// lobby team = seat / team size) or -1 for a base that stays neutral; null = automatic seating (server chooseStarts).
+        /// </summary>
+        public int[] Owners;
+
+        /// <summary>True when the bases are assigned to teams (some entry names a team).</summary>
+        public bool HasOwners
+        {
+            get
+            {
+                if (Owners == null || Owners.Length != Bases.Count) return false;
+                foreach (int t in Owners) if (t >= 0) return true;
+                return false;
+            }
+        }
+
+        /// <summary>Keep <see cref="Owners"/> one entry per base after bases were added or removed (new bases neutral).</summary>
+        public void SyncOwners()
+        {
+            if (Owners == null || Owners.Length == Bases.Count) return;
+            var next = new int[Bases.Count];
+            for (int i = 0; i < next.Length; i++) next[i] = i < Owners.Length ? Owners[i] : -1;
+            Owners = next;
+        }
+
+        /// <summary>
+        /// Why these seats cannot start on this ownership (server sketchMaps.baseOwnersProblem, same words), or null:
+        /// every team with an active seat needs as many bases as it has active seats; no base may name a missing team.
+        /// </summary>
+        public string OwnersProblem(int seatCount, int teamSize, ulong closedMask)
+        {
+            if (!HasOwners || seatCount <= 0) return null;
+            int ts = Math.Max(1, teamSize), teams = (seatCount + ts - 1) / ts;
+            bool ffa = ts == 1 && teams > 2;
+            var seats = new int[teams];
+            var bases = new int[teams];
+            for (int i = 0; i < seatCount; i++) if (i >= 64 || (closedMask & (1UL << i)) == 0) seats[i / ts]++;
+            for (int b = 0; b < Owners.Length; b++)
+            {
+                int t = Owners[b];
+                if (t < 0) continue;
+                if (t >= teams) return $"Base {b + 1} belongs to {TeamName(t, ffa)}, which this format does not have: reassign it in the team window.";
+                bases[t]++;
+            }
+            for (int t = 0; t < teams; t++)
+                if (seats[t] > bases[t])
+                    return $"{TeamName(t, ffa)} has {seats[t]} player{(seats[t] == 1 ? "" : "s")} but {(bases[t] > 0 ? "only " + bases[t] : "no")} starting base{(bases[t] == 1 ? "" : "s")}: give every player a base in the team window.";
+            return null;
+        }
+
+        public static string TeamName(int team, bool ffa) => ffa ? $"Player {team + 1}" : $"Team {team + 1}";
+
+        /// <summary>"north-west", "centre", "south" … for a base (the team window names bases by where they stand).</summary>
+        public string Where(int index)
+        {
+            if (index < 0 || index >= Bases.Count) return "";
+            var b = Bases[index];
+            string ns = b.V < .36 ? "north" : b.V > .64 ? "south" : "", ew = b.U < .36 ? "west" : b.U > .64 ? "east" : "";
+            return ns.Length > 0 && ew.Length > 0 ? ns + "-" + ew : ns.Length + ew.Length > 0 ? ns + ew : "centre";
+        }
 
         public static readonly (string id, string label, int tiles)[] Sizes =
             { ("small", "Small", 104), ("medium", "Standard", 152), ("large", "Large", 208), ("huge", "Huge", 232) };
@@ -52,7 +113,7 @@ namespace SE.Runtime.UI
 
         public MapSketch Clone()
         {
-            var c = new MapSketch { W = W, H = H, Cells = (byte[])Cells.Clone(), Size = Size, Name = Name };
+            var c = new MapSketch { W = W, H = H, Cells = (byte[])Cells.Clone(), Size = Size, Name = Name, Owners = (int[])Owners?.Clone() };
             c.Bases.AddRange(Bases);
             return c;
         }
@@ -116,7 +177,9 @@ namespace SE.Runtime.UI
         {
             var bases = new JArray();
             foreach (var b in Bases) bases.Add(new JArray(b.U, b.V));
-            return new JObject { ["v"] = 1, ["name"] = Name ?? "", ["size"] = Size, ["w"] = W, ["h"] = H, ["cells"] = EncodeCells(Cells), ["bases"] = bases };
+            var o = new JObject { ["v"] = 1, ["name"] = Name ?? "", ["size"] = Size, ["w"] = W, ["h"] = H, ["cells"] = EncodeCells(Cells), ["bases"] = bases };
+            if (HasOwners) o["owners"] = new JArray(Owners);
+            return o;
         }
 
         /// <summary>A sketch from JSON (a saved slot or the lobby room's 'sketch'); null when unreadable.</summary>
@@ -133,6 +196,12 @@ namespace SE.Runtime.UI
                 foreach (var t in arr)
                     if (t is JArray p && p.Count >= 2 && s.Bases.Count < MaxBases)
                         s.Bases.Add(new Vector2Double(Round4(Num(p[0])), Round4(Num(p[1]))));
+            if (o["owners"] is JArray owners && owners.Count == s.Bases.Count)
+            {
+                s.Owners = new int[owners.Count];
+                for (int i = 0; i < owners.Count; i++) s.Owners[i] = Math.Max(-1, Math.Min(MaxBases - 1, MapPreview.Int(owners[i], -1)));
+                if (!s.HasOwners) s.Owners = null;
+            }
             return s;
         }
 
@@ -208,6 +277,7 @@ namespace SE.Runtime.UI
                 ["classes"] = new JArray("deep", "shallow", "open", "forest", "marsh", "hills", "mountains", "peaks", "river", "ford", "road", "bridge"),
                 ["cells"] = Convert.ToBase64String(cls), ["starts"] = starts, ["startSteps"] = stepRows, ["startReach"] = new JArray(reach),
             };
+            if (HasOwners) preview["startOwners"] = new JArray(Owners);
             try { e.Preview = MapPreviewData.Parse(preview, e); }
             catch (Exception ex) { Debug.LogWarning("Map sketch preview: " + ex.Message); }
             return e;
@@ -218,6 +288,7 @@ namespace SE.Runtime.UI
         {
             var sb = new StringBuilder(EncodeCells(Cells)).Append('|').Append(Size).Append('|').Append(Name);
             foreach (var b in Bases) sb.Append('|').Append(b.U.ToString("R")).Append(',').Append(b.V.ToString("R"));
+            if (HasOwners) sb.Append("|owners:").Append(string.Join(",", Owners));
             return sb.ToString();
         }
 
@@ -480,6 +551,7 @@ namespace SE.Runtime.UI
             foreach (var b in sketch.Bases) if (Gap(b, u, v) < .1) { Say("Too close to another base"); return; }
             Push();
             sketch.Bases.Add(new Vector2Double(MapSketch.Round4(u), MapSketch.Round4(v)));
+            sketch.SyncOwners();   // a new base starts neutral when the bases are assigned to teams
             Redraw();
         }
 
@@ -490,6 +562,13 @@ namespace SE.Runtime.UI
             if (best < 0) { Say("Click on a base to remove it"); return; }
             Push();
             sketch.Bases.RemoveAt(best);
+            if (sketch.Owners != null && best < sketch.Owners.Length)
+            {
+                var owners = new List<int>(sketch.Owners);
+                owners.RemoveAt(best);
+                sketch.Owners = owners.ToArray();
+                if (!sketch.HasOwners) sketch.Owners = null;
+            }
             Redraw();
         }
 
@@ -549,7 +628,10 @@ namespace SE.Runtime.UI
                 m.AddToClassList("se-builder-base");
                 m.style.left = Length.Percent((float)b.U * 100f);
                 m.style.top = Length.Percent((float)b.V * 100f);
-                m.style.backgroundColor = (Color)MapPreview.TeamColor(i);
+                // team-owned bases (assigned in the team window) wear their team's colour; neutral ones are grey
+                bool owned = sketch.HasOwners;
+                int team = owned ? sketch.Owners[i] : i;
+                m.style.backgroundColor = owned && team < 0 ? (Color)new Color32(120, 120, 120, 255) : (Color)MapPreview.TeamColor(team);
                 markers.Add(m);
             }
             message = null;

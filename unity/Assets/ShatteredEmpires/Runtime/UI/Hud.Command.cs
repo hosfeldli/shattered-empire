@@ -9,7 +9,8 @@ namespace SE.Runtime.UI
     /// <summary>
     /// Control groups, bottom-right (docs/UI_DESIGN_SPEC.md § B12): every assigned group as a 52×32 chip
     /// with its digit and strength. Click selects, double-click jumps the camera there, Ctrl+click assigns
-    /// the current selection. Hidden when no group exists. Plus the game-speed hotkeys beside pause.
+    /// the current selection. Hidden when no group exists. Plus the game-speed hotkeys (spectators, sandbox and
+    /// single-player matches; matches with several humans change speed by vote, Hud.SpeedVote.cs).
     /// </summary>
     public sealed partial class Hud
     {
@@ -75,7 +76,8 @@ namespace SE.Runtime.UI
         void SpeedHotkeys()
         {
             bool spectator = session.Spectator;
-            if (session.Paused || !(spectator || session.Welcome?.Sandbox == true)) return;
+            // spectators, the sandbox and single-player matches (Hud.Shell.cs SpeedDirect); several humans vote instead (Hud.SpeedVote.cs)
+            if (session.Paused || !SpeedDirect) return;
             var speeds = spectator ? SpectatorSpeeds : Speeds;
             int current = Mathf.RoundToInt(session.PlayRate), i = System.Array.IndexOf(speeds, current);
             if (i < 0) i = 0;

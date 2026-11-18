@@ -17,7 +17,7 @@
 //    Trenches on the rural outskirts inside a city's territory remain.
 import { UNITS, BUILDINGS, TERRAIN, N, W, T, isWater } from './constants.js';
 import { disk, dist, NB, hexLine } from './hex.js';
-import { nativeRules, tempo } from './rulesets.js';
+import { actionRules, nativeRules, tempo } from './rulesets.js';
 
 export const FIELDWORKS = {
   basic: { name: 'Earthworks', time: 10, cost: { materials: 6 }, cover: { front: 0.25, flank: 0.10, rear: 0, indirect: 0.08 } },
@@ -354,12 +354,13 @@ export function fieldworksFor(g, civ, vis) {
   for (const f of g.fieldworks.values()) if (f.owner === civ.id || vis[f.tile]) {
     let route = f.route || 0;
     for (let d = 0; d < 6; d++) if (!g.fieldworks.has(NB[f.tile * 6 + d])) route &= ~(1 << d);
-    // Endpoints meeting existing works form a junction. Interior parallel lines stay separate.
+    // Endpoints meeting existing works form a junction. Interior parallel lines stay separate. (The action
+    // ruleset sends its route too, 2026-11-18: links set when the line is drawn, actionBases trenchRoutes.)
     if (nativeRules(g) && (!route || (route & (route - 1)) === 0)) for (let d = 0; d < 6; d++) {
       const neighbor = g.fieldworks.get(NB[f.tile * 6 + d]);
       if (neighbor && neighbor.owner === f.owner && neighbor.project !== f.project) route |= 1 << d;
     }
-    out.push([f.tile, f.owner, f.type === 'reinforced' && !f.upgrading ? 1 : 0, f.dir, Math.round(f.progress * 100), Math.round(f.hp), f.state === 'materials' ? 1 : f.state === 'queued' || f.state === 'planned' ? 2 : 0, f.upgrading ? 1 : 0, ...(nativeRules(g) ? [route] : [])]);
+    out.push([f.tile, f.owner, f.type === 'reinforced' && !f.upgrading ? 1 : 0, f.dir, Math.round(f.progress * 100), Math.round(f.hp), f.state === 'materials' ? 1 : f.state === 'queued' || f.state === 'planned' ? 2 : 0, f.upgrading ? 1 : 0, ...(nativeRules(g) || actionRules(g) ? [route] : [])]);
   }
   return out;
 }

@@ -12,6 +12,11 @@ namespace SE.Runtime.Effects
             public float Age, Duration, Arc, Trail;
             public bool Grenade;   // a thrown grenade: a lob, then a small blast where it lands
             public bool Rocket, Strategic, Warhead;
+            // effects pass (2026-11-18, EffectsRenderer.Missiles): a missile battery round, an air-defense
+            // interceptor, the age at which an interceptor kills this flight (-1: never), whether an interceptor
+            // that found no visible missile bursts on arrival, and the path length since the last trail puff
+            public bool Missile, Interceptor, BurstAtEnd;
+            public float KillAt, TrailDistance;
         }
         readonly Flight[] flights = new Flight[512];
         int flightCount;
@@ -58,14 +63,18 @@ namespace SE.Runtime.Effects
             if (flightCount >= flights.Length) return;
             bool strategic = weapon == "warhead" && duration > 3;
             float distance = math.distance(from, to);
+            bool missile = weapon == "missile";
             flights[flightCount++] = new Flight {
                 From = from, To = to, Last = from, Duration = math.max(.05f, duration),
                 Grenade = weapon == "grenade",
-                Arc = weapon == "grenade" ? .06f + distance * .22f : strategic ? math.min(13, distance * .48f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
+                // a missile battery round climbs out, cruises and dives (MissileHeight); a strategic missile lofts high
+                Arc = weapon == "grenade" ? .06f + distance * .22f : strategic ? math.min(13, distance * .48f) : missile ? math.min(2.4f, .45f + distance * .13f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
                 Rocket = weapon == "warhead" || weapon == "missile" || weapon == "rockets" || weapon == "aam" || weapon == "drone_strike" || weapon == "at_rocket",
                 Strategic = strategic,
                 Warhead = weapon == "warhead",
+                Missile = missile, KillAt = -1,
             };
+            if (strategic || missile) MissileLaunch(from, to, strategic ? 1f : .45f, strategic);
         }
 
         void UpdateFlights(float dt)
@@ -78,11 +87,25 @@ namespace SE.Runtime.Effects
             {
                 ref var f = ref flights[i];
                 f.Age += dt;
-                if (f.Age > f.Duration + .05f) { if (f.Grenade) GrenadeBurst(f.To); flights[i--] = flights[--flightCount]; continue; }
+                // shot down (EffectsRenderer.Missiles): the interceptor reaches it now
+                if (f.KillAt >= 0 && f.Age >= f.KillAt) { InterceptBurst(f.Last, f.Strategic); flights[i--] = flights[--flightCount]; continue; }
+                if (f.Age > f.Duration + .05f)
+                {
+                    if (f.Grenade) GrenadeBurst(f.To);
+                    if (f.Interceptor && f.BurstAtEnd) InterceptBurst(f.To, f.Strategic);
+                    flights[i--] = flights[--flightCount]; continue;
+                }
                 float t = math.saturate(f.Age / f.Duration);
-                float3 p = math.lerp(f.From, f.To, t) + new float3(0, 4 * f.Arc * t * (1 - t), 0);
+                float3 p = FlightPosition(f, t);
                 var step = p - f.Last;
                 var heading = math.normalizesafe(step, new float3(0, 0, 1));
+                if (f.Missile || f.Strategic || f.Interceptor)
+                {
+                    // guided missiles (effects pass): the body, a hot motor and a lingering, drifting smoke trail
+                    MissileTravel(ref f, p, heading, math.length(step));
+                    f.Last = p;
+                    continue;
+                }
                 if (f.Rocket)
                     missileBodies.Add(InstanceData.TRS(MapSpace.W(p), quaternion.LookRotationSafe(MapSpace.W(heading), new float3(0, 1, 0)),
                         new float3(f.Warhead ? .44f : .085f), new float4(.93f, .92f, .86f, 0)));

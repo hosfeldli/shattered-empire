@@ -1,7 +1,8 @@
 // Battlefield aftermath that persists and matters: craters slow vehicles and give infantry cover,
 // destroyed vehicles burn then remain as wrecks (obstacles and cover) until engineers clear them,
 // and smoke from fires and shelling conceals what is inside it and spoils aim through it.
-// Everything recovers with time: smoke clears, fires burn out, craters soften, wrecks rust away.
+// Everything recovers with time: smoke clears, fires burn out, craters soften, wrecks rust away
+// (destruction pass 2026-11-18: within minutes, not the whole match; see docs/gameplay-overhaul/DESTRUCTION.md).
 import { book } from './ledger.js';
 import { UNITS, T, isWater } from './constants.js';
 import { disk } from './hex.js';
@@ -36,8 +37,29 @@ export const FIELD_POS = { perCiv: 24, total: 120, cover: 0.12, after: 15, aband
 // stable position inside the hex, severity and seed, so clients rebuild the same overlapping
 // depressions after save, reload or reconnect. Bounded per hex and in total; insignificant
 // overlaps merge into the aggregate crater depth. Position comes from a hash, never the game RNG.
-export const IMPACT = Object.freeze({ perTile: 6, total: 6000 });
+//
+// Healing (destruction pass, 2026-11-18): impact records no longer last for the whole match. Each one holds
+// its full depth for IMPACT.hold seconds, then fills in linearly over IMPACT.heal seconds and is removed.
+// The heal level is derived from the record's own `at` and a heal clock that advances in IMPACT.tick steps
+// for the whole map at once, so it needs nothing new in saves, is identical on every client, and changes
+// (re-sending the bf block and re-meshing the cratered terrain chunks) at most once per tick instead of a
+// trickle every second. Snapshots carry it as the 7th field of each 'm' row: percent of depth left (1..100).
+export const IMPACT = Object.freeze({ perTile: 6, total: 3000, hold: 60, heal: 240, tick: 30 });
 export const IMPACT_CLASSES = ['mortar', 'shell', 'bomb', 'missile', 'strategic'];
+/** The map-wide heal clock: game time rounded down to the heal tick. */
+export const healClock = (g) => Math.floor((g.time || 0) / IMPACT.tick) * IMPACT.tick;
+/** Fraction of an impact's depth left (1 fresh .. 0 healed) at a heal clock; records without a time count as healed. */
+export function impactHeal(at, clock) {
+  if (!Number.isFinite(at)) return 0;
+  const age = clock - at;
+  return age <= IMPACT.hold ? 1 : Math.max(0, 1 - (age - IMPACT.hold) / IMPACT.heal);
+}
+export const healWire = (at, clock) => Math.round(impactHeal(at, clock) * 100);
+// Wrecks rust away (or are towed off) after WRECK.life seconds; at most WRECK.total stand on the map.
+export const WRECK = Object.freeze({ life: 600, perTile: 3, total: 400 });
+// Crater depth (the gameplay aggregate: cover and vehicle cost) softens one level every `every` seconds
+// after the last hit (crews patch roads faster). Three levels: a fully churned hex is passable in ~9 min.
+export const CRATER_HEAL = Object.freeze({ every: 180, road: 90 });
 function recordImpact(g, t, cls, severity, position) {
   const list = g.impacts.get(t) || [];
   const seed = ((t * 2654435761) ^ (g.eventSeq * 40503) ^ (g.tickN * 97)) >>> 0;
@@ -78,7 +100,15 @@ export function addScorch(g, t, v) {
   e.v = Math.min(1, e.v + v); e.at = g.time; g.scorch.set(t, e);
 }
 export const WEAR = Object.freeze({ tracked: 0.05, wheeled: 0.03, infantry: 0.006, cap: 8000 });
-export function addWear(g, t, move) {
+// Forest clearing (R5, W3 2026-11-17): heavy tracked hulls (def.clearsForest: tanks, autonomous tanks, SP guns;
+// any tracked vehicle when the caller passes no unit def) flatten the forest they drive through. Each entry of
+// such a hull into a FOREST hex counts one pass on the hex's wear record (r.h); at `passes` the hex is cleared:
+// its moisture drops below the forest band and it becomes GRASS for good (moist and terr are saved world arrays,
+// world.touch replicates the change, nothing in the action ruleset raises moisture again, so it never regrows).
+// Work is bounded: candidates sit in g.forestPending (only forest hexes heavy hulls entered), checked at 1 Hz in
+// battlefieldStep; navigation is invalidated at most once every `navEvery` seconds, batching every cleared hex.
+export const FOREST_CLEAR = Object.freeze({ passes: 3, moist: 0.45, navEvery: 3, maxPerStep: 64 });
+export function addWear(g, t, move, def = null) {
   const w = g.world;
   if (t < 0 || isWater(w.terr[t]) || w.road[t] || !WEAR[move]) return;
   const e = g.wear.get(t);
@@ -86,7 +116,42 @@ export function addWear(g, t, move) {
   const r = e || { v: 0, at: 0, k: move };
   r.v = Math.min(1, r.v + WEAR[move]); r.at = g.time;
   if (WEAR[move] > WEAR[r.k] || 0) r.k = move;
+  if (move === 'tracked' && (def ? def.clearsForest : true) && w.terr[t] === T.FOREST) {
+    r.h = (r.h || 0) + 1;
+    if (r.h >= FOREST_CLEAR.passes) (g.forestPending ??= new Set()).add(t);
+  }
   g.wear.set(t, r);
+}
+
+/** Clear the forest on hex t (idempotent). Returns whether it changed. */
+export function clearForest(g, t) {
+  const w = g.world;
+  if (w.terr[t] !== T.FOREST) return false;
+  w.moist[t] = Math.min(w.moist[t], FOREST_CLEAR.moist);
+  w.terr[t] = T.GRASS;
+  if (w.dense) w.dense[t] = 0;   // §30: a cleared dense-forest hex stays open to infantry (even if a brush re-forests it)
+  w.touch(t);
+  g.bfVer++;
+  g.forestCleared = (g.forestCleared || 0) + 1;
+  g.forestNavDirty = true;
+  return true;
+}
+
+function forestStep(g) {
+  const pending = g.forestPending;
+  if (pending?.size) {
+    let n = 0;
+    for (const t of pending) {
+      pending.delete(t);
+      const r = g.wear.get(t);
+      if (r && (r.h || 0) >= FOREST_CLEAR.passes) clearForest(g, t);
+      if (++n >= FOREST_CLEAR.maxPerStep) break;
+    }
+  }
+  if (g.forestNavDirty && g.time - (g.forestNavAt ?? -Infinity) >= FOREST_CLEAR.navEvery && typeof g.nav?.invalidate === 'function') {
+    g.forestNavDirty = false; g.forestNavAt = g.time;
+    g.nav.invalidate();
+  }
 }
 
 export function addWreck(g, t, type, owner, position = null) {
@@ -94,12 +159,22 @@ export function addWreck(g, t, type, owner, position = null) {
   if (!def || def.civilian && def.move === 'infantry') return;
   if (def.move === 'infantry') return;
   const list = g.wrecks.get(t) || [];
-  if (list.length >= 3) list.shift();
+  if (list.length >= WRECK.perTile) list.shift();
+  else if (countWrecks(g) >= WRECK.total) dropOldestWreck(g);
   list.push({ type, owner, burn: def.air ? 25 : 45, at: g.time, ...(position || {}) });
   addIntensity(g, t, 4);
   g.wrecks.set(t, list); g.world.dirty.add(t); g.bfVer++;
   addSmoke(g, t, 0.55, 30);
   addScorch(g, t, 0.35);
+}
+
+function countWrecks(g) { let n = 0; for (const l of g.wrecks.values()) n += l.length; return n; }
+function dropOldestWreck(g) {
+  let oldest = -1, at = Infinity;
+  for (const [tile, l] of g.wrecks) if (l.length && l[0].at < at) { at = l[0].at; oldest = tile; }
+  if (oldest < 0) return;
+  const l = g.wrecks.get(oldest); l.shift(); if (!l.length) g.wrecks.delete(oldest);
+  g.world.dirty.add(oldest); g.bfVer++;
 }
 
 export function addSmoke(g, t, density, seconds) {
@@ -134,7 +209,7 @@ export function battlefieldStep(g, dt, { fieldPositions = true } = {}) {
   // smoke: burning wrecks and buildings keep it coming; otherwise it thins and clears
   for (const [t, list] of g.wrecks) {
     for (const wr of list) if (wr.burn > 0) { wr.burn -= dt; addSmoke(g, t, 0.6, 6); if (wr.burn <= 0) g.bfVer++; }
-    if (list.length && g.time - list[0].at > 1500) { list.shift(); g.world.dirty.add(t); g.bfVer++; }
+    if (list.length && g.time - list[0].at > WRECK.life) { list.shift(); g.world.dirty.add(t); g.bfVer++; }
     if (!list.length) { g.wrecks.delete(t); g.bfVer++; }
   }
   for (const b of g.buildings.values()) if (b.fire > 0) addSmoke(g, b.tile, 0.7, 6);
@@ -146,7 +221,8 @@ export function battlefieldStep(g, dt, { fieldPositions = true } = {}) {
     const step = dt;                      // called once a second
     for (const [t, e] of g.intensity) {
       if (g.time - e.at < 60) continue;
-      e.v -= step * (e.v > 40 ? 0.025 : 0.05) * (g.world.owner[t] >= 0 ? 1.3 : 1);
+      // destruction pass: four times faster than before (a stage-3 waste recovers in ~8 min, not ~40)
+      e.v -= step * (e.v > 40 ? 0.1 : 0.2) * (g.world.owner[t] >= 0 ? 1.3 : 1);
       // historical scarring: the worst a hex has been is remembered long after it recovers
       const peak = Math.max(g.scars.get(t)?.v || 0, e.v / 100);
       if (peak >= 0.15) g.scars.set(t, { v: peak, at: g.time });
@@ -155,16 +231,41 @@ export function battlefieldStep(g, dt, { fieldPositions = true } = {}) {
     }
     if (fieldPositions) fieldPositionsStep(g, step);
   }
-  // craters soften over time (faster on roads, which crews patch)
+  // craters soften over time (faster on roads, which crews patch). The drawn bowls (impact records) heal on
+  // their own clock (impactStep) and are not dropped here: removing them with the aggregate made a half-healed
+  // bowl vanish in one frame. Engineers filling a crater still clear its records (engineerClear).
   for (const [t, c] of g.craters) {
     const age = g.time - c.at;
-    if (age > (g.world.road[t] ? 300 : 900)) { c.d -= 1; c.at = g.time; g.world.dirty.add(t); g.bfVer++; forgetImpact(g, t, c.d <= 0); if (c.d <= 0) g.craters.delete(t); }
+    if (age > (g.world.road[t] ? CRATER_HEAL.road : CRATER_HEAL.every)) {
+      c.d -= 1; c.at = g.time; g.world.dirty.add(t); g.bfVer++;
+      if (c.d <= 0) g.craters.delete(t);
+    }
   }
+  impactStep(g);
   // scorch weathers away over many minutes; wear fades once traffic stops (historical traces last)
   for (const b of g.buildings.values()) if (b.fire > 0) addScorch(g, b.tile, 0.01 * dt);
-  for (const [t, e] of g.scorch) if (g.time - e.at > 120) { e.v -= 0.0015 * dt; if (e.v <= 0.03) g.scorch.delete(t); }
+  for (const [t, e] of g.scorch) if (g.time - e.at > 60) { e.v -= 0.004 * dt; if (e.v <= 0.03) g.scorch.delete(t); }
   for (const [t, e] of g.wear) if (g.time - e.at > 60) { e.v -= 0.001 * dt; if (e.v <= 0.05) g.wear.delete(t); }
-  for (const [t, e] of g.scars) if (!g.intensity.has(t)) { e.v -= 0.00025 * dt; if (e.v <= 0.05) { g.scars.delete(t); g.bfVer++; } }
+  for (const [t, e] of g.scars) if (!g.intensity.has(t)) { e.v -= 0.001 * dt; if (e.v <= 0.05) { g.scars.delete(t); g.bfVer++; } }
+  // forest clearing is an action-ruleset rule (its navigation has invalidate); the legacy ruleset keeps its forests
+  if (typeof g.nav?.invalidate === 'function') forestStep(g); else g.forestPending?.clear();
+}
+
+/** Removes healed impact records, once per heal tick (the map-wide batch the clients re-mesh on). */
+export function impactStep(g) {
+  const clock = healClock(g);
+  if (g.impactHealAt === clock) return;
+  g.impactHealAt = clock;
+  let changed = false;
+  for (const [t, list] of g.impacts) {
+    let keep = 0;
+    for (const m of list) if (impactHeal(m.at, clock) > 0) list[keep++] = m;
+    if (keep === list.length) { if (!changed) changed = list.some((m) => impactHeal(m.at, clock) < 1); continue; }
+    g.impactCount = Math.max(0, (g.impactCount || 0) - (list.length - keep));
+    list.length = keep; changed = true;
+    if (!keep) g.impacts.delete(t);
+  }
+  if (changed) g.bfVer++;
 }
 
 function fieldPositionsStep(g, dt) {
@@ -246,8 +347,15 @@ export function rememberBattlefield(g, civ) {
     if (!cr && !wrecks?.length && !stage && !g.scorch.has(t) && !g.wear.has(t)) { memory.delete(t); continue; }
     memory.set(t, { crater: cr?.d || 0, intensity: stage,
       wrecks: (wrecks || []).map(wreckWire),
-      impacts: (g.impacts.get(t) || []).map((m) => [m.c, m.x, m.z, m.s, m.seed]),
+      impacts: (g.impacts.get(t) || []).map((m) => [m.c, m.x, m.z, m.s, m.seed, m.at]),
       scorch: Math.round((g.scorch.get(t)?.v || 0) * 10), wear: Math.round((g.wear.get(t)?.v || 0) * 10) });
+  }
+  // remembered craters heal on the same public schedule as the real ones (derived from the impact time
+  // that was seen, so nothing hidden leaks); healed ones are forgotten once per heal tick
+  const clock = healClock(g);
+  if (civ.bfHealAt !== clock) {
+    civ.bfHealAt = clock;
+    for (const known of memory.values()) if (known.impacts?.length) known.impacts = known.impacts.filter((x) => impactHeal(x[5], clock) > 0);
   }
   // scorch and track wear are remembered only where they were seen; refreshed every few seconds
   if (civ.human && (g.tickN % 30 === 0)) {
@@ -291,21 +399,24 @@ export function battlefieldSnapshot(g, vis, explored, memory = null, god = false
   // impacts, scorch and wear: live where seen now, remembered elsewhere (never hidden fresh activity)
   const m = [], sc = [], wr = [];
   const WK = { tracked: 2, wheeled: 1, infantry: 0 };
+  // each impact row ends with its heal level (percent of depth left); fully healed rows are left out
+  const clock = healClock(g);
+  const live = (t, x) => { const f = healWire(x.at, clock); if (f > 0) m.push([t, x.c, x.x, x.z, x.s, x.seed, f]); };
   if (god || !memory) {
-    for (const [t, list] of g.impacts) if (vis[t] || explored[t]) for (const x of list) m.push([t, x.c, x.x, x.z, x.s, x.seed]);
+    for (const [t, list] of g.impacts) if (vis[t] || explored[t]) for (const x of list) live(t, x);
     for (const [t, e] of g.scorch) if (vis[t] || explored[t]) sc.push([t, Math.round(e.v * 10)]);
     for (const [t, e] of g.wear) if (vis[t] || explored[t]) wr.push([t, Math.round(e.v * 10), WK[e.k] ?? 0]);
   } else {
     for (const [t, known] of memory) {
       if (!explored[t] && !vis[t]) continue;
       if (vis[t]) {
-        for (const x of g.impacts.get(t) || []) m.push([t, x.c, x.x, x.z, x.s, x.seed]);
+        for (const x of g.impacts.get(t) || []) live(t, x);
         const se = g.scorch.get(t), we = g.wear.get(t);
         if (se) sc.push([t, Math.round(se.v * 10)]);
         if (we) wr.push([t, Math.round(we.v * 10), WK[we.k] ?? 0]);
         continue;
       }
-      for (const x of known.impacts || []) m.push([t, ...x]);
+      for (const x of known.impacts || []) { const f = healWire(x[5], clock); if (f > 0) m.push([t, x[0], x[1], x[2], x[3], x[4], f]); }
       if (known.scorch) sc.push([t, known.scorch]);
       if (known.wear) wr.push([t, known.wear, WK[known.wk] ?? 0]);
     }
@@ -328,5 +439,7 @@ export function restoreBattlefield(g, d) {
   g.intensity = new Map(d.intensity || []); g.fieldPos = new Map(d.fieldPos || []);
   // warzone format v2: older saves have no impact records, scorch or wear; craters still show
   // through their aggregate depth and new impacts start recording from here on
-  g.impacts = new Map(d.impacts || []); g.impactCount = d.impactCount || 0; g.scorch = new Map(d.scorch || []); g.wear = new Map(d.wear || []); g.scars = new Map(d.scars || []);
+  g.impacts = new Map(d.impacts || []); g.impactCount = 0; for (const l of g.impacts.values()) g.impactCount += l.length; g.scorch = new Map(d.scorch || []); g.wear = new Map(d.wear || []); g.scars = new Map(d.scars || []);
+  // forest hexes that reached their clearing passes but were not processed before the save
+  for (const [t, r] of g.wear) if ((r.h || 0) >= FOREST_CLEAR.passes && g.world?.terr[t] === T.FOREST) (g.forestPending ??= new Set()).add(t);
 }

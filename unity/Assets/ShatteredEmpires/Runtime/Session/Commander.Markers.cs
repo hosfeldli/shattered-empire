@@ -1,5 +1,6 @@
 using System;
 using SE.Core.Protocol;
+using SE.Runtime.Input;
 using SE.Runtime.Rendering;
 using Unity.Mathematics;
 using UnityEngine;
@@ -226,6 +227,7 @@ namespace SE.Runtime.Session
         {
             if (!session.ActionRts || session.Spectator) return;
             if (SelectedBuildings.Count == 0 && SelectedObjective <= 0) return;
+            DrawRallyPreview(time);
             var w = session.World;
             var g = w.Grid;
             int shown = 0;
@@ -248,6 +250,43 @@ namespace SE.Runtime.Session
                 for (int k = 1; k < steps; k++)
                 {
                     float f = k / (float)steps, x = b.X + dx * f, z = b.Z + dz * f;
+                    discs.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + .03f, z)), 0, new float3(.06f, 1f, .06f), dim));
+                }
+            }
+        }
+
+        /// <summary>
+        /// §22: where a new rally point would go — while a Shift-click rally is held, while the rally tool is armed,
+        /// and (as a hint) while Shift is held over open ground with production selected: a ring at the cursor and a
+        /// dotted lead from each selected producer.
+        /// </summary>
+        void DrawRallyPreview(float time)
+        {
+            if (!RallyCapable || hoverTile < 0) return;
+            bool hint = Current == Mode.Select && !dragging && InputFacade.Shift;
+            if (!rallyPlacing && Current != Mode.Rally && !hint) return;
+            if (!cam.TryGround(InputFacade.MousePosition, out var p)) return;
+            var w = session.World;
+            var g = w.Grid;
+            bool attack = RallyAttackMoveArmed;
+            var col = attack ? new float4(1f, .32f, .25f, .8f) : new float4(.38f, .95f, .5f, .8f);
+            if (hint) col.w = .45f;   // a hint until the click
+            float py = w.GroundHeight(p.x, p.z) + .03f;
+            rings.Add(InstanceData.TRS(MapSpace.W(new float3(p.x, py, p.z)), 0, new float3(.34f + .04f * Mathf.Sin(time * 7f)), col));
+            rings.Add(InstanceData.TRS(MapSpace.W(new float3(p.x, py, p.z)), 0, new float3(.12f), col));
+            var dim = new float4(col.xyz, .3f);
+            int shown = 0;
+            foreach (var b in session.Structures.Buildings.Values)
+            {
+                if (b.Owner != session.CivId || !b.HasPosition) continue;
+                if (!SelectedBuildings.Contains(b.Id) && !(SelectedObjective > 0 && b.City == SelectedObjective && b.Done && IsProductionType(b.Type))) continue;
+                if (++shown > 24) break;
+                float bx = g.NearX(b.X, p.x), dx = p.x - bx, dz = p.z - b.Z, len = Mathf.Sqrt(dx * dx + dz * dz);
+                if (len < .4f) continue;
+                int steps = Mathf.Clamp(Mathf.CeilToInt(len / .5f), 1, 40);
+                for (int k = 1; k < steps; k++)
+                {
+                    float f = k / (float)steps, x = bx + dx * f, z = b.Z + dz * f;
                     discs.Add(InstanceData.TRS(MapSpace.W(new float3(x, w.GroundHeight(x, z) + .03f, z)), 0, new float3(.06f, 1f, .06f), dim));
                 }
             }

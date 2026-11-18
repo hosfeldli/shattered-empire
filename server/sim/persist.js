@@ -3,6 +3,8 @@ import { LEGACY_RULESET, actionRules, nativeRules, normalizeNativeCiv } from './
 // so live games survive deploys, restarts and crashes, and replays can be verified.
 import { Game } from './game.js';
 import { ActionGame } from './actionGame.js';
+import { migrateProduction } from './actionProduction.js';
+import { markDenseForest } from './actionMap.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES } from './actionDefinitions.js';
 import { WRAP } from './hex.js';
 import { BUILDINGS, TECHS, POLICIES } from './constants.js';
@@ -25,6 +27,7 @@ export function serializeGame(g) {
   const w = g.world;
   const world = { arrays: {}, wiped: [...w.wiped], dirty: w.dirty.size > 0 ? 1 : 0, volcanoes: w.volcanoes, riftTiles: w.riftTiles, faultTiles: w.faultTiles, starts: w.starts, stab0: w.stab0 ? b64(w.stab0) : null };
   for (const k of WORLD_ARRAYS) world.arrays[k] = b64(w[k]);
+  if (w.dense) world.arrays.dense = b64(w.dense);   // §30 dense forest (action ruleset)
   const civs = g.civs.map((c) => {
     const o = {};
     for (const [k, v] of Object.entries(c)) {
@@ -130,7 +133,10 @@ export function restoreGame(data) {
   g.diplomacy.nextProposal = data.diplomacy.nextProposal;
   if (action) {
     g.setSites(data.action.sites);
+    // §30 dense forest: saved since 2026-11-18; an older save derives it from its (possibly cleared) terrain
+    if (data.world.arrays.dense) { w.dense = fromB64(data.world.arrays.dense, Uint8Array); g.nav.invalidate(); } else markDenseForest(g);
     g.rebuildBuildingIndex();
+    migrateProduction(g);   // W1: pre-scheduler saves carry one FIFO `queue` per building
     g.materialCaches = new Map(data.action.materialCaches || []);
     g.roadProjects = data.action.roadProjects || [];
     for (const civ of g.civs) civ.cacheIntel ??= new Map();
@@ -141,7 +147,25 @@ export function restoreGame(data) {
     // review S: a running decisive-domination countdown survives a save; the territory refresh flag too
     g.dominance = data.action.dominance || null;
     g.territoryDirty = !!data.action.territoryDirty;
+    // 2026-11-18 unit rebalance: a unit whose type changed its health (infantry squads lost HP per man; exo_infantry
+    // became an Infantry Fighting Vehicle) keeps its health fraction at the new maximum. The former exo squad also takes
+    // the vehicle's footprint, drops its squad-only state (suppression, armour plates) and leaves any garrison.
     for (const u of g.units.values()) {
+      const d = ACTION_UNITS[u.type];
+      if (!d || d.air || !(u.maxHp > 0) || u.maxHp === d.hp) continue;
+      u.hp = u.hp > 0 ? Math.max(1, Math.round(u.hp / u.maxHp * d.hp * 1000) / 1000) : 0;
+      u.maxHp = d.hp;
+      if (!d.men) {
+        u.radius = d.radius; delete u.supp; delete u.suppAt; delete u.plates;
+        if (u.inside) {
+          const b = g.buildings.get(u.inside);
+          if (b?.garrison) b.garrison = b.garrison.filter((id) => id !== u.id);
+          u.inside = 0;
+        }
+      }
+    }
+    for (const u of g.units.values()) {
+      if (u.inside) continue;   // W4: garrisoned squads stay out of the movement and target indexes
       if (!ACTION_UNITS[u.type].air) g.movers.add(u);
       g.targets.add(u);
     }

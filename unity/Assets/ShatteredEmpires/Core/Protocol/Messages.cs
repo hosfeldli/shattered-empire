@@ -63,6 +63,12 @@ namespace SE.Core.Protocol
         public int DefenseLevel;
         public float X, Z, Radius, Capture, Build, DevelopedAt, Tenure, Maturity;
         public bool IsBase, Contested, Operational, Memory, Starting;
+        /// <summary>Capture (W2, R7): progress fell during the last server step (nobody capturing, or a rival draining the claim).</summary>
+        public bool Decaying;
+        /// <summary>Own captured city without a headquarters (server `settle`, 2026-11-18): the settlement price with its
+        /// claim road included, the road's segment count and the base it leads to. SettleMaterials is 0 when not sent.</summary>
+        public int SettleMaterials, SettleEnergy, SettleRoad;
+        public string SettleTo;
         public string Name, Kind;
         public int[] Slots;
         public BaseParcel[] Parcels;
@@ -100,6 +106,35 @@ namespace SE.Core.Protocol
         public bool HasRally, RallyAttackMove;
         public float RallyX, RallyZ;
         public string Project;
+        /// <summary>
+        /// Own production (W1 scheduler, econ <c>qs</c>): one entry per unit type in queue order. Synthesized from the
+        /// legacy <c>q</c>/<c>tr</c>/<c>rp</c> fields for older servers (then <see cref="QueuesFromServer"/> is false and
+        /// every <see cref="ProductionQueue.State"/> is null). Null when nothing is queued.
+        /// </summary>
+        public ProductionQueue[] Queues;
+        public bool QueuesFromServer;
+        /// <summary>Own production: the building's shared production capacity, work units per second (econ <c>cap</c>); 0 when not sent.</summary>
+        public float ProductionCapacity;
+        /// <summary>W4 garrison (own buildings, econ <c>gar</c>): occupant unit ids in entry order (the first def.firingSlots fire); null when empty.</summary>
+        public int[] Garrison;
+        /// <summary>W4 garrison exit rally point (econ <c>ge:[x, z]</c>).</summary>
+        public bool HasGarrisonExit;
+        public float GarrisonExitX, GarrisonExitZ;
+    }
+
+    /// <summary>One unit-type queue of a producing building (server actionProduction.js productionWire <c>qs[i]</c>).</summary>
+    public struct ProductionQueue
+    {
+        public string Unit;
+        /// <summary>Items queued, including the one in progress.</summary>
+        public int Count;
+        /// <summary>0 low, 1 normal, 2 high.</summary>
+        public int Priority;
+        /// <summary>Progress of the current item, 0..100.</summary>
+        public float Progress;
+        /// <summary>producing, resources, capacity, prerequisites, exit, paused, waiting, idle; null from a legacy server.</summary>
+        public string State;
+        public bool Repeat;
     }
 
     public struct CityRecord
@@ -129,6 +164,9 @@ namespace SE.Core.Protocol
         public bool Half;
         /// <summary>Barracks upgrades (server actionUpgrades.js): a grenade lob (gr), a squad AT rocket (rk), a marksman shot (mk), a hit absorbed by body armour (ar).</summary>
         public bool Grenade, Rocket, Marksman, Armoured;
+        /// <summary>2026-11-18: a sustained-burst round from a bunker MG (bu: its place in the burst, 1..shots; 0 = a single volley) and an IFV anti-tank missile launch (tw).</summary>
+        public int BurstRound;
+        public bool Tow;
         public bool HasOrigin, HasDestination;
         public WorldPoint Origin, Destination;
     }
@@ -200,5 +238,7 @@ namespace SE.Core.Protocol
         public bool Wrap = true, Spectator, Sandbox, Paused, CanPause;
         public CivInfo[] Civs = System.Array.Empty<CivInfo>();
         public JObject Defs;
+        /// <summary>§30 dense forest (world.dense): bitset, hex t = bit (t &amp; 7) of byte t &gt;&gt; 3; null when the server sends none.</summary>
+        public byte[] Dense;
     }
 }

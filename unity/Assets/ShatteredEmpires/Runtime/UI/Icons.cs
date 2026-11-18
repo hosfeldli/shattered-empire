@@ -227,11 +227,10 @@ namespace SE.Runtime.UI
                     Circle(c, 0.8f, 0.23f, 0.06f); Circle(dark, 0.83f, 0.2f, 0.03f);
                     break;
                 case "exo_infantry":
-                    // an armoured exoskeleton: broad shoulders, visor, heavy limbs
-                    Box(c, 0.4f, 0.17f, 0.58f, 0.3f); Box(glow, 0.43f, 0.21f, 0.55f, 0.24f);
-                    Poly(c, 0.3f, 0.32f, 0.68f, 0.32f, 0.63f, 0.6f, 0.35f, 0.6f);
-                    Box(c, 0.36f, 0.6f, 0.46f, 0.9f); Box(c, 0.52f, 0.6f, 0.62f, 0.9f);
-                    Box(c, 0.66f, 0.36f, 0.86f, 0.44f);
+                    // infantry fighting vehicle (2026-11-18): a tall tracked hull, a small turret with a long autocannon and a missile box
+                    Tracks(c, 0.08f, 0.9f); Poly(c, 0.08f, 0.38f, 0.8f, 0.38f, 0.92f, 0.5f, 0.9f, 0.66f, 0.08f, 0.66f);
+                    Box(c, 0.36f, 0.27f, 0.6f, 0.38f); Line(c, 0.03f, 0.6f, 0.31f, 0.94f, 0.29f);
+                    Box(c, 0.3f, 0.19f, 0.5f, 0.26f); Box(glow, 0.47f, 0.2f, 0.5f, 0.25f);
                     break;
                 case "colonist":
                     Soldier(c, 0.3f, 0.9f, false, false);

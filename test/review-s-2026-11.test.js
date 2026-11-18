@@ -68,7 +68,8 @@ test('Infantry Training is functional: halted infantry take cover, moving infant
   const target = [...g.units.values()].find((u) => u.owner === 1 && u.type === 'rifle_squad');
   const hit = (halted) => {
     target.hp = target.maxHp; target.goal = halted ? null : { x: target.x + 1, z: target.z };
-    damageActionTarget(g, target, shooter, 40, 'rifle');
+    // 2026-11-18: 20, not 40: with 9-HP riflemen a 40 volley hits the rifle kill cap (3 men) with or without cover
+    damageActionTarget(g, target, shooter, 20, 'rifle');
     return target.maxHp - target.hp;
   };
   const plain = hit(true);

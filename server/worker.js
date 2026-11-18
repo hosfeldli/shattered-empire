@@ -13,6 +13,7 @@ const { GAME_DEFS, TICK_HZ, aiProfile } = await import('./sim/constants.js');
 const { serializeGame, restoreGame } = await import('./sim/persist.js');
 const { geoViewer, geoMessage } = await import('./sim/terrainGeo.js');
 const { commandAck } = await import('./commandAck.js');
+const { castVote, dropVoter, setSpeedDirect, speedMode, voteStep } = await import('./sim/speedVote.js');
 
 let game;
 if (workerData.restore) {
@@ -57,8 +58,22 @@ let nextSave = game.time + AUTOSAVE_S;
 // Spectated AI-only matches can run faster than real time (or pause) for testing.
 const OBSERVE = !!workerData.observe;
 game.speed = 1;
+// R6 speed votes (sim/speedVote.js): results are announced to everyone; a passed vote is applied here, at the
+// start of a tick interval, so the change lands on a boundary between two whole intervals
+const civName = (id) => game.civs[id]?.name || 'A player';
+function announceVote(r) {
+  if (!r?.result && !r?.expired && !r?.applied) return;
+  const note = (text, level = 'info') => send(-1, { t: 'note', time: Math.round(game.time), text, kind: 'speed', level, quiet: level === 'info' });
+  if (r.applied) { send(-1, { t: 'paused', on: !game.speed, speed: game.speed }); note(`Game speed is now ${r.applied}×.`, 'minor'); }
+  else if (r.expired) note(`The vote for ${r.expired.speed}× ran out of time.`);
+  else if (r.result === 'proposed') note(`${civName(r.vote.by)} proposes ${r.vote.speed}× speed.`, 'minor');
+  else if (r.result === 'passed') note(`Everyone agreed to ${r.vote.speed}× speed.`);
+  else if (r.result === 'rejected') note(`${civName(r.by)} rejected ${r.vote.speed}× speed.`);
+  else if (r.result === 'withdrawn') note(`The vote for ${r.vote.speed}× was withdrawn.`);
+}
 const timer = setInterval(() => {
   try {
+    if (game.speedVote || game.pendingSpeed) { announceVote(voteStep(game, Date.now())); flush(); }
     // A connected observer is a human too: exhibitions continue while watched. Keep the
     // requested speed intact so reconnecting resumes the same match, including a manual pause.
     // The manager later saves and parks the worker after its existing idle timeout.
@@ -106,17 +121,20 @@ parentPort.on('message', (m) => {
     if (m.t === 'congestion') {
       const next = new Set(m.civs || []);
       // a connection that drained gets a full catch-up on the next snapshot round
-      for (const id of congested) if (!next.has(id) && id >= 0 && game.civs[id]) game.civs[id].catchUp = true;
+      for (const id of congested) if (!next.has(id) && id >= 0 && game.civs[id]) { game.civs[id].catchUp = true; deltas.get(id)?.resyncEcon?.(); }
       congested = next; return;
     }
     if (m.t === 'cmd' && m.cmd && m.cmd.c === 'speed') {
-      // campaigns, skirmishes and multiplayer run at the match's own pace; only the combat sandbox (and AI
-      // exhibitions, through the observer channel) can change speed
-      const eligible = !!game.sandbox;
-      const requested = Number(m.cmd.speed);
-      if (!eligible) send(m.civId, { t: 'ack', rid: m.rid, error: 'Game speed is fixed in campaigns and multiplayer' });
-      else if (![1, 2, 4].includes(requested)) send(m.civId, { t: 'ack', rid: m.rid, error: 'Choose 1×, 2× or 4× speed' });
-      else { game.resumeSpeed = requested; game.speed = requested; send(m.civId, { t: 'ack', rid: m.rid, speed: requested }); send(m.civId, { t: 'paused', on: false, speed: requested }); }
+      // R6: the sandbox and single-player matches set speed directly; multiplayer goes through {c:'speedVote'}
+      const r = setSpeedDirect(game, Number(m.cmd.speed), tickMs);
+      if (r.error) send(m.civId, { t: 'ack', rid: m.rid, error: r.error });
+      else { send(m.civId, { t: 'ack', rid: m.rid, speed: r.speed }); send(m.civId, { t: 'paused', on: false, speed: r.speed }); }
+      flush();
+    } else if (m.t === 'cmd' && m.cmd && m.cmd.c === 'speedVote') {
+      const r = castVote(game, m.civId, m.cmd, Date.now(), tickMs);
+      if (r.error) send(m.civId, { t: 'ack', rid: m.rid, error: r.error });
+      else if (r.result === 'direct') { send(m.civId, { t: 'ack', rid: m.rid, speed: r.speed }); send(m.civId, { t: 'paused', on: false, speed: r.speed }); }
+      else { send(m.civId, { t: 'ack', rid: m.rid, vote: r.result }); announceVote(r); }
       flush();
     } else if (m.t === 'cmd' && m.cmd && m.cmd.c === 'pause') {
       // single-player matches (one human against the AI) and the sandbox can be paused
@@ -136,11 +154,11 @@ parentPort.on('message', (m) => {
       flush();
     } else if (m.t === 'connect') {
       const c = game.civs[m.civId]; if (c) c.connected = !!m.on;
-      if (!m.on) { geoViewers.delete(m.civId); deltas.delete(m.civId); }
+      if (!m.on) { geoViewers.delete(m.civId); deltas.delete(m.civId); announceVote(dropVoter(game, m.civId)); flush(); }
     } else if (m.t === 'welcome') {
       const civ = game.civs[m.civId];
       civ.connected = true;
-      send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random' }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, paused: !game.speed,
+      send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random', dense: game.denseWire?.() }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, canSpeed: speedMode(game) === 'direct', speedVote: speedMode(game) === 'vote', paused: !game.speed,
         civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
       if (m.caps?.includes('udelta')) deltas.set(m.civId, deltaEncoder()); else deltas.delete(m.civId);
       for (const [, msg] of game.snapshots(m.civId)) sendSnap(m.civId, msg);
@@ -152,7 +170,7 @@ parentPort.on('message', (m) => {
       if (!m.on) geoViewers.delete(-2);
     } else if (m.t === 'obsWelcome') {
       const o = game.setObserver({ connected: true });
-      send(-2, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random' },
+      send(-2, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: o.follow, spectator: true, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random', dense: game.denseWire?.() },
         civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[o.follow], time: game.time });
       send(-2, game.observerSnapshot(true));
       // spectators share one channel: a full sync for a newcomer is harmless to the others

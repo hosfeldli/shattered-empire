@@ -44,6 +44,7 @@ namespace SE.Runtime.UI
             statusLabel = Line("", "se-menu-status", foot);
             Line($"v{Application.version} · Windows preview" + (App.Updater.CurrentBuild.Length > 0 ? " · build " + App.Updater.CurrentBuild : ""), "se-menu-version", foot);
             UpdateBanner.Attach(frame, foot);   // in-app updater (App/Updater.cs): hidden unless an update is on offer
+            ReleaseNotes.Attach(this, foot);    // "What's new" link; the notes window after an update (UI/ReleaseNotes.cs)
 
             // the mouse's back button pops a page like Escape
             frame.RegisterCallback<PointerDownEvent>(e =>
@@ -84,6 +85,7 @@ namespace SE.Runtime.UI
         /// <summary>Pop one page. Leaving the lobby page leaves the lobby. False at the root (nothing to do).</summary>
         public bool HandleEscape()
         {
+            if (ReleaseNotes.Close()) return true;
             if (quitArmed) { DisarmQuit(); return true; }
             if (pages.Top == "lobby") { LeaveLobbyPage(); return true; }
             if (pages.Pop()) { SyncWide(); return true; }
@@ -627,6 +629,10 @@ namespace SE.Runtime.UI
                 remove.AddToClassList("se-lobby-icon");
                 remove.SetEnabled(SidesPlayable(index));
             }
+            // a custom map: which team starts on which base (MainMenu.Builder.cs, MAP_BUILDER_TEAMS.md)
+            if (!random && skirmish.Map == "custom" && skirmishSketch != null)
+                BaseOwnerRows(skirmishAiList, skirmishSketch, MapPreview.Seats(format), ts, SkirmishClosedMask(), ffa, true,
+                    next => { skirmishSketch = next; skirmishCustom = next.ToEntry(); SyncSkirmish(); });
             if (skirmishSides != null)
                 skirmishSides.text = SidesText(perTeam, ffa) + (skirmish.Ais.Count < 2 ? "" : " · ✕ leaves a seat empty for uneven sides") +
                     (!random && FindMap(skirmish.Map) is MapCatalogEntry sm && sm.Players > MapPreview.Seats(format) ? $" · {sm.Name} has {sm.Players} starts; the spare ones stay neutral" : "");
@@ -1160,6 +1166,10 @@ namespace SE.Runtime.UI
                     }
                 }
                 foreach (var s in r.Seats) if (s.Human && s.Taken) humans++;
+                // a custom map: the host assigns the bases to teams (sent as the room's sketch; guests see it)
+                if (r.Map == "custom" && lobbySketch != null)
+                    BaseOwnerRows(lobbySeats, lobbySketch, r.Seats.Count, teamSize, closedMask, teamSize == 1 && teams > 2, isHost,
+                        next => game.SendLobby(LobbyMessages.CustomMap(next.Encode())));
                 var lm = r.Map == "custom" ? lobbyCustom : FindMap(r.Map);
                 lobbySides.text = SidesText(perTeam, format.StartsWith("ffa", StringComparison.Ordinal)) +
                     (isHost ? " · Close leaves an empty seat out (uneven sides)" : "") +

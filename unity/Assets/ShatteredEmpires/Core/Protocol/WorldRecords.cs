@@ -25,7 +25,8 @@ namespace SE.Core.Protocol
 
     public struct CraterRecord { public int Tile; public float Depth; }
     public struct WreckRecord { public int Tile, Owner; public string Type; public bool Burning, HasPosition; public float X, Z, Yaw; }
-    public struct ImpactRecord { public int Tile, Seed; public string Class; public float X, Z, Severity; }
+    /// <summary>A crater. Heal: fraction of its depth left (server battlefield.js impactHeal; 1 fresh, falls toward 0 as it fills in).</summary>
+    public struct ImpactRecord { public int Tile, Seed; public string Class; public float X, Z, Severity, Heal; }
     public struct TileValue { public int Tile; public float Value; }
 
     /// <summary>Battlefield damage (server battlefield.js battlefieldSnapshot).</summary>
@@ -135,7 +136,8 @@ namespace SE.Core.Protocol
             s.Wrecks = w.ToArray();
             var impacts = new List<ImpactRecord>();
             if (bf["m"] is JArray ma) foreach (var x in ma) if (x is JArray r && r.Count >= 6)
-                impacts.Add(new ImpactRecord { Tile = I(r[0], -1), Class = ProtocolDecoder.Str(r[1], "shell"), X = ProtocolDecoder.Float(r[2]), Z = ProtocolDecoder.Float(r[3]), Severity = ProtocolDecoder.Float(r[4]), Seed = I(r[5]) });
+                impacts.Add(new ImpactRecord { Tile = I(r[0], -1), Class = ProtocolDecoder.Str(r[1], "shell"), X = ProtocolDecoder.Float(r[2]), Z = ProtocolDecoder.Float(r[3]), Severity = ProtocolDecoder.Float(r[4]), Seed = I(r[5]),
+                    Heal = r.Count >= 7 ? Math.Max(0f, Math.Min(1f, ProtocolDecoder.Float(r[6]) / 100f)) : 1f });   // older servers: no healing field
             s.Impacts = impacts.ToArray();
             s.Scorch = Values(bf["sc"], .1f); s.Wear = Values(bf["wr"], .1f);
             s.Smoke = Values(bf["s"], 0.1f);

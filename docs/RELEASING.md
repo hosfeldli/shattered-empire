@@ -1,8 +1,8 @@
 # Releasing (one command)
 
 - **Type:** How-to
-- **Updated:** 2026-11-17
-- **Scope:** `tools/release.ps1` (Cloud Run server and Windows Unity ZIP) and the in-app updater
+- **Updated:** 2026-11-18
+- **Scope:** `tools/release.ps1` (Cloud Run server and Windows Unity ZIP), release notes and the in-app updater
 - **Related:** [Release and distribution](RELEASE.md)
 
 ## One-time setup on a PC
@@ -25,18 +25,20 @@ To use a different gcloud configuration directory, pass `-GcloudConfig <dir>`.
 
 ## Release
 
-Commit first. The release is HEAD's short sha (`git rev-parse --short=7 HEAD`). Then:
+Write and commit the release notes first (see [Release notes](#release-notes)). The release is HEAD's
+short sha (`git rev-parse --short=7 HEAD`). Then:
 
 ```powershell
 cd D:\Projects\shattered_empires
-powershell -ExecutionPolicy Bypass -File tools\release.ps1 -DryRun     # rehearse: read-only checks, prints every change
-powershell -ExecutionPolicy Bypass -File tools\release.ps1             # server + client
+node tools\release-notes.mjs validate 0.5.0                                              # the notes gate, on its own
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Version 0.5.0 -DryRun   # rehearse: read-only checks, prints every change
+powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Version 0.5.0           # server + client
 ```
 
 | Switch | Effect |
 | --- | --- |
 | `-Server` / `-Client` | Release only that part. With neither, both are released. |
-| `-Version 0.5.0` | Sets the manifest `version`. Without it, the published one is kept. |
+| `-Version 0.5.0` | Sets the manifest `version`. **Required for a client release**: it names the release notes (`docs/releases/<Version>/notes.json`). A server-only release keeps the published version. |
 | `-DryRun` | Changes nothing. Read-only gcloud calls (`describe`, `cat`, `list`) still run. |
 | `-PackageOnly` | Builds the client ZIP locally (for testing the updater) and publishes nothing. |
 | `-SkipBuild` | Client: zip the existing `unity/Build/Windows`. Server: require an existing image. |
@@ -51,6 +53,10 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1             # server 
 
 Every step is skipped when it's already done, so you can re-run the script after a failure.
 
+0. **Release notes gate** (client releases, not `-PackageOnly`; before any gcloud call). Stops unless
+   `-Version` is given and `node tools/release-notes.mjs validate <Version>` passes. Under `-DryRun` it runs
+   with `--allow-draft`: a `draft: true` file, and its missing screenshots, only warn, but every other error
+   still stops the rehearsal. The notes folder must also match HEAD, like the shipped files.
 1. **Sanity.** Checks the key files, then checks that HEAD holds the shipped files: `server/`,
    `package*.json` and `Dockerfile` for the server, and `unity/Assets|Packages|ProjectSettings`
    for the client. `.mcp.json`, `unity/Assets/Plugins*`, `unity/Assets/Screenshots*` and
@@ -80,6 +86,10 @@ Every step is skipped when it's already done, so you can re-run the script after
    - **Upload.** Uploads to
      `gs://stem-471602-se-snapshots/downloads/unity-preview-<sha>/ShatteredEmpires-Windows-<sha>.zip`,
      then checks the object's size.
+   - **Release notes.** Uploads `notes.json` and the images it references (`release-notes.mjs files`) to
+     `gs://stem-471602-se-snapshots/downloads/release-notes/<Version>/` (`--cache-control=no-cache`) on every run,
+     then lists the folder. The ZIP's manifest entry gets `notes: { version, url }`, with url
+     `https://game.liamhosfeld.com/api/release-notes/<Version>`.
    - **Manifest.** Merges the new entry into `downloads/manifest.json`:
      - The new entry goes first, and every other entry is kept.
      - `unity{build,date}` is set to this build, and `version` is kept unless you pass `-Version`.
@@ -88,7 +98,111 @@ Every step is skipped when it's already done, so you can re-run the script after
    - **Verify.**
      - Polls `/api/downloads` until it lists `<sha>`. The server caches the manifest for 60 s.
      - Opens `/download/file/<name>` and checks that it starts a ZIP of the right size.
+     - Fetches `/api/release-notes/<Version>`. A failure here only warns: the server must have been deployed
+       with the release-notes route.
 4. **Push (optional).** Runs `git push` when you pass `-PushBranch`.
+
+## Release notes
+
+Every client release has notes. Players see them in a *What's new in &lt;version&gt;* window the first time the
+new version starts after an update. The main menu footer's *What's new* link reopens them.
+
+### Workflow
+
+1. **Draft.** Run `node tools/release-notes.mjs draft 0.5.1`. It writes `docs/releases/0.5.1/notes.json` with
+   `draft: true`. The draft contains:
+   - `since`: the previous notes folder, and the last commit that touched it. For the first release, pass
+     `--since 0.4.3 --since-commit 4bd3f1d`.
+   - `git log <since.commit>..HEAD` as starting bullets and fixes.
+   - The docs changed since then, listed as sources to write from.
+2. **Write.** Use real content only: the workstream reports in `docs/gameplay-overhaul/` and
+   `docs/performance/`. Take numbers straight from the measured tables. Anything that hasn't been measured
+   says so or is left out. Use a plain, short, concrete, player-facing tone, and no names or email addresses.
+3. **Screenshots.** After all work is done, run the client with `-release-shots` (see below), writing into the
+   notes folder.
+4. **Finalise.** Remove `"draft": true`, run `node tools/release-notes.mjs validate 0.5.1`, then commit the folder.
+5. **Release** with `tools/release.ps1 -Version 0.5.1`.
+
+### `notes.json` schema (schema 1)
+
+Unknown fields are errors. Keep it compact.
+
+| Field | Rule |
+| --- | --- |
+| `schema` | `1` |
+| `version` | Semver, equal to the folder name and `-Version`. |
+| `date` | `YYYY-MM-DD` |
+| `title` (≤ 80), `summary` (≤ 500) | Plain sentences. |
+| `since` | `{ version, commit }`: the previous released version and its commit. `version` must be older, and it must equal the newest older folder in `docs/releases` when there is one. `commit` must exist and be an ancestor of HEAD. |
+| `draft` | Optional. `true` fails a real release, and only warns under `-DryRun`. |
+| `sections[]` | 1–14 sections. Each is `{ heading (≤ 60), blocks[] }` with 1–12 blocks. |
+| `fixes[]` | Optional. Up to 60 short strings (≤ 220 each). The client shows them in a collapsed *Smaller fixes* list. |
+
+The blocks (`type` decides the shape):
+
+| `type` | Fields |
+| --- | --- |
+| `text` | `text` (≤ 700): one short paragraph. |
+| `bullets` | `items[]`: 1–14 strings, each ≤ 260. |
+| `chart` | `kind` (`bar` or `line`), `title`, `unit` (e.g. `FPS`, `ms`), `labels[]` (1–16; a line chart needs at least 2), `series[]` (1–4 series, each `{ name, values[] }` with one value per label: a number ≥ 0, or `null` for not measured), `caption`, `source` (the doc the numbers come from), optional `better` (`higher` or `lower`). The client draws it. No image is needed. |
+| `comparison` | Either a table, `rows[]` of `{ label, before, after }` (1–16 rows) with optional `columns: [beforeHeading, afterHeading]`, or an image pair, `before` and `after` each `{ image, caption?, alt? }`. Optional `title`, `caption`, `source`. |
+| `image` | `image` (a file name in the notes folder, `.png` or `.jpg`, no folders), `caption`, optional `alt`. |
+
+The images are checked too. Each must exist and really be a PNG or JPEG, at most 1920×1080 and **600 KB**, and
+all of them together at most **8 MB**. Files in the folder that no block references are reported, and they are
+not uploaded.
+
+### Serving and the client
+
+- **Server.** `server/releaseNotes.js` serves three routes:
+  - `GET /api/release-notes/latest`
+  - `GET /api/release-notes/<version>`
+  - `GET /api/release-notes/<version>/<image>`
+  - **In production** it reads `downloads/release-notes/<version>/` from the bucket. `latest` is the manifest
+    entry's `notes.version`. The notes JSON is cached for 5 minutes.
+  - **Locally** (no bucket, `DOWNLOAD_DIR`, or `RELEASE_NOTES_DIR`) it reads `docs/releases/`. `latest` is the
+    highest version folder.
+  - Only image file names are served from a version folder. Test: `test/release-notes.test.js`.
+- **Client.** `Runtime/UI/ReleaseNotes.cs` shows the window.
+  - **When it opens on its own.** On the first start of a version, which it reads from the version in
+    `build_id.txt`, that `release.ps1` writes from `-Version`. It compares that with PlayerPrefs `se.notes.seen`.
+    It opens only after an in-app update (the updater's `last-update.txt` said ok) or when an earlier version
+    was seen. A fresh install shows nothing.
+  - **Not blocking.** It is a window beside the menu. Close or Escape dismisses it.
+  - **Offline.** It shows the copy cached in `persistentDataPath/ReleaseNotes/<version>/`, or a short note.
+    Images load asynchronously and are cached there too. A failed image shows *Image unavailable offline*.
+  - **Testing.** `-whats-new` opens it at start in any build. `-notes-site http://127.0.0.1:8137` reads a
+    local server.
+
+### Screenshots: `-release-shots`
+
+```powershell
+$env:PORT = 8137; node server\index.js     # a local server on the release tree (production may still run the old one)
+ShatteredEmpires.exe -release-shots D:\Projects\shattered_empires\docs\releases\0.5.0 -server ws://127.0.0.1:8137/ws
+```
+
+This starts an AI-only observe match: seed 7, unless you pass `-seed`. It lets the match develop for
+`-release-shots-wait` real minutes (default 6, at 4× speed). Then it frames a fixed list of views, writes each one
+as a PNG of the game camera without the interface, and quits.
+- Each PNG is 1280×720. If it is over 580 KB, it is re-encoded with fewer colour bits, then at 960×540.
+- A view with nothing on the map to frame is skipped. The log line `RELEASE-SHOTS done: ... skipped [...]`
+  lists them.
+- Re-run with a longer wait, or another `-seed`, or remove the block from the notes.
+
+| File | View |
+| --- | --- |
+| `base_closeup.png` | The most developed held base (highest tier, then most defences), close up (distance 3.6). |
+| `base_overview.png` | The same base from 9. |
+| `defenses_road.png` | A finished defence on or beside a road (2.4). |
+| `trenches.png` | The finished trench node with the most links, a junction if there is one (2.0). |
+| `river.png` | The river reach nearest that base that isn't a bridge (5). |
+| `crater_field.png` | The densest crater field (most impacts within 1.5 units) (3.4). |
+| `units_ifv.png` | An Infantry Fighting Vehicle (`exo_infantry`), if one has been built (1.6). |
+| `army.png` | The busiest 4×4-hex block of units (6). |
+| `shockwave.png` | A staged, client-only heavy explosion over the crater field, captured 0.18 s in, to show the shock front (4). |
+
+Before/after image pairs need captures from the previous build. Make those the same way with the old ZIP, and
+rename them `*_before.png`.
 
 ## Commits on this PC
 

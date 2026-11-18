@@ -2,11 +2,14 @@ import { N, T } from './constants.js';
 import { WEAPON_KEYS, WEAPONS, weaponVs as baseVs } from './weapons.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, OUTPOST_TYPES } from './actionDefinitions.js';
 import { addCrater, addIntensity, addSmoke, addWreck, scarCover } from './battlefield.js';
+import { blastForest, blastTrees } from './shockwave.js';
 import { emit } from './combat.js';
-import { centerOf, distance, dxBetween, tileAt, trenchPosition } from './actionNavigation.js';
+import { centerOf, distance, dxBetween, tileAt, trenchPosition, wrapX } from './actionNavigation.js';
 import { chase, moveGroup, stanceOf, stopUnit } from './actionOrders.js';
 import { airStep, CITY_AA, cityHasAA, flakBurst } from './actionAir.js';
-import { armourDamage, infantryKit, SMALL_ARMS, squadFirepower, structureDamage, structureRange } from './actionUpgrades.js';
+import { armourDamage, infantryKit, SMALL_ARMS, squadFirepower, squadHit, structureDamage, structureRange, suppress } from './actionUpgrades.js';
+import { firingSlot, garrisonRange, shelterBlast, sightFrom } from './actionGarrison.js';
+import { GARRISON } from './actionDefinitions.js';
 
 const VID = Object.fromEntries(WEAPON_KEYS.map((key, index) => [key, index]));
 const unitOf = (obj) => obj?.isUnit ? ACTION_UNITS[obj.type] : null;
@@ -21,14 +24,14 @@ function attackRange(game, actor, def, target) {
   const enemy = unitOf(target);
   const elevated = !enemy?.air && game.world.elev[actor.tile] - game.world.elev[target.tile] > .09;
   // era-upgraded defenses reach further (B: building levels); marksmen fire their own shots (actionUpgrades)
-  return def.range + structureRange(actor) + (actor.abilityUntil > game.time && def.ability === 'intercept' && enemy?.air ? 1.6 : 0) + (elevated ? .35 : 0);
+  return def.range + structureRange(actor) + garrisonRange(actor) + (actor.abilityUntil > game.time && def.ability === 'intercept' && enemy?.air ? 1.6 : 0) + (elevated ? .35 : 0);
 }
 
 function hitChance(game, shooter, profile, target, range) {
   const d = unitOf(target);
   if (!weaponVs(profile, d || { air: false })) return false;
   if (distance(shooter, target) > range) return false;
-  return WEAPONS[profile].arc || unitOf(shooter)?.air || d?.air || game.nav.clearShot(shooter, target);
+  return WEAPONS[profile].arc || unitOf(shooter)?.air || d?.air || game.nav.clearShot(sightFrom(game, shooter), target);
 }
 
 function cover(game, target, source, indirect) {
@@ -84,9 +87,13 @@ export function structureArmour(target, weapon, kit) {
   return FORTIFIED_VS[weapon] ?? 1;
 }
 
-export function damageActionTarget(game, target, source, amount, weapon, indirect = false) {
+export function damageActionTarget(game, target, source, amount, weapon, indirect = false, blast = 0) {
   if (!alive(target) || !game.hostile(source.owner, target.owner)) return;
   const d = unitOf(target), profile = WEAPONS[weapon];
+  // W4: a blast on a garrisoned structure reaches its occupants, reduced by GARRISON.protection (actionGarrison.js)
+  if (!d && blast > 0 && target.garrison?.length) shelterBlast(game, target, source, amount, weapon, blast, damageActionTarget);
+  // suppression (W3): every round that reaches a squad pins it a little, whether or not it hurts
+  if (d?.move === 'infantry' && d.men > 1 && profile?.supp) suppress(target, game.time, profile.supp * (blast > 0 ? 1.5 : 1));
   let mult = profile ? weaponVs(weapon, d || { air: false }) : 1;
   if (!mult) return;
   if (d?.move === 'tracked' || d?.move === 'wheeled') mult *= profile?.vsArmor ?? 1;
@@ -96,7 +103,12 @@ export function damageActionTarget(game, target, source, amount, weapon, indirec
   if (!d) mult *= structureArmour(target, weapon, source.kit);
   if (d) mult *= 1 - cover(game, target, source, indirect);
   // heavy_armor / body_armor are functional (actionUpgrades.armourDamage): small-arms immunity, one saved life per man
-  const damage = armourDamage(game, target, d, weapon, Math.max(1, Math.round(amount * mult - (d?.def || 0) * .20)));
+  let damage = armourDamage(game, target, d, weapon, Math.max(1, Math.round(amount * mult - (d?.def || 0) * .20)));
+  // squads lose men one at a time, a hit killing at most its weapon's cap (actionUpgrades.squadHit, W3)
+  if (d?.move === 'infantry' && d.men > 1 && damage > 0) {
+    const shooter = game.units.get(source.id);
+    damage = squadHit(game, target, d, weapon, damage, blast, !!(shooter && ACTION_UNITS[shooter.type]?.vsInfantry));
+  }
   if (damage <= 0) {
     target.lastCombat = game.time;
     if (target.armourSave === game.time) emit(game, { k: 'hit', a: source.tile, b: target.tile, s: source.id, t: target.id, w: VID[weapon], d: 0, bx: target.x, bz: target.z, ar: 1 });
@@ -141,6 +153,59 @@ function projectile(game, shooter, target, weapon, damage, radius = null) {
   });
   emit(game, { k: 'launch', a: shooter.tile, b: t, s: shooter.id, t: target.id, w: index, f: flight,
     ax: shooter.x, az: shooter.z, bx: point.x, bz: point.z, ab: w?.airburst ? 1 : undefined });
+  if (MISSILE_DEFENSE.tactical.has(weapon)) armIntercept(game, game.projectiles.get(id), game.time);
+}
+
+// ---- Missile defense (§44, W3 2026-11-17) ----
+// AA batteries and mobile air defense shoot down strategic missiles and tactical guided missiles (missile
+// battery rounds). The outcome is decided ONCE per projectile, at launch: one spatial query around the aim
+// point finds hostile interceptors in range, each ready one (lowest id first, at most maxShots) spends its
+// cooldown on the missile and kills it with its chance, drawn from game.rng (deterministic, saved). A killed
+// missile is resolved early, at `at` of its flight, with the event
+//   {k:'mintercept', a: launch tile, b: intercept tile, s: interceptor id, t: missile id, ax, az: interceptor
+//    position, bx, bz: intercept point, w: weapon index, st: 1 strategic / 0 tactical}
+// Counterplay: saturation (every interceptor fires once per cooldown, so salvos get through) and range.
+export const MISSILE_DEFENSE = {
+  interceptors: { aa_battery: { range: 5.5, strategic: .38, tactical: .3 }, air_defense: { range: 5, strategic: .3, tactical: .4 } },
+  cooldown: { strategic: 8, tactical: 3.5 }, maxShots: 4, at: .82, tactical: new Set(['missile']),
+};
+const INTERCEPT_REACH = Math.max(...Object.values(MISSILE_DEFENSE.interceptors).map((s) => s.range));
+
+/** Decide whether projectile `p` is shot down (call once, when it is created). Returns the interceptor or null. */
+export function interceptMissile(game, p) {
+  const kind = p.strategic ? 'strategic' : 'tactical';
+  const shooters = [];
+  for (const v of game.targets.query(p.x, p.z, INTERCEPT_REACH + .5, [])) {
+    const spec = MISSILE_DEFENSE.interceptors[v.type];
+    if (!spec || !alive(v) || !game.hostile(p.owner, v.owner) || (v.mintReady || 0) > game.time) continue;
+    if (v.isUnit ? !!v.grounded : !v.done) continue;
+    if (distance(v, p) <= spec.range) shooters.push(v);
+  }
+  shooters.sort((a, b) => a.id - b.id);
+  for (const v of shooters.slice(0, MISSILE_DEFENSE.maxShots)) {
+    v.mintReady = game.time + MISSILE_DEFENSE.cooldown[kind];
+    if (game.rng() < MISSILE_DEFENSE.interceptors[v.type][kind]) return v;
+  }
+  return null;
+}
+
+function armIntercept(game, p, launched) {
+  const v = interceptMissile(game, p);
+  p.mint = 0;
+  if (!v) return;
+  const k = MISSILE_DEFENSE.at, ix = wrapX(p.ax + dxBetween(p.ax, p.x) * k), iz = p.az + (p.z - p.az) * k;
+  p.mint = { by: v.id, x: ix, z: iz, vx: v.x, vz: v.z };
+  p.arrive = launched + (p.arrive - launched) * k;
+}
+
+function resolveIntercept(game, p) {
+  const m = p.mint, t = tileAt(m.x, m.z);
+  emit(game, { k: 'mintercept', a: p.from, b: t, s: m.by, t: p.id, ax: m.vx, az: m.vz, bx: m.x, bz: m.z, w: VID[p.weapon], st: p.strategic ? 1 : 0 });
+  if (p.strategic) {
+    game.notify(p.owner, 'Strategic missile intercepted.', { kind: 'war', tile: p.to });
+    const by = game.units.get(m.by) || game.buildings.get(m.by);
+    if (by && game.civs[by.owner]) game.notify(by.owner, 'Air defenses shot down a strategic missile.', { kind: 'war', tile: t >= 0 ? t : p.to });
+  }
 }
 
 export function bombard(game, shooter, point, bonus = 1) {
@@ -159,12 +224,15 @@ export function launchStrategic(game, b, point) {
   emit(game, { k: 'launch', a: b.tile, b: t, s: b.id, ax: b.x, az: b.z, bx: point.x, bz: point.z, f: flight, w: VID.warhead });
   for (const civ of game.civs) if (civ.visible[t] || civ.id === b.owner)
     game.notify(civ.id, 'Strategic missile inbound.', { kind: 'warning', tile: t, level: 'critical' });
+  armIntercept(game, game.projectiles.get(id), game.time);
 }
 
 function resolveProjectiles(game, near) {
   for (const p of game.projectiles.values()) {
     if (p.arrive > game.time + .00001) continue;
     game.projectiles.delete(p.id);
+    // §44: a missile shot down at launch-time decision ends here, short of its target
+    if (p.mint) { resolveIntercept(game, p); continue; }
     const target = game.units.get(p.target) || game.buildings.get(p.target);
     const w = WEAPONS[p.weapon];
     // Guided and proximity-fused rounds track their target; fast aircraft get a wider tracking envelope
@@ -174,20 +242,17 @@ function resolveProjectiles(game, near) {
     const t = tileAt(aim.x, aim.z);
     if (t < 0 || t >= N) continue;
     const source = { id: p.shooter, owner: p.owner, tile: p.from, x: p.ax, z: p.az, kit: p.kit };
-    if (p.strategic) {
-      const intercept = game.targets.query(aim.x, aim.z, 5, near).filter((v) => alive(v) && v.done && v.type === 'aa_battery' && game.hostile(p.owner, v.owner));
-      if (intercept.length && game.rng() < 1 - .62 ** intercept.length) {
-        emit(game, { k: 'impact', a: p.from, b: t, bx: aim.x, bz: aim.z, w: VID.warhead, r: 2, ab: 1 });
-        game.notify(p.owner, 'Strategic missile intercepted.', { kind: 'war', tile: t });
-        continue;
-      }
+    // a strategic missile from a save made before §44 (no launch-time decision): decide now, at impact
+    if (p.strategic && p.mint === undefined) {
+      const v = interceptMissile(game, p);
+      if (v) { p.mint = { by: v.id, x: aim.x, z: aim.z, vx: v.x, vz: v.z }; resolveIntercept(game, p); continue; }
     }
     if (p.radius > 0) {
       for (const v of game.targets.query(aim.x, aim.z, p.radius + .57, near)) {
         if (unitOf(v)?.air || !alive(v)) continue;
         const range = Math.max(0, distance(aim, v) - v.radius);
         if (range > p.radius) continue;
-        damageActionTarget(game, v, source, p.damage * (1 - range / p.radius * .66), p.weapon, true);
+        damageActionTarget(game, v, source, p.damage * (1 - range / p.radius * .66), p.weapon, true, p.radius);
       }
     } else if (alive(target) && distance(aim, target) <= target.radius + .32)
       damageActionTarget(game, target, source, p.damage, p.weapon, !!w.arc);
@@ -200,6 +265,10 @@ function resolveProjectiles(game, near) {
       addCrater(game, t, p.strategic ? 2.6 : p.radius > 0 ? .63 : .26, p.strategic ? 'strategic' : p.weapon === 'mortar' ? 'mortar' : p.weapon === 'bombs' ? 'bomb' : p.weapon === 'missile' ? 'missile' : 'shell',
         { x: dxBetween(ctr.x, aim.x), z: aim.z - ctr.z });
     if (p.radius > 0) addSmoke(game, t, p.strategic ? .89 : .36, p.strategic ? 50 : 13);
+    // effects pass (2026-11-18): a warhead flattens the forest in its core and fells more along its height-aware
+    // shock front (shockwave.js); a heavy conventional blast may fell the forest on the hex it hits
+    if (p.strategic) blastForest(game, aim.x, aim.z);
+    else if (p.radius > 0) blastTrees(game, t, p.radius, aim.x, aim.z);
     if (p.strategic || p.radius >= 1.0) {
       game.roads.damageTile(t, p.strategic ? 110 : 16, game.rng, .7);
       game.nav.invalidate();
@@ -221,19 +290,62 @@ function fire(game, actor, def, target) {
   else if (def.vsInfantry && unitOf(target).move === 'infantry') damage *= def.vsInfantry;
   if (actor.abilityUntil > game.time && (def.ability === 'focused_fire' || def.ability === 'intercept' && unitOf(target)?.air)) damage *= 1.40;
   // squads fire with the men still standing; era-upgraded defenses hit harder (B)
-  damage *= (actor.isUnit ? squadFirepower(actor) : structureDamage(actor));
+  damage *= (actor.isUnit ? squadFirepower(actor, game, def, target) : structureDamage(actor));
   if (actor.kills) damage *= 1 + Math.min(3, Math.floor(actor.kills / 4)) * .04;
+  if (actor.inside) damage *= GARRISON.fireBonus;   // W4: firing from a garrisoned structure (steadier aim)
   actor.readyAt = game.time + (def.fireCooldown ?? w.cooldown);   // per-unit override (mortar team, 2026-11-17)
+  // Sustained bursts (2026-11-18, the bunker: def.burst): `shots` rounds `gap` s apart on one target, each `share` of a
+  // volley, then `rest` s. The building loop polls a structure mid-burst every 3 ticks (BURST_GATE) instead of 6.
+  // Event flag bu: the round's place in the burst (1..shots), so the client can draw one continuous stream.
+  let round;
+  if (def.burst && !actor.isUnit) {
+    const left = (actor.burstLeft > 0 ? actor.burstLeft : def.burst.shots) - 1;
+    round = def.burst.shots - left;
+    actor.burstLeft = left; actor.burstTarget = left > 0 ? target.id : 0;
+    actor.readyAt = game.time + (left > 0 ? def.burst.gap : def.burst.rest) - .01;
+    damage *= def.burst.share;
+  }
   actor.lastCombat = game.time;
   if (def.ability === 'infiltrate') actor.abilityUntil = 0;
   if (w.mode === 'projectile') projectile(game, actor, target, def.weapon, damage);
   else {
     emit(game, { k: 'fire', a: actor.tile, b: target.tile, ax: actor.x, az: actor.z, bx: target.x, bz: target.z,
-      s: actor.id, t: target.id, w: VID[def.weapon] });
+      s: actor.id, t: target.id, w: VID[def.weapon], bu: round });
     damageActionTarget(game, target, actor, damage, def.weapon);
     if (def.weapon === 'flak' && unitOf(target)?.air) flakBurst(game, actor, target, target, 'flak', true);
   }
   infantryKit(game, actor, def, target, damageActionTarget);
+  if (def.atgm && actor.isUnit) fireAtgm(game, actor, def, target);
+}
+
+// ---- IFV anti-tank missile (2026-11-18, exo_infantry as an Infantry Fighting Vehicle: def.atgm) ----
+// After its autocannon fires, a ready IFV launches a wire-guided missile at an armoured vehicle (tracked / wheeled,
+// not aircraft) or a fortified structure within atgm.range it can see and has a line of fire to: its current target
+// when that qualifies, otherwise the nearest such target (one spatial query, only while the missile is ready).
+// A guided 'missile' projectile (vsArmor 1.3) that is never intercepted (not a battery round); launch flag tw:1.
+const atgmTarget = (v) => { const d = unitOf(v); return d ? !d.air && (d.move === 'tracked' || d.move === 'wheeled') : ACTION_BUILDINGS[v.type]?.armor === 'fortified'; };
+export function fireAtgm(game, actor, def, target) {
+  if ((actor.atgmReady || 0) > game.time) return;
+  const spec = def.atgm, civ = game.civs[actor.owner];
+  const usable = (v) => alive(v) && game.hostile(actor.owner, v.owner) && atgmTarget(v) && distance(actor, v) <= spec.range && game.sees(civ, v) && game.nav.clearShot(actor, v);
+  let pick = usable(target) ? target : null;
+  if (!pick) {
+    let score = Infinity;
+    for (const v of game.targets.query(actor.x, actor.z, spec.range, [])) {
+      if (!usable(v)) continue;
+      const s = distance(actor, v) + (v.isUnit ? 0 : 1.5);   // armour first, then bunkers
+      if (s < score) { score = s; pick = v; }
+    }
+  }
+  if (!pick) return;
+  actor.atgmReady = game.time + spec.cooldown;
+  const t = tileAt(pick.x, pick.z);
+  if (t < 0) return;
+  const flight = .45 + Math.min(.6, distance(actor, pick) * .1), id = game.id_();
+  game.projectiles.set(id, { id, owner: actor.owner, shooter: actor.id, from: actor.tile, ax: actor.x, az: actor.z, to: t,
+    x: pick.x, z: pick.z, weapon: 'missile', damage: spec.damage, radius: 0, arrive: game.time + flight, target: pick.id, air: false, small: true });
+  emit(game, { k: 'launch', a: actor.tile, b: t, s: actor.id, t: pick.id, w: VID.missile, f: flight,
+    ax: actor.x, az: actor.z, bx: pick.x, bz: pick.z, tw: 1 });
 }
 
 // Troops under fire look for better cover nearby: trenches, forest, ruins, sandbags, or friendly armor
@@ -283,7 +395,7 @@ function seekCover(game, u, target) {
 
 function acquire(game, actor, def, near) {
   const civ = game.civs[actor.owner];
-  const range = def.range + structureRange(actor) + (def.ability === 'intercept' && actor.abilityUntil > game.time ? 1.7 : .45);
+  const range = def.range + structureRange(actor) + garrisonRange(actor) + (def.ability === 'intercept' && actor.abilityUntil > game.time ? 1.7 : .45);
   let best = null, score = Infinity;
   for (const v of game.targets.query(actor.x, actor.z, range, near)) {
     if (!alive(v) || !game.hostile(actor.owner, v.owner) || !game.sees(civ, v)) continue;
@@ -296,6 +408,19 @@ function acquire(game, actor, def, near) {
     if (d < score) { score = d; best = v; }
   }
   return best;
+}
+
+// W4 garrison (actionGarrison.js): an occupant never moves, chases or seeks cover. Only the holders of the
+// structure's firing slots shoot, from the structure (garrisonRange / sightFrom / GARRISON.fireBonus); an explicit
+// attack target is preferred while it is in reach, and hold fire keeps them silent unless ordered.
+function garrisonShot(game, u, def, near) {
+  if (!def.weapon || u.hp <= 0 || u.readyAt > game.time || (game.tickN + u.id) % 3 !== 0) return;
+  if (!firingSlot(game, u)) { u.target = 0; return; }
+  const explicit = u.attack ? game.units.get(u.attack) || game.buildings.get(u.attack) : null;
+  let target = alive(explicit) && game.sees(game.civs[u.owner], explicit) && hitChance(game, u, def.weapon, explicit, attackRange(game, u, def, explicit)) ? explicit : null;
+  if (!target && stanceOf(u) !== 'holdFire') target = acquire(game, u, def, near);
+  u.target = target?.id || 0;
+  if (target) fire(game, u, def, target);
 }
 
 // Aircraft missions, fuel, refuelling, patrol routes and flight paths live in actionAir.js (D).
@@ -319,7 +444,7 @@ function manTrenches(game) {
   if (!game.fieldworks?.size || game.tickN % 20 !== 0) return;
   for (const u of game.units.values()) {
     const def = ACTION_UNITS[u.type];
-    if (u.manned || def.move !== 'infantry' || def.air || u.goal || u.attack || u.mode === 'move' || u.hp <= 0) continue;
+    if (u.manned || u.inside || def.move !== 'infantry' || def.air || u.goal || u.attack || u.mode === 'move' || u.hp <= 0) continue;
     const spot = trenchPosition(game, u, u.owner, .8);
     if (!spot) continue;
     u.manned = true;
@@ -396,11 +521,12 @@ export function actionCombat(game) {
   manTrenches(game);
   const near = [];
   game.targets.clear();
-  for (const u of game.units.values()) game.targets.add(u);
+  for (const u of game.units.values()) if (!u.inside) game.targets.add(u);   // W4: occupants are not targets
   for (const b of game.buildings.values()) game.targets.add(b);
   resolveProjectiles(game, near);
   for (const u of game.units.values()) {
     const def = ACTION_UNITS[u.type];
+    if (u.inside) { garrisonShot(game, u, def, near); continue; }
     if (def.air && aircraftMission(game, u)) continue;
     if (def.setup && (u.vx || u.vz) && (u.deployed || u.setupUntil)) { u.deployed = false; u.setupUntil = 0; }
     if (!def.weapon || u.mode === 'move' || u.grounded || !alive(u) || def.air && u.fuel <= 0) continue;
@@ -434,9 +560,17 @@ export function actionCombat(game) {
   for (const b of game.buildings.values()) {
     const def = ACTION_BUILDINGS[b.type];
     if (b.type === 'town' && b.done && (game.tickN + b.id) % 6 === 3) cityAntiAir(game, b, near);
-    if (!b.done || !def.attack || b.readyAt > game.time || (game.tickN + b.id) % 6 !== 0) continue;
-    const target = acquire(game, b, def, near);
+    // a structure mid-burst (def.burst, the bunker) is polled every 3 ticks and keeps its target while it stays valid
+    const bursting = def.burst && b.burstLeft > 0;
+    if (!b.done || !def.attack || b.readyAt > game.time || (game.tickN + b.id) % (bursting ? 3 : 6) !== 0) continue;
+    let target = null;
+    if (bursting) {
+      const held = game.units.get(b.burstTarget) || game.buildings.get(b.burstTarget);
+      if (alive(held) && !held.inside && game.hostile(b.owner, held.owner) && game.sees(game.civs[b.owner], held) && hitChance(game, b, def.weapon, held, attackRange(game, b, def, held))) target = held;
+    }
+    target ||= acquire(game, b, def, near);
     if (target) fire(game, b, def, target);
+    else if (bursting) { b.burstLeft = 0; b.burstTarget = 0; }
   }
 }
 

@@ -41,10 +41,21 @@ namespace SE.Runtime.UI
             return (Defs?["RUIN_TYPES"] as JArray)?.FirstOrDefault(r => ProtocolDecoder.Str(r["key"]) == site.Kind);
         }
 
+        /// <summary>Capture state (R7): 0 none, 1 rising, 2 paused (contested), 3 draining (decaying).</summary>
+        static int CaptureState(in ObjectiveSite s) => s.Contested && s.Capture > 0 ? 2 : s.Decaying && s.Capture > 0 ? 3 : s.Capture > 0 ? 1 : s.Contested ? 2 : 0;
+
+        /// <summary>The capture line, in words (never colour only): rising, paused while contested, or draining.</summary>
+        static string CaptureText(in ObjectiveSite s) => CaptureState(s) switch
+        {
+            1 => $"Capturing {s.Capture:0}%",
+            2 => s.Capture > 0 ? $"Paused · contested · {s.Capture:0}%" : "Contested",
+            3 => $"Draining {s.Capture:0}% · nobody capturing",
+            _ => "",
+        };
+
         string SiteStatus(ObjectiveSite s)
         {
-            if (s.Contested) return "Contested";
-            if (s.Capture > 0) return $"Capturing · {s.Capture:0}%";
+            if (s.Contested || s.Capture > 0) return CaptureText(s);
             if (s.Operational) return $"Tier {Tier(s.Tier)} headquarters";
             if (s.Headquarters != 0) return $"Rebuilding · {s.Build:0}%";
             if (s.Owner == session.CivId) return s.IsBase ? "Secured · establish a base" : "Controlled";
@@ -68,7 +79,7 @@ namespace SE.Runtime.UI
             "field_gun" => "Long-range anti-vehicle gun · weak to infantry and artillery",
             "rifle_squad" or "militia" => "Holds and captures ground · weak to artillery and armor in the open",
             "special_forces" => "Elite raiders and capture team · weak to armor and artillery",
-            "exo_infantry" => "Heavy assault infantry · weak to anti-armor and artillery",
+            "exo_infantry" => "Infantry fighting vehicle: autocannon vs infantry and light vehicles, anti-tank missile every 10 s · weak to tanks and anti-armor",
             "mech_infantry" => "Fast armored infantry · weak to anti-armor",
             "tank" or "autonomous_tank" => "Armored front line · weak to anti-armor teams and aircraft",
             "mortar_team" => "Indirect fire on dug-in troops · weak to fast raiders",
@@ -223,18 +234,15 @@ namespace SE.Runtime.UI
                 var owner = UiKit.Text(site.Owner < 0 ? "Unclaimed" : own ? "Yours" : FactionName(site.Owner), "se-cmd-card-meta", head);
                 owner.style.flexShrink = 0;
                 int id = site.Id;
-                CardBar(() => session.Objectives.TryGetValue(id, out var s) && (s.Capture > 0 || s.Contested) ? s.Capture : -1,
-                    () => session.Objectives.TryGetValue(id, out var s) ? s.Contested ? "Contested" : $"Capturing {s.Capture:0}%" : "",
-                    () => session.Objectives.TryGetValue(id, out var s) && s.Contested ? UiKit.Token("bad") : UiKit.RelationColor(session, s.Capturing >= 0 ? s.Capturing : s.Owner));
+                CaptureBar(id, false);
                 return;
             }
             int siteId = site.Id;
             if (site.Headquarters == 0)
             {
                 var line = CardLine();
-                cmdCardLive.Add(() => line.text = session.Objectives.TryGetValue(siteId, out var s) ? SiteStatus(s) : "");
-                CardBar(() => session.Objectives.TryGetValue(siteId, out var s) && (s.Capture > 0 && s.Capture < 100 || s.Contested) ? s.Capture : -1,
-                    () => session.Objectives.TryGetValue(siteId, out var s) && s.Contested ? "Contested" : "Securing");
+                cmdCardLive.Add(() => { string t = session.Objectives.TryGetValue(siteId, out var s) ? SiteStatus(s) : ""; if (line.text != t) line.text = t; });
+                CaptureBar(siteId, true);
                 return;
             }
             if (!site.Operational)
@@ -267,9 +275,53 @@ namespace SE.Runtime.UI
                 sockets.text = $"{used}/{s.Capacity} used";
             });
             int hqId = site.Headquarters;
+            if (session.Structures.Buildings.TryGetValue(hqId, out var hqRecord) && GarrisonCapacity(hqRecord.Type) > 0) GarrisonPanel(hqId);
             CardBar(() => session.Structures.Buildings.TryGetValue(hqId, out var hq) ? hq.Project != null ? hq.WorksPct : hq.Hp : 0,
                 () => session.Structures.Buildings.TryGetValue(hqId, out var hq) ? hq.Project == "tier" ? $"Upgrading {hq.WorksPct}%" : hq.Project == "perimeter" ? $"Perimeter {hq.WorksPct}%" : $"Condition {hq.Hp}%" : "",
                 () => session.Structures.Buildings.TryGetValue(hqId, out var hq) && hq.Project == null ? HealthColor(hq.Hp) : UiKit.Token("good"));
+        }
+
+        /// <summary>
+        /// The capture bar of a site card (R7): a state glyph and words for rising, paused (contested) and draining
+        /// (decaying) progress, so the state never rests on colour alone. Updated only when the state or the value moves.
+        /// </summary>
+        void CaptureBar(int siteId, bool securing)
+        {
+            var row = UiKit.El("se-cmd-bar-row", card);
+            row.style.flexDirection = FlexDirection.Row; row.style.alignItems = Align.Center; row.style.height = 20;
+            var glyph = new IconElement("", "se-cmd-card-icon");
+            glyph.style.width = 14; glyph.style.height = 14; glyph.style.flexShrink = 0; glyph.style.marginRight = 6;
+            row.Add(glyph);
+            var track = UiKit.El("se-cmd-bar", row);
+            track.style.flexGrow = 1; track.style.height = 4;
+            var fill = UiKit.El("se-cmd-bar-fill", track);
+            fill.style.height = 4;
+            var text = UiKit.Text("", "se-cmd-bar-caption", row);
+            text.style.width = 230; text.style.flexShrink = 0; text.style.unityTextAlign = TextAnchor.MiddleRight;
+            text.style.whiteSpace = WhiteSpace.NoWrap; text.style.overflow = Overflow.Hidden; text.style.textOverflow = TextOverflow.Ellipsis;
+            int shownState = -2; float shownCapture = -1f; bool shownVisible = true;
+            cmdCardLive.Add(() =>
+            {
+                bool found = session.Objectives.TryGetValue(siteId, out var s);
+                bool visible = found && (securing ? s.Capture > 0 && s.Capture < 100 || s.Contested : s.Capture > 0 || s.Contested);
+                if (visible != shownVisible) { shownVisible = visible; row.style.visibility = visible ? Visibility.Visible : Visibility.Hidden; }
+                if (!visible) return;
+                int state = CaptureState(s);
+                if (state == shownState && Mathf.Abs(s.Capture - shownCapture) < .05f) return;
+                bool stateChanged = state != shownState;
+                shownState = state; shownCapture = s.Capture;
+                fill.style.width = Length.Percent(Mathf.Clamp(s.Capture, 0, 100));
+                string t = securing && state == 1 ? $"Securing {s.Capture:0}%" : CaptureText(s);
+                if (text.text != t) text.text = t;
+                if (!stateChanged) return;
+                glyph.Kind = state == 1 ? "upgrade" : state == 2 ? "pause" : state == 3 ? "withdraw" : "";
+                var color = state == 2 ? UiKit.Token("warn") : state == 3 ? UiKit.Token("bad")
+                    : UiKit.RelationColor(session, s.Capturing >= 0 ? s.Capturing : s.Owner);
+                glyph.Tint = color;
+                fill.style.backgroundColor = color;
+                // a draining bar reads as emptying: dimmed fill
+                fill.style.opacity = state == 3 ? .6f : 1f;
+            });
         }
 
         (float materials, float energy) BaseIncome(int siteId)
@@ -318,43 +370,297 @@ namespace SE.Runtime.UI
                 return $"Condition {b.Hp}%";
             }, () => session.Structures.Buildings.TryGetValue(firstId, out var b) && b.Done && b.Project == null && b.WorksKind == null ? HealthColor(b.Hp) : UiKit.Token("good"));
             if (first.Owner != session.CivId) return;
+            if (selected.Length == 1 && first.Done && GarrisonCapacity(first.Type) > 0) GarrisonPanel(first.Id);
             var trainerIds = selected.Where(b => Defs?["BUILDINGS"]?[b.Type]?["trains"] is JArray).Select(b => b.Id).ToArray();
             if (trainerIds.Length == 0) return;
-            // production line: queue icons with progress on the head, and a Repeat tag
-            var line = UiKit.El("se-cmd-queue", card);
-            line.style.flexDirection = FlexDirection.Row; line.style.alignItems = Align.Center; line.style.height = 30;
-            const int Slots = 10;
-            var slotEls = new (VisualElement box, IconElement icon, VisualElement progress)[Slots];
-            for (int k = 0; k < Slots; k++)
+            ProductionPanel(trainerIds);
+        }
+
+        // ------------------------------------------------------------------ garrison on the card (W4, R4)
+        const int GarrisonChips = 6;
+
+        /// <summary>
+        /// A structure's garrison: "Garrison 2/4 · 2 firing" with Exit rally / Clear / Eject all, and one chip per
+        /// occupant (a gold top edge marks a firing slot). Click a chip to select that squad; right-click ejects it.
+        /// Updated only when the snapshot changes.
+        /// </summary>
+        void GarrisonPanel(int buildingId)
+        {
+            var head = UiKit.El("se-cmd-bar-row", card);
+            head.style.flexDirection = FlexDirection.Row; head.style.alignItems = Align.Center; head.style.height = 24;
+            var glyph = new IconElement("bunker", "se-cmd-card-icon");
+            glyph.style.width = 16; glyph.style.height = 16; glyph.style.flexShrink = 0; glyph.style.marginRight = 6;
+            head.Add(glyph);
+            var summary = UiKit.Text("", "se-cmd-card-line", head);
+            summary.style.flexGrow = 1; summary.style.flexShrink = 1;
+            summary.style.overflow = Overflow.Hidden; summary.style.textOverflow = TextOverflow.Ellipsis; summary.style.whiteSpace = WhiteSpace.NoWrap;
+            SmallButton("Exit rally", null, () => BeginGarrisonExitRally(buildingId), "Set where squads go when they step out (click the ground)", head, 70);
+            var clearRally = SmallButton(null, "close", () => ClearGarrisonExitRally(buildingId), "Clear the exit rally point", head, 22);
+            var eject = SmallButton("Eject all", null, () => Ungarrison(buildingId), "Every squad steps out", head, 64);
+            var chipsRow = UiKit.El("se-cmd-queue", card);
+            chipsRow.style.flexDirection = FlexDirection.Row; chipsRow.style.alignItems = Align.Center; chipsRow.style.height = 30;
+            var chips = new VisualElement[GarrisonChips];
+            var chipIcons = new IconElement[GarrisonChips];
+            var chipUnit = new int[GarrisonChips];
+            for (int k = 0; k < GarrisonChips; k++)
             {
-                var box = UiKit.El("se-cmd-queue-item", line);
-                box.style.width = 26; box.style.height = 28; box.style.marginRight = 3;
+                int index = k;
+                var chip = UiKit.El("se-cmd-queue-item", chipsRow);
+                chip.style.width = 30; chip.style.height = 28; chip.style.marginRight = 4;
+                chip.style.borderTopWidth = 2; chip.style.borderTopColor = Color.clear;
+                chip.style.backgroundColor = new Color(1, 1, 1, .06f);
                 var icon = new IconElement("", "se-cmd-queue-icon");
-                icon.style.width = 24; icon.style.height = 24;
-                box.Add(icon);
-                var progress = UiKit.El("se-cmd-queue-progress", box);
-                progress.style.height = 2;
-                slotEls[k] = (box, icon, progress);
+                icon.style.width = 22; icon.style.height = 22;
+                chip.Add(icon);
+                chip.RegisterCallback<PointerDownEvent>(e =>
+                {
+                    int id = chipUnit[index];
+                    if (id == 0) return;
+                    if (e.button == 0) commander.SelectUnits(new[] { id });
+                    else if (e.button == 1) Ungarrison(buildingId, id);
+                    e.StopPropagation();
+                });
+                chips[k] = chip; chipIcons[k] = icon;
             }
-            var tag = UiKit.Text("Repeat", "se-cmd-tag", line);
-            tag.style.marginLeft = StyleKeyword.Auto;
+            var none = UiKit.Text("Empty · select infantry squads and choose Garrison on their wheel", "se-cmd-card-meta", chipsRow);
+            none.style.marginLeft = 0;
+            int snap = -1; string shownSummary = null; bool shownRally = true, shownAny = true;
+            var shownChip = new int[GarrisonChips];
+            for (int k = 0; k < GarrisonChips; k++) shownChip[k] = -1;
             cmdCardLive.Add(() =>
             {
-                int n = 0; bool repeat = false;
-                foreach (int id in trainerIds)
+                if (snap == session.Snapshots) return;
+                snap = session.Snapshots;
+                if (!session.Structures.Buildings.TryGetValue(buildingId, out var b)) return;
+                int n = b.Garrison?.Length ?? 0, slots = FiringSlots(b.Type);
+                string text = "Garrison · " + GarrisonSummary(buildingId);
+                if (text != shownSummary) { shownSummary = text; summary.text = text; }
+                if (b.HasGarrisonExit != shownRally) { shownRally = b.HasGarrisonExit; clearRally.style.display = shownRally ? DisplayStyle.Flex : DisplayStyle.None; }
+                bool any = n > 0;
+                if (any != shownAny) { shownAny = any; eject.SetEnabled(any); none.style.display = any ? DisplayStyle.None : DisplayStyle.Flex; }
+                for (int k = 0; k < GarrisonChips; k++)
                 {
-                    if (!session.Structures.Buildings.TryGetValue(id, out var b)) continue;
+                    int id = k < n ? b.Garrison[k] : 0;
+                    chipUnit[k] = id;
+                    if (id == shownChip[k]) continue;
+                    shownChip[k] = id;
+                    chips[k].style.display = id != 0 ? DisplayStyle.Flex : DisplayStyle.None;
+                    if (id == 0) continue;
+                    string type = UnitTypeOf(id) ?? "";
+                    chipIcons[k].Kind = type;
+                    bool firing = k < slots;
+                    chips[k].style.borderTopColor = firing ? UiKit.Token("warn") : Color.clear;
+                    chips[k].tooltip = (type.Length > 0 ? NameOf("UNITS", type) : "Squad") + (firing ? "\nIn a firing slot: shoots from the structure" : "\nSheltered: protected, not firing")
+                        + "\nClick: select · right-click: eject";
+                }
+            });
+        }
+
+        // ------------------------------------------------------------------ production queues on the card (W1, §7–9)
+        const int QueueRows = 5;
+        static readonly Color[] ShareColors =
+        {
+            new Color(.43f, .84f, .47f), new Color(.29f, .59f, 1f), new Color(.94f, .74f, .34f), new Color(.78f, .52f, .95f), new Color(.36f, .82f, .84f), new Color(.93f, .45f, .38f),
+        };
+        // scratch for the live update (no allocation per update)
+        readonly List<string> queueTypes = new List<string>(8);
+
+        sealed class QueueRow
+        {
+            public VisualElement Root, Swatch, Fill;
+            public IconElement Icon, StateIcon;
+            public Label Name, State;
+            public UnityEngine.UIElements.Button Priority, Pause, CancelOne, CancelAll;
+            public string Type;
+            // last shown values: text and styles are touched only when these change
+            public int Count = -1, PriorityShown = -1, Paused = -1;
+            public float Progress = -1f;
+            public string StateShown;
+            public bool Legacy, Shown = true;
+        }
+
+        static UnityEngine.UIElements.Button SmallButton(string label, string icon, Action click, string tooltip, VisualElement parent, float width)
+        {
+            var b = string.IsNullOrEmpty(label) ? UiKit.IconButton(icon, click, tooltip, parent, 22) : UiKit.Button(label, click, parent, null, null);
+            b.style.height = 22; b.style.minHeight = 22; b.style.width = width; b.style.minWidth = width;
+            b.style.marginLeft = 3; b.style.paddingLeft = 2; b.style.paddingRight = 2; b.style.fontSize = 11;
+            b.focusable = false;
+            if (!string.IsNullOrEmpty(tooltip)) b.tooltip = tooltip;
+            return b;
+        }
+
+        /// <summary>
+        /// The production panel of the selection card: the shared capacity bar (how the building's one production
+        /// budget is split across its queues, R1), Clear, and a row per unit-type queue with count, progress, state
+        /// (icon and words), priority, pause, cancel one and cancel all. Several selected buildings of one type are
+        /// summed per unit type and every command goes to each building that holds that queue.
+        /// </summary>
+        void ProductionPanel(int[] trainerIds)
+        {
+            // header: label · capacity split bar · caption · Repeat tag · Clear
+            var head = UiKit.El("se-cmd-bar-row", card);
+            head.style.flexDirection = FlexDirection.Row; head.style.alignItems = Align.Center; head.style.height = 24;
+            var label = UiKit.Text("Production", "se-cmd-card-meta", head);
+            label.style.marginLeft = 0; label.style.flexShrink = 0;
+            var bar = UiKit.El("se-cmd-bar", head);
+            bar.style.flexGrow = 1; bar.style.height = 5; bar.style.flexDirection = FlexDirection.Row; bar.style.overflow = Overflow.Hidden;
+            bar.tooltip = "Production capacity: one budget per building, shared by its unit queues. High priority is served first, " +
+                "then equal shares; more queues never add speed. Coloured parts: the queues producing now; dark: unused.";
+            var segments = new VisualElement[ShareColors.Length];
+            for (int k = 0; k < segments.Length; k++)
+            {
+                segments[k] = UiKit.El(null, bar);
+                segments[k].style.height = 5; segments[k].style.backgroundColor = ShareColors[k];
+                segments[k].style.width = 0;
+            }
+            var caption = UiKit.Text("", "se-cmd-bar-caption", head);
+            caption.style.width = 170; caption.style.flexShrink = 0; caption.style.unityTextAlign = TextAnchor.MiddleRight;
+            caption.style.whiteSpace = WhiteSpace.NoWrap; caption.style.overflow = Overflow.Hidden; caption.style.textOverflow = TextOverflow.Ellipsis;
+            var tag = UiKit.Text("Repeat", "se-cmd-tag", head);
+            tag.style.marginLeft = 6; tag.style.flexShrink = 0;
+            var clear = SmallButton("Clear", null, () => QueueClear(HostsFor(trainerIds, null)),
+                "Clear the whole queue" + (trainerIds.Length > 1 ? $" of all {trainerIds.Length} buildings" : "") + "\nResources already spent are not refunded.", head, 46);
+            var rows = new QueueRow[QueueRows];
+            for (int k = 0; k < QueueRows; k++) rows[k] = MakeQueueRow(trainerIds);
+            var more = CardLine("se-cmd-card-line se-cmd-card-meta");
+            more.style.display = DisplayStyle.None;
+            var empty = CardLine("se-cmd-card-line se-cmd-card-meta");
+            empty.text = "Nothing queued · train from the building's wheel";
+            empty.style.display = DisplayStyle.None;
+            int snap = -1; float shownCap = -1f; int shownProducing = -1, shownMore = -1; bool shownRepeat = true, shownAny = true;
+            var shares = new float[ShareColors.Length];
+            cmdCardLive.Add(() =>
+            {
+                if (snap == session.Snapshots) return;   // queues change with the snapshot only
+                snap = session.Snapshots;
+                var hosts = HostsFor(trainerIds, null);
+                // the unit types queued, in queue order of the first host that has them
+                queueTypes.Clear();
+                bool repeat = false;
+                float cap = 0f;
+                foreach (var b in hosts)
+                {
+                    cap += b.ProductionCapacity;
                     if (!string.IsNullOrEmpty(b.Repeat)) repeat = true;
-                    if (b.Queue == null) continue;
-                    for (int q = 0; q < b.Queue.Length && n < Slots; q++, n++)
+                    if (b.Queues == null) continue;
+                    foreach (var q in b.Queues) if (q.Count > 0 && !queueTypes.Contains(q.Unit)) queueTypes.Add(q.Unit);
+                }
+                // capacity split: per building, its budget shared equally by the queues producing now
+                Array.Clear(shares, 0, shares.Length);
+                int producing = 0;
+                foreach (var b in hosts)
+                {
+                    if (b.Queues == null) continue;
+                    int n = 0;
+                    foreach (var q in b.Queues) if (q.State == "producing") n++;
+                    if (n == 0) continue;
+                    producing += n;
+                    float each = b.ProductionCapacity > 0 ? b.ProductionCapacity / n : 1f / n;
+                    foreach (var q in b.Queues)
                     {
-                        slotEls[n].icon.Kind = b.Queue[q];
-                        slotEls[n].progress.style.width = Length.Percent(q == 0 ? b.TrainProgress : 0);
+                        if (q.State != "producing") continue;
+                        int at = queueTypes.IndexOf(q.Unit);
+                        if (at >= 0 && at < shares.Length) shares[at] += each;
                     }
                 }
-                for (int k = 0; k < Slots; k++) slotEls[k].box.style.visibility = k < n ? Visibility.Visible : Visibility.Hidden;
-                tag.style.visibility = repeat ? Visibility.Visible : Visibility.Hidden;
+                float total = cap > 0 ? cap : Mathf.Max(1, hosts.Length);
+                for (int k = 0; k < segments.Length; k++) segments[k].style.width = Length.Percent(Mathf.Clamp(shares[k] / total * 100f, 0, 100));
+                if (Mathf.Abs(cap - shownCap) > .001f || producing != shownProducing)
+                {
+                    shownCap = cap; shownProducing = producing;
+                    string c = cap > 0 ? $"{cap:0.##} work/s · " : "";
+                    caption.text = c + (producing == 0 ? "idle" : producing == 1 ? "1 queue producing" : $"{producing} queues share it");
+                }
+                if (repeat != shownRepeat) { shownRepeat = repeat; tag.style.display = repeat ? DisplayStyle.Flex : DisplayStyle.None; }
+                bool any = queueTypes.Count > 0;
+                if (any != shownAny) { shownAny = any; empty.style.display = any ? DisplayStyle.None : DisplayStyle.Flex; clear.SetEnabled(any); }
+                for (int k = 0; k < QueueRows; k++)
+                    UpdateQueueRow(rows[k], k < queueTypes.Count ? queueTypes[k] : null, hosts, k);
+                int extra = Mathf.Max(0, queueTypes.Count - QueueRows);
+                if (extra != shownMore)
+                {
+                    shownMore = extra;
+                    more.style.display = extra > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+                    if (extra > 0) more.text = $"+{extra} more unit {(extra == 1 ? "type" : "types")} queued · see the building's wheel";
+                }
             });
+        }
+
+        QueueRow MakeQueueRow(int[] trainerIds)
+        {
+            var row = new QueueRow();
+            row.Root = UiKit.El("se-cmd-queue", card);
+            row.Root.style.flexDirection = FlexDirection.Row; row.Root.style.alignItems = Align.Center; row.Root.style.height = 26;
+            row.Swatch = UiKit.El(null, row.Root);
+            row.Swatch.style.width = 4; row.Swatch.style.height = 18; row.Swatch.style.marginRight = 4; row.Swatch.style.flexShrink = 0;
+            row.Icon = new IconElement("", "se-cmd-queue-icon");
+            row.Icon.style.width = 20; row.Icon.style.height = 20; row.Icon.style.flexShrink = 0;
+            row.Root.Add(row.Icon);
+            row.Name = UiKit.Text("", "se-cmd-card-line", row.Root);
+            row.Name.style.width = 128; row.Name.style.flexShrink = 0; row.Name.style.marginLeft = 4;
+            row.Name.style.overflow = Overflow.Hidden; row.Name.style.textOverflow = TextOverflow.Ellipsis; row.Name.style.whiteSpace = WhiteSpace.NoWrap;
+            var track = UiKit.El("se-cmd-bar", row.Root);
+            track.style.width = 56; track.style.height = 4; track.style.flexShrink = 0;
+            row.Fill = UiKit.El("se-cmd-bar-fill", track);
+            row.Fill.style.height = 4; row.Fill.style.width = 0;
+            row.StateIcon = new IconElement("", "se-cmd-queue-icon");
+            row.StateIcon.style.width = 14; row.StateIcon.style.height = 14; row.StateIcon.style.flexShrink = 0; row.StateIcon.style.marginLeft = 2;
+            row.Root.Add(row.StateIcon);
+            row.State = UiKit.Text("", "se-cmd-card-line", row.Root);
+            row.State.style.flexGrow = 1; row.State.style.flexShrink = 1; row.State.style.marginLeft = 4;
+            row.State.style.overflow = Overflow.Hidden; row.State.style.textOverflow = TextOverflow.Ellipsis; row.State.style.whiteSpace = WhiteSpace.NoWrap;
+            var r = row;
+            row.Priority = SmallButton("Normal", null, () => { if (r.Type != null) QueuePriority(HostsFor(trainerIds, null), r.Type, (Mathf.Max(0, r.PriorityShown) + 1) % 3); },
+                "Priority: low → normal → high\nHigher priorities take the building's production capacity first.", row.Root, 58);
+            row.Pause = SmallButton(null, "pause", () => { if (r.Type != null) QueuePause(HostsFor(trainerIds, null), r.Type, r.Paused != 1); },
+                "Pause or resume this queue (it keeps its progress)", row.Root, 22);
+            row.CancelOne = SmallButton("-1", null, () => { if (r.Type != null) QueueCancel(HostsFor(trainerIds, null), r.Type, false); },
+                "Cancel one\nResources already spent are not refunded.", row.Root, 30);
+            row.CancelAll = SmallButton(null, "close", () => { if (r.Type != null) QueueCancel(HostsFor(trainerIds, null), r.Type, true); },
+                "Cancel all of this unit\nResources already spent are not refunded.", row.Root, 22);
+            return row;
+        }
+
+        /// <summary>One queue row from the summed queue of <paramref name="type"/> (null hides the row); touches only what changed.</summary>
+        void UpdateQueueRow(QueueRow row, string type, BuildingRecord[] hosts, int index)
+        {
+            bool show = type != null;
+            if (show != row.Shown) { row.Shown = show; row.Root.style.display = show ? DisplayStyle.Flex : DisplayStyle.None; }
+            if (!show) { row.Type = null; return; }
+            var s = SummarizeQueue(hosts, type);
+            if (type != row.Type)
+            {
+                row.Type = type; row.Count = -1; row.PriorityShown = -1; row.Paused = -1; row.Progress = -1f; row.StateShown = "\0";
+                row.Icon.Kind = type;
+                row.Swatch.style.backgroundColor = ShareColors[index % ShareColors.Length];
+                row.Root.tooltip = NameOf("UNITS", type) + "\n" + UnitRole(type);
+            }
+            if (s.Count != row.Count) { row.Count = s.Count; row.Name.text = $"{NameOf("UNITS", type)} ×{s.Count}" + (s.Hosts > 1 ? $" ({s.Hosts})" : ""); }
+            if (Mathf.Abs(s.Progress - row.Progress) > .05f) { row.Progress = s.Progress; row.Fill.style.width = Length.Percent(Mathf.Clamp(s.Progress, 0, 100)); }
+            if (s.State != row.StateShown)
+            {
+                row.StateShown = s.State;
+                row.State.text = QueueStateText(s.State, type);
+                string icon = QueueStateIcon(s.State, type);
+                row.StateIcon.Kind = icon ?? (s.State == "producing" ? "play" : "");
+                bool producing = s.State == "producing" || s.State == null;
+                var tone = producing ? UiKit.Token("good") : s.State == "paused" || s.State == "waiting" ? UiKit.Token("text") : UiKit.Token("warn");
+                row.State.style.color = tone; row.StateIcon.Tint = tone;
+            }
+            int paused = s.PausedHosts > 0 && s.PausedHosts >= s.Hosts ? 1 : 0;
+            if (paused != row.Paused)
+            {
+                row.Paused = paused;
+                var ic = UiKit.IconOf(row.Pause);
+                if (ic != null) ic.Kind = paused == 1 ? "play" : "pause";
+                row.Pause.tooltip = paused == 1 ? "Resume this queue" : "Pause this queue (it keeps its progress)";
+            }
+            if (s.Priority != row.PriorityShown) { row.PriorityShown = s.Priority; UiKit.SetText(row.Priority, PriorityName(s.Priority)); }
+            if (s.Legacy != row.Legacy)
+            {
+                row.Legacy = s.Legacy;
+                row.Priority.SetEnabled(!s.Legacy); row.Pause.SetEnabled(!s.Legacy);
+            }
         }
 
         string ProjectName(string project) => project switch
@@ -481,6 +787,8 @@ namespace SE.Runtime.UI
             public int Pips;             // tier pips (0 hides)
             public bool Contested;
             public float Pulse;
+            /// <summary>Capture state glyph beside the badge (R7): 0 none, 1 rising (up chevron), 2 paused (two bars), 3 draining (down chevron).</summary>
+            public int CaptureState;
 
             public SiteBadge()
             {
@@ -490,13 +798,36 @@ namespace SE.Runtime.UI
             }
 
             /// <summary>Applies the visual state; repaints only when something drawn changed (the pulse matters only while contested).</summary>
-            public void Set(int shape, Color color, float progress, Color progressColor, int pips, bool contested, float pulse)
+            public void Set(int shape, Color color, float progress, Color progressColor, int pips, bool contested, float pulse, int captureState = 0)
             {
                 if (!contested) pulse = 0f;
                 if (shape == Shape && color == Color && progress == Progress && progressColor == ProgressColor && pips == Pips && contested == Contested
-                    && Mathf.Abs(pulse - Pulse) < .02f) return;
+                    && Mathf.Abs(pulse - Pulse) < .02f && captureState == CaptureState) return;
                 Shape = shape; Color = color; Progress = progress; ProgressColor = progressColor; Pips = pips; Contested = contested; Pulse = pulse;
+                CaptureState = captureState;
                 MarkDirtyRepaint();
+            }
+
+            /// <summary>The capture state glyph at the badge's top-right (shape, not colour only).</summary>
+            void PaintCaptureState(Painter2D p)
+            {
+                if (CaptureState == 0) return;
+                var o = new Vector2(29, 3);   // just right of the badge, above the name
+                p.fillColor = new Color(.03f, .05f, .06f, .75f);
+                p.BeginPath(); p.Arc(o + new Vector2(5, 5), 6.5f, 0f, 360f); p.Fill();
+                if (CaptureState == 2)
+                {
+                    p.fillColor = new Color(1f, .82f, .4f, 1f);
+                    p.BeginPath(); p.MoveTo(o + new Vector2(2, 1)); p.LineTo(o + new Vector2(4, 1)); p.LineTo(o + new Vector2(4, 9)); p.LineTo(o + new Vector2(2, 9)); p.ClosePath(); p.Fill();
+                    p.BeginPath(); p.MoveTo(o + new Vector2(6, 1)); p.LineTo(o + new Vector2(8, 1)); p.LineTo(o + new Vector2(8, 9)); p.LineTo(o + new Vector2(6, 9)); p.ClosePath(); p.Fill();
+                    return;
+                }
+                bool up = CaptureState == 1;
+                p.fillColor = up ? ProgressColor : new Color(.95f, .42f, .34f, 1f);
+                p.BeginPath();
+                if (up) { p.MoveTo(o + new Vector2(5, 0.5f)); p.LineTo(o + new Vector2(10, 8.5f)); p.LineTo(o + new Vector2(0, 8.5f)); }
+                else { p.MoveTo(o + new Vector2(0, 1.5f)); p.LineTo(o + new Vector2(10, 1.5f)); p.LineTo(o + new Vector2(5, 9.5f)); }
+                p.ClosePath(); p.Fill();
             }
 
             void Paint(MeshGenerationContext ctx)
@@ -547,6 +878,7 @@ namespace SE.Runtime.UI
                     p.strokeColor = new Color(.95f, .3f, .24f, .5f + .5f * Pulse); p.lineWidth = 2f;
                     p.BeginPath(); p.Arc(c, 16f, 0f, 360f); p.Stroke();
                 }
+                PaintCaptureState(p);
                 if (Pips > 0)
                 {
                     for (int k = 0; k < 3; k++)
@@ -636,14 +968,20 @@ namespace SE.Runtime.UI
                 int pips = hq && site.Operational && site.Tier > 0 && (own || enemy || site.Owner >= 0) ? Mathf.Clamp(site.Tier, 1, 3) : 0;
                 float progress = site.Capture > 0 ? site.Capture / 100f : hq && !site.Operational ? site.Build / 100f : -1f;
                 var progressColor = site.Capturing >= 0 ? UiKit.RelationColor(session, site.Capturing) : relation;
-                mark.Badge.Set(shape, color, progress, progressColor, pips, site.Contested, pulse);
+                int captureState = site.Memory ? 0 : CaptureState(site);
+                if (captureState == 3) progressColor = UiKit.Token("bad");   // draining: the arc turns red and shrinks
+                mark.Badge.Set(shape, color, progress, progressColor, pips, site.Contested, pulse, captureState);
                 if (!mark.Shown) { mark.Shown = true; mark.Root.style.display = DisplayStyle.Flex; }
                 var at = new Vector2(p.x - 14, p.y - 24);
                 if (!((at - mark.At).sqrMagnitude <= .0025f)) { mark.At = at; mark.Root.style.translate = new Translate(at.x, at.y); }
                 mark.Root.style.opacity = site.Memory ? .6f : 1f;
                 var nameDisplay = detailed ? DisplayStyle.Flex : DisplayStyle.None;
                 if (mark.Name.style.display != nameDisplay) mark.Name.style.display = nameDisplay;
-                if (detailed) mark.Name.text = site.Contested ? "Contested" : site.Name;
+                if (detailed)
+                {
+                    string label = captureState == 2 ? "Contested · paused" : captureState == 3 ? "Draining" : site.Name;
+                    if (mark.Name.text != label) mark.Name.text = label;
+                }
             }
             HideUnseenMarkers(frame);
         }

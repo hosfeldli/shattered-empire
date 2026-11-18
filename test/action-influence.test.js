@@ -22,7 +22,9 @@ function spot(g, type, keep) {
   for (let t = 0; t < g.world.owner.length; t++) {
     if (!keep(g.world.owner[t], ring[t])) continue;
     const p = centerOf(t);
-    if (!g.command(0, { c: 'fieldPreview', type, point: p }).error) return p;
+    // 2026-11-18: an unsnapped spot (with the 3-hex ring a snap can carry a spot past the ring's edge)
+    const r = g.command(0, { c: 'fieldPreview', type, point: p });
+    if (!r.error && !r.reply?.placement?.snapped) return p;
   }
   return null;
 }
@@ -57,7 +59,7 @@ test('own territory and neutral ground inside the ring: list price; non-defenses
   assert.deepEqual(r.cost, ACTION_BUILDINGS.guard_post.cost);
   assert.equal(r.note, undefined);
   g.civs[0].age = 1;   // radar posts are Tier II
-  assert.equal(preview(g, 'sensor_post', near).code, 'territory', 'support posts stay territory-only');
+  assert.notEqual(preview(g, 'sensor_post', near).code, 'territory', 'W2: radar posts may go on neutral ground (def.neutral)');
   g.civs[0].age = 0;
   const before = g.civs[0].res.materials;
   assert.ok(g.command(0, { c: 'fieldBuild', type: 'guard_post', point: near }).building);

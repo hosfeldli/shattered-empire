@@ -10,8 +10,8 @@ using UnityEngine;
 namespace SE.Runtime.Session
 {
     /// <summary>
-    /// Direct order keys (workstream H, 2026-11-16): attack move on F (selection, on-screen army, whole
-    /// army), stances cycled with V, rally points that carry an action, and the crossed-out cursor over
+    /// Direct order keys (workstream H, 2026-11-16): attack move on F in both camera schemes since 2026-11-17
+    /// (selection; twice: every combat unit on screen; Ctrl: whole army), stances cycled with S / V, rally points that carry an action, and the crossed-out cursor over
     /// ground the selected units cannot reach. The HUD's selection panel calls the same public methods,
     /// so a button and its key always do the same thing.
     /// </summary>
@@ -192,6 +192,7 @@ namespace SE.Runtime.Session
                 : new Vector3(g.CenterX(tile), session.World.GroundHeight(g.CenterX(tile), g.CenterZ(tile)), g.CenterZ(tile));
             var cmd = new JObject { ["c"] = "move", ["units"] = new JArray(units.Selected.ToArray()), ["tile"] = tile, ["attackMove"] = true };
             if (session.ActionRts) { cmd["point"] = Point(point); cmd["queue"] = InputFacade.Shift; }
+            DenseForestHint(tile, time);
             var order = new Order { MapPoint = point, Time = time, Kind = "attackMove" };
             Orders.Add(order);
             UI.Hud.NoteOrder(units.Selected, point, "attack", time);
@@ -211,7 +212,7 @@ namespace SE.Runtime.Session
             if (aiming && cam.TryGround(InputFacade.MousePosition, out var p))
                 blocked = (Current == Mode.Rally || SelectionHasGround()) && (Impassable(p) || ReachBlocked(p));   // + server reach query (F, Commander.Markers.cs)
             TargetImpassable = blocked;
-            SetOrderCursor(blocked ? 2 : aiming && (AttackMoveArmed || RallyAttackMoveArmed) ? 1 : 0);
+            UpdateContextCursor(overUi, aiming, blocked);   // the context cursor (Commander.Cursor.cs, C-D §39)
         }
 
         bool SelectionHasGround()
@@ -240,58 +241,32 @@ namespace SE.Runtime.Session
             return false;
         }
 
-        static Texture2D attackCursor, blockedCursor;
-        static int cursorShown;
+        // The cursor images and SetOrderCursor / ResetOrderCursor moved to Commander.Cursor.cs (C-D §39 context cursors).
 
-        /// <summary>0 the system cursor, 1 the red attack crosshair, 2 the crossed-out circle.</summary>
-        static void SetOrderCursor(int kind)
+        float denseHintAt = -10f;
+
+        /// <summary>
+        /// §30 dense forest (2026-11-18): an immediate hint when a move order's target hex is dense forest off the road
+        /// and the selection holds infantry-class units (def move "infantry": squads, engineers, special forces), which
+        /// cannot pass it. The order is still sent (vehicles go; infantry halt, and the server's quiet "could not reach"
+        /// note, surfaced by the HUD, follows later). At most one hint per 2 s.
+        /// </summary>
+        void DenseForestHint(int tile, float time)
         {
-            if (kind == cursorShown) return;
-            cursorShown = kind;
-            if (kind == 0) { Cursor.SetCursor(null, Vector2.zero, CursorMode.Auto); return; }
-            if (kind == 1 && attackCursor == null) attackCursor = MakeCursor(false);
-            if (kind == 2 && blockedCursor == null) blockedCursor = MakeCursor(true);
-            Cursor.SetCursor(kind == 1 ? attackCursor : blockedCursor, new Vector2(16, 16), CursorMode.Auto);
-        }
-
-        /// <summary>Back to the system cursor (leaving the match, disposing).</summary>
-        public static void ResetOrderCursor() => SetOrderCursor(0);
-
-        /// <summary>A 32×32 cursor drawn in code: red with a dark outline so it reads on any ground.</summary>
-        static Texture2D MakeCursor(bool blocked)
-        {
-            const int n = 32;
-            var tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, name = blocked ? "CursorBlocked" : "CursorAttack" };
-            var px = new Color32[n * n];
-            const float c = (n - 1) * .5f;
-            for (int y = 0; y < n; y++)
-                for (int x = 0; x < n; x++)
-                {
-                    float dx = x - c, dy = y - c, r = Mathf.Sqrt(dx * dx + dy * dy);
-                    float d;   // distance to the shape's centre line
-                    if (blocked)
-                    {
-                        float ring = Mathf.Abs(r - 11.5f);
-                        float slash = r < 12.5f ? Mathf.Abs(dx + dy) * .7071f : 99f;   // top-left to bottom-right
-                        d = Mathf.Min(ring, slash);
-                    }
-                    else
-                    {
-                        float ring = Mathf.Abs(r - 8.5f);
-                        float ticks = Mathf.Min(Mathf.Abs(dx) < 99 && Mathf.Abs(dy) >= 5f && Mathf.Abs(dy) <= 14f ? Mathf.Abs(dx) : 99f,
-                                                Mathf.Abs(dx) >= 5f && Mathf.Abs(dx) <= 14f ? Mathf.Abs(dy) : 99f);
-                        d = Mathf.Min(Mathf.Min(ring, ticks), r);
-                    }
-                    float core = blocked ? 1.9f : 1.1f, edge = core + 1.4f;
-                    Color32 col;
-                    if (d <= core) col = new Color32(240, 72, 56, 255);
-                    else if (d <= edge) col = new Color32(20, 12, 10, (byte)(220 * Mathf.Clamp01(edge - d + .3f)));
-                    else col = new Color32(0, 0, 0, 0);
-                    px[y * n + x] = col;
-                }
-            tex.SetPixels32(px);
-            tex.Apply(false, false);
-            return tex;
+            var w = session.World;
+            if (!session.ActionRts || tile < 0 || !w.IsDense(tile) || time - denseHintAt < 2f) return;
+            if (w.Road != null && tile < w.Road.Length && (w.Road[tile] & 0xFFFFFF) != 0) return;   // a road through it stays open
+            int infantry = 0, total = 0;
+            foreach (int id in units.Selected)
+            {
+                if (!session.Units.TryGet(id, out var u)) continue;
+                total++;
+                if (ProtocolDecoder.Str(session.Defs?["UNITS"]?[session.Units.Types.Name(u.TypeIndex)]?["move"]) == "infantry") infantry++;
+            }
+            if (infantry == 0) return;
+            denseHintAt = time;
+            Say(infantry == total ? "Dense forest · infantry cannot pass it (tanks can clear it): they will halt at its edge"
+                : "Dense forest · your infantry cannot pass it (tanks can clear it); the vehicles go on", false, time);
         }
     }
 }

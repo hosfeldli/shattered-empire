@@ -6,7 +6,8 @@
 const SUMMARY = ['hexes', 'edges', 'placed', 'skipped', 'crossings'];
 export function commandAck(res, rid) {
   if (res && res.reply) return { ...res.reply, rid };
-  const ack = { t: 'ack', rid, error: res ? res.error : undefined, code: res?.error ? res.code : undefined };
+  // 2026-11-18: `reason` mirrors `code` (the placement contract, CONSTRUCTION_DESIGN.md)
+  const ack = { t: 'ack', rid, error: res ? res.error : undefined, code: res?.error ? res.code : undefined, reason: res?.error ? res.code : undefined };
   if (res && !res.error) for (const key of SUMMARY) if (Number.isFinite(res[key])) ack[key] = res[key];
   return ack;
 }

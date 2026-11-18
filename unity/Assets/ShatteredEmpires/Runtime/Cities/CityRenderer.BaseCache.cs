@@ -44,8 +44,15 @@ namespace SE.Runtime.Cities
             ulong h = 1469598103934665603UL;
             h = Mix(h, site.Id); h = Mix(h, site.Tile); h = Mix(h, site.Owner); h = Mix(h, site.Tier); h = Mix(h, site.VisualTier);
             h = Mix(h, site.Capacity); h = Mix(h, site.DefenseLevel); h = Mix(h, site.Memory ? 1 : 0); h = Mix(h, site.Headquarters != 0 ? 1 : 0);
-            h = Mix(h, site.X); h = Mix(h, site.Z); h = Mix(h, (long)Mathf.FloorToInt(site.Maturity)); h = Mix(h, site.Kind);
-            h = Mix(h, world.Epoch); h = Mix(h, world.RoadRevision);
+            h = Mix(h, site.X); h = Mix(h, site.Z); h = Mix(h, site.Kind);
+            // maturity only grew the settlement houses outside the compound (removed 2026-11-18); kept for the legacy A/B key
+            if (PerfFlags.LegacyBaseKey) h = Mix(h, (long)Mathf.FloorToInt(site.Maturity));
+            if (PerfFlags.LegacyBaseKey) h = Mix(h, world.RoadRevision);
+            // roads: only those around this compound (below), not the map-wide road revision, which every
+            // road built anywhere bumped, so every base recomposed whenever anyone paved a hex (perf 2026-11-17)
+            h = Mix(h, world.Epoch);
+            // the passive development stage (time held, in stages: not the raw tenure, which ticks every snapshot)
+            h = Mix(h, DevelopmentStage(site.Tenure));
             var team = CivColor(site.Owner);
             h = Mix(h, team.x); h = Mix(h, team.y); h = Mix(h, team.z);
             foreach (var p in site.Parcels)
@@ -55,20 +62,24 @@ namespace SE.Runtime.Cities
             }
             // occupants (pads, glyphs, live docking arms) and positioned buildings the accessories keep clear of
             var origin = new float2(site.X, site.Z);
-            float reach = FoundationRadius(origin, lots) + 1.6f;
+            // (as far as the passive development reaches, plus the largest structure: CityRenderer.BaseDevelopment.cs)
+            float reach = FoundationRadius(origin, lots) + DevelopmentReach + .8f;
             foreach (var b in structures.Buildings.Values)
             {
                 if (b.City == site.Id && b.Slot > 0) { h = Mix(h, b.Slot); h = Mix(h, b.Type); h = Mix(h, b.Done ? 1 : 0); h = Mix(h, b.Id); }
                 else if (b.HasPosition && math.distancesq(origin, new float2(b.X, b.Z)) < reach * reach) { h = Mix(h, b.Id); h = Mix(h, b.X); h = Mix(h, b.Z); }
             }
-            // explored hexes around the compound (entrances and accessories only use known hexes)
+            // explored hexes and their roads around the compound (entrances end on the portals of the hexes
+            // within ~4.3 units, CityRenderer.Rings.InvalidateRingDistricts; the window keeps a margin past that)
             var g = world.Grid; int row = site.Tile / g.W, column = site.Tile % g.W;
-            for (int r = Mathf.Max(0, row - 4); r <= Mathf.Min(g.H - 1, row + 4); r++)
-                for (int q0 = column - 5; q0 <= column + 5; q0++)
+            for (int r = Mathf.Max(0, row - 5); r <= Mathf.Min(g.H - 1, row + 5); r++)
+                for (int q0 = column - 6; q0 <= column + 6; q0++)
                 {
                     int q = g.Wrap ? HexMath.PosMod(q0, g.W) : q0;
                     if (q < 0 || q >= g.W) continue;
-                    h = Mix(h, world.Known[r * g.W + q] != 0 ? 1 : 0);
+                    int i = r * g.W + q;
+                    h = Mix(h, world.Known[i] != 0 ? 1 : 0);
+                    h = Mix(h, world.Road[i]);
                 }
             return h;
         }
