@@ -139,8 +139,8 @@ namespace SE.Runtime.UI
                     string icon, title, cost = "";
                     switch (commander.Current)
                     {
-                        case Commander.Mode.Road: icon = "road"; title = "Build a road in your territory"; cost = "15 Materials / link"; break;
-                        case Commander.Mode.Trench: icon = "trench"; title = "Draw a trench in your territory"; cost = "35 Materials / segment"; break;
+                        case Commander.Mode.Road: icon = "road"; title = "Build a road · your land or neutral ground"; cost = "15 Materials / link"; break;
+                        case Commander.Mode.Trench: icon = "trench"; title = "Draw a trench · your land or neutral ground"; cost = "35 Materials / segment"; break;
                         case Commander.Mode.Rally: icon = "rally"; title = commander.RallyAttackMoveArmed ? "Set an attack-move rally point" : "Set rally point"; break;
                         case Commander.Mode.Place: icon = Icons.BuildingKind(commander.Option); title = NameOf("BUILDINGS", commander.Option); cost = CmdCostText(Defs?["BUILDINGS"]?[commander.Option]?["cost"]); break;
                         default:

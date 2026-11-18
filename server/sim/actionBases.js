@@ -558,7 +558,8 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
     let code = null;
     if (p.tile < 0 || p.tile >= N) code = 'ground';
     else if (game.world.road[p.tile]) { code = 'road'; crossings++; }
-    else if (!anywhere && game.world.owner[p.tile] !== civ.id) { code = 'territory'; outside++; }
+    // 2026-11-17: trenches may be dug on your own or neutral ground, never in another player's territory
+    else if (!anywhere && game.world.owner[p.tile] >= 0 && game.world.owner[p.tile] !== civ.id) { code = 'territory'; outside++; }
     else if (!civ.visible[p.tile]) code = 'hidden';
     else if (game.fieldworks.has(p.tile)) code = 'dug';
     else {
@@ -573,7 +574,7 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
   const cost = { materials: valid.length * 35 };
   if (!valid.length) {
     const code = Object.entries(why).sort((x, y) => y[1] - x[1])[0]?.[0];
-    const error = code === 'territory' ? 'Trenches can only be dug inside your own territory.'
+    const error = code === 'territory' ? "Trenches go on your own territory or neutral ground, never in another player's territory."
       : code === 'road' ? 'Trenches leave roads open: draw the line across open ground beside the road.'
       : code === 'blocked' ? `The trench line runs through ${blockedBy}: draw it around the structure.`
       : code === 'hidden' ? 'Scout the trench line so its ground is currently visible.'

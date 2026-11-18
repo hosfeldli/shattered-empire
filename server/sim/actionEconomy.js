@@ -112,7 +112,7 @@ function crossesFoundation(game, a, b) {
 const ROAD_SKIP = {
   route: 'No suitable road or bridge route connects those locations.',
   hidden: 'Scout the road route so its construction sites are currently visible.',
-  territory: 'Roads can only be built inside your own territory.',
+  territory: "Roads go on your own territory or neutral ground, never through another player's territory.",
   hostile: 'Road construction cannot enter an active hostile headquarters compound.',
   foundation: 'Roads cannot be built through a base foundation; the base links its own roads to the hub.',
   blocked: 'The road route runs through a structure: draw it around the structure.',
@@ -142,7 +142,9 @@ export function roadBuild(game, civ, points, preview = false) {
       const key = Math.min(from, to) + ':' + Math.max(from, to);
       if (edges.has(key)) continue;
       if (!civ.visible[from] || !civ.visible[to]) { skip(from, to, 'hidden'); continue; }
-      if (game.world.owner[from] !== civ.id || game.world.owner[to] !== civ.id) { skip(from, to, 'territory'); continue; }
+      // 2026-11-17: roads may cross your own or neutral ground, never another player's territory
+      const foreign = (t) => game.world.owner[t] >= 0 && game.world.owner[t] !== civ.id;
+      if (foreign(from) || foreign(to)) { skip(from, to, 'territory'); continue; }
       if (game.sites.some((s) => s.hq && game.hostile(civ.id, s.owner) && (distance(s, centerOf(from)) < 2.7 || distance(s, centerOf(to)) < 2.7))) { skip(from, to, 'hostile'); continue; }
       const existing = game.roads.usable(from, to); if (existing?.type >= 2 && existing.cond >= 95) continue;
       const foundation = crossesFoundation(game, from, to);

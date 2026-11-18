@@ -85,6 +85,8 @@ test('a trench stroke half outside your territory digs the inside half and lists
   const g = create(), civ = g.civs[0]; rich(g);
   g.units.clear();
   const home = g.sites[0];
+  // neutral ground is allowed now: make the land around us another player's so the border still refuses
+  for (let t = 0; t < g.world.owner.length; t++) if (g.world.owner[t] < 0) g.world.owner[t] = 1;
   // a straight line from inside the territory out past its border
   let line = null;
   for (let a = 0; a < 12 && !line; a++) {
@@ -113,6 +115,7 @@ test('a trench stroke half outside your territory digs the inside half and lists
 test('a road stroke builds the edges it can and skips the rest (hidden, outside territory)', () => {
   const g = create(), civ = g.civs[0]; rich(g);
   const home = g.sites[0];
+  for (let t = 0; t < g.world.owner.length; t++) if (g.world.owner[t] < 0) g.world.owner[t] = 1;   // foreign, not neutral
   let found = null;
   for (let a = 0; a < 12 && !found; a++) {
     const dx = Math.sin(a * Math.PI / 6), dz = Math.cos(a * Math.PI / 6);
@@ -152,4 +155,23 @@ test('base perimeter defenses do not need every outer lot in sight', () => {
   assert.ok(t != null, 'a fogged own-territory spot accepts a watchtower');
   const neutral = [...Array(g.world.owner.length).keys()].find((k) => g.world.owner[k] < 0 && distance(centerOf(k), s) < 14);
   if (neutral != null) assert.match(g.command(0, { c: 'fieldPreview', type: 'guard_post', point: centerOf(neutral) }).error || 'Scout', /Scout/, 'neutral ground must still be scouted');
+});
+
+test("trenches and roads may cross neutral ground (2026-11-17), never another player's territory", () => {
+  const g = create(), civ = g.civs[0]; rich(g);
+  g.units.clear();
+  civ.visible.fill(1);
+  const home = g.sites[0];
+  let trench = null, road = null;
+  for (let a = 0; a < 12 && !(trench && road); a++) {
+    const dx = Math.sin(a * Math.PI / 6), dz = Math.cos(a * Math.PI / 6);
+    const pts = [{ x: home.x + dx * 3.2, z: home.z + dz * 3.2 }, { x: home.x + dx * 9, z: home.z + dz * 9 }];
+    const t = g.command(0, { c: 'trenchWorld', points: pts, preview: true });
+    if (!trench && t.reply?.trench?.positions.some((p) => g.world.owner[p.tile] < 0)) trench = t;
+    const r = g.command(0, { c: 'roadBuild', points: pts, preview: true });
+    if (!road && r.reply?.road?.positions.some((e) => g.world.owner[e.a] < 0 || g.world.owner[e.b] < 0)) road = r;
+  }
+  assert.ok(trench, 'a trench reaches onto neutral ground');
+  assert.ok(road, 'a road reaches onto neutral ground');
+  assert.ok(!trench.reply.trench.skipped.some((p) => p.why === 'territory'));
 });

@@ -26,7 +26,7 @@ namespace SE.Runtime.UI
             if (text.StartsWith("multiplayer")) return "Multiplayer\nCreate or join a hosted match. Select teams and opponents before launching.";
             if (text.StartsWith("field guide")) return "Field Guide\nLook up units, buildings, resources, counters, commands and asset credits.";
             if (text.StartsWith("settings")) return "Settings\nAdjust graphics, audio, interface scaling, accessibility and key bindings.";
-            if (text.StartsWith("field construction")) return InputFacade.Expand("Build wheel ({build})\nPlace defenses (also on neutral ground; ×3 cost beyond your ring of influence), roads, trenches, outposts or a New Base inside your territory. Your base engineers build them. {rotate_left} and {rotate_right} rotate a defense before placement.");
+            if (text.StartsWith("field construction")) return InputFacade.Expand("Build wheel ({build})\nPlace defenses, sandbags, roads and trenches on your land or neutral ground (defenses cost ×3 beyond your ring of influence); outposts and a New Base go inside your territory. Your base engineers build them. {rotate_left} and {rotate_right} rotate a defense before placement.");
             if (text.StartsWith("rally")) return "Rally point\nClick a world position. Newly recruited units move there automatically.";
             if (text.StartsWith("reinforce")) return "Reinforce an army\nSend compatible newly recruited units to the selected army group.";
             if (text.StartsWith("repeat")) return "Repeat production\nContinue recruiting this unit when resources and command capacity permit. Disable it to stop future recruitment.";

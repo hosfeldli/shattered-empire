@@ -138,7 +138,7 @@ namespace SE.Runtime.UI
             {
                 SetDockLabel(dockBuild, "Build · " + HudKey("build", "B"));
                 SetDockLabel(dockTerrain, "Terrain · " + HudKey("terrain", "T"));
-                dockBuild.tooltip = "Build\nDefenses, roads, trenches, outposts and new bases, placed in your own territory.";
+                dockBuild.tooltip = "Build\nDefenses, roads, trenches, outposts and new bases. Defenses, sandbags, roads and trenches can also go on neutral ground.";
                 dockTerrain.tooltip = "Terrain (" + HudKey("terrain", "T") + ")\nPick raise, lower, flatten or smooth, then drag across your own territory like a brush (" + HudKey("brush_smaller", "[") + " " + HudKey("brush_larger", "]") + " or Ctrl + wheel: size). The cost grows with the hexes painted.";
                 zoomButton.tooltip = "Local view (" + HudKey("minimap_zoom", "Z") + ")\nSwitch the minimap between the whole map and the area around the camera.";
             }

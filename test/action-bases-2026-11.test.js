@@ -43,9 +43,9 @@ test('build wheel placements: own territory only, except defenses also on neutra
   assert.equal(g.command(0, { c: 'fieldPreview', type: 'repair_point', point: centerOf(neutral) }).code, 'territory');
   assert.equal(g.command(0, { c: 'fieldPreview', type: 'base_site', point: centerOf(neutral) }).code, 'territory');
   assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'guard_post', point: centerOf(neutral) }).code, 'territory');
-  // trenches and roads too
+  // 2026-11-17: trenches may be dug on neutral ground too (roads likewise); enemy land stays refused
   const t = g.command(0, { c: 'trenchWorld', points: [centerOf(neutral), centerOf(NB[neutral * 6 + 1] >= 0 ? NB[neutral * 6 + 1] : neutral)] });
-  assert.ok(t.error);
+  assert.notEqual(t.code, 'territory', t.error);
   const road = g.command(0, { c: 'roadBuild', points: [{ x: enemy.x + 1.5, z: enemy.z + 1.5 }, { x: enemy.x - 1.5, z: enemy.z - 1.5 }] });
   assert.ok(road.error);
   // own land works

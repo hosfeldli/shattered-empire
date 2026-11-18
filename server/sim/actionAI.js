@@ -48,6 +48,37 @@ export function airChoice(own, count, airSeen, highest) {
   return mix.map(([type, w]) => ({ type, gap: w / total * size - count(type) })).sort((a, b) => b.gap - a.gap)[0].type;
 }
 
+// Target ground-army composition by era (shares of the ground army). Indirect fire (mortars, SP artillery,
+// missile batteries) is kept to about a tenth: some, never a mortar carpet. Each role lists its unit types with
+// weights; the role and type furthest below target is trained next.
+const ROLES = [
+  { role: 'line', share: [.56, .32, .26], types: [['rifle_squad', 1], ['exo_infantry', .45, 3], ['special_forces', .12, 2]] },
+  { role: 'antitank', share: [.22, .14, .12], types: [['anti_armor', 1]] },
+  { role: 'indirect', share: [.1, .1, .1], types: [['mortar_team', 1], ['sp_artillery', 1, 2], ['missile_battery', .5, 3]] },
+  { role: 'armour', share: [.12, .44, .52], types: [['armored_car', .5], ['tank', 1.6, 2], ['mech_infantry', .7, 2], ['field_gun', .35, 2], ['autonomous_tank', 1, 3]] },
+];
+const ROLE_OF = Object.fromEntries(ROLES.flatMap((r) => r.types.map(([t]) => [t, r.role])));
+export function compositionPick(own, count, highest, personality) {
+  const era = Math.max(0, Math.min(2, highest - 1));
+  const ground = own.filter((u) => ROLE_OF[u.type]);
+  const size = ground.length + 1;
+  const tilt = personality?.aggression > .65 ? .06 : 0;   // aggressive AIs lean on armour
+  const share = (r) => r.share[era] + (r.role === 'armour' ? tilt : r.role === 'line' ? -tilt : 0);
+  const roleCount = (role) => ground.filter((u) => ROLE_OF[u.type] === role).length;
+  return (facility, allowOver) => {
+    const picks = [];
+    for (const r of ROLES) {
+      const gap = share(r) * size - roleCount(r.role);
+      const types = r.types.filter(([t, , tier]) => (tier || ACTION_UNITS[t].tier) <= highest && ACTION_UNITS[t].facility === facility);
+      if (!types.length || gap <= 0 && !allowOver) continue;
+      const total = types.reduce((n, [, w]) => n + w, 0), have = types.reduce((n, [t]) => n + count(t), 0) + 1;
+      const order = types.map(([t, w]) => ({ t, g: w / total * have - count(t) })).sort((a, b) => b.g - a.g).map((x) => x.t);
+      picks.push({ gap, order });
+    }
+    return picks.sort((a, b) => b.gap - a.gap).flatMap((x) => x.order);
+  };
+}
+
 function buildArmy(game, civ, bases, own, observed, p) {
   const byType = {};
   for (const u of own) byType[u.type] = (byType[u.type] || 0) + 1;
@@ -68,7 +99,7 @@ function buildArmy(game, civ, bases, own, observed, p) {
     const main = s === bases[0];
     // a second Materials Processor before the Armory: materials, not energy, limit how many troops an AI can field
     // W2: enemy air seen in the last couple of minutes (p.enemyAir) brings the Heavy Weapons Works (AA vehicles) forward
-    const build = main ? ['depot', 'barracks', 'power_plant', 'depot', 'armory', 'motor_works', ...(Math.max(enemyAir, p.enemyAir || 0) >= 1 ? ['heavy_weapons', 'airfield'] : ['airfield', 'heavy_weapons']), 'advanced_lab'] :
+    const build = main ? ['depot', 'barracks', 'power_plant', 'motor_works', 'depot', 'armory', ...(Math.max(enemyAir, p.enemyAir || 0) >= 1 ? ['heavy_weapons', 'airfield'] : ['airfield', 'heavy_weapons']), 'advanced_lab'] :
       s.kind === 'research' ? ['power_plant', 'armory', 'advanced_lab', 'depot', 'missile_silo', 'airfield'] :
       // W2: the second base puts up the airfield (or, against enemy air, the AA-producing Heavy Weapons Facility) fourth,
       // so the AI fields an air arm at all (Wave 1: airfields only appeared at the seventh slot of a tier-3 base)
@@ -94,28 +125,21 @@ function buildArmy(game, civ, bases, own, observed, p) {
   const reserveForBase = !belowFloor && p.state === 'Expanding' && game.siteById.get(p.target)?.owner === civ.id && !game.siteById.get(p.target)?.hq;
   const reserveForTier = !belowFloor && highest === 1 && game.time > 135 && !headquarters(game, bases[0])?.project;
   const minimum = defensive || belowFloor ? 0 : reserveForBase ? ACTION_BUILDINGS.town.cost.materials : reserveForTier && own.length >= 7 ? TIERS[1].cost.materials : 38;
-  // surplus energy buys the energy-hungry kit (artillery, armour, air defence) instead of piling up
-  const energyRich = civ.res.energy > Math.max(400, civ.res.materials * 2.5);
   const armorCount = own.filter((u) => ACTION_UNITS[u.type].move === 'tracked' || ACTION_UNITS[u.type].air && ACTION_UNITS[u.type].atk > 0).length;
   const needsArmor = highest >= 2 && armorCount < Math.max(3, own.length * .22);
+  // Urgent picks first (a minimum infantry screen, one scout, answers to enemy air and armour), then the
+  // balanced composition (compositionPick): the AI used to fall through to rifle squads at every barracks and
+  // spammed infantry; now each facility trains whatever its share of the target army is shortest of.
   const preferred = [];
   if (count('rifle_squad') + count('militia') < 4 || own.length < 6) preferred.push('rifle_squad');
-
   if (count('scout_buggy') === 0) preferred.push('scout_buggy');
   // W2: air defence answers the enemy air seen recently (p.enemyAir decays over ~2 min): one AA vehicle per two
   // enemy aircraft (up to 6) and fighters through airChoice; upgraded city perimeters add AA in developBases.
   const airSeen = Math.max(enemyAir, p.enemyAir || 0);
   if (airSeen >= 1 && count('air_defense') < Math.min(6, Math.ceil(airSeen * .5))) preferred.push('air_defense');
-  if (enemyArmor > count('tank') + count('anti_armor')) preferred.push('anti_armor', 'tank');
-  if (count('mortar_team') + count('sp_artillery') < own.length / 6) preferred.push('sp_artillery', 'mortar_team');
-  if (count('rifle_squad') < own.length / 3) preferred.push('rifle_squad');
-  if (civ.personality?.aggression > .65) preferred.push('armored_car', 'tank', 'exo_infantry');
-  else if (civ.personality?.riskAversion > .55) preferred.push('tank', 'mortar_team');
-  if (count('anti_armor') < Math.max(1, own.length * .15)) preferred.push('anti_armor');
-  if (energyRich) preferred.unshift(...['sp_artillery', 'tank', 'air_defense', 'mortar_team', 'anti_armor'].filter((t) => ACTION_UNITS[t].tier <= highest));
+  if (enemyArmor > count('tank') + count('anti_armor') + count('autonomous_tank') + count('field_gun')) preferred.push('anti_armor', 'tank');
   const airPick = airChoice(own, count, airSeen, highest);
-  if (airPick) preferred.push(airPick);
-  preferred.push('autonomous_tank', 'tank', 'mech_infantry', 'armored_car', 'rifle_squad');
+  const comp = compositionPick(own, count, highest, civ.personality);
   const facilities = bases.flatMap((s) => facilitiesAt(game, s)).filter((b) => b.done && b.queue.length < 2)
     .sort((a, b) => Number(a.type === 'barracks') - Number(b.type === 'barracks') || a.id - b.id);
   const operation = game.siteById.get(p.target), staging = operation && bases[0] ? game.lerpPoint(bases[0], operation,
@@ -123,12 +147,18 @@ function buildArmy(game, civ, bases, own, observed, p) {
   for (const b of facilities) {
     if (staging) b.rally = staging;
     const s = game.siteById.get(b.site);
-    const type = preferred.find((key) => {
+    const affordable = (key) => {
       const d = ACTION_UNITS[key];
+      if (!d || d.facility !== b.type || d.tier > highest) return false;
       if (needsArmor && b.type === 'barracks' && own.length > 8 && civ.res.materials < 215 + d.cost.materials) return false;
       const energyReserve = reserveForBase ? 120 : reserveForTier && own.length >= 7 ? TIERS[1].cost.energy : 0;
-      return d.facility === b.type && d.tier <= highest && civ.res.materials - d.cost.materials >= minimum && civ.res.energy - (d.cost.energy || 0) >= energyReserve && canPay(civ, d.cost);
-    });
+      return civ.res.materials - d.cost.materials >= minimum && civ.res.energy - (d.cost.energy || 0) >= energyReserve && canPay(civ, d.cost);
+    };
+    let type = preferred.find(affordable);
+    if (!type && b.type === 'airfield' && airPick && affordable(airPick)) type = airPick;
+    // the most under-represented role this facility can train; a facility whose roles are all at or over their
+    // share waits (saving materials for the vehicle works), except barracks while no vehicle facility exists yet
+    if (!type) type = comp(b.type, highest < 2 || !facilities.some((f) => f.type !== 'barracks' && f.type !== 'airfield')).find(affordable);
     if (type) train(game, civ, [b.id], type, 1);
   }
   // Upgrades: barracks kit first (cheap, immediate), then the armory's; affordable once the army floor is met,

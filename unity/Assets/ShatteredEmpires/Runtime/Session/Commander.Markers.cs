@@ -178,6 +178,9 @@ namespace SE.Runtime.Session
             {
                 case "territory":
                     // defenses may also go on neutral ground (ring of influence): their refusal is only for another player's land
+                    // (as may trenches and roads since 2026-11-17)
+                    if (error.StartsWith("Trenches ", StringComparison.OrdinalIgnoreCase) || error.StartsWith("Roads ", StringComparison.OrdinalIgnoreCase))
+                        return "In another player's territory · trenches and roads go on your own land or neutral ground";
                     return error.StartsWith("Defenses ", StringComparison.OrdinalIgnoreCase)
                         ? "In another player's territory · defenses go on your own land or neutral ground"
                         : "Outside your territory · build only on your own land (defenses claim the hexes around them)";
