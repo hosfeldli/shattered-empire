@@ -77,7 +77,7 @@ test('small arms engage helicopters (weakly); tank cannons still cannot', () => 
   const heli = g.spawn(g.civs[1], 'helicopter', { x: centre.x + 1, z: centre.z }, .05);
   const fighter = g.spawn(g.civs[1], 'fighter', { x: centre.x + 1, z: centre.z + .5 }, .05);
   assert.equal(canEngage(rifles, heli), true);
-  assert.equal(canEngage(rifles, fighter), false, 'fast jets stay out of small-arms reach');
+  assert.equal(canEngage(rifles, fighter), false, 'jets (the Warthog included) stay out of small-arms reach');
   assert.equal(canEngage(tank, heli), false);
 });
 
@@ -94,7 +94,7 @@ test('repairs slow to 30% while the structure is under fire', () => {
   assert.ok(Math.abs(shelled / calm - .3) < .02, `ratio ${(shelled / calm).toFixed(2)}`);
 });
 
-test('AI airfields build a mix: helicopters and fighters, fighters first against enemy air, capped share', () => {
+test('AI airfields build a mix: helicopters and Warthogs (never extra jets against enemy air), capped share', () => {
   const army = (types) => types.map((type, id) => ({ id, type }));
   const counter = (own) => (type) => own.filter((u) => u.type === type).length;
   const ground = Array(24).fill('rifle_squad');
@@ -102,7 +102,8 @@ test('AI airfields build a mix: helicopters and fighters, fighters first against
   assert.equal(airChoice(own, counter(own), 0, 2), 'helicopter');
   own = army([...ground, 'recon_drone', 'helicopter']);
   assert.equal(airChoice(own, counter(own), 0, 2), 'fighter');
-  assert.equal(airChoice(own, counter(own), 4, 2), 'fighter', 'enemy air calls for fighters');
+  const jet = army([...ground, 'recon_drone', 'fighter']);
+  assert.equal(airChoice(jet, counter(jet), 4, 2), 'helicopter', 'enemy air does not call for Warthogs: they cannot intercept');
   own = army([...ground, 'recon_drone', 'helicopter', 'helicopter', 'fighter', 'fighter']);
   assert.equal(airChoice(own, counter(own), 0, 2), null, 'air stays near 18% of the army');
 });

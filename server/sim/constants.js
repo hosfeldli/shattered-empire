@@ -100,7 +100,7 @@ export const TECHS = {
   higher_education: { name: 'Higher Education', age: 1, cost: 300, req: ['schooling'], desc: 'Universities; Technocracy.' },
   // Mechanization
   mechanization: { name: 'Mechanization', age: 2, cost: 700, req: ['motorization'], desc: 'Heavy assembly: tanks, mechanized infantry.' },
-  aviation: { name: 'Aviation', age: 2, cost: 720, req: ['petroleum'], desc: 'Airfields, attack helicopters and basic fighters; AA batteries to defend against aircraft.' },
+  aviation: { name: 'Aviation', age: 2, cost: 720, req: ['petroleum'], desc: 'Airfields, attack helicopters and Warthog ground-attack jets; AA batteries to defend against aircraft.' },
   highways: { name: 'Highways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Highways: fastest road movement and supply.' },
   railways: { name: 'Railways', age: 2, cost: 650, req: ['civil_engineering'], desc: 'Railways for bulk supply and transport.' },
   mechanized_agriculture: { name: 'Mechanized Agriculture', age: 2, cost: 650, req: ['agronomy'], desc: '+50% farm output, +housing.' },
@@ -246,7 +246,10 @@ export const UNITS = {
   helicopter: { name: 'Attack Helicopter', glyph: 'He', men: 2, age: 2, tech: 'aviation', move: 'aircraft', cat: 'air', air: true, role: 'support', alt: 'low', fuel: 55, ammo: 6, svc: 16, cost: { steel: 80, fuel: 60, munitions: 30 }, pop: 1, time: 20, hp: 150, atk: 22, def: 6, range: 2, speed: 2.0, vision: 4, bonus: { tracked: 1.6, wheeled: 1.4 } },
   recon_drone: { name: 'Recon Drone', glyph: 'RD', men: 0, age: 3, tech: 'drones', move: 'aircraft', cat: 'air', air: true, civilian: true, role: 'recon', alt: 'low', fuel: 90, ammo: 0, svc: 10, cost: { steel: 20, electronics: 15, fuel: 10 }, pop: 0, time: 10, hp: 40, atk: 0, def: 2, range: 0, speed: 2.4, vision: 8 },
   missile_battery: { name: 'Missile Battery', glyph: 'MB', men: 6, age: 3, tech: 'precision_missiles', move: 'wheeled', cat: 'artillery', cost: { steel: 90, electronics: 40, munitions: 60 }, pop: 2, time: 22, hp: 130, atk: 42, def: 5, range: 8, speed: 0.9, vision: 3, vsBuildings: 3 },
-  fighter: { name: 'Fighter', glyph: 'Fi', men: 1, age: 2, tech: 'aviation', move: 'aircraft', cat: 'air', air: true, role: 'fighter', alt: 'high', fuel: 60, ammo: 8, svc: 15, cost: { steel: 90, fuel: 50, credits: 40 }, pop: 1, time: 20, hp: 120, atk: 16, def: 8, range: 2, speed: 3.2, vision: 5 },
+  // the 'fighter' key is kept for save and protocol compatibility: it is now the Warthog, a slow,
+  // straight-winged ground-attack jet with a 30 mm rotary cannon. It cannot engage aircraft and takes
+  // extra damage from anti-aircraft fire (aaVulnerable); like other jets, small arms cannot reach it.
+  fighter: { name: 'Warthog', glyph: 'Wh', men: 1, age: 2, tech: 'aviation', move: 'aircraft', cat: 'air', air: true, role: 'attack', alt: 'high', fuel: 60, ammo: 8, svc: 15, cost: { steel: 90, fuel: 50, credits: 40 }, pop: 1, time: 20, hp: 110, atk: 26, def: 9, range: 2, speed: 2.3, vision: 5, aaVulnerable: 1.35, bonus: { tracked: 1.3, wheeled: 1.2 } },
   bomber: { name: 'Tactical Bomber', glyph: 'Bo', men: 3, age: 3, tech: 'air_operations', move: 'aircraft', cat: 'air', air: true, role: 'bomber', alt: 'high', fuel: 80, ammo: 2, svc: 25, cost: { steel: 160, fuel: 80, munitions: 60, credits: 80 }, pop: 1, time: 28, hp: 200, atk: 34, def: 6, range: 1, speed: 2.2, vision: 4, vsBuildings: 2.5 },
   oneway_drone: { name: 'One-Way Strike Drone', glyph: 'OW', men: 0, age: 3, tech: 'drones', move: 'aircraft', cat: 'air', air: true, role: 'oneway', alt: 'low', oneWay: true, fuel: 45, ammo: 1, svc: 0, cost: { steel: 25, electronics: 10, munitions: 20 }, pop: 0, time: 10, hp: 30, atk: 26, def: 1, range: 0, speed: 2.8, vision: 3, vsBuildings: 2 },
   air_defense: { name: 'Air Defense Vehicle', glyph: 'AA', men: 4, age: 3, tech: 'air_defense', move: 'wheeled', cat: 'wheeled', cost: { steel: 70, electronics: 25, munitions: 30 }, pop: 1, time: 18, hp: 140, atk: 5, def: 8, range: 5, speed: 1.1, vision: 5 },

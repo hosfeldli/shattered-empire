@@ -63,6 +63,9 @@ namespace SE.Runtime.Audio
             Shot("strategic", "blast_01");
             Shot("quake", "quake_01", "quake_02", "rumble_01");
             Shot("flak", "flak_01");
+            // the Warthog's rotary cannon: a recording if one is added, otherwise synthesized (AudioSynth.GunRun)
+            Shot("gun_run", "gun_run_01", "gun_run_02");
+            if (!Shots.ContainsKey("gun_run")) Shots["gun_run"] = new[] { AudioSynth.GunRun(0), AudioSynth.GunRun(1) };
             Shot("pickup", "pickup_01"); Shot("energy", "energy_01");
             Shot("siren", "siren_01"); Shot("distant_blast", "distant_blast");
             Shot("collapse", "debris_01", "debris_02", "rumble_02");

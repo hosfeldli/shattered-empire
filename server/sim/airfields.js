@@ -5,7 +5,7 @@ import { dist } from './hex.js';
 import { book } from './ledger.js';
 
 // what each refill costs: fuel per second of endurance, munitions per round, steel per hit point
-export const SERVICE_COST = { fuelPerSec: 0.15, steelPerHp: 0.08, munitions: { fighter: 1.5, support: 3, bomber: 18, strike: 6, recon: 0, oneway: 0 } };
+export const SERVICE_COST = { fuelPerSec: 0.15, steelPerHp: 0.08, munitions: { attack: 2, support: 3, bomber: 18, strike: 6, recon: 0, oneway: 0 } };
 
 export const isBase = (b) => !!(b && b.done && BUILDINGS[b.type].airbase && b.state !== 'planned');
 // drone works only service drones; airfields take everything

@@ -957,7 +957,7 @@ export function useAbility(game, civ, group, kind, point) {
       if (distance(u, point) > spec.range * 1.35 || !civ.explored[tileAt(point.x, point.z)]) continue;
       game.bombard(u, point);
     } else if (kind === 'repair') { game.repairAround(civ, u, 2.35, 39, true); repairInfrastructure(game, civ, u); }
-    else if (kind === 'patrol' || kind === 'strike') {
+    else if (kind === 'patrol' || kind === 'strike' || kind === 'gun_run') {
       const issued = moveGroup(game, [u], point, { mode: 'assault' });
       if (issued.error) continue;
       u.airOrder = { kind, point };

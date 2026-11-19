@@ -1180,8 +1180,10 @@ namespace SE.Runtime.Military
         /// </summary>
         void FlySnapshot(int s, Kind kind, in SE.Core.Protocol.WorldMotion m, UnitStore store, HexGrid grid, bool fresh, float dt)
         {
-            float tx = px[s], tz = pz[s];
-            float vx = m.Vx, vz = m.Vz;
+            // the track to follow: a Hermite curve through the snapshots (server velocity as tangents), not the
+            // piecewise-linear interpolation, so curving flight paths have no kinks at the snapshot boundaries
+            store.SmoothPosition(s, out float tx, out float tz, out float vx, out float vz);
+            EnsureFlight(px.Length);
             if (!fresh && airLive[s] && dt > 0f)
             {
                 // the interpolated track's own velocity, for when the server sends none
@@ -1197,6 +1199,7 @@ namespace SE.Runtime.Military
             {
                 airLive[s] = true;
                 airX[s] = tx; airZ[s] = tz; airH[s] = store.Facing(s); airBank[s] = 0; airAlt[s] = m.Altitude;
+                ResetFlight(s, vx, vz, m.Altitude);
                 px[s] = airX[s]; pz[s] = airZ[s];
                 return;
             }
@@ -1209,11 +1212,13 @@ namespace SE.Runtime.Military
                 float pull = 1f - Mathf.Exp(-dt * 4.5f);
                 airX[s] = px1 + ex * pull; airZ[s] = pz1 + ez * pull;
             }
-            airAlt[s] = Mathf.Lerp(airAlt[s], m.Altitude, 1f - Mathf.Exp(-dt * 3f));
+            float altBefore = airAlt[s];
+            airAlt[s] = Mathf.Lerp(airAlt[s], store.SmoothAltitude(s), 1f - Mathf.Exp(-dt * 4f));
+            FlightAttitude(s, kind, vx, vz, (airAlt[s] - altBefore) / dt, dt);
             float limit, bankMax;
             switch (kind)
             {
-                case Kind.Fighter: limit = 3.2f; bankMax = 1.15f; break;
+                case Kind.Fighter: limit = 3.2f; bankMax = 1.0f; break;
                 case Kind.Bomber: limit = 1.6f; bankMax = .6f; break;
                 case Kind.Heli: limit = 3.5f; bankMax = .32f; break;
                 default: limit = 4f; bankMax = .55f; break;
@@ -1238,8 +1243,10 @@ namespace SE.Runtime.Military
             float bank = -airBank[slot];
             // Hover is subtle, and ground servicing has neither banking nor bobbing.
             float flightBlend = math.saturate(alt / .24f);
-            float pitch = kind == Kind.Heli ? Mathf.Clamp(speed[slot] * .12f, 0, .22f) * flightBlend : 0f;
-            var pos = p + new float3(0, alt + Mathf.Sin(time * .7f + phase) * .008f * flightBlend, 0);
+            // pitch from the flight model (UnitRenderer.Flight.cs): helicopters dip the nose to accelerate and flare to
+            // brake, jets pitch down into a gun or bombing run and up as they climb out
+            float pitch = AirPitch(slot, kind) * flightBlend;
+            var pos = p + new float3(0, alt + HoverBob(slot, kind, time, phase) * flightBlend, 0);
             var rot = quaternion.EulerZXY(pitch, MapSpace.Yaw(heading), -bank);   // map heading into Unity space; mirroring flips the roll
             float s = altitude >= 0 ? 1f : level == 2 ? 1f : 1.5f;
             switch (kind)

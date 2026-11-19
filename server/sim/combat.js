@@ -34,6 +34,9 @@ export function eventsFor(g, since, vis, god) {
     const e = ev[k];
     if (god) { out.push(e); continue; }
     const seeA = e.a >= 0 && vis[e.a] === 1, seeB = e.b >= 0 && vis[e.b] === 1;
+    // a strafing burst (action RTS): a and b are both ends of the line of impacts on the ground, so either
+    // end in view shows the whole walk of impacts
+    if (e.k === 'strafe') { if (seeA || seeB) out.push(e); continue; }
     if (e.ax !== undefined || e.bx !== undefined) {
       if (seeB || seeA && (e.k === 'fire' || e.k === 'launch')) out.push({
         ...e, ...(seeA ? {} : { a: -1, s: undefined, ax: undefined, az: undefined }),
@@ -391,7 +394,7 @@ export function chooseTarget(g, u, radius, policy) {
       if (policy === 'defensive' && d > def.range) s -= 6;
       const vs = weaponVs(wk, ed);
       if (ed.air && vs >= 1.4) s += 6;
-      if (!ed.air && vs < 0.5) s -= 4;                // a fighter's guns are wasted on ground targets
+      if (!ed.air && vs < 0.5) s -= 4;                // an anti-aircraft weapon is wasted on ground targets
       if (ed.civilian) s -= 2;
       if (ARMORED.has(ed.cat) && wpn.vsArmor < 0.6) s -= 2;
       s += 2 * (1 - e.hp / e.maxHp);

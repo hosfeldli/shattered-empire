@@ -154,7 +154,10 @@ export const ACTION_UNITS = {
   air_defense: unit('air_defense', 'heavy_weapons', 2, 180, 95, 4, { ability: 'intercept', time: 25 }),
   missile_battery: unit('missile_battery', 'heavy_weapons', 3, 310, 185, 7, { ability: 'bombard', time: 38 }),
   helicopter: unit('helicopter', 'airfield', 2, 280, 130, 6, { ability: 'strike', time: 32 }),
-  fighter: unit('fighter', 'airfield', 2, 315, 160, 7, { ability: 'patrol', time: 35 }),
+  // 'fighter' is the Warthog (id kept for saves and the protocol): strafing runs with a 30 mm cannon
+  // (actionFlight.js), ground targets only, slow for a jet and fragile under anti-aircraft fire
+  fighter: unit('fighter', 'airfield', 2, 315, 160, 7, { ability: 'gun_run', strafe: true, aaVulnerable: 1.35, time: 35,
+    desc: 'Ground-attack jet. Strafing runs with a 30 mm rotary cannon shred armor and troops along the line of the pass. Cannot engage aircraft; slow and fragile under air defense.' }),
   recon_drone: unit('recon_drone', 'airfield', 2, 115, 65, 2, { ability: 'scan', vision: 10.5, time: 19 }),
   bomber: unit('bomber', 'airfield', 3, 470, 250, 9, { ability: 'strike', time: 46 }),
   oneway_drone: unit('oneway_drone', 'advanced_lab', 3, 125, 80, 2, { ability: 'strike', time: 18 }),
@@ -162,9 +165,10 @@ export const ACTION_UNITS = {
   strike_swarm: unit('strike_swarm', 'advanced_lab', 3, 335, 210, 7, { ability: 'strike', time: 40 }),
 };
 // Aircraft cross the (larger) battlefield noticeably faster than any ground force, scaled by role:
-// fighters fastest, then one-way drones and bombers, with helicopters and swarms as the slow low-level
-// attackers. Resulting speeds (hexes/s): fighter 6.5, oneway 5.5, swarm 4.5, recon 4.3, bomber 4.2, helicopter 3.4.
-const AIR_PACE = { fighter: 1.6, oneway_drone: 1.55, bomber: 1.5, recon_drone: 1.4, strike_swarm: 1.35, helicopter: 1.35 };
+// one-way drones fastest, then bombers and the Warthog (slow for a jet: 2.3 x 1.27 x 1.3 = 3.8, was the 6.5
+// fighter), with helicopters and swarms as the slow low-level
+// attackers. Resulting speeds (hexes/s): Warthog 3.8, oneway 5.5, swarm 4.5, recon 4.3, bomber 4.2, helicopter 3.4.
+const AIR_PACE = { fighter: 1.3, oneway_drone: 1.55, bomber: 1.5, recon_drone: 1.4, strike_swarm: 1.35, helicopter: 1.35 };
 for (const [key, pace] of Object.entries(AIR_PACE)) ACTION_UNITS[key].speed *= pace;
 // Endurance in seconds of flight (actionAir.js fuel): aircraft refuel at an airfield or headquarters.
 const AIR_FUEL = { fighter: 51, bomber: 76, helicopter: 102, recon_drone: 42, strike_swarm: 38, oneway_drone: 30 };
@@ -240,6 +244,7 @@ export const ABILITIES = {
   intercept: { name: 'Priority Intercept', cooldown: 26, duration: 9, desc: 'Increase range and damage against aircraft.' },
   patrol: { name: 'Air Superiority Patrol', cooldown: 22, point: true, desc: 'Patrol the selected airspace for enemy aircraft.' },
   strike: { name: 'Targeted Strike', cooldown: 25, point: true, desc: 'Fly to the target and strike the selected area.' },
+  gun_run: { name: 'Gun Run', cooldown: 20, point: true, desc: 'Strafe ground forces around the selected point: repeated cannon passes until nothing is left there.' },
   infiltrate: { name: 'Tactical Infiltration', cooldown: 31, duration: 12, desc: 'Remain concealed until firing or detected at close range.' },
 };
 

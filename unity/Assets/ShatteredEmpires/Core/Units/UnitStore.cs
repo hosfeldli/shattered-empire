@@ -256,6 +256,46 @@ namespace SE.Core.Units
             z = z0 + (z1 - z0) * f;
         }
 
+        /// <summary>
+        /// Position and velocity at the current render time on a cubic Hermite curve through the bracketing snapshots,
+        /// using each snapshot's server velocity as the tangent (aircraft): continuous in position and velocity, so a
+        /// curving flight path has no kinks at the 10 Hz snapshot boundaries. Falls back to <see cref="Position"/>
+        /// (and the latest velocity) when there is no bracket or no continuous motion.
+        /// </summary>
+        public void SmoothPosition(int slot, out float x, out float z, out float vx, out float vz)
+        {
+            Prepare();
+            ref var u = ref Records[slot];
+            vx = u.Motion.Vx; vz = u.Motion.Vz;
+            if (s1 == null || single || slot >= s0.Id.Length || slot >= s1.Id.Length || s0.Id[slot] != u.Id || s1.Id[slot] != u.Id
+                || !s0.Motion[slot].Present || !s1.Motion[slot].Present) { Position(slot, out x, out z); return; }
+            var a = s0.Motion[slot]; var b = s1.Motion[slot];
+            float span = s1.Time - s0.Time;
+            if (span < 1e-4f || span > 1f) { Position(slot, out x, out z); return; }
+            float t = f, t2 = t * t, t3 = t2 * t;
+            // Hermite basis (h00 + h01 = 1, so the start point carries no separate term)
+            float h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
+            float dx = grid.DxWrap(a.X, b.X), dz = b.Z - a.Z;
+            x = a.X + h10 * span * a.Vx + h01 * dx + h11 * span * b.Vx;
+            z = a.Z + h10 * span * a.Vz + h01 * dz + h11 * span * b.Vz;
+            // the curve's derivative: velocity along it (world units per second)
+            float d10 = 3 * t2 - 4 * t + 1, d01 = -6 * t2 + 6 * t, d11 = 3 * t2 - 2 * t;
+            vx = (d10 * span * a.Vx + d01 * dx + d11 * span * b.Vx) / span;
+            vz = (d10 * span * a.Vz + d01 * dz + d11 * span * b.Vz) / span;
+            // a teleport (respawn, spawn at a pad) between the snapshots: no curve through it
+            if (dx * dx + dz * dz > 25f) Position(slot, out x, out z);
+        }
+
+        /// <summary>Altitude at the current render time, eased between the bracketing snapshots.</summary>
+        public float SmoothAltitude(int slot)
+        {
+            Prepare();
+            ref var u = ref Records[slot];
+            if (s1 == null || single || slot >= s0.Id.Length || slot >= s1.Id.Length || s0.Id[slot] != u.Id || s1.Id[slot] != u.Id) return u.Motion.Altitude;
+            float t = f * f * (3 - 2 * f);
+            return s0.Motion[slot].Altitude + (s1.Motion[slot].Altitude - s0.Motion[slot].Altitude) * t;
+        }
+
         /// <summary>Direction of travel at the current render time (zero when stationary).</summary>
         public void Heading(int slot, out float dx, out float dz)
         {

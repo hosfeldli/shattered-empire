@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { Game } from '../server/sim/game.js';
 import { spawnUnit } from '../server/sim/military.js';
 import { onAircraftBuilt } from '../server/sim/airOperations.js';
-import { weaponVs } from '../server/sim/weapons.js';
+import { weaponVs, WEAPONS } from '../server/sim/weapons.js';
 import { UNITS, isWater, TERRAIN } from '../server/sim/constants.js';
 import { disk, dist } from '../server/sim/hex.js';
 
@@ -32,7 +32,7 @@ function airfield(g, civId = 0) {
 function aircraft(g, type, base) { const u = spawnUnit(g, g.civs[base.owner], type, base.tile); onAircraftBuilt(g, u, base); return u; }
 const away = (g, from, d) => disk(from, d).find((t) => dist(t, from) === d && land(g, t));
 
-test('a fighter patrol is one order: launch, orbit, return on fuel, land, service from real stock, relaunch', () => {
+test('a Warthog patrol is one order: launch, orbit, return on fuel, land, service from real stock, relaunch', () => {
   const g = world();
   const base = airfield(g), civ = g.civs[0];
   const f = aircraft(g, 'fighter', base);
@@ -118,14 +118,14 @@ test('a full airfield queues landings and diverts when it must; a destroyed base
   assert.ok(craft.every((u) => !g.units.has(u.id) || u.air.home !== b2.id), 'nothing still calls the destroyed base home');
 });
 
-test('explicit target classes: small arms and tank guns never hit aircraft; fighters and AA do; bombers cannot fight fighters', () => {
+test('explicit target classes: small arms and tank guns never hit aircraft; AA does; the Warthog cannot fight aircraft', () => {
   for (const t of ['militia', 'rifle_squad', 'tank', 'field_gun', 'scout_buggy', 'armored_car', 'helicopter', 'bomber', 'strike_swarm']) assert.equal(weaponVs(t === 'helicopter' ? 'rockets' : t === 'bomber' ? 'bombs' : t === 'strike_swarm' ? 'drone_strike' : { militia: 'carbine', rifle_squad: 'rifle', tank: 'cannon', field_gun: 'howitzer', scout_buggy: 'mg', armored_car: 'mg' }[t], UNITS.fighter), 0, `${t} cannot target a fighter`);
-  assert.ok(weaponVs('aam', UNITS.bomber) > 1, 'fighters intercept bombers');
+  assert.ok(weaponVs('gau8', UNITS.bomber) === 0 && weaponVs('gau8', UNITS.helicopter) === 0, 'the Warthog has no air-to-air weapon');
   assert.ok(weaponVs('flak', UNITS.fighter) > 1 && weaponVs('airburst', UNITS.helicopter) > 1, 'air defense engages aircraft');
   assert.equal(weaponVs('airburst', UNITS.tank), 0, 'an AA battery cannot target tanks');
   assert.ok(weaponVs('autocannon', UNITS.helicopter) > 0 && weaponVs('autocannon', UNITS.fighter) === 0, 'mechanized infantry: low-flying aircraft only');
   assert.equal(weaponVs('mg', UNITS.helicopter), 0, 'bunker machine guns are ground-only');
-  assert.ok(weaponVs('aam', UNITS.tank) < 0.5, 'a fighter is inefficient against ground forces');
+  assert.ok(weaponVs('gau8', UNITS.tank) >= 1 && WEAPONS.gau8.vsArmor > 1, 'the Warthog cannon is built for armour');
 });
 
 test('an AA battery fires airbursts at a detected aircraft, never at ground units, and stops without munitions', () => {

@@ -1098,6 +1098,7 @@ namespace SE.Runtime.App
                         break;
                     }
                     case "flak": PresentFlak(e); break;   // GameBootstrap.Air.cs (D)
+                    case "strafe": PresentStrafe(e); break;   // the Warthog's gun runs (GameBootstrap.GunRun.cs)
                     case "impact":
                     {
                         var p = EventPoint(e, false, .01f);
@@ -1185,6 +1186,7 @@ namespace SE.Runtime.App
                 }
             }
             session.Events.Clear();
+            UpdateGunRuns(Time.deltaTime);   // bursts in progress walk their impacts (GameBootstrap.GunRun.cs)
             // burning buildings and burning wrecks
             fireAt -= Time.unscaledDeltaTime;
             if (fireAt <= 0)

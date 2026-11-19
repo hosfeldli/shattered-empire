@@ -304,10 +304,14 @@ namespace SE.Runtime.UI
                     Line(c, 0.03f, 0.3f, 0.74f, 0.66f, 0.74f);
                     break;
                 case "fighter":
-                    Poly(c, 0.02f, 0.5f, 0.82f, 0.44f, 0.98f, 0.5f, 0.82f, 0.56f);
-                    Poly(c, 0.38f, 0.48f, 0.62f, 0.48f, 0.42f, 0.16f, 0.34f, 0.16f);
-                    Poly(c, 0.38f, 0.52f, 0.62f, 0.52f, 0.42f, 0.84f, 0.34f, 0.84f);
-                    Poly(c, 0.04f, 0.5f, 0.16f, 0.48f, 0.12f, 0.3f, 0.06f, 0.3f);
+                    // the Warthog from above: long fuselage, straight wing, twin engine pods, tailplane with twin fins
+                    Poly(c, 0.04f, 0.46f, 0.84f, 0.45f, 0.97f, 0.5f, 0.84f, 0.55f, 0.04f, 0.54f);
+                    Poly(c, 0.52f, 0.47f, 0.64f, 0.47f, 0.62f, 0.05f, 0.54f, 0.05f);
+                    Poly(c, 0.52f, 0.53f, 0.64f, 0.53f, 0.62f, 0.95f, 0.54f, 0.95f);
+                    Circle(c, 0.3f, 0.37f, 0.055f); Circle(c, 0.3f, 0.63f, 0.055f);
+                    Line(c, 0.11f, 0.24f, 0.37f, 0.36f, 0.37f); Line(c, 0.11f, 0.24f, 0.63f, 0.36f, 0.63f);
+                    Poly(c, 0.06f, 0.24f, 0.14f, 0.24f, 0.14f, 0.76f, 0.06f, 0.76f);
+                    Line(c, 0.03f, 0.04f, 0.24f, 0.17f, 0.24f); Line(c, 0.03f, 0.04f, 0.76f, 0.17f, 0.76f);
                     break;
                 case "bomber":
                     Poly(c, 0.04f, 0.5f, 0.86f, 0.44f, 0.98f, 0.5f, 0.86f, 0.58f);

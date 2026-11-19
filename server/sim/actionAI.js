@@ -51,14 +51,14 @@ function failed(game, p, target) {
   p.failedAt[target] = (p.failedAt[target] || 0) + 1;
 }
 
-// W2: what the airfields train. Air is capped at ~18% of the army (min 2). Enemy air seen recently calls for
-// fighters first; otherwise the mix aims at helicopters 2 : fighters 1 (: bombers 1 from era III), plus one recon
-// drone once the army is 20 strong. Before this every airfield built only helicopters (Wave 1: 26 helicopters,
-// no fighters or bombers in 30 sims).
+// W2: what the airfields train. Air is capped at ~18% of the army (min 2). The mix aims at helicopters 2 :
+// Warthogs ('fighter') 1 (: bombers 1 from era III), plus one recon drone once the army is 20 strong. Before this
+// every airfield built only helicopters (Wave 1: 26 helicopters, no fighters or bombers in 30 sims).
+// 2026-11-19: the fighter became the Warthog ground-attack jet, which cannot engage aircraft: enemy air is now
+// answered by air defense vehicles alone (buildArmy), never by more jets. `airSeen` is kept for callers.
 export function airChoice(own, count, airSeen, highest) {
   const air = own.filter((u) => ACTION_UNITS[u.type].air && ACTION_UNITS[u.type].facility === 'airfield');
   if (air.length >= Math.max(2, Math.round(own.length * .18))) return null;
-  if (airSeen >= 1 && count('fighter') < Math.min(6, airSeen * .6 + .5)) return 'fighter';
   if (!count('recon_drone') && own.length >= 20) return 'recon_drone';
   const mix = [['helicopter', 2], ['fighter', 1]];
   if (highest >= 3) mix.push(['bomber', 1]);
@@ -165,7 +165,7 @@ function buildArmy(game, civ, bases, own, observed, p) {
   if (count('rifle_squad') + count('militia') < 4 || own.length < 6) preferred.push('rifle_squad');
   if (count('scout_buggy') === 0) preferred.push('scout_buggy');
   // W2: air defence answers the enemy air seen recently (p.enemyAir decays over ~2 min): one AA vehicle per two
-  // enemy aircraft (up to 6) and fighters through airChoice; upgraded city perimeters add AA in developBases.
+  // enemy aircraft (up to 6); upgraded city perimeters add AA in developBases (Warthogs cannot intercept).
   const airSeen = Math.max(enemyAir, p.enemyAir || 0);
   if (airSeen >= 1 && count('air_defense') < Math.min(6, Math.ceil(airSeen * .5))) preferred.push('air_defense');
   if (enemyArmor > count('tank') + count('anti_armor') + count('autonomous_tank') + count('field_gun')) preferred.push('anti_armor', 'tank');
@@ -361,6 +361,12 @@ function tacticalSupport(game, civ, own, observed) {
       use = !!point;
     } else if (d.ability === 'strike' && !u.airOrder) {
       point = observed.find((v) => ['tracked', 'wheeled'].includes(ACTION_UNITS[v.type].move) && distance(u, v) < 12);
+      use = !!point;
+    } else if (d.ability === 'gun_run' && !u.grounded && !['gun_run', 'return'].includes(u.airOrder?.kind)) {
+      // Warthog: strafe ground forces (armour first) that no observed air defense covers; it is fragile under AA
+      const covered = (v) => observed.some((a) => a.type === 'air_defense' && distance(a, v) < 4.5);
+      const ground = observed.filter((v) => !ACTION_UNITS[v.type].air && distance(u, v) < 12 && !covered(v));
+      point = ground.find((v) => ['tracked', 'wheeled'].includes(ACTION_UNITS[v.type].move)) || ground[0];
       use = !!point;
     }
     if (use) { game.command(civ.id, { c: 'ability', ability: d.ability, units: [u.id], point: point && { x: point.x, z: point.z } }); decisions++; }

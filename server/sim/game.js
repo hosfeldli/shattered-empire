@@ -1858,7 +1858,7 @@ export class Game {
   // overkill avoidance; focus fire puts every weapon on the one target.
   orderAttack(civ, ids, target, opts = {}) {
     let units = (ids || []).map((id) => this.units.get(id)).filter((u) => u && u.owner === civ.id && UNITS[u.type].atk > 0);
-    // aircraft attacking something fly a strike mission (fighters intercept aircraft the same way)
+    // aircraft attacking something fly a strike mission (no aircraft intercepts: air defense does)
     const air = units.filter((u) => UNITS[u.type].air);
     if (air.length) {
       units = units.filter((u) => !UNITS[u.type].air);

@@ -58,7 +58,7 @@ namespace SE.Runtime.Rendering
             RoadWheel = WheelModel(true).Build("Tracked road wheel");
             FieldGun = Towed(false).Build("Towed gun");
             Mortar = Towed(true).Build("Mortar and bipod");
-            Fighter = Aircraft(false).Build("Fighter airframe");
+            Fighter = Warthog().Build("Warthog airframe");   // unit 'fighter' is the Warthog ground-attack jet
             Bomber = Aircraft(true).Build("Bomber airframe");
             Helicopter = Heli().Build("Helicopter airframe");
             Rotor = RotorModel().Build("Four-blade rotor");
@@ -93,7 +93,7 @@ namespace SE.Runtime.Rendering
             ArmoredCarLo = ModelLibrary.Or("ArmoredCarLo", ArmoredCarLo); ArmoredCarMount = ModelLibrary.Or("ArmoredCarMount", ArmoredCarMount);
             CargoTruck = ModelLibrary.Or("CargoTruck", CargoTruck); RocketTruck = ModelLibrary.Or("RocketTruck", RocketTruck);
             AirDefense = ModelLibrary.Or("AirDefense", AirDefense);
-            Fighter = ModelLibrary.Or("Fighter", Fighter); Bomber = ModelLibrary.Or("Bomber", Bomber);
+            Fighter = ModelLibrary.Or("Warthog", Fighter); Bomber = ModelLibrary.Or("Bomber", Bomber);
             Helicopter = ModelLibrary.Or("Helicopter", Helicopter); Rotor = ModelLibrary.Or("Rotor", Rotor);
             Rifle = ModelLibrary.Or("Rifle", Rifle);
             Ifv = ModelLibrary.Or("Ifv", Ifv); IfvTurret = ModelLibrary.Or("IfvTurret", IfvTurret);
@@ -382,6 +382,36 @@ namespace SE.Runtime.Rendering
                 m.Beam(P(s * .09f, .15f, -.06f), P(s * .25f, .028f, -.61f), .034f, .028f, 6, Edge)
                     .Surface(SurfaceKind.Rubber).Beam(P(s * .25f, .13f, -.07f), P(s * .34f, .13f, -.07f), .13f, .13f, 12, Dark)
                     .Surface(SurfaceKind.Armor).Beam(P(s * .34f, .13f, -.07f), P(s * .36f, .13f, -.07f), .079f, .072f, 10, Steel);
+            return m;
+        }
+
+        /// <summary>
+        /// The Warthog ground-attack jet (code-built fallback for Resources/Models/Warthog): straight low wing, twin
+        /// engine pods high on the rear fuselage, twin fins on the tailplane tips, the rotary cannon under the nose.
+        /// Nose along +z, same units as the other airframes.
+        /// </summary>
+        static MeshBuilder Warthog()
+        {
+            var m = new MeshBuilder().Surface(SurfaceKind.Armor)
+                .Beam(P(0, 0, -.57f), P(0, 0, -.34f), .02f, .062f, 14, Paint)
+                .Beam(P(0, 0, -.34f), P(0, 0, .40f), .062f, .08f, 14, Paint)
+                .Beam(P(0, 0, .40f), P(0, -.005f, .57f), .074f, .02f, 14, Edge)
+                .Beam(P(-.012f, -.035f, .50f), P(-.012f, -.035f, .64f), .016f, .014f, 8, Dark)
+                .Surface(SurfaceKind.Glass).Blob(P(0, .065f, .33f), P(.042f, .035f, .1f), Glass);
+            for (int s = -1; s <= 1; s += 2)
+            {
+                m.Surface(SurfaceKind.Armor);
+                Wing(m, P(s * .07f, -.03f, .11f), P(s * .58f, -.04f, .065f), P(s * .58f, -.04f, -.05f), P(s * .07f, -.032f, -.085f), Paint);
+                Wing(m, P(s * .03f, .024f, -.43f), P(s * .27f, .024f, -.45f), P(s * .27f, .024f, -.55f), P(s * .03f, .024f, -.56f), Edge);
+                m.Box(P(s * .15f, -.10f, .04f), P(.055f, .045f, .17f), Paint);                          // gear pod
+                m.Box(P(s * .075f, .04f, -.25f), P(.05f, .05f, .14f), Paint);                           // engine pylon
+                m.Beam(P(s * .125f, .11f, -.08f), P(s * .125f, .11f, -.39f), .058f, .052f, 12, Steel)   // engine pod
+                    .Beam(P(s * .125f, .11f, -.39f), P(s * .125f, .11f, -.44f), .046f, .04f, 10, Dark);
+                m.Box(P(s * .27f, .02f, -.50f), P(.014f, .16f, .12f), Paint);                           // fin
+                foreach (float x in new[] { .26f, .36f, .46f })
+                    m.Beam(P(s * x, -.09f, -.07f), P(s * x, -.09f, .10f), .018f, .014f, 8, Dark);        // stores
+                m.Surface(SurfaceKind.Glass).Box(P(s * .58f, -.045f, 0), P(.02f, .012f, .03f), s < 0 ? Tail : Optic);
+            }
             return m;
         }
 

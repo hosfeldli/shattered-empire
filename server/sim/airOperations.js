@@ -7,7 +7,7 @@ import { tempo } from './rulesets.js';
 //   exceptional: holding (waiting for a slot, burning fuel), awaiting (no fuel/munitions at base),
 //                diverting (base lost or full), lost (out of fuel: crash)
 //
-// Missions: patrol (fighters, helicopters), strike (any armed aircraft; one-way drones are consumed),
+// Missions: patrol (Warthogs, helicopters), strike (any armed aircraft; one-way drones are consumed),
 // support (helicopters and swarms over a friendly army), scout (recon drones), return.
 // Everything here is authoritative; the client only smooths positions between server ticks.
 import { UNITS, BUILDINGS, N } from './constants.js';
@@ -26,9 +26,8 @@ export function canFly(type, kind) {
   if (r === 'recon') return kind === 'scout' || kind === 'patrol';
   if (r === 'oneway') return kind === 'strike';
   if (r === 'bomber') return kind === 'strike';
-  if (r === 'fighter') return kind === 'patrol' || kind === 'strike';
   if (r === 'strike') return kind === 'strike' || kind === 'support';
-  return kind === 'patrol' || kind === 'strike' || kind === 'support';    // helicopters
+  return kind === 'patrol' || kind === 'strike' || kind === 'support';    // helicopters, the Warthog (role 'attack')
 }
 
 export function initAircraft(g, u, baseId) {
@@ -105,7 +104,7 @@ function setReturning(g, u) {
 }
 
 // Choose suitable ready aircraft for a mission ordered from a base (or anywhere).
-//   air target -> fighters; armour -> helicopters / strike swarms; a concentration -> bombers;
+//   air target -> nobody (air defense); armour -> Warthogs / helicopters / strike swarms; a concentration -> bombers;
 //   unknown region -> recon; a precise expendable strike -> one-way drones
 export function autoSelect(g, civ, mission, { base = null, max = 4, prefer = null } = {}) {
   const tt = mission.target ? targetTile(g, mission) : mission.tile;
@@ -113,11 +112,11 @@ export function autoSelect(g, civ, mission, { base = null, max = 4, prefer = nul
   const tdef = tgtUnit ? UNITS[tgtUnit.type] : null;
   let order;
   if (mission.kind === 'scout') order = ['recon_drone'];
-  else if (mission.kind === 'patrol') order = tdef?.air ? ['fighter', 'helicopter'] : ['fighter', 'helicopter', 'recon_drone'];
-  else if (mission.kind === 'support') order = ['helicopter', 'strike_swarm'];
-  else if (tdef?.air) order = ['fighter'];
+  else if (mission.kind === 'patrol') order = tdef?.air ? [] : ['fighter', 'helicopter', 'recon_drone'];
+  else if (mission.kind === 'support') order = ['helicopter', 'fighter', 'strike_swarm'];
+  else if (tdef?.air) order = [];     // no aircraft carries air-to-air weapons: air defense answers aircraft
   else if (prefer === 'oneway') order = ['oneway_drone'];
-  else if (tdef && (tdef.cat === 'tracked' || tdef.cat === 'wheeled')) order = ['helicopter', 'strike_swarm', 'bomber', 'oneway_drone'];
+  else if (tdef && (tdef.cat === 'tracked' || tdef.cat === 'wheeled')) order = ['fighter', 'helicopter', 'strike_swarm', 'bomber', 'oneway_drone'];
   else {
     // a concentration of troops or a structure: bombers first
     let n = 0; if (tt >= 0) for (const t of disk(tt, 1)) for (const id of g.tileUnits.get(t) || []) { const e = g.units.get(id); if (e && g.hostile(civ.id, e.owner)) n++; }
@@ -254,12 +253,12 @@ function flyMission(g, u, m, dt) {
         const tg = u.order.target, tu = tg.kind === 'unit' ? g.units.get(tg.id) : null;
         const tile = tu ? tu.tile : g.buildings.get(tg.id)?.tile ?? -1;
         const ground = tu ? !UNITS[tu.type].air : true;
-        if (tile < 0 || dist(tile, center) > m.radius + (m.kind === 'support' ? 2 : 4) || (d.role === 'fighter' && ground)) { u.order = { kind: 'idle' }; u.path = []; }
+        if (tile < 0 || dist(tile, center) > m.radius + (m.kind === 'support' ? 2 : 4) || !ground && !g.canHitUnit(u, tu)) { u.order = { kind: 'idle' }; u.path = []; }
         else return;     // engaging: the combat system flies the attack
       }
-      // fighters on patrol intercept detected aircraft inside the sector; helicopters on support
-      // hit ground threats near the army they cover
-      const threat = sectorThreat(g, u, center, m.radius + (d.role === 'fighter' ? 3 : 1), d.role === 'fighter' ? 'air' : m.kind === 'support' ? 'ground' : 'any');
+      // aircraft on patrol or support hit threats inside the sector their weapons can engage (the
+      // Warthog and helicopters: ground forces near the army or area they cover)
+      const threat = sectorThreat(g, u, center, m.radius + 1, m.kind === 'support' ? 'ground' : 'any');
       if (threat && d.atk > 0 && (a.ammo > 0 || !d.ammo)) { u.order = { kind: 'attack', target: threat, resume: undefined }; u.repathAt = 0; return; }
       if (!u.path.length) {
         // aircraft on station keep circling; a flight spreads over two orbits so it never bunches
@@ -292,7 +291,7 @@ function flyMission(g, u, m, dt) {
         } else if (!u.path.length) routeTo(u, tt);
         return;
       }
-      // helicopters, swarms and fighters on a strike: the combat system handles the attack run
+      // helicopters, swarms and Warthogs on a strike: the combat system handles the attack run
       if (u.order.kind !== 'attack') { u.order = { kind: 'attack', target: tg, resume: undefined }; u.repathAt = 0; }
       break;
     }

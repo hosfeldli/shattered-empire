@@ -65,7 +65,7 @@ export const SCENARIOS = {
   artillery: { name: 'Artillery bombardment of a position', run(g, a) {
     return [spawnGroup(g, 0, 'sp_artillery', offset(a, -6), 6), spawnGroup(g, 1, 'rifle_squad', offset(a, 2), 9)];
   } },
-  air: { name: 'Air operations: airfield, fighters, bomber, helicopter, drones vs troops and AA', run(g, a) {
+  air: { name: 'Air operations: airfield, Warthogs, bomber, helicopter, drones vs troops and AA', run(g, a) {
     const free = (t) => buildingSite(g, t);
     for (const k of ['aviation', 'air_operations', 'drones', 'air_defense']) { g.civs[0].techs.add(k); g.civs[1].techs.add(k); }
     const airSite = free(offset(a, -9));

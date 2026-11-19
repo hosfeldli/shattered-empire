@@ -53,6 +53,38 @@ namespace SE.Runtime.Audio
             Loops["music_combat"] = TacticalTheme(true);
         }
 
+        /// <summary>
+        /// The Warthog's 30 mm rotary cannon: about a second of rounds at ~65 a second, so close together that the
+        /// individual cracks fuse into one tearing low "brrrt" tone, then the echo and the rumble of the impacts.
+        /// </summary>
+        public static AudioClip GunRun(int variant)
+        {
+            rng = new System.Random(4100 + variant * 31);
+            float burst = 1.0f + variant * .12f, rate = 64f + variant * 3f;
+            int n = (int)((burst + 1.4f) * Rate);
+            var d = new float[n];
+            var noise = new float[n];
+            for (int i = 0; i < n; i++) noise[i] = R();
+            var crack = (float[])noise.Clone();
+            HighPass(crack, 1400f);
+            LowPass(noise, 700f);
+            float period = 1f / rate;
+            for (int i = 0; i < n; i++)
+            {
+                float t = i / (float)Rate;
+                float env = t < burst ? Math.Min(1f, t / .03f) : (float)Math.Exp(-(t - burst) / .05f);
+                float phase = (t % period) / period;                     // position inside the current round
+                float round = (float)Math.Exp(-phase * 9f);              // each round: a sharp attack, quick decay
+                float buzz = (float)Math.Sin(2 * Math.PI * rate * t) * .9f + (float)Math.Sin(4 * Math.PI * rate * t + 1) * .35f;
+                float body = noise[i] * (float)Math.Exp(-Math.Max(0, t - burst) / .5f);   // low roar, decaying after the burst
+                d[i] = env * (crack[i] * round * 1.1f + buzz * (.45f + round * .4f)) + body * (t < burst ? .55f : .8f);
+            }
+            LowPass(d, 3800f);
+            Reverb(d, .4f, .86f);
+            Fade(d, .4f);
+            return Clip("gun_run" + variant, d, false);
+        }
+
         static float[] CommandChord()
         {
             var data = new float[(int)(Rate * 1.4f)];

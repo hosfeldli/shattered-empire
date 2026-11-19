@@ -324,12 +324,17 @@ namespace SE.Runtime.Rendering
                 .Blob(new Vector3(0, 0.95f, 0), new Vector3(0.13f, 0.06f, 0.13f), White)
                 .Box(new Vector3(0.12f, 0.55f, 0.15f), new Vector3(0.04f, 0.04f, 0.42f), Dark)
                 .Build("soldier");
+            // the Warthog (unit 'fighter'): straight wing, twin engine pods on the rear fuselage, twin fins
             Fighter = new MeshBuilder()
-                .Tube(new Vector3(0, 0, -0.5f), 1f, 0.07f, 6, White)
-                .Box(new Vector3(0, -0.01f, -0.05f), new Vector3(1f, 0.025f, 0.3f), White)
-                .Box(new Vector3(0, -0.01f, -0.45f), new Vector3(0.42f, 0.02f, 0.12f), White)
-                .Box(new Vector3(0, 0.03f, -0.45f), new Vector3(0.02f, 0.2f, 0.14f), White)
-                .Box(new Vector3(0, 0.05f, 0.25f), new Vector3(0.07f, 0.05f, 0.16f), Glass)
+                .Tube(new Vector3(0, 0, -0.55f), 1.12f, 0.065f, 6, White)
+                .Box(new Vector3(0, -0.04f, 0.02f), new Vector3(1.16f, 0.025f, 0.17f), White)
+                .Tube(new Vector3(-0.125f, 0.11f, -0.42f), 0.33f, 0.055f, 6, Dark)
+                .Tube(new Vector3(0.125f, 0.11f, -0.42f), 0.33f, 0.055f, 6, Dark)
+                .Box(new Vector3(0, 0.02f, -0.49f), new Vector3(0.56f, 0.02f, 0.12f), White)
+                .Box(new Vector3(-0.27f, 0.02f, -0.5f), new Vector3(0.02f, 0.16f, 0.12f), White)
+                .Box(new Vector3(0.27f, 0.02f, -0.5f), new Vector3(0.02f, 0.16f, 0.12f), White)
+                .Box(new Vector3(0, 0.05f, 0.33f), new Vector3(0.07f, 0.04f, 0.13f), Glass)
+                .Tube(new Vector3(0, -0.035f, 0.55f), 0.09f, 0.016f, 6, Dark)
                 .Build("fighter");
             Bomber = new MeshBuilder()
                 .Tube(new Vector3(0, 0, -0.5f), 1f, 0.09f, 6, White)

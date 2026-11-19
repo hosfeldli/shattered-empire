@@ -25,7 +25,7 @@ export const AIR = {
   rangeShare: .32,     // a patrol waypoint must lie within speed x endurance x this of a refuelling base
   maxWaypoints: 8,
 };
-export const AIR_MISSIONS = ['patrol', 'route', 'intercept', 'scout', 'support', 'strike', 'return', 'orbit'];
+export const AIR_MISSIONS = ['patrol', 'route', 'intercept', 'scout', 'support', 'strike', 'return', 'orbit', 'gun_run'];
 // Weather and relief for aircraft (§31, W3 2026-11-17). All checks are O(1) per airborne aircraft per tick
 // (one weather-cell lookup and one elevation read at its own hex):
 //  - storm cells (weather.stormAt >= storm): aircraft do not take off from, or land at, a base under a storm
@@ -350,6 +350,8 @@ export function airStep(game, u) {
     fly(u, stationPath(game, u, u.airOrder.point, 'orbit', u.airOrder));
     return false;
   }
+  // the Warthog has no bombs: a strike order becomes a gun run (strafing passes, actionFlight.js) over the point
+  if (current.kind === 'strike' && d.strafe) current.kind = 'gun_run';
   if (current.kind === 'strike') {
     if (u.fuel <= 0) return false;
     game.bombard(u, current.point);

@@ -473,6 +473,50 @@ def fighter(name, bomber=False):
     a.box((0, -.52, .17), (.014, .06, .004), 'dark', bevel=0)
     save(a)
 
+def warthog(name):
+    """The Warthog ground-attack jet (unit 'fighter'): straight low wing, twin engine pods on the rear
+    fuselage, twin fins at the tips of the tailplane, the 30 mm rotary cannon jutting from under the nose,
+    blunt canopy well forward, wing-root gear pods and underwing stores."""
+    a = Asset(name)
+    # Fuselage: a long slab-sided tube from the gun nose back to the tail cone.
+    rings = [(.0, .57), (.035, .55), (.06, .49), (.074, .40), (.08, .26), (.08, .02), (.074, -.18), (.062, -.34), (.046, -.46), (.03, -.54), (.0, -.57)]
+    a.lathe(rings, 'y', 'paint', segs=16)
+    # GAU-8 barrels out of the nose, slightly left of centre and low, with the muzzle cluster.
+    a.cyl((-.012, .50, -.035), 'y', .016, .016, .13, 'dark', segs=10)
+    for k in range(4):
+        ang = k * math.pi / 2
+        a.cyl((-.012 + math.cos(ang) * .008, .60, -.035 + math.sin(ang) * .008), 'y', .0035, .0035, .04, 'steel', segs=6)
+    # Blunt canopy close to the nose.
+    a.lathe([(0, .44), (.03, .42), (.042, .36), (.042, .28), (.03, .23), (0, .21)], 'y', 'glass', segs=14, center=(0, 0, .06))
+    a.box((0, .33, .093), (.07, .006, .02), 'paint', bevel=.002)          # canopy bow
+    for s in (-1, 1):
+        # Straight, thick, low-set wing with a slight taper; drooped wingtips.
+        a.prism([(s * .07, .11), (s * .50, .075), (s * .50, -.055), (s * .07, -.085)], 'z', -.055, -.030, 'paint', bevel=.004)
+        a.prism([(s * .50, .075), (s * .58, .06), (s * .58, -.045), (s * .50, -.055)], 'z', -.062, -.040, 'edge', bevel=.003)
+        # Main gear pods under the wing roots.
+        a.box((s * .15, .04, -.075), (.055, .17, .045), 'paint', bevel=.012, taper=(1, .9))
+        # Underwing pylons and stores: missiles outboard, bombs and a rocket pod inboard.
+        for k, x in enumerate((.24, .32, .40, .47)):
+            a.box((s * x, .01, -.065), (.01, .07, .02), 'dark', bevel=0)
+            if k == 3:
+                a.cyl((s * x, -.06, -.085), 'y', .012, .012, .15, 'edge', segs=8)
+                a.cyl((s * x, .09, -.085), 'y', .012, .001, .035, 'dark', segs=8)
+            else:
+                a.cyl((s * x, -.07, -.09), 'y', .022, .022, .15, 'edge' if k else 'dark', segs=10)
+                a.cyl((s * x, .08, -.09), 'y', .022, .004, .04, 'dark', segs=10)
+        # Engine pods high on the rear fuselage, on short stub pylons, with dark intakes and exhausts.
+        x = s * .125
+        a.box((s * .075, -.25, .065), (.05, .14, .045), 'paint', bevel=.008)
+        a.cyl((x, -.09, .11), (0, -1, 0), .058, .056, .30, 'paint', segs=16)
+        a.cyl((x, -.083, .11), (0, -1, 0), .05, .05, .008, 'grille', segs=16)
+        a.cyl((x, -.39, .11), (0, -1, 0), .05, .042, .05, 'dark', segs=14)
+        # Tailplane and the twin fins at its tips.
+        a.prism([(s * .03, -.43), (s * .27, -.45), (s * .27, -.55), (s * .03, -.56)], 'z', .010, .024, 'paint', bevel=.003)
+        fx = s * .27
+        a.prism([(-.42, -.02), (-.56, -.02), (-.58, .17), (-.49, .17)], 'x', fx - .007, fx + .007, 'paint', bevel=.003)
+        a.box((fx, -.55, .08), (.016, .02, .02), 'tail' if s < 0 else 'optic', bevel=0)
+    save(a)
+
 def helicopter(name):
     a = Asset(name)
     # Narrow armoured fuselage with stepped tandem cockpits.
@@ -559,7 +603,7 @@ barrel('GunBarrel'); barrel('HowitzerBarrel', artillery=True)
 road_wheel('RoadWheel'); truck_wheel('Wheel')
 carrier('Carrier'); armored_car('ArmoredCar'); armored_car_lo('ArmoredCarLo'); armored_car_mount('ArmoredCarMount')
 cargo_truck('CargoTruck', 'cargo'); cargo_truck('RocketTruck', 'rocket'); cargo_truck('AirDefense', 'radar')
-fighter('Fighter'); fighter('Bomber', bomber=True)
+fighter('Fighter'); fighter('Bomber', bomber=True); warthog('Warthog')
 helicopter('Helicopter'); rotor('Rotor')
 rifle('Rifle')
 with open(os.path.join(out, 'MANIFEST.txt'), 'w') as fh:

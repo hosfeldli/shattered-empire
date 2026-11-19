@@ -8,7 +8,7 @@
 // blast: hex radius of area damage (0 = the target only); falloff applies to the ring.
 //
 // targets: what the weapon can engage at all. Targeting checks these classes, never a unit's
-//   other numbers: a ground-only cannon cannot shoot a fighter.
+//   other numbers: a ground-only cannon cannot shoot an aircraft.
 //     'ground'  units on the ground and structures
 //     'air'     any aircraft
 //     'lowair'  only low-flying aircraft (helicopters and drones)
@@ -45,12 +45,16 @@ export const UNIT_WEAPON = {
   scout_buggy: 'mg', militia: 'carbine', rifle_squad: 'rifle', special_forces: 'smg_team', exo_infantry: 'smg_team',
   mortar_team: 'mortar', armored_car: 'mg', field_gun: 'atgun', mech_infantry: 'autocannon', tank: 'cannon', autonomous_tank: 'cannon',
   sp_artillery: 'howitzer', helicopter: 'rockets', missile_battery: 'missile', air_defense: 'flak', strike_swarm: 'drone_strike',
-  fighter: 'aam', bomber: 'bombs', oneway_drone: 'warhead',
+  fighter: 'gau8', bomber: 'bombs', oneway_drone: 'warhead',
 };
 export const BUILDING_WEAPON = { town: 'mg', bunker: 'mg', fort: 'fortgun', camp: 'rifle', guard_post: 'mg_light', aa_battery: 'airburst' };
 
 // Append new profiles so historical event indices remain stable.
 WEAPONS.pistol = { name: 'Defensive pistol', mode: 'hitscan', cooldown: 1.4, burst: 1, supp: 1, vsArmor: .08, tracer: 'light', targets: ['ground'] };
+// The Warthog's 30 mm rotary cannon: ground targets only, strongest against armour. In the action RTS
+// it fires during strafing runs (actionFlight.js): a one-second burst whose impacts walk along the
+// aircraft's ground track; the legacy ruleset resolves it as a heavy hitscan burst.
+WEAPONS.gau8 = { name: '30 mm rotary cannon', mode: 'hitscan', cooldown: 2.4, burst: 10, supp: 30, vsArmor: 1.3, he: 0.4, tracer: 'heavy', targets: ['ground'] };
 export const WEAPON_KEYS = Object.keys(WEAPONS);
 export const weaponOf = (unitType) => WEAPONS[UNIT_WEAPON[unitType]] || null;
 
@@ -58,7 +62,7 @@ export const weaponOf = (unitType) => WEAPONS[UNIT_WEAPON[unitType]] || null;
 export const ARMORED = new Set(['wheeled', 'tracked']);
 
 // Effectiveness of a weapon against a target definition: 0 when the weapon cannot engage it.
-//   targetDef.air with alt 'low' (helicopters, drones) or 'high' (fighters, bombers)
+//   targetDef.air with alt 'low' (helicopters, drones, the Warthog) or 'high' (bombers)
 export function weaponVs(wk, targetDef) {
   const w = WEAPONS[wk]; if (!w || !targetDef) return 0;
   if (targetDef.air) {

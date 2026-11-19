@@ -1,6 +1,6 @@
 // AI air operations: the same mission orders a player gives, planned like a player would.
-// - Production: aircraft from airfields / drone works in a sensible mix (fighters when enemy air is
-//   seen, strike aircraft otherwise, a recon drone, a few one-way drones), within what the economy can service.
+// - Production: aircraft from airfields / drone works in a sensible mix (Warthogs and helicopters for ground
+//   attack, bombers, a recon drone, a few one-way drones), within what the economy can service.
 // - Persistent patrols over the threatened city, the front or the airfields (patrol missions repeat across servicing).
 // - Strikes on concentrations that are worth it and not covered by known air defense.
 // - Servicing awareness: only ready aircraft get new missions; nothing is re-tasked mid-turnaround.
@@ -36,7 +36,7 @@ function wantedFleet(g, civ, ai, bases) {
   const want = {};
   if (air) {
     const n = Math.min(10, 2 + civ.age + (ai.campaign ? 2 : 0)) * air;
-    want.fighter = Math.round(n * (enemyAir ? 0.5 : 0.3));
+    want.fighter = Math.round(n * 0.3);      // the Warthog: ground attack (no aircraft can intercept)
     want.bomber = Math.round(n * (enemyAir ? 0.2 : 0.35));
     want.helicopter = n - want.fighter - want.bomber;
   }
@@ -101,7 +101,7 @@ export function aiAirStep(ai) {
   const threats = ai.enemiesNear();
   const enemies = [...g.units.values()].filter((u) => civ.visible[u.tile] && g.hostile(civ.id, u.owner) && !UNITS[u.type].civilian && g.detects(civ.id, u));
   const send = (ids, mission) => { if (ids.length) ai.cmd({ c: 'airMission', units: ids, ...mission, auth: 'mission' }); };
-  // patrols: keep one or two fighters / helicopters on station, re-aimed when the threat moves
+  // patrols: keep one or two Warthogs / helicopters on station, re-aimed when the threat moves
   const spot = patrolSpot(g, civ, ai, bases, threats);
   if (spot && !(spot.why === 'base' && civ.res.fuel < 80)) {   // a standing patrol over a quiet base is a luxury when fuel is short
     const want = spot.why === 'intercept' ? 3 : spot.why === 'base' ? 1 : 2;
@@ -110,7 +110,7 @@ export function aiAirStep(ai) {
     for (const u of stale) u.air.mission.tile = spot.tile;     // re-aim persistent patrols (takes effect on their next sortie)
     const need = want - on.length;
     if (need > 0) {
-      const pref = spot.why === 'intercept' ? ['fighter'] : ['fighter', 'helicopter'];
+      const pref = spot.why === 'intercept' ? [] : ['fighter', 'helicopter'];   // nothing intercepts aircraft
       const pick = ready.filter((u) => pref.includes(u.type) && canFly(u.type, 'patrol') && aaThreat(g, civ, spot.tile) < 3).slice(0, need);
       send(pick.map((u) => u.id), { kind: 'patrol', tile: spot.tile, radius: spot.why === 'base' ? 2 : 3 });
     }
@@ -118,10 +118,10 @@ export function aiAirStep(ai) {
   // strikes on worthwhile targets not covered by air defense; never pile everything onto one target
   for (const t of strikeTargets(g, civ, ai, enemies).slice(0, 2)) {
     if (tasked('strike', t.tile).length) continue;
-    const pool = ready.filter((u) => u.air.state === 'ready' && !u.air.mission?.kind?.match(/patrol|scout/) && canFly(u.type, 'strike') && u.type !== 'fighter');
+    const pool = ready.filter((u) => u.air.state === 'ready' && !u.air.mission?.kind?.match(/patrol|scout/) && canFly(u.type, 'strike'));
     // helicopters and one-way drones are vulnerable: keep them out of AA cover altogether
     const ok = pool.filter((u) => (t.aa === 0 || UNITS[u.type].alt === 'high'));
-    const order = ['bomber', 'helicopter', 'strike_swarm', 'oneway_drone'];
+    const order = ['bomber', 'fighter', 'helicopter', 'strike_swarm', 'oneway_drone'];
     const pick = ok.sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type)).filter((u) => u.type !== 'oneway_drone' || t.value >= 5).slice(0, t.value >= 6 ? 2 : 1);
     for (const u of pick) { const i = ready.indexOf(u); if (i >= 0) ready.splice(i, 1); }
     send(pick.map((u) => u.id), { kind: 'strike', tile: t.tile, target: t.target });

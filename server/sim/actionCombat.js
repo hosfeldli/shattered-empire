@@ -7,6 +7,7 @@ import { emit } from './combat.js';
 import { centerOf, distance, dxBetween, tileAt, trenchPosition, wrapX } from './actionNavigation.js';
 import { chase, moveGroup, stanceOf, stopUnit } from './actionOrders.js';
 import { airStep, CITY_AA, cityHasAA, flakBurst } from './actionAir.js';
+import { attackRuns } from './actionFlight.js';
 import { armourDamage, infantryKit, SMALL_ARMS, squadFirepower, squadHit, structureDamage, structureRange, suppress } from './actionUpgrades.js';
 import { firingSlot, garrisonRange, shelterBlast, sightFrom } from './actionGarrison.js';
 import { GARRISON } from './actionDefinitions.js';
@@ -96,6 +97,8 @@ export function damageActionTarget(game, target, source, amount, weapon, indirec
   if (d?.move === 'infantry' && d.men > 1 && profile?.supp) suppress(target, game.time, profile.supp * (blast > 0 ? 1.5 : 1));
   let mult = profile ? weaponVs(weapon, d || { air: false }) : 1;
   if (!mult) return;
+  // the low, slow Warthog (def.aaVulnerable) takes extra damage from anti-aircraft weapons
+  if (d?.aaVulnerable && profile && (profile.targets.includes('air') || profile.targets.includes('lowair'))) mult *= d.aaVulnerable;
   if (d?.move === 'tracked' || d?.move === 'wheeled') mult *= profile?.vsArmor ?? 1;
   // 2026-11-17: tracked armour shrugs off small arms (rifles, carbines, machine guns) at half their vehicle rate
   if (d?.move === 'tracked' && SMALL_ARMS.has(weapon)) mult *= .5;
@@ -425,6 +428,8 @@ function garrisonShot(game, u, def, near) {
 
 // Aircraft missions, fuel, refuelling, patrol routes and flight paths live in actionAir.js (D).
 const aircraftMission = airStep;
+// Fixed-wing attack runs (strafing passes, bombing runs) live in actionFlight.js.
+const RUN_HOOKS = { fire: (game, u, def, target) => fire(game, u, def, target), damage: (...args) => damageActionTarget(...args) };
 
 // Upgraded city defenses give a headquarters built-in AA (actionAir.cityHasAA): flak airbursts at aircraft.
 function cityAntiAir(game, b, near) {
@@ -528,6 +533,7 @@ export function actionCombat(game) {
     const def = ACTION_UNITS[u.type];
     if (u.inside) { garrisonShot(game, u, def, near); continue; }
     if (def.air && aircraftMission(game, u)) continue;
+    if (def.air && attackRuns(game, u, def, RUN_HOOKS, stopUnit)) continue;
     if (def.setup && (u.vx || u.vz) && (u.deployed || u.setupUntil)) { u.deployed = false; u.setupUntil = 0; }
     if (!def.weapon || u.mode === 'move' || u.grounded || !alive(u) || def.air && u.fuel <= 0) continue;
     const civ = game.civs[u.owner];

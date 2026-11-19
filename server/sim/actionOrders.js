@@ -2,6 +2,7 @@ import { DT } from './constants.js';
 import { ACTION_UNITS } from './actionDefinitions.js';
 import { distance, dxBetween, OPEN_COST, SpatialIndex, tileAt, wrapX, trenchPosition } from './actionNavigation.js';
 import { addWear } from './battlefield.js';
+import { flyAircraft } from './actionFlight.js';
 
 const SIDESTEPS = [.34, -.34, .66, -.66, 1.04, -1.04, 1.48, -1.48];
 // unitMotion: the longest step over a sliver of unstandable ground on a lane (matches actionNavigation LANE_STRIDE)
@@ -403,10 +404,8 @@ export function unitMotion(game) {
     u.waitingCrossing = false;
     const def = ACTION_UNITS[u.type];
     if (u.tacticalResume && game.time >= u.tacticalUntil) stopUnit(game, u, true);
-    if (def.air) {
-      const target = u.grounded ? .045 : def.alt === 'high' ? u.type === 'bomber' ? 2.6 : 2 : u.type === 'helicopter' ? .75 : 1.05;
-      u.altitude = Math.max(.045, u.altitude + Math.max(-.12, Math.min(.082, (target - u.altitude) * .15)));
-    }
+    // aircraft fly their own flight model: banked turns and attack runs, smooth rotor flight (actionFlight.js)
+    if (def.air) { flyAircraft(game, u, def, stopUnit); continue; }
     if (!u.goal) {
       if (u.alignFacing != null) { u.yaw = turn(u.yaw, u.alignFacing, DT * 1.25); if (Math.abs(angleDelta(u.yaw,u.alignFacing)) < .015) u.alignFacing = null; }
       u.vx = u.vz = u.speed = 0; continue;
