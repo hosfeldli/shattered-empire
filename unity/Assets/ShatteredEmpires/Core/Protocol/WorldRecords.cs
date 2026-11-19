@@ -41,6 +41,104 @@ namespace SE.Core.Protocol
         public TileValue[] Intensity = Array.Empty<TileValue>();
     }
 
+    /// <summary>
+    /// A keyed battlefield delta (Pass 4, server delta.js keyedBattlefield 'bfd'): for each sub-list, every row of each tile
+    /// that changed (they replace all rows that tile had) and the tiles that left the sub-list.
+    /// </summary>
+    public sealed class BattlefieldDelta
+    {
+        public int Version;
+        public BattlefieldState Updated = new BattlefieldState();
+        public int[] CratersGone, WrecksGone, ImpactsGone, ScorchGone, WearGone, SmokeGone, IntensityGone;
+    }
+
+    /// <summary>Rows grouped by tile, in the order the server listed them within a tile (crater stamping keeps the first six).</summary>
+    sealed class TileGroups<T>
+    {
+        readonly Dictionary<int, List<T>> byTile = new Dictionary<int, List<T>>();
+        readonly Stack<List<T>> pool = new Stack<List<T>>();
+        readonly HashSet<int> touched = new HashSet<int>();
+        readonly Func<T, int> tileOf;
+        int count;
+        public TileGroups(Func<T, int> tileOf) { this.tileOf = tileOf; }
+
+        public void Clear()
+        {
+            foreach (var l in byTile.Values) { l.Clear(); pool.Push(l); }
+            byTile.Clear();
+            count = 0;
+        }
+
+        public void Reset(T[] all) { Clear(); Apply(all, null); }
+
+        public void Apply(T[] updated, int[] removed)
+        {
+            if (removed != null)
+                foreach (int t in removed)
+                    if (byTile.TryGetValue(t, out var l)) { count -= l.Count; l.Clear(); pool.Push(l); byTile.Remove(t); }
+            if (updated == null) return;
+            touched.Clear();
+            foreach (var r in updated)
+            {
+                int t = tileOf(r);
+                if (!byTile.TryGetValue(t, out var l)) byTile[t] = l = pool.Count > 0 ? pool.Pop() : new List<T>(4);
+                if (touched.Add(t)) { count -= l.Count; l.Clear(); }   // a changed tile's rows replace the rows it had
+                l.Add(r);
+                count++;
+            }
+        }
+
+        public T[] ToArray()
+        {
+            if (count == 0) return Array.Empty<T>();
+            var a = new T[count];
+            int i = 0;
+            foreach (var l in byTile.Values) for (int k = 0; k < l.Count; k++) a[i++] = l[k];
+            return a;
+        }
+    }
+
+    /// <summary>
+    /// The battlefield a keyed-delta client holds (Pass 4): a full 'bf' resets it, a 'bfd' delta patches it by tile, and
+    /// <see cref="Snapshot"/> builds the arrays the renderers read (a new object, so a queued geometry update keeps its copy).
+    /// </summary>
+    public sealed class BattlefieldStore
+    {
+        public int Version = -1;
+        readonly TileGroups<CraterRecord> craters = new TileGroups<CraterRecord>(r => r.Tile);
+        readonly TileGroups<WreckRecord> wrecks = new TileGroups<WreckRecord>(r => r.Tile);
+        readonly TileGroups<ImpactRecord> impacts = new TileGroups<ImpactRecord>(r => r.Tile);
+        readonly TileGroups<TileValue> scorch = new TileGroups<TileValue>(r => r.Tile), wear = new TileGroups<TileValue>(r => r.Tile),
+            smoke = new TileGroups<TileValue>(r => r.Tile), intensity = new TileGroups<TileValue>(r => r.Tile);
+
+        public void Clear()
+        {
+            craters.Clear(); wrecks.Clear(); impacts.Clear(); scorch.Clear(); wear.Clear(); smoke.Clear(); intensity.Clear();
+            Version = -1;
+        }
+
+        public void Reset(BattlefieldState s, int version)
+        {
+            craters.Reset(s.Craters); wrecks.Reset(s.Wrecks); impacts.Reset(s.Impacts);
+            scorch.Reset(s.Scorch); wear.Reset(s.Wear); smoke.Reset(s.Smoke); intensity.Reset(s.Intensity);
+            Version = version;
+        }
+
+        public void Apply(BattlefieldDelta d)
+        {
+            var u = d.Updated;
+            craters.Apply(u.Craters, d.CratersGone); wrecks.Apply(u.Wrecks, d.WrecksGone); impacts.Apply(u.Impacts, d.ImpactsGone);
+            scorch.Apply(u.Scorch, d.ScorchGone); wear.Apply(u.Wear, d.WearGone); smoke.Apply(u.Smoke, d.SmokeGone); intensity.Apply(u.Intensity, d.IntensityGone);
+            Version = d.Version;
+        }
+
+        public BattlefieldState Snapshot() => new BattlefieldState
+        {
+            Craters = craters.ToArray(), Wrecks = wrecks.ToArray(), Impacts = impacts.ToArray(),
+            Scorch = scorch.ToArray(), Wear = wear.ToArray(), Smoke = smoke.ToArray(), Intensity = intensity.ToArray(),
+        };
+    }
+
     /// <summary>Regional weather on a coarse grid (server weather.js snapshot).</summary>
     public sealed class WeatherState
     {
@@ -143,6 +241,28 @@ namespace SE.Core.Protocol
             s.Smoke = Values(bf["s"], 0.1f);
             s.Intensity = Values(bf["i"], 1f);
             return s;
+        }
+
+        /// <summary>A keyed battlefield delta ('bfd': { v, u: { sub: rows }, r: { sub: tiles } }), or null when absent.</summary>
+        public static BattlefieldDelta BattlefieldChanges(JObject bfd)
+        {
+            if (bfd == null) return null;
+            var r = bfd["r"] as JObject;
+            return new BattlefieldDelta
+            {
+                Version = I(bfd["v"], -1),
+                Updated = Battlefield(bfd["u"] as JObject) ?? new BattlefieldState(),
+                CratersGone = Tiles(r?["c"]), WrecksGone = Tiles(r?["w"]), ImpactsGone = Tiles(r?["m"]),
+                ScorchGone = Tiles(r?["sc"]), WearGone = Tiles(r?["wr"]), SmokeGone = Tiles(r?["s"]), IntensityGone = Tiles(r?["i"]),
+            };
+        }
+
+        static int[] Tiles(JToken t)
+        {
+            if (!(t is JArray a) || a.Count == 0) return null;
+            var r = new int[a.Count];
+            for (int i = 0; i < r.Length; i++) r[i] = I(a[i], -1);
+            return r;
         }
 
         static TileValue[] Values(JToken t, float scale)

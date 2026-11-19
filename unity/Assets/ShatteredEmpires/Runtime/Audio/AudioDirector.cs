@@ -145,6 +145,20 @@ namespace SE.Runtime.Audio
                 PlayVoice("rumble", mapPos, volume * .65f, minDistance * 3f, 0, camDistance, travel + .04f);
         }
 
+        /// <summary>Strongest storm within earshot of the camera focus (0..1), set by the weather presentation.</summary>
+        public float StormNear;
+
+        /// <summary>
+        /// Thunder from a lightning strike at a map position: a 3D voice there (so it pans and fades with direction
+        /// and distance, far strikes muffled by the distance low-pass), starting after the sound's travel time.
+        /// </summary>
+        public void Thunder(float3 mapPos, float delay, float loudness, float camDistance)
+        {
+            float d = Vector3.Distance(listener.position, MapSpace.W(mapPos));
+            float near = Mathf.Clamp01(1f - d / (120f + camDistance));
+            PlayVoice("thunder", mapPos, Mathf.Lerp(.55f, 1.25f, near) * Mathf.Clamp01(loudness), 30f, 3, camDistance, delay);
+        }
+
         /// <summary>Close bullet strikes: a ricochet off armour or a thud into earth or masonry.</summary>
         public void Strike(float3 mapPos, bool armour, bool masonry, float camDistance)
         {
@@ -259,7 +273,8 @@ namespace SE.Runtime.Audio
             urbanEcho = urbanNear;
             // Weather and war beds: heavy rain and storm wind take over from the light beds; at operational
             // and strategic zoom an active front is heard as a low, continuous rumble.
-            Fade("storm", Mathf.Clamp01((wind - .55f) * 2.2f + (rain - .6f) * 1.5f) * .30f * a, dt);
+            // StormNear: the strongest storm cell within earshot of the focus (WeatherPresenter): its wind howls before it arrives
+            Fade("storm", Mathf.Max(Mathf.Clamp01((wind - .55f) * 2.2f + (rain - .6f) * 1.5f), Mathf.Clamp01((StormNear - .3f) * 1.6f)) * .30f * a, dt);
             Fade("rain_heavy", Mathf.Clamp01((rain - .45f) * 2f) * (.12f + close * .2f) * a, dt);
             Fade("dread", Mathf.Max(cinematicMusic ? dread * .55f : 0, battleHeat * strategic * .4f) * a, dt * .5f);
             Fade("coast", localCoast ? close * .30f * a : 0, dt);

@@ -284,7 +284,8 @@ Shader "SE/Terrain"
                 half woodland = saturate((i.color.g - i.color.r) * 7.0h);
                 albedo = lerp(albedo, earth * half3(.82h, .93h, .73h), woodland * nearDetail * .26h * (1.0h - apron));
                 half damp = smoothstep(.60h, .85h, m2) * vegetated * .5h;
-                half wet = saturate(max(_SE_Wetness, gf.b) + damp * .35h);
+                // ground under falling rain is wet at once (regional rain, WeatherField); the server's wetness builds up slowly
+                half wet = saturate(max(max(_SE_Wetness, gf.b), SE_WeatherAt(wp.xz).g * .85h) + damp * .35h);
                 albedo *= 1.0h - wet * .18h;
 
                 half relief = lerp(grassLuma, rockLuma, steep);

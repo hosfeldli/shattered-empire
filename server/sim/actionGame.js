@@ -32,6 +32,7 @@ const VALID_SCENARIOS = new Set(['domination', 'control', 'operation']);
 export const START_RES = { low: { materials: 300, energy: 50 }, standard: { materials: 500, energy: 100 }, high: { materials: 1500, energy: 500 }, max: { materials: 5000, energy: 2000 } };
 const MAX_TEAMS = 12;
 const VEHICLE_SPAWN_GAP = .035;
+const NO_OBSTACLES = Object.freeze([]);
 
 export class ActionGame extends Game {
   constructor(options) {
@@ -58,6 +59,7 @@ export class ActionGame extends Game {
     this.teamHold = new Array(MAX_TEAMS).fill(0);
     this.engagements = new Map();
     this.reports = [];
+    this.groupJobs = [];   // Pass 3: members of large group orders still to be routed (actionOrders.groupRouteStep)
     const startRes = START_RES[options.startRes] || START_RES.standard;
     // explicit teams (a lobby with closed seats: uneven sides); otherwise team = seat / team size
     const teamOf = Array.isArray(options.teamOf) && options.teamOf.length === this.civs.length && options.teamOf.every((t) => Number.isInteger(t) && t >= 0 && t < MAX_TEAMS) ? options.teamOf : null;
@@ -147,19 +149,33 @@ export class ActionGame extends Game {
       if (tile < 0) continue;
       if (!this.buildingCells.has(tile)) this.buildingCells.set(tile, new Set());
       this.buildingCells.get(tile).add(b.id);
+      this.obstacleLists?.delete(tile);
     }
     this.tileB[b.tile] = b.id;
   }
 
-  obstaclesAtTile(tile) { return [...(this.buildingCells.get(tile) || [])].map((id) => this.buildings.get(id)).filter(Boolean); }
+  // NAV_BRIDGES (2026-11-18, perf): the buildings near a hex, a cached array per hex (dropped when a building is
+  // registered or removed there). Navigation asks this on every standing test; it was three fresh arrays each time.
+  // Callers must not mutate the result.
+  obstaclesAtTile(tile) {
+    const lists = this.obstacleLists ??= new Map();
+    let list = lists.get(tile);
+    if (!list) {
+      const cell = this.buildingCells.get(tile);
+      list = cell ? [...cell].map((id) => this.buildings.get(id)).filter(Boolean) : NO_OBSTACLES;
+      lists.set(tile, list);
+    }
+    return list;
+  }
   buildingAtTile(tile) { return this.obstaclesAtTile(tile).find((b) => b.tile === tile) || null; }
   rebuildBuildingIndex() {
-    this.buildingCells.clear(); this.tileB.fill(-1);
+    this.buildingCells.clear(); this.tileB.fill(-1); this.obstacleLists = null;
     for (const b of this.buildings.values()) this.registerBuilding(b);
   }
   removeBuilding(b) {
     this.buildings.delete(b.id);
     for (const tile of [b.tile, ...Array.from({ length: 6 }, (_, d) => NB[b.tile * 6 + d])]) {
+      this.obstacleLists?.delete(tile);
       const set = this.buildingCells.get(tile); if (!set) continue;
       set.delete(b.id); if (!set.size) this.buildingCells.delete(tile);
     }
@@ -574,12 +590,19 @@ export class ActionGame extends Game {
     const p = this.point(cmd.point || cmd, cmd.tile), group = ownedUnits(this, civ, cmd.units).filter((u) => !u.auto);
     if (['move', 'capture', 'attack', 'hold', 'withdraw', 'deploy', 'collect'].includes(cmd.c)) for (const u of group) {
       u.supportTask = null; u.enter = 0;
+      if (u.groupJob) u.groupJob = 0;   // Pass 3: a field order replaces a queued group route
       // W4: a garrisoned squad given a field order steps out first ('hold' keeps it inside)
       if (u.inside && cmd.c !== 'hold') leaveBuilding(this, u);
     }
     const site = this.siteById.get(cmd.site) || this.siteById.get(this.buildings.get(cmd.id)?.site);
     switch (cmd.c) {
-      case 'move': return p ? moveGroup(this, group, p, { mode: cmd.attackMove ? 'assault' : 'move', queue: cmd.queue === true }) : { error: 'Choose a destination.' };
+      case 'move': {
+        if (!p) return { error: 'Choose a destination.' };
+        const moved = moveGroup(this, group, p, { mode: cmd.attackMove ? 'assault' : 'move', queue: cmd.queue === true });
+        // NAV_BRIDGES.md: some vehicles of the group stayed behind for want of a bridge
+        if (moved.note && civ.human) this.notify(civ.id, moved.note, { kind: 'unit', quiet: true, tile: tileAt(p.x, p.z) });
+        return moved;
+      }
       case 'collect': return collectOrder(this, civ, group, cmd.cache, cmd.queue === true);
       case 'capture': {
         if (!site || !civ.siteIntel.has(site.id) && !civ.visible[site.tile]) return { error: 'Scout that objective first.' };

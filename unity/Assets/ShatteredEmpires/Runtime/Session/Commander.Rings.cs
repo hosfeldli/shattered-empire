@@ -139,6 +139,7 @@ namespace SE.Runtime.Session
         {
             DrawPadHover(time);   // §12: the hovered pad of a base that is not selected (this runs once per frame with the overlays)
             DrawGarrisonExits(time);
+            DrawGarrisonPips(time);
             PlacingSurchargedDefense = false;
             if (!session.ActionRts || !PlacingDefense(out int reach)) return;
             var w = session.World;
@@ -546,6 +547,47 @@ namespace SE.Runtime.Session
             }
             foreach (int id in SelectedBuildings) if (session.Structures.Buildings.TryGetValue(id, out var b)) Mark(b);
             if (session.Objectives.TryGetValue(SelectedObjective, out var site) && session.Structures.Buildings.TryGetValue(site.Headquarters, out var hq)) Mark(hq);
+        }
+
+        /// <summary>
+        /// W4 (2026-11-18): one pip per garrison place on the camera side of each own garrisonable structure: a filled
+        /// blue disc per occupant (econ <c>gar</c>), an empty ring per free place. Shown on structures with occupants,
+        /// and on every one in view while garrison-eligible squads are selected (so free room reads at a glance).
+        /// O(own buildings) per frame, culled to the camera's neighbourhood.
+        /// </summary>
+        void DrawGarrisonPips(float time)
+        {
+            if (!session.ActionRts || session.Spectator) return;
+            var w = session.World;
+            var g = w.Grid;
+            bool squads = false;
+            if (units.Selected.Count > 0) SelectionMakeup(out _, out squads);
+            float yaw = cam.Yaw * Mathf.Deg2Rad;
+            // camera forward in map space (Unity +z is map -z): pips sit on the near side, in a row across the view
+            float fx = Mathf.Sin(yaw), fz = -Mathf.Cos(yaw), rx = Mathf.Cos(yaw), rz = Mathf.Sin(yaw);
+            var full = new float4(.45f, .72f, 1f, .95f);
+            var free = new float4(.75f, .85f, 1f, .55f);
+            foreach (var kv in session.Structures.Buildings)
+            {
+                var b = kv.Value;
+                if (b.Owner != session.CivId || b.Memory || !b.Done || !b.HasPosition) continue;
+                int n = b.Garrison?.Length ?? 0;
+                if (n == 0 && !squads) continue;
+                var def = session.Defs?["BUILDINGS"]?[b.Type ?? ""];
+                int cap = ProtocolDecoder.Int(def?["garrison"]);
+                if (cap <= 0) continue;
+                float bx = g.NearX(b.X, cam.Focus.x);
+                if (Mathf.Abs(bx - cam.Focus.x) > 60f || Mathf.Abs(b.Z - cam.Focus.z) > 60f) continue;
+                float r = ProtocolDecoder.Float(def?["radius"], .4f) + .2f, step = .17f;
+                float cx = bx - fx * r, cz = b.Z - fz * r;
+                for (int k = 0; k < cap && k < 8; k++)
+                {
+                    float off = (k - (Mathf.Min(cap, 8) - 1) * .5f) * step;
+                    float x = cx + rx * off, z = cz + rz * off, y = w.GroundHeight(x, z) + .05f;
+                    if (k < n) discs.Add(InstanceData.TRS(MapSpace.W(new float3(x, y, z)), 0, new float3(.13f, 1f, .13f), full));
+                    else rings.Add(InstanceData.TRS(MapSpace.W(new float3(x, y + .005f, z)), 0, new float3(.13f), free));
+                }
+            }
         }
 
         void DrawPadHover(float time)

@@ -68,13 +68,13 @@ namespace SE.Runtime.Effects
                 From = from, To = to, Last = from, Duration = math.max(.05f, duration),
                 Grenade = weapon == "grenade",
                 // a missile battery round climbs out, cruises and dives (MissileHeight); a strategic missile lofts high
-                Arc = weapon == "grenade" ? .06f + distance * .22f : strategic ? math.min(13, distance * .48f) : missile ? math.min(2.4f, .45f + distance * .13f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
+                Arc = weapon == "grenade" ? .06f + distance * .22f : strategic ? math.min(13, distance * .48f) : missile ? math.min(4.2f, .9f + distance * .36f) : weapon == "mortar" || weapon == "howitzer" ? math.min(3.4f, distance * .27f) : weapon == "bombs" ? .20f : .03f,
                 Rocket = weapon == "warhead" || weapon == "missile" || weapon == "rockets" || weapon == "aam" || weapon == "drone_strike" || weapon == "at_rocket",
                 Strategic = strategic,
                 Warhead = weapon == "warhead",
                 Missile = missile, KillAt = -1,
             };
-            if (strategic || missile) MissileLaunch(from, to, strategic ? 1f : .45f, strategic);
+            if (strategic || missile) MissileLaunch(from, to, strategic ? 1f : .6f, strategic);
         }
 
         void UpdateFlights(float dt)

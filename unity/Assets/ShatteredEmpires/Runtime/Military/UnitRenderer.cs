@@ -424,10 +424,12 @@ namespace SE.Runtime.Military
                 figureTeam = TeamWear(team.xyz);
                 bool selectedUnit = Selected.Contains(u.Id);
                 bool hostile = !IsAir(kind) && IsHostile != null && IsHostile(u.Owner);
+                // engineers carry no team circle (user request 2026-11-18): only the selection ring when selected
+                bool ringless = torsoOf[s] == Detail.Engineer && !selectedUnit;
                 if (level > 0 && (selectedUnit || !IsAir(kind)))
                 {
                     // whose unit it is, at a glance and at any zoom: the team outline circle (or the selection ring)
-                    GroundRing(x, RingGround(view, x, ground, z, s), z, s, team, selectedUnit, camDist);
+                    if (!ringless) GroundRing(x, RingGround(view, x, ground, z, s), z, s, team, selectedUnit, camDist);
                     // and what it is, over every enemy: a role glyph
                     if (hostile) RoleGlyph(s, kind, p, team, camDist);
                 }

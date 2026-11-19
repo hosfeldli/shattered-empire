@@ -288,6 +288,7 @@ namespace SE.Runtime.Session
             {
                 cmd["c"] = "capture"; cmd["site"] = s.Id; cmd["queue"] = InputFacade.Shift;
             }
+            else if (SpatialBuildingAt(mouse) is BuildingRecord home && GarrisonTarget(home) && GarrisonOrder(home, point, time)) return;
             else
             {
                 cmd["c"] = "move"; cmd["point"] = Point(point);
@@ -304,6 +305,38 @@ namespace SE.Runtime.Session
                 Resolve(order, r);
                 if (r.Error == null) ActionMoveOrders++;
             }) ?? -1;
+        }
+
+        /// <summary>
+        /// W4 garrison (2026-11-18): a right-click on an own garrisonable structure (the Garrison cursor) sends the
+        /// eligible squads in with <c>{c:'garrison', units, building}</c>, exactly as the unit wheel does. Before this the
+        /// right-click fell through to a plain <c>move</c>, so squads walked up to the structure and stood beside it.
+        /// The rest of the selection (vehicles, mortar teams) moves to the structure as before. False when no selected
+        /// unit may garrison (the caller then issues the ordinary move).
+        /// </summary>
+        bool GarrisonOrder(BuildingRecord home, Vector3 point, float time)
+        {
+            var eligible = new JArray(); var rest = new JArray();
+            SplitGarrison(eligible, rest);
+            if (eligible.Count == 0) return false;
+            int cap = ProtocolDecoder.Int(session.Defs?["BUILDINGS"]?[home.Type ?? ""]?["garrison"]);
+            var order = new Order { MapPoint = point, Time = time, Kind = "garrison" };
+            Orders.Add(order);
+            NoteIssued("garrison", point);
+            UI.Hud.NoteOrder(units.Selected, point, "move", time);
+            order.Rid = session.Net?.Command(new JObject { ["c"] = "garrison", ["units"] = eligible, ["building"] = home.Id }, r =>
+            {
+                Resolve(order, r);   // refusals ("That structure is full.", "Only infantry squads ...") are said by Resolve
+                if (r.Error != null) return;
+                ActionMoveOrders++;
+                int entered = ProtocolDecoder.Int(r.Raw?["entered"]), moving = ProtocolDecoder.Int(r.Raw?["moving"]), refused = ProtocolDecoder.Int(r.Raw?["refused"]);
+                string text = entered > 0 && moving > 0 ? $"{entered} inside, {moving} moving in" : entered > 0 ? $"{entered} inside" : $"{moving} moving in to garrison";
+                if (refused > 0) text += $" · {refused} turned away ({cap} places, full)";
+                Say(text, refused == 0, Time.unscaledTime);
+            }) ?? -1;
+            if (rest.Count > 0)
+                session.Net?.Command(new JObject { ["c"] = "move", ["units"] = rest, ["point"] = Point(point), ["queue"] = InputFacade.Shift }, r => { });
+            return true;
         }
 
         void SetActionRally(int tile, float time)

@@ -2,7 +2,7 @@ import { N, T, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
 import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, DEFENSE_INFLUENCE, MISSILE_PROJECT, NEW_BASE_GAP, OUTPOST_TYPES, PLACEMENT, TIERS, UPGRADE_LINES } from './actionDefinitions.js';
 import { centerOf, distance, dxBetween, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, tileAt, wrapX } from './actionNavigation.js';
-import { baseStreets, hubRoute, hubTiles, ROAD_EDGE_COST, ROAD_SEARCH } from './actionMap.js';
+import { baseStreets, hubRoute, hubTiles, roadEdgesCost, ROAD_SEARCH } from './actionMap.js';
 import { launchStrategic } from './actionCombat.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
@@ -575,10 +575,10 @@ export function connectSiteRoads(game, site, links = site.slots ? 2 : 1) {
 }
 
 // --- Claim roads (2026-11-18, docs/gameplay-overhaul/ROADS_AND_CLAIMS.md) --------------------------------------
-// A match starts without roads between its sites (actionMap.layCrossings). When a player establishes a headquarters
+// A match starts without roads between its sites, and without bridges (NAV_BRIDGES.md). When a player establishes a headquarters
 // on a captured city, a road from that city to the player's nearest operational base is planned with the map's road
 // planner (hubRoute over nav.strategic, heavy-vehicle ground, bridges over rivers), priced at ROAD_EDGE_COST per
-// missing or ruined segment, added to the settlement price and laid by an automatic road project. Existing healthy
+// missing or ruined segment (ROAD_BRIDGE_COST for a bridge segment, which is laid with the road), added to the settlement price and laid by an automatic road project. Existing healthy
 // roads and segments already under construction are reused at no charge. No route (an island): no road, no charge.
 const CLAIM_ROAD_TRIES = 3;     // nearest own bases tried, by distance
 const CLAIM_PLAN_TTL = 20;      // seconds a plan is reused (repeated establish attempts, the site wire)
@@ -603,7 +603,7 @@ export function planClaimRoad(game, site, owner = site.owner) {
       if (pending.has(key) || e && e.cond >= 60 && e.type >= 2) continue;
       pending.add(key); edges.push({ a, b });
     }
-    return { owner, at: game.time, to: other.id, name: other.name, edges, cost: { materials: edges.length * ROAD_EDGE_COST } };
+    return { owner, at: game.time, to: other.id, name: other.name, edges, cost: { materials: roadEdgesCost(game.world, edges) } };
   }
   return { owner, at: game.time, to: 0, name: '', edges: [], cost: { materials: 0 } };
 }
@@ -618,7 +618,7 @@ export function claimRoadFor(game, site, owner = site.owner) {
   else if (plan.edges.length) {
     const pending = pendingRoadEdges(game);
     const edges = plan.edges.filter(({ a, b }) => { const e = game.roads.get(a, b); return !pending.has(edgeKey(a, b)) && !(e && e.cond >= 60 && e.type >= 2); });
-    if (edges.length !== plan.edges.length) plan = site.claimRoad = { ...plan, edges, cost: { materials: edges.length * ROAD_EDGE_COST } };
+    if (edges.length !== plan.edges.length) plan = site.claimRoad = { ...plan, edges, cost: { materials: roadEdgesCost(game.world, edges) } };
   }
   return plan?.edges.length ? plan : null;
 }
@@ -720,6 +720,7 @@ export function productionStep(game, dt) {
 
 export function trenchLine(game, civ, points, reverse, preview, { anywhere = false } = {}) {
   const byTile = new Map(), walls = new Map();   // walls: tile -> the structure the stroke crosses inside it
+  const visits = [];   // every hex the stroke enters, in drawing order (re-entries included): trenchRoutes
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1], b = points[i];
     const len = distance(a, b);
@@ -733,6 +734,7 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
       const wall = last && structureOnSegment(game, last, p, .14);
       if (wall) for (const q of [last, p]) { const k = tileAt(q.x, q.z); if (k >= 0 && !walls.has(k)) walls.set(k, wall.label); }
       last = p;
+      if (t >= 0 && t !== visits.at(-1) && (byTile.has(t) || byTile.size < 22)) visits.push(t);
       if (t >= 0 && !byTile.has(t) && byTile.size < 22) {
         const front = Math.atan2(-(b.z - a.z), game.dx(a.x, b.x)) + (reverse ? Math.PI : 0);
         byTile.set(t, { tile: t, ...p, facing: front });
@@ -741,15 +743,19 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
   }
   // 2026-11-17: forgiving strokes, like the terrain brush. Every hex of the line that can be dug is kept; the
   // others are skipped and listed in `skipped` ({ tile, x, z, why }), and the order is refused only when no hex
-  // remains. Roads stay open as crossings (see trenchRoadMask); a hex inside a structure's walls or an outpost
-  // compound is skipped (before, a stroke across a building was refused as a whole).
+  // remains. A hex inside a structure's walls or an outpost compound is skipped (before, a stroke across a building
+  // was refused as a whole).
+  // 2026-11-18: trenches are dug on roads and beside them like anywhere else. A road hex of the line is a covered
+  // crossing: the trench runs up to the carriageway on both sides and passes under timber and steel plates, so the
+  // road stays open (trenches never change movement: no vehicle is slowed or blocked by one). Only a bridge or
+  // causeway deck (a road over water) is skipped: there is no ground to dig.
   const skipped = [], why = {};
   let crossings = 0, outside = 0, blockedBy = null;
   const valid = [];
   for (const p of byTile.values()) {
     let code = null;
     if (p.tile < 0 || p.tile >= N) code = 'ground';
-    else if (game.world.road[p.tile]) { code = 'road'; crossings++; }
+    else if (game.world.road[p.tile] && (game.world.river[p.tile] || game.world.lake[p.tile] || isWater(game.world.terr[p.tile]))) code = 'bridge';
     // 2026-11-17: trenches may be dug on your own or neutral ground, never in another player's territory
     else if (!anywhere && game.world.owner[p.tile] >= 0 && game.world.owner[p.tile] !== civ.id) { code = 'territory'; outside++; }
     else if (!civ.visible[p.tile]) code = 'hidden';
@@ -761,13 +767,13 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
       else if (game.hasEnemyAt({ ...p, radius: .75 }, civ.id)) code = 'contested';
     }
     if (code) { skipped.push({ tile: p.tile, x: p.x, z: p.z, why: code }); why[code] = (why[code] || 0) + 1; }
-    else valid.push(p);
+    else { valid.push(p); if (game.world.road[p.tile]) crossings++; }
   }
   const cost = { materials: valid.length * 35 };
   if (!valid.length) {
     const code = Object.entries(why).sort((x, y) => y[1] - x[1])[0]?.[0];
     const error = code === 'territory' ? "Trenches go on your own territory or neutral ground, never in another player's territory."
-      : code === 'road' ? 'Trenches leave roads open: draw the line across open ground beside the road.'
+      : code === 'bridge' ? 'A trench cannot be dug through a bridge: draw the line on dry ground.'
       : code === 'blocked' ? `The trench line runs through ${blockedBy}: draw it around the structure.`
       : code === 'hidden' ? 'Scout the trench line so its ground is currently visible.'
       : code === 'contested' ? 'The trench line is contested by enemy troops.'
@@ -780,7 +786,7 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
   const error = affordable(civ, cost);
   if (error) return error;
   pay(civ, cost);
-  const routes = trenchRoutes(game, civ, [...byTile.values()], new Set(valid.map((p) => p.tile)));
+  const routes = trenchRoutes(game, civ, visits, byTile, new Set(valid.map((p) => p.tile)));
   for (const p of valid) {
     game.fieldworks.set(p.tile, { ...p, owner: civ.id, type: 'basic', dir: ((Math.round((Math.PI / 2 - p.facing) / (Math.PI / 3)) % 6) + 6) % 6,
       route: routes.get(p.tile) || 0, progress: 0, hp: 100, state: 'building' });
@@ -791,43 +797,77 @@ export function trenchLine(game, civ, points, reverse, preview, { anywhere = fal
 
 /**
  * Presentation links of a new trench line (bit d of a node's route: joined to NB[tile * 6 + d]; clients draw
- * the trench along these links only). 2026-11-18: consecutive hexes of the stroke are linked (before, every
- * pair of neighbouring hexes in the stroke was, so a stroke that wiggled across a hex corner drew a
- * triangle of trenches), and each end of a dug run joins the nearest of the owner's existing trenches
- * beside it (the bit is set on both nodes), so a line drawn up to an earlier one continues it as one work.
- * Gameplay never reads the route.
- * @param stroke every hex of the stroke in drawing order (dug or skipped), with its point
+ * the trench along these links only). Gameplay never reads the route.
+ *
+ * 2026-11-18 (second pass, "the trenches don't connect"): the links follow the stroke hex by hex as drawn. Each
+ * hex the stroke enters for the first time is joined to the hex it came from (the last of the owner's trench
+ * hexes on the stroke, so a stroke that clips a road or another skipped hex keeps going when the hexes either
+ * side touch). Before, only consecutive hexes of the first-entry list were linked: a stroke that wiggled back into
+ * a hex lost the link, and the line ran on as separate pieces. An existing trench the stroke runs through is
+ * joined in on both sides (a crossing is one network), and every end of a dug run joins the owner's works beside
+ * it: one end, the nearest; a lone hex (a gap redrawn between two works), both sides. No link closes a triangle,
+ * so a stroke over a hex corner or along an older line draws no triangles or ladders.
+ * @param visits every hex the stroke enters, in drawing order (re-entries included)
+ * @param byTile the stroke's hexes (first sample each)
  * @param dug the hexes being dug
  */
-function trenchRoutes(game, civ, stroke, dug) {
+function trenchRoutes(game, civ, visits, byTile, dug) {
   const routes = new Map();
   const dirTo = (a, b) => { for (let d = 0; d < 6; d++) if (NB[a * 6 + d] === b) return d; return -1; };
+  const own = (t) => dug.has(t) || game.fieldworks.get(t)?.owner === civ.id;
+  const bits = (t) => dug.has(t) ? routes.get(t) || 0 : game.fieldworks.get(t)?.owner === civ.id ? game.fieldworks.get(t).route || 0 : 0;
+  const linked = (a, b) => { const d = dirTo(a, b); return d >= 0 && own(a) && own(b) && !!((bits(a) >> d & 1) || (bits(b) >> ((d + 3) % 6) & 1)); };
+  const degree = (t) => { let n = 0; for (let d = 0; d < 6; d++) if (linked(t, NB[t * 6 + d])) n++; return n; };
+  // a link a-b would close a triangle when a common neighbour is already joined to both
+  const triangle = (a, b) => { for (let d = 0; d < 6; d++) { const x = NB[a * 6 + d]; if (x >= 0 && x !== b && linked(a, x) && linked(b, x)) return true; } return false; };
   const link = (a, b) => {
-    const d = dirTo(a, b), back = dirTo(b, a);
-    if (d < 0 || back < 0) return false;
-    routes.set(a, (routes.get(a) || 0) | (1 << d));
-    if (dug.has(b)) routes.set(b, (routes.get(b) || 0) | (1 << back));
-    else { const f = game.fieldworks.get(b); f.route = (f.route || 0) | (1 << back); }
+    const d = dirTo(a, b);
+    if (d < 0 || a === b || !own(a) || !own(b) || linked(a, b) || triangle(a, b)) return false;
+    for (const [x, k] of [[a, d], [b, (d + 3) % 6]]) {
+      if (dug.has(x)) routes.set(x, (routes.get(x) || 0) | (1 << k));
+      else { const f = game.fieldworks.get(x); f.route = (f.route || 0) | (1 << k); }
+    }
     return true;
   };
-  for (let i = 0; i + 1 < stroke.length; i++) {
-    const a = stroke[i].tile, b = stroke[i + 1].tile;
-    if (dug.has(a) && dug.has(b)) link(a, b);
-  }
-  for (let i = 0; i < stroke.length; i++) {
-    const p = stroke[i];
-    if (!dug.has(p.tile)) continue;
-    const before = i > 0 && dug.has(stroke[i - 1].tile) && dirTo(p.tile, stroke[i - 1].tile) >= 0;
-    const after = i + 1 < stroke.length && dug.has(stroke[i + 1].tile) && dirTo(p.tile, stroke[i + 1].tile) >= 0;
-    if (before && after) continue;
-    let best = null, bestDistance = Infinity;
-    for (let d = 0; d < 6; d++) {
-      const f = game.fieldworks.get(NB[p.tile * 6 + d]);
-      if (!f || f.owner !== civ.id || dug.has(f.tile)) continue;
-      const gap = distance(p, f);
-      if (gap < bestDistance) { best = f; bestDistance = gap; }
+  // 1. along the stroke: each hex joins the hex it was entered from (or, failing that, the latest hex beside it)
+  const entered = new Set(), trail = [];
+  for (const t of visits) {
+    if (!own(t)) continue;   // skipped (road, hidden, blocked...): the hexes either side may still touch
+    const first = !entered.has(t);
+    entered.add(t);
+    if (first && trail.length && (dug.has(t) || dug.has(trail.at(-1)))) {
+      if (!link(trail.at(-1), t) && dug.has(t))
+        for (let k = trail.length - 2; k >= 0; k--) if (dirTo(trail[k], t) >= 0 && link(trail[k], t)) break;
     }
-    if (best && bestDistance <= 2.8) link(p.tile, best.tile);
+    trail.push(t);
+  }
+  // 2. the ends of the dug runs join the owner's works beside them (nearest first): an end once, a lone hex twice
+  for (const t of entered) {
+    if (!dug.has(t)) continue;
+    const p = byTile.get(t);
+    const near = [];
+    for (let d = 0; d < 6; d++) {
+      const f = game.fieldworks.get(NB[t * 6 + d]);
+      if (f && f.owner === civ.id && !dug.has(f.tile) && !linked(t, f.tile)) near.push({ tile: f.tile, gap: distance(p, f) });
+    }
+    near.sort((x, y) => x.gap - y.gap || x.tile - y.tile);
+    for (const n of near) { if (degree(t) >= 2) break; link(t, n.tile); }
+  }
+  // 3. a free end of an older line beside the new one joins it (a T where the old line stops at the new)
+  for (const t of entered) {
+    if (!dug.has(t)) continue;
+    for (let d = 0; d < 6; d++) {
+      const f = game.fieldworks.get(NB[t * 6 + d]);
+      if (!f || f.owner !== civ.id || dug.has(f.tile) || degree(f.tile) >= 2 || linked(t, f.tile)) continue;
+      let best = -1, gap = Infinity;
+      for (let e = 0; e < 6; e++) {
+        const n = NB[f.tile * 6 + e];
+        if (!dug.has(n)) continue;
+        const q = byTile.get(n), m = distance(q, f);
+        if (m < gap || m === gap && n < best) { best = n; gap = m; }
+      }
+      if (best >= 0) link(f.tile, best);
+    }
   }
   return routes;
 }

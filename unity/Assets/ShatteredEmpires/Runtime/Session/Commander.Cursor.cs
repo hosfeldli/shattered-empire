@@ -1,3 +1,4 @@
+using Newtonsoft.Json.Linq;
 using SE.Core.Protocol;
 using SE.Runtime.Input;
 using UnityEngine;
@@ -13,7 +14,7 @@ namespace SE.Runtime.Session
     /// <item>With units selected, the hover target, in the order a right-click resolves it
     /// (<see cref="ActionContextOrder"/>): an enemy unit or building attacks, a pickup collects, a site we don't
     /// hold captures, an own damaged building with an engineer selected repairs, an own building with garrison
-    /// slots takes infantry (reserved: the server feature is pending, nothing has slots yet), ground the selection
+    /// slots takes the selected garrison-eligible squads (W4, 2026-11-18: the right-click sends <c>garrison</c>), ground the selection
     /// can't reach is crossed out, anything else moves.</item>
     /// <item>With nothing selected: the select cursor over anything clickable.</item>
     /// </list>
@@ -128,12 +129,15 @@ namespace SE.Runtime.Session
             {
                 SelectionMakeup(out bool engineers, out bool infantry);
                 if (engineers && own.Done && (own.RepairCost > 0 || own.Hp < 100)) return CursorContext.Repair;
-                if (infantry && own.Done && ProtocolDecoder.Int(session.Defs?["BUILDINGS"]?[own.Type ?? ""]?["garrison"]) > 0) return CursorContext.Garrison;
+                if (infantry && GarrisonTarget(own)) return CursorContext.Garrison;
             }
             return blocked ? CursorContext.Invalid : CursorContext.Move;
         }
 
-        /// <summary>Whether the selection holds engineers and infantry (O(selected), only on a hover evaluation).</summary>
+        /// <summary>
+        /// Whether the selection holds engineers and garrison-eligible squads (O(selected), only on a hover evaluation).
+        /// <paramref name="infantry"/> follows the server's actionGarrison.canGarrison, so mortar teams alone keep the move cursor.
+        /// </summary>
         void SelectionMakeup(out bool engineers, out bool infantry)
         {
             engineers = infantry = false;
@@ -143,8 +147,34 @@ namespace SE.Runtime.Session
                 if (!store.TryGet(id, out var u)) continue;
                 string type = store.Types.Name(u.TypeIndex);
                 if (type == "engineer") engineers = true;
-                if (ProtocolDecoder.Str(UnitDef(u.TypeIndex)?["move"]) == "infantry") infantry = true;
+                if (GarrisonEligible(u.TypeIndex)) infantry = true;
                 if (engineers && infantry) return;
+            }
+        }
+
+        // ------------------------------------------------------------------ garrison (W4, R4; CAPTURE_AND_GARRISON.md)
+        /// <summary>Unit flag: the squad is inside a structure (server actionGame unitSnapshot, bit 16384).</summary>
+        const int GarrisonedFlag = 16384;
+
+        /// <summary>Server actionGarrison.canGarrison: capture-capable ground squads that are not the automatic engineers.</summary>
+        bool GarrisonEligible(int typeIndex)
+        {
+            var d = UnitDef(typeIndex);
+            return ProtocolDecoder.Bool(d?["capture"]) && !ProtocolDecoder.Bool(d?["auto"]) && !ProtocolDecoder.Bool(d?["air"]);
+        }
+
+        /// <summary>An own, finished, live structure with garrison places (defs BUILDINGS[type].garrison).</summary>
+        bool GarrisonTarget(in BuildingRecord b) =>
+            b.Owner == session.CivId && !b.Memory && b.Done && b.Hp > 0 && ProtocolDecoder.Int(session.Defs?["BUILDINGS"]?[b.Type ?? ""]?["garrison"]) > 0;
+
+        /// <summary>Selected squads that may enter a structure, and the rest of the selection.</summary>
+        void SplitGarrison(JArray eligible, JArray rest)
+        {
+            var store = session.Units;
+            foreach (int id in units.Selected)
+            {
+                if (store.TryGet(id, out var u) && GarrisonEligible(u.TypeIndex)) eligible.Add(id);
+                else rest.Add(id);
             }
         }
 

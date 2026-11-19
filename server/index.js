@@ -14,6 +14,7 @@ import { continentPreview } from './png.js';
 import { makeDownloads } from './downloads.js';
 import { makeReleaseNotes } from './releaseNotes.js';
 import { Admin } from './admin.js';
+import { createTelemetry } from './telemetry/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -33,6 +34,9 @@ const log = {
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.webp': 'image/webp' };
 const manager = new MatchManager(log, makeStore(log));
+// BigQuery diagnostics (docs/TELEMETRY.md): a no-op unless TELEMETRY_DATASET is set
+const telemetry = createTelemetry({ log });
+manager.telemetry = telemetry;
 const downloads = makeDownloads(log);
 const releaseNotes = makeReleaseNotes(log, downloads);
 manager.restoreAll().catch((e) => log.error('restore failed', e));
@@ -92,6 +96,7 @@ wss.on('connection', (ws, req) => {
 const heartbeat = setInterval(() => {
   for (const ws of wss.clients) { if (!ws.isAlive) { ws.terminate(); continue; } ws.isAlive = false; ws.ping(); }
 }, 25_000);
+telemetry.start({ manager, connections: () => wss.clients.size });
 
 server.listen(PORT, process.env.HOST || undefined, () => { log.info(`Shattered Empires server ${VERSION} listening on :${server.address().port}`); process.send?.({ t: 'listening', port: server.address().port }); });
 
@@ -101,7 +106,9 @@ async function shutdown() {
   log.info('shutting down: saving matches');
   clearInterval(heartbeat);
   setTimeout(() => process.exit(0), 9000).unref();
+  const flushed = telemetry.stop().catch(() => {});   // last telemetry rows, in parallel with the saves (bounded at 4 s)
   try { await manager.shutdown(); } catch (e) { log.error('save on shutdown failed', e); }
+  await flushed;
   for (const ws of wss.clients) ws.close(1012, 'server restarting');
   server.close(() => process.exit(0));
 }

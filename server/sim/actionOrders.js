@@ -4,6 +4,8 @@ import { distance, dxBetween, OPEN_COST, SpatialIndex, tileAt, wrapX, trenchPosi
 import { addWear } from './battlefield.js';
 
 const SIDESTEPS = [.34, -.34, .66, -.66, 1.04, -1.04, 1.48, -1.48];
+// unitMotion: the longest step over a sliver of unstandable ground on a lane (matches actionNavigation LANE_STRIDE)
+const LANE_HOP = .07;
 // 2026-11-16: every ground unit moves ~30% slower than its definition speed (Rowen: 20-50% slower),
 // and terrain only nudges pace (roads +20%, rough ground at most -20%) so a unit type keeps a consistent speed.
 export const GROUND_PACE = .7;
@@ -28,6 +30,7 @@ export function ownedUnits(game, civ, ids) {
 }
 
 function assign(game, u, goal, opts, path) {
+  if (u.groupJob) u.groupJob = 0;   // Pass 3: a new order replaces a queued group route (groupRouteStep)
   const order = { goal, mode: opts.mode, facing: opts.facing ?? null, path, convoy: opts.convoy || 0, convoySpeed: opts.convoySpeed || 0 };
   if (opts.queue && (u.goal || u.airOrder || u.attack)) {
     if (u.orders.length >= 8) return false;
@@ -134,6 +137,53 @@ function candidate(game, u, point, reserved, max, start = u, preview = false, ct
   return null;
 }
 
+const routeSlot = (game, u, p, reserved, opts, routing) =>
+  candidate(game, u, p, reserved, opts.exact ? .45 : 1.55, u, false, routing) || (!opts.exact && candidate(game, u, p, reserved, 3.1, u, false, routing));
+
+// Pass 3 (perf, late game): an AI final assault or a large player selection used to route every member in the tick the
+// order was given (40-80 fine routes: 400-900 ms ticks). The first `now` members are routed at once; the rest follow
+// `perTick` a tick, oldest order first. Deterministic: the queue is part of the saved state (persist.js) and is worked
+// at a fixed point of the tick (the start of unitMotion).
+// `aiTick`: an AI plan that has already routed this many members in the tick (several group orders in one plan: an
+// expansion sends many small groups) queues the members of its further orders whole, placed or not.
+export const GROUP_ROUTE = Object.freeze({ now: 24, perTick: 16, aiTick: 48 });
+
+/** Routes queued members of earlier group orders, at most GROUP_ROUTE.perTick a tick. */
+export function groupRouteStep(game) {
+  const jobs = game.groupJobs;
+  if (!jobs?.length) return;
+  let budget = GROUP_ROUTE.perTick;
+  while (budget > 0 && jobs.length) {
+    const job = jobs[0];
+    // members still waiting for this job (alive, not given another order since); a member given a new move/deploy
+    // order (assign) or a field order (ActionGame.command) has its groupJob cleared
+    const live = job.rest.filter(([id]) => game.units.get(id)?.groupJob === job.id && game.units.get(id).hp > 0);
+    if (!live.length) { jobs.shift(); continue; }
+    const take = live.slice(0, budget);
+    job.rest = live.slice(take.length);
+    budget -= take.length;
+    const members = take.map(([id]) => game.units.get(id));
+    const reserved = new SpatialIndex(.70);
+    for (const [x, z, radius] of job.slots) reserved.add({ x, z, radius });
+    game.nav.beginBatch();
+    try {
+      // the flow field is primed for every member still to come, as the original order primed it for the whole group
+      game.nav.primeGroup([...members, ...job.rest.map(([id]) => game.units.get(id)).filter(Boolean)], job);
+      const routing = { failed: job.failed };
+      for (let i = 0; i < take.length; i++) {
+        const u = members[i]; u.groupJob = 0;
+        const pick = routeSlot(game, u, { x: take[i][1], z: take[i][2] }, reserved, job.opts, routing);
+        if (!pick) continue;
+        if (!ACTION_UNITS[u.type].air) job.slots.push([pick.slot.x, pick.slot.z, ACTION_UNITS[u.type].radius]);
+        assign(game, u, pick.slot, job.opts, pick.path);
+      }
+      job.failed = routing.failed;
+      game.nav.activeFlows.clear();
+    } finally { game.nav.endBatch(); }
+    if (!job.rest.length) jobs.shift();
+  }
+}
+
 export function moveGroup(game, group, point, opts = {}) {
   if (!group.length) return { error: 'Select units to give an order.' };
   game.nav.beginBatch();
@@ -168,15 +218,30 @@ function moveGroupBatched(game, group, point, opts) {
   const convoy = ground.length > 1 && !opts.formation ? (game.nextConvoy = (game.nextConvoy || 0) + 1) : 0;
   const convoySpeed = convoy ? Math.min(...ground.map((u) => ACTION_UNITS[u.type].speed)) * GROUND_PACE : 0;
   const orderOpts = convoy ? { ...opts, convoy, convoySpeed } : opts;
-  const routing = { failed: false };
+  const routing = { failed: false }, left = [];
+  // Pass 3 (perf, late game): a large group is routed GROUP_ROUTE.now units at a time. Once a member is placed, the
+  // rest are queued in game.groupJobs and routed GROUP_ROUTE.perTick a tick (groupRouteStep), in the same order and
+  // against the same reserved slots. Waiting members keep their current order until their turn.
+  const ai = !!game.civs[ground[0]?.owner]?.isAI, spent = game.groupSpent ??= { tick: -1, n: 0 };
+  if (spent.tick !== game.tickN) { spent.tick = game.tickN; spent.n = 0; }
+  const defer = Array.isArray(game.groupJobs) && (ground.length > GROUP_ROUTE.now || ai) ? [] : null, slots = defer ? [] : null;
+  if (slots) { const add = reserved.add.bind(reserved); reserved.add = (o) => { slots.push([o.x, o.z, o.radius]); add(o); }; }
   for (let i = 0; i < ground.length; i++) {
     const u = ground[i], row = Math.floor(i / cols), width = Math.min(cols, ground.length - row * cols);
     const side = (i % cols - (width - 1) * .5) * spacing, forward = ((rows - 1) * .5 - row) * spacing;
     const p = { x: point.x + sideX * side + fx * forward, z: point.z + sideZ * side + fz * forward };
+    if (defer && (placed && i >= GROUP_ROUTE.now || ai && spent.n >= GROUP_ROUTE.aiTick)) { defer.push([u.id, p.x, p.z]); continue; }
+    spent.n++;
     // a crowded destination (a base court, a bridgehead) widens the slot search instead of leaving the unit behind
-    const pick = candidate(game, u, p, reserved, opts.exact ? .45 : 1.55, u, false, routing) || (!opts.exact && candidate(game, u, p, reserved, 3.1, u, false, routing));
-    if (!pick) continue;
+    const pick = routeSlot(game, u, p, reserved, opts, routing);
+    if (!pick) { left.push(u); continue; }
     if (assign(game, u, pick.slot, orderOpts, pick.path)) placed++;
+  }
+  if (defer?.length) {
+    const id = game.nextGroupJob = (game.nextGroupJob || 0) + 1;
+    for (const [uid] of defer) game.units.get(uid).groupJob = id;
+    game.groupJobs.push({ id, x: point.x, z: point.z, opts: { ...orderOpts }, rest: defer, slots, failed: routing.failed });
+    placed += defer.length;   // reported as placed: each is routed within a few ticks (or left where it is)
   }
   for (let i = 0; i < air.length; i++) {
     const u = air[i], offset = (i - (air.length - 1) / 2) * Math.min(.32, 4 / air.length);
@@ -185,7 +250,15 @@ function moveGroupBatched(game, group, point, opts) {
     if (assign(game, u, goal, opts, [goal])) placed++;
   }
   game.nav.activeFlows.clear();
-  return placed ? { placed, blocked: group.length - placed } : { error: 'No selected unit can reach that ground.' };
+  // NAV_BRIDGES (2026-11-18): say why vehicles stayed behind when only a road (a bridge) would let them through
+  let crossing = 0;
+  if (left.length) {
+    const goalTile = tileAt(point.x, point.z);
+    for (const u of left) if (game.nav.needsCrossing(u.tile, goalTile, ACTION_UNITS[u.type])) crossing++;
+  }
+  const why = crossing ? `${crossing === 1 ? 'A vehicle' : crossing + ' vehicles'} cannot cross there without a bridge: build a road across the river (or marsh) first.` : null;
+  if (!placed) return { error: why || 'No selected unit can reach that ground: the way is blocked (water, cliffs, structures or wrecks).', ...(crossing && { code: 'bridge' }) };
+  return { placed, blocked: group.length - placed, ...(crossing && { crossing, note: why }) };
 }
 
 /**
@@ -197,15 +270,18 @@ export function reachQuery(game, group, point, move = 'infantry') {
   const ground = group.filter((u) => !ACTION_UNITS[u.type].air);
   const air = group.length - ground.length;
   const probes = ground.length ? ground : group.length ? [] : [{ x: point.x, z: point.z, probe: { move: ['infantry', 'wheeled', 'tracked'].includes(move) ? move : 'infantry', radius: .14 } }];
-  let reachable = air, blocked = 0;
+  let reachable = air, blocked = 0, crossing = 0;
+  const goalTile = tileAt(point.x, point.z);
   for (const u of probes) {
     const def = u.probe || ACTION_UNITS[u.type];
     const r = game.nav.reachability(u.probe ? { x: u.x, z: u.z, unknown: true } : u, point, def);
     if (r === 'ok') reachable++; else if (r === 'blocked') blocked++;
+    else if (!u.probe && game.nav.needsCrossing(tileAt(u.x, u.z), goalTile, def)) crossing++;
   }
   const total = probes.length + air;
-  const reason = reachable === total ? null : blocked ? 'impassable' : 'unreachable';
-  return { reply: { t: 'ack', reach: { ok: reachable > 0, all: reachable === total, reachable, units: total, reason } } };
+  // 'bridge' (NAV_BRIDGES.md): every unit that cannot reach is a vehicle a road across a river or marsh would let through
+  const reason = reachable === total ? null : blocked ? 'impassable' : crossing === total - reachable ? 'bridge' : 'unreachable';
+  return { reply: { t: 'ack', reach: { ok: reachable > 0, all: reachable === total, reachable, units: total, reason, ...(crossing && { crossing }) } } };
 }
 
 function polyline(points) {
@@ -271,9 +347,17 @@ function deployLineBatched(game, group, points, opts) {
   return { reply: { t: 'ack', deploy: { label: 'frontage', placed, unreachable, overflow, positions: placements } } };
 }
 
+// NAV_BRIDGES (2026-11-18, late game): a chase that found no firing spot (the target across a river, inside a compound,
+// on a cliff) is not tried again for the same target position for CHASE_BACKOFF ticks. Attack orders and attack-moves
+// re-chase every 9 ticks per unit, and each attempt is up to five route searches: with many units facing an
+// unreachable target this was a standing repath storm that grew with the armies.
+const CHASE_BACKOFF = 40;
 export function chase(game, u, target, range) {
   const d = ACTION_UNITS[u.type], len = distance(u, target);
   if (len <= range * .90 && game.nav.clearShot(u, target)) return;
+  const f = u.chaseFail;
+  if (f && game.tickN - f.tick < CHASE_BACKOFF && (f.x - target.x) ** 2 + (f.z - target.z) ** 2 < 1 && (f.ux - u.x) ** 2 + (f.uz - u.z) ** 2 < 1) return;
+  u.chaseFail = null;
   const a = Math.atan2(dxBetween(target.x, u.x), u.z - target.z);
   const angles = [0, .55, -.55, 1.08, -1.08];
   for (const delta of angles) {
@@ -285,6 +369,7 @@ export function chase(game, u, target, range) {
     startOrder(game, u, { goal: spot, mode: 'assault', path });
     return;
   }
+  u.chaseFail = { tick: game.tickN, x: target.x, z: target.z, ux: u.x, uz: u.z };
 }
 
 export function unitMotion(game) {
@@ -293,6 +378,7 @@ export function unitMotion(game) {
   for (const u of game.units.values()) if (!ACTION_UNITS[u.type].air && !u.inside) index.add(u);
   const phase = game.tickN;
   game.nav.beginTraffic(game.units);
+  groupRouteStep(game);   // Pass 3: queued members of large group orders
   for (const u of game.units.values()) {
     if (u.inside) continue;   // W4: garrisoned squads do not move (actionGarrison.js)
     u.waitingCrossing = false;
@@ -389,6 +475,14 @@ export function unitMotion(game) {
     let nx = wrapX(ox + Math.sin(dir) * step), nz = oz + Math.cos(dir) * step;
     if (!game.nav.trafficAllows(u, nx, nz, def)) { u.waitingCrossing = true; u.vx = u.vz = 0; continue; }
     let ok = allowed(nx, nz);
+    // NAV_BRIDGES (2026-11-18): standing is tested on a sampled body (centre and four rim points), so along a narrow
+    // lane (a bridge end, a gap between facilities) the standable ground has slivers a few hundredths wide where a
+    // short step fails although the planned line (sampled at LANE_HOP) is clear. A unit facing its waypoint steps
+    // over such a sliver instead of waiting for a stuck ladder that replans the same line.
+    if (!ok && !def.air && step > .0001 && step < LANE_HOP && Math.abs(angleDelta(yaw, desired)) < .35) {
+      const hx = wrapX(ox + Math.sin(desired) * Math.min(LANE_HOP, length)), hz = oz + Math.cos(desired) * Math.min(LANE_HOP, length);
+      if (allowed(hx, hz)) { nx = hx; nz = hz; ok = true; }
+    }
     if (!ok && !def.air) {
       const bias = u.id % 2 ? 1 : -1;
       for (const a of SIDESTEPS) {
@@ -432,7 +526,7 @@ export function unitMotion(game) {
         u.blockedReplans = (u.blockedReplans || 0) + 1;
         if (u.blockedReplans > STUCK.blockedReplans) { if (u.blockedReplans === STUCK.blockedReplans + 1) stuckStats(game).blockedCapped++; }
         else {
-          const route = game.nav.route(u, u.goal, def);
+          const route = strictRoute(game, u, u.goal, def);
           if (route) { u.path = route; u.navVer = game.nav.terrainVersion; }
           else if (u.blocked > 60) stopUnit(game, u, true);
         }
@@ -468,6 +562,18 @@ export const STUCK = Object.freeze({ move: .5, near: 25, ghost: 30, replan: 55, 
 const stuckStats = (game) => (game.navStats ??= {}).stuck ??= { ghost: 0, wedge: 0, invalidated: 0, replan: 0, replanFail: 0, altGoal: 0,
   escape: 0, unstick: 0, gaveUp: 0, arrivedNear: 0, repeat: 0, blockedCapped: 0 };
 
+/**
+ * NAV_BRIDGES (2026-11-18): a blocked unit's re-route checks its lines finely beside structures and wrecks too
+ * (nav.strict, actionNavigation.tight). The ordinary planner samples lines .28 apart; a line grazing a facility's
+ * corner passed those samples while the unit's own steps hit the corner, so it stood blocked and every re-route
+ * returned the same path until it gave up. Only blocked and stuck units pay for the fine check.
+ */
+export function strictRoute(game, from, to, def) {
+  const nav = game.nav, was = nav.strict;
+  nav.strict = true;
+  try { return nav.route(from, to, def); } finally { nav.strict = was; }
+}
+
 function relocate(game, u, spot) {
   const ox = u.x, oz = u.z;
   u.x = spot.x; u.z = spot.z; u.tile = tileAt(u.x, u.z); game.movers.moved(u, ox, oz);
@@ -476,7 +582,7 @@ function relocate(game, u, spot) {
 function replan(game, u, def, S) {
   u.stuckReplans = (u.stuckReplans || 0) + 1;
   S.replan++;
-  const route = game.nav.route(u, u.goal, def);
+  const route = strictRoute(game, u, u.goal, def);
   u.navVer = game.nav.terrainVersion;
   if (route) { u.path = route; return true; }
   S.replanFail++;
@@ -567,7 +673,7 @@ function stallCheck(game, u, def) {
     const p = escapePoint(game, u, def);
     if (p) {
       S.escape++;
-      const onward = game.nav.route(p, u.goal, def);
+      const onward = strictRoute(game, p, u.goal, def);
       u.path = onward ? [p, ...onward] : [p, ...u.path];
       u.ghostUntil = game.time + 3;
     }

@@ -78,6 +78,43 @@ namespace SE.Core.World
             if (dirtyCells.Count > 0) Revision++;
         }
 
+        /// <summary>
+        /// Apply a keyed building delta (Pass 4, econ 'bd'): changed or added records and the ids that left. Ends in the
+        /// same state, dirty cells and revision as <see cref="ApplyBuildings"/> given the whole list.
+        /// </summary>
+        public void ApplyBuildingChanges(BuildingRecord[] updated, int[] removed, WorldModel world, HashSet<int> dirtyCells)
+        {
+            bool changed = false;
+            if (removed != null)
+                foreach (int id in removed)
+                    if (Buildings.TryGetValue(id, out var prev))
+                    {
+                        dirtyCells.Add(world.ChunkOf(prev.Tile));
+                        Buildings.Remove(id); visualKey.Remove(id);
+                        changed = true;
+                    }
+            if (updated != null)
+                foreach (var b in updated)
+                {
+                    if (b.Tile < 0 || b.Tile >= world.Grid.N)
+                    {
+                        // ApplyBuildings never keeps a record off the map
+                        if (Buildings.TryGetValue(b.Id, out var off)) { dirtyCells.Add(world.ChunkOf(off.Tile)); Buildings.Remove(b.Id); visualKey.Remove(b.Id); changed = true; }
+                        continue;
+                    }
+                    long key = VisualKey(b);
+                    if (!visualKey.TryGetValue(b.Id, out long old) || old != key)
+                    {
+                        if (Buildings.TryGetValue(b.Id, out var prev) && prev.Tile != b.Tile) dirtyCells.Add(world.ChunkOf(prev.Tile));
+                        dirtyCells.Add(world.ChunkOf(b.Tile));
+                        visualKey[b.Id] = key;
+                        changed = true;
+                    }
+                    Buildings[b.Id] = b;
+                }
+            if (changed || dirtyCells.Count > 0) Revision++;
+        }
+
         public void ApplyCities(CityRecord[] list, WorldModel world, HashSet<int> dirtyCells)
         {
             seen.Clear();

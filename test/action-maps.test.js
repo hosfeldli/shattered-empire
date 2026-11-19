@@ -12,8 +12,8 @@ const { parentPort, workerData } = await import('node:worker_threads');
 globalThis.SE_MAP_SIZE = workerData.size; globalThis.SE_WRAP = false;
 const { ActionGame } = await import(workerData.sim + 'actionGame.js');
 const { mirrorTile } = await import(workerData.sim + 'authoredMaps.js');
-const { HEAVY_GROUND } = await import(workerData.sim + 'actionNavigation.js');
-const { mapPreview } = await import(workerData.sim + 'actionMap.js');
+const { HEAVY_GROUND, LIGHT_GROUND } = await import(workerData.sim + 'actionNavigation.js');
+const { mapPreview, ROAD_SEARCH } = await import(workerData.sim + 'actionMap.js');
 const slots = Array.from({ length: workerData.players }, () => ({ human: false, difficulty: 'normal' }));
 const make = (seed) => new ActionGame({ id: 'map-' + seed, seed, map: workerData.id, slots });
 const t0 = performance.now();
@@ -30,10 +30,13 @@ let same = twin.roads.edges.size === g.roads.edges.size && twin.sites.length ===
 for (let i = 0; same && i < N; i++) if (twin.world.elev[i] !== w.elev[i] || twin.world.terr[i] !== w.terr[i] || twin.world.river[i] !== w.river[i]) same = false;
 for (let i = 0; same && i < g.sites.length; i++) if (twin.sites[i].tile !== g.sites[i].tile || twin.sites[i].name !== g.sites[i].name) same = false;
 const starts = g.sites.filter((s) => s.start !== undefined);
-const unreachable = g.sites.filter((s) => !g.nav.strategic(starts[0].tile, s.tile, HEAVY_GROUND, false, true, 1e9)).map((s) => s.name);
+// NAV_BRIDGES (2026-11-18): a match starts without bridges, so a wide river stops vehicles until a road is built. What
+// must hold: every ruin and outpost is reachable on foot, and a road (bridges included) can be planned to it.
+const unreachable = g.sites.filter((s) => !g.nav.strategic(starts[0].tile, s.tile, LIGHT_GROUND, false, true, 1e9)).map((s) => s.name);
+const unroadable = g.sites.filter((s) => s.tile !== starts[0].tile && !g.nav.strategic(starts[0].tile, s.tile, HEAVY_GROUND, true, false, ROAD_SEARCH)).map((s) => s.name);
 let fords = 0, bridges = 0, rivers = 0;
 for (let i = 0; i < N; i++) if (w.river[i]) { rivers++; if (w.flow[i] < 94) fords++; if (w.road[i]) bridges++; }
-// fairness: every seat's heavy-vehicle route lengths to the other seats and to the main sites
+// fairness: every seat's march lengths to the other seats (on foot: the only movement every map allows at the start)
 // 2026-11-18: the shortest heavy-vehicle drive between two sites in hexes of ground distance: the path the units
 // drive (nav.route, pulled taut), direct or by way of one other main site, whichever is shorter. A match now starts
 // without country roads (ROADS_AND_CLAIMS.md), so counting coarse planner tiles (which followed the roads) no longer
@@ -41,12 +44,15 @@ for (let i = 0; i < N; i++) if (w.river[i]) { rivers++; if (w.flow[i] < 94) ford
 // hex axis, and the tile-count planner can prefer a detour to the straight way over a central objective.
 const { centerOf, distance } = await import(workerData.sim + 'actionNavigation.js');
 const drives = new Map();
+// NAV_BRIDGES (2026-11-18): measured on foot (LIGHT_GROUND). With no bridges at the start a heavy-vehicle drive can be
+// cut by a wide river until someone builds a road; the march is what every seat can do from the first second, and the
+// roads that open the vehicle routes are checked separately (unroadable).
 const drive = (a, b) => {
   const key = Math.min(a, b) * N + Math.max(a, b);
   if (drives.has(key)) return drives.get(key);
   let len = Infinity;
-  const p = g.nav.nearest(centerOf(a), HEAVY_GROUND, 3), q = g.nav.nearest(centerOf(b), HEAVY_GROUND, 3);
-  const path = p && q && g.nav.strategic(a, b, HEAVY_GROUND, false, true, 1e9) && g.nav.route(p, q, HEAVY_GROUND);
+  const p = g.nav.nearest(centerOf(a), LIGHT_GROUND, 3), q = g.nav.nearest(centerOf(b), LIGHT_GROUND, 3);
+  const path = p && q && g.nav.strategic(a, b, LIGHT_GROUND, false, true, 1e9) && g.nav.route(p, q, LIGHT_GROUND);
   if (path) { len = 0; let at = p; for (const pt of path) { len += distance(at, pt); at = pt; } len /= Math.sqrt(3); }
   drives.set(key, len);
   return len;
@@ -58,7 +64,7 @@ const rivals = seats.map((s) => seats.filter((o) => o !== s).map((o) => route(s.
 const preview = mapPreview(g);
 let error = null;
 try { for (let i = 0; i < 600; i++) g.tick(); } catch (e) { error = String(e.stack || e); }
-parentPort.postMessage({ genMs, asym, same, unreachable, rivers, fords, bridges, error, mapId: g.mapId, teamSize: g.teamSize,
+parentPort.postMessage({ genMs, asym, same, unreachable, unroadable, rivers, fords, bridges, error, mapId: g.mapId, teamSize: g.teamSize,
   starts: starts.map((s) => ({ start: s.start, owner: s.owner, hq: !!g.buildings.get(s.hq) })), main: g.sites.filter((s) => s.slots).length,
   outposts: g.sites.filter((s) => !s.slots).length, rings: g.sites.filter((s) => s.slots).every((s) => s.parcels.length === 9),
   wstarts: w.starts.length, teams: g.civs.map((c) => c.team), units: g.units.size, rivals, preview });
@@ -118,7 +124,7 @@ for (const def of MAP_CATALOG) {
         assert.ok(Math.max(...lengths) - Math.min(...lengths) <= Math.max(4, Math.min(...lengths) * .08), `unequal routes between rivals: ${JSON.stringify(r.rivals)}`);
       }
     }
-    for (const list of r.rivals) assert.ok(list.every(Number.isFinite), 'every seat can drive to every rival');
+    for (const list of r.rivals) assert.ok(list.every(Number.isFinite), 'every seat can march to every rival');
     // the stored lobby preview is up to date (regenerate with node tools/map-previews.mjs)
     const stored = MAP_PREVIEWS[def.id], fresh = r.preview;
     assert.ok(stored, `${def.id} has a stored preview`);
@@ -126,13 +132,15 @@ for (const def of MAP_CATALOG) {
     let differ = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differ++;
     assert.ok(differ <= a.length * .03, `${differ} preview cells are stale: run node tools/map-previews.mjs`);
     assert.deepEqual(stored.starts.map((s) => [s.u, s.v]), fresh.starts.map((s) => [s.u, s.v]));
-    assert.deepEqual(r.unreachable, [], 'every ruin and outpost can be reached by heavy vehicles');
+    assert.deepEqual(r.unreachable, [], 'every ruin and outpost can be reached on foot');
+    assert.deepEqual(r.unroadable, [], 'a road (bridges included) can be built to every ruin and outpost, opening it to vehicles');
     assert.equal(r.starts.length, def.players);
     assert.ok(r.starts.every((s, i) => s.start === i && s.owner === i && s.hq), 'each seat starts at its own operational base');
     assert.equal(r.wstarts, def.players);
     assert.ok(r.rings, 'every city ruin has its full ring of parcels');
     assert.ok(r.main >= def.players + 3 && r.outposts >= def.players * 2);
-    assert.ok(r.rivers > 0 && r.fords > 0 && r.bridges > 0, `rivers ${r.rivers}, fords ${r.fords}, bridges ${r.bridges}`);
+    assert.ok(r.rivers > 0 && r.fords > 0, `rivers ${r.rivers}, fords ${r.fords}`);
+    assert.equal(r.bridges, 0, 'no bridge stands at the start: one is laid with the first road across the river (NAV_BRIDGES.md)');
     assert.ok(r.genMs < 8000, `generation took ${r.genMs} ms`);
   });
 }

@@ -131,3 +131,135 @@ a sign post at junctions of three or more, pegged tape for planned works.
 9. Performance: bench `warzone.trenchMs` during digging with ~150 nodes; draw calls; check no hitch when roads change
    near many trenches (those nodes rebuild).
 10. Trees and grass no longer grow on the works; existing trees under old works are scarred (sticky scars).
+
+---
+
+# Second pass: "the trenches don't connect" (2026-11-18)
+
+User report: "the trenches don't connect". Reproduced headlessly by drawing strokes through the `trenchWorld`
+command on a 64×64 action map and walking the network the client builds from the wire (`fw` element 8 route
+bits + `trenchWorld` positions, linked by the `TrenchNetwork.Linked` rule). Fuzzing ~150 placements per shape:
+
+| case | before | after |
+|---|---|---|
+| single strokes (straight, diagonal, bent, wobbling, random walks) | 0 broken | 0 broken |
+| a gap between two lines drawn in afterwards | 67 / 75 broken | 0 |
+| T: a line ending against the middle of an older one | 9 / 145 broken | 0 |
+| X: a line crossing an older one | 2 / 145 broken | 0 |
+| routed links longer than the client's 2.9 reach (dropped) | ~1 in 100 links | none dropped |
+
+## Root causes
+
+1. **Gap fills joined one side only (server).** `trenchRoutes` joined each end of a dug run to the *single*
+   nearest older trench. A run of one hex (a gap redrawn, a hole shelled out and re-dug) is both ends at once, so
+   it joined one neighbour and the line stayed broken on the other side.
+2. **Older free ends were never joined (server).** Only the new run's *ends* looked for older works. A new line
+   passing beside the free end of an older line (a T where the old line stops at the new one, or an earlier line
+   whose own end hex had been skipped) never got a link from either side.
+3. **The client dropped long links.** `TrenchNetwork.RoutedReach` was 2.9 map units, but routed nodes in
+   neighbouring hexes can be up to ~3.7 apart (each node sits where the stroke first entered its hex, anywhere
+   inside it). The junction to an older line's node across its hex was silently not drawn.
+4. **Digging looked like separate pits (client).** Each node dug its half of every link outward from itself by its
+   own progress, so a finished node next to a part-dug one showed two stubs with untouched ground between them,
+   and a line being dug read as a row of separate pits until every node was 100 %. Engineers dig a section in
+   ~4 s each, but a long line or a busy crew leaves this state on screen for a long time.
+5. **Minor (client): a notch at every node.** A link's banks are pressed to the floor inside another link's slot
+   (that opens corners and junctions). The test counted a point *at* the node (along = 0) as inside the opposite
+   link's slot, so on a straight run the fire step and wall foot dipped to below the floor at each node, which
+   reads as a seam between the two halves.
+
+Checked and found correct: server/client hex direction tables match (`hex.js` DIRS vs `HexMath.DirsEven/Odd`, odd-r);
+the wire carries route bits for planned, part-dug and finished hexes alike and masks bits toward vanished
+neighbours; the two halves of a link meet in an identical section (same point, same blended facing, vertices on the
+same `MeshSurface`, so slopes and height steps do not open a seam); a node's cache key includes its neighbours'
+records, so a neighbour finished, destroyed or redrawn rebuilds it.
+
+## Fixes
+
+* `actionBases.trenchLine` records every hex the stroke enters in drawing order (re-entries included) and
+  `trenchRoutes` was rewritten:
+  1. each hex entered for the first time joins the hex it was entered from: the last of the owner's trench hexes on
+     the stroke, so a stroke that clips a road or another skipped hex keeps going when the hexes either side touch;
+     an older trench the stroke runs through is joined in on both sides (a crossing is one network). If that hex is
+     not a neighbour, the latest neighbouring hex of the stroke is used;
+  2. every dug hex with fewer than two links joins the owner's older works beside it, nearest first, until it has
+     two (an end once, a lone hex both sides);
+  3. a free end (fewer than two links) of an older line beside a newly dug hex joins the nearest new hex (T);
+  4. no link may close a triangle (a common neighbour already joined to both), so a stroke over a hex corner or
+     drawn along an older line makes no triangles or ladders. The 2.8 distance limit is gone (links are between
+     hex neighbours only).
+* `TrenchNetwork.RoutedReach` 2.9 → 3.8 (a guard against bad data only).
+* `TrenchNetwork.HalfDug` / `MeetsOpen` / `ProgressOf`: a link's digging is drawn as **one stretch grown from the
+  more advanced node** (higher progress, ties to the lower tile), (progress a + progress b) halves long. A finished
+  node and a part-dug neighbour show one trench reaching on from the finished one with a digging face; the halves
+  meet open only when the stretch crosses the midpoint. `TrenchRenderer` arms carry `DugStart..Dug`; a stretch
+  dug from the far side starts with a rounded digging face (`Sweep` start `End.Round`), is taped up to it, and does
+  not shape the node (no pit, no corner fan at a node whose only digging is away from it).
+* `TrenchRenderer.InOtherSlot` only presses points strictly ahead of the node (along > 0.001 and inside the
+  other link's dug stretch).
+
+## Tests
+
+* `test/trench-connect-2026-11-18.test.js`: straight, diagonal, bent, wobbling, crossing, T, extension, overlapping
+  end and gap-fill strokes over every placement on the map where they can be laid (each shape includes cases with
+  ≥ 0.08 elevation relief across the line): the client's network is one piece wherever the hexes touch, with no
+  triangles; a straight stroke is a single chain; route bits are sent while planned and part-dug; a shelled-out hex
+  is masked and, redrawn, rejoins both sides; parallel lines a hex apart are not laddered.
+* `TrenchNetwork.SelfTest()` (pure C#): link rule (either bit, owners, long routed links, legacy proximity) and the
+  dig stretches (contiguous, whole when both finished, digging face otherwise). Run in the editor with
+  `execute_code`: `return SE.Core.World.TrenchNetwork.SelfTest();` → `"ok"`.
+
+## In-game checklist (second pass)
+
+1. Draw a straight line, an L, a zig-zag and a deliberately wobbly hand-drawn line: one continuous work, no pits
+   joined by nothing, no triangle at hex corners, no notch or seam at the nodes along a straight run.
+2. Draw a line across an older one (X), one ending against the middle of an older one (T, both ways round: the new
+   line ending at the old, and the old line's end beside the new), one continuing an older line's end: one network,
+   open junction pits.
+3. Draw two lines with a gap, then draw the gap in (or shell a hex out and redraw it): joined on both sides.
+4. Watch engineers dig a line: the dug trench grows continuously from finished sections with a rounded digging face
+   and tape ahead; no isolated pits between finished nodes; finished halves meet without a seam.
+5. Lines up a slope and across a height step: banks and floor continuous through the midpoint of each link.
+6. Two lines drawn a hex apart in parallel: two works, not a ladder.
+
+# Trenches and roads (2026-11-18, follow-up)
+
+User request: "allow trenches to be built connected to roads, account for them connecting, don't block trenches for
+that reason."
+
+## Decision: a trench hex on a road is a covered crossing
+
+* **Server (action ruleset).** `trenchLine` no longer skips road hexes (`why: 'road'` is gone); a road hex is dug and
+  routed like any other, so a line across a road is one work and a line drawn up to a road ends in the road hex.
+  Hexes beside roads were never refused and still are not. The only road-related skip left is a **bridge or
+  causeway deck** (a road on a river, lake or water hex), `why: 'bridge'`: there is no ground to dig. The reply's
+  `crossings` now counts the road hexes dug as crossings.
+* **Roads stay open.** Trenches never change movement (nav reads terrain, roads and structures only, never
+  `fieldworks`), so no nav change was needed: vehicles drive a road through a crossing on the same route at the same
+  cost (tested). A road finished later through a trench used to fill the trench hex in (`actionEconomy`
+  `fieldEconomyStep`); it now keeps it as a crossing and re-sends the works (their road masks change).
+* **Client.** The line runs up to the carriageway's verge on both sides, steel plates carry it across the road
+  (existing `Plates`), and each verge end is now left **open onto the road**: the bank cut faces are closed as
+  before, timber posts frame the opening and a duckboard step spans the verge to the carriageway. (It was closed by
+  a sandbag wall, which read as the line stopping short of the road.) A free end of a line (one link) beside a road
+  now runs on to the road it points most toward (not back along its own link), so a line that ends next to a road
+  visibly joins it; before, only a node continuing straight into a road got that stub.
+* The native rulesets (`fieldworks.js`, hex-centred trenches) are unchanged: they still keep trench segments off
+  roads.
+
+## Tests
+
+* `test/trench-connect-2026-11-18.test.js`: a line across a country road digs the road hex (`crossings` ≥ 1), is one
+  network, and a tank's route along the road is identical before and after; a line drawn up to a road joins the
+  crossing; a road over a river is skipped as `bridge`.
+* `test/action-rts.test.js` (*trench lines cross roads as covered crossings…*): updated from the old "roads stay
+  open, road tile not dug, a finished road fills the trench" rule to the new one.
+
+## In-game checks (roads)
+
+1. Draw a line across a road: one continuous work, steel plates on the asphalt, the slot open at both verges with
+   timber posts and a duckboard step; no sandbag wall across the slot.
+2. Draw a line that stops beside a road (one hex short): it runs on to the road's verge and opens onto it.
+3. Drive a tank column along the road through the crossing: no slowdown, no detour.
+4. Build a road across an existing trench: the trench stays, now with plates.
+5. Draw a line across a bridge: the deck is skipped, the line either side ends at the banks.

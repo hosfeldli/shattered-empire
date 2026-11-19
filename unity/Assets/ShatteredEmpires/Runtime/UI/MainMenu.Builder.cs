@@ -6,8 +6,8 @@ using UnityEngine.UIElements;
 
 namespace SE.Runtime.UI
 {
-    // The main menu's map builder page (MapBuilder.cs): reached from the root menu, New Skirmish's
-    // Battlefield and the lobby host's rules. "Use" puts the sketch into New Skirmish as the map "custom",
+    // The main menu's map builder page (MapBuilder.cs): reached from the root menu, New Skirmish's (and Watch
+    // AI Match's) Battlefield and the lobby host's rules. "Use" puts the sketch into New Skirmish as the map "custom",
     // or sends it to the lobby (server sketchMaps.js validates it and every client previews the room's copy).
     public sealed partial class MainMenuView
     {
@@ -36,7 +36,7 @@ namespace SE.Runtime.UI
             var p = SubPage("Map builder");
             // continue the sketch on the bench; else the one in use here; else the last one used; else a fresh one
             var start = builderView?.Sketch ?? (builderFor == "lobby" ? lobbySketch : skirmishSketch) ?? MapSketch.Load(-1) ?? MapSketch.Default();
-            builderView = new MapBuilderView(start, UseSketch, builderFor == "lobby" ? "Use in lobby" : "Use in New Skirmish", p.Footer);
+            builderView = new MapBuilderView(start, UseSketch, builderFor == "lobby" ? "Use in lobby" : builderFor == "watch" ? "Use in Watch AI Match" : "Use in New Skirmish", p.Footer);
             p.Content.Add(builderView);
             return p.Root;
         }

@@ -121,6 +121,10 @@ namespace SE.Runtime.Effects
         float lightningAt, lightning;
         readonly System.Random rng = new System.Random(17);
         public event Action<float> Thunder;   // distance-ish delay seconds, for the audio
+        /// <summary>True while WeatherPresenter draws the regional weather (its strikes replace the camera's lightning).</summary>
+        public bool RegionalWeather;
+        /// <summary>How strongly recent regional lightning lights the view (StormClouds.ViewFlash).</summary>
+        public float StrikeFlash;
 
         public Atmosphere(Camera camera, Light sunLight)
         {
@@ -169,9 +173,14 @@ namespace SE.Runtime.Effects
             Cloud = Mathf.Lerp(Cloud, tc, k); Rain = Mathf.Lerp(Rain, tr, k); Storm = Mathf.Lerp(Storm, ts, k);
             Fog = Mathf.Lerp(Fog, tf, k); Wet = Mathf.Lerp(Wet, Mathf.Max(tw, tr), k);
             float overcast = Mathf.Clamp01(Cloud * 0.85f + Storm * 0.4f);
-            // lightning in storms
+            // With the regional weather drawn (WeatherPresenter), storms darken the ground where they are, so the
+            // camera's own sample dims the whole view less the further out it is: at strategic zoom a storm must
+            // read as a dark patch, not as a dark screen.
+            if (RegionalWeather) overcast *= Mathf.Lerp(1f, .35f, Mathf.Clamp01((camDistance - 30f) / 120f));
+            // lightning in storms: the regional strikes (StormClouds, with directional thunder) or, without them, at the camera
             lightning = Mathf.Max(0, lightning - dt * 6f);
-            if (Storm > 0.35f && time > lightningAt)
+            if (RegionalWeather) lightning = Mathf.Max(lightning, StrikeFlash * 1.1f);
+            else if (Storm > 0.35f && time > lightningAt)
             {
                 lightningAt = time + 3f + R() * 9f / Storm;
                 lightning = 0.8f + R() * 0.6f;
@@ -235,7 +244,8 @@ namespace SE.Runtime.Effects
             Shader.SetGlobalVector(CloudsId, new Vector4(Mathf.Clamp01(Cloud), cloudDrift.x, cloudDrift.y, 0f));
             Shader.SetGlobalVector(WindId, new Vector4(windU.x, windU.z, math.length(WindMap), 0));
             Shader.SetGlobalFloat(RainId, Rain);
-            Shader.SetGlobalFloat(WetId, Wet * 0.5f);
+            // regional wetness is in the ground field; the camera's rain wets everything only up close, where it is falling on the view
+            Shader.SetGlobalFloat(WetId, Wet * 0.5f * (RegionalWeather ? Mathf.Clamp01(1f - (camDistance - 15f) / 50f) : 1f));
             if (world != null && groundWorld != world) { groundWorld = world; groundAt = world.GroundHeight; }
             if (fx != null && Rain > 0.05f && camDistance < 140f && world.Ready && VisualIntensity > 0.01f)
                 fx.Rain(focusMap, Rain * VisualIntensity * Mathf.Lerp(1f, 0.3f, camDistance / 140f), WindMap, groundAt, Mathf.Clamp(camDistance * 0.55f, 4f, 30f));

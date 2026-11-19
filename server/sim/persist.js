@@ -53,7 +53,13 @@ export function serializeGame(g) {
     ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, map: g.mapId, tutorial: g.tutorial,
       tutorialSite: g.tutorialSite, teamHold: g.teamHold, engagements: mapOut(g.engagements), reports: g.reports,
       materialCaches: mapOut(g.materialCaches), roadProjects: g.roadProjects, armyLimit: g.armyLimit,
-      dominance: g.dominance || null, territoryDirty: !!g.territoryDirty } } : {}),
+      dominance: g.dominance || null, territoryDirty: !!g.territoryDirty, groupJobs: g.groupJobs || [], nextGroupJob: g.nextGroupJob || 0,
+      // Pass 3: convoy pace (actionOrders.unitMotion) reads last tick's lead distance; unsaved, a restored match drove
+      // its convoys at a different speed on the first tick and diverged from the uninterrupted one (Infinity -> null)
+      convoys: [...(g.convoys || new Map())].map(([id, c]) => [id, Number.isFinite(c.lead) ? c.lead : null, Number.isFinite(c.next) ? c.next : null, c.tick]),
+      // Pass 3: units compare a path's u.navVer with the navigation's terrain version (stuck ladder: replan a path planned
+      // before a terrain change); the counter restarted on restore, so every moving unit replanned at its first stall check
+      navTerrainVersion: g.nav?.terrainVersion ?? 0, nextConvoy: g.nextConvoy || 0 } } : {}),
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
     // v2: wrapped topology and world style
     wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style,
@@ -147,6 +153,9 @@ export function restoreGame(data) {
     // review S: a running decisive-domination countdown survives a save; the territory refresh flag too
     g.dominance = data.action.dominance || null;
     g.territoryDirty = !!data.action.territoryDirty;
+    g.groupJobs = data.action.groupJobs || []; g.nextGroupJob = data.action.nextGroupJob || 0;   // Pass 3 (actionOrders.groupRouteStep)
+    g.nextConvoy = data.action.nextConvoy || 0;   // Pass 3: convoy ids continue (moveGroup), as in the uninterrupted match
+    if (data.action.convoys) g.convoys = new Map(data.action.convoys.map(([id, lead, next, tick]) => [id, { lead: lead ?? Infinity, next: next ?? Infinity, tick }]));
     // 2026-11-18 unit rebalance: a unit whose type changed its health (infantry squads lost HP per man; exo_infantry
     // became an Infantry Fighting Vehicle) keeps its health fraction at the new maximum. The former exo squad also takes
     // the vehicle's footprint, drops its squad-only state (suppression, armour plates) and leaves any garrison.
@@ -170,6 +179,7 @@ export function restoreGame(data) {
       g.targets.add(u);
     }
     for (const b of g.buildings.values()) g.targets.add(b);
+    if (data.action.navTerrainVersion != null) g.nav.terrainVersion = data.action.navTerrainVersion;
   } else g.rebuildTileUnits();
   return g;
 }

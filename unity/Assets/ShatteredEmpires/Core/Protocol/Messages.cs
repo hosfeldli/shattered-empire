@@ -62,6 +62,18 @@ namespace SE.Core.Protocol
         /// <summary>Action RTS own bases: perimeter upgrade level (1..3, server `defenseLevel`); 0 when not sent.</summary>
         public int DefenseLevel;
         public float X, Z, Radius, Capture, Build, DevelopedAt, Tenure, Maturity;
+        /// <summary>
+        /// Keyed deltas (Pass 4, capability econ-delta-v1): the server sends the claim time ('ta') instead of a tenure that
+        /// changes every frame, and 'ml' while the maturity still grows; <see cref="Rederive"/> recomputes both for a time.
+        /// </summary>
+        public bool HasTenureAnchor, MaturityLive;
+        public float TenureAnchor;
+        /// <summary>Tenure and maturity at a snapshot time, from their anchors (a no-op for a site sent with plain values).</summary>
+        public void Rederive(float time)
+        {
+            if (HasTenureAnchor) Tenure = System.Math.Max(0f, time - TenureAnchor);
+            if (MaturityLive) Maturity = System.Math.Min(35f, System.Math.Max(0f, time - DevelopedAt));
+        }
         public bool IsBase, Contested, Operational, Memory, Starting;
         /// <summary>Capture (W2, R7): progress fell during the last server step (nobody capturing, or a rival draining the claim).</summary>
         public bool Decaying;
@@ -206,6 +218,20 @@ namespace SE.Core.Protocol
         public RuinRecord[] Ruins;
         public BattlefieldState BattlefieldState;
         public WeatherState WeatherState;
+        // Pass 4 keyed deltas (capability econ-delta-v1, server/delta.js). A full field carries its version (-1: a server
+        // without the capability); a delta applies only on top of version Version - 1 (ClientSession checks).
+        public int SitesVersion = -1, BuildingsVersion = -1, BattlefieldVersion = -1;
+        public KeyedDelta<ObjectiveSite> SitesDelta;
+        public KeyedDelta<BuildingRecord> BuildingsDelta;
+        public BattlefieldDelta BattlefieldDelta;
+    }
+
+    /// <summary>Changed or added records of a keyed field and the keys that left it (server delta.js keyedList).</summary>
+    public sealed class KeyedDelta<T>
+    {
+        public int Version;
+        public T[] Updated = System.Array.Empty<T>();
+        public int[] Removed = System.Array.Empty<int>();
     }
 
     public sealed class GeoChunk

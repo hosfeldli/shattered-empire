@@ -32,7 +32,7 @@
 - `actionGame.js`: commands, `sees`, snapshots, ejection in `removeBuilding`, and a `garrison` scheduler step every 2 ticks.
 - `persist.js`: restore keeps occupants out of the indexes.
 
-**Tests:** `test/garrison.test.js` (directive Test D).
+**Tests:** `test/garrison.test.js` (directive Test D) and `test/garrison-entry-2026-11-18.test.js` (the client's exact commands on real map structures).
 
 ### Data
 
@@ -57,7 +57,7 @@
 - **Destruction:** when a structure is removed, its occupants are placed around it. This covers destruction, demolition, and the facilities that go when a base's headquarters is lost. If the structure was destroyed (hp 0), each occupant loses **30% of its max HP**, and a squad below that dies (counted as a casualty).
 - **Ownership:** structures never change owner in this ruleset (a headquarters is destroyed and becomes a ruin), so there is no capture-with-occupants case. Units can only enter their owner's structures.
 - **Save:** `u.inside`, `u.enter`, `b.garrison` and `b.exitRally` are plain fields and persist. Restore leaves occupants out of `movers` and `targets`, and rebuilds the queue of walkers from `u.enter`.
-- **AI:** the AI does not garrison yet. Its army counts and threat estimates are unaffected, because it never sees rival occupants.
+- **AI:** the AI does not garrison yet (no `garrison` command in actionAI.js / actionAIWorks.js). Its army counts and threat estimates are unaffected, because it never sees rival occupants.
 - **Performance:** occupants leave the movement and combat loops. Only firing-slot holders do a target search. The scheduler step costs O(squads walking in).
 
 ### Wire contract (for C-B)
@@ -83,3 +83,48 @@
 - the row is sent only to the owner, allies and the god view. Rivals never receive it.
 
 The client should hide the model of a unit whose flag bit 16384 is set, and list it in the structure's occupant panel from `gar`.
+
+### Fix 2026-11-18: "the troops never actually garrison, they just go over to the building"
+
+**Root cause (client).** Right-clicking one of your own garrisonable structures with infantry selected showed the
+Garrison cursor (`Commander.Cursor.EvaluateHover`), but the right-click itself (`Commander.Action.ActionContextOrder`)
+had no garrison branch. It fell through to a plain `{c:'move', point}` onto the structure. The server moved the
+squads next to the structure (the footprint is blocked) and did nothing else. A `move` also clears `u.enter`, so it
+cancels a garrison walk that was already under way. Only the unit wheel (Garrison > structure) sent `garrison`.
+
+**Server path checked, and not at fault.** `garrisonCommand` → `moveGroup` to the structure → `garrisonStep` every 2
+ticks enters within `radius + reach` (+0.8 once halted) → `u.inside`, flag 16384, econ `gar`. Headless runs on real
+structures entered every time: the HQ, a bunker, a watchtower and a parcel barracks, approached from 8 directions on 4
+seeds, with mixed selections including a tank. The near-goal arrival logic and stuck recovery did not interfere. The
+decoder reads `gar`, and UnitRenderer hides flagged units.
+
+**Fixes**
+- `Commander.Action.cs` adds `GarrisonOrder`. A right-click on an own, finished garrisonable structure sends
+  `{c:'garrison', units:[eligible], building}`, the same command the wheel sends. The rest of the selection (vehicles,
+  mortar teams) gets the ordinary move to the structure. The reply is shown: "2 moving in to garrison" or "1 inside,
+  2 moving in", plus "· N turned away" when it is full. Refusals are shown by `Resolve`.
+- `Commander.Cursor.cs`: the Garrison cursor now uses the server's eligibility (`capture && !auto && !air`), so
+  mortar teams alone keep the Move cursor. It also adds the shared helpers `GarrisonEligible`, `GarrisonTarget` and `SplitGarrison`.
+- `Commander.cs` `ScreenOf`: garrisoned squads can no longer be picked. Before, clicking a garrisoned structure
+  selected the hidden squad at its centre instead of the structure.
+- `Commander.Rings.cs` adds `DrawGarrisonPips`. Each own garrisonable structure shows one pip per place on its camera
+  side: a filled blue disc for each occupant and an empty ring for each free place. The pips show on any structure with
+  occupants, and on every one in view while eligible squads are selected.
+- `Hud.Overlay.cs`: no health bars for hidden occupants.
+- Card and wheel hints now mention the right-click.
+- `actionGarrison.js`: a garrison order for squads that are all already inside says "Those squads are already inside."
+  instead of the infantry-only message.
+
+### In-game checklist
+1. Select 2–3 rifle squads about 10 hexes from your HQ. Hover the HQ: the cursor is the blue Garrison cursor and empty
+   pips appear in front of it. Right-click: the toast says "N moving in to garrison". The squads walk over and disappear,
+   and the pips fill in.
+2. Click the HQ: the HQ is selected (not a hidden squad). The card shows "Garrison · n/4 · …" with occupant chips.
+3. Do the same with a bunker (2 places): send 3 squads. The toast says "· 1 turned away". Right-click it again with
+   the leftover squad: the toast says "That structure is full."
+4. Select a mortar team alone and hover the bunker: you get the Move cursor. A tank plus squads: the squads enter and
+   the tank parks beside the structure.
+5. Unit wheel > Garrison > pick a structure: the same result.
+6. Card "Eject all", or right-click a chip: the squads reappear beside the structure (or walk to the exit rally point).
+   Selecting an occupant from a chip and right-clicking the ground also brings it out.
+7. Shell a garrisoned bunker with enemy mortars: the occupants take reduced damage. Destroy it: they are thrown out, hurt.

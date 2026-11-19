@@ -208,6 +208,20 @@ namespace SE.Runtime.UI
             static readonly Color Fill = new Color(.05f, .075f, .085f, .86f), FillHover = new Color(.16f, .20f, .21f, .94f);
             static readonly Color Edge = new Color(1f, 1f, 1f, .10f);
 
+            /// <summary>
+            /// The minimap rim this strip docks against, in the strip's own coordinates (centre and radius). When set,
+            /// the left edge is cut along that circle so the strip meets the bezel along its whole height (a straight
+            /// edge left a wedge-shaped gap, wider at the row edge nearer the disc's equator).
+            /// </summary>
+            public float ArcCx, ArcCy, ArcR;
+
+            float LeftAt(float y)
+            {
+                if (ArcR <= 0) return 0;
+                float dy = y - ArcCy;
+                return Mathf.Max(0, ArcCx + Mathf.Sqrt(Mathf.Max(0, ArcR * ArcR - dy * dy)));
+            }
+
             void Paint(MeshGenerationContext ctx)
             {
                 var r = contentRect;
@@ -215,8 +229,11 @@ namespace SE.Runtime.UI
                 var p = ctx.painter2D;
                 float slant = r.height * .45f;
                 p.BeginPath();
-                p.MoveTo(new Vector2(0, 0)); p.LineTo(new Vector2(r.width, 0));
-                p.LineTo(new Vector2(r.width - slant, r.height)); p.LineTo(new Vector2(0, r.height)); p.ClosePath();
+                p.MoveTo(new Vector2(LeftAt(0), 0)); p.LineTo(new Vector2(r.width, 0));
+                p.LineTo(new Vector2(r.width - slant, r.height)); p.LineTo(new Vector2(LeftAt(r.height), r.height));
+                // up the bezel's curve
+                for (int k = 5; k >= 1; k--) { float y = r.height * k / 6f; p.LineTo(new Vector2(LeftAt(y), y)); }
+                p.ClosePath();
                 p.fillColor = hover || selected ? FillHover : Fill;
                 p.Fill();
                 p.strokeColor = alert == 2 ? UiKit.Token("bad") : alert == 1 ? UiKit.Token("warn") : selected || hover ? UiKit.Token("accent") : Edge;

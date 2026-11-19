@@ -51,12 +51,67 @@ float SE_CloudNoise(float2 p)
     float d = frac(sin(dot(i + float2(1, 1), float2(127.1, 311.7))) * 43758.5);
     return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
 }
+// ---- regional weather (WeatherField.cs): one texel per 8x8-hex weather cell, r cloud, g rain, b storm,
+// a wetness; the previous and the latest server snapshot, blended along the wind between updates
+TEXTURE2D(_SE_WxPrev); SAMPLER(sampler_SE_WxPrev);
+TEXTURE2D(_SE_WxNext);
+float4 _SE_WxParams;    // x = blend prev->next, y = visual intensity (player setting), z = enabled, w = time (s)
+float4 _SE_WxScale;     // xy: world (x, -z) -> weather uv
+float4 _SE_WxAdvect;    // xy: prev uv offset, zw: next uv offset (wind advection between snapshots)
+float4 _SE_Strikes[4];  // lightning strikes (StormClouds.cs): xyz world position, w start time (_SE_WxParams.w clock)
+float4 _SE_StrikeAmp;   // strength of each strike (0 = none)
+#define SE_CLOUD_BASE 17.0
+
+half4 SE_WeatherAt(float2 xzWS)
+{
+    if (_SE_WxParams.z < 0.5) return 0;
+    float2 uv = float2(xzWS.x, -xzWS.y) * _SE_WxScale.xy;
+    half4 a = SAMPLE_TEXTURE2D_LOD(_SE_WxPrev, sampler_SE_WxPrev, uv + _SE_WxAdvect.xy, 0);
+    half4 b = SAMPLE_TEXTURE2D_LOD(_SE_WxNext, sampler_SE_WxPrev, uv + _SE_WxAdvect.zw, 0);
+    return lerp(a, b, (half)_SE_WxParams.x);
+}
+
+// How much heavy cloud and storm overhead darken this point (0..1): the weather is read where the sun ray
+// through this point meets the cloud base, so the shade sits under the storm clouds as drawn.
+half SE_StormShade(float3 positionWS)
+{
+    if (_SE_WxParams.z < 0.5 || _SE_WxParams.y <= 0.001) return 0;
+    float3 L = _MainLightPosition.xyz;
+    float lift = max(SE_CLOUD_BASE - positionWS.y, 0.0) / max(L.y, 0.35);
+    float2 p = positionWS.xz + L.xz * lift;
+    half4 w = SE_WeatherAt(p);
+    half cover = smoothstep(0.42h, 0.95h, w.r) * 0.42h + w.b * 0.62h + w.g * 0.12h;
+    if (cover <= 0.004h) return 0;
+    float n = SE_CloudNoise(p * 0.05 - _SE_Clouds.yz * 1.1);
+    return saturate(cover * (0.72h + 0.56h * (half)n)) * (half)_SE_WxParams.y;
+}
+
+// Local light from recent lightning strikes (a few hexes around each).
+half SE_StrikeLight(float3 positionWS)
+{
+    if (_SE_WxParams.z < 0.5) return 0;
+    half f = 0;
+    [unroll] for (int i = 0; i < 4; i++)
+    {
+        float age = _SE_WxParams.w - _SE_Strikes[i].w;
+        float amp = _SE_StrikeAmp[i];
+        if (amp <= 0 || age < 0 || age > 0.7) continue;
+        float2 d = positionWS.xz - _SE_Strikes[i].xz;
+        float k = saturate(1.0 - dot(d, d) * (1.0 / (24.0 * 24.0)));
+        float flick = 0.55 + 0.45 * sin(age * 71.0 + i * 1.7);
+        f += (half)(amp * exp(-age * 6.5) * k * k * flick);
+    }
+    return f * (half)_SE_WxParams.y;
+}
+
 half SE_CloudShadow(float3 positionWS)
 {
-    if (_SE_Clouds.x <= 0.01) return 0;
+    // the regional cloud where the weather texture is live (WeatherField), the camera's cover otherwise
+    float cover = _SE_WxParams.z > 0.5 ? SE_WeatherAt(positionWS.xz).r : _SE_Clouds.x;
+    if (cover <= 0.01) return 0;
     float2 p = positionWS.xz * 0.045 - _SE_Clouds.yz;   // yz: integrated wind drift (Atmosphere)
     float n = SE_CloudNoise(p) * 0.6 + SE_CloudNoise(p * 2.3 + 7.1) * 0.4;
-    return smoothstep(1.0 - _SE_Clouds.x * 0.85, 1.05 - _SE_Clouds.x * 0.6, n) * 0.5;
+    return smoothstep(1.0 - cover * 0.85, 1.05 - cover * 0.6, n) * 0.5;
 }
 
 half3 SE_Shade(half3 albedo, float3 positionWS, half3 normalWS, half emission)
@@ -85,6 +140,15 @@ float _SE_ShroudOn;     // 1 while unexplored ground is shrouded
 
 half3 SE_ApplyFog(half3 color, float3 positionWS, float fogCoord)
 {
+    // regional weather: ground, water, units and buildings under heavy cloud and storms are darker, cooler and
+    // flatter; recent lightning lights them for an instant (WeatherField / StormClouds)
+    if (_SE_WxParams.z > 0.5)
+    {
+        half shade = SE_StormShade(positionWS);
+        half lum = dot(color, half3(0.3h, 0.59h, 0.11h));
+        color = lerp(color, lum * half3(0.86h, 0.92h, 1.04h), shade * 0.4h) * (1.0h - shade * 0.55h);
+        color += color * SE_StrikeLight(positionWS) * 2.2h;
+    }
     // organic edges: the per-hex fog texture is read through a noise warp, so no hexagon outlines show
     float2 warp = float2(SE_CloudNoise(positionWS.xz * .55), SE_CloudNoise(positionWS.xz * .55 + 17.3)) - .5;
     float3 warped = positionWS + float3(warp.x, 0, warp.y) * .75;

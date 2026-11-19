@@ -101,6 +101,37 @@ namespace SE.Runtime.UI
         /// <summary>One of our units or buildings started taking damage at map (x, z) (at most every 2.5 s; also pinged).</summary>
         public Action<float, float> UnderAttack;
 
+        /// <summary>
+        /// The storm layer (WeatherPresenter.MinimapTexture: one texel per weather cell, north at the top, refreshed
+        /// by its owner): heavy cloud a pale veil, rain blue, storms dark violet. Drawn over each terrain image as a
+        /// stretched child, so it follows the scroll, the zoom and the wrap copies with no work here.
+        /// </summary>
+        public Texture Weather
+        {
+            set
+            {
+                for (int k = 0; k < terrain.Length; k++)
+                {
+                    if (weatherLayer[k] == null)
+                    {
+                        if (value == null) continue;
+                        var img = new Image { scaleMode = ScaleMode.StretchToFill, pickingMode = PickingMode.Ignore };
+                        img.AddToClassList("se-minimap__weather");
+                        img.style.position = Position.Absolute;
+                        img.style.left = 0; img.style.top = 0; img.style.right = 0; img.style.bottom = 0;
+                        weatherLayer[k] = img;
+                        terrain[k].Add(img);
+                    }
+                    if (weatherLayer[k].image != value) weatherLayer[k].image = value;
+                    weatherLayer[k].style.display = value != null ? DisplayStyle.Flex : DisplayStyle.None;
+                }
+            }
+        }
+        readonly Image[] weatherLayer = new Image[3];
+
+        /// <summary>Repaint the storm layer after its texture changed.</summary>
+        public void WeatherChanged() { foreach (var img in weatherLayer) img?.MarkDirtyRepaint(); }
+
         /// <summary>True while the circle shows the local section around the camera instead of the whole map.</summary>
         public bool Zoomed => zoomed;
 

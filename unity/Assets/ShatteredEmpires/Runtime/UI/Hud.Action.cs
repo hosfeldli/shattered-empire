@@ -422,7 +422,7 @@ namespace SE.Runtime.UI
                 });
                 chips[k] = chip; chipIcons[k] = icon;
             }
-            var none = UiKit.Text("Empty · select infantry squads and choose Garrison on their wheel", "se-cmd-card-meta", chipsRow);
+            var none = UiKit.Text("Empty · select infantry squads and right-click this structure (or Garrison on their wheel)", "se-cmd-card-meta", chipsRow);
             none.style.marginLeft = 0;
             int snap = -1; string shownSummary = null; bool shownRally = true, shownAny = true;
             var shownChip = new int[GarrisonChips];

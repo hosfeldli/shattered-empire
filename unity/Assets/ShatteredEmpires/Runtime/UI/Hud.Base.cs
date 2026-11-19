@@ -756,7 +756,7 @@ namespace SE.Runtime.UI
         {
             Id = "garrison", Icon = "bunker", Angle = angle,
             Name = () => session.Structures.Buildings.TryGetValue(buildingId, out var b) ? $"Garrison · {b.Garrison?.Length ?? 0}/{GarrisonCapacity(b.Type)}" : "Garrison",
-            Detail = () => GarrisonSummary(buildingId) + " · select infantry and use Garrison on their wheel to enter",
+            Detail = () => GarrisonSummary(buildingId) + " · select infantry and right-click the structure (or Garrison on their wheel) to enter",
             Badge = () => OccupantCount(buildingId),
             Children = () => { baseSubRing = "garrison"; return GarrisonItems(buildingId); },
         };
@@ -1934,7 +1934,7 @@ namespace SE.Runtime.UI
                 return new RadialItem
                 {
                     Id = "build:road", Icon = "road", Title = "Road", Cost = RoadCost,
-                    Detail = () => "Drag a route through your territory and release to build. 15 Materials per link; roads over rivers become bridges.",
+                    Detail = () => "Drag a route through your territory and release to build. 15 Materials per link, 40 per bridge link: a road over a river lays its bridge (matches start without bridges).",
                     Click = _ => { CloseWheel(); commander.BeginRoad(); },
                 };
             var d = Defs?["BUILDINGS"]?[key];

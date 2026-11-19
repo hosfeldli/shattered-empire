@@ -133,6 +133,8 @@ namespace SE.Runtime.Session
         {
             screen = default;
             ref var u = ref session.Units.Records[slot];
+            // W4: a garrisoned squad (flag 16384) is hidden inside its structure; clicks there pick the structure
+            if ((u.Flags & GarrisonedFlag) != 0) return false;
             if (!units.TryGetPosition(session.Units, u.Id, out var xz)) return false;
             var g = session.World.Grid;
             float x = g.NearX(xz.x, cam.Focus.x);

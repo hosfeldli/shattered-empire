@@ -15,7 +15,8 @@ namespace SE.Net
     public sealed class GameConnection : IDisposable
     {
         public const int Protocol = 2;
-        public static readonly string[] WantCaps = { "geo", "udelta", "action-rts", "ring-cities-v1" };
+        /// <summary>econ-delta-v1 (Pass 4): sites, buildings and battlefield as versioned keyed deltas (ClientSession applies them).</summary>
+        public static readonly string[] WantCaps = { "geo", "udelta", "action-rts", "ring-cities-v1", "econ-delta-v1" };
         public const string ClientName = "unity-native/0.1";
 
         public enum Status { Idle, Connecting, Open, Ready, Closed, Retrying }
@@ -32,6 +33,10 @@ namespace SE.Net
         public string ServerVersion { get; private set; } = "";
         public double RttMs { get; private set; }
         public int Connections { get; private set; }
+        /// <summary>The server accepts client diagnostics (hello.telemetry; docs/TELEMETRY.md).</summary>
+        public bool ServerTelemetry { get; private set; }
+        /// <summary>Version details sent in the hello (set by the runtime: ClientTelemetry.Identify).</summary>
+        public static string ClientBuild = "", ClientVersion = "", ClientPlatform = "";
         public string LastError => link.LastError;
         public WebSocketLink Link => link;
 
@@ -85,7 +90,8 @@ namespace SE.Net
                 {
                     SetState(Status.Open);
                     retry = 0;
-                    SendRaw(new JObject { ["t"] = "hello", ["proto"] = Protocol, ["caps"] = new JArray(WantCaps), ["client"] = ClientName }, true);
+                    SendRaw(new JObject { ["t"] = "hello", ["proto"] = Protocol, ["caps"] = new JArray(WantCaps), ["client"] = ClientName,
+                        ["build"] = ClientBuild, ["version"] = ClientVersion, ["platform"] = ClientPlatform }, true);
                 }
                 link.Drain(OnMessage, budgetMs);
                 if (State == Status.Ready && now - pingAt > 2.0)
@@ -131,6 +137,7 @@ namespace SE.Net
                         ProtocolVersion = ProtocolDecoder.Int(m.Raw["proto"], 1);
                         Capabilities = (m.Raw["caps"] as JArray)?.ToObject<string[]>() ?? Array.Empty<string>();
                         ServerVersion = ProtocolDecoder.Str(m.Raw["version"], "");
+                        ServerTelemetry = ProtocolDecoder.Bool(m.Raw["telemetry"]);
                         BecomeReady();
                     }
                     else

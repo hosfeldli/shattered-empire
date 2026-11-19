@@ -138,10 +138,51 @@ namespace SE.Runtime.UI
         int hoverBuilding, hoverBuildingFilled = -1, hoverBuildingHp = -1, hoverBuildingLevel = -1, hoverBuildingProgress = -1;
         float hoverBuildingSince;
 
+        /// <summary>The storm value the server's air rules read at a hex (0..1, grounded at .5; WeatherPresenter), or null.</summary>
+        public static Func<int, float> StormAt;
+        int stormHoverTile = -1; float stormHoverPickAt, stormHoverSince; bool stormHoverFilled;
+
+        /// <summary>Over open ground under a storm: what the storm does to aircraft there (picked ten times a second).</summary>
+        bool StormHoverCard(float time)
+        {
+            if (StormAt == null) return false;
+            if (time >= stormHoverPickAt)
+            {
+                stormHoverPickAt = time + .1f;
+                int t = commander.HoverTile();
+                if (t >= 0 && StormAt(t) < .5f) t = -1;
+                if (t != stormHoverTile) { stormHoverTile = t; stormHoverSince = time; }
+            }
+            if (stormHoverTile < 0 || time - stormHoverSince < .35f) return false;
+            if (!stormHoverFilled || hoverFilledFor != -1 || hoverBuildingFilled != -1)   // a unit or building card was shown since
+            {
+                stormHoverFilled = true;
+                hoverFilledFor = -1; hoverBuildingFilled = -1;
+                hoverName.text = "Storm";
+                hoverOwner.text = "Weather";
+                hoverOwner.style.color = new Color(.70f, .66f, .95f);
+                hoverDot.style.backgroundColor = new Color(.42f, .33f, .78f);
+                hoverRole.text = "Aircraft cannot take off or land at bases under it";
+                hoverStatus.text = "Aircraft inside fly slower and burn fuel faster";
+            }
+            if (!hoverShown) { hoverShown = true; hoverCard.BringToFront(); UiKit.Show(hoverCard); }
+            var mouse = InputFacade.MousePosition;
+            var p = ToPanel(new Vector3(mouse.x, mouse.y, 1));
+            float w = root.layout.width, h = root.layout.height;
+            if (float.IsNaN(w) || w <= 0) { w = 1920; h = 1080; }
+            var pos = new Vector2(p.x + 24, p.y + 18);
+            if (pos.x + 330 > w - 8) pos.x = p.x - 24 - 330;
+            pos.y = Mathf.Clamp(pos.y, 48, h - 120);
+            if (!((pos - hoverAt).sqrMagnitude <= .0025f)) { hoverAt = pos; hoverCard.style.translate = new Translate(pos.x, pos.y); }
+            return true;
+        }
+
         bool BuildingHoverCard(Func<Vector3, Vector3> toScreen, float time)
         {
             int id = commander.HoverBuildingId;
             if (id != hoverBuilding) { hoverBuilding = id; hoverBuildingSince = time; }
+            if (id == 0 && StormHoverCard(time)) return true;
+            stormHoverFilled = false;
             if (id == 0 || !session.Structures.Buildings.TryGetValue(id, out var b) || !b.HasPosition) { HideHoverCard(); return true; }
             if (time - hoverBuildingSince < .2f) { HideHoverCard(); return true; }
             var sp = toScreen(new Vector3(b.X, session.World.GroundHeight(b.X, b.Z) + .45f, b.Z));

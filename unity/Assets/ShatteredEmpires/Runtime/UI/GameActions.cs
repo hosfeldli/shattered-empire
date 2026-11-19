@@ -21,6 +21,14 @@ namespace SE.Runtime.UI
         public string Format;
         /// <summary>One entry per AI seat in seat order (seat 1 on): its difficulty and personality ("random" allowed).</summary>
         public List<AiSeatOption> Ais = new List<AiSeatOption>();
+        /// <summary>
+        /// Watch AI Match: every seat is an AI and you spectate (server mode 'observe'); <see cref="Ais"/> then
+        /// starts at seat 0. <see cref="Speed"/> is the starting match speed (1, 2, 4, 8) and
+        /// <see cref="ObserverFog"/> starts the view behind the followed nation's fog (WATCH_SETUP.md).
+        /// </summary>
+        public bool Observe;
+        public int Speed = 1;
+        public bool ObserverFog;
     }
 
     /// <summary>One AI of a New Skirmish (server 'rivals' entry).</summary>

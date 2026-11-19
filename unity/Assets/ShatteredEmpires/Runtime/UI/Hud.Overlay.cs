@@ -168,7 +168,7 @@ namespace SE.Runtime.UI
             for (int s = 0; s < store.SlotCount && bars < 260; s++)
             {
                 ref var u = ref store.Records[s];
-                if (!u.InUse) continue;
+                if (!u.InUse || (u.Flags & InsideFlag) != 0) continue;   // W4: garrisoned squads are hidden inside their structure
                 bool selected = units.Selected.Contains(u.Id);
                 bool hurt = u.Hp < 100, contact = u.Target > 0, fired = underFire.ContainsKey(u.Id);
                 if (!selected && !(close && (hurt || contact)) && !fired) continue;

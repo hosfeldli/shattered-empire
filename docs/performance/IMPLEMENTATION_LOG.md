@@ -529,3 +529,302 @@ Both runs have tree scars and unit culling on.
 
 ### PerfFlags now
 `-perf-legacy geometry,streets,spoil,territory,basekey,trees,unitcull,compose,decode` (or `all`).
+
+
+# Pass 3: late-game server (2026-11-18, server perf agent)
+
+The user's report: "Especially later in the game the server seems like it begins having issues."
+
+## Method
+
+- **Bench.** New tool `tools/late-game-bench.mjs`, which runs headless all-AI matches. It is monkey-patched only; the sim source is untouched.
+  - **Measured:** per-system time; tick p50/p95/p99/max and the count of ticks over 50/100/250 ms per window; `route()`/`strategic()`/`primeGroup()`/`componentOf()` calls and ms, attributed to the system that called them; GC pauses by kind, attributed to the tick they fell in; and thread CPU (`process.threadCpuUsage`).
+  - **The live worker's paths:** 5 Hz delta-encoded snapshots plus geo for one connected player, with econ at 1 Hz; outbox bytes; and the autosave (serialize, stringify, gzip) every 60 game-seconds.
+  - **Census:** every 30 s, the size of every Map, Set, array and typed array on the game, the civs (max and sum), the AI plans and the units/buildings. Anything that grows shows up without being named.
+  - **Diagnostics:** the 25 worst ticks with their breakdown; `--prof=A-B` (CPU profile of game minutes A..B); `--heap` (allocation sampling); `--save-at`/`--from` (replay a late window from a save); `--young=MB` (young-generation size).
+- **Matches.** 6 AI (normal) on iron_basin (128), continental_divide (132) and twin_continents (128), seed 7, 45–50 game minutes. Three matches ran in parallel on the 6-core dev box.
+- **Machine load (read before the numbers).** Other agents were running benches and tests on the same machine for the whole pass, and CPU load was at 100% most of the time. Wall-clock tick times for the same work varied by 40–60% between back-to-back runs, and even thread CPU varied by ±7% for an identical simulation (same stateHash). Only same-hash comparisons and paired runs below are meaningful. Small differences are noise.
+
+## Growth curve: before (HEAD 8e6bfef + in-progress tree at the start of the pass)
+
+Mean, p95, p99 and max are tick ms per 5-minute window. GC is in-tick GC ms per window. Snap and econ are KB per message for one player.
+
+| map | window (min) | units | mean | p95 | p99 | max | ai mean | nav mean | GC ms | snap KB | econ KB | save ms | save KB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| iron_basin | 0-5 | 100 | 9.4 | 105 | 169 | 628 | 2.8 | 2.4 | 1459 | 10 | 14 | 40 | 2139 |
+| iron_basin | 10-15 | 261 | 30.4 | 169 | 394 | 1530 | 13.5 | 8.9 | 4337 | 29 | 45 | 14 | 2684 |
+| iron_basin | 15-20 | 265 | 59.1 | 227 | 743 | 2973 | 27.3 | 17.2 | 6613 | 38 | 73 | 52 | 2702 |
+| iron_basin | 20-25 | 156 | 56.8 | 265 | 903 | 1875 | 33.2 | 10.3 | 8333 | 37 | 83 | 14 | 2647 |
+| iron_basin | 30-35 | 186 | 28.8 | 160 | 370 | 1537 | 14.5 | 6.4 | 8376 | 40 | 94 | 51 | 2727 |
+| iron_basin | 45-50 | 205 | 39.9 | 210 | 506 | 1309 | 20.9 | 9.1 | 17920 | 46 | 118 | 66 | 2911 |
+| continental_divide | 0-5 | 99 | 8.4 | 31 | 166 | 526 | 2.0 | 2.4 | 1285 | 8 | 12 | 30 | 2240 |
+| continental_divide | 15-20 | 238 | 60.9 | 255 | 842 | 3004 | 34.5 | 14.4 | 6973 | 34 | 64 | 45 | 2808 |
+| continental_divide | 35-40 | 185 | 48.5 | 252 | 609 | 1454 | 18.4 | 7.2 | 10064 | 24 | 34 | 81 | 2887 |
+| twin_continents | 0-5 | 98 | 8.4 | 22 | 165 | 937 | 2.3 | 2.6 | 1992 | 8 | 11 | 41 | 2114 |
+| twin_continents | 15-20 | 213 | 41.0 | 185 | 445 | 1157 | 17.3 | 13.4 | 5436 | 31 | 60 | 38 | 2657 |
+| twin_continents | 30-35 | 157 | 29.0 | 211 | 419 | 1071 | 11.8 | 7.4 | 7321 | 22 | 30 | 89 | 2684 |
+
+**What grew:** the cost per tick, not the data.
+
+- From game minute ~10, the mean tick rose from 3–9 ms to 30–60 ms and p99 from about 165 to 400–900 ms. Single ticks reached 1.5–3 s.
+- **Almost all of it was route searching:**
+  - AI plans, through `moveGroup` → `candidate` → `route` → `strategic`;
+  - flow fields (`primeGroup`);
+  - region rebuilds (`componentOf`) after every `invalidate()`;
+  - in one window on continental_divide, base engineers (`goNear`) re-ordering every 0.2 s: 13 ms a tick of `route()` from `field economy`.
+- A CPU profile of minutes 6–12 on iron_basin put 30% in `planActionAI`, almost all of it `moveGroup` routing. The worst AI ticks ran single `strategic()` searches of 290 ms.
+- GC grew with it: up to 18 s of in-tick GC per 5 minutes, from about 22 MB/s of allocation, mostly in navigation.
+
+## After NAVIGATION's pass (same protocol, the tree this pass then worked on)
+
+NAVIGATION's changes were:
+
+- region-based instant failure;
+- chase back-off;
+- a fine-search budget;
+- typed-array coarse search;
+- cached obstacle lists and centre costs.
+
+| map | window (min) | units | mean | p95 | p99 | max | ai mean | nav mean | GC ms | econ KB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| iron_basin | 0-5 | 100 | 2.7 | 5 | 59 | 151 | 0.9 | 0.8 | 513 | 14 |
+| iron_basin | 15-20 | 244 | 14.2 | 66 | 106 | 237 | 3.5 | 6.0 | 1466 | 70 |
+| iron_basin | 25-30 | 199 | 22.7 | 114 | 185 | 472 | 5.0 | 9.6 | 5247 | 97 |
+| iron_basin | 30-35 | 198 | 22.5 | 104 | 204 | 939 | 6.3 | 9.7 | 4502 | 110 |
+| iron_basin | 40-45 | 164 | 13.9 | 51 | 162 | 333 | 5.0 | 4.7 | 555 | 110 |
+| continental_divide | 25-30 | 169 | 18.0 | 98 | 163 | 639 | 5.0 | 6.9 | 2132 | 34 |
+| continental_divide | 35-40 | 198 | 15.5 | 86 | 141 | 560 | 4.5 | 5.4 | 2740 | 31 |
+| twin_continents | 25-30 | 154 | 19.4 | 108 | 165 | 386 | 4.8 | 8.4 | 3075 | 29 |
+| twin_continents | 35-40 | 193 | 17.9 | 94 | 156 | 436 | 3.4 | 8.4 | 2620 | 27 |
+
+The late-game mean was about 4x lower, but the tail was still there.
+
+- **The worst ticks were all single AI plans (one civ, one call) taking 400–940 ms.** The time went on:
+  - `primeGroup` flow fields: 130–590 ms;
+  - fine routes and local detours: 100–350 ms;
+  - `componentOf` region rebuilds: 80–140 ms;
+  - occasional 100–390 ms GC pauses.
+- **Profile of minutes 30–35 on iron_basin (31.7 s of CPU):**
+  - unitMotion: 43% (`route()` alone is 34%);
+  - AI: 20%, mostly `moveGroup`;
+  - visibility: 8%;
+  - combat: 7%;
+  - snapshot build and encode: 7%;
+  - field economy: 3%.
+
+## Unbounded growth and superlinear costs: none outside navigation
+
+The census at minute 10 against the end, iron_basin:
+
+| structure | min 10 | min 45 | bound |
+|---|---|---|---|
+| `g.events` | 107 | 5973 | capped at 6000 (splices to 4000); `eventsFor` binary-searches |
+| `g.wrecks` (tiles / records) | 1 / 1 | 91 / 126 | WRECK.total 400, life 600 s |
+| `g.impacts` (tiles / records) | 5 / 6 | 155 / 489 | IMPACT.total 3000, healed after 300 s |
+| `g.craters` / `intensity` / `scars` / `scorch` / `wear` | 5 / 24 / 0 / 3 / 890 | 107 / 264 / 230 / 98 / 781 | all decay; wear capped at 8000 |
+| `g.fieldworks` (trench tiles) | 0 | 158 | player-built |
+| `g.roads.edges` | 114 | 429 | player-built |
+| `g.reports` / `g.log` | 0 / 0 | 30 / 0 | 30 cap |
+| `civ.battlefieldMemory` (human) | 30 | 645 | at most the tile count |
+| `civ.aiPlan.notes` | 15 | 18 | 18 cap |
+| `g.fogCache` | 6000 | 6000 | 6000 cap (full: 12% misses late; small cost) |
+| `nav.crowdCache` / `g.obstacleLists` | 369 / 12380 | 1282 / 12386 | 20000 cap / at most the tile count |
+| heap | 45 MB | 89 MB | flat; no leak |
+
+- **Autosave** grows from 2.1 to 2.9 MB of JSON (gzip 183 → 328 KB). serialize + stringify on the tick thread takes 9–15 ms, and up to 177 ms when a GC lands in it. The gzip already runs async.
+- **Messages.**
+  - The per-player econ message grows from 14 to 110–118 KB at minute 45 on iron_basin. The biggest parts are `buildings` 33 KB, `bf` 28 KB and `sites` 17 KB.
+  - `sites` (with `tenure`, which changes every frame) is rebuilt and resent in every 5 Hz snapshot, not only in econ.
+  - ws permessage-deflate is on, so the wire bytes are much smaller.
+  - Not changed: a server-only delta for `sites`/`buildings` needs client agreement. ClientSession keeps `Objectives` when `sites` is absent, but `tenure` would then go stale. Recommended as a protocol follow-up.
+
+## Changes
+
+### Hash-neutral
+
+Proved by stateHash equality against the frozen pre-change tree, on the iron_basin minute-30 save run to 35, 36 and 40, twin_continents run from start to minute 15, and continental_divide from start to minute 12:
+
+| # | file | change | measured |
+|---|---|---|---|
+| P3-1 | actionNavigation.js `invalidate()`, `groundPrint`/`sameGround` | The ground-only caches (`components`, `centreCache`, `roadOnlyCache`, `laneCache`, `gradient`) are kept when every input they read is unchanged since the last invalidate. Most invalidates are a building placed or removed. Those inputs change only one way between two invalidates, so equal at both ends means unchanged throughout. | Region rebuilds per 5 min (iron_basin, minutes 30–35): 254 → 12, and 4.5 s → 0.2 s. Each removed rebuild was an 80–140 ms spike. |
+| P3-2 | actionNavigation.js `crowding()` | The cache signature is compared code by code instead of `map().join()` into a string on every call (13.6 M calls per 5 min). A hit is exactly the old test. | `crowding` was 4.6% of all server CPU; its string garbage is gone. |
+| P3-3 | actionNavigation.js `primeGroup` | The cost of entering the settled tile is computed once per pop, on the first neighbour that passes, instead of six times through `stepCost(n, t)`. | Flow-field ms per new flow: about 35 → 26 ms. |
+| P3-4 | actionNavigation.js `insideFootprint`/`obstacleAt` | Indexed loops replace `for…of` with destructuring. Heap sampling attributed about 0.5 GB per 5 minutes of short-lived iterator garbage to these two. | Allocation only. |
+
+### Deterministic behaviour changes
+
+Run-to-run hashes are identical (test/group-route-queue.test.js).
+
+| # | file | change |
+|---|---|---|
+| P3-5 | actionOrders.js `moveGroup`/`groupRouteStep`, `assign`; actionGame.js (constructor, `command`); persist.js | **Chunked group routing.** A group order routes its first `GROUP_ROUTE.now` (24) members at once. The rest go to `game.groupJobs` and are routed `perTick` (16) a tick at the start of `unitMotion`, oldest order first, against the same reserved slots and the same flow-field goal. An AI that has already routed `aiTick` (48) members in a tick queues its further orders whole. Waiting members keep their current order. A new order (`assign`) or a field order (`ActionGame.command`) cancels a member's queued route. The queue and `nextGroupJob` are saved. Bounds the 68-unit-assault and AI-expansion ticks; a 1.5 s AI plan with 12 group orders was observed. |
+| P3-6 | persist.js | **Save/restore continuity.** Three pieces of runtime state are now saved: `game.convoys` (convoy pace), `game.nextConvoy`, and `nav.terrainVersion`. Before, a restored late-game match diverged from the uninterrupted one on the first tick, because every moving unit's `navVer` mismatched (stuck-ladder replan) and convoy pace and ids reset. It now diverges at tick 2: the rest comes from history kept in the nav caches (below). |
+
+Tuning note for P3-5: smaller chunks (10/12/12) cost about +13% thread CPU (36.4 vs 31.9 s for iron_basin minutes 30–36). The flow field was re-primed for each chunk, and more 250–350 ms ticks appeared. 24/16/48 measured 33.3 and 37.9 s on the same hash, which is inside the ±7% thread-CPU noise. It engages only for genuinely large orders.
+
+## After: paired runs from the minute-30 saves, game minutes 30–40
+
+These are the cleanest runs of this pass: 3 runs in parallel, before and after run back to back.
+
+| map | tree | mean | p50 | p95 | p99 | max | ticks >100 / >250 ms | ai mean | nav mean | in-tick GC ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| iron_basin | before (post-NAVIGATION) | 18.6 | 6.2 | 87 | 145 | 815 | 186 / 12 | 4.7 | 8.6 | 3437 |
+| iron_basin | after (P3-1..6, chunks 12/12) | 17.7 | 7.0 | 65 | 119 | 1506 | 87 / 7 | 4.3 | 8.0 | 2209 |
+| continental_divide | before | 17.3 | 5.3 | 86 | 138 | 530 | 175 / 11 | 4.5 | 6.5 | 3590 |
+| continental_divide | after | 14.6 | 6.0 | 61 | 90 | 362 | 33 / 2 | 3.0 | 6.0 | 1848 |
+| twin_continents | before | 19.9 | 6.5 | 91 | 143 | 405 | 194 / 6 | 4.4 | 8.5 | 4314 |
+| twin_continents | after | 16.9 | 6.4 | 67 | 102 | 261 | 55 / 1 | 3.1 | 8.0 | 1813 |
+
+- **Single-match A/B** (iron_basin, minutes 30–36, alternating, thread CPU s / p95 / p99 / max / ticks >250 ms):
+  - before: 32.7 / 46 / 101 / 242 / 0 and 31.1 / 24 / 61 / 183 / 0;
+  - hash-neutral changes only: 33.0 / 41 / 85 / 205 / 0 and 31.2 / 39 / 83 / 224 / 0.
+- **A repeat of the 3-map paired run under heavier load** (6 runs in parallel) showed no difference in p95/p99 between before and after. Read the table as "p95 −25 to −30%, ticks over 100 ms halved, in the cleaner runs", not as a precise figure.
+- **The one robust result is the tail:** the 0.8–3.4 s single ticks (AI plans with dozens of group routes) are bounded by P3-5, and region rebuilds are gone (P3-1).
+
+## Threading inside a match: evaluated, not done
+
+A late match uses about 10–20% of one core on average; the problem is the spikes. Parallelism inside a match cannot split a single synchronous AI plan or route search. The candidates:
+
+1. **Snapshot/delta/stringify on a helper:** at most 7% of the tick. The structured clone costs about what the stringify saves.
+2. **Visibility on helpers:** 8%, best case about 1 ms a tick (SharedArrayBuffer positions, Atomics.wait).
+3. **AI planning off-thread:** not viable. It mutates the game synchronously and would need a full state replica (about 5 + 50 ms per hand-off) or a lockstep replica (2x CPU).
+4. **Batched path searches:** the biggest share, but the order pipeline consumes `route()` synchronously everywhere. Both modes would have to defer results, and the helpers would need nav-input replicas rebuilt on every invalidate.
+
+The lead agreed: no threading.
+
+## GC / Node flags
+
+- Production runs `node:22-slim` with plain `node server/index.js`; match workers get `maxOldGenerationSizeMb` only.
+- **Young-generation test locally** (node 26, iron_basin minutes 28–42, 3 runs in parallel):
+
+  | `maxYoungGenerationSizeMb` | scavenges | scavenge ms | max scavenge ms | major GCs | major GC ms |
+  |---|---|---|---|---|---|
+  | default | 322 | 9342 | 417 | 8 | 855 |
+  | 32 | 620 | 14176 | 486 | 12 | 633 |
+  | 64 | 322 | 8109 | 358 | 10 | 328 |
+
+  - 32 MB doubles the scavenges, and 64 MB is about the default.
+  - The 30–400 ms scavenges are a contention artefact: parallel scavenger threads starved on a box at 100% load.
+- **Not measured under Linux** (no WSL or Docker here). Recommendation: don't add `--max-semi-space-size` blind. If it is tried, set `resourceLimits.maxYoungGenerationSizeMb: 64` on the match Worker in matches.js, since the CLI flag does not size worker isolates reliably, and compare `/api/metrics` p99 on Cloud Run gen2.
+
+## Handed over / open
+
+- **Flow fields** are dropped on every `invalidate()`, because their crowding depends on buildings. Keeping them is not exactly neutral: their extent depends on the members' starts, and they are not saved.
+- **Remaining route cost:**
+  - per-unit `fineRoute`/`localRoute` detours: 100–350 ms in the worst ticks;
+  - `stopUnit` → `tacticalResume`/queued-order routes: about 6% of CPU;
+  - the stuck-ladder `strictRoute`: about 5%.
+- **Save/restore continuity late in a match** still diverges at tick 2. Causes:
+  - nav cache history: `crowdCache` keyed by a radius bucket, not the radius; corridors and flows keyed without radius;
+  - a `destinationFacing` null-vs-undefined difference.
+
+  With exact-radius keys, 150 ticks matched. Worth a dedicated pass if deploy restores must continue the exact match.
+- **Engineers can be assigned build jobs across the whole map** (`pickJob` has no distance bound for build jobs). One was seen walking about 170 units.
+- **Protocol:** `sites` is resent at 5 Hz and `buildings`/`bf` in full at 1 Hz (about 110 KB per second per player before deflate, late).
+- Raw data stayed in the session scratch directory and is not committed.
+
+# Pass 4: econ deltas (2026-11-18, protocol agent)
+
+Follow-up to Pass 3's open protocol item. Late in a match the per-player econ message is 60–110 KB: `bf` 15–40 KB, `sites` 16–20 KB (in every 5 Hz snapshot, not only econ), `buildings` 5–22 KB. Most of each is identical to what the player was sent a second earlier.
+
+## Design
+
+New capability **`econ-delta-v1`**, used together with `udelta`.
+
+- The Unity client announces it in the hello (`GameConnection.WantCaps`), and `server/protocol.js` offers it.
+- `worker.js` builds the player's `deltaEncoder(50, 10, { keyed: true })` only when the welcome carries the capability.
+- A 0.5.0 client (no capability) and spectators get exactly what they got before.
+
+The new code is in `server/delta.js`; the simulation is untouched.
+
+| field | full (first message, rejoin, resync, slow safety refresh) | delta | key |
+|---|---|---|---|
+| `sites` (5 Hz) | `sites` + `sv` | `sd: { v, u: [records], r: [ids] }` | id |
+| `buildings` (1 Hz) | `buildings` + `bv` | `bd: { v, u, r }` | id |
+| `bf` (1 Hz) | `bf` + `bfv` | `bfd: { v, u: { sub: rows }, r: { sub: tiles } }` | tile within each sub-list; a listed tile replaces all of that tile's rows (order within a tile is kept; crater stamping uses the first six) |
+| `ruins`, `cities` | as before | left out while identical to the last econ message (the client keeps its copy) | – |
+
+- **Versions and gaps.**
+  - A delta is sent only when something changed, and each delta increments the field version.
+  - A client applies a delta only on top of `v - 1`. Any other version is a gap: the delta is dropped and the client sends `cmd { c: 'resync' }`, at most every 2 s.
+  - The worker answers with `resyncEcon()` and `catchUp`, so the next snapshot carries all three fields whole.
+  - A rejoin builds a new encoder, so its first message is whole too.
+  - The safety refresh runs every 300 econ messages (bf/buildings) and every 1500 snapshots (sites).
+- **Per-frame clocks.**
+  - `tenure` changed in every frame, so every owned site counted as changed. It travels as its anchor `ta` (claim time) instead, and the client sets `Tenure = time - ta`.
+  - `maturity` travels as `ml: 1` while it grows (the client computes `min(35, time - developedAt)`).
+  - Remembered sites keep their literal values.
+- **Client** (Core/Protocol, Session):
+  - `ProtocolDecoder` decodes `sd`/`bd`/`bfd` into `KeyedDelta<T>`/`BattlefieldDelta` on the network threads. Site and building decoding were factored into `Sites()`/`Buildings()`, field for field the same.
+  - `ClientSession` checks the versions and applies the deltas in wire order:
+    - sites go into `Objectives`, with anchors re-derived on every snapshot (`ObjectiveSite.Rederive`);
+    - buildings go into `StructureStore.ApplyBuildingChanges`, with the same dirty cells and revision as a full apply;
+    - the battlefield goes into the new `BattlefieldStore` (tile groups), whose `Snapshot()` feeds the existing geometry path.
+  - Full fields without a version (older servers) behave exactly as before.
+- **Encoder cost.**
+  - Records are compared by their JSON. `buildings` and each `bf` sub-list first compare as a whole, which is cheap when unchanged.
+  - Site anchors are rest-spread copies: `delete` put the copies into dictionary mode and cost about 12%.
+  - On a replay of minutes 18–22 (iron_basin, 1200 messages), keyed and legacy encode + stringify take the same time: 445 vs 445 ms.
+
+## Measured
+
+Tool: `tools/econ-delta-bench.mjs`.
+
+- **Setup.** Every nation is watched as a connected player, with both encoders fed the same snapshots in alternating order. Values are averaged over the 6 players, in ±1 min windows. `--no-victory` keeps the match running past the AI's decisive win at about minute 23 (instance-only patch).
+- **Measures.** Raw KB per player per minute, KB deflated per message (an upper bound for permessage-deflate with context takeover), and ms per player per minute. "enc" is delta encoding plus `JSON.stringify` on the match worker's tick thread. "deflate" is `zlib.deflateRawSync` of each message, as a proxy for the ws compression on the main thread.
+- **Data:** `docs/performance/data/econ-delta-*.json`.
+
+| map | min | udelta KB/min (deflated) | keyed KB/min (deflated) | econ msg KB udelta → keyed | enc ms/min udelta → keyed | deflate ms/min udelta → keyed |
+|---|---|---|---|---|---|---|
+| iron_basin | 5 | 3771 (996) | 1391 (357) | 17.4 → 6.1 | 26 → 34 | 66 → 28 |
+| iron_basin | 20 | 11046 (2827) | 3776 (993) | 72.8 → 15.9 | 111 → 124 | 280 → 79 |
+| iron_basin | 40 | 9894 (2529) | 2484 (672) | 59.0 → 11.4 | 67 → 79 | 192 → 49 |
+| continental_divide | 5 | 3105 (818) | 1266 (297) | 14.6 → 5.6 | 22 → 29 | 54 → 25 |
+| continental_divide | 20 | 11748 (3012) | 4163 (1069) | 80.9 → 17.9 | 109 → 123 | 256 → 79 |
+| continental_divide | 40 | 10977 (2648) | 3001 (738) | 66.5 → 13.4 | 128 → 140 | 285 → 86 |
+
+- **Bytes:** 2.7–4x fewer, raw and deflated. Late-match wire traffic falls from about 2.5–3 MB to about 0.7 MB per player per minute.
+- **Server CPU per player** (encode + deflate): 330–410 → 160–225 ms per game minute. The deflate on the main thread falls by about 70%.
+- **Tick thread:** encode + stringify is equal on the isolated replay. In the paired bench it is +10–25%, about 0.2 ms per player per second; the bench ran on a loaded machine.
+- The occasional full refresh is still 80–125 KB: the "max" econ message, 6 in 720.
+- **Client decode** (Unity editor, minute-40 iron_basin samples, `ProtocolDecoder.Decode`; allocation by Mono heap delta, approximate):
+
+  | message | wire | allocated | decode time |
+  |---|---|---|---|
+  | econ, udelta | 51 KB | about 122 KB | 9.6 ms |
+  | econ, keyed | 10 KB | about 12 KB | 1.1 ms |
+  | 5 Hz snapshot, udelta | 23 KB | about 20 KB | 2.9 ms |
+  | 5 Hz snapshot, keyed | 5 KB | about 4 KB | 0.8 ms |
+
+  Per second (1 econ + 4 snapshots): about 200 → 28 KB allocated and about 21 → 4 ms of decode on the network threads. On top of that, a battlefield delta rebuilds the typed arrays (`BattlefieldStore.Snapshot`) on the main thread only when the battlefield changed.
+
+## Other large fields resent unchanged (census, econ messages, minute 40)
+
+| field | size | how often unchanged | status |
+|---|---|---|---|
+| `ruins` | 1–3 KB | 96–99% | now gated |
+| `cities` | 0.3–0.5 KB | 99% | now gated |
+| `trenchWorld` + `fw` | 2–5 KB | 75–95% | already gated whole for udelta (S4). Could be keyed by tile; small. |
+| `civs` | 0.7 KB | 92–99% | ungated; the Unity client ignores it, the Godot client may read it |
+| `units` / `wp` / `paths` | – | – | already per-record (udelta) |
+| `vis` / `urban` | – | – | already only sent on change |
+
+## Verification
+
+- `test/econ-delta-2026-11-18.test.js`:
+  - **Capability:** negotiated only when asked for.
+  - **Unit checks:** delta contents, tenure anchors, a version gap, a resync, and an old encoder never emitting keyed fields.
+  - **Long replay:** 20 minutes of crossroads with 4 AI, 6000 snapshots. The reference client (`keyedReceiver`, which ClientSession mirrors) is compared with the full snapshot after every delivered message, covering sites, buildings, bf, ruins and cities. The run includes:
+    - a reconnect at tick 3000 (new encoder, client keeps its copy);
+    - a dropped message at tick 6450. The gap is detected on the next delta, and the resync fields arrive in the following message (6 messages stale in total).
+
+    Bytes: 23.6 MB keyed vs 80.0 MB udelta.
+- `test/econ-gate.test.js` (unchanged) still passes.
+- **C# parity.** The real `ProtocolDecoder`, `StructureStore` and `BattlefieldStore` were run in the Unity editor over a 20-minute keyed fixture (3371 deltas). Sites, buildings (visual key plus queue and staff fields) and battlefield equal the decoded full snapshot at all 61 checkpoints, with no gaps.
+- The client compiles (Unity 6.3, no console errors).
+
+## Risks / notes
+
+- **Site tenure** is re-derived from the snapshot clock (rounded to 0.1 s). It differs from the server value by under 0.05 s in general; the test measured about 3e-13. It only feeds `DevelopmentStage` and a release-shots sort.
+- **Version-gap recovery** costs one round trip plus a full message (about 80–125 KB late). There is no gap source in normal operation: ws is ordered, congested viewers are skipped before encoding, and a rejoin uses a new encoder. It is a safety net.
+- **Ruins and cities gating** relies on the client keeping its copies when the fields are absent. Unity does. Only keyed clients get it.

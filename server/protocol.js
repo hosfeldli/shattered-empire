@@ -8,7 +8,8 @@
 //   geo: terrain geometry in 'geo' messages (server/sim/terrainGeo.js), fog-filtered like tile records
 export const PROTOCOL_VERSION = 2;
 export const PROTOCOL_MIN = 1;
-export const CAPABILITIES = ['geo', 'udelta', 'action-rts', 'ring-cities-v1'];
+//   econ-delta-v1 (with udelta): sites, buildings and battlefield as versioned keyed deltas (server/delta.js, Pass 4)
+export const CAPABILITIES = ['geo', 'udelta', 'action-rts', 'ring-cities-v1', 'econ-delta-v1'];
 
 export function negotiate(msg) {
   const proto = Number.isInteger(msg.proto) ? msg.proto : 1;

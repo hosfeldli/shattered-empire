@@ -21,9 +21,12 @@ namespace SE.Runtime.UI
         readonly VisualElement frame, pageHost;
         readonly Label statusLabel;
         readonly UiKit.PageStack pages;
-        readonly CampaignOptions skirmish = new CampaignOptions();
+        // New Skirmish and Watch AI Match share one setup page (BuildSetup); each keeps its own choices
+        readonly CampaignOptions soloSetup = new CampaignOptions(), watchSetup = new CampaignOptions { Observe = true, Format = "ffa4" };
+        bool watching;   // the setup page is Watch AI Match: every seat an AI, no seat of yours
+        CampaignOptions skirmish => watching ? watchSetup : soloSetup;
 
-        static readonly HashSet<string> WidePages = new HashSet<string> { "skirmish", "lobby", "settings", "guide", "browse", "builder" };
+        static readonly HashSet<string> WidePages = new HashSet<string> { "skirmish", "watch", "lobby", "settings", "guide", "browse", "builder" };
 
         bool advancedOpen;
         string codeMode = "join";
@@ -65,7 +68,9 @@ namespace SE.Runtime.UI
                 social.LobbyChanged += OnSocialChanged;
                 social.InviteAccepted += OnInviteAccepted;
             }
-            skirmish.Wrap = false;
+            soloSetup.Wrap = false;
+            watchSetup.Wrap = false;
+            LoadWatchSetup();
         }
 
         // ------------------------------------------------------------------ contract (Hud)
@@ -133,7 +138,7 @@ namespace SE.Runtime.UI
             SyncWide();
         }
 
-        /// <summary>Review captures: "root", "skirmish", "multiplayer", "lobby", "training", "settings", "guide", "friends", "code".</summary>
+        /// <summary>Review captures: "root", "skirmish", "watch", "multiplayer", "lobby", "training", "settings", "guide", "friends", "code".</summary>
         public void ReviewPage(string id)
         {
             Show(true, null);
@@ -157,6 +162,7 @@ namespace SE.Runtime.UI
                     break;
                 case "friends": case "code": case "browse": Go("multiplayer"); Go(id); break;
                 case "guide": Go("training"); Go("guide"); break;
+                case "watch": Go("training"); Go("watch"); break;
                 default: Go(id); break;
             }
         }
@@ -173,6 +179,7 @@ namespace SE.Runtime.UI
             switch (id)
             {
                 case "skirmish": return BuildSkirmish;
+                case "watch": return BuildWatch;
                 case "multiplayer": return BuildMultiplayer;
                 case "friends": return BuildFriends;
                 case "browse": return BuildBrowse;
@@ -409,7 +416,9 @@ namespace SE.Runtime.UI
         Label skirmishSides;
         MapPicker skirmishPicker;
 
-        string SkirmishFormat => string.IsNullOrEmpty(skirmish.Format) ? "1v1" : skirmish.Format;
+        string SkirmishFormat => string.IsNullOrEmpty(skirmish.Format) ? (watching ? "ffa4" : "1v1") : skirmish.Format;
+        /// <summary>The seat of AI entry 0: 1 in New Skirmish (seat 0 is yours), 0 when watching.</summary>
+        int SeatBase => watching ? 0 : 1;
         bool SkirmishRandom => FindMap(skirmish.Map) == null;
 
         static readonly (string id, string text)[] StartResHelp =
@@ -434,16 +443,32 @@ namespace SE.Runtime.UI
             return l;
         }
 
-        VisualElement BuildSkirmish()
+        VisualElement BuildSkirmish() { watching = false; return BuildSetup(); }
+
+        /// <summary>Watch AI Match: the New Skirmish page with every seat an AI, plus speed and the spectator's view.</summary>
+        VisualElement BuildWatch()
         {
-            var p = SubPage("New Skirmish");
+            watching = true;
+            // a built map remembered from last time: the builder's last sketch, else a random world
+            if (watchSetup.Map == "custom" && skirmishCustom == null)
+            {
+                var last = MapSketch.Load(-1);
+                if (last != null) { skirmishSketch = last; skirmishCustom = last.ToEntry(); }
+                else watchSetup.Map = "random";
+            }
+            return BuildSetup();
+        }
+
+        VisualElement BuildSetup()
+        {
+            var p = SubPage(watching ? "Watch AI Match" : "New Skirmish");
             var columns = Box("se-menu-columns", p.Content);
             var left = Box("se-menu-column", columns);
             var right = Box("se-menu-column", columns);
-            if (string.IsNullOrEmpty(skirmish.Format)) skirmish.Format = "1v1";
+            if (string.IsNullOrEmpty(skirmish.Format)) skirmish.Format = watching ? "ffa4" : "1v1";
 
             // ---- sides: the format, then one row per seat (you, allies, rivals) with each AI's settings
-            Section("Sides", left, true);
+            Section(watching ? "Nations" : "Sides", left, true);
             skirmishFormatSeg = UiKit.Segmented(Options(Formats), SkirmishFormat, v => SetSkirmishFormat(v), left, 66);
             skirmishAiList = Box("se-ai-list se-ai-list--seats", left);
             skirmishSides = Line("", "se-menu-help-line", left);
@@ -471,12 +496,13 @@ namespace SE.Runtime.UI
             UiKit.Segmented(Options(StartResOptions), string.IsNullOrEmpty(skirmish.StartRes) ? "standard" : skirmish.StartRes,
                 v => { skirmish.StartRes = v; if (resHelp != null) resHelp.text = HelpFor(StartResHelp, v); }, left, 99);
             resHelp = Line(HelpFor(StartResHelp, string.IsNullOrEmpty(skirmish.StartRes) ? "standard" : skirmish.StartRes), "se-menu-help-line", left);
+            if (watching) WatchRules(left);
 
             // ---- battlefield: a catalog map with a start for every seat, or a random world (style, size, seed)
             Section("Battlefield", right, true);
             skirmishPicker = new MapPicker(() => WithCustom(skirmishCustom), OnSkirmishMap);
             right.Add(skirmishPicker);
-            Btn("Map builder", () => OpenBuilder("skirmish"), right, "terrain").tooltip = "Paint your own map: sea, land, mountains and the bases";
+            Btn("Map builder", () => OpenBuilder(watching ? "watch" : "skirmish"), right, "terrain").tooltip = "Paint your own map: sea, land, mountains and the bases";
             RequestMaps();
             skirmishRandomBox = Box("se-menu-random", right);
             Line("World style", "se-menu-label", skirmishRandomBox);
@@ -491,21 +517,112 @@ namespace SE.Runtime.UI
             Btn("Roll", () => seedField.value = UnityEngine.Random.Range(1, 999999).ToString(), seedRow).tooltip = "A random seed you can note down and share";
             UiKit.IconButton("close", () => seedField.value = "", "Clear the seed", seedRow, 36);
 
-            Line("Commander name", "se-menu-label", right);
-            var nameField = Field(game.PlayerName, right);
-            nameField.maxLength = 24;
-            nameField.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
+            if (!watching)
+            {
+                Line("Commander name", "se-menu-label", right);
+                var nameField = Field(game.PlayerName, right);
+                nameField.maxLength = 24;
+                nameField.RegisterValueChangedCallback(e => game.PlayerName = e.newValue);
+            }
 
             SyncSkirmish();
-            Btn("Start", () =>
+            bool watch = watching;
+            var start = Btn(watch ? "Watch" : "Start", () =>
             {
                 skirmish.Wrap = false;
                 EnsureSkirmishAis();
                 skirmish.Rivals = skirmish.Ais.Count;
                 skirmish.Sketch = skirmish.Map == "custom" ? skirmishSketch?.Encode() : null;
+                if (watch) { SaveWatchSetup(); SetStatus("Starting the AI match…"); }
                 game.StartCampaign(skirmish);
-            }, p.Footer, "play", true);
+            }, p.Footer, watch ? "observer" : "play", true);
+            if (watch) start.tooltip = "Start the AI match and watch it as a spectator; speed and view change in the match too";
             return p.Root;
+        }
+
+        // ---- Watch AI Match: the exhibition's starting speed and what the spectator sees (both change in the match)
+        static readonly (string id, string label)[] WatchSpeedOptions = { ("1", "1×"), ("2", "2×"), ("4", "4×"), ("8", "8×") };
+        static readonly (string id, string text)[] WatchSpeedHelp =
+        {
+            ("1", "Real time: every battle at the speed players fight it."),
+            ("2", "Twice as fast: the opening passes quickly."),
+            ("4", "Four times as fast: a whole war in a coffee break."),
+            ("8", "Eight times as fast: for long experiments; battles blur."),
+        };
+        static readonly (string id, string label)[] WatchViewOptions = { ("map", "Whole map"), ("fog", "Their fog of war") };
+        static readonly (string id, string text)[] WatchViewHelp =
+        {
+            ("map", "See every nation and every unit (the camera follows the nation you pick)."),
+            ("fog", "See only what the followed nation sees: scouting and surprise as it plays."),
+        };
+
+        void WatchRules(VisualElement parent)
+        {
+            Section("Watching", parent);
+            Line("Match speed", "se-menu-label", parent);
+            Label speedHelp = null;
+            string speed = (watchSetup.Speed == 2 || watchSetup.Speed == 4 || watchSetup.Speed == 8 ? watchSetup.Speed : 1).ToString();
+            UiKit.Segmented(Options(WatchSpeedOptions), speed, v =>
+            {
+                watchSetup.Speed = int.TryParse(v, out int n) ? n : 1;
+                if (speedHelp != null) speedHelp.text = HelpFor(WatchSpeedHelp, v);
+            }, parent, 66);
+            speedHelp = Line(HelpFor(WatchSpeedHelp, speed), "se-menu-help-line", parent);
+            Line("Spectator view", "se-menu-label", parent);
+            Label viewHelp = null;
+            string view = watchSetup.ObserverFog ? "fog" : "map";
+            UiKit.Segmented(Options(WatchViewOptions), view, v =>
+            {
+                watchSetup.ObserverFog = v == "fog";
+                if (viewHelp != null) viewHelp.text = HelpFor(WatchViewHelp, v);
+            }, parent, 132);
+            viewHelp = Line(HelpFor(WatchViewHelp, view), "se-menu-help-line", parent);
+        }
+
+        const string WatchSetupKey = "se.watch.setup";
+
+        /// <summary>The last Watch AI Match choices (PlayerPrefs, like the other menu settings); defaults: four AIs, free for all.</summary>
+        void LoadWatchSetup()
+        {
+            string json = PlayerPrefs.GetString(WatchSetupKey, "");
+            if (string.IsNullOrEmpty(json)) return;
+            try
+            {
+                var o = JObject.Parse(json);
+                var w = watchSetup;
+                string Str(string key, string fallback) => (string)o[key] is string v && v.Length > 0 ? v : fallback;
+                w.Format = Str("format", w.Format);
+                if (MapPreview.Seats(w.Format) < 2) w.Format = "ffa4";
+                w.Map = Str("map", w.Map);
+                w.Style = Str("style", w.Style);
+                w.MapSize = Str("mapSize", w.MapSize);
+                w.Difficulty = Str("difficulty", w.Difficulty);
+                w.Objective = Str("objective", w.Objective);
+                w.StartRes = Str("startRes", w.StartRes);
+                w.Seed = (string)o["seed"] ?? "";
+                w.Speed = (int?)o["speed"] ?? 1;
+                w.ObserverFog = (bool?)o["fog"] ?? false;
+                w.Ais.Clear();
+                if (o["ais"] is JArray ais)
+                    foreach (var t in ais)
+                        if (t is JObject a)
+                            w.Ais.Add(new AiSeatOption { Difficulty = (string)a["difficulty"] ?? w.Difficulty, Personality = (string)a["personality"] ?? "random", Closed = (bool?)a["closed"] ?? false });
+            }
+            catch (Exception e) { Debug.LogWarning("Watch AI Match: could not read the saved setup (" + e.Message + ")"); }
+        }
+
+        void SaveWatchSetup()
+        {
+            var w = watchSetup;
+            var ais = new JArray();
+            foreach (var ai in w.Ais) ais.Add(new JObject { ["difficulty"] = ai.Difficulty, ["personality"] = ai.Personality, ["closed"] = ai.Closed });
+            var o = new JObject
+            {
+                ["format"] = w.Format, ["map"] = w.Map, ["style"] = w.Style, ["mapSize"] = w.MapSize, ["difficulty"] = w.Difficulty,
+                ["objective"] = w.Objective, ["startRes"] = w.StartRes, ["seed"] = w.Seed ?? "", ["speed"] = w.Speed, ["fog"] = w.ObserverFog, ["ais"] = ais,
+            };
+            PlayerPrefs.SetString(WatchSetupKey, o.ToString(Newtonsoft.Json.Formatting.None));
+            PlayerPrefs.Save();
         }
 
         void SetSkirmishFormat(string format)
@@ -529,26 +646,27 @@ namespace SE.Runtime.UI
         /// <summary>One AI entry per AI seat of the format (kept when the format changes, so choices survive).</summary>
         void EnsureSkirmishAis()
         {
-            int need = Mathf.Max(1, MapPreview.Seats(SkirmishFormat) - 1);
+            int need = watching ? Mathf.Max(2, MapPreview.Seats(SkirmishFormat)) : Mathf.Max(1, MapPreview.Seats(SkirmishFormat) - 1);
             while (skirmish.Ais.Count < need) skirmish.Ais.Add(new AiSeatOption { Difficulty = skirmish.Difficulty });
             if (skirmish.Ais.Count > need) skirmish.Ais.RemoveRange(need, skirmish.Ais.Count - need);
             if (!SidesPlayable()) foreach (var ai in skirmish.Ais) ai.Closed = false;
         }
 
-        /// <summary>At least two sides keep a seat (you are always seated): the server's rule for closed seats.</summary>
+        /// <summary>At least two sides keep a seat (in New Skirmish you are always seated): the server's rule for closed seats.</summary>
         bool SidesPlayable(int extraClosed = -1)
         {
             int ts = MapPreview.TeamSizeOf(SkirmishFormat);
-            var sides = new HashSet<int> { 0 };
+            var sides = new HashSet<int>();
+            if (!watching) sides.Add(0);
             for (int i = 0; i < skirmish.Ais.Count; i++)
-                if (!skirmish.Ais[i].Closed && i != extraClosed) sides.Add((i + 1) / ts);
+                if (!skirmish.Ais[i].Closed && i != extraClosed) sides.Add((i + SeatBase) / ts);
             return sides.Count >= 2;
         }
 
         ulong SkirmishClosedMask()
         {
             ulong mask = 0;
-            for (int i = 0; i < skirmish.Ais.Count && i < 63; i++) if (skirmish.Ais[i].Closed) mask |= 1UL << (i + 1);
+            for (int i = 0; i < skirmish.Ais.Count && i + SeatBase < 63; i++) if (skirmish.Ais[i].Closed) mask |= 1UL << (i + SeatBase);
             return mask;
         }
 
@@ -570,11 +688,11 @@ namespace SE.Runtime.UI
         }
 
         /// <summary>"2 v 1" / "Free for all · 3 players": who plays whom once closed seats are left out.</summary>
-        static string SidesText(IReadOnlyList<int> perTeam, bool ffa)
+        static string SidesText(IReadOnlyList<int> perTeam, bool ffa, string who = "players")
         {
             int total = 0, teams = 0;
             foreach (int n in perTeam) if (n > 0) { total += n; teams++; }
-            if (ffa) return $"Free for all · {total} players";
+            if (ffa) return $"Free for all · {total} {who}";
             var parts = new List<string>();
             foreach (int n in perTeam) if (n > 0) parts.Add(n.ToString());
             return string.Join(" v ", parts) + (teams == perTeam.Count ? "" : " · a side is empty");
@@ -591,18 +709,21 @@ namespace SE.Runtime.UI
             bool random = SkirmishRandom;
             int teams = Mathf.Max(2, MapPreview.Seats(format) / Mathf.Max(1, ts));
             var perTeam = new int[teams];
-            perTeam[0] = 1;
 
-            // you: seat 0, team 1
-            var you = Box("se-ai-row se-ai-row--you", skirmishAiList);
-            Box("se-team-dot", you).style.backgroundColor = (Color)MapPreview.TeamColor(0);
-            Line(ffa ? "You" : "You · Team 1", "se-ai-row-name", you);
-            Line(string.IsNullOrEmpty(game.PlayerName) ? "Commander" : game.PlayerName, "se-ai-row-tag", you);
+            // you: seat 0, team 1 (Watch AI Match has no seat of yours: every seat is an AI)
+            if (!watching)
+            {
+                perTeam[0] = 1;
+                var you = Box("se-ai-row se-ai-row--you", skirmishAiList);
+                Box("se-team-dot", you).style.backgroundColor = (Color)MapPreview.TeamColor(0);
+                Line(ffa ? "You" : "You · Team 1", "se-ai-row-name", you);
+                Line(string.IsNullOrEmpty(game.PlayerName) ? "Commander" : game.PlayerName, "se-ai-row-tag", you);
+            }
 
             for (int i = 0; i < skirmish.Ais.Count; i++)
             {
                 var ai = skirmish.Ais[i];
-                int seat = i + 1, team = seat / ts, index = i;
+                int seat = i + SeatBase, team = seat / ts, index = i;
                 bool closed = ai.Closed;
                 if (!closed && team < teams) perTeam[team]++;
                 var row = Box("se-ai-row", skirmishAiList);
@@ -610,7 +731,8 @@ namespace SE.Runtime.UI
                 var dot = Box("se-team-dot", row);
                 dot.style.backgroundColor = closed ? (Color)new Color32(0, 0, 0, 0) : (Color)MapPreview.TeamColor(team);
                 dot.EnableInClassList("se-team-dot--empty", closed);
-                string who = ffa ? $"Rival {seat}" : team == 0 ? "Ally" : $"Rival · Team {team + 1}";
+                string who = watching ? (ffa ? $"Nation {seat + 1}" : $"Nation {seat + 1} · Team {team + 1}")
+                    : ffa ? $"Rival {seat}" : team == 0 ? "Ally" : $"Rival · Team {team + 1}";
                 if (closed)
                 {
                     Line(who + " · seat left empty", "se-ai-row-name se-ai-row-name--closed", row);
@@ -622,7 +744,7 @@ namespace SE.Runtime.UI
                 Cycle(PersonalityIds, PersonalityNames, ai.Personality, v => ai.Personality = v, row, "Personality: Warlord attacks early, Merchant builds an economy, Builder fortifies");
                 var remove = UiKit.IconButton("close", () =>
                 {
-                    if (!SidesPlayable(index)) { SetStatus("Both sides need at least one player"); return; }
+                    if (!SidesPlayable(index)) { SetStatus(watching ? "At least two sides need an AI nation" : "Both sides need at least one player"); return; }
                     ai.Closed = true;
                     SyncSkirmish();
                 }, "Leave this seat empty (uneven sides: 2 v 1, 1 v 3 …)", row, 26);
@@ -634,7 +756,7 @@ namespace SE.Runtime.UI
                 BaseOwnerRows(skirmishAiList, skirmishSketch, MapPreview.Seats(format), ts, SkirmishClosedMask(), ffa, true,
                     next => { skirmishSketch = next; skirmishCustom = next.ToEntry(); SyncSkirmish(); });
             if (skirmishSides != null)
-                skirmishSides.text = SidesText(perTeam, ffa) + (skirmish.Ais.Count < 2 ? "" : " · ✕ leaves a seat empty for uneven sides") +
+                skirmishSides.text = SidesText(perTeam, ffa, watching ? "AI nations" : "players") + (skirmish.Ais.Count < 2 ? "" : " · ✕ leaves a seat empty for uneven sides") +
                     (!random && FindMap(skirmish.Map) is MapCatalogEntry sm && sm.Players > MapPreview.Seats(format) ? $" · {sm.Name} has {sm.Players} starts; the spare ones stay neutral" : "");
         }
 
@@ -787,15 +909,15 @@ namespace SE.Runtime.UI
         static readonly MapCatalogEntry[] BuiltInMaps =
         {
             new MapCatalogEntry { Id = "twin_rivers", Name = "Twin Rivers", Players = 2, TeamSize = 1, Size = 76,
-                Description = "Two rivers frame a central ridge. Coastal roads bridge both rivers; the direct route wades the fords to the Ridgeway saddle." },
+                Description = "Two rivers frame a central ridge. Roads built along the coast bridge both rivers; the direct route wades the fords to the Ridgeway saddle." },
             new MapCatalogEntry { Id = "serpentine", Name = "Serpentine", Players = 2, TeamSize = 1, Size = 80,
                 Description = "Long ridges fold the valley into an S around the Coil; river fords cut the bends and a saddle lets infantry climb straight over." },
             new MapCatalogEntry { Id = "mirefen_gap", Name = "Mirefen Gap", Players = 2, TeamSize = 1, Size = 84,
-                Description = "Two fen lakes cut the map coast to coast. Mirefen holds the dry gap between them; coastal bridges and upstream fords open the flanks." },
+                Description = "Two fen lakes cut the map coast to coast. Mirefen holds the dry gap between them; bridges you build on the coast and upstream fords open the flanks." },
             new MapCatalogEntry { Id = "fortress_pass", Name = "Fortress Pass", Players = 2, TeamSize = 1, Size = 84,
                 Description = "A wall of impassable peaks splits the map: one winding canyon to the Keep, and two narrow goat trails far to the north and south." },
             new MapCatalogEntry { Id = "three_crowns", Name = "Three Crowns", Players = 3, TeamSize = 1, Size = 96,
-                Description = "Free for all. Three realms around the Crown plateau, each split from the next by a border river with one bridge and one ford." },
+                Description = "Free for all. Three realms around the Crown plateau, each split from the next by a border river with one bridge site and one ford." },
             new MapCatalogEntry { Id = "shattered_delta", Name = "Shattered Delta", Players = 3, TeamSize = 1, Size = 104,
                 Description = "Free for all. Three rivers run into a central lagoon, one between each pair of realms; delta towns hold the crossings." },
             new MapCatalogEntry { Id = "ring_of_fire", Name = "Ring of Fire", Players = 3, TeamSize = 1, Size = 104,
@@ -805,11 +927,11 @@ namespace SE.Runtime.UI
             new MapCatalogEntry { Id = "crossroads", Name = "Crossroads", Players = 4, TeamSize = 1, Size = 104,
                 Description = "Free for all. Four realms around the Hub; lakes on the diagonals split the approaches into lanes." },
             new MapCatalogEntry { Id = "stepping_stones", Name = "Stepping Stones", Players = 4, TeamSize = 2, Size = 104,
-                Description = "Every capital on its own island; causeways and bridged straits chain the islands into three lanes. Long ground routes: air matters." },
+                Description = "Every capital on its own island; causeways and bridges, once roads are built, chain the islands into three lanes. Long ground routes: air matters." },
             new MapCatalogEntry { Id = "king_of_the_hill", Name = "King of the Hill", Players = 4, TeamSize = 1, Size = 104,
                 Description = "Free for all. A sheer-sided plateau with one ramp per realm: hold the Summit and see everything, but every ramp leads to you." },
             new MapCatalogEntry { Id = "saltmarsh_estuary", Name = "Saltmarsh Estuary", Players = 4, TeamSize = 2, Size = 108,
-                Description = "A tidal sound splits the coast. Land bridges cross it north and south; causeways reach Tidewater Isle in the middle." },
+                Description = "A tidal sound splits the coast. Land bridges cross it north and south; causeways built with roads reach Tidewater Isle in the middle." },
             new MapCatalogEntry { Id = "fjordmark", Name = "Fjordmark", Players = 4, TeamSize = 2, Size = 108,
                 Description = "Two cliff-walled fjords cut deep into the land; the centre is reached around a fjord head or over the Narrows rock bridge." },
             new MapCatalogEntry { Id = "quarry_highlands", Name = "Quarry Highlands", Players = 4, TeamSize = 1, Size = 112,
@@ -850,7 +972,7 @@ namespace SE.Runtime.UI
             next.Sort((a, b) => a.Players != b.Players ? a.Players.CompareTo(b.Players) : a.Size.CompareTo(b.Size));
             maps.Clear();
             maps.AddRange(next);
-            if (FindMap(skirmish.Map) == null) skirmish.Map = "random";
+            foreach (var setup in new[] { soloSetup, watchSetup }) if (FindMap(setup.Map) == null) setup.Map = "random";
             if (skirmishPicker != null && skirmishPicker.panel != null) SyncSkirmish();
             if (lobbyPicker != null && lobbyPicker.panel != null) UpdateLobby();
         }
@@ -1340,7 +1462,7 @@ namespace SE.Runtime.UI
                 game.StartCampaign(new CampaignOptions { MapSize = "small", Rivals = 1, Difficulty = "easy", Tutorial = true });
             }, p.Content).tooltip = "A small guided match against one forgiving rival";
             Item("skirmish", "Combat Sandbox", () => game.StartMatch("sandbox", ""), p.Content).tooltip = "Stage a battle at once and try tactics";
-            Item("observer", "Watch AI Match", () => game.StartMatch("observe", ""), p.Content).tooltip = "Watch AI nations fight; follow any of them";
+            Item("observer", "Watch AI Match", () => Go("watch"), p.Content).tooltip = "Set up a match between AI nations (map, teams, each AI, rules, speed) and watch it";
             Item("guide", "Field Guide", () => Go("guide"), p.Content);
             if (Application.isEditor || Debug.isDebugBuild) Item("overview", "Performance stress scene", () => game.StartStress(), p.Content);
             return p.Root;

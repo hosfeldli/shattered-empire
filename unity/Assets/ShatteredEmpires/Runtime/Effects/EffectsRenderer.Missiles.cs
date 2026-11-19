@@ -45,7 +45,7 @@ namespace SE.Runtime.Effects
         void MissileTravel(ref Flight f, float3 p, float3 heading, float moved)
         {
             bool strategic = f.Strategic && !f.Interceptor, interceptor = f.Interceptor;
-            float body = strategic ? .44f : interceptor ? .055f : .09f;
+            float body = strategic ? .44f : interceptor ? .055f : .13f;
             missileBodies.Add(InstanceData.TRS(MapSpace.W(p), quaternion.LookRotationSafe(MapSpace.W(heading), Up), new float3(body), new float4(.93f, .92f, .86f, 0)));
             // the motor: a hot streak and a soft additive glow behind the body
             float flare = strategic ? .09f : interceptor ? .028f : .04f;
@@ -72,8 +72,9 @@ namespace SE.Runtime.Effects
                     Emit(at, Wind * .05f + RandDir() * .01f, .022f, .07f, 2.2f + R(),
                         new float3(.9f, .9f, .9f), new float3(.70f, .72f, .73f), .38f, false, 0, .6f, .015f);
                 else
-                    Emit(at, Wind * .06f + RandDir() * .015f, .03f, .1f, 3.2f + R() * 1.3f,
-                        new float3(.84f + g, .84f + g, .82f + g), new float3(.64f, .66f, .67f), .44f, false, 0, .5f, .015f);
+                    // a tactical missile (missile battery): a thick white trail that hangs along the arc for a while
+                    Emit(at, Wind * .06f + RandDir() * .015f, .045f, .16f, 4.5f + R() * 1.8f,
+                        new float3(.88f + g, .88f + g, .86f + g), new float3(.66f, .68f, .69f), .55f, false, 0, .5f, .015f);
             }
             if (n == 4) f.TrailDistance = 0;   // a hitch: do not try to catch up next frame
         }

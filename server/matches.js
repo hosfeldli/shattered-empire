@@ -79,17 +79,20 @@ export class MatchManager {
     const sketch = mapId === 'custom' ? parseSketch(opts.sketch) : null;
     const authored = mapId === 'custom' ? sketchDef(sketch) : mapId !== 'random' ? (Object.hasOwn(MAPS_BY_ID, mapId) ? MAPS_BY_ID[mapId] : null) : null;
     if (mapId !== 'random' && !authored) throw new Error(`Unknown map "${mapId}"`);
+    // Watch AI Match (action RTS): the New Skirmish setup with every seat an AI. Impossible combinations
+    // are refused with the reason rather than quietly changed (docs/gameplay-overhaul/WATCH_SETUP.md).
+    if (observe && action) this.checkObserve(opts, authored);
     // a lobby format ('2v2', 'ffa4') or teams × teamSize fixes the seat count exactly (lobby and New Skirmish).
     // On a catalog map any format up to its number of starts fits (fewer players than it was drawn for, or
     // other teams: actionMap.assignStarts places them); without one, or one that does not fit, the map's own.
-    let fmt = action && !sandbox && !observe ? (Object.hasOwn(FORMATS, opts.format) ? FORMATS[opts.format] : null) || (Number.isInteger(opts.teams) ? { teamSize: opts.teamSize | 0, teams: opts.teams } : null) : null;
+    let fmt = action && !sandbox ? (Object.hasOwn(FORMATS, opts.format) ? FORMATS[opts.format] : null) || (Number.isInteger(opts.teams) ? { teamSize: opts.teamSize | 0, teams: opts.teams } : null) : null;
     if (fmt && authored && !fitsMap(authored, Math.max(1, Math.min(4, fmt.teamSize | 0)) * Math.max(2, fmt.teams | 0))) fmt = null;
     const teamSize = fmt ? Math.min(4, Math.max(1, fmt.teamSize | 0)) : authored ? authored.teamSize : action && !sandbox ? Math.min(4, Math.max(1, opts.teamSize | 0)) : 1;
     const teams = fmt ? Math.max(2, Math.min(teamSize > 1 ? 2 : 6, fmt.teams | 0)) : 2;
     const desired = Math.min(MAX_CIVS, fmt || !authored ? teamSize * teams : authored.players);
     const fixed = fmt || authored;
     const humans = observe ? 0 : Math.max(1, Math.min(fixed ? desired : MAX_CIVS, pvp ? (opts.humans | 0) || (fixed ? desired : 2) : 1));
-    const ais = authored && !fmt ? authored.players - humans : sandbox ? 1 : observe ? Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4)) : fmt ? desired - humans :
+    const ais = authored && !fmt ? authored.players - humans : sandbox ? 1 : observe ? (fmt ? desired : Math.max(desired, Math.min(MAX_CIVS, opts.ais ?? 4))) : fmt ? desired - humans :
       Math.max(pvp ? 0 : 1, action ? desired - humans : 0, Math.min(MAX_CIVS - humans, opts.ais ?? 1));
     const personalities = ['warlord', 'merchant', 'builder'];
     const slots = [];
@@ -114,14 +117,29 @@ export class MatchManager {
       startRes: START_RESOURCES.includes(opts.startRes) ? opts.startRes : 'standard' };
     // closed seats (uneven teams: 2 v 1, three humans against two AIs), on a random world or a catalog map
     // (whose unused starts stay neutral). Seat indices other than the creator's; dropped when the match starts.
-    if (action && (fmt || authored) && !observe && !sandbox && Array.isArray(opts.closed)) {
+    // An AI match may leave any seat empty (there is no creator's seat); there a seat that does not exist, or
+    // one that would leave a single side, is refused instead of skipped.
+    if (action && (fmt || authored) && !sandbox && Array.isArray(opts.closed)) {
       for (const v of opts.closed) {
         const i = Number(v);
-        if (!Number.isInteger(i) || i <= 0 || i >= slots.length || slots[i].human && slots[i].token) continue;
+        if (!Number.isInteger(i) || i < (observe ? 0 : 1) || i >= slots.length || slots[i].human && slots[i].token) {
+          if (observe) throw new Error(`There is no seat ${v} to leave empty in this format`);
+          continue;
+        }
         const before = slots[i];
         slots[i] = { human: false, closed: true, name: 'Closed', token: null, ws: null };
-        if (!this.playable(slots, teamSize)) slots[i] = before;
+        if (!this.playable(slots, teamSize)) {
+          slots[i] = before;
+          if (observe) throw new Error('At least two sides must keep an AI nation');
+        }
       }
+    }
+    if (observe) {
+      // the exhibition's own options: the starting speed (the spectator still changes it in the match) and
+      // whether the spectator starts behind the followed nation's fog of war (in-match "Their fog of war")
+      m.speed = [1, 2, 4, 8].includes(+opts.speed) ? +opts.speed : 1;
+      m.observerFog = opts.fog === true;
+      if (!opts.title) m.name = `AI exhibition (${slots.filter((s) => !s.closed).length} empires)`;
     }
     // lobby (pvp): the size the host asked for (random maps re-size with the seat count), and whether the
     // match waits for everyone to be ready (Unity lobby) instead of starting when the last seat is taken
@@ -135,8 +153,50 @@ export class MatchManager {
     m.waitForReady = pvp && opts.waitForReady === true;
     m.public = pvp && opts.public === true;   // listed in /api/lobbies (the in-game lobby browser)
     this.matches.set(id, m);
+    this.telemetry?.lifecycle(m, 'created');
     this.log.info?.(`match ${id} created (${humans} humans, ${ais} AI, ${mapSize}x${mapSize})`);
     return m;
+  }
+
+  // Watch AI Match options, checked before anything is built: the New Skirmish choices (format, map, each AI,
+  // rules, random world) plus the exhibition's speed and the spectator's fog. Throws the reason.
+  checkObserve(o, authored) {
+    const has = (k) => o[k] !== undefined && o[k] !== null && o[k] !== '';
+    let seats = authored && !has('format') ? authored.players : 0;
+    if (has('format')) {
+      if (!Object.hasOwn(FORMATS, o.format)) throw new Error(`Unknown format "${o.format}"`);
+      const f = FORMATS[o.format];
+      seats = f.teamSize * f.teams;
+      if (authored && !fitsMap(authored, seats)) throw new Error(`${authored.name} has ${authored.players} starting bases; a ${o.format} match needs ${seats}. Choose a smaller format or another map.`);
+      if (has('ais') && Number(o.ais) !== seats) throw new Error(`A ${o.format} match has ${seats} AI nations, not ${o.ais}`);
+    } else if (has('ais') && !authored) {
+      const n = Number(o.ais);
+      if (!Number.isInteger(n) || n < 2 || n > MAX_CIVS) throw new Error(`An AI match needs between 2 and ${MAX_CIVS} AI nations`);
+      seats = n;
+    }
+    if (has('rivals')) {
+      if (!Array.isArray(o.rivals)) throw new Error('rivals must be a list of AI settings');
+      if (seats && o.rivals.length > seats) throw new Error(`${o.rivals.length} AI settings for ${seats} seats`);
+      o.rivals.forEach((r, i) => {
+        if (r == null || typeof r !== 'object') throw new Error(`AI ${i + 1}: settings must be an object`);
+        if (r.difficulty != null && !AI_DIFFICULTIES.includes(r.difficulty)) throw new Error(`AI ${i + 1}: unknown difficulty "${r.difficulty}"`);
+        if (r.personality != null && r.personality !== 'random' && !AI_PERSONALITIES.includes(r.personality)) throw new Error(`AI ${i + 1}: unknown personality "${r.personality}"`);
+      });
+    }
+    if (has('difficulty') && !AI_DIFFICULTIES.includes(o.difficulty)) throw new Error(`Unknown AI difficulty "${o.difficulty}"`);
+    if (has('aiPersonality') && o.aiPersonality !== 'random' && !AI_PERSONALITIES.includes(o.aiPersonality)) throw new Error(`Unknown AI personality "${o.aiPersonality}"`);
+    if (has('objective') && !OBJECTIVES.includes(o.objective)) throw new Error(`Unknown victory condition "${o.objective}"`);
+    if (has('startRes') && !START_RESOURCES.includes(o.startRes)) throw new Error(`Unknown starting resources "${o.startRes}"`);
+    if (has('style') && !STYLES.includes(o.style)) throw new Error(`Unknown world style "${o.style}"`);
+    // the setup screen sends a size name; the launch flag -map may pass a side length
+    if (has('mapSize') && !Object.hasOwn(ACTION_SIZES, o.mapSize) && !Number.isInteger(+o.mapSize)) throw new Error(`Unknown map size "${o.mapSize}"`);
+    if (has('speed') && ![1, 2, 4, 8].includes(+o.speed)) throw new Error('Game speed must be 1×, 2×, 4× or 8×');
+    if (has('fog') && typeof o.fog !== 'boolean') throw new Error('fog must be true or false');
+    if (has('seed') && !Number.isFinite(+o.seed)) throw new Error('The seed must be a whole number');
+    if (has('closed')) {
+      if (!Array.isArray(o.closed)) throw new Error('closed must be a list of seats');
+      if (o.closed.length && !has('format') && !authored) throw new Error('Choose a format (or a catalog map) to leave seats empty');
+    }
   }
 
   // spectator seat: watches the whole map, cannot give orders
@@ -157,6 +217,7 @@ export class MatchManager {
 
   meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style,
     teamSize: m.teamSize, map: m.map || 'random', sketch: m.map === 'custom' ? m.sketch : undefined, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes, teamOf: m.teamOf,
+    speed: m.speed, observerFog: m.observerFog || undefined,
     slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
@@ -177,6 +238,7 @@ export class MatchManager {
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
         teamSize: m.teamSize, map: m.map || 'random', sketch: startSketch || null, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
+        speed: m.mode === 'observe' ? m.speed || 1 : undefined, observerFog: m.mode === 'observe' && !!m.observerFog, telemetry: this.telemetry?.workerOptions() || null,
         slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
@@ -195,6 +257,7 @@ export class MatchManager {
       }
     });
     this.log.info?.(`match ${m.id} ${restoreBuf ? 'restored' : 'started'} seed=${m.seed} size=${m.mapSize}`);
+    this.telemetry?.lifecycle(m, restoreBuf ? 'restored' : 'started');
   }
 
   // A new match whose world could not be built (the worker threw before it was ready, e.g. a map-builder
@@ -222,6 +285,7 @@ export class MatchManager {
       for (const s of seen) if (s.ws) { this.send(s.ws, { t: 'lobbyClosed', match: m.id, error: why, startFailed: true }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; }
     }
     this.log.warn?.(`match ${m.id}: ${why}`);
+    this.telemetry?.lifecycle(m, 'start_failed', { end_reason: why });
   }
 
   async recover(m) {
@@ -285,6 +349,7 @@ export class MatchManager {
         }
         this.backpressure(m);
         break;
+      case 'tm': this.telemetry?.fromWorker(m, msg.rows); break;
       case 'stats': m.stats = msg; if (msg.avg > 50) this.log.warn?.(`match ${m.id} avg tick ${msg.avg}ms (max ${msg.max}ms); slowest: ${slowest(msg.systems).map((x) => `${x.system} p95 ${x.p95}ms`).join(', ')}`); break;
       case 'autosave': this.persist(m, msg.buf); break;
       case 'saved': this.persist(m, msg.buf).then(() => { const r = m.saveWaiters?.shift(); if (r) r(); }); break;
@@ -331,6 +396,7 @@ export class MatchManager {
       this.matches.delete(m.id);
       for (const s of [...m.slots, ...(m.watchers || [])]) if (s.ws && s.ws !== ws) { this.send(s.ws, { t: 'lobbyClosed', match: m.id, error: 'The host closed the lobby' }); s.ws.ctx = { ...s.ws.ctx, match: null, slot: null }; }
       this.log.info?.(`match ${m.id} lobby closed by the host`);
+      this.telemetry?.lifecycle(m, 'lobby_closed', { end_reason: 'host_left' });
     } else {
       Object.assign(slot, { token: null, ws: null, name: 'Open seat', ready: false });
       m.lastActive = Date.now();
@@ -344,6 +410,7 @@ export class MatchManager {
     ws.ctx = { match: null, slot: null, proto: 1, caps: [] };
     ws.on('message', (raw) => {
       let msg; try { msg = JSON.parse(raw); } catch { return; }
+      ws.rawBytes = raw.length;   // telemetry size limit
       try { this.handle(ws, msg); } catch (e) { this.send(ws, { t: 'error', error: e.message, rid: msg.rid }); }
     });
     ws.on('close', () => {
@@ -368,8 +435,11 @@ export class MatchManager {
         const r = negotiate(msg);
         if (r.error) return this.send(ws, { t: 'hello', ok: false, error: r.error, proto: PROTOCOL_VERSION });
         ctx.proto = r.proto; ctx.caps = r.caps;
-        return this.send(ws, { t: 'hello', ok: true, proto: r.proto, server: PROTOCOL_VERSION, caps: r.caps, offered: CAPABILITIES, version: process.env.APP_VERSION || 'dev', maps: mapList() });
+        this.telemetry?.hello(ctx, msg);
+        return this.send(ws, { t: 'hello', ok: true, proto: r.proto, server: PROTOCOL_VERSION, caps: r.caps, offered: CAPABILITIES, version: process.env.APP_VERSION || 'dev', maps: mapList(), telemetry: this.telemetry?.helloReply() });
       }
+      // client diagnostics (docs/TELEMETRY.md): validated, rate-limited, dropped silently when telemetry is off
+      case 'telemetry': this.telemetry?.client(ws, msg, ws.rawBytes || 0); return;
       case 'maps': return this.send(ws, { t: 'maps', maps: mapList(), rid: msg.rid });
       case 'list': return this.send(ws, { t: 'lobby', matches: this.list().filter((m) => m.ruleset !== ACTION_RULESET || ctx.caps?.includes('ring-cities-v1')) });
       case 'create': {
@@ -731,15 +801,17 @@ export class MatchManager {
       if (m.status === 'parked' && !anyone && now - m.lastActive > PARKED_TTL_MS) {
         this.matches.delete(m.id); if (this.store) this.store.remove(m.id).catch(() => {});
         this.log.info?.(`match ${m.id} removed (parked for a week)`);
+        this.telemetry?.lifecycle(m, 'abandoned', { end_reason: 'parked_expired' });
         continue;
       }
       if (idle && m.status === 'running') {
         // park idle matches: save and stop the worker; a player rejoining resumes them
-        this.requestSave(m).then(() => { this.stopWorker(m); m.status = 'parked'; this.log.info?.(`match ${m.id} parked`); });
+        this.requestSave(m).then(() => { this.stopWorker(m); m.status = 'parked'; this.log.info?.(`match ${m.id} parked`); this.telemetry?.lifecycle(m, 'parked', { end_reason: 'idle' }); });
       } else if ((idle && m.status !== 'parked') || done) {
         this.stopWorker(m); this.matches.delete(m.id);
         if (this.store && done) this.store.remove(m.id).catch(() => {});
         this.log.info?.(`match ${m.id} removed (${done ? 'finished' : 'idle'})`);
+        if (!done) this.telemetry?.lifecycle(m, 'abandoned', { end_reason: m.status === 'lobby' ? 'lobby_idle' : 'idle' });
       }
     }
   }

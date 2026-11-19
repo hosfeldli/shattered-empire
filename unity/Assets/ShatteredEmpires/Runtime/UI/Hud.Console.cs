@@ -122,15 +122,24 @@ namespace SE.Runtime.UI
         /// </summary>
         void LayoutResourceBars()
         {
-            float mapTop = ConsoleHeight - Minimap.Diameter;   // the disc sits at the console's bottom-left
+            // 2026-11-18: each strip's left edge is cut along the bezel's circle (SlantBack.ArcCx/Cy/R), so the bars
+            // meet the minimap rim along their whole height instead of touching it at one corner with a wedge gap
+            float r = Minimap.Diameter * .5f, cx = r, cy = ConsoleHeight - r;   // the disc sits at the console's bottom-left
+            float rim = r + ResChordGap * .5f;
             int row = 0;
             foreach (var kind in ResRowOrder)
             {
                 if (!resChips.TryGetValue(kind, out var rc)) continue;
-                float top = ResRowTop + row++ * (ResRowHeight + ResRowGap);
-                float left = Minimap.RightEdgeOver(top - mapTop, top + ResRowHeight - mapTop) + ResChordGap;
+                float top = ResRowTop + row++ * (ResRowHeight + ResRowGap), bottom = top + ResRowHeight;
+                float At(float y) { float dy = y - cy; return Mathf.Abs(dy) >= rim ? cx : cx + Mathf.Sqrt(rim * rim - dy * dy); }
+                float near = Mathf.Min(At(top), At(bottom)), far = Mathf.Max(At(top), At(bottom));
+                float left = Mathf.Floor(near);
                 rc.Chip.style.top = top;
-                rc.Chip.style.left = Mathf.Round(left);
+                rc.Chip.style.left = left;
+                rc.Chip.style.width = 150f + (far - left);
+                rc.Chip.style.paddingLeft = 6f + (far - left);   // the icon starts clear of the curve
+                rc.Back.ArcCx = cx - left; rc.Back.ArcCy = cy - top; rc.Back.ArcR = rim;
+                rc.Back.MarkDirtyRepaint();
             }
         }
 

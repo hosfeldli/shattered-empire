@@ -95,7 +95,7 @@ export function garrisonCommand(game, civ, group, id) {
   if (!cap) return { error: 'That structure cannot be garrisoned.' };
   if (!b.done) return { error: 'The structure is not finished yet.' };
   const eligible = group.filter((u) => canGarrison(u) && u.inside !== b.id);
-  if (!eligible.length) return { error: 'Only infantry squads can garrison structures.' };
+  if (!eligible.length) return { error: group.some((u) => u.inside === b.id) ? 'Those squads are already inside.' : 'Only infantry squads can garrison structures.' };
   const heading = [...queueOf(game)].filter((uid) => game.units.get(uid)?.enter === b.id && !eligible.some((u) => u.id === uid)).length;
   let free = cap - occupants(b).filter((uid) => game.units.has(uid)).length - heading;
   if (free <= 0) return { error: 'That structure is full.' };

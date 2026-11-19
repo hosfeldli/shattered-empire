@@ -1,5 +1,5 @@
 // Roads and claims (2026-11-18, docs/gameplay-overhaul/ROADS_AND_CLAIMS.md): a match starts without roads between
-// its sites (only crossings), and establishing a headquarters on a captured city pays for and lays
+// its sites (and, since NAV_BRIDGES.md, without bridges or other crossings), and establishing a headquarters on a captured city pays for and lays
 // the road to the owner's nearest operational base.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ globalThis.SE_WRAP = false;
 const { ActionGame } = await import('../server/sim/actionGame.js');
 const { ACTION_BUILDINGS, ACTION_UNITS } = await import('../server/sim/actionDefinitions.js');
 const { headquarters } = await import('../server/sim/actionBases.js');
-const { COMPOUND_SPOKE, ROAD_EDGE_COST } = await import('../server/sim/actionMap.js');
+const { COMPOUND_SPOKE, ROAD_SEARCH, roadEdgesCost } = await import('../server/sim/actionMap.js');
 const { distance, tileAt } = await import('../server/sim/actionNavigation.js');
 const { NB, dist } = await import('../server/sim/hex.js');
 
@@ -20,8 +20,6 @@ function place(g, owner, type, point) {
   assert.ok(u, `spawn ${type}`);
   u.x = point.x; u.z = point.z; u.tile = tileAt(u.x, u.z); reindex(g); return u;
 }
-// a crossing end (actionMap.layCrossings): a river hex (bridge), or a hex wheels cross only on a road (causeway, cutting)
-const crossing = (g, t) => !!g.world.river[t] && !g.world.lake[t] || g.nav.roadOnly(t, { move: 'wheeled', radius: .2 });
 // tiles reachable from `from` along usable road edges
 function roadReach(g, from) {
   const seen = new Set([from]), queue = [from];
@@ -48,17 +46,21 @@ for (const seed of [41, 7, 1234]) {
     // a starting base's own compound streets reach no farther than COMPOUND_SPOKE hexes from its hub
     const starts = g.sites.filter((s) => s.owner >= 0);
     const street = (e) => starts.some((s) => dist(s.tile, e.a) <= COMPOUND_SPOKE && dist(s.tile, e.b) <= COMPOUND_SPOKE);
-    for (const e of g.roads.edges.values()) assert.ok(street(e) || crossing(g, e.a) || crossing(g, e.b), `edge ${e.a}-${e.b} is a compound street or a crossing`);
+    // NAV_BRIDGES (2026-11-18): no bridge, causeway or cutting is laid at the start either: only compound streets
+    for (const e of g.roads.edges.values()) assert.ok(street(e), `edge ${e.a}-${e.b} is a compound street`);
+    for (let t = 0; t < w.road.length; t++) if (w.road[t]) assert.ok(!w.river[t] || w.lake[t], `no bridge at the start (hex ${t})`);
     for (const s of starts) assert.ok(g.roads.edgesOf(s.tile).length >= 1, `${s.name} has its compound streets`);
     for (const s of g.sites) {
       if (s.owner >= 0) continue;
       const near = [s.tile, ...(s.parcels || []).map((p) => p.tile)];
       for (const t of near) assert.equal(g.roads.edgesOf(t).length, 0, `${s.name} has no road`);
     }
-    // the crossings keep every city in reach of tracks and wheels without the old country roads
+    // every city is in reach on foot, and of a road (with its bridges) that vehicles could then follow
     const home = g.sites[0];
-    for (const s of g.sites) if (s.slots && s !== home) for (const move of ['tracked', 'wheeled'])
-      assert.ok(g.nav.strategic(home.tile, s.tile, { move, radius: .2 }, false, true, 1e9), `${move} vehicles reach ${s.name}`);
+    for (const s of g.sites) if (s.slots && s !== home) {
+      assert.ok(g.nav.strategic(home.tile, s.tile, { move: 'infantry', radius: .14 }, false, true, 1e9), `infantry reach ${s.name}`);
+      assert.ok(g.nav.strategic(home.tile, s.tile, { move: 'tracked', radius: .22 }, true, false, ROAD_SEARCH), `a road can be built to ${s.name}`);
+    }
   });
 }
 
@@ -68,7 +70,7 @@ test('establishing a captured city charges the headquarters plus its road and bu
   const plan = site.claimRoad;
   assert.ok(plan && plan.edges.length > 2, 'a road is planned at capture');
   assert.equal(plan.to, home.id, 'to the nearest own base');
-  assert.equal(plan.cost.materials, plan.edges.length * ROAD_EDGE_COST);
+  assert.equal(plan.cost.materials, roadEdgesCost(g.world, plan.edges), 'ROAD_EDGE_COST a segment, ROAD_BRIDGE_COST a bridge segment');
   const town = ACTION_BUILDINGS.town.cost, total = town.materials + plan.cost.materials;
   // the price is published on the ruin
   const wire = g.siteWire(site, civ, true);

@@ -350,8 +350,9 @@ export function buildActionMap(game) {
   const hubs = main.map((s) => s.tile);
   // 2026-11-18 (roads & claims, docs/gameplay-overhaul/ROADS_AND_CLAIMS.md): the corridors between the cities
   // are planned (they still shape the coast) but not paved: no road leads to an unclaimed city, so roads cannot
-  // be followed to find one. Only the crossings are laid: bridges, marsh causeways and cuttings (layCrossings).
-  const link = (a, b) => corridors.push(...layCrossings(game, hubRoute(w, game.nav.strategic(a, b, HEAVY_GROUND, true, false, ROAD_SEARCH), hubs)));
+  // be followed to find one. Nor are their crossings laid any more (NAV_BRIDGES.md, 2026-11-18): a bridge, causeway
+  // or cutting exists only once a road through it is built (a claim road, a player's road, an engineer's road).
+  const link = (a, b) => corridors.push(...(hubRoute(w, game.nav.strategic(a, b, HEAVY_GROUND, true, false, ROAD_SEARCH), hubs) || []));
   const linked = new Set([main.find((s) => s.tile === central.tile) || main[0]]);
   while (linked.size < main.length) {
     let pair = null, best = Infinity;
@@ -393,6 +394,18 @@ function reachable(game, from, def) {
 export const ROAD_SEARCH = N;
 /** Materials per paved road segment (hex edge): player roads (actionEconomy.roadBuild) and claim roads (actionBases). */
 export const ROAD_EDGE_COST = 15;
+/**
+ * NAV_BRIDGES (2026-11-18): a road segment with an end on a river hex is a bridge, laid with the road (matches start
+ * without bridges). It costs ROAD_BRIDGE_COST instead of ROAD_EDGE_COST: a crossing of one river hex is two such
+ * segments (bank, river, bank), 80 Materials against 30 for the same length of plain road. Marsh causeways and slope
+ * cuttings are ordinary road segments. Shared by player roads (actionEconomy.roadBuild, actionEngineers.roadRouteBetween)
+ * and claim roads (actionBases.planClaimRoad).
+ */
+export const ROAD_BRIDGE_COST = 40;
+export const isBridgeSegment = (w, a, b) => !!(w.river[a] && !w.lake[a] || w.river[b] && !w.lake[b]);
+export const roadEdgeCost = (w, a, b) => (isBridgeSegment(w, a, b) ? ROAD_BRIDGE_COST : ROAD_EDGE_COST);
+/** Materials for a list of road segments [{ a, b }]. */
+export const roadEdgesCost = (w, edges) => { let c = 0; for (const e of edges) c += roadEdgeCost(w, e.a, e.b); return c; };
 
 export const hubTiles = (game) => (game.sites || []).filter((s) => s.slots).map((s) => s.tile);
 const HUB_REACH = 2;
@@ -410,7 +423,8 @@ export function compoundSpokes(game, site) {
   const w = game.world, spokes = [];
   for (let d = 0; d < 6; d++) {
     const line = [site.tile];
-    for (let k = 0; k < COMPOUND_SPOKE; k++) { const n = NB[line[line.length - 1] * 6 + d]; if (!spokeTile(w, n)) break; line.push(n); }
+    // NAV_BRIDGES (2026-11-18): never over a river hex either, so no street is a bridge at the start
+    for (let k = 0; k < COMPOUND_SPOKE; k++) { const n = NB[line[line.length - 1] * 6 + d]; if (!spokeTile(w, n) || w.river[n]) break; line.push(n); }
     spokes.push(line.length === COMPOUND_SPOKE + 1 ? line : null);
   }
   const count = (from) => [0, 2, 4].filter((k) => spokes[from + k]).length;
@@ -478,33 +492,6 @@ export function hubRoute(w, route, hubs) {
     if (k >= 0) clean.length = k + 1; else clean.push(t);
   }
   return clean;
-}
-
-// A river hex a road crosses by a bridge (a lake is open water, never bridged by the road planner), and a hex wheels
-// can cross only on a road (marsh, or a slope steeper than the wheeled climb limit: actionNavigation.roadOnly).
-const WHEELED_GROUND = { move: 'wheeled', radius: .2 };
-const riverCrossing = (w, t) => !!w.river[t] && !w.lake[t] && !isWater(w.terr[t]);
-
-/**
- * 2026-11-18: of a planned country road, lay only its crossings: bridges (each edge with a river end, bank to bank),
- * causeways over marsh and cuttings through slopes too steep for wheels (each edge with a road-only end for wheeled
- * vehicles). A match starts without roads between its sites, yet every vehicle class reaches every site it could
- * reach on the old road network (a wide river, flow >= 94, is road-only for all vehicles, marsh and steep ground for
- * wheels) and the maps keep their bridges and fords. A crossing is a few hexes long and leads nowhere. `mirror` lays the half-turn of each edge too (authored team maps). Returns the
- * route (or [] without one) for the corridor list.
- */
-export function layCrossings(game, route, mirror = null) {
-  if (!route) return [];
-  const w = game.world;
-  // terrain-only tests (never the road just laid on the previous edge), so a crossing is laid whole
-  const hard = (t) => riverCrossing(w, t) || game.nav.roadOnly(t, WHEELED_GROUND);
-  for (let i = 1; i < route.length; i++) {
-    const a = route[i - 1], b = route[i];
-    if (!hard(a) && !hard(b)) continue;
-    game.roads.set(a, b, 2);
-    if (mirror) game.roads.set(mirror(a), mirror(b), 2);
-  }
-  return route;
 }
 
 export function connect(game, a, b, kind = 2, hubs = hubTiles(game)) {
@@ -779,10 +766,8 @@ function buildAuthoredMap(game, def) {
     for (let i = 1; i < tiles.length; i++) {
       const path = hubRoute(w, game.nav.strategic(tiles[i - 1], tiles[i], HEAVY_GROUND, true, false, ROAD_SEARCH), hubs);
       if (!path) throw new Error(`${def.name}: no road route between ${JSON.stringify(road[i - 1])} and ${JSON.stringify(road[i])}`);
-      // 2026-11-18: the authored roads are validated and their wide-river bridges laid; the rest is built when a
-      // city is claimed (ROADS_AND_CLAIMS.md)
-      layCrossings(game, path, mirrorTile);
-      game.nav.invalidate();
+      // 2026-11-18: the authored roads are validated only; they are built when a city is claimed (ROADS_AND_CLAIMS.md),
+      // their bridges with them (NAV_BRIDGES.md)
     }
   }
   w.starts = sites.slice(0, game.civs.length).map((s) => s.tile);
@@ -878,8 +863,7 @@ function buildRotatedMap(game, def) {
     for (let i = 1; i < tiles.length; i++) {
       const path = hubRoute(w, game.nav.strategic(tiles[i - 1], tiles[i], HEAVY_GROUND, true, false, ROAD_SEARCH), hubs);
       if (!path) throw new Error(`${def.name}: no road route between ${JSON.stringify(road[i - 1])} and ${JSON.stringify(road[i])} (turn ${k})`);
-      layCrossings(game, path);   // 2026-11-18: crossings only (see the team-map loop above)
-      game.nav.invalidate();
+      // validated only (see the team-map loop above)
     }
   }
   w.starts = sites.slice(0, game.civs.length).map((s) => s.tile);

@@ -46,6 +46,8 @@ namespace SE.Runtime.App
         /// minimap zoom) become instant. Applied by <c>UiKit.ApplyMotion</c>.
         /// </summary>
         public static bool ReduceUiMotion { get => B("reduceUiMotion", false); set => SetB("reduceUiMotion", value); }
+        /// <summary>Share anonymous performance and gameplay diagnostics with the game server (ClientTelemetry, docs/TELEMETRY.md).</summary>
+        public static bool ShareDiagnostics { get => B("shareDiagnostics", true); set => SetB("shareDiagnostics", value); }
 
         /// <summary>Restore the Interface tab defaults (the interface scale and UI motion are applied by the caller).</summary>
         public static void ResetInterface()

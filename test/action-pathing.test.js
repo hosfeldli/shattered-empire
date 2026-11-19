@@ -186,6 +186,8 @@ test('reachability query: impassable water, cut-off ground and a bridge', () => 
   // cut the bridge: the far bank becomes unreachable for vehicles
   for (const e of [...g.roads.edges.values()]) if (g.world.river[e.a] || g.world.river[e.b]) e.cond = 0;
   g.nav.invalidate();
-  assert.equal(ask(s.to).reason, 'unreachable');
+  // NAV_BRIDGES (2026-11-18): tanks cut off by a river that infantry could wade are told a bridge (a road) is needed
+  assert.equal(ask(s.to).reason, 'bridge');
+  assert.equal(ask(s.to).ok, false);
   assert.equal(g.command(0, { c: 'reach', units: [], point: river }).reply.reach.reason, 'impassable');
 });

@@ -244,7 +244,9 @@ test('infantry sheltering behind friendly armor take less direct fire', () => {
   assert.ok(tank.hp === tank.maxHp);
 });
 
-test('trench lines leave roads open and mark the sections that meet them', async () => {
+// 2026-11-18: trenches are dug on road hexes as covered crossings (the road stays open: trenches never affect
+// movement) and a road finished later through a trench keeps it (TRENCHES.md)
+test('trench lines cross roads as covered crossings and mark the sections that meet them', async () => {
   const { trenchRoadMask } = await import('../server/sim/actionBases.js');
   const { fieldEconomyStep } = await import('../server/sim/actionEconomy.js');
   const { NB } = await import('../server/sim/hex.js');
@@ -265,19 +267,21 @@ test('trench lines leave roads open and mark the sections that meet them', async
   const preview = g.command(0, { c: 'trenchWorld', points, preview: true });
   assert.ok(preview.reply?.trench, preview.error);
   assert.ok(preview.reply.trench.crossings >= 1, 'the preview reports the road crossing');
-  assert.ok(preview.reply.trench.positions.every((p) => !g.world.road[p.tile] && Number.isInteger(p.road)), 'no section on a road tile; each carries its road mask');
+  assert.ok(preview.reply.trench.positions.some((p) => g.world.road[p.tile]), 'the road hex is part of the line');
+  assert.ok(preview.reply.trench.positions.every((p) => Number.isInteger(p.road)), 'each section carries its road mask');
   const result = g.command(0, { c: 'trenchWorld', points });
   assert.ok(!result.error, result.error);
-  assert.ok(!g.fieldworks.has(edge.a), 'the road tile stays open');
+  assert.ok(g.fieldworks.has(edge.a), 'the road hex is dug as a crossing');
+  assert.ok(g.roads.usable(edge.a, edge.b), 'the road stays usable');
   const dug = [...g.fieldworks.keys()];
   assert.ok(dug.length >= 2, 'trench sections either side of the road');
   assert.ok(dug.some((t) => trenchRoadMask(g, t) > 0), 'sections beside the road are marked for a clean crossing');
   for (const t of dug) for (let d = 0; d < 6; d++) assert.equal(!!(trenchRoadMask(g, t) & (1 << d)), NB[t * 6 + d] >= 0 && !!g.world.road[NB[t * 6 + d]]);
-  // a road finished later through a trench fills that section in
+  // a road finished later through a trench keeps it as a crossing
   const t = dug[0], n = NB[t * 6 + [0, 1, 2, 3, 4, 5].find((d) => NB[t * 6 + d] >= 0)];
   g.roadProjects.push({ owner: 0, edges: [{ a: t, b: n }], left: 0 });
   fieldEconomyStep(g, .2);
-  assert.ok(g.roads.usable(t, n) && !g.fieldworks.has(t));
+  assert.ok(g.roads.usable(t, n) && g.fieldworks.has(t));
 });
 
 test('new roads join the network at base hubs instead of shadowing existing roads', async () => {

@@ -20,7 +20,10 @@ const solidFootprintOf = (type) => SOLID[type] || null;
 export function insideFootprint(b, rects, x, z, r) {
   const dx = dxBetween(b.x, x), dz = z - b.z, sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
   const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
-  for (const [rx, rz, hw, hd, yaw] of rects) {
+  // Pass 3 (perf): indexed loops here and in obstacleAt (no iterator objects; ~0.5 GB of short-lived garbage per
+  // 5 late-game minutes came from these two hot loops)
+  for (let i = 0; i < rects.length; i++) {
+    const q = rects[i], rx = q[0], rz = q[1], hw = q[2], hd = q[3], yaw = q[4];
     const s = Math.sin(yaw), c = Math.cos(yaw), ox = lx - rx, oz = lz - rz;
     const u = Math.abs(ox * c - oz * s) - hw, v = Math.abs(ox * s + oz * c) - hd;
     if (Math.max(0, u) ** 2 + Math.max(0, v) ** 2 < r * r) return true;
@@ -172,8 +175,68 @@ function visualHeight(e) {
 const STRATEGIC_LIMIT = Math.max(4300, Math.round(N / 7));
 // route(): coarse re-searches around a corridor tile the fine stage could not thread, and that tile's weight factor
 const ROUTE_RETRIES = 2, AVOID_PENALTY = 8;
+// road planning: weight factor for a new road edge onto a hex on or beside a field defense (barricades excepted)
+const DEFENSE_ROAD_PENALTY = 4;
+// route(): fine local-grid nodes one route() may expand over all its attempts (NAV_BRIDGES.md, late game: a goal in a
+// pocket no corridor can thread cost three attempts x three local searches, up to ~7,500 nodes, and was asked again and
+// again by group slots, chases and re-routes)
+const ROUTE_LOCAL_BUDGET = 3200;
+// line(): sample spacing on road-only hexes (bridge lanes)
+const LANE_STRIDE = .06;
+// A wreck blocks movement with the hull the client draws (NAV_BRIDGES.md, "rusted cars", 2026-11-18): the scale of
+// WarzoneRenderer.WreckScale times the extents of WorldMeshes.Wreck (tracks and hull: half 0.44 x 0.50) or
+// LightVehicleWreck (wheels and chassis: half 0.37 x 0.455), oriented by the wreck's yaw. It was a 0.115 disc for every
+// type: a tank wreck's corners stuck out of it (units drove into the drawn hull) and a buggy's was a third wider than
+// drawn. { hw, hl, r } half-width, half-length and circumradius.
+const HULLS = new Map();
+export function wreckHull(type) {
+  let h = HULLS.get(type);
+  if (!h) {
+    const t = String(type || ''), tracked = t.includes('tank') || t === 'sp_artillery';
+    const s = tracked ? .235 : t === 'mech_infantry' || t === 'exo_infantry' ? .22 : ['supply_truck', 'colonist', 'missile_battery', 'air_defense'].includes(t) ? .2
+      : t === 'armored_car' ? .19 : t === 'field_gun' ? .16 : t === 'scout_buggy' ? .14 : .17;
+    const hw = (tracked ? .44 : .37) * s, hl = (tracked ? .5 : .455) * s;
+    HULLS.set(type, h = { hw, hl, r: Math.hypot(hw, hl) });
+  }
+  return h;
+}
+/** True if a disc of radius r at (x, z) touches wreck w's hull. */
+export function touchesWreck(w, x, z, r) {
+  const h = wreckHull(w.type), dx = dxBetween(w.x, x), dz = z - w.z;
+  if (dx * dx + dz * dz >= (h.r + r) ** 2) return false;
+  const sn = Math.sin(w.yaw || 0), cs = Math.cos(w.yaw || 0);
+  const u = Math.abs(dx * cs - dz * sn) - h.hw, v = Math.abs(dx * sn + dz * cs) - h.hl;
+  return Math.max(0, u) ** 2 + Math.max(0, v) ** 2 < r * r;
+}
+
 export const LIGHT_GROUND = { move: 'infantry', radius: .13 };
 export const HEAVY_GROUND = { move: 'tracked', radius: .22 };
+
+// Pass 3 (perf): everything cost(), edgeOk(), roadOnly(), nearLane() and gradientOf() read about the ground, so
+// invalidate() can tell a building change (ground untouched) from a ground change. Road edges by class and condition
+// band (cut, worn below 50, sound); the ring-road and dense-forest tables by identity and content.
+const GROUND_ARRAYS = ['terr', 'lake', 'river', 'flowDir', 'flow', 'road', 'elev'];
+const roadBand = (e) => (e.cond <= 0 ? 0 : e.cond < 50 ? 1 : 2);
+function groundPrint(nav) {
+  const w = nav.world, edges = [];
+  for (const [k, e] of nav.roads.edges) edges.push(k, e.type, roadBand(e));
+  const print = { ring: nav.game.ringRoads, dense: w.dense ? w.dense.slice() : null, edges };
+  for (const name of GROUND_ARRAYS) print[name] = w[name].slice();
+  return print;
+}
+function sameGround(nav, p) {
+  const w = nav.world;
+  if (p.ring !== nav.game.ringRoads || !!p.dense !== !!w.dense || nav.roads.edges.size * 3 !== p.edges.length) return false;
+  if (p.dense) for (let i = 0; i < p.dense.length; i++) if (p.dense[i] !== w.dense[i]) return false;
+  let i = 0;
+  for (const [k, e] of nav.roads.edges) { if (p.edges[i] !== k || p.edges[i + 1] !== e.type || p.edges[i + 2] !== roadBand(e)) return false; i += 3; }
+  for (const name of GROUND_ARRAYS) {
+    const a = p[name], b = w[name];
+    if (a.length !== b.length) return false;
+    for (let j = 0; j < a.length; j++) if (a[j] !== b[j] && !(a[j] !== a[j] && b[j] !== b[j])) return false;
+  }
+  return true;
+}
 
 export class ActionNavigation {
   constructor(game) {
@@ -184,6 +247,7 @@ export class ActionNavigation {
     this.flows = new Map(); this.activeFlows = new Map();
     this.crossings = new Map(); this.crossingVersion = -1;
     this.terrainVersion = 0;
+    this.localLeft = Infinity;   // fine local-grid nodes left to the route() in progress (ROUTE_LOCAL_BUDGET)
   }
   /**
    * Item 7 (perf): a group order routes every member through the same corridor, and route()'s fine
@@ -217,13 +281,21 @@ export class ActionNavigation {
     const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + ':' + budget;
     if (B.local.has(k)) { B.hits++; return B.local.get(k); }
     const r = this.localRoute(a, b, def, budget, grid, step);
-    B.local.set(k, r);
+    if (r || !this.localCut) B.local.set(k, r);   // a search cut short by the route budget is not a verdict
     return r;
   }
   invalidate() {
     if (this.batch) this.beginBatch();
-    this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.gradient = null;
-    this.roadOnlyCache = null; this.crowdCache = null; this.components = null;
+    this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.crowdCache = null;
+    // Pass 3 (perf, late game): most invalidations are a building placed or removed, which leaves the ground itself as
+    // it was. The ground-only caches (regions, centre costs, road-only and lane tiles, gradient) are kept when every
+    // input they read is unchanged since the last invalidate. Those inputs only change one way between two invalidates
+    // (forest cleared, a road worn down; repairs, new roads and reshaping all invalidate), so "the same at both ends"
+    // means "unchanged throughout", and each kept entry is what a fresh evaluation would give. Rebuilding the regions
+    // alone cost 80-140 ms per movement class after every building change late in a match.
+    if (this.groundPrint && sameGround(this, this.groundPrint)) return;
+    this.groundPrint = groundPrint(this);
+    this.gradient = null; this.roadOnlyCache = null; this.laneCache = null; this.centreCache = null; this.components = null;
   }
 
   /**
@@ -239,10 +311,69 @@ export class ActionNavigation {
       const w = this.world;
       let only = isWater(w.terr[t]) || !!w.lake[t] || !Number.isFinite(TERRAIN_COST[def.move]?.[w.terr[t]] ?? Infinity);
       if (!only && w.river[t] && w.flow[t] >= 94 && def.move !== 'infantry') only = true;
-      if (!only && this.gradientOf(t) > (MAX_GRADIENT[def.move] ?? .5)) only = true;
+      if (!only && this.gradientOf(t) > (MAX_GRADIENT[def.move] ?? .5) && !(def.move === 'infantry' && w.river[t])) only = true;
       // dense forest (actionMap.markDenseForest): infantry enter it only along a road
       if (!only && def.move === 'infantry' && w.dense?.[t] && w.terr[t] === T.FOREST) only = true;
       v = cache[t] = only ? 2 : 1;
+    }
+    return v === 2;
+  }
+
+  /** A standing field defense (not a barricade) on hex t or beside it (buildingCells register each building on its six neighbours too). */
+  nearDefense(t) {
+    const defs = this.game.defs?.BUILDINGS;
+    for (const b of this.game.obstaclesAtTile(t)) {
+      const d = defs?.[b.type];
+      if (d?.field && d.defense && b.type !== 'barricade' && b.state !== 'ruin') return true;
+    }
+    return false;
+  }
+
+  /**
+   * How hex t needs line() sampled: 2 a bridge lane nearby (road-only ground), 1 structures or wrecks on it (only for
+   * a strict route: a blocked unit's re-route, see actionOrders.strictRoute), 0 open.
+   */
+  tight(t, def) {
+    if (t < 0) return 0;
+    return this.nearLane(t, def) ? 2 : this.strict && (this.game.buildingCells?.get(t)?.size || this.wrecksNear(t)) ? 1 : 0;
+  }
+
+  /**
+   * Ground wrecks (with a position) whose hull a unit on hex t could touch: those on t and on its six neighbours.
+   * obstacleAt read only the probe point's own hex, so a wreck just across a hex edge did not block a unit whose body
+   * reached over it. Rebuilt when the battlefield changes (game.bfVer). Returns an array or undefined.
+   */
+  wrecksNear(t) {
+    const g = this.game;
+    if (!g.wrecks?.size) return undefined;
+    if (this.wreckVer !== g.bfVer || !this.wreckCells) {
+      const cells = this.wreckCells = new Map();
+      this.wreckVer = g.bfVer;
+      for (const [tile, list] of g.wrecks) for (const w of list) {
+        if (w.x == null || w.air) continue;
+        for (let d = -1; d < 6; d++) {
+          const n = d < 0 ? tile : NB[tile * 6 + d];
+          if (n < 0) continue;
+          const c = cells.get(n); if (c) c.push(w); else cells.set(n, [w]);
+        }
+      }
+    }
+    return this.wreckCells.get(t);
+  }
+
+  /**
+   * Tile t or one of its neighbours is a lane for this class: road-only ground carrying a road (a bridge, a causeway, a
+   * cutting), where a unit's body can touch the lane's edge. Road-only ground without a road is a plain wall.
+   */
+  nearLane(t, def) {
+    if (t < 0) return false;
+    const all = this.laneCache ??= {}, cache = all[def.move] ??= new Uint8Array(N);
+    let v = cache[t];
+    if (!v) {
+      const w = this.world;
+      let near = !!w.road[t] && this.roadOnly(t, def);
+      for (let d = 0; d < 6 && !near; d++) { const n = NB[t * 6 + d]; if (n >= 0 && w.road[n] && this.roadOnly(n, def)) near = true; }
+      v = cache[t] = near ? 2 : 1;
     }
     return v === 2;
   }
@@ -262,13 +393,24 @@ export class ActionNavigation {
    */
   crowding(t, def) {
     if (def.air) return 0;
-    const near = this.game.obstaclesAtTile(t), wrecks = this.game.wrecks.get(t);
+    const near = this.game.obstaclesAtTile(t), wrecks = this.wrecksNear(t);
     if (!near.length && !wrecks?.length) return 0;
     const key = t * 4 + (def.radius > .2 ? def.radius > .24 ? 2 : 1 : 0);
-    const sig = near.map((b) => b.id * 2 + (b.done === false || b.state === 'ruin' ? 1 : 0)).join(',') + '|' + (wrecks?.length || 0);
+    // Pass 3 (perf, late game): the signature (each building's id and whether it is unfinished or a ruin, then the
+    // wreck count) is compared code by code instead of joined into a string on every call. This is called for every
+    // node of every coarse search and flow field (~45k times a tick late in a match). A hit is exactly the old test.
+    const wl = wrecks?.length || 0;
     const cache = this.crowdCache ??= new Map();
     const hit = cache.get(key);
-    if (hit && hit.sig === sig) return hit.value;
+    if (hit && hit.wl === wl && hit.codes.length === near.length) {
+      let same = true;
+      for (let i = 0; i < near.length; i++) {
+        const b = near[i];
+        if (hit.codes[i] !== b.id * 2 + (b.done === false || b.state === 'ruin' ? 1 : 0)) { same = false; break; }
+      }
+      if (same) return hit.value;
+    }
+    const codes = near.map((b) => b.id * 2 + (b.done === false || b.state === 'ruin' ? 1 : 0));
     let blocked = 0;
     const cx = X[t], cz = Z[t];
     for (let i = -1; i < 6; i++) {
@@ -277,14 +419,30 @@ export class ActionNavigation {
     }
     const value = blocked / 7;
     if (cache.size > 20000) cache.clear();
-    cache.set(key, { sig, value });
+    cache.set(key, { codes, wl, value });
     return value;
+  }
+
+  /**
+   * cost() at a hex centre, cached per movement class until the next invalidate() (NAV_BRIDGES.md, late game: every
+   * coarse search, flow field and region fill re-evaluated river, road, ring-road and gradient tests for each hex it
+   * touched). Ground units only.
+   */
+  centreCost(t, def) {
+    if (def.air) return this.cost(t, X[t], Z[t], def);
+    if (t < 0) return Infinity;
+    const all = this.centreCache ??= {};
+    let c = all[def.move];
+    if (!c) { c = all[def.move] = new Float64Array(N); c.fill(NaN); }
+    let v = c[t];
+    if (v !== v) v = c[t] = this.cost(t, X[t], Z[t], def);
+    return v;
   }
 
   /** Coarse step weight from t to n (Infinity when impossible), shared by flow fields and A*. */
   stepCost(t, n, def) {
     if (!this.edgeOk(t, n, def)) return Infinity;
-    let terrain = this.cost(n, X[n], Z[n], def);
+    let terrain = this.centreCost(n, def);
     if (!Number.isFinite(terrain)) return Infinity;
     const crowd = this.crowding(n, def);
     if (crowd >= 1) terrain *= 4; else if (crowd > 0) terrain *= 1 + crowd * 1.6;
@@ -304,13 +462,13 @@ export class ActionNavigation {
       const stack = [];
       let id = 0;
       for (let s = 0; s < N; s++) {
-        if (comp[s] >= 0 || !Number.isFinite(this.cost(s, X[s], Z[s], def))) continue;
+        if (comp[s] >= 0 || !Number.isFinite(this.centreCost(s, def))) continue;
         comp[s] = ++id; stack.push(s);
         while (stack.length) {
           const t = stack.pop();
           for (let d = 0; d < 6; d++) {
             const n = NB[t * 6 + d];
-            if (n < 0 || comp[n] >= 0 || !this.edgeOk(t, n, def) || !Number.isFinite(this.cost(n, X[n], Z[n], def))) continue;
+            if (n < 0 || comp[n] >= 0 || !this.edgeOk(t, n, def) || !Number.isFinite(this.centreCost(n, def))) continue;
             comp[n] = id; stack.push(n);
           }
         }
@@ -332,6 +490,19 @@ export class ActionNavigation {
     if (ca < 0) return 'ok';   // a unit already standing somewhere odd (on a bridge edge): let the router decide
     const goal = this.nearest(to, def, .45), cb = this.componentOf(tileAt(goal.x, goal.z), def);
     return cb < 0 || cb === ca ? 'ok' : 'unreachable';
+  }
+
+  /**
+   * NAV_BRIDGES (2026-11-18): a vehicle at tile a is cut off from tile b only by ground a road would open (a wide river
+   * without a bridge, marsh or a slope without a road): the two lie in different regions for its class, but in one region
+   * on foot. Matches start without bridges, so this is the usual reason a vehicle order fails. Two cached lookups.
+   */
+  needsCrossing(a, b, def) {
+    if (def.air || def.move === 'infantry' || a < 0 || b < 0) return false;
+    const ca = this.componentOf(a, def), cb = this.componentOf(b, def);
+    if (ca < 0 || cb < 0 || ca === cb) return false;
+    const fa = this.componentOf(a, LIGHT_GROUND), fb = this.componentOf(b, LIGHT_GROUND);
+    return fa >= 0 && fa === fb;
   }
 
   /** Steepest visual gradient from each tile to a land neighbour (lazily rebuilt after terrain changes). */
@@ -376,10 +547,19 @@ export class ActionNavigation {
         while (heap.size && (expanded < 4300 || pending.size)) {
           const t = heap.pop(); if (closed[t]) continue;
           closed[t] = 1; expanded++; pending.delete(t);
+          // Pass 3 (perf): stepCost(n, t) is the price of entering t, the same for all six neighbours, so it is worked
+          // out once per settled tile (on the first neighbour that passes, exactly where stepCost first asked for it)
+          // instead of six times; the neighbour's own tests (stand-able centre, edge) still run per neighbour.
+          let enter = NaN;
           for (let d = 0; d < 6; d++) {
             const n = NB[t * 6 + d]; if (n < 0 || closed[n]) continue;
             // flows run goal-outward: the unit will step n -> t
-            const terrain = Number.isFinite(this.cost(n, X[n], Z[n], def)) ? this.stepCost(n, t, def) : Infinity;
+            if (!Number.isFinite(this.centreCost(n, def)) || !this.edgeOk(n, t, def)) continue;
+            if (enter !== enter) {
+              enter = this.centreCost(t, def);
+              if (Number.isFinite(enter)) { const crowd = this.crowding(t, def); if (crowd >= 1) enter *= 4; else if (crowd > 0) enter *= 1 + crowd * 1.6; }
+            }
+            const terrain = enter;
             if (!Number.isFinite(terrain)) continue;
             const cost = weights[t] + terrain * (this.roads.usable(t, n) ? .94 : 1);
             if (cost >= weights[n]) continue;
@@ -472,25 +652,37 @@ export class ActionNavigation {
     const w = this.world, terrain = w.terr[t];
     if (isWater(terrain) || w.lake[t]) return this.roadAt(t, x, z, def, true) ? 1.15 : Infinity;
     let base = TERRAIN_COST[def.move][terrain];
-    const river = this.riverAt(t, x, z);
+    // NAV_BRIDGES (2026-11-18): a wide river (flow >= 94) is road-only for vehicles over the WHOLE hex, as the coarse
+    // graph (roadOnly) has it. Before, only the drawn channel was impassable: a vehicle nudged onto the dry part of a
+    // river hex beside a bridge stood on a tile the coarse search could neither leave nor enter, so its route failed
+    // and it halted at the bridge end (or its order slot there was refused).
+    const wide = !!w.river[t] && w.flow[t] >= 94 && def.move !== 'infantry';
+    const river = wide || this.riverAt(t, x, z);
     const road = this.roadAt(t, x, z, def, river);
     // §30 (2026-11-18): ordinary infantry cannot pass dense forest (world.dense, actionMap.markDenseForest) off a
     // road; vehicles can, and heavy hulls clear it to grass (battlefield.js FOREST_CLEAR), which reopens it.
     if (!road && terrain === T.FOREST && def.move === 'infantry' && w.dense?.[t]) return Infinity;
     // Mountain faces: impassable beyond the class's climb limit unless a road cuts the slope;
     // below it, climbing costs grow with the gradient so routes prefer valleys and passes.
-    const gradient = this.gradientOf(t), limit = MAX_GRADIENT[def.move] ?? .5;
+    // NAV_BRIDGES (2026-11-18): infantry wade any river hex, however steep its banks. A hex's gradient is its steepest
+    // neighbour, so a river along a cliff foot read as a wall although its floor is the valley's lowest ground. The old
+    // match-start crossings (bridges laid along such gorges) hid it; without them seed 3 on a 96 map was split in two
+    // on foot. Vehicles still need the road (and the climb limit still holds on the banks themselves).
+    const wade = def.move === 'infantry' && !!w.river[t];
+    const gradient = wade ? Math.min(this.gradientOf(t), MAX_GRADIENT.infantry) : this.gradientOf(t), limit = MAX_GRADIENT[def.move] ?? .5;
     if (!road && gradient > limit) return Infinity;
     if (!road) base *= 1 + Math.max(0, gradient - limit * .45) * 1.6;
     if (river && !road) {
-      if (w.flow[t] >= 94 && def.move !== 'infantry') return Infinity;
+      if (wide) return Infinity;
       base *= def.move === 'infantry' ? 1.34 : 2.35;
     }
     return road ? Math.min(base, road === 1 ? .84 : .66) : base;
   }
 
   obstacleAt(t, x, z, radius, ignore = 0, ignoreTarget = 0, sight = false) {
-    for (const b of this.game.obstaclesAtTile(t)) {
+    const near = this.game.obstaclesAtTile(t);
+    for (let i = 0; i < near.length; i++) {
+      const b = near[i];
       if (b.id === ignore || b.id === ignoreTarget) continue;
       const def = this.game.defs.BUILDINGS[b.type];
       if (sight && def?.lowCover) continue;
@@ -503,8 +695,8 @@ export class ActionNavigation {
         if (Math.max(0,lx) ** 2 + Math.max(0,lz) ** 2 < (radius + .015) ** 2) return true;
       } else if (dxBetween(x, b.x) ** 2 + (b.z - z) ** 2 < (b.radius + radius) ** 2) return true;
     }
-    const wrecks = this.game.wrecks.get(t);
-    if (wrecks) for (const w of wrecks) if (w.x != null && !w.air && dxBetween(x, w.x) ** 2 + (w.z - z) ** 2 < (.115 + radius) ** 2) return true;
+    const wrecks = this.wrecksNear(t);
+    if (wrecks) for (let i = 0; i < wrecks.length; i++) if (touchesWreck(wrecks[i], x, z, radius + .01)) return true;
     return false;
   }
 
@@ -526,11 +718,34 @@ export class ActionNavigation {
   line(a, b, def, stride = .28) {
     const dx = dxBetween(a.x, b.x), dz = b.z - a.z;
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / stride));
-    let last = a;
+    const fine = stride > LANE_STRIDE && !def.air ? Math.ceil(Math.hypot(dx, dz) / steps / LANE_STRIDE) : 1;
+    const half = Math.hypot(dx, dz) / steps / 2;
+    let last = a, lastNarrow = fine > 1 ? this.tight(tileAt(a.x, a.z), def) : 0;
     for (let i = 1; i <= steps; i++) {
       const next = { x: wrapX(a.x + dx * i / steps), z: a.z + dz * i / steps };
+      // NAV_BRIDGES (2026-11-18): beside a road-only hex (a bridge, a causeway, a cutting) the passable lane is only
+      // ~0.13 either side of the road for a tank. Samples .28 apart could straddle the lane's edge on a diagonal, so
+      // a path was accepted that the unit's own small steps could not drive: it stopped at the bridge end, blocked,
+      // and every replan returned the same path. The same held for a line grazing a facility's corner in a base
+      // court, or a wreck. On such hexes (tight) the segment is checked at the lane stride; beside structures and
+      // wrecks only when the body, grown by half the segment, touches one at the segment's middle (else no point of
+      // the segment can).
+      const narrow = fine > 1 ? this.tight(tileAt(next.x, next.z), def) : 0;
+      let sub = false;
+      if (narrow || lastNarrow) {
+        const mx = wrapX(a.x + dx * (i - .5) / steps), mz = a.z + dz * (i - .5) / steps;
+        // on a lane always (the standing test is not monotonic in the body's size, so no cheaper shortcut holds)
+        sub = narrow === 2 || lastNarrow === 2 || this.obstacleAt(tileAt(mx, mz), mx, mz, def.radius + half + .02);
+      }
+      if (sub) {
+        for (let k = 1; k < fine; k++) {
+          const f = (i - 1 + k / fine) / steps, x = wrapX(a.x + dx * f), z = a.z + dz * f;
+          if (!this.canMove(last, x, z, def)) return false;
+          last = { x, z };
+        }
+      }
       if (!this.canMove(last, next.x, next.z, def)) return false;
-      last = next;
+      last = next; lastNarrow = narrow;
     }
     return true;
   }
@@ -546,7 +761,7 @@ export class ActionNavigation {
     const tiles = new Set([tileAt(from.x, from.z), tileAt(x, z)]);
     for (const t of [...tiles]) if (t >= 0) for (let d = 0; d < 6; d++) if (NB[t * 6 + d] >= 0) tiles.add(NB[t * 6 + d]);
     for (const t of tiles) {
-      const obstacles = [...this.game.obstaclesAtTile(t), ...(this.game.wrecks.get(t) || []).filter((w) => !w.air && w.x != null).map((w) => ({ ...w, radius: .115 }))];
+      const obstacles = [...this.game.obstaclesAtTile(t), ...(this.game.wrecks.get(t) || []).filter((w) => !w.air && w.x != null).map((w) => ({ ...w, radius: wreckHull(w.type).r }))];
       for (const o of obstacles) {
         const radius = (o.radius + def.radius) ** 2;
         const before = dxBetween(from.x, o.x) ** 2 + (from.z - o.z) ** 2, after = dxBetween(x, o.x) ** 2 + (z - o.z) ** 2;
@@ -587,23 +802,29 @@ export class ActionNavigation {
     }
     const key = `${def.move}:${from}:${to}`;
     if (!buildingRoads && !avoid && this.corridors.has(key)) return this.corridors.get(key);
-    const heap = new MinHeap(), best = new Map([[from, 0]]), parents = new Map(), closed = new Set();
+    // NAV_BRIDGES (2026-11-18, late game): the search state lives in reused typed arrays stamped per search (it was
+    // three Maps/Sets per call, the bulk of a long search's time); same expansion order, same result.
+    const A = this.astar ??= { best: new Float64Array(N), parent: new Int32Array(N), seen: new Uint32Array(N), shut: new Uint32Array(N), gen: 0 };
+    if (++A.gen === 0xffffffff) { A.seen.fill(0); A.shut.fill(0); A.gen = 1; }
+    const gen = A.gen, best = A.best, parent = A.parent, seen = A.seen, shut = A.shut;
+    const heap = new MinHeap();
+    best[from] = 0; parent[from] = -1; seen[from] = gen;
     heap.push(from, 0);
-    let result = null;
-    while (heap.size && closed.size < limit) {
+    let result = null, closedCount = 0;
+    while (heap.size && closedCount < limit) {
       const t = heap.pop();
-      if (closed.has(t)) continue;
+      if (shut[t] === gen) continue;
       if (t === to) {
         result = [t];
-        for (let p = parents.get(t); p !== undefined; p = parents.get(p)) result.push(p);
+        for (let p = parent[t]; p >= 0; p = parent[p]) result.push(p);
         result.reverse();
         break;
       }
-      closed.add(t);
+      shut[t] = gen; closedCount++;
       for (let d = 0; d < 6; d++) {
         const n = NB[t * 6 + d];
-        if (n < 0 || closed.has(n)) continue;
-        let weight = buildingRoads ? this.cost(n, X[n], Z[n], def) : this.stepCost(t, n, def);
+        if (n < 0 || shut[n] === gen) continue;
+        let weight = buildingRoads ? this.centreCost(n, def) : this.stepCost(t, n, def);
         if (!Number.isFinite(weight) && buildingRoads && this.world.river[n] && !this.world.lake[n] && !isWater(this.world.terr[n])) weight = 2.6;
         if (!Number.isFinite(weight)) continue;
         if (buildingRoads) {
@@ -617,12 +838,15 @@ export class ActionNavigation {
             const m = NB[n * 6 + k];
             if (m >= 0 && m !== t && w.road[m] && !(t >= 0 && w.road[t] && this.roads.usable(t, m))) { weight *= 1.3; break; }
           }
+          // 2026-11-18 (user rule "defenses offset from roads, except the sandbag barricade"): a new road keeps off
+          // the hexes on or beside a field defense where a reasonable way round exists
+          if (!this.roads.usable(t, n) && this.nearDefense(n)) weight *= DEFENSE_ROAD_PENALTY;
         } else if (this.roads.usable(t, n)) weight *= .94;
         if (avoid?.has(n)) weight *= AVOID_PENALTY;
-        const cost = best.get(t) + weight;
-        if (cost >= (best.get(n) ?? Infinity)) continue;
-        best.set(n, cost);
-        parents.set(n, t);
+        const cost = best[t] + weight;
+        if (seen[n] === gen && cost >= best[n]) continue;
+        best[n] = cost; seen[n] = gen;
+        parent[n] = t;
         heap.push(n, cost + dist(n, to) * .59);
       }
     }
@@ -641,11 +865,29 @@ export class ActionNavigation {
    * spawned on the far side of a facility could be refused every exit even though an open way out existed.
    */
   route(from, to, def) {
+    this.localLeft = ROUTE_LOCAL_BUDGET;
+    try { return this.routeBudgeted(from, to, def); } finally { this.localLeft = Infinity; }
+  }
+
+  routeBudgeted(from, to, def) {
     if (!this.canStand(to.x, to.z, def)) return null;
     if (def.air || (distance(from, to) < 12 && this.line(from, to, def))) return [to];
     const a = tileAt(from.x, from.z), b = tileAt(to.x, to.z);
     if (a < 0 || b < 0) return null;
-    let coarse = this.strategic(a, b, def), avoid = null;
+    // NAV_BRIDGES (2026-11-18, late game): ground cut off from the unit (across a wide river with no bridge yet, which
+    // is now the normal state of a match) made every request exhaust a full bounded A* (STRATEGIC_LIMIT nodes) before
+    // failing. With no start bridges, vehicles ordered across rivers turned that into a repath storm (each blocked
+    // re-route, ladder replan and AI order paid it again). The cached regions answer it in O(1); a straight walk
+    // closer than 12 was already tried above.
+    const ca = this.componentOf(a, def), cb = ca >= 0 ? this.componentOf(b, def) : -1;
+    if (ca >= 0 && cb >= 0 && ca !== cb) {
+      const stats = this.game.navStats ??= {};
+      stats.routeCutOff = (stats.routeCutOff || 0) + 1;
+      return null;
+    }
+    // In one region a route exists: a long way around a river (to its ford or source) may need more than the
+    // interactive bound, which used to fail it and leave the unit with no path. Bounded at half the map.
+    let coarse = this.strategic(a, b, def, false, false, ca >= 0 && ca === cb ? Math.max(STRATEGIC_LIMIT, N >> 1) : STRATEGIC_LIMIT), avoid = null;
     if (!coarse) return this.line(from, to, def) ? [to] : null;
     for (let attempt = 0; ; attempt++) {
       const r = this.fineRoute(from, to, def, coarse);
@@ -706,7 +948,10 @@ export class ActionNavigation {
     const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
     heap.push(start, 0);
     let visited = 0;
-    while (heap.size && visited++ < budget) {
+    const cap = Math.min(budget, this.localLeft ?? Infinity);
+    this.localCut = false;
+    try {
+    while (heap.size && visited++ < cap) {
       const t = heap.pop(), p = point(t);
       if (distance(p, b) < .65 && this.line(p, b, def, .15)) {
         const result = [b];
@@ -724,7 +969,9 @@ export class ActionNavigation {
         heap.push(n, w + distance(q, b) / step);
       }
     }
+    this.localCut = cap < budget && visited > cap && heap.size > 0;
     return null;
+    } finally { if (this.localLeft !== undefined) this.localLeft -= Math.min(visited, cap); }
   }
 
   clearShot(a, b) {

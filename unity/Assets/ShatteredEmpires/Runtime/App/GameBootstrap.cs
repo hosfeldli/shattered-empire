@@ -51,6 +51,8 @@ namespace SE.Runtime.App
         EffectsRenderer fx;
         Wildlife wildlife;
         Atmosphere atmosphere;
+        WeatherPresenter weather;   // regional clouds, storm shade, lightning, thunder, storm notices (WEATHER_VISUALS.md)
+        int weatherMinimapRev = -1;
         AudioDirector audioDirector;
         RtsCamera rts;
         Commander commander;
@@ -186,6 +188,10 @@ namespace SE.Runtime.App
             wildlife = new Wildlife();
             fx.Blast += wildlife.Disturb;
             atmosphere = new Atmosphere(cam, sun);
+            weather = new WeatherPresenter();
+            atmosphere.RegionalWeather = true;
+            weather.Notice += (text, level, tile) => session.LocalNote(text, level, tile);
+            Hud.StormAt = weather.StormAtTile;
             rts = new RtsCamera(cam);
             rts.Bind(session.World);
             commander = new Commander(session, rts, units);
@@ -195,6 +201,7 @@ namespace SE.Runtime.App
             session.Other += OnOther;
             if (!bench) audioDirector = new AudioDirector(cam);
             if (audioDirector != null) atmosphere.Thunder += delay => audioDirector.Play("thunder", new float3(rts.Focus.x, 4, rts.Focus.z), 0.8f, 30f, 3, rts.Distance, delay);
+            if (audioDirector != null) weather.Strike += (at, delay, loudness) => audioDirector.Thunder(at, delay, loudness, rts.Distance);
             if (!opts.Has("no-ui")) BuildInterface();
             ApplyQuality(opts.Get("quality", PlayerPrefs.GetString("se.quality", "high")));
             serverUrl = LaunchOptions.ResolveServer(opts.Has("server") ? opts.Get("server") : PlayerPrefs.GetString("se.server", LaunchOptions.PublicServer),
@@ -380,10 +387,12 @@ namespace SE.Runtime.App
                 if (opts.Has("map")) msg["mapSize"] = opts.Get("map");
                 if (opts.Has("objective")) msg["objective"] = opts.Get("objective");
                 if (opts.Has("wrap")) msg["wrap"] = true;
-                // the New Campaign screen's choices (server options: style, mapSize, ais, difficulty, seed)
-                if (pendingCampaign != null && mode == "ai")
+                // the New Campaign screen's choices (server options: style, mapSize, ais, difficulty, seed); Watch AI
+                // Match sends the same setup with every seat an AI (no seat of yours: AI entry i is seat i)
+                if (pendingCampaign != null && (mode == "ai" || mode == "observe"))
                 {
                     var c = pendingCampaign;
+                    bool watch = mode == "observe";
                     msg["style"] = c.Style; msg["mapSize"] = c.MapSize; msg["ais"] = c.Rivals; msg["difficulty"] = c.Difficulty;
                     msg["objective"] = c.Objective; msg["wrap"] = c.Wrap; msg["tutorial"] = c.Tutorial;
                     if (!string.IsNullOrEmpty(c.StartRes)) msg["startRes"] = c.StartRes;
@@ -395,8 +404,14 @@ namespace SE.Runtime.App
                     if (!string.IsNullOrEmpty(c.Format) && !c.Tutorial)
                     {
                         msg["format"] = c.Format;
-                        msg["ais"] = Mathf.Max(1, MapPreview.Seats(c.Format) - 1);
+                        msg["ais"] = watch ? MapPreview.Seats(c.Format) : Mathf.Max(1, MapPreview.Seats(c.Format) - 1);
                         msg["title"] = $"{playerName} · {MapPreview.FormatLabel(c.Format)}";
+                    }
+                    if (watch)
+                    {
+                        msg.Remove("title");   // the server names an exhibition by its nations
+                        msg["speed"] = c.Speed;
+                        msg["fog"] = c.ObserverFog;
                     }
                     if (c.Ais != null && c.Ais.Count > 0 && !c.Tutorial)
                     {
@@ -410,7 +425,7 @@ namespace SE.Runtime.App
                         msg["rivals"] = rivals;
                         // seats left empty (uneven sides, on a random world or a catalog map): seat i + 1 for AI entry i
                         var closed = new JArray();
-                        for (int i = 0; i < c.Ais.Count; i++) if (c.Ais[i].Closed) closed.Add(i + 1);
+                        for (int i = 0; i < c.Ais.Count; i++) if (c.Ais[i].Closed) closed.Add(watch ? i : i + 1);
                         if (closed.Count > 0) msg["closed"] = closed;
                     }
                 }
@@ -492,10 +507,12 @@ namespace SE.Runtime.App
         {
             pendingCampaign = new CampaignOptions { Style = options.Style, MapSize = options.MapSize, Difficulty = options.Difficulty,
                 Seed = options.Seed, Rivals = options.Rivals, Tutorial = options.Tutorial, Wrap = options.Wrap, Objective = options.Objective, Map = options.Map,
-                Format = options.Format, StartRes = options.StartRes, Sketch = options.Sketch };
+                Format = options.Format, StartRes = options.StartRes, Sketch = options.Sketch,
+                Observe = options.Observe, Speed = options.Speed, ObserverFog = options.ObserverFog };
             if (options.Ais != null)
                 foreach (var ai in options.Ais) pendingCampaign.Ais.Add(new AiSeatOption { Difficulty = ai.Difficulty, Personality = ai.Personality, Closed = ai.Closed });
-            StartMatch("ai", "");
+            // Watch AI Match uses the same setup with every seat an AI (server mode 'observe', WATCH_SETUP.md)
+            StartMatch(options.Observe ? "observe" : "ai", "");
         }
 
         /// <summary>
@@ -781,6 +798,7 @@ namespace SE.Runtime.App
             double mainMs = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
             perf.Sample(frameMs, mainMs);
             SoakSample(frameMs, mainMs);
+            TelemetryFrame(frameMs, mainMs);   // diagnostics (GameBootstrap.Telemetry.cs, docs/TELEMETRY.md)
         }
 
         void Present(float dt)
@@ -864,6 +882,18 @@ namespace SE.Runtime.App
             HudOverlayMarker.End();
             stallUnits = Ms(ts);
             Mark(6, ref tq);
+            float weatherRate = phase == Phase.Playing ? session.Paused ? 0 : session.PlayRate : 1;
+            weather.Update(world, phase == Phase.Playing || phase == Phase.Stress ? session.Weather : null, session.WeatherRevision, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z),
+                rts.Cam.transform.position, rts.Distance, time, dt, weatherRate, GameSettings.WeatherIntensity);
+            if (phase == Phase.Playing) weather.WatchBases(session.Structures, session.Units, session.CivId, time);
+            atmosphere.StrikeFlash = weather.ViewFlash * (GameSettings.ReducedMotion ? .3f : 1f);
+            if (audioDirector != null) audioDirector.StormNear = weather.StormNear;
+            if (hud != null && weather.MinimapRevision != weatherMinimapRev)
+            {
+                weatherMinimapRev = weather.MinimapRevision;
+                hud.Map.Weather = weather.MinimapTexture;
+                hud.Map.WeatherChanged();
+            }
             atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);
             Mark(7, ref tq);
             fx.Wind = atmosphere.WindMap;
@@ -888,6 +918,7 @@ namespace SE.Runtime.App
             DrawMark(3, ref td);
             fx.Draw(images);
             wildlife?.Draw(images);
+            weather.Draw();
             if (phase == Phase.Playing) commander.DrawOverlay(images, time);
             DrawMark(4, ref td);
             Mark(9, ref tq);
@@ -1058,7 +1089,9 @@ namespace SE.Runtime.App
                         if (e.Grenade) { weapon = "grenade"; NoteUpgradeFx(0, p); }
                         else if (e.Rocket) { weapon = "at_rocket"; NoteUpgradeFx(1, p); fx.RocketBackBlast(p, target); }
                         else if (e.Tow) fx.RocketBackBlast(p, target);   // the IFV anti-tank missile (server fireAtgm, 2026-11-18)
-                        if (!e.Grenade) fx.Muzzle(p, true, target-p);
+                        // a guided missile leaves its rail with a motor flare and exhaust (fx.MissileLaunch, called by
+                        // Projectile), never a gun's muzzle flash (2026-11-18: missile trucks read as shooting)
+                        if (!e.Grenade && weapon != "missile") fx.Muzzle(p, true, target-p);
                         fx.Projectile(e.Grenade ? p + new float3(0, .02f, 0) : p, target, weapon, e.Flight);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(weapon == "cannon" || weapon == "howitzer" || weapon == "atgun" || weapon == "fortgun" ? "cannon" : "launch", p, 0.9f, 5f, 2, rts.Distance);
@@ -1242,7 +1275,7 @@ namespace SE.Runtime.App
         void OnDestroy()
         {
             terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); units?.Dispose(); fx?.Dispose(); wildlife?.Dispose(); fog?.Dispose(); shroud?.Dispose(); ground?.Dispose();
-            atmosphere?.Dispose(); audioDirector?.Dispose(); commander?.Dispose();
+            atmosphere?.Dispose(); weather?.Dispose(); audioDirector?.Dispose(); commander?.Dispose();
             net?.Dispose();
             session?.World.Dispose();
         }

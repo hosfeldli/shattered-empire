@@ -291,7 +291,7 @@ if ($Server) {
             }
         }
         Info "deploy $Service <- $Tag"
-        $null = Invoke-GCloud -GArgs @('run', 'deploy', $Service, "--image=$Tag", "--region=$Region", "--update-env-vars=APP_VERSION=$Sha", '--quiet') -Mutating
+        $null = Invoke-GCloud -GArgs @('run', 'deploy', $Service, "--image=$Tag", "--region=$Region", "--update-env-vars=APP_VERSION=$Sha,TELEMETRY_DATASET=se_telemetry", '--execution-environment=gen2', '--quiet') -Mutating   # gen2 (2026-11-18): full Linux sandbox, faster for the CPU-bound simulation; same price
         if ($DryRun) { Dry "poll $Site/api/health until version = $Sha" }
         else {
             if (-not (Wait-Health $Sha)) { Fail "health did not report $Sha within $HealthTimeoutSec s" }

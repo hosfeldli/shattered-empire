@@ -59,7 +59,8 @@ namespace SE.Runtime.Battlefields
         {
             public float2 Dir;          // unit, from the node
             public float Length;        // to the link's midpoint (or the free end)
-            public float Dug;           // dug length from the node (0 while planned)
+            public float DugStart;      // the dug stretch runs DugStart..Dug from the node (DugStart > 0: dug from the far side)
+            public float Dug;           // end of the dug stretch (0 while planned)
             public float2 EdgeFacing;   // enemy side at the far end (shared by both halves of a link)
             public End Far;
             public bool Planned;
@@ -417,9 +418,8 @@ namespace SE.Runtime.Battlefields
             float2 p = t.HasPosition ? new float2(t.X, t.Z) : new float2(g.CenterX(tile), g.CenterZ(tile));
             float facingAngle = TrenchNetwork.FacingOf(t);
             var facing = new float2(math.sin(facingAngle), math.cos(facingAngle));
-            bool planned = t.State == 2 || t.Progress <= 0;
-            float built = math.saturate(t.Progress / 100f);
-            bool complete = !planned && t.Progress >= 100;
+            float built = TrenchNetwork.ProgressOf(t);
+            bool planned = built <= 0;
             curP = p; curSeed = tile; curReinforced = t.Reinforced;
             arms.Clear();
             for (int d = 0; d < 6; d++)
@@ -432,8 +432,16 @@ namespace SE.Runtime.Battlefields
                 if (!TrenchNetwork.Linked(t, o, d, length)) continue;
                 float otherFacing = TrenchNetwork.FacingOf(o);
                 var edgeFacing = math.normalizesafe(facing + new float2(math.sin(otherFacing), math.cos(otherFacing)), facing);
-                bool otherDone = o.State != 2 && o.Progress >= 100 && world.Known[nb] != 0;
-                AddArm(delta / length, length * .5f, edgeFacing, planned, built, complete && otherDone ? End.Open : End.Round);
+                // 2026-11-18: the link's digging is one stretch grown from the more advanced node (TrenchNetwork.HalfDug),
+                // so a finished node and a part-dug neighbour are joined by one trench instead of two pits with a gap
+                bool known = world.Known[nb] != 0;
+                float otherBuilt = TrenchNetwork.ProgressOf(o), half = length * .5f;
+                TrenchNetwork.HalfDug(tile, built, nb, otherBuilt, known, out float from, out float to);
+                arms.Add(new Arm
+                {
+                    Dir = delta / length, Length = half, DugStart = to > from ? from * half : 0, Dug = to > from ? to * half : 0,
+                    EdgeFacing = edgeFacing, Far = TrenchNetwork.MeetsOpen(built, otherBuilt, known) ? End.Open : End.Round, Planned = to <= from,
+                });
             }
             if (!t.HasPosition)
                 for (int d = 0; d < 6; d++)
@@ -455,13 +463,18 @@ namespace SE.Runtime.Battlefields
             // the links: dug stretches (split where a road crosses), steel plates on the road, tape where still planned
             for (int i = 0; i < arms.Count; i++) ArmWorks(i, facing);
             // the node: the outer side of every corner (and a free end, a lone pit) closed by the profile swept round it
-            if (!planned && built > 0 && RoadGap(p) >= RoadClearance)
+            if (!planned && RoadGap(p) >= RoadClearance)
             {
+                // only stretches dug from the node shape it (a stretch dug from the far side ends in its own face)
                 angles.Clear();
+                bool dugAway = false;
                 for (int i = 0; i < arms.Count; i++)
-                    if (arms[i].Dug > .015f && RoadGap(p + arms[i].Dir * .02f) >= RoadClearance) angles.Add(math.atan2(arms[i].Dir.y, arms[i].Dir.x));
+                {
+                    if (arms[i].Dug - arms[i].DugStart > .015f && arms[i].DugStart > 1e-4f) dugAway = true;
+                    if (arms[i].DugStart <= 1e-4f && arms[i].Dug > .015f && RoadGap(p + arms[i].Dir * .02f) >= RoadClearance) angles.Add(math.atan2(arms[i].Dir.y, arms[i].Dir.x));
+                }
                 angles.Sort();
-                if (angles.Count == 0) Fan(p, 0, 2 * math.PI, facing, -1, 0);
+                if (angles.Count == 0 && !dugAway) Fan(p, 0, 2 * math.PI, facing, -1, 0);
                 for (int i = 0; i < angles.Count; i++)
                 {
                     float a = angles[i], b = i + 1 < angles.Count ? angles[i + 1] : angles[0] + 2 * math.PI;
@@ -489,6 +502,21 @@ namespace SE.Runtime.Battlefields
             if (t.RoadMask == 0) return;
             var g = world.Grid;
             int count = arms.Count;
+            // 2026-11-18: a free end of a line (one link) beside a road runs on to the road it points most toward
+            // (anything but back along its own link), so a line drawn up to a road visibly joins it
+            int freeEndRoad = -1;
+            if (count == 1)
+            {
+                float best = -2f;
+                for (int d = 0; d < 6; d++)
+                {
+                    int nb = g.Nb[tile * 6 + d];
+                    if ((t.RoadMask & (1 << d)) == 0 || nb < 0) continue;
+                    var to = math.normalizesafe(new float2(g.DxWrap(c.x, g.CenterX(nb)), g.CenterZ(nb) - c.y));
+                    float ahead = math.dot(to, -arms[0].Dir);
+                    if (math.dot(to, arms[0].Dir) < .5f && ahead > best) { best = ahead; freeEndRoad = d; }
+                }
+            }
             for (int d = 0; d < 6; d++)
             {
                 if ((t.RoadMask & (1 << d)) == 0) continue;
@@ -504,6 +532,8 @@ namespace SE.Runtime.Battlefields
                     if (math.dot(toward, -arms[i].Dir) > .5f) continues = true;
                     if (math.dot(toward, arms[i].Dir) > .8f) linked = true;
                 }
+                if (d == freeEndRoad) continues = true;
+                else if (count == 1) continues = false;   // a free end joins one road only
                 if (!continues || linked) continue;
                 float stop = -1;
                 for (float s = .05f; s < reach; s += .02f)
@@ -518,12 +548,12 @@ namespace SE.Runtime.Battlefields
         {
             var arm = arms[i];
             float yaw = math.atan2(arm.Dir.x, arm.Dir.y);
-            if (arm.Dug > .015f)
+            if (arm.Dug - arm.DugStart > .015f)
             {
-                // march along the dug length, splitting it where it runs onto a road
-                float s0 = 0; bool onRoad = RoadGap(curP) < RoadClearance;
+                // march along the dug stretch, splitting it where it runs onto a road
+                float s0 = arm.DugStart; bool onRoad = RoadGap(curP + arm.Dir * s0) < RoadClearance;
                 const float probe = .02f;
-                for (float s = probe; ; s += probe)
+                for (float s = s0 + probe; ; s += probe)
                 {
                     bool last = s >= arm.Dug;
                     float at = math.min(s, arm.Dug);
@@ -533,7 +563,8 @@ namespace SE.Runtime.Battlefields
                     if (onRoad) Plates(arm, s0, s1, yaw);
                     else if (s1 - s0 > .03f)
                     {
-                        End start = s0 <= 0 ? End.Open : End.Square;
+                        // a stretch dug from the far side (TrenchNetwork.HalfDug) starts at its digging face
+                        End start = s0 > arm.DugStart + 1e-4f ? End.Square : arm.DugStart > 1e-4f ? End.Round : End.Open;
                         End end = !last ? End.Square : arm.Dug < arm.Length - 1e-4f ? End.Round : arm.Far;
                         Sweep(i, nodeFacing, s0, s1, start, end);
                     }
@@ -541,6 +572,8 @@ namespace SE.Runtime.Battlefields
                     s0 = s1; onRoad = road;
                 }
             }
+            if (arm.Dug - arm.DugStart <= .015f) { Tape(arm.Dir, 0, arm.Length, yaw); return; }
+            if (arm.DugStart > .02f) Tape(arm.Dir, 0, arm.DugStart, yaw);
             if (arm.Dug < arm.Length - .02f) Tape(arm.Dir, arm.Dug, arm.Length, yaw);
         }
 
@@ -593,9 +626,11 @@ namespace SE.Runtime.Battlefields
             {
                 if (j == self) continue;
                 var a = arms[j];
-                if (a.Dug <= .015f) continue;
+                if (a.Dug - a.DugStart <= .015f) continue;
                 float along = math.dot(rel, a.Dir);
-                if (along < 0 || along > a.Dug) continue;
+                // strictly ahead of the node: on a straight run the other arm's section at the node itself is not pressed
+                // (it was, which notched the fire step and wall foot at every node)
+                if (along < math.max(a.DugStart, .001f) || along > a.Dug) continue;
                 if (math.abs(rel.x * a.Dir.y - rel.y * a.Dir.x) < WallTop - .001f) return true;
             }
             return false;
@@ -703,6 +738,12 @@ namespace SE.Runtime.Battlefields
             Bands(count, RStep, 2); Bands(count, RWall, 2); Bands(count, RBank, 2);
             float yaw = math.atan2(arm.Dir.x, arm.Dir.y);
             if (start == End.Square) SquareEnd(secPool[0], -arm.Dir, curP + arm.Dir * s0, yaw, i);
+            if (start == End.Round)
+            {
+                // the digging face of a stretch dug from the far side: the profile swept round its near end
+                float a = math.atan2(arm.Dir.y, arm.Dir.x);
+                Fan(curP + arm.Dir * s0, a + math.PI * .5f, math.PI, FacingAt(arm, nodeFacing, s0), i, 70 + i);
+            }
             if (end == End.Square) SquareEnd(secPool[count - 1], arm.Dir, curP + arm.Dir * s1, yaw, i);
             if (end == End.Round)
             {
@@ -761,7 +802,10 @@ namespace SE.Runtime.Battlefields
 
         /// <summary>
         /// A square end (at a road verge, or where a road splits the line): the cut faces of the banks closed down
-        /// into the ground, and a sandbag wall across the slot.
+        /// into the ground. 2026-11-18: the slot stays open onto the road (it was walled off with sandbags, which read as
+        /// the line stopping short of the road): timber posts frame the opening and a duckboard step spans the verge to
+        /// the carriageway, so a trench crossing a road (a covered crossing: steel plates on the road, Plates) or ending
+        /// at one visibly runs into it.
         /// </summary>
         void SquareEnd(Sec sec, float2 outward, float2 at, float yaw, int self)
         {
@@ -778,11 +822,22 @@ namespace SE.Runtime.Battlefields
                 for (int j = 0; j < 4; j++) { cur.Nrm.Add(float3.zero); cur.Col.Add(color); cur.Kind.Add((byte)SurfaceKind.Soil); }
                 Tri(b0, b0 + 1, b0 + 2, want); Tri(b0, b0 + 2, b0 + 3, want);
             }
-            // the sandbag wall closing the slot, just inside the end
-            var wall = at - outward * .016f;
-            float y = MeshSurface(wall.x, wall.y) + FloorLift;
-            float height = math.min(sec.P[6].y, sec.P[13].y) - y + .004f;
-            Bags(new float3(wall.x, y, wall.y), yaw + math.PI * .5f, 0, new float3(.026f, math.max(.012f, height), WallTop * 2f + .012f), self);
+            // timber posts framing the opening, at the foot of each revetted wall
+            var across = new float2(-outward.y, outward.x);
+            for (int side = -1; side <= 1; side += 2)
+            {
+                var post = at - outward * .004f + across * (side * WallFoot);
+                float py = MeshSurface(post.x, post.y) + FloorLift;
+                float top = math.max(sec.P[6].y, sec.P[13].y);   // the revetment tops
+                Box(new float3(post.x, py - .002f, post.y), yaw, 0, new float3(.006f, math.max(.012f, top - py + .004f), .006f), new float3(.30f, .24f, .17f));
+            }
+            // a duckboard step across the verge onto the road, level with the carriageway
+            var inner = at - outward * .02f; var outer = at + outward * (RoadClearance + .02f);
+            float hi = MeshSurface(inner.x, inner.y) + FloorLift, ho = RoadCurve.Height(world, float.NegativeInfinity, outer.x, outer.y) + .0004f;
+            float span = math.distance(inner, outer);
+            var mid = (inner + outer) * .5f;
+            float yawOut = math.atan2(outward.x, outward.y);
+            Box(new float3(mid.x, (hi + ho) * .5f, mid.y), yawOut, -math.atan2(ho - hi, span), new float3(FloorHalf * 1.7f, .0016f, span), Board * .9f);
         }
 
         // ---------------------------------------------------------------- details

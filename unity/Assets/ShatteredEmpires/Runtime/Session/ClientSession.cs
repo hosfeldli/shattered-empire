@@ -88,6 +88,35 @@ namespace SE.Runtime.Session
         public BattlefieldState Battlefield = new BattlefieldState();
         public WeatherState Weather;
         public int TrenchRevision, RuinRevision, BattlefieldRevision, WeatherRevision;
+
+        // Pass 4 keyed deltas (capability econ-delta-v1, server/delta.js): the versions of sites, buildings and battlefield
+        // held, and the battlefield grouped by tile. A delta applies only on top of the version it follows; anything else
+        // is a gap: the delta is dropped and the server is asked (at most every 2 s) to send the fields whole.
+        readonly BattlefieldStore battlefieldStore = new BattlefieldStore();
+        int sitesVersion = -1, buildingsVersion = -1;
+        long resyncAskedAt;
+        readonly List<int> anchoredSites = new List<int>();
+        /// <summary>Diagnostics: keyed deltas dropped because they did not follow the version held.</summary>
+        public int KeyedGaps;
+
+        void ResetKeyed() { sitesVersion = buildingsVersion = -1; battlefieldStore.Clear(); }
+
+        void KeyedGap()
+        {
+            KeyedGaps++;
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (resyncAskedAt != 0 && now - resyncAskedAt < 2 * System.Diagnostics.Stopwatch.Frequency) return;
+            resyncAskedAt = now;
+            Net?.Command(new JObject { ["c"] = "resync" });
+        }
+
+        /// <summary>Tenure and maturity of sites sent with time anchors follow the snapshot clock.</summary>
+        void RederiveSites(float time)
+        {
+            anchoredSites.Clear();
+            foreach (var kv in Objectives) if (kv.Value.HasTenureAnchor || kv.Value.MaturityLive) anchoredSites.Add(kv.Key);
+            foreach (int id in anchoredSites) { var o = Objectives[id]; o.Rederive(time); Objectives[id] = o; }
+        }
         /// <summary>Server definitions from the welcome (BUILDINGS, UNITS, TECHS, AGES ...).</summary>
         public JObject Defs => Welcome?.Defs;
 
@@ -98,6 +127,19 @@ namespace SE.Runtime.Session
         /// <summary>Where and what each note is about (same index as <see cref="Notes"/>).</summary>
         public readonly List<NoteInfo> NoteMeta = new List<NoteInfo>();
         public struct NoteInfo { public int Tile; public string Kind, Title; }
+
+        /// <summary>
+        /// A note raised by the client itself (e.g. a storm over one of our air bases, WeatherPresenter), shown and
+        /// pinged exactly like a server note of that level.
+        /// </summary>
+        public void LocalNote(string text, string level, int tile, string kind = "weather")
+        {
+            Notes.Add((Units.RenderTime, text, level));
+            NoteMeta.Add(new NoteInfo { Tile = tile, Kind = kind });
+            if (tile >= 0 && (level == "critical" || level == "major")) LastAlertTile = tile;
+            NotesTotal++;
+            if (Notes.Count > 200) { Notes.RemoveRange(0, Notes.Count - 200); NoteMeta.RemoveRange(0, NoteMeta.Count - 200); }
+        }
         /// <summary>The map location of the most recent important alert (-1: none), for "jump to alert".</summary>
         public int LastAlertTile = -1;
         /// <summary>Notes received in all (keeps counting after old ones are trimmed from the list).</summary>
@@ -269,6 +311,7 @@ namespace SE.Runtime.Session
             softGeo = false;
             deferredGeometry.Clear();   // updates for the world being replaced
             Objectives.Clear(); Pickups.Clear(); ActionPlan = null; Econ = null; Age = 0;
+            ResetKeyed();
             Trenches =System.Array.Empty<TrenchRecord>(); Ruins = System.Array.Empty<RuinRecord>(); Battlefield = new BattlefieldState(); Weather = null;
             TrenchRevision++; RuinRevision++; BattlefieldRevision++; WeatherRevision++;
             BeforeGeometryChange?.Invoke();
@@ -312,6 +355,7 @@ namespace SE.Runtime.Session
                 World.Reset(World.Grid.W, World.Grid.H, World.Grid.Wrap);
                 Units.Reset(World.Grid);
                 Structures.Clear();
+                ResetKeyed();
             }
             if (s.Observer != null)
             {
@@ -328,7 +372,20 @@ namespace SE.Runtime.Session
             {
                 Objectives.Clear();
                 foreach (var site in s.Objectives) Objectives[site.Id] = site;
+                sitesVersion = s.SitesVersion;
             }
+            else if (s.SitesDelta != null)
+            {
+                var d = s.SitesDelta;
+                if (sitesVersion >= 0 && d.Version == sitesVersion + 1)
+                {
+                    foreach (int id in d.Removed) Objectives.Remove(id);
+                    foreach (var site in d.Updated) Objectives[site.Id] = site;
+                    sitesVersion = d.Version;
+                }
+                else KeyedGap();
+            }
+            if (sitesVersion >= 0) RederiveSites(s.Time);
             if (s.Pickups != null)
             { Pickups.Clear(); foreach (var pickup in s.Pickups) Pickups[pickup.Id] = pickup; }
             if (s.Events != null) Events.AddRange(s.Events);
@@ -343,17 +400,30 @@ namespace SE.Runtime.Session
                 }
                 PartEnd(2);
                 if (s.Ruins != null && (s.Ruins.Length != Ruins.Length || RuinsChanged(s.Ruins))) { Ruins = s.Ruins; RuinRevision++; }
+                BattlefieldState bf = null;
                 if (s.BattlefieldState != null)
                 {
-                    // the battlefield and its craters change together (the warzone draws both)
-                    var bf = s.BattlefieldState;
-                    Geometry(() => { Battlefield = bf; BattlefieldRevision++; World.ApplyImpacts(bf.Impacts, BeforeGeometryChange, DirtyChunks, DirtyCells); });
+                    bf = s.BattlefieldState;
+                    if (s.BattlefieldVersion >= 0) battlefieldStore.Reset(bf, s.BattlefieldVersion); else battlefieldStore.Clear();
                 }
+                else if (s.BattlefieldDelta != null)
+                {
+                    if (battlefieldStore.Version >= 0 && s.BattlefieldDelta.Version == battlefieldStore.Version + 1) { battlefieldStore.Apply(s.BattlefieldDelta); bf = battlefieldStore.Snapshot(); }
+                    else KeyedGap();
+                }
+                // the battlefield and its craters change together (the warzone draws both)
+                if (bf != null) Geometry(() => { Battlefield = bf; BattlefieldRevision++; World.ApplyImpacts(bf.Impacts, BeforeGeometryChange, DirtyChunks, DirtyCells); });
                 PartEnd(3);
                 Econ = s.Econ;
                 ActionPlan = s.ActionPlan;
                 if (Econ != null) Age = ProtocolDecoder.Int(Econ["age"], Age);
-                if (s.Buildings != null) Structures.ApplyBuildings(s.Buildings, World, DirtyCells);
+                if (s.Buildings != null) { Structures.ApplyBuildings(s.Buildings, World, DirtyCells); buildingsVersion = s.BuildingsVersion; }
+                else if (s.BuildingsDelta != null)
+                {
+                    var d = s.BuildingsDelta;
+                    if (buildingsVersion >= 0 && d.Version == buildingsVersion + 1) { Structures.ApplyBuildingChanges(d.Updated, d.Removed, World, DirtyCells); buildingsVersion = d.Version; }
+                    else KeyedGap();
+                }
                 if (s.Cities != null) Structures.ApplyCities(s.Cities, World, DirtyCells);
                 PartEnd(4);
             }

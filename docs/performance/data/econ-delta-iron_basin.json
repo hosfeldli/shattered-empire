@@ -1,0 +1,516 @@
+{
+ "map": "iron_basin",
+ "seed": 7,
+ "players": 6,
+ "over": false,
+ "end": 2460,
+ "windows": [
+  {
+   "minute": 5,
+   "units": 112,
+   "players": 6,
+   "legacy": {
+    "kbPerMin": 3771,
+    "deflKbPerMin": 996,
+    "encMsPerMin": 25.6,
+    "deflateMsPerMin": 66,
+    "encMsMean": 0.085,
+    "encMsP95": 0.138,
+    "encMsMax": 0.93,
+    "econKB": 17.4,
+    "econKBMax": 26
+   },
+   "keyed": {
+    "kbPerMin": 1391,
+    "deflKbPerMin": 357,
+    "encMsPerMin": 33.5,
+    "deflateMsPerMin": 28.3,
+    "encMsMean": 0.112,
+    "encMsP95": 0.179,
+    "encMsMax": 1.07,
+    "econKB": 6.1,
+    "econKBMax": 24.1
+   },
+   "fields": {
+    "sites": {
+     "kb": 7.31,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "units": {
+     "kb": 5.63,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "buildings": {
+     "kb": 2.64,
+     "sentOf": 720,
+     "unchanged": 163
+    },
+    "bf": {
+     "kb": 1.58,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "vis": {
+     "kb": 2.67,
+     "sentOf": 360,
+     "unchanged": 0
+    },
+    "civs": {
+     "kb": 0.71,
+     "sentOf": 720,
+     "unchanged": 711
+    },
+    "wp": {
+     "kb": 0.64,
+     "sentOf": 720,
+     "unchanged": 334
+    },
+    "econ": {
+     "kb": 0.29,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "keyed.sd": {
+     "kb": 0.89,
+     "sentOf": 200,
+     "unchanged": 0
+    },
+    "cities": {
+     "kb": 0.23,
+     "sentOf": 720,
+     "unchanged": 705
+    },
+    "keyed.bd": {
+     "kb": 0.28,
+     "sentOf": 545,
+     "unchanged": 0
+    },
+    "ruins": {
+     "kb": 0.17,
+     "sentOf": 720,
+     "unchanged": 690
+    },
+    "keyed.bfd": {
+     "kb": 0.13,
+     "sentOf": 714,
+     "unchanged": 0
+    },
+    "tiles": {
+     "kb": 0.25,
+     "sentOf": 345,
+     "unchanged": 0
+    },
+    "keyed.sites": {
+     "kb": 7.74,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "urban": {
+     "kb": 2.67,
+     "sentOf": 12,
+     "unchanged": 3
+    },
+    "keyed.buildings": {
+     "kb": 2.72,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "keyed.bf": {
+     "kb": 1.47,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "pickups": {
+     "kb": 0.01,
+     "sentOf": 720,
+     "unchanged": 708
+    },
+    "tick": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "t": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    },
+    "time": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "paths": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    },
+    "bridges": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    },
+    "ms": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    },
+    "projects": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    },
+    "fw": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    },
+    "trenchWorld": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 714
+    }
+   }
+  },
+  {
+   "minute": 20,
+   "units": 186,
+   "players": 6,
+   "legacy": {
+    "kbPerMin": 11046,
+    "deflKbPerMin": 2827,
+    "encMsPerMin": 110.6,
+    "deflateMsPerMin": 279.7,
+    "encMsMean": 0.368,
+    "encMsP95": 0.713,
+    "encMsMax": 29.24,
+    "econKB": 72.8,
+    "econKBMax": 89.8
+   },
+   "keyed": {
+    "kbPerMin": 3776,
+    "deflKbPerMin": 993,
+    "encMsPerMin": 124.3,
+    "deflateMsPerMin": 78.8,
+    "encMsMean": 0.414,
+    "encMsP95": 0.861,
+    "encMsMax": 28.55,
+    "econKB": 15.9,
+    "econKBMax": 82.9
+   },
+   "fields": {
+    "bf": {
+     "kb": 33.32,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "sites": {
+     "kb": 16.54,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "units": {
+     "kb": 11.15,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "buildings": {
+     "kb": 8.45,
+     "sentOf": 720,
+     "unchanged": 92
+    },
+    "wp": {
+     "kb": 4.22,
+     "sentOf": 720,
+     "unchanged": 180
+    },
+    "trenchWorld": {
+     "kb": 1.52,
+     "sentOf": 720,
+     "unchanged": 583
+    },
+    "vis": {
+     "kb": 2.67,
+     "sentOf": 360,
+     "unchanged": 0
+    },
+    "keyed.bfd": {
+     "kb": 0.98,
+     "sentOf": 714,
+     "unchanged": 0
+    },
+    "ruins": {
+     "kb": 0.73,
+     "sentOf": 720,
+     "unchanged": 684
+    },
+    "civs": {
+     "kb": 0.72,
+     "sentOf": 720,
+     "unchanged": 633
+    },
+    "fw": {
+     "kb": 0.64,
+     "sentOf": 720,
+     "unchanged": 519
+    },
+    "keyed.bd": {
+     "kb": 0.7,
+     "sentOf": 622,
+     "unchanged": 0
+    },
+    "keyed.sd": {
+     "kb": 1.05,
+     "sentOf": 369,
+     "unchanged": 0
+    },
+    "ev": {
+     "kb": 0.61,
+     "sentOf": 492,
+     "unchanged": 0
+    },
+    "econ": {
+     "kb": 0.28,
+     "sentOf": 720,
+     "unchanged": 116
+    },
+    "cities": {
+     "kb": 0.28,
+     "sentOf": 720,
+     "unchanged": 687
+    },
+    "keyed.bf": {
+     "kb": 31.7,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "pickups": {
+     "kb": 0.15,
+     "sentOf": 720,
+     "unchanged": 711
+    },
+    "keyed.sites": {
+     "kb": 16.32,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "keyed.buildings": {
+     "kb": 8.02,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "tiles": {
+     "kb": 0.11,
+     "sentOf": 208,
+     "unchanged": 0
+    },
+    "tick": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "time": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "t": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "paths": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "bridges": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "ms": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "projects": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    }
+   }
+  },
+  {
+   "minute": 40,
+   "units": 117,
+   "players": 6,
+   "legacy": {
+    "kbPerMin": 9894,
+    "deflKbPerMin": 2529,
+    "encMsPerMin": 67.2,
+    "deflateMsPerMin": 191.7,
+    "encMsMean": 0.224,
+    "encMsP95": 0.533,
+    "encMsMax": 2.03,
+    "econKB": 59,
+    "econKBMax": 85
+   },
+   "keyed": {
+    "kbPerMin": 2484,
+    "deflKbPerMin": 672,
+    "encMsPerMin": 79.3,
+    "deflateMsPerMin": 48.6,
+    "encMsMean": 0.264,
+    "encMsP95": 0.646,
+    "encMsMax": 2.89,
+    "econKB": 11.4,
+    "econKBMax": 83.8
+   },
+   "fields": {
+    "bf": {
+     "kb": 22.68,
+     "sentOf": 720,
+     "unchanged": 9
+    },
+    "sites": {
+     "kb": 19.24,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "units": {
+     "kb": 6.62,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "buildings": {
+     "kb": 4.61,
+     "sentOf": 720,
+     "unchanged": 241
+    },
+    "ruins": {
+     "kb": 2.8,
+     "sentOf": 720,
+     "unchanged": 693
+    },
+    "wp": {
+     "kb": 2.41,
+     "sentOf": 720,
+     "unchanged": 420
+    },
+    "trenchWorld": {
+     "kb": 2.12,
+     "sentOf": 720,
+     "unchanged": 516
+    },
+    "vis": {
+     "kb": 2.67,
+     "sentOf": 354,
+     "unchanged": 0
+    },
+    "fw": {
+     "kb": 0.89,
+     "sentOf": 720,
+     "unchanged": 443
+    },
+    "civs": {
+     "kb": 0.72,
+     "sentOf": 720,
+     "unchanged": 663
+    },
+    "keyed.bfd": {
+     "kb": 0.47,
+     "sentOf": 705,
+     "unchanged": 0
+    },
+    "keyed.bd": {
+     "kb": 0.56,
+     "sentOf": 476,
+     "unchanged": 0
+    },
+    "keyed.sd": {
+     "kb": 0.94,
+     "sentOf": 273,
+     "unchanged": 0
+    },
+    "econ": {
+     "kb": 0.26,
+     "sentOf": 720,
+     "unchanged": 358
+    },
+    "keyed.bf": {
+     "kb": 23.1,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "pickups": {
+     "kb": 0.17,
+     "sentOf": 720,
+     "unchanged": 708
+    },
+    "keyed.sites": {
+     "kb": 19.09,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "ev": {
+     "kb": 0.45,
+     "sentOf": 240,
+     "unchanged": 0
+    },
+    "cities": {
+     "kb": 0.14,
+     "sentOf": 720,
+     "unchanged": 708
+    },
+    "keyed.buildings": {
+     "kb": 4.76,
+     "sentOf": 6,
+     "unchanged": 0
+    },
+    "tick": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "time": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 0
+    },
+    "tiles": {
+     "kb": 0.06,
+     "sentOf": 45,
+     "unchanged": 0
+    },
+    "t": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "paths": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "bridges": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "ms": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    },
+    "projects": {
+     "kb": 0,
+     "sentOf": 720,
+     "unchanged": 720
+    }
+   }
+  }
+ ]
+}

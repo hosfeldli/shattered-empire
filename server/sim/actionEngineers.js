@@ -12,8 +12,9 @@
 import { N, T, isWater } from './constants.js';
 import { disk, dist as hexDist, hexLine } from './hex.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, CAPTURE, RUIN_TYPES, TERRAIN_WORKS } from './actionDefinitions.js';
-import { centerOf, distance, tileAt } from './actionNavigation.js';
-import { baseStreets, planRing } from './actionMap.js';
+import { centerOf, distance, HEAVY_GROUND, tileAt } from './actionNavigation.js';
+import { baseStreets, isBridgeSegment, planRing, ROAD_SEARCH } from './actionMap.js';
+import { roadBuild } from './actionEconomy.js';
 import { addFacility, canPay, connectSiteRoads, headquarters } from './actionBases.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
@@ -428,4 +429,48 @@ function reshape(game, p, list) {
     w.classify(t); w.touch(t);
   }
   game.nav.invalidate();
+}
+
+// --- roadRouteBetween (NAV_BRIDGES.md, 2026-11-18) ---------------------------------------------------------------
+// Matches start without bridges: a wide river (flow >= 94) stops every vehicle until a road with its bridge is built
+// across it. This plans the road between two points with the road planner (heavy-vehicle ground, rivers bridged,
+// never across open water or a lake) and orders it exactly as a player's road stroke (actionEconomy.roadBuild): the
+// same visibility, territory, hostile-compound, foundation and structure rules, the same price (ROAD_EDGE_COST a
+// segment, ROAD_BRIDGE_COST a bridge segment), the same per-player project limit, and it is built by the base
+// engineers. For the AI (and tests); players draw strokes.
+/** Longest road roadRouteBetween orders in one project (segments); the same cap as a drawn stroke. */
+export const ROAD_ROUTE_MAX = 120;
+/**
+ * roadRouteBetween(game, civ, from, to, { preview = false } = {})
+ *   from, to: tile indices or points { x, z }.
+ * Returns { ok: true, edges, bridges, skipped, cost: { materials }, route: [tiles] } (preview: nothing is paid or
+ * queued), or { error, code } with code 'points' | 'route' | 'length' | 'funds' | 'projects' | a roadBuild refusal
+ * code ('territory', 'foundation', 'blocked', 'hidden', 'hostile', 'built').
+ */
+export function roadRouteBetween(game, civ, from, to, { preview = false } = {}) {
+  const point = (p) => (typeof p === 'number' ? (p >= 0 && p < N ? centerOf(p) : null) : p && Number.isFinite(p.x) && Number.isFinite(p.z) ? { x: p.x, z: p.z } : null);
+  const a = point(from), b = point(to);
+  const ta = a ? tileAt(a.x, a.z) : -1, tb = b ? tileAt(b.x, b.z) : -1;
+  if (!civ || ta < 0 || tb < 0) return { error: 'Choose two points on the map for the road.', code: 'points' };
+  if (ta === tb) return { error: 'Choose two points farther apart for the road.', code: 'points' };
+  const route = game.nav.strategic(ta, tb, HEAVY_GROUND, true, false, ROAD_SEARCH);
+  if (!route) return { error: 'No suitable road or bridge route connects those locations.', code: 'route' };
+  if (route.length - 1 > ROAD_ROUTE_MAX) return { error: `That road would be ${route.length - 1} segments: build it in sections of at most ${ROAD_ROUTE_MAX}.`, code: 'length' };
+  // the planned tiles as a stroke: each step is one hex edge, so roadBuild lays exactly this route
+  const r = roadBuild(game, civ, route.map(centerOf), preview);
+  const w = game.world;
+  if (preview) {
+    const road = r.reply?.road;
+    if (!road || r.error) return { error: r.error || 'No suitable road or bridge route connects those locations.', code: r.code || 'route' };
+    return { ok: true, preview: true, edges: road.positions.length, bridges: road.positions.filter((e) => isBridgeSegment(w, e.a, e.b)).length,
+      skipped: road.skipped.length, cost: road.cost, route };
+  }
+  if (r.error) {
+    const code = r.code || (/requires d+ Materials/.test(r.error) ? 'funds' : /Finish an existing road project/.test(r.error) ? 'projects'
+      : /already has an operational/.test(r.error) ? 'built' : 'route');
+    return { error: r.error, code };
+  }
+  const project = game.roadProjects[game.roadProjects.length - 1];
+  const bridges = project?.edges ? project.edges.filter((e) => isBridgeSegment(w, e.a, e.b)).length : 0;
+  return { ok: true, edges: r.edges, bridges, skipped: r.skipped, cost: r.cost, route };
 }

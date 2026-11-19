@@ -6,7 +6,7 @@ import { centerOf, distance, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, til
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
 import { applyTerrain, engineerStep as baseEngineers } from './actionEngineers.js';
-import { ROAD_EDGE_COST } from './actionMap.js';
+import { roadEdgesCost } from './actionMap.js';
 
 export function seedMaterialCaches(game) {
   const add = (site, index, amount, radius, replenishes = false) => {
@@ -169,7 +169,8 @@ export function roadBuild(game, civ, points, preview = false) {
     // a preview still carries the skipped edges so the client can draw them red under the refusal
     return preview ? { ...refusal, reply: { t: 'ack', ...refusal, road: { positions: [], skipped, cost: { materials: 0 }, seconds: 0 } } } : refusal;
   }
-  const cost = edges.size * ROAD_EDGE_COST;
+  // NAV_BRIDGES.md: bridge segments (an end on a river hex) cost ROAD_BRIDGE_COST, the rest ROAD_EDGE_COST
+  const cost = roadEdgesCost(game.world, edges.values());
   const positions = [...edges.values()].map((e) => ({ ...e, from: centerOf(e.a), to: centerOf(e.b) }));
   const seconds = Math.max(3, Math.min(14, edges.size * 1.1));
   if (preview) return { reply: { t: 'ack', road: { positions, skipped, cost: { materials: cost }, seconds } } };
@@ -180,7 +181,7 @@ export function roadBuild(game, civ, points, preview = false) {
   civ.res.materials -= cost;
   // built by the base engineers, edge by edge (actionEngineers.js)
   game.roadProjects.push({ id: game.id_(), owner: civ.id, edges: [...edges.values()], left: seconds, total: seconds });
-  return { edges: edges.size, skipped: skipped.length };
+  return { edges: edges.size, skipped: skipped.length, cost: { materials: cost } };
 }
 
 export function fieldEconomyStep(game, dt) {
@@ -195,10 +196,10 @@ export function fieldEconomyStep(game, dt) {
       continue;
     }
     for (const e of p.edges) game.roads.set(e.a, e.b, 2);
-    // a finished road crosses any trench in its way: the works on its tiles are filled in, leaving a gap
-    let filled = 0;
-    for (const e of p.edges) for (const t of [e.a, e.b]) if (game.fieldworks?.delete(t)) filled++;
-    if (filled) game.fwVer++;
+    // a finished road crossing a trench keeps it (2026-11-18): the trench hex becomes a covered crossing (plates
+    // carry the road over the slot, TRENCHES.md); trenches never affect movement. The trench records' road masks
+    // change with the road, so the works are re-sent.
+    if (game.fieldworks?.size) game.fwVer++;
     game.nav.invalidate(); game.roadProjects.splice(i, 1);
     game.notify(p.owner, p.label || 'Road connection complete.', { kind: 'build', tile: p.edges[0].a });
   }

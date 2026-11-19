@@ -1,6 +1,6 @@
 // One match = one worker thread. The simulation, fog-of-war filtering and JSON encoding all run
 // here, so a heavy battle in one match cannot stall the event loop of another.
-import { deltaEncoder } from './delta.js';
+import { deltaEncoder, KEYED_CAP } from './delta.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import zlib from 'node:zlib';
 
@@ -27,6 +27,14 @@ if (workerData.restore) {
 game.adaptive = process.env.SE_ADAPTIVE !== '0';
 if (workerData.sandbox) { game.sandbox = true; game.sandboxReveal = true; for (const c of game.civs) if (!c.human) c.ai = null; game.refreshVisibility(); }
 const post = (m) => parentPort.postMessage(m);
+// Telemetry (docs/TELEMETRY.md): only when the server has it on. The probe reads the game, never writes it.
+let probe = null;
+if (workerData.telemetry) {
+  const { createProbe } = await import('./telemetry/probe.js');
+  const defs = await import('./sim/actionDefinitions.js'), navMod = game.ruleset === ACTION_RULESET ? await import('./sim/actionNavigation.js') : null;
+  probe = createProbe(game, { post, units: defs.ACTION_UNITS, buildings: defs.ACTION_BUILDINGS, centerOf: navMod?.centerOf, minuteMs: workerData.telemetry.minuteMs || 60_000 });
+  setInterval(() => { try { probe?.second(); } catch (e) { post({ t: 'error', error: 'telemetry: ' + String(e && e.stack || e) }); probe = null; } }, 1000).unref();
+}
 const out = [];
 const deltas = new Map();               // civId -> snapshot delta encoder (capability 'udelta')
 const sendSnap = (civId, msg) => { const enc = deltas.get(civId); send(civId, enc ? enc(msg) : msg); };
@@ -47,7 +55,7 @@ function geoStep() { for (const civId of geoViewers.keys()) if (civId === -2 ? g
 function flush() {
   for (const [civId, msg] of game.outbox) send(civId, msg);
   game.outbox.length = 0;
-  if (out.length) { post({ t: 'out', msgs: out.splice(0) }); }
+  if (out.length) { probe?.out(out); post({ t: 'out', msgs: out.splice(0) }); }
 }
 
 let tickMs = 0, maxMs = 0, ticks = 0, overSent = false, frames = 0;
@@ -58,6 +66,11 @@ let nextSave = game.time + AUTOSAVE_S;
 // Spectated AI-only matches can run faster than real time (or pause) for testing.
 const OBSERVE = !!workerData.observe;
 game.speed = 1;
+// Watch AI Match setup: the exhibition's starting speed and the spectator's fog (both still change in the match)
+if (OBSERVE) {
+  if ([1, 2, 4, 8].includes(workerData.speed)) game.speed = workerData.speed;
+  if (workerData.observerFog && typeof game.setObserver === 'function') game.setObserver({ fog: true });
+}
 // R6 speed votes (sim/speedVote.js): results are announced to everyone; a passed vote is applied here, at the
 // start of a tick interval, so the change lands on a boundary between two whole intervals
 const civName = (id) => game.civs[id]?.name || 'A player';
@@ -86,12 +99,14 @@ const timer = setInterval(() => {
       // paused: keep the view alive (orders given now show up and run when play resumes)
       frames++;
       if (frames % 5 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) sendSnap(civId, msg); geoStep(); }   // includes the spectator
-      flush(); return;
+      flush(); probe?.interval(0, 0, true); return;
     }
     frames++;
     // 5 Hz snapshots, economy every second, regardless of how many ticks ran
-    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) sendSnap(civId, msg); geoStep(); }
+    const ts = probe ? performance.now() : 0;
+    if (frames % 2 === 0) { for (const [civId, msg] of game.snapshots(null, frames % 10 === 0, congested)) sendSnap(civId, msg); geoStep(); probe?.snapshot(performance.now() - ts); }
     flush();
+    probe?.interval(performance.now() - t0, n, false);
     const dt = (performance.now() - t0) / n;
     tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks += n;
     if (game.time >= nextSave) { nextSave = game.time + AUTOSAVE_S; const time = game.time; saveAsync((buf) => post({ t: 'autosave', buf, time })); }
@@ -112,7 +127,9 @@ let saving = false;
 function saveAsync(done) {
   if (saving) return;                       // one compression in flight at a time
   saving = true;
+  const t0 = performance.now();
   const json = JSON.stringify(serializeGame(game));
+  probe?.autosave(performance.now() - t0);
   zlib.gzip(json, { level: 6 }, (err, buf) => { saving = false; if (err) post({ t: 'error', error: 'save failed: ' + err.message }); else done(buf); });
 }
 
@@ -124,7 +141,13 @@ parentPort.on('message', (m) => {
       for (const id of congested) if (!next.has(id) && id >= 0 && game.civs[id]) { game.civs[id].catchUp = true; deltas.get(id)?.resyncEcon?.(); }
       congested = next; return;
     }
-    if (m.t === 'cmd' && m.cmd && m.cmd.c === 'speed') {
+    if (m.t === 'cmd' && m.cmd && m.cmd.c === 'resync') {
+      // Pass 4: a keyed-delta client saw a version gap; its next snapshot carries sites, buildings and battlefield whole
+      const enc = deltas.get(m.civId), civ = game.civs[m.civId];
+      if (enc?.resyncEcon) { enc.resyncEcon(); if (civ) civ.catchUp = true; }
+      send(m.civId, { t: 'ack', rid: m.rid, resync: !!enc?.keyed });
+      flush();
+    } else if (m.t === 'cmd' && m.cmd && m.cmd.c === 'speed') {
       // R6: the sandbox and single-player matches set speed directly; multiplayer goes through {c:'speedVote'}
       const r = setSpeedDirect(game, Number(m.cmd.speed), tickMs);
       if (r.error) send(m.civId, { t: 'ack', rid: m.rid, error: r.error });
@@ -149,6 +172,7 @@ parentPort.on('message', (m) => {
       }
       flush();
     } else if (m.t === 'cmd') {
+      probe?.command();
       const res = game.command(m.civId, m.cmd || {});
       send(m.civId, commandAck(res, m.rid));   // refusals carry their `code` (review S / U)
       flush();
@@ -160,7 +184,8 @@ parentPort.on('message', (m) => {
       civ.connected = true;
       send(m.civId, { t: 'welcome', match: game.id, ruleset: game.ruleset, speed: game.speed, civId: m.civId, seed: game.seed, defs: game.defs, world: { wrap: globalThis.SE_WRAP, style: game.world.style, map: game.mapId || 'random', dense: game.denseWire?.() }, sandbox: !!game.sandbox, canPause: game.civs.filter((c) => c.human).length === 1 || !!game.sandbox, canSpeed: speedMode(game) === 'direct', speedVote: speedMode(game) === 'vote', paused: !game.speed,
         civs: game.civs.map((c) => ({ id: c.id, team: c.team, name: c.name, color: c.color, human: c.human, leader: c.leader, rebel: c.isRebel, ai: !c.human && !c.isRebel ? { difficulty: c.difficulty, personality: c.personality, profile: c.diffProfile, advantages: aiProfile(c).adv } : undefined })), start: game.world.starts[m.civId], time: game.time });
-      if (m.caps?.includes('udelta')) deltas.set(m.civId, deltaEncoder()); else deltas.delete(m.civId);
+      // Pass 4: keyed deltas for sites / buildings / battlefield when the client negotiated them (server/delta.js)
+      if (m.caps?.includes('udelta')) deltas.set(m.civId, deltaEncoder(50, 10, { keyed: m.caps.includes(KEYED_CAP) })); else deltas.delete(m.civId);
       for (const [, msg] of game.snapshots(m.civId)) sendSnap(m.civId, msg);
       if (m.caps?.includes('geo')) { geoViewers.set(m.civId, geoViewer()); sendGeo(m.civId, true); } else geoViewers.delete(m.civId);
       for (const e of game.log.slice(-15)) if (e.kind) send(m.civId, { t: 'note', time: Math.round(e.time), text: '(earlier) ' + e.text, kind: 'history', quiet: true, level: 'info' });

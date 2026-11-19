@@ -257,23 +257,11 @@ namespace SE.Core.Protocol
                 }
             if (o["sites"] is JArray sites)
             {
-                var records = new List<ObjectiveSite>(sites.Count);
-                foreach (var site in sites)
-                    if (site is JObject st) records.Add(new ObjectiveSite
-                    {
-                        Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
-                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]), DefenseLevel = Int(st["defenseLevel"]),
-                        X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
-                        IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Decaying = Bool(st["decaying"]), Operational = Bool(st["operational"]),
-                        Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
-                        Slots = IntArray(st["slots"]),
-                        Parcels = BaseParcels(st["parcels"]),
-                        RingVersion = Int(st["ringVersion"]), DevelopedAt = Float(st["developedAt"]), Tenure = Float(st["tenure"]), Maturity = Float(st["maturity"]), VisualTier = Int(st["visualTier"], 1),
-                        SettleMaterials = Int(st["settle"]?["materials"]), SettleEnergy = Int(st["settle"]?["energy"]), SettleRoad = Int(st["settle"]?["road"]),
-                        SettleTo = Str(st["settle"]?["to"], ""),
-                    });
-                s.Objectives = records.ToArray();
+                s.Objectives = Sites(sites, s.Time);
+                s.SitesVersion = Int(o["sv"], -1);
             }
+            else if (o["sd"] is JObject sd)
+                s.SitesDelta = new KeyedDelta<ObjectiveSite> { Version = Int(sd["v"], -1), Updated = Sites(sd["u"] as JArray, s.Time), Removed = IntArray(sd["r"]) };
             if (o["pickups"] is JArray pickups)
             {
                 var records = new List<ResourcePickup>(pickups.Count);
@@ -345,42 +333,16 @@ namespace SE.Core.Protocol
                         }
                 }
                 s.BattlefieldState = WorldRecordDecoder.Battlefield(s.Battlefield);
+                if (s.BattlefieldState != null) s.BattlefieldVersion = Int(o["bfv"], -1);
+                else s.BattlefieldDelta = WorldRecordDecoder.BattlefieldChanges(o["bfd"] as JObject);
                 s.Ruins = WorldRecordDecoder.Ruins(o["ruins"]);
                 if (o["buildings"] is JArray ba)
                 {
-                    s.Buildings = new BuildingRecord[ba.Count];
-                    for (int k = 0; k < ba.Count; k++)
-                    {
-                        var b = ba[k] as JObject;
-                        if (b == null) continue;
-                        var q = b["q"] as JArray;
-                        s.Buildings[k] = new BuildingRecord
-                        {
-                            Id = Int(b["id"]), Owner = Int(b["o"], -1), Type = Str(b["ty"], ""), Tile = Int(b["t"], -1),
-                            Hp = Int(b["hp"], 100), Done = Int(b["d"]) == 1, Progress = Int(b["p"]), Active = Int(b["a"]) == 1,
-                            State = Str(b["st"]), Fire = Int(b["f"]) == 1, Memory = Int(b["mem"]) == 1, Level = Int(b["lv"], 1),
-                            Tier = Int(b["ti"]), Era = Int(b["ea"], -1), City = Int(b["c"], -1), QueueLength = q?.Count ?? 0, TrainProgress = Int(b["tr"]),
-                            Staffed = Int(b["s"]), Why = Str(b["w"]), UpgradeCost = b["uc"] as JObject, RepairCost = Int(b["rc"]), Repeat = Str(b["rp"]),
-                            HasPosition = b["px"] != null && b["pz"] != null, X = Float(b["px"]), Z = Float(b["pz"]), HasYaw = b["yaw"] != null, Yaw = Float(b["yaw"]),
-                            Missiles = Int(b["mi"]), Slot = Int(b["slot"]), RallyGroup = Int(b["rg"]), Project = Str(b["project"]),
-                        };
-                        if (q != null)
-                        {
-                            var types = new string[q.Count];
-                            for (int qi = 0; qi < q.Count; qi++) types[qi] = q[qi] is JArray qa && qa.Count > 0 ? Str(qa[0], "") : "";
-                            s.Buildings[k].Queue = types;
-                        }
-                        // W1 production scheduler: per-type queues and the shared capacity (legacy q/tr/rp for older servers)
-                        s.Buildings[k].ProductionCapacity = Float(b["cap"]);
-                        if (b["qs"] is JArray qs) { s.Buildings[k].Queues = ProductionQueues(qs); s.Buildings[k].QueuesFromServer = true; }
-                        else if (q != null && q.Count > 0) s.Buildings[k].Queues = LegacyQueues(s.Buildings[k].Queue, Float(b["tr"]), s.Buildings[k].Repeat);
-                        // W4 garrison: occupants and the exit rally point
-                        if (b["gar"] is JArray gar && gar.Count > 0) s.Buildings[k].Garrison = IntArray(gar);
-                        if (b["ge"] is JArray ge && ge.Count >= 2) { s.Buildings[k].HasGarrisonExit = true; s.Buildings[k].GarrisonExitX = Float(ge[0]); s.Buildings[k].GarrisonExitZ = Float(ge[1]); }
-                        if (b["ra"] is JArray ra && ra.Count >= 2) { s.Buildings[k].HasRally = true; s.Buildings[k].RallyX = Float(ra[0]); s.Buildings[k].RallyZ = Float(ra[1]); s.Buildings[k].RallyAttackMove = ra.Count < 3 || Int(ra[2], 1) != 0; }
-                        if (b["wk"] is JArray wk && wk.Count >= 2) { s.Buildings[k].WorksKind = Str(wk[0]) == "r" ? "repair" : "upgrade"; s.Buildings[k].WorksPct = Int(wk[1]); }
-                    }
+                    s.Buildings = Buildings(ba);
+                    s.BuildingsVersion = Int(o["bv"], -1);
                 }
+                else if (o["bd"] is JObject bd)
+                    s.BuildingsDelta = new KeyedDelta<BuildingRecord> { Version = Int(bd["v"], -1), Updated = Buildings(bd["u"] as JArray), Removed = IntArray(bd["r"]) };
                 if (o["cities"] is JArray ca)
                 {
                     s.Cities = new CityRecord[ca.Count];
@@ -407,6 +369,74 @@ namespace SE.Core.Protocol
                 }
             }
             return s;
+        }
+
+        /// <summary>Objective sites (snapshot 'sites', or the changed records of a keyed 'sd' delta) at a snapshot time.</summary>
+        static ObjectiveSite[] Sites(JArray sites, float time)
+        {
+            if (sites == null) return Array.Empty<ObjectiveSite>();
+            var records = new List<ObjectiveSite>(sites.Count);
+            foreach (var site in sites)
+                if (site is JObject st)
+                {
+                    var r = new ObjectiveSite
+                    {
+                        Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
+                        Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]), DefenseLevel = Int(st["defenseLevel"]),
+                        X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
+                        IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Decaying = Bool(st["decaying"]), Operational = Bool(st["operational"]),
+                        Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
+                        Slots = IntArray(st["slots"]),
+                        Parcels = BaseParcels(st["parcels"]),
+                        RingVersion = Int(st["ringVersion"]), DevelopedAt = Float(st["developedAt"]), Tenure = Float(st["tenure"]), Maturity = Float(st["maturity"]), VisualTier = Int(st["visualTier"], 1),
+                        SettleMaterials = Int(st["settle"]?["materials"]), SettleEnergy = Int(st["settle"]?["energy"]), SettleRoad = Int(st["settle"]?["road"]),
+                        SettleTo = Str(st["settle"]?["to"], ""),
+                        // Pass 4 keyed deltas: the claim time instead of a per-frame tenure; maturity still growing
+                        HasTenureAnchor = st["ta"] != null && st["ta"].Type != JTokenType.Null, TenureAnchor = Float(st["ta"]), MaturityLive = Int(st["ml"]) == 1,
+                    };
+                    r.Rederive(time);
+                    records.Add(r);
+                }
+            return records.ToArray();
+        }
+
+        /// <summary>Building records (econ 'buildings', or the changed records of a keyed 'bd' delta).</summary>
+        static BuildingRecord[] Buildings(JArray ba)
+        {
+            if (ba == null) return Array.Empty<BuildingRecord>();
+            var list = new BuildingRecord[ba.Count];
+            for (int k = 0; k < ba.Count; k++)
+            {
+                var b = ba[k] as JObject;
+                if (b == null) continue;
+                var q = b["q"] as JArray;
+                list[k] = new BuildingRecord
+                {
+                    Id = Int(b["id"]), Owner = Int(b["o"], -1), Type = Str(b["ty"], ""), Tile = Int(b["t"], -1),
+                    Hp = Int(b["hp"], 100), Done = Int(b["d"]) == 1, Progress = Int(b["p"]), Active = Int(b["a"]) == 1,
+                    State = Str(b["st"]), Fire = Int(b["f"]) == 1, Memory = Int(b["mem"]) == 1, Level = Int(b["lv"], 1),
+                    Tier = Int(b["ti"]), Era = Int(b["ea"], -1), City = Int(b["c"], -1), QueueLength = q?.Count ?? 0, TrainProgress = Int(b["tr"]),
+                    Staffed = Int(b["s"]), Why = Str(b["w"]), UpgradeCost = b["uc"] as JObject, RepairCost = Int(b["rc"]), Repeat = Str(b["rp"]),
+                    HasPosition = b["px"] != null && b["pz"] != null, X = Float(b["px"]), Z = Float(b["pz"]), HasYaw = b["yaw"] != null, Yaw = Float(b["yaw"]),
+                    Missiles = Int(b["mi"]), Slot = Int(b["slot"]), RallyGroup = Int(b["rg"]), Project = Str(b["project"]),
+                };
+                if (q != null)
+                {
+                    var types = new string[q.Count];
+                    for (int qi = 0; qi < q.Count; qi++) types[qi] = q[qi] is JArray qa && qa.Count > 0 ? Str(qa[0], "") : "";
+                    list[k].Queue = types;
+                }
+                // W1 production scheduler: per-type queues and the shared capacity (legacy q/tr/rp for older servers)
+                list[k].ProductionCapacity = Float(b["cap"]);
+                if (b["qs"] is JArray qs) { list[k].Queues = ProductionQueues(qs); list[k].QueuesFromServer = true; }
+                else if (q != null && q.Count > 0) list[k].Queues = LegacyQueues(list[k].Queue, Float(b["tr"]), list[k].Repeat);
+                // W4 garrison: occupants and the exit rally point
+                if (b["gar"] is JArray gar && gar.Count > 0) list[k].Garrison = IntArray(gar);
+                if (b["ge"] is JArray ge && ge.Count >= 2) { list[k].HasGarrisonExit = true; list[k].GarrisonExitX = Float(ge[0]); list[k].GarrisonExitZ = Float(ge[1]); }
+                if (b["ra"] is JArray ra && ra.Count >= 2) { list[k].HasRally = true; list[k].RallyX = Float(ra[0]); list[k].RallyZ = Float(ra[1]); list[k].RallyAttackMove = ra.Count < 3 || Int(ra[2], 1) != 0; }
+                if (b["wk"] is JArray wk && wk.Count >= 2) { list[k].WorksKind = Str(wk[0]) == "r" ? "repair" : "upgrade"; list[k].WorksPct = Int(wk[1]); }
+            }
+            return list;
         }
 
         static UnitWire DecodeUnit(JArray a)

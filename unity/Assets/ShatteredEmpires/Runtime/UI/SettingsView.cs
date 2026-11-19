@@ -165,6 +165,8 @@ namespace SE.Runtime.UI
             UiKit.SettingRow("Reduce UI motion", UiKit.Switch(GameSettings.ReduceUiMotion, v => { GameSettings.ReduceUiMotion = v; UiKit.ApplyMotion(this); }), c);
             UiKit.Text("Panels, wheels and counters change instantly instead of fading, sliding or counting.", "se-settings-note", c);
             UiKit.SettingRow("Check for updates on startup", UiKit.Switch(Updater.CheckOnStartup, v => Updater.CheckOnStartup = v), c);
+            UiKit.SettingRow("Share diagnostics", UiKit.Switch(GameSettings.ShareDiagnostics, v => GameSettings.ShareDiagnostics = v), c);
+            UiKit.Text("Sends anonymous performance, system and match statistics to the game server to help fix bugs and lag. No names or accounts.", "se-settings-note", c);
         }
 
         void CameraTab(VisualElement c)
