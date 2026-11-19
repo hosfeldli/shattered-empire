@@ -216,6 +216,7 @@ namespace SE.Runtime.Military
             Array.Resize(ref coverArmor, s);
             Array.Resize(ref coverDx, s * MaxFigures); Array.Resize(ref coverDz, s * MaxFigures);
             EnsureReadability(s);
+            EnsureInfantry(s);
             int old = ids.Length;
             Array.Resize(ref ids, s);
             for (int i = old; i < s; i++) ids[i] = -1;
@@ -272,6 +273,7 @@ namespace SE.Runtime.Military
         {
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             frameDt = Mathf.Clamp(dt, 0f, .1f);
+            frameNo++;
             foreach (var b in batches) b.Clear();
             foreach (var b in details) b.Clear();
             foreach (var b in soldiers) b?.Clear();
@@ -337,6 +339,7 @@ namespace SE.Runtime.Military
                     treadTravel[s] += Mathf.Sqrt(dx * dx + dz * dz);
                     gaitPhase[s] = (gaitPhase[s] + Mathf.Sqrt(dx * dx + dz * dz) / (kindOf[s] == Kind.Exo ? .068f : .056f) * math.PI * 2) % (math.PI * 2);
                 }
+                if (IsFoot(kindOf[s])) TrackFoot(s, fresh, oldX, oldZ, u.Hp, grid, dt, time);   // UnitRenderer.Infantry.cs
                 if (IsAir(kindOf[s]))
                 {
                     if (u.Motion.Present) FlySnapshot(s, kindOf[s], u.Motion, store, grid, fresh, dt);
@@ -361,7 +364,8 @@ namespace SE.Runtime.Military
                 // garrisoned squads are inside their structure (server flag 16384, actionGarrison.js): not drawn
                 if ((u.Flags & GarrisonedFlag) != 0) continue;
                 var kind = kindOf[s];
-                float x = grid.NearX(px[s], camX), z = pz[s];
+                bool foot = IsFoot(kind);   // soldiers are drawn at their smoothed squad point (UnitRenderer.Infantry.cs)
+                float x = grid.NearX(foot ? sqX[s] : px[s], camX), z = foot ? sqZ[s] : pz[s];
                 float fx = grid.DxWrap(focus.x, x), fz = z - focus.z;
                 bool close = level == 2 && fx * fx + fz * fz < (camDist + 3f) * (camDist + 3f);
                 int tile = u.Tile;
@@ -628,6 +632,8 @@ namespace SE.Runtime.Military
             int figures = level == 2 ? full : Math.Min(alive, kind == Kind.Exo ? 2 : 4);
             float scale = kind == Kind.Exo ? WorldScale.Soldier * 1.20f : WorldScale.Soldier;
             spread[slot] = Mathf.Lerp(spread[slot], fighting ? 1f : 0f, 1f - Mathf.Exp(-dt * 3.5f));
+            int known = BeginFigures(slot, figures);   // per-soldier motion state (UnitRenderer.Infantry.cs)
+            float rigCycle = kind == Kind.Exo ? .068f : .056f;
             math.sincos(facing, out float sn, out float cs);
             bool trench = TryTrenchFrame(view, x, z, out float trenchX, out float trenchZ, out float trenchDirX, out float trenchDirZ, out float trenchFacing, out float trenchBlend);
             var model = kind == Kind.Exo ? Model.Exo : Model.Soldier;
@@ -741,6 +747,8 @@ namespace SE.Runtime.Military
                     float rx = fx - x, rz = fz - z, r2 = rx * rx + rz * rz, reach = RingReach(slot);
                     if (r2 > reach * reach) { float k = reach / math.sqrt(r2); fx = x + rx * k; fz = z + rz * k; }
                 }
+                // each man moves to that place on a spring of his own, on his own gait (UnitRenderer.Infantry.cs)
+                var gait = FollowFigure(slot, f, seed, known, x, z, ref fx, ref fz, RingReach(slot), rigCycle, dt, time, out float rigStride, out float rigPhase);
                 float fy = level == 2 || trench ? view.GroundHeight(fx, fz) : ground;
                 // manning a trench: stood on its floor between the parapet and the parados, facing the enemy side. Each
                 // man drops in on his own beat with a little hop. 2026-11-18: the trench floor is the shared ground itself
@@ -774,10 +782,13 @@ namespace SE.Runtime.Military
                     else if (myCover >= .98f) { pose = PoseKneel; figureFacing = threatYaw + j * .15f; }
                     else if (fighting && stand < .5f && Trait(seed, 14) < .35f) pose = PoseKneel;
                 }
+                // turned at an eased, limited rate; along his own path when free to (UnitRenderer.Infantry.cs)
+                figureFacing = SteerFigure(slot, f, seed, figureFacing, pose == PoseAuto && !fighting && stand < .5f && !(mortar && setup > .05f),
+                    pose == PoseKneel || pose == PoseDeploy, dt, time, ref gait);
                 if (level == 2)
                 {
-                    AddFigure(torsoOf[slot], foot, figureFacing, scale, body, moving ? math.saturate(speed[slot] / .11f) : 0f, Mathf.Max(spread[slot], stand * .6f),
-                        gaitPhase[slot] + f * .71f + j * 1.3f, shotAge, equipment, view, assisting, reloadCycle, seed, pose, poseTime);
+                    AddFigure(torsoOf[slot], foot, figureFacing, scale, body, rigStride, Mathf.Max(spread[slot], stand * .6f),
+                        rigPhase, shotAge, equipment, view, assisting, reloadCycle, seed, pose, poseTime, gait);
                     if (mortar && f == 0 && setup < .15f)
                     {
                         // packed: the tube rides on the loader's back
@@ -788,7 +799,7 @@ namespace SE.Runtime.Military
                 }
                 else
                     // too small for helmets and shoulders to read: the simple figure carries the team colour itself
-                    batches[(int)model].Add(T(foot, figureFacing + j * 0.1f, new float3(scale), new float4(math.lerp(body.xyz, figureTeam, .45f), 0)));
+                    AddSimpleFigure(model, foot, figureFacing + j * 0.1f, scale, new float4(math.lerp(body.xyz, figureTeam, .45f), 0), gait);
             }
             if (mortar && level == 2 && setup > .15f)
             {
@@ -928,91 +939,12 @@ namespace SE.Runtime.Military
         }
 
         unsafe void AddFigure(Detail torso, float3 foot, float facing, float scale, float4 color, float stride, float aim, float phase, float shotAge, int equipment, TerrainView groundView = default, bool assisting = false, bool reloadCycle = false, int seed = 0,
-            int pose = PoseAuto, float poseTime = 0f)
+            int pose = PoseAuto, float poseTime = 0f, in FigureGait gait = default)
         {
             if (RigFor(torso, out int rigRole) != null) { AddRigged(rigRole, foot, facing, scale, color, stride, aim, phase, shotAge, seed, equipment, pose, poseTime); return; }
-            // the procedural figure approximates the poses: crouched aim for kneeling work, a run for a dash
-            if (pose == PoseKneel || pose == PoseDeploy) { stride = 0f; aim = 1f; }
-            else if (pose == PoseDash) { stride = 1f; phase = poseTime * 2f * Mathf.PI; }
-            else if (pose == PoseHop) { stride = .5f; phase = poseTime * Mathf.PI; }
-            float step = Mathf.Sin(phase) * stride, crouch = aim * (1f - stride) * .115f;
-            float recoil = shotAge >= 0f && shotAge < .25f ? Mathf.Exp(-shotAge * 19) * (1 - Mathf.Exp(-shotAge * 180)) * .065f : 0f;
-            float reload = reloadCycle && shotAge > .50f && shotAge < 1.45f ? Mathf.Sin((shotAge - .50f) / .95f * Mathf.PI) : 0;
-            float breathe = Mathf.Sin(Time.time * 1.8f + phase) * .003f * (1 - stride);
-            float bob = -Mathf.Abs(step) * .018f + Mathf.Sin(phase * 2) * .006f * stride + breathe;
-            var root = MapSpace.W(foot) + new float3(0, (bob - crouch) * scale, 0);
-            var turn = quaternion.RotateY(MapSpace.Yaw(facing));
-            var chest = math.mul(turn, quaternion.EulerZXY(.095f * stride + .19f * aim, step * .08f, step * .052f));
-            var torsoOrigin = root + math.rotate(turn, new float3(0, .453f * scale, 0)) - math.rotate(chest, new float3(0, .453f * scale, 0));
-            DetailPart(torso, torsoOrigin, chest, scale, color);
-            bool engineer = torso == Detail.Engineer;
-            var weapon = torsoOrigin + math.rotate(chest, new float3(engineer ? .12f : .055f, .535f + .12f * aim, .14f - recoil) * scale);
-            var weaponTilt = math.mul(chest, quaternion.EulerZXY(.39f * (1f - aim) + reload * .12f, -.13f * (1f - aim), -.29f * (1f - aim) + reload * .20f));
-            if ((equipment & 1) != 0)
-            {
-                var plate = torsoOrigin + math.rotate(chest, new float3(0, .63f, .105f) * scale);
-                batches[(int)Model.Plate].Add(InstanceData.TRS(plate, chest, new float3(.22f, .19f, .037f) * scale, new float4(.34f, .38f, .29f, 0)));
-            }
-            if ((equipment & 16) != 0)
-            {
-                var radio = torsoOrigin + math.rotate(chest, new float3(-.14f, .75f, -.07f) * scale);
-                batches[(int)Model.Plate].Add(InstanceData.TRS(radio, chest, new float3(.013f, .21f, .014f) * scale, new float4(.17f, .19f, .18f, 0)));
-            }
-            for (int side = -1; side <= 1; side += 2)
-            {
-                float s = side * step;
-                var hip = root + math.rotate(turn, new float3(side * .072f, .454f, 0) * scale);
-                float cycle = phase + (side < 0 ? math.PI : 0);
-                float cycle01 = math.frac(cycle / (math.PI * 2));
-                bool planted = cycle01 < .54f;
-                float swing = planted ? 0 : Mathf.Clamp01((cycle01 - .54f) / .46f);
-                float advance = planted ? Mathf.Lerp(.22f, -.22f, cycle01 / .54f) : Mathf.Lerp(-.22f, .22f, Mathf.SmoothStep(0, 1, swing));
-                float lift = planted ? 0 : Mathf.Sin(swing * math.PI) * .115f;
-                var ankle = MapSpace.W(foot) + math.rotate(turn, new float3(side * .072f, .029f + lift * stride, advance * stride) * scale);
-                if (groundView.W > 0)
-                {
-                    float floor = groundView.GroundHeight(ankle.x, -ankle.z);
-                    ankle.y += Mathf.Clamp(floor - foot.y, -.07f * scale, .13f * scale);
-                }
-                float3 delta = ankle - hip;
-                float length = math.clamp(math.length(delta), .13f * scale, .461f * scale);
-                float3 down = math.normalizesafe(delta, new float3(0, -1, 0));
-                float a = .245f * scale, b = .222f * scale;
-                float along = (a * a - b * b + length * length) / (2 * length);
-                float bend = Mathf.Sqrt(Mathf.Max(0, a * a - along * along));
-                float3 forward = math.rotate(turn, new float3(0, 0, 1));
-                var knee = hip + down * along + math.normalizesafe(forward - down * math.dot(forward, down), forward) * bend;
-                var thigh = LimbRotation(turn, knee - hip);
-                var shin = LimbRotation(turn, ankle - knee);
-                DetailPart(Detail.Thigh, hip, thigh, scale, color);
-                DetailPart(Detail.Shin, knee, shin, scale, color);
-                var shoulder = torsoOrigin + math.rotate(chest, new float3(side * .161f, .715f, .01f) * scale);
-                float3 wrist;
-                if (!engineer || aim > .25f && !assisting)
-                {
-                    var grip = side > 0 ? new float3(.006f, -.052f, -.045f) : new float3(-.014f, -.012f, .055f);
-                    if (engineer) grip = new float3(side > 0 ? 0 : -.028f, -.035f, -.02f);
-                    if (reload > 0 && side < 0) grip += new float3(-.03f, -.09f * reload, -.06f * reload);
-                    wrist = weapon + math.rotate(weaponTilt, grip * scale);
-                }
-                else wrist = torsoOrigin + math.rotate(chest, new float3(side * .17f, assisting ? .49f : .43f, assisting ? .19f : .02f + s * .16f) * scale);
-                var armDelta = wrist - shoulder;
-                float armLength = math.clamp(math.length(armDelta), .055f * scale, .305f * scale);
-                var armDown = math.normalizesafe(armDelta, new float3(0, -1, 0));
-                float upperLength = .155f * scale, lowerLength = .154f * scale;
-                float armAlong = (upperLength * upperLength - lowerLength * lowerLength + armLength * armLength) / (2 * armLength);
-                float armBend = math.sqrt(math.max(0, upperLength * upperLength - armAlong * armAlong));
-                var outward = math.rotate(chest, new float3(side * .7f, -.6f, -.4f));
-                var elbow = shoulder + armDown * armAlong + math.normalizesafe(outward - armDown * math.dot(outward, armDown)) * armBend;
-                var upper = LimbRotation(chest, elbow - shoulder);
-                var forearm = LimbRotation(chest, wrist - elbow);
-                DetailPart(Detail.UpperArm, shoulder, upper, scale, color);
-                DetailPart(Detail.Forearm, elbow, forearm, scale, color);
-            }
-            if (!engineer || !assisting)
-            {
-                details[(int)(engineer ? Detail.PistolWeapon : torso == Detail.AntiArmor ? Detail.LauncherWeapon : Detail.RifleWeapon)].Add(InstanceData.TRS(weapon, weaponTilt, new float3(scale), new float4(.72f, .74f, .69f, 0)));
-            }
+            // the procedural figure: a full walk/run cycle on the soldier's own motion when AddSquad supplies it,
+            // otherwise approximated from the pose (UnitRenderer.Infantry.cs)
+            ProceduralFigure(torso, foot, facing, scale, color, stride, aim, phase, shotAge, equipment, groundView, assisting, reloadCycle, seed, pose, poseTime, gait);
         }
 
         void DetailPart(Detail part, float3 unity, quaternion rotation, float scale, float4 color)
