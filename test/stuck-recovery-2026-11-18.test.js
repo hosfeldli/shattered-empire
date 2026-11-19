@@ -27,7 +27,8 @@ test('a tank boxed in by idle allied tanks ghosts out instead of re-planning for
   const ticks = run(g, 600, () => !tank.goal);
   assert.ok(sim.distance(tank, to) < 1.2, `arrived (at ${sim.distance(tank, to).toFixed(2)} after ${ticks} ticks)`);
   assert.ok(routes.n <= 30, `bounded route requests: ${routes.n}`);
-  assert.ok((g.navStats?.stuck?.ghost || 0) >= 1 || ticks < 200, 'the ladder ghosted it out');
+  // Pass 5: a unit held only by other units' bodies passes through them (PUSH) before the ladder's ghost rung
+  assert.ok((g.navStats?.stuck?.ghost || 0) + (g.navStats?.stuck?.pushPast || 0) >= 1 || ticks < 200, 'it ghosted out');
 });
 
 test('a unit wedged under a new structure steps out and carries on', () => {
@@ -59,29 +60,50 @@ test('a goal that becomes occupied ends near it (alternate goal or near-goal hal
   assert.ok(routes.n <= 30, `bounded route requests: ${routes.n}`);
 });
 
-test('a unit with no way forward gives up after the bounded ladder, with a quiet notice and a log entry', () => {
+test('a unit ringed by hostile vehicles that never move pushes through them (Pass 5: units never hold a unit for good)', () => {
   const g = S.makeGame(sim), area = S.paintArea(sim, g, 40, 40, 12, 16);
   S.reindex(sim, g);
   const u = S.place(sim, g, 0, 'rifle_squad', area.point(6, 4)), to = area.point(6, 12);
   g.command(0, { c: 'move', units: [u.id], point: to });
-  // an enemy wall it cannot ghost through, rebuilt in place every tick (hostile units never yield)
   const ring = [];
   for (let k = 0; k < 10; k++) {
     const a = k * Math.PI / 5, v = S.place(sim, g, 1, 'tank', { x: u.x + Math.sin(a) * .42, z: u.z + Math.cos(a) * .42 });
     if (v) ring.push([v, v.x, v.z]);
   }
   const routes = countRoutes(g);
-  let notes = 0;
-  for (let i = 0; i < STUCK.giveUp + 60 && u.goal; i++) {
+  for (let i = 0; i < 600 && u.goal; i++) {
     for (const [v, x, z] of ring) { v.x = x; v.z = z; v.hp = v.maxHp ?? v.hp; v.goal = null; v.target = 0; v.stance = 'holdFire'; }
     u.hp = u.maxHp ?? u.hp; u.stance = 'holdFire'; u.target = 0;
+    g.tick(); g.outbox.length = 0;
+  }
+  assert.ok(!u.goal && sim.distance(u, to) < 1.2, `arrived (${sim.distance(u, to).toFixed(2)})`);
+  assert.ok(g.navStats.stuck.pushPast >= 1, JSON.stringify(g.navStats.stuck));
+  assert.ok(routes.n <= 10, `bounded route requests: ${routes.n}`);
+});
+
+test('a unit with no way forward gives up after the bounded ladder, with a quiet notice and a log entry', () => {
+  const g = S.makeGame(sim), area = S.paintArea(sim, g, 40, 40, 12, 16);
+  S.reindex(sim, g);
+  g.civs[0].human = true;
+  const u = S.place(sim, g, 0, 'rifle_squad', area.point(6, 4)), to = area.point(6, 12);
+  g.command(0, { c: 'move', units: [u.id], point: to });
+  tick5: for (let i = 0; i < 5; i++) { g.tick(); g.outbox.length = 0; if (!u.goal) break tick5; }
+  // the ground around it floods (its hex becomes an island): no route, no alternate goal, no coarse corridor
+  S.paintLake(sim, g, Array.from({ length: 6 }, (_, d) => sim.NB[u.tile * 6 + d]).filter((t) => t >= 0));
+  // searches actually run (Pass 5: a repeated failed request is answered from nav's failed-route memo in O(1))
+  const routes = { n: 0 }, once = g.nav.routeOnce.bind(g.nav);
+  g.nav.routeOnce = (...a) => { routes.n++; return once(...a); };
+  let notes = 0;
+  for (let i = 0; i < STUCK.giveUp + 60 && u.goal; i++) {
+    u.hp = u.maxHp ?? u.hp;
     g.tick();
     notes += g.outbox.filter(([, m]) => m.t === 'note' && /could not reach/.test(m.text)).length;
     g.outbox.length = 0;
   }
-  if (u.goal) return;   // the escort shifted enough to let it through: nothing to assert about giving up
   const st = g.navStats.stuck;
-  assert.ok(st.ghost >= 1 && st.replan >= 1, JSON.stringify(st));
+  assert.ok(!u.goal, 'the order ended');
+  assert.ok(st.ghost >= 1 && st.replan >= 1 && st.gaveUp >= 1, JSON.stringify(st));
   assert.ok(routes.n <= STUCK.blockedReplans + STUCK.replans + 8, `bounded route requests: ${routes.n}`);
-  if (st.gaveUp) { assert.ok(notes >= 1, 'owner told'); assert.ok(g.navStats.stuckLog.length >= 1); }
+  assert.ok(notes >= 1, 'owner told');
+  assert.ok(g.navStats.stuckLog.length >= 1);
 });

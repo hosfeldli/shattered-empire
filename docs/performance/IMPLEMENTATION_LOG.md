@@ -828,3 +828,13 @@ Tool: `tools/econ-delta-bench.mjs`.
 - **Site tenure** is re-derived from the snapshot clock (rounded to 0.1 s). It differs from the server value by under 0.05 s in general; the test measured about 3e-13. It only feeds `DevelopmentStage` and a release-shots sort.
 - **Version-gap recovery** costs one round trip plus a full message (about 80–125 KB late). There is no gap source in normal operation: ws is ordered, congested viewers are skipped before encoding, and a rejoin uses a new encoder. It is a safety net.
 - **Ruins and cities gating** relies on the client keeping its copies when the fields are absent. Unity does. Only keyed clients get it.
+
+# Pass 5: vehicles never block pathing; failed-route memo (2026-11-19, navigation)
+
+Details and numbers are in docs/gameplay-overhaul/NAV_BRIDGES.md, "Pass 5".
+- Wrecks and units are soft obstacles (`actionOrders.PUSH`, `nav.softWrecks`).
+- Failed routes are remembered for 3 s (`route()`) and per group order (`groupRoute`).
+- On the 160-map probe, late-game failed routes fell from 367–524 to 30–39 a game minute. Route time per game minute
+  roughly halved (1,784 → 801 ms in minutes 21–30, 2,635 → 1,438 ms in minutes 31–40). The worst tick fell from
+  439–490 to 202–250 ms.
+- Hash-changing (behaviour change), deterministic.

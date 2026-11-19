@@ -6,6 +6,17 @@ import { addWear } from './battlefield.js';
 const SIDESTEPS = [.34, -.34, .66, -.66, 1.04, -1.04, 1.48, -1.48];
 // unitMotion: the longest step over a sliver of unstandable ground on a lane (matches actionNavigation LANE_STRIDE)
 const LANE_HOP = .07;
+// Pass 5 (vehicles never block pathing). Other units and wrecks are soft obstacles for a unit with an order: they are
+// avoided while a way round exists, but they never hold it. A unit whose step is refused only by a wreck hull for
+// PUSH.wreck ticks drives through the wreck (wreck pass, PUSH.pass seconds, renewed while it is still inside one).
+// A unit whose step is refused only by other units' bodies for PUSH.units ticks (allies) or PUSH.foes ticks (hostile
+// units) passes through them (ghost) for PUSH.pass seconds. Not within PUSH.goal of its own goal, where the crowd is
+// the destination and the near-arrival rules apply. A unit kept off a single-lane crossing by oncoming traffic for
+// PUSH.cross ticks enters anyway (the traffic it waits for may itself be stuck).
+// A wreck is pushed through after PUSH.wreckEarly ticks held by it alone when the unit's path was planned through wrecks
+// (route() found no wreck-free way and tagged the path `soft`), else after PUSH.wreck ticks in a row (time for sidesteps
+// and a collision re-route to find the way round first).
+export const PUSH = Object.freeze({ wreck: 25, wreckEarly: 3, units: 12, foes: 25, pass: 1.5, goal: .9, cross: 80, crossPass: 3 });
 // 2026-11-16: every ground unit moves ~30% slower than its definition speed (Rowen: 20-50% slower),
 // and terrain only nudges pace (roads +20%, rough ground at most -20%) so a unit type keeps a consistent speed.
 export const GROUND_PACE = .7;
@@ -110,8 +121,16 @@ function groupRoute(game, from, to, d, ctx) {
       return game.nav.canStand(to.x, to.z, d) && game.nav.line(from, to, d) ? [to] : null;
     }
   }
+  // Pass 5: within one group order, a slot hex no corridor could thread from a start hex (the fine stage failed: a
+  // pocket, a crowded court) is not searched again for the other members starting in the same hex. Late in a match
+  // these repeated slot failures were all of the remaining failed routes (~190 a game minute, ~1 s of route time).
+  const pair = ctx && !d.air ? tileAt(from.x, from.z) * 4194304 + tileAt(to.x, to.z) * 4 + (d.move === 'infantry' ? 0 : d.move === 'wheeled' ? 1 : 2) : -1;
+  if (pair >= 0 && ctx.fine?.has(pair)) { const stats = game.navStats ??= {}; stats.slotMemo = (stats.slotMemo || 0) + 1; return null; }
   const path = game.nav.route(from, to, d);
-  if (!path && ctx && !d.air) ctx.failed = true;
+  if (!path && ctx && !d.air) {
+    ctx.failed = true;
+    if (game.nav.lastFail === 'fine') (ctx.fine ??= new Set()).add(pair);
+  }
   return path;
 }
 
@@ -413,7 +432,8 @@ export function unitMotion(game) {
     let desired = Math.atan2(dx, dz);
     const length = Math.hypot(dx, dz), vehicle = !def.air && def.move !== 'infantry';
     let followingSpeed = Infinity;
-    if (vehicle) {
+    const ghost = u.ghostUntil > game.time;
+    if (vehicle && !ghost) {
       index.query(u.x,u.z,def.radius + .85,near);
       const sn = Math.sin(desired), cs = Math.cos(desired);
       const front = near.find((v) => {
@@ -462,18 +482,33 @@ export function unitMotion(game) {
     // Friendly ground: inside our own team's territory allied units may brush past each other (half
     // the clearance), and a unit that has made no progress for a while briefly ghosts through allies.
     const owner = game.world.owner?.[u.tile] ?? -1;
-    const homeGround = owner >= 0 && game.allied(u.owner, owner), ghost = u.ghostUntil > game.time;
-    const allowed = (x, z) => game.nav.canMove(u, x, z, def) && (def.air || near.every((v) => {
+    const homeGround = owner >= 0 && game.allied(u.owner, owner);
+    const nav = game.nav;
+    // Pass 5: a ghosting unit passes through every unit's body (allies and hostiles); a unit with a wreck pass ignores
+    // wreck hulls (nav.softWrecks)
+    const unitsOk = (x, z) => def.air || ghost || near.every((v) => {
       if (v === u || v.hp <= 0) return true;
       const friend = game.allied(u.owner, v.owner);
-      if (ghost && friend) return true;
       const r = (def.radius + ACTION_UNITS[v.type].radius) * (homeGround && friend ? .5 : 1) + .016;
       const after = dxBetween(x, v.x) ** 2 + (v.z - z) ** 2;
       return after >= r * r || after > dxBetween(ox, v.x) ** 2 + (v.z - oz) ** 2 + .000001;
-    }));
+    });
+    const groundOk = (x, z, soft) => {
+      if (!soft || def.air) return nav.canMove(u, x, z, def);
+      nav.softWrecks = true;
+      try { return nav.canMove(u, x, z, def); } finally { nav.softWrecks = false; }
+    };
+    const wreckPass = !def.air && u.wreckPassUntil > game.time;
+    const allowed = (x, z) => groundOk(x, z, wreckPass) && unitsOk(x, z);
     const dir = vehicle ? yaw : desired;
     let nx = wrapX(ox + Math.sin(dir) * step), nz = oz + Math.cos(dir) * step;
-    if (!game.nav.trafficAllows(u, nx, nz, def)) { u.waitingCrossing = true; u.vx = u.vz = 0; continue; }
+    const px = nx, pz = nz;
+    if (!(u.crossPassUntil > game.time) && !nav.trafficAllows(u, nx, nz, def)) {
+      u.waitingCrossing = true; u.vx = u.vz = 0;
+      if ((u.crossWait = (u.crossWait || 0) + 1) >= PUSH.cross) { u.crossWait = 0; u.crossPassUntil = game.time + PUSH.crossPass; stuckStats(game).crossPass++; }
+      continue;
+    }
+    u.crossWait = 0;
     let ok = allowed(nx, nz);
     // NAV_BRIDGES (2026-11-18): standing is tested on a sampled body (centre and four rim points), so along a narrow
     // lane (a bridge end, a gap between facilities) the standable ground has slivers a few hundredths wide where a
@@ -492,6 +527,24 @@ export function unitMotion(game) {
         if (allowed(nx, nz)) { ok = true; u.yaw = vehicle ? angle : turn(yaw, angle, DT * 3.7); break; }
       }
     }
+    // Pass 5: no way round. Push through what holds the unit, if it is only wrecks and/or other units (never terrain or
+    // structures), once it has been held long enough to have tried going round.
+    if (!ok && !def.air && step > .0001 && distance(u, u.goal) > PUSH.goal) {
+      const held = u.blocked + 1;
+      const wreckFree = groundOk(px, pz, false), softFree = wreckFree || groundOk(px, pz, true);
+      const bodies = softFree && unitsOk(px, pz);
+      // ticks in a row held by a wreck alone (not by the crowd queueing beside one)
+      u.wreckHeld = softFree && !wreckFree && bodies ? (u.wreckHeld || 0) + 1 : 0;
+      if (softFree) {
+        const passWreck = !wreckFree && (u.wreckHeld >= PUSH.wreck || u.wreckHeld >= PUSH.wreckEarly && !!u.path?.soft), passUnits = !bodies && held >= (near.some((v) => v !== u && v.hp > 0 && !game.allied(u.owner, v.owner)) ? PUSH.foes : PUSH.units);
+        if ((wreckFree || passWreck) && (bodies || passUnits)) {
+          const S = stuckStats(game);
+          if (passWreck) { u.wreckPassUntil = game.time + PUSH.pass; S.wreckPass++; }
+          if (passUnits) { u.ghostUntil = game.time + PUSH.pass; S.pushPast++; }
+          nx = px; nz = pz; ok = true;
+        }
+      }
+    }
     if (ok && step > .0001) {
       u.x = nx; u.z = nz;
       u.vx = dxBetween(ox, nx) / DT; u.vz = (nz - oz) / DT;
@@ -499,7 +552,7 @@ export function unitMotion(game) {
       if (nextTile !== u.tile && !def.air) addWear(game, nextTile, def.move, def);
       u.tile = nextTile;
       if (!def.air) index.moved(u, ox, oz);
-      u.blocked = 0;
+      u.blocked = 0; if (u.wreckHeld) u.wreckHeld = 0;
     } else {
       u.vx = u.vz = 0;
       if (vehicle) u.speed = Math.max(0, u.speed - pace * DT * 3);
@@ -526,9 +579,10 @@ export function unitMotion(game) {
         u.blockedReplans = (u.blockedReplans || 0) + 1;
         if (u.blockedReplans > STUCK.blockedReplans) { if (u.blockedReplans === STUCK.blockedReplans + 1) stuckStats(game).blockedCapped++; }
         else {
+          // Pass 5: a failed collision re-route no longer halts the unit (it did once blocked 6 s, often only behind a
+          // wreck or another unit); the push-through above and the stuck ladder (stallCheck) handle it
           const route = strictRoute(game, u, u.goal, def);
           if (route) { u.path = route; u.navVer = game.nav.terrainVersion; }
-          else if (u.blocked > 60) stopUnit(game, u, true);
         }
       }
     }
@@ -560,7 +614,7 @@ export function unitMotion(game) {
 export const STUCK = Object.freeze({ move: .5, near: 25, ghost: 30, replan: 55, escape: 90, unstick: 130, every: 60, replans: 6,
   giveUp: 600, blockedReplans: 10, unstickRadius: .9, unstickCooldown: 300, closeRadius: 1.5, closeGain: .15, closeTicks: 60 });
 const stuckStats = (game) => (game.navStats ??= {}).stuck ??= { ghost: 0, wedge: 0, invalidated: 0, replan: 0, replanFail: 0, altGoal: 0,
-  escape: 0, unstick: 0, gaveUp: 0, arrivedNear: 0, repeat: 0, blockedCapped: 0 };
+  escape: 0, unstick: 0, gaveUp: 0, arrivedNear: 0, repeat: 0, blockedCapped: 0, wreckPass: 0, pushPast: 0, crossPass: 0, coarse: 0 };
 
 /**
  * NAV_BRIDGES (2026-11-18): a blocked unit's re-route checks its lines finely beside structures and wrecks too
@@ -587,7 +641,15 @@ function replan(game, u, def, S) {
   if (route) { u.path = route; return true; }
   S.replanFail++;
   const alt = alternateGoal(game, u, def);
-  if (!alt) return false;
+  if (!alt) {
+    // Pass 5: last resort, the coarse corridor's hex centres as waypoints (same region only): the unit keeps working
+    // its way along with local avoidance instead of standing still until it gives up
+    const hubs = game.nav.coarsePath(u, u.goal, def);
+    if (!hubs) return false;
+    S.coarse++;
+    u.path = hubs;
+    return true;
+  }
   S.altGoal++;
   u.goal = alt.goal; u.path = alt.path; u.goalBest = Infinity; u.goalStall = 0;
   return true;
@@ -675,7 +737,7 @@ function stallCheck(game, u, def) {
       S.escape++;
       const onward = strictRoute(game, p, u.goal, def);
       u.path = onward ? [p, ...onward] : [p, ...u.path];
-      u.ghostUntil = game.time + 3;
+      u.ghostUntil = u.wreckPassUntil = game.time + 3;
     }
     return;
   }
@@ -690,11 +752,15 @@ function stallCheck(game, u, def) {
     return;
   }
   if (n > STUCK.unstick && (n - STUCK.unstick) % STUCK.every === 0 && (u.stuckReplans || 0) < STUCK.replans) {
-    u.ghostUntil = game.time + 2.5;
+    u.ghostUntil = u.wreckPassUntil = game.time + 2.5;
     replan(game, u, def, S);
     return;
   }
-  if (n > STUCK.giveUp) {
+  // Pass 5: the escape rung moves the unit .6 to the side, which counts as displacement progress and restarted the
+  // ladder: a unit on ground it could not leave (a flooded hex, a pocket) climbed ghost/replan/escape for ever and never
+  // gave up. Net progress toward the goal is the backstop: stuck three times or more and not STUCK.closeGain closer to
+  // the goal for STUCK.giveUp ticks (a long detour away from the goal is not stuck episodes), it gives up all the same.
+  if (n > STUCK.giveUp || (u.goalStall || 0) >= STUCK.giveUp && (u.stuckEpisodes || 0) >= 3 && n >= STUCK.ghost) {
     S.gaveUp++;
     const log = game.navStats.stuckLog ??= [];
     log.push({ t: Math.round(game.time), id: u.id, type: u.type, tile: u.tile, goal: tileAt(u.goal.x, u.goal.z), replans: u.stuckReplans || 0 });

@@ -105,7 +105,11 @@ function jobsFor(game, civ) {
   return jobs;
 }
 
-function pickJob(game, u, hq, jobs, load) {
+// Pass 5: a build job much nearer another of the civ's bases is left to that base's team (by more than FAR_JOB_SLACK).
+// pickJob had no distance bound for build jobs: an engineer was seen walking ~170 units across the map, a long route
+// request and a long exposed march, while the job's own base had engineers to spare.
+const FAR_JOB_SLACK = 8;
+function pickJob(game, u, hq, jobs, load, homes = null) {
   let best = null, score = Infinity;
   for (const j of jobs) {
     if (u.skip === j.key && u.skipUntil > game.time) continue;
@@ -113,6 +117,10 @@ function pickJob(game, u, hq, jobs, load) {
     if (n >= (j.kind === 'fix' || j.kind === 'trench' ? 1 : 3)) continue;
     const fromHome = hq ? distance(hq, j) : 0;
     if (j.kind === 'fix' && fromHome > 9 || j.kind === 'repair' && fromHome > 14) continue;
+    if (hq && homes && homes.length > 1 && BUILD_KINDS.has(j.kind)) {
+      if (j.nearHome === undefined) { let m = Infinity; for (const h of homes) m = Math.min(m, distance(h, j)); j.nearHome = m; }
+      if (fromHome > j.nearHome + FAR_JOB_SLACK) continue;
+    }
     const s = distance(u, j) + fromHome * .5 + n * 4 - (BUILD_KINDS.has(j.kind) ? 1.5 : 0);
     if (s < score) { score = s; best = j; }
   }
@@ -161,7 +169,7 @@ function work(game, civ, u, job, working, dt) {
   }
 }
 
-function runEngineer(game, civ, u, jobs, byKey, load, working, dt) {
+function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null) {
   u.assisting = false;
   const home = homeOf(game, u), hq = home ? headquarters(game, home) : null;
   const hardened = civ.techs.has('field_engineering');
@@ -176,7 +184,7 @@ function runEngineer(game, civ, u, jobs, byKey, load, working, dt) {
   let job = u.job ? byKey.get(u.job) : null;
   if (!job) {
     u.job = null;
-    job = pickJob(game, u, hq, jobs, load);
+    job = pickJob(game, u, hq, jobs, load, homes);
     if (job) { u.job = job.key; u.jobAt = game.time; load.set(job.key, (load.get(job.key) || 0) + 1); }
   }
   if (!job) {
@@ -225,7 +233,10 @@ export function engineerStep(game, dt) {
     if (!civ?.alive) continue;
     const jobs = jobsFor(game, civ), byKey = new Map(jobs.map((j) => [j.key, j])), load = new Map(), working = new Map();
     for (const u of list) if (u.job && byKey.has(u.job)) load.set(u.job, (load.get(u.job) || 0) + 1);
-    for (const u of list) runEngineer(game, civ, u, jobs, byKey, load, working, dt);
+    // the civ's staffed headquarters (bases with engineers of their own), for pickJob's far-job rule
+    const staffed = new Set(list.map((u) => u.home)), homes = [];
+    for (const s of game.sites) if (s.slots && s.owner === owner && staffed.has(s.id)) { const hq = headquarters(game, s); if (hq?.done) homes.push(hq); }
+    for (const u of list) runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes);
   }
   fieldUpkeep(game, dt);
 }

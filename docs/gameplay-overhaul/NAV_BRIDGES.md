@@ -388,12 +388,131 @@ It never leaves units grinding through the stuck ladder.
   rivers. Their move orders are refused with `code: 'bridge'`. Claim roads still bridge rivers to their own cities.
 - **Strict re-routes cost more per call** than ordinary routes. They are bounded by the existing re-route rate limits:
   at most 10 collision re-routes between progress, and 6 ladder replans per order.
-- **Wrecks can jam a single-lane bridge or cutting.** Seed 5 on a 128 map: two wrecks at a bridge end closed it to
-  wheeled vehicles, while tanks still passed. Wheeled orders are refused ("the way is blocked") until engineers clear
-  the wrecks or they rust away (600 s).
+- ~~**Wrecks can jam a single-lane bridge or cutting.**~~ Fixed in Pass 5 below: wrecks never close the way.
 - **The remaining failed routes are cheap.** Late game there are about 180 a minute, mostly wheeled group slots 75
   away in a region they cannot thread, at about 40 ms each, under the local budget. Remembering a failed slot per goal
   would remove them.
 - **Some heavy-vehicle routes are much longer now.** Where a corridor used to cross a river by a start bridge,
   vehicles detour to a ford or are cut off until a road is built. The fairness test now measures marches on foot and
   that a road can be planned to every site.
+
+## Pass 5: vehicles never block pathing (2026-11-19)
+
+User request: *"Just make it so that vehicles don't block pathing, further improve the pathing efficiency and
+reliability."*
+
+### Rule
+
+Other units (own or hostile, moving or parked, infantry or vehicles) and wrecks ("rusted cars") are **soft obstacles**
+for a unit with an order. They are avoided while a way round exists: the planner and local avoidance still see them, so
+units do not drive through wrecks in an open field. But they never make a route fail or hold a unit for good.
+
+| Obstacle | Planner (`route()`) | Motion (`unitMotion`) |
+|---|---|---|
+| Wreck | Hard first. If no wreck-free route exists and a wreck stands near the goal or near the corridor step that failed, planned again with wrecks soft (`nav.softWrecks`); the path is tagged `path.soft`. The coarse cost (`crowding`) always weighs wrecks, so the clear way is preferred. | Held by a wreck alone for `PUSH.wreckEarly` (3) ticks on a `soft` path, or `PUSH.wreck` (25) ticks in a row otherwise: drives through it (wreck pass, 1.5 s, renewed while inside). |
+| Allied unit | Not in route planning (unchanged). | Held only by unit bodies for `PUSH.units` (12) ticks: passes through (ghost, 1.5 s). |
+| Hostile unit | Not in route planning (unchanged). | Same, after `PUSH.foes` (25) ticks. Ghosting now applies to hostile bodies too. |
+| Single-lane crossing (oncoming traffic) | – | Waiting `PUSH.cross` (80) ticks: enters anyway for 3 s (the traffic it waits for may itself be stuck). |
+
+- No push within `PUSH.goal` (0.9) of the unit's own goal: the crowd there is the destination, and the near-arrival
+  rules apply.
+- Never through terrain or structures: a push is only taken when the step is free once units and wrecks are ignored.
+- Wrecks remain cover and sight blockers (`clearShot` passes `sight`, which ignores the soft flag), and still block the
+  standing test for order slots (`nearest`), so slots are not placed on wrecks.
+- Deterministic: tick counters on the unit (`wreckHeld`, `crossWait`, `blocked`) and `game.time`. The new unit fields
+  (`wreckPassUntil`, `crossPassUntil`, `crossWait`, `wreckHeld`) are saved with the unit; old saves read them as unset.
+  `path.soft` is not saved (a restored unit waits the ordinary 25 ticks).
+
+### Reliability: stuck causes found and fixed
+
+1. **Wreck jams** (the open risk above). Wrecks across a bridge end, a cutting or a one-hex gap made every route fail:
+   orders were refused ("the way is blocked") or units halted. Fixed by the soft-wreck route and the wreck pass.
+2. **Hostile bodies were a permanent wall.** Ghosting applied to allies only, so two idle enemy vehicles on a bridge
+   deck stopped every crossing: 0/120 arrived, 119 gave up after 60 s. Fixed by ghosting through any unit.
+3. **A failed collision re-route halted the unit** (`unitMotion`: blocked > 6 s and the strict re-route failed), often
+   only behind a wreck or another unit, before the ladder could act. Removed; the push-through and the ladder handle it.
+4. **Waiting at a crossing skipped the watchdog.** A unit kept off a single-lane bridge by oncoming traffic `continue`d
+   before `stallCheck`, so if that traffic was itself stuck it waited for ever. Fixed by `PUSH.cross`.
+5. **The ladder could loop for ever.** The escape rung moves the unit 0.6 to the side, which counts as displacement
+   progress and restarted the ladder: a unit on ground it could not leave climbed ghost / replan / escape for ever and
+   never gave up (found while rewriting the give-up test). Backstop: stuck three times or more, not 0.15 closer to the
+   goal for `STUCK.giveUp` ticks, and stalled now: it gives up.
+6. **Ladder fallback.** When the strict replan and the alternate goal both fail, the unit gets the coarse corridor's hex
+   centres as waypoints (`nav.coarsePath`, same region only) instead of standing still until it gives up.
+
+### Efficiency
+
+- **Failed-route memo** (`route()`, `FAIL_MEMO_TICKS` = 30, `FAIL_CELL` = 0.25): a failed request (class, body,
+  strictness, start cell, goal cell) is answered from the memo for 3 s; `invalidate()` forgets them all. Wrecks never
+  fail a route, so battlefield changes do not matter. Counted in `navStats.routeMemo`.
+- **Failed slot pairs per group order** (`actionOrders.groupRoute`): a slot hex the fine stage could not thread from a
+  start hex is not searched again for other members starting in that hex. Late in a match these AI slot failures were
+  nearly all the remaining failed routes. Counted in `navStats.slotMemo`.
+- **The soft-wreck retry is only paid near a wreck** (`failNearWreck`). Retrying every fine failure was measured to
+  double the cost of the remaining failed routes (about 20 → 44 ms each).
+- **Engineers** (`actionEngineers.pickJob`): a build job more than `FAR_JOB_SLACK` (8) further from the engineer's HQ
+  than from another staffed HQ of the civ is left to that base's team (the ~170-unit walks noted in Pass 3).
+
+### Measured (same seeds, same tools; before = HEAD b4d1bb9 from `git archive`)
+
+`tools/nav-bridge-city-repro.mjs` (96 map, seeds 3, 7, 11, 41). New `jam` scenarios: wrecks on the lane at both bridge
+ends, and an own or hostile tank and armored car parked idle on the deck.
+
+| Scenario | Before: arrived (refused / gave up) | After |
+|---|---|---|
+| jammed bridge, tanks | 27/60 (30 refused) | 60/60 |
+| jammed bridge, wheeled | 48/60 (12 refused) | 59/60 |
+| jammed bridge, mixed | 80/100 (20 halted) | 100/100 |
+| own vehicles parked on the deck | 120/120 | 119/120 |
+| hostile vehicles parked on the deck | 0/120 (119 gave up) | 119/120, 0 gave up |
+| clear bridges, wrecks beside the lane, wreck field, city | same counts within 1 crowded-court halt; 0 give-ups in both | |
+| wreck overlap where a clear lane exists (unit-ticks) | 0 | 0–31 (a mixed group queueing beside a wreck) |
+
+- The one wheeled unit short in the "after" column is a supply truck that stops 2.8 from the point at the end of its
+  path on seed 11 bridge 2; it does the same on that clear bridge before and after.
+- Wreck overlap on the jammed bridges is by design: units drive through the wrecks (up to 980 unit-ticks, 0.35 deep).
+
+`tools/nav-late-game-probe.mjs --map=random --size=160 --players=6 --minutes=40 --seed=7`, each run alone. The matches
+diverge as units behave differently; the army sizes are comparable. Means per game minute:
+
+| Minutes | Units (before / after) | Tick mean, ms | Worst tick, ms | Failed routes / min | Route ms / min | Failed-route ms / min |
+|---|---|---|---|---|---|---|
+| 1–10 | 95 / 95 | 1.3 → 1.2 | 26 → 20 | 0 → 0 | 64 → 62 | 0 → 0 |
+| 11–20 | 173 / 171 | 3.3 → 3.1 | 207 → 40 | 30 → 0 | 492 → 218 | 246 → 0 |
+| 21–30 | 251 / 226 | 7.1 → 5.0 | 439 → 202 | 367 → 30 | 1,784 → 801 | 1,243 → 217 |
+| 31–40 | 326 / 296 | 9.5 → 7.0 | 490 → 250 | 524 → 39 | 2,635 → 1,438 | 1,744 → 776 |
+
+- Give-ups over the 40 minutes: 0 before, 2 after. The new goal-progress backstop gives up units that before cycled the
+  ladder for ever (not counted by the probe).
+
+`tools/late-game-bench.mjs iron_basin --minutes=40`: both matches end early (before at 28.6 min, after at 31.3 min, with
+more units alive late: 211 against 140 in minutes 25–30). p99 is 9–40 ms and max 38–110 ms in both, with no tick over
+250 ms. The machine was shared with other runs, so read it as "no regression", not a gain.
+
+### Files
+
+- `server/sim/actionNavigation.js`: `softWrecks` (`obstacleAt`, `canMove`, `tight`; `crowding` always hard); batch memo
+  keys carry softness; `route()` = failed-route memo + soft-wreck retry (`routeOnce`, `lastFail`, `failTiles`,
+  `failNearWreck`); `coarsePath`.
+- `server/sim/actionOrders.js`: `PUSH`, push-through, ghosting through any unit, the crossing pass, no halt on a failed
+  collision re-route, the goal-progress give-up backstop, the coarse fallback in `replan`, failed slot pairs.
+- `server/sim/actionEngineers.js`: the `pickJob` far-job rule.
+- `test/nav-soft-obstacles-2026-11-19.test.js` (new): a jammed bridge both ways for wheeled, tracked and mixed groups;
+  own and hostile vehicles parked on the deck; a one-hex chokepoint closed by a line of wrecks; the failed-route memo;
+  determinism.
+- `test/stuck-recovery-2026-11-18.test.js`: the hostile-ring test now expects the unit to push through, and the give-up
+  test floods the unit's surroundings instead (a hostile ring no longer holds it).
+- `tools/nav-bridge-city-repro.mjs`: `--only=jam`.
+
+### Residual risks
+
+- **Units visibly drive through wrecks and each other** where nothing else is possible (jams, a unit pinned 1.2–2.5 s).
+  Intended, but players will see hulls overlapping at jammed crossings.
+- **Hostile units no longer body-block.** A line of enemy vehicles cannot hold a bridge by standing on it; they have to
+  shoot. A gameplay change in movement only.
+- **Remaining failed routes:** about 30–40 a minute late, about 24 ms each (long AI orders whose fine stage runs out of
+  budget).
+- **Flow fields are still dropped on every `invalidate()`.** Not changed: keeping them is not neutral, and they are not
+  saved.
+- **The memos are runtime-only (not saved).** A restored match can differ from the uninterrupted one in which repeated
+  failures are searched again, as with the other nav caches.

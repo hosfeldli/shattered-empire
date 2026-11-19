@@ -8,7 +8,7 @@
 //            HQ, out through the far side, and straight through the compound
 // Per order: arrived / units (stopped within the group radius of the point, or within 1 of its own order slot), never (still moving at the end), halted (stopped short of the destination), gave up
 // (stuck ladder), ratio (driven / shortest passable), seconds, route() calls and their ms.
-// Usage: node tools/nav-bridge-city-repro.mjs [--size=96] [--seeds=3,7,11,41] [--bridges=3] [--seconds=150] [--only=bridge|city|wrecks|nowrecks] [--trace] [--verbose]
+// Usage: node tools/nav-bridge-city-repro.mjs [--size=96] [--seeds=3,7,11,41] [--bridges=3] [--seconds=150] [--only=bridge|city|wrecks|nowrecks|jam] [--trace] [--verbose]
 const flags = Object.fromEntries(process.argv.slice(2).filter((a) => a.startsWith('--')).map((a) => { const [k, ...v] = a.slice(2).split('='); return [k, v.length ? v.join('=') : true]; }));
 globalThis.SE_MAP_SIZE = Number(flags.size || 96);
 globalThis.SE_WRAP = false;
@@ -170,11 +170,11 @@ for (const seed of seeds) {
     for (const o of others) connect(g, s.tile, o.tile);
   }
   g.nav.invalidate();
-  if (!flags.only || flags.only === 'bridge' || flags.only === 'nowrecks') {
+  if (!flags.only || flags.only === 'bridge' || flags.only === 'nowrecks' || flags.only === 'jam') {
     const spans = bridgeSpans(g).slice(0, perSeed);
     console.log(`seed ${seed}: ${spans.length} wide-river bridges`);
     for (const [i, span] of spans.entries()) {
-      for (const [name, types] of Object.entries(GROUPS)) for (const dir of [0, 1]) {
+      if (flags.only !== 'jam') for (const [name, types] of Object.entries(GROUPS)) for (const dir of [0, 1]) {
         clearUnits(g);
         const from = dir ? span.b : span.a, to = dir ? span.a : span.b;
         const d0 = ACTION_UNITS[types[0]];
@@ -187,12 +187,12 @@ for (const seed of seeds) {
       // two-way: tanks one way, wheeled the other, at once
       clearUnits(g);
       const dT = ACTION_UNITS.tank, pa = bankPoint(g, span.a, dT, 1.1), pb = bankPoint(g, span.b, dT, 1.1);
-      if (pa && pb) {
+      if (pa && pb && flags.only !== 'jam') {
         const west = S.placeBlock(sim, g, 0, GROUPS.tanks, pa, .62), east = S.placeBlock(sim, g, 0, GROUPS.wheeled, pb, .62);
         const r = simulate(g, [{ units: west, point: bankPoint(g, span.b, dT, .8) }, { units: east, point: bankPoint(g, span.a, dT, .8) }]);
         report(`s${seed} bridge${i} two-way`, r); add('bridge:two-way', r);
       }
-      if (flags.only !== 'nowrecks') {
+      if (flags.only !== 'nowrecks' && flags.only !== 'jam') {
         // wrecks at both bridge ends (a fight at the crossing): beside the road, leaving one lane
         g.wrecks.clear();
         for (const s0 of span.tiles) for (let d = 0; d < 6; d++) {
@@ -213,6 +213,44 @@ for (const seed of seeds) {
           report(`s${seed} bridge${i} wrecked ${name} ${dir ? 'B>A' : 'A>B'}`, r); add('wrecks:bridge:' + name, r);
         }
         g.wrecks.clear(); g.bfVer++; g.nav.invalidate();
+      }
+      if (!flags.only || flags.only === 'jam') {
+        // Pass 5 (vehicles never block pathing): wrecks ON the lane at both bridge ends (a column destroyed on the
+        // crossing): one on the bank road tile's centre, one where the road leaves the span. Every lane is closed by
+        // wreck hulls; before Pass 5 vehicle orders across were refused ("the way is blocked") or units gave up.
+        g.wrecks.clear();
+        for (const s0 of span.tiles) for (let d = 0; d < 6; d++) {
+          const n = NB[s0 * 6 + d];
+          if (n < 0 || span.tiles.includes(n) || !g.roads.usable(s0, n)) continue;
+          const c = centerOf(n), sc = centerOf(s0), ax = c.x - sc.x, az = c.z - sc.z, yaw = Math.atan2(ax, az);
+          g.wrecks.set(n, [{ type: 'tank', owner: 1, burn: 0, at: g.time, x: c.x, z: c.z, yaw: yaw + 1.2 },
+            { type: 'armored_car', owner: 1, burn: 0, at: g.time, x: c.x - ax * .3, z: c.z - az * .3, yaw: yaw + 1.5 }]);
+        }
+        g.bfVer++; g.nav.invalidate();
+        for (const name of ['tanks', 'wheeled', 'mixed']) for (const dir of [0, 1]) {
+          clearUnits(g);
+          const types = GROUPS[name], d0 = ACTION_UNITS[types[0]], from = dir ? span.b : span.a, to = dir ? span.a : span.b;
+          const start = bankPoint(g, from, d0, 1.1), goal = bankPoint(g, to, d0, .8);
+          if (!start || !goal) continue;
+          const units = S.placeBlock(sim, g, 0, types, start, .62);
+          const r = simulate(g, [{ units, point: goal }]);
+          report(`s${seed} bridge${i} jammed ${name} ${dir ? 'B>A' : 'A>B'}`, r); add('jam:wrecks:' + name, r);
+        }
+        g.wrecks.clear(); g.bfVer++; g.nav.invalidate();
+        // live vehicles parked on the deck (idle, no order): our own, then a hostile one (both sides hold fire)
+        for (const owner of [0, 1]) for (const name of ['tanks', 'wheeled']) for (const dir of [0, 1]) {
+          clearUnits(g);
+          const mid = span.tiles[span.tiles.length >> 1], c = centerOf(mid);
+          const parked = [S.place(sim, g, owner, 'tank', c), S.place(sim, g, owner, 'armored_car', c)].filter(Boolean);
+          for (const p of parked) { p.stance = 'holdFire'; p.mode = 'guard'; }
+          const types = GROUPS[name], d0 = ACTION_UNITS[types[0]], from = dir ? span.b : span.a, to = dir ? span.a : span.b;
+          const start = bankPoint(g, from, d0, 1.1), goal = bankPoint(g, to, d0, .8);
+          if (!start || !goal) continue;
+          const units = S.placeBlock(sim, g, 0, types, start, .62);
+          for (const u of units) u.stance = 'holdFire';
+          const r = simulate(g, [{ units, point: goal }]);
+          report(`s${seed} bridge${i} parked(${owner ? 'enemy' : 'own'}) ${name} ${dir ? 'B>A' : 'A>B'}`, r); add(`jam:parked-${owner ? 'enemy' : 'own'}:` + name, r);
+        }
       }
     }
   }

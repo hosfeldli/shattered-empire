@@ -181,6 +181,8 @@ const DEFENSE_ROAD_PENALTY = 4;
 // pocket no corridor can thread cost three attempts x three local searches, up to ~7,500 nodes, and was asked again and
 // again by group slots, chases and re-routes)
 const ROUTE_LOCAL_BUDGET = 3200;
+// route(): a failed request is remembered this many ticks (Pass 5), keyed on start and goal cells FAIL_CELL wide
+const FAIL_MEMO_TICKS = 30, FAIL_CELL = .25;
 // line(): sample spacing on road-only hexes (bridge lanes)
 const LANE_STRIDE = .06;
 // A wreck blocks movement with the hull the client draws (NAV_BRIDGES.md, "rusted cars", 2026-11-18): the scale of
@@ -260,7 +262,7 @@ export class ActionNavigation {
   beginBatch() { this.batch = this.batchOff ? null : { snap: new Map(), line: new Map(), local: new Map(), ids: new WeakMap(), next: 1, hits: 0 }; }
   endBatch() { const b = this.batch; this.batch = null; return b ? b.hits : 0; }
   snapAt(B, key, x, z, def, max) {
-    const k = key + ':' + def.move + ':' + def.radius;
+    const k = key + ':' + def.move + ':' + def.radius + (this.softWrecks ? ':s' : '');
     if (B.snap.has(k)) { B.hits++; return B.snap.get(k); }
     const p = this.nearest({ x, z }, def, max);
     if (p) B.ids.set(p, B.next++);
@@ -270,7 +272,7 @@ export class ActionNavigation {
   lineB(a, b, def) {
     const B = this.batch, ia = B && B.ids.get(a), ib = ia && B.ids.get(b);
     if (!ib) return this.line(a, b, def);
-    const k = ia + ':' + ib + ':' + def.move + ':' + def.radius;
+    const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + (this.softWrecks ? ':s' : '');
     let v = B.line.get(k);
     if (v === undefined) B.line.set(k, v = this.line(a, b, def)); else B.hits++;
     return v;
@@ -278,7 +280,7 @@ export class ActionNavigation {
   localRouteB(a, b, def, budget, grid, step) {
     const B = this.batch, ia = B && B.ids.get(a), ib = ia && B.ids.get(b);
     if (!ib) return this.localRoute(a, b, def, budget, grid, step);
-    const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + ':' + budget;
+    const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + ':' + budget + (this.softWrecks ? ':s' : '');
     if (B.local.has(k)) { B.hits++; return B.local.get(k); }
     const r = this.localRoute(a, b, def, budget, grid, step);
     if (r || !this.localCut) B.local.set(k, r);   // a search cut short by the route budget is not a verdict
@@ -287,6 +289,7 @@ export class ActionNavigation {
   invalidate() {
     if (this.batch) this.beginBatch();
     this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.crowdCache = null;
+    this.failed?.clear();
     // Pass 3 (perf, late game): most invalidations are a building placed or removed, which leaves the ground itself as
     // it was. The ground-only caches (regions, centre costs, road-only and lane tiles, gradient) are kept when every
     // input they read is unchanged since the last invalidate. Those inputs only change one way between two invalidates
@@ -335,7 +338,7 @@ export class ActionNavigation {
    */
   tight(t, def) {
     if (t < 0) return 0;
-    return this.nearLane(t, def) ? 2 : this.strict && (this.game.buildingCells?.get(t)?.size || this.wrecksNear(t)) ? 1 : 0;
+    return this.nearLane(t, def) ? 2 : this.strict && (this.game.buildingCells?.get(t)?.size || !this.softWrecks && this.wrecksNear(t)) ? 1 : 0;
   }
 
   /**
@@ -412,11 +415,15 @@ export class ActionNavigation {
     }
     const codes = near.map((b) => b.id * 2 + (b.done === false || b.state === 'ruin' ? 1 : 0));
     let blocked = 0;
-    const cx = X[t], cz = Z[t];
-    for (let i = -1; i < 6; i++) {
-      const x = i < 0 ? cx : cx + Math.cos(i * Math.PI / 3 + Math.PI / 6) * .5, z = i < 0 ? cz : cz + Math.sin(i * Math.PI / 3 + Math.PI / 6) * .5;
-      if (this.obstacleAt(t, wrapX(x), z, def.radius)) blocked++;
-    }
+    const cx = X[t], cz = Z[t], soft = this.softWrecks;
+    // wrecks always weigh on the coarse cost (routes prefer the clear way), even inside a soft-wreck route
+    this.softWrecks = false;
+    try {
+      for (let i = -1; i < 6; i++) {
+        const x = i < 0 ? cx : cx + Math.cos(i * Math.PI / 3 + Math.PI / 6) * .5, z = i < 0 ? cz : cz + Math.sin(i * Math.PI / 3 + Math.PI / 6) * .5;
+        if (this.obstacleAt(t, wrapX(x), z, def.radius)) blocked++;
+      }
+    } finally { this.softWrecks = soft; }
     const value = blocked / 7;
     if (cache.size > 20000) cache.clear();
     cache.set(key, { codes, wl, value });
@@ -695,6 +702,9 @@ export class ActionNavigation {
         if (Math.max(0,lx) ** 2 + Math.max(0,lz) ** 2 < (radius + .015) ** 2) return true;
       } else if (dxBetween(x, b.x) ** 2 + (b.z - z) ** 2 < (b.radius + radius) ** 2) return true;
     }
+    // Pass 5: wrecks never close the way. A soft-wreck test (nav.softWrecks: a route no clear way exists for, a unit
+    // pushing past a wreck) ignores them; sight lines (clearShot) and the ordinary planner still see them.
+    if (this.softWrecks && !sight) return false;
     const wrecks = this.wrecksNear(t);
     if (wrecks) for (let i = 0; i < wrecks.length; i++) if (touchesWreck(wrecks[i], x, z, radius + .01)) return true;
     return false;
@@ -761,7 +771,7 @@ export class ActionNavigation {
     const tiles = new Set([tileAt(from.x, from.z), tileAt(x, z)]);
     for (const t of [...tiles]) if (t >= 0) for (let d = 0; d < 6; d++) if (NB[t * 6 + d] >= 0) tiles.add(NB[t * 6 + d]);
     for (const t of tiles) {
-      const obstacles = [...this.game.obstaclesAtTile(t), ...(this.game.wrecks.get(t) || []).filter((w) => !w.air && w.x != null).map((w) => ({ ...w, radius: wreckHull(w.type).r }))];
+      const obstacles = this.softWrecks ? this.game.obstaclesAtTile(t) : [...this.game.obstaclesAtTile(t), ...(this.game.wrecks.get(t) || []).filter((w) => !w.air && w.x != null).map((w) => ({ ...w, radius: wreckHull(w.type).r }))];
       for (const o of obstacles) {
         const radius = (o.radius + def.radius) ** 2;
         const before = dxBetween(from.x, o.x) ** 2 + (from.z - o.z) ** 2, after = dxBetween(x, o.x) ** 2 + (z - o.z) ** 2;
@@ -865,15 +875,58 @@ export class ActionNavigation {
    * spawned on the far side of a facility could be refused every exit even though an open way out existed.
    */
   route(from, to, def) {
+    if (def.air) return this.routeOnce(from, to, def);
+    // Pass 5 (failed-route memo): the same failed request (a group slot in a pocket no corridor can thread, a chase spot,
+    // a ladder replan, an AI order repeated every plan) cost a full budgeted search each time: late in a match 400-850
+    // failed routes a game minute, 60-85% of all route time. A failure is remembered for FAIL_MEMO_TICKS, keyed on the
+    // start and goal to a FAIL_CELL grid, the class, the body and strictness; any invalidate() (terrain, buildings,
+    // roads) forgets them all. Wrecks never fail a route (below), so the battlefield changing does not matter.
+    const g = this.game, tick = g.tickN ?? 0;
+    const key = def.move + ':' + def.radius + (this.strict ? 's' : '') + ':' + Math.floor(wrapX(from.x) / FAIL_CELL) + ',' + Math.floor(from.z / FAIL_CELL) + ':'
+      + Math.floor(wrapX(to.x) / FAIL_CELL) + ',' + Math.floor(to.z / FAIL_CELL);
+    const memo = this.failed ??= new Map(), seen = memo.get(key);
+    if (seen !== undefined) {
+      if (tick - seen < FAIL_MEMO_TICKS && tick >= seen) { this.lastFail = 'memo'; const st = g.navStats ??= {}; st.routeMemo = (st.routeMemo || 0) + 1; return null; }
+      memo.delete(key);
+    }
+    let path = this.routeOnce(from, to, def);
+    // Pass 5 (vehicles never block pathing): wrecks never close the way. When no route clear of wreck hulls exists (two
+    // wrecks across a single-lane bridge end, a cutting, a gap between facilities), the route is planned again with
+    // wrecks soft: the unit drives through the wreck (unitMotion lets a unit push past a wreck in its way). The coarse
+    // cost still weighs wrecks, so the clear way is preferred wherever there is one. A region cut-off or a coarse failure
+    // does not depend on wrecks and is not retried.
+    if (!path && !this.softWrecks && g.wrecks?.size && (this.lastFail === 'goal' || this.lastFail === 'fine') && this.failNearWreck(to)) {
+      this.softWrecks = true;
+      try { path = this.routeOnce(from, to, def); } finally { this.softWrecks = false; }
+      // tagged: unitMotion lets a unit on this path push through a wreck at once (PUSH.wreckEarly); not saved, a restored
+      // unit only waits the ordinary PUSH.wreck ticks
+      if (path) { path.soft = true; const st = g.navStats ??= {}; st.routeSoft = (st.routeSoft || 0) + 1; }
+    }
+    if (!path) {
+      if (memo.size >= 4096) memo.delete(memo.keys().next().value);
+      memo.set(key, tick);
+    }
+    return path;
+  }
+
+  /** The failed route() could have been closed by a wreck: one stands near the goal or near a corridor step no detour threaded. */
+  failNearWreck(to) {
+    if (this.lastFail === 'goal') return !!this.wrecksNear(tileAt(to.x, to.z));
+    for (const t of this.failTiles) if (this.wrecksNear(t)) return true;
+    return false;
+  }
+
+  routeOnce(from, to, def) {
     this.localLeft = ROUTE_LOCAL_BUDGET;
+    this.lastFail = null; this.failTiles = [];
     try { return this.routeBudgeted(from, to, def); } finally { this.localLeft = Infinity; }
   }
 
   routeBudgeted(from, to, def) {
-    if (!this.canStand(to.x, to.z, def)) return null;
+    if (!this.canStand(to.x, to.z, def)) { this.lastFail = 'goal'; return null; }
     if (def.air || (distance(from, to) < 12 && this.line(from, to, def))) return [to];
     const a = tileAt(from.x, from.z), b = tileAt(to.x, to.z);
-    if (a < 0 || b < 0) return null;
+    if (a < 0 || b < 0) { this.lastFail = 'cut'; return null; }
     // NAV_BRIDGES (2026-11-18, late game): ground cut off from the unit (across a wide river with no bridge yet, which
     // is now the normal state of a match) made every request exhaust a full bounded A* (STRATEGIC_LIMIT nodes) before
     // failing. With no start bridges, vehicles ordered across rivers turned that into a repath storm (each blocked
@@ -883,22 +936,45 @@ export class ActionNavigation {
     if (ca >= 0 && cb >= 0 && ca !== cb) {
       const stats = this.game.navStats ??= {};
       stats.routeCutOff = (stats.routeCutOff || 0) + 1;
+      this.lastFail = 'cut';
       return null;
     }
     // In one region a route exists: a long way around a river (to its ford or source) may need more than the
     // interactive bound, which used to fail it and leave the unit with no path. Bounded at half the map.
     let coarse = this.strategic(a, b, def, false, false, ca >= 0 && ca === cb ? Math.max(STRATEGIC_LIMIT, N >> 1) : STRATEGIC_LIMIT), avoid = null;
-    if (!coarse) return this.line(from, to, def) ? [to] : null;
+    if (!coarse) { this.lastFail = 'coarse'; return this.line(from, to, def) ? [to] : null; }
     for (let attempt = 0; ; attempt++) {
       const r = this.fineRoute(from, to, def, coarse);
       if (r.path) return r.path;
-      if (attempt >= ROUTE_RETRIES || r.fail < 0 || r.fail === a || r.fail === b) return null;
+      if (r.fail >= 0) this.failTiles.push(r.fail, r.from ?? r.fail);
+      if (attempt >= ROUTE_RETRIES || r.fail < 0 || r.fail === a || r.fail === b) { this.lastFail = 'fine'; return null; }
       (avoid ??= new Set()).add(r.fail);
       const stats = this.game.navStats ??= {};
       stats.routeRetry = (stats.routeRetry || 0) + 1;
       coarse = this.strategic(a, b, def, false, true, STRATEGIC_LIMIT, avoid);
-      if (!coarse) return null;
+      if (!coarse) { this.lastFail = 'fine'; return null; }
     }
+  }
+
+  /**
+   * Pass 5 (stuck recovery, last resort): the coarse corridor from `from` to `to` as standable hex-centre waypoints,
+   * without the fine stage. Only within one region for the class (a way exists); null otherwise. Used by the stuck
+   * ladder when every route and alternate goal failed, so the unit keeps working its way along with local avoidance.
+   */
+  coarsePath(from, to, def) {
+    if (def.air) return [to];
+    const a = tileAt(from.x, from.z), b = tileAt(to.x, to.z);
+    if (a < 0 || b < 0) return null;
+    const ca = this.componentOf(a, def);
+    if (ca < 0 || ca !== this.componentOf(b, def)) return null;
+    const coarse = a === b ? [a] : this.strategic(a, b, def, false, true, Math.max(STRATEGIC_LIMIT, N >> 1));
+    if (!coarse) return null;
+    const points = [];
+    for (let i = 1; i < coarse.length - 1; i++) { const p = this.nearest(centerOf(coarse[i]), def, .89); if (p) points.push(p); }
+    const goal = this.nearest(to, def, .45);
+    if (!goal) return points.length ? points : null;
+    points.push(goal);
+    return points;
   }
 
   /** The fine stage of route(): { path } or { fail: the coarse tile of the step no detour could thread }. */
@@ -929,7 +1005,7 @@ export class ActionNavigation {
         let detour = this.localRouteB(points[i], points[i + 1], def, 220, 25, .24), skip = 1;
         if (!detour && i + 2 < points.length) { detour = this.localRouteB(points[i], points[i + 2], def, 900, 37, .2); skip = 2; }
         if (!detour) { detour = this.localRouteB(points[i], points[i + 1], def, 1400, 45, .18); skip = 1; }
-        if (!detour) return { fail: tiles[i + 1] === tiles[0] && i + 2 < points.length ? tiles[i + 2] : tiles[i + 1] };
+        if (!detour) return { fail: tiles[i + 1] === tiles[0] && i + 2 < points.length ? tiles[i + 2] : tiles[i + 1], from: tiles[i] };
         path.push(...detour);
         i += skip;
       } else {
