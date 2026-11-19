@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "version": "0.6.0",
+  "date": "2026-11-19",
+  "title": "Unstuck armies, smarter AI, storms you can see",
+  "summary": "Vehicles no longer get stuck at rivers, bridges, wrecks or other units, and the late-game server is much faster. The AI now attacks on several fronts, actually captures ground, builds defenses and trenches, and uses missiles to break stalemates. Storms roll in with clouds, darkness and sound, and troops really garrison.",
+  "since": {
+    "version": "0.5.0",
+    "commit": "8e6bfef"
+  },
+  "sections": [
+    {
+      "heading": "Pathing that doesn't get stuck",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Bridges are no longer on the map from the start: they are laid when a road is built across a river. Infantry can wade any river; vehicles need a bridge, and an order that needs a missing bridge is refused with a message saying why. Vehicles, wrecks and rusted cars no longer block routes: units steer round them where they can and squeeze through when they can't, and a unit that stops making progress is re-routed automatically."
+        },
+        {
+          "type": "comparison",
+          "title": "Getting across a jammed bridge",
+          "columns": [
+            "0.5.0",
+            "0.6.0"
+          ],
+          "rows": [
+            { "label": "Tanks across a wreck-jammed bridge", "before": "27 of 60", "after": "60 of 60" },
+            { "label": "Wheeled vehicles across", "before": "48 of 60", "after": "59 of 60" },
+            { "label": "Enemy vehicles parked on the deck", "before": "0 of 120", "after": "119 of 120" },
+            { "label": "Vehicles lost at clear bridges", "before": "27", "after": "0" }
+          ],
+          "source": "docs/gameplay-overhaul/NAV_BRIDGES.md"
+        }
+      ]
+    },
+    {
+      "heading": "A faster late-game server",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Big group orders are now worked out over several steps instead of all at once, failed routes are remembered instead of retried, and the per-second economy update now sends only what changed. Long matches stay responsive."
+        },
+        {
+          "type": "comparison",
+          "title": "Late match",
+          "columns": [
+            "0.5.0",
+            "0.6.0"
+          ],
+          "rows": [
+            { "label": "Average server step", "before": "48 ms", "after": "11 ms" },
+            { "label": "Worst server step", "before": "9.7 s", "after": "0.43 s" },
+            { "label": "Economy update size", "before": "59-81 KB", "after": "11-18 KB" },
+            { "label": "Client time reading updates", "before": "21 ms/s", "after": "4 ms/s" }
+          ],
+          "source": "docs/performance/IMPLEMENTATION_LOG.md"
+        }
+      ]
+    },
+    {
+      "heading": "A smarter AI",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Captures the territory it moves into (about 85% of the time, up from 48%) instead of passing back and forth.",
+            "Plans operations along several routes at once and leaves pickets to hold what it took.",
+            "Builds field defenses and digs trenches on its fronts.",
+            "Hard and brutal AIs save up for missiles and launch them to break late-game stalemates.",
+            "Brutal is the strongest AI again and finishes more matches."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Weather, trenches and garrisons",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Storms roll in as clouds that darken the ground, with rain, wind and thunder coming from their direction. They show on the minimap and hover cards.",
+            "Right-clicking a building with troops selected now garrisons them, with markers showing how many are inside.",
+            "Trench lines join up properly, can cross or meet roads, and never dig up a bridge deck.",
+            "Watch AI matches use the same setup screen as other matches, with speed and fog options."
+          ]
+        }
+      ]
+    }
+  ],
+  "fixes": [
+    "Engineers no longer show a team circle unless selected.",
+    "Missile trucks fire a visible missile in an arc with a smoke trail.",
+    "The resource panels follow the curve of the minimap.",
+    "Engineers no longer walk across the map to jobs another base can do.",
+    "Optional diagnostics (Settings, Share diagnostics) help us find performance problems."
+  ]
+}
