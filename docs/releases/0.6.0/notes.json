@@ -11,6 +11,7 @@
   "sections": [
     {
       "heading": "Pathing that doesn't get stuck",
+      "category": "gameplay",
       "blocks": [
         {
           "type": "text",
@@ -24,10 +25,26 @@
             "0.6.0"
           ],
           "rows": [
-            { "label": "Tanks across a wreck-jammed bridge", "before": "27 of 60", "after": "60 of 60" },
-            { "label": "Wheeled vehicles across", "before": "48 of 60", "after": "59 of 60" },
-            { "label": "Enemy vehicles parked on the deck", "before": "0 of 120", "after": "119 of 120" },
-            { "label": "Vehicles lost at clear bridges", "before": "27", "after": "0" }
+            {
+              "label": "Tanks across a wreck-jammed bridge",
+              "before": "27 of 60",
+              "after": "60 of 60"
+            },
+            {
+              "label": "Wheeled vehicles across",
+              "before": "48 of 60",
+              "after": "59 of 60"
+            },
+            {
+              "label": "Enemy vehicles parked on the deck",
+              "before": "0 of 120",
+              "after": "119 of 120"
+            },
+            {
+              "label": "Vehicles lost at clear bridges",
+              "before": "27",
+              "after": "0"
+            }
           ],
           "source": "docs/gameplay-overhaul/NAV_BRIDGES.md"
         }
@@ -35,6 +52,13 @@
     },
     {
       "heading": "A faster late-game server",
+      "category": "performance",
+      "later": [
+        {
+          "version": "0.7.0",
+          "text": "Routing does even less work: a change on the map only resets nearby routes, and each server step has a routing budget."
+        }
+      ],
       "blocks": [
         {
           "type": "text",
@@ -48,10 +72,26 @@
             "0.6.0"
           ],
           "rows": [
-            { "label": "Average server step", "before": "48 ms", "after": "11 ms" },
-            { "label": "Worst server step", "before": "9.7 s", "after": "0.43 s" },
-            { "label": "Economy update size", "before": "59-81 KB", "after": "11-18 KB" },
-            { "label": "Client time reading updates", "before": "21 ms/s", "after": "4 ms/s" }
+            {
+              "label": "Average server step",
+              "before": "48 ms",
+              "after": "11 ms"
+            },
+            {
+              "label": "Worst server step",
+              "before": "9.7 s",
+              "after": "0.43 s"
+            },
+            {
+              "label": "Economy update size",
+              "before": "59-81 KB",
+              "after": "11-18 KB"
+            },
+            {
+              "label": "Client time reading updates",
+              "before": "21 ms/s",
+              "after": "4 ms/s"
+            }
           ],
           "source": "docs/performance/IMPLEMENTATION_LOG.md"
         }
@@ -59,6 +99,13 @@
     },
     {
       "heading": "A smarter AI",
+      "category": "ai",
+      "later": [
+        {
+          "version": "0.7.0",
+          "text": "Every AI now gets a fair share of planning time, so an eighth AI is no longer starved."
+        }
+      ],
       "blocks": [
         {
           "type": "bullets",
@@ -74,6 +121,13 @@
     },
     {
       "heading": "Weather, trenches and garrisons",
+      "category": "gameplay",
+      "later": [
+        {
+          "version": "0.7.0",
+          "text": "Storms are now rare travelling systems (hurricanes and squall lines) under a new cloud deck, with forecast tracks on the minimap."
+        }
+      ],
       "blocks": [
         {
           "type": "bullets",

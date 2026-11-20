@@ -46,6 +46,8 @@ namespace SE.Runtime.App
         /// minimap zoom) become instant. Applied by <c>UiKit.ApplyMotion</c>.
         /// </summary>
         public static bool ReduceUiMotion { get => B("reduceUiMotion", false); set => SetB("reduceUiMotion", value); }
+        /// <summary>Draw the weapon range of every defense in view (the minimap console toggle; selected defenses always show theirs).</summary>
+        public static bool ShowDefenseRanges { get => B("defenseRanges", false); set => SetB("defenseRanges", value); }
         /// <summary>Share anonymous performance and gameplay diagnostics with the game server (ClientTelemetry, docs/TELEMETRY.md).</summary>
         public static bool ShareDiagnostics { get => B("shareDiagnostics", true); set => SetB("shareDiagnostics", value); }
 

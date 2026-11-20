@@ -10,10 +10,13 @@
     powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Server                  # server only
     powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Client -Version 0.5.0
 
-  Release notes gate: a client release (not -PackageOnly) needs -Version and docs/releases/<Version>/notes.json
-  that passes `node tools/release-notes.mjs validate <Version>` (with --allow-draft under -DryRun). The check runs
-  before anything remote, and stops -DryRun too. The notes folder is uploaded to
-  gs://<bucket>/downloads/release-notes/<Version>/ and the manifest entry gets notes {version, url}.
+  Release notes gate: a client release (not -PackageOnly) needs -Version and docs/releases/<Version>/notes.json,
+  and every docs/releases/* folder (the running changelog) must pass
+  `node tools/release-notes.mjs validate-all --release <Version>` (with --allow-draft under -DryRun; a draft is
+  allowed only in the newest folder, and only under -DryRun or when that folder is newer than <Version>). The check
+  runs before anything remote, and stops -DryRun too. Every version's notes folder up to <Version> is uploaded to
+  gs://<bucket>/downloads/release-notes/<version>/ (corrections to older notes are published too) and the
+  manifest entry gets notes {version, url}.
 
   Steps (each one is skipped when it is already done, so re-running is safe):
     1. sanity: service-account keys are git-ignored, untracked, unstaged and excluded by .gcloudignore;
@@ -155,23 +158,32 @@ if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') { Fa
 
 # ------------------------------------------------------------------ release notes gate (local only, before any gcloud call)
 # Players see these notes after updating (Runtime/UI/ReleaseNotes.cs). A client release cannot go out without them.
-$NotesRef = $null; $NotesFiles = @(); $NotesSince = ''
+$NotesRef = $null; $NotesFiles = @(); $NotesSince = ''; $NotesByVersion = [ordered]@{}
 if ($Client -and -not $PackageOnly) {
     Step 'Release notes'
     if (-not $Version) { Fail "-Version is required for a client release: players are shown docs/releases/<Version>/notes.json after updating (start one with: node tools/release-notes.mjs draft <Version>)" }
     $nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
     if (-not $nodeCmd) { Fail 'node.exe not found (needed to validate the release notes)' }
     $notesTool = Join-Path $Repo 'tools\release-notes.mjs'
-    $nargs = @($notesTool, 'validate', $Version)
+    if (-not (Test-Path (Join-Path $Repo "docs\releases\$Version\notes.json"))) { Fail "docs/releases/$Version/notes.json does not exist (start one with: node tools/release-notes.mjs draft $Version)" }
+    # the running changelog: every version's notes are validated (older ones get corrected and re-published)
+    $nargs = @($notesTool, 'validate-all', '--release', $Version)
     if ($DryRun) { $nargs += '--allow-draft' }
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try { $nout = & $nodeCmd.Source @nargs 2>&1; $ncode = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
     foreach ($l in @($nout)) { if ($l) { Info ([string]$l) } }
-    if ($ncode -ne 0) { Fail "release notes for $Version are missing or invalid: fix docs/releases/$Version/notes.json (see docs/RELEASING.md)" }
-    $NotesFiles = @((& $nodeCmd.Source $notesTool 'files' $Version) | Where-Object { $_ })
+    if ($ncode -ne 0) { Fail "release notes are missing or invalid: fix docs/releases/*/notes.json (see docs/RELEASING.md)" }
+    # "<version><TAB><file>" for every version up to $Version (newer, unreleased notes are not uploaded)
+    foreach ($l in @((& $nodeCmd.Source $notesTool 'publish-list' '--release' $Version) | Where-Object { $_ })) {
+        $nv, $nf = ([string]$l) -split "`t", 2
+        if (-not $NotesByVersion.Contains($nv)) { $NotesByVersion[$nv] = @() }
+        $NotesByVersion[$nv] += $nf
+    }
+    if (-not $NotesByVersion.Contains($Version)) { Fail "release notes for $Version are not in the publish list" }
+    $NotesFiles = @($NotesByVersion[$Version])
     $NotesSince = [string](Get-Prop (Get-Prop (Get-Content -Raw -Encoding UTF8 (Join-Path $Repo "docs\releases\$Version\notes.json") | ConvertFrom-Json) 'since') 'version')
     $NotesRef = [ordered]@{ version = $Version; url = "$Site/api/release-notes/$Version" }
-    Ok ("docs/releases/$Version/notes.json is valid ({0} file(s) to upload, since $NotesSince)" -f $NotesFiles.Count)
+    Ok ("release notes valid: {0} version(s) to upload ({1}); {2} file(s) for $Version, since $NotesSince" -f $NotesByVersion.Count, (@($NotesByVersion.Keys) -join ', '), $NotesFiles.Count)
 }
 
 $script:Gcloud = Find-Gcloud
@@ -224,7 +236,7 @@ function Check-Dirty([string]$what, [string[]]$files) {
 }
 if ($Server) { Check-Dirty 'server' $dirtyServer }
 if ($Client) { Check-Dirty 'client' $dirtyClient }
-if ($NotesRef) { Check-Dirty 'release notes' @($dirty | Where-Object { $_ -like "docs/releases/$Version/*" }) }
+if ($NotesRef) { $notesVersions = @($NotesByVersion.Keys); Check-Dirty 'release notes' @($dirty | Where-Object { $_ -match '^docs/releases/([^/]+)/' -and $notesVersions -contains $Matches[1] }) }
 
 if ($SkipTests) { Warn 'npm test skipped (-SkipTests)' }
 else {
@@ -456,18 +468,23 @@ if ($Client) {
         }
     }
 
-    # 3c'. release notes next to the ZIP: downloads/release-notes/<Version>/ (notes.json and its images), re-uploaded
-    # every run (small); the manifest entry points at them so the client and /api/release-notes/latest find them
+    # 3c'. release notes next to the ZIP: downloads/release-notes/<version>/ (notes.json and its images) for EVERY
+    # version up to this one (the running changelog: corrections to older notes go out too), re-uploaded every run
+    # (small). The manifest entry points at this version's, so the client and /api/release-notes/latest find them;
+    # /api/release-notes/index lists them all.
     $notesListed = $true
     if ($NotesRef) {
-        $NotesUrl = "gs://$Bucket/downloads/release-notes/$Version/"
-        Info ("release notes -> $NotesUrl ({0} file(s))" -f $NotesFiles.Count)
-        $null = Invoke-GCloud -GArgs (@('storage', 'cp') + $NotesFiles + @($NotesUrl, '--cache-control=no-cache')) -Mutating
-        if (-not $DryRun) {
-            $listedNotes = Invoke-GCloud -GArgs @('storage', 'ls', $NotesUrl)
-            if ($listedNotes -notmatch 'notes\.json') { Fail "release notes not found at $NotesUrl after the upload; manifest not changed" }
-            Ok 'release notes uploaded'
+        foreach ($nv in @($NotesByVersion.Keys)) {
+            $nfiles = @($NotesByVersion[$nv])
+            $NotesUrl = "gs://$Bucket/downloads/release-notes/$nv/"
+            Info ("release notes -> $NotesUrl ({0} file(s))" -f $nfiles.Count)
+            $null = Invoke-GCloud -GArgs (@('storage', 'cp') + $nfiles + @($NotesUrl, '--cache-control=no-cache')) -Mutating
+            if (-not $DryRun) {
+                $listedNotes = Invoke-GCloud -GArgs @('storage', 'ls', $NotesUrl)
+                if ($listedNotes -notmatch 'notes\.json') { Fail "release notes not found at $NotesUrl after the upload; manifest not changed" }
+            }
         }
+        if (-not $DryRun) { Ok ("release notes uploaded ({0} version(s))" -f $NotesByVersion.Count) }
         $notesListed = $published.Count -gt 0 -and [string](Get-Prop (Get-Prop $published[0] 'notes') 'version') -eq $Version
         if ($entry -is [System.Collections.IDictionary]) { $entry['notes'] = $NotesRef }
         else { $entry | Add-Member -NotePropertyName notes -NotePropertyValue ([pscustomobject]$NotesRef) -Force }

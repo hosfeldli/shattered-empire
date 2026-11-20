@@ -22,7 +22,7 @@ namespace SE.Runtime.UI
         public static Func<int, int> UnitFuel;
 
         VisualElement hoverCard, hoverDot;
-        Label hoverName, hoverOwner, hoverRole, hoverStatus;
+        Label hoverName, hoverOwner, hoverRole, hoverStatus, hoverTerrain;
         int hoverId, hoverFilledFor = -1, hoverHp = -1, hoverFuel = int.MinValue;
         string hoverStance;
         float hoverPickAt, hoverCardSince;
@@ -41,6 +41,8 @@ namespace SE.Runtime.UI
             hoverOwner = L("", "se-hovercard-owner", head);
             hoverRole = L("", "se-hovercard-role", hoverCard);
             hoverStatus = L("", "se-hovercard-status", hoverCard);
+            hoverTerrain = L("", "se-hovercard-terrain", hoverCard);   // ground units: climb limit and rivers (Hud.Mobility.cs)
+            hoverTerrain.pickingMode = PickingMode.Ignore;
             foreach (var l in new[] { hoverName, hoverOwner, hoverRole, hoverStatus }) l.pickingMode = PickingMode.Ignore;
         }
 
@@ -122,10 +124,13 @@ namespace SE.Runtime.UI
                 hoverOwner.style.color = rel;
                 hoverDot.style.backgroundColor = rel;
                 hoverRole.text = UnitRole(type);
+                var limits = TerrainLimits(Defs, type);
+                hoverTerrain.text = limits ?? "";
+                hoverTerrain.style.display = limits != null ? DisplayStyle.Flex : DisplayStyle.None;
             }
             hoverFilledFor = u.Id; hoverHp = u.Hp; hoverStance = stance; hoverFuel = fuel;
             string status = $"Condition {u.Hp}%";
-            if (stance != null) status += " · Stance: " + Session.Commander.StanceLabel(stance);
+            if (stance != null) status += " · Stance: " + Session.Commander.StanceLabel(stance) + (StanceRingName(stance) is string ring ? $" ({ring})" : "");
             if (fuel >= 0) status += $" · Fuel {Mathf.RoundToInt(fuel / 2.55f)}%";
             hoverStatus.text = status;
             hoverStatus.EnableInClassList("warn", u.Hp <= 60 && u.Hp > 30);
@@ -170,6 +175,7 @@ namespace SE.Runtime.UI
                 hoverDot.style.backgroundColor = new Color(.42f, .33f, .78f);
                 hoverRole.text = info != null ? info[2] : "Aircraft cannot take off or land at bases under it";
                 hoverStatus.text = info != null ? info[3] : "Aircraft inside fly slower and burn fuel faster";
+                hoverTerrain.style.display = DisplayStyle.None;
             }
             if (!hoverShown) { hoverShown = true; hoverCard.BringToFront(); UiKit.Show(hoverCard); }
             var mouse = InputFacade.MousePosition;
@@ -226,6 +232,7 @@ namespace SE.Runtime.UI
                 hoverOwner.style.color = rel;
                 hoverDot.style.backgroundColor = rel;
                 hoverRole.text = StructureRole(b.Type);
+                hoverTerrain.style.display = DisplayStyle.None;
             }
             hoverBuildingFilled = b.Id; hoverBuildingHp = b.Hp; hoverBuildingLevel = b.Level; hoverBuildingProgress = progress;
             string status = b.Done ? $"Condition {b.Hp}%" : $"Under construction {progress}%";

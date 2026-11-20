@@ -89,8 +89,8 @@ namespace SE.Runtime.Landscape
                 case 5: return new float3(0.72f, 0.62f, 0.42f);   // desert
                 case 6: return new float3(0.55f, 0.57f, 0.52f);   // tundra
                 case 7: return new float3(.39f, .45f, .36f);   // marsh
-                case 8: return new float3(.49f, .50f, .41f);   // hills
-                case 9: return new float3(.51f, .51f, .48f);   // mountain
+                case 8: return new float3(.47f, .51f, .37f);   // hills: grassy downs (green over red: the shader grasses them)
+                case 9: return new float3(.47f, .46f, .44f);   // mountain: bare rock (the shader's slope rock does the faces)
                 case 10: return new float3(0.86f, 0.88f, 0.90f);  // peak snow
                 case 11: return new float3(0.45f, 0.16f, 0.07f);  // lava fields
                 case 12: return new float3(0.30f, 0.29f, 0.28f);  // ash
@@ -105,6 +105,9 @@ namespace SE.Runtime.Landscape
             if ((f & 32) != 0) c = math.lerp(c, new float3(0.3f, 0.29f, 0.28f), 0.6f);   // ash fall
             if ((f & 16) != 0) c = math.lerp(c, new float3(0.6f, 0.52f, 0.36f), 0.4f);   // drought
             if ((f & 4) != 0) c *= new float3(0.92f, 0.95f, 0.88f);                       // volcanic soil
+            // HILLS_MOUNTAINS (2026-11-19): impassable mountains read as such: snow caps their upper slopes well below the
+            // general snow line (ShadeAt), so a range stands out as a pale wall from the strategic camera
+            if (Biome[i] == 9) c = math.lerp(c, new float3(.86f, .88f, .90f), math.saturate((Height[i] - 2.5f) * .8f));
             float n = Hash(i, Seed) - 0.5f;
             return c * (1f + n * .025f);
         }

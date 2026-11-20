@@ -83,27 +83,59 @@ const projectPoint = (game, p) => {
 // armed unit or finished defense is marked dangerous and not taken (repairs at the engineer's own base excepted, see
 // pickJob). Nothing is cancelled: the work is picked up again once the ground is retaken or the threat has gone.
 const DANGER_PAD = 1.6;
-function threatsFor(game, civ) {
+function threatsFor(game, civ, armed = armedList(game)) {
   const out = [], seen = civ.visible;
-  for (const v of game.units.values()) {
+  for (const a of armed.units) {
+    const v = a.e;
     if (v.hp <= 0 || !game.hostile(v.owner, civ.id)) continue;
+    if (seen && !seen[a.tile]) continue;
+    out.push(a.x, a.z, a.r);   // long-range guns: only their near reach counts
+  }
+  for (const a of armed.buildings) {
+    const b = a.e;
+    if (b.hp <= 0 || !b.done || !game.hostile(b.owner, civ.id)) continue;
+    if (seen && !seen[a.tile]) continue;
+    out.push(a.x, a.z, a.r);
+  }
+  return sortThreats(out);
+}
+// Pass 7 (perf): the armed units and defences, with their tile and danger radius, listed once per engineerStep instead of
+// once per civ (threatsFor scanned every unit and building, with a tileAt each, 8 times every other tick in a 4v4).
+// Liveness, completion and ownership are still read live per civ; positions do not change inside engineerStep, and a
+// list taken before any entity was created since (game.nextId) is rebuilt, so every civ sees exactly what it saw before.
+function armedList(game) {
+  const units = [], buildings = [], owned = new Map();
+  const own = (o) => owned.get(o) || (owned.set(o, { units: [], buildings: [] }).get(o));
+  for (const b of game.buildings.values()) own(b.owner).buildings.push(b);   // rawJobsFor's candidates, in map order
+  for (const v of game.units.values()) {
+    own(v.owner).units.push(v);
     const d = ACTION_UNITS[v.type];
     if (!d?.atk || d.air || v.type === 'engineer') continue;
-    if (seen && !seen[tileAt(v.x, v.z)]) continue;
-    out.push(v.x, v.z, Math.min(4.2, Math.max(2.2, d.range || 0)) + DANGER_PAD);   // long-range guns: only their near reach counts
+    units.push({ e: v, x: v.x, z: v.z, tile: tileAt(v.x, v.z), r: Math.min(4.2, Math.max(2.2, d.range || 0)) + DANGER_PAD });
   }
   for (const b of game.buildings.values()) {
-    if (b.hp <= 0 || !b.done || !game.hostile(b.owner, civ.id)) continue;
     const d = ACTION_BUILDINGS[b.type];
     if (!d?.attack || b.type === 'aa_battery') continue;
-    if (seen && !seen[tileAt(b.x, b.z)]) continue;
-    out.push(b.x, b.z, Math.min(4.2, d.range || 2) + DANGER_PAD);
+    buildings.push({ e: b, x: b.x, z: b.z, tile: tileAt(b.x, b.z), r: Math.min(4.2, d.range || 2) + DANGER_PAD });
   }
+  return { units, buildings, owned, at: game.nextId, nu: game.units.size, nb: game.buildings.size };
+}
+// Pass 7 (perf): threats sorted by z, so underThreat only looks at the z band a threat could reach (every radius is at
+// most THREAT_R). It only asks whether ANY threat reaches the point, so the order does not change the answer.
+const THREAT_R = 4.2 + DANGER_PAD;
+function sortThreats(flat) {
+  const n = flat.length / 3, idx = Array.from({ length: n }, (_, i) => i).sort((a, b) => flat[a * 3 + 1] - flat[b * 3 + 1]);
+  const out = new Float64Array(flat.length);
+  for (let k = 0; k < n; k++) { const i = idx[k]; out[k * 3] = flat[i * 3]; out[k * 3 + 1] = flat[i * 3 + 1]; out[k * 3 + 2] = flat[i * 3 + 2]; }
   return out;
 }
 const hostileGround = (game, civ, x, z) => { const o = game.world.owner[tileAt(x, z)]; return o >= 0 && game.hostile(o, civ.id); };
 function underThreat(game, threats, x, z) {
-  for (let i = 0; i < threats.length; i += 3) {
+  // first threat with z >= z - THREAT_R (binary search), stop past z + THREAT_R
+  let lo = 0, hi = threats.length / 3;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (threats[m * 3 + 1] < z - THREAT_R) lo = m + 1; else hi = m; }
+  for (let i = lo * 3; i < threats.length; i += 3) {
+    if (threats[i + 1] > z + THREAT_R) break;
     const r = threats[i + 2];
     if (Math.abs(game.dx(threats[i], x)) > r || Math.abs(threats[i + 1] - z) > r) continue;
     if (distance({ x: threats[i], z: threats[i + 1] }, { x, z }) <= r) return true;
@@ -112,9 +144,9 @@ function underThreat(game, threats, x, z) {
 }
 const dangerous = (j, hq) => j.danger && !(hq && (j.kind === 'repair' || j.kind === 'fix') && distance(hq, j) <= hq.radius + 3);
 
-function jobsFor(game, civ) {
-  const jobs = [], threats = threatsFor(game, civ);
-  for (const j of rawJobsFor(game, civ)) {
+function jobsFor(game, civ, armed) {
+  const jobs = [], threats = threatsFor(game, civ, armed);
+  for (const j of rawJobsFor(game, civ, armed?.owned.get(civ.id))) {
     if (j.kind !== 'fix' && hostileGround(game, civ, j.x, j.z)) continue;
     if (threats.length && underThreat(game, threats, j.x, j.z)) j.danger = true;
     jobs.push(j);
@@ -122,9 +154,10 @@ function jobsFor(game, civ) {
   return jobs;
 }
 
-function rawJobsFor(game, civ) {
+// mine (Pass 7): the civ's own buildings and units listed by armedList, in map order; every condition is still read live
+function rawJobsFor(game, civ, mine = null) {
   const jobs = [];
-  for (const b of game.buildings.values()) {
+  for (const b of mine ? mine.buildings : game.buildings.values()) {
     if (b.owner !== civ.id || b.hp <= 0) continue;
     const def = ACTION_BUILDINGS[b.type];
     if (!b.done) { if (def.field && !b.perimeterSlot) jobs.push({ key: 'b' + b.id, kind: 'build', x: b.x, z: b.z, reach: b.radius + .5, target: b }); }
@@ -140,7 +173,7 @@ function rawJobsFor(game, civ) {
     const point = projectPoint(game, p);
     jobs.push({ key: 'p' + p.id, kind: p.kind === 'terrain' ? 'terrain' : 'road', x: point.x, z: point.z, reach: p.kind === 'terrain' ? .9 : .75, target: p });
   }
-  for (const v of game.units.values()) {
+  for (const v of mine ? mine.units : game.units.values()) {
     const d = ACTION_UNITS[v.type];
     if (v.owner !== civ.id || v.hp <= 0 || v.hp >= v.maxHp * .97 || d.air || (d.move !== 'tracked' && d.move !== 'wheeled') || v.goal) continue;
     if (game.time - v.lastCombat < 4) continue;
@@ -217,8 +250,7 @@ function work(game, civ, u, job, working, dt) {
 function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null) {
   u.assisting = false;
   const home = homeOf(game, u), hq = home ? headquarters(game, home) : null;
-  const hardened = civ.techs.has('field_engineering');
-  if (!hardened && game.time - (u.hitAt ?? -99) < 2.5) {
+  if (game.time - (u.hitAt ?? -99) < 2.5) {
     // the job that got it shot is avoided for a minute instead of being walked straight back into
     if (u.job) { load.set(u.job, Math.max(0, (load.get(u.job) || 1) - 1)); u.skip = u.job; u.skipUntil = game.time + 60; }
     u.job = null; u.retreatUntil = game.time + 6;
@@ -257,14 +289,11 @@ function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null)
   }
 }
 
-// Field Engineering: idle damaged vehicles patch themselves up to 70%. Improved Logistics haste ends
-// once a reinforcement has reached its rally point.
+// Improved Logistics haste ends once a reinforcement has reached its rally point. (The Field Engineering self-repair
+// of vehicles went with the troop upgrades, 2026-11-19.)
 function fieldUpkeep(game, dt) {
   for (const u of game.units.values()) {
     if (u.hasteUntil && (!u.goal || u.hasteUntil <= game.time)) u.hasteUntil = 0;
-    const d = ACTION_UNITS[u.type];
-    if (d.air || (d.move !== 'tracked' && d.move !== 'wheeled') || u.hp >= u.maxHp * .7 || u.hp <= 0) continue;
-    if (game.civs[u.owner]?.techs.has('field_engineering')) u.hp = Math.min(u.maxHp * .7, u.hp + dt * 1.2);
   }
 }
 
@@ -272,6 +301,7 @@ function fieldUpkeep(game, dt) {
 export function engineerStep(game, dt) {
   if (game.tickN % 10 < 2) maintainEngineers(game);
   const byCiv = new Map();
+  let armed = null;
   for (const u of game.units.values()) {
     if (!u.auto || u.hp <= 0) continue;
     let list = byCiv.get(u.owner);
@@ -281,7 +311,8 @@ export function engineerStep(game, dt) {
   for (const [owner, list] of byCiv) {
     const civ = game.civs[owner];
     if (!civ?.alive) continue;
-    const jobs = jobsFor(game, civ), byKey = new Map(jobs.map((j) => [j.key, j])), load = new Map(), working = new Map();
+    if (!armed || armed.at !== game.nextId || armed.nu !== game.units.size || armed.nb !== game.buildings.size) armed = armedList(game);
+    const jobs = jobsFor(game, civ, armed), byKey = new Map(jobs.map((j) => [j.key, j])), load = new Map(), working = new Map();
     for (const u of list) if (u.job && byKey.has(u.job)) load.set(u.job, (load.get(u.job) || 0) + 1);
     // the civ's staffed headquarters (bases with engineers of their own), for pickJob's far-job rule
     const staffed = new Set(list.map((u) => u.home)), homes = [];

@@ -41,6 +41,7 @@ export class World {
     this.drought = new Float32Array(N);   // seconds of drought remaining
     this.owner = new Int8Array(N).fill(-1);
     this.ver = new Uint16Array(N).fill(1);
+    this.touches = 0;                     // count of touch() calls (not saved): lets a viewer skip an unchanged tile scan
     this.dirty = new Set();
     this.wiped = new Set();               // tiles whose roads must be obliterated (consumed by Game)
     this.volcanoes = [];
@@ -48,7 +49,7 @@ export class World {
     this.faultTiles = [];
   }
 
-  touch(i) { this.ver[i] = (this.ver[i] + 1) & 0xffff || 1; this.dirty.add(i); }
+  touch(i) { this.ver[i] = (this.ver[i] + 1) & 0xffff || 1; this.dirty.add(i); this.touches++; }
 
   generate(nCivs) {
     // a hand-authored map (mapCatalog.js) replaces the whole procedural pipeline

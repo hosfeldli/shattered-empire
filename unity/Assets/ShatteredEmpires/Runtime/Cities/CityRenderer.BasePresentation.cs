@@ -16,10 +16,11 @@ namespace SE.Runtime.Cities
     /// - every socket is a rounded square pad on the foundation, docked to the hub: a lit docking arm runs from
     ///   a gate in the HQ drum to the ring road (chevrons point out to the socket) and a concrete causeway runs
     ///   on to the pad's threshold, where the building's front (doors, bays) faces the hub;
-    /// - a painted identity glyph on each causeway says which building it is (rank chevrons for barracks, crate for
-    ///   materials, bolt for energy, bars for vehicles, crosshair for heavy weapons…);
-    /// - open sockets show a dashed team outline, corner lamps and a build cross; locked sockets (next tier) are
-    ///   faint pads with one dot per tier they need;
+    /// - a built socket's pad is rimmed in its facility's accent colour; the type emblem sits on the building's roof
+    ///   (CityRenderer.FacilityIdentity.cs; it used to be painted on the causeway in front of the pad);
+    /// - open sockets stand out (2026-11-19, user: "thicker lines"): a thick bright team outline, a dashed inner
+    ///   line, a team-washed floor, a large build cross and bright corner lamps; locked sockets (next tier) are
+    ///   faint grey pads with one dot per tier they need;
     /// - tier reads in the world: tier 2 adds barrier blocks behind every socket, HQ radomes and a beacon;
     ///   tier 3 raises T-wall runs with a team band and watch towers, plaza flags and the HQ crown.
     /// Unclaimed compounds (no headquarters) keep only their ruins and roads.
@@ -180,69 +181,7 @@ namespace SE.Runtime.Cities
             Put(Part.Box, new float3(gate.x, hubY + .135f, gate.y), yaw, new float3(.13f, .014f, .056f), team, .6f * glow);
         }
 
-        /// <summary>A painted symbol saying which building stands on the socket (yaw: the glyph's up, pointing out to the building).</summary>
-        void IdentityGlyph(float2 at, float yaw, string type, float memory)
-        {
-            const float Lift = .0006f, Thick = .022f;
-            float3 color;
-            void Bar(float lx, float lz, float length, float turn, float thick = Thick)
-                => GroundRect(LocalToMap(at, yaw, lx, lz), yaw + turn, 0, 0, thick, length, Lift, color * memory, SurfaceKind.Plain);
-            void Chevron(float tipZ, float size)
-            {
-                const float A = .85f;
-                Bar(size * .5f * math.sin(A), tipZ - size * .5f * math.cos(A), size, -A);
-                Bar(-size * .5f * math.sin(A), tipZ - size * .5f * math.cos(A), size, A);
-            }
-            switch (type)
-            {
-                case "barracks":                                  // infantry: two rank chevrons
-                    color = new float3(.56f, .76f, .36f);
-                    Chevron(.055f, .09f); Chevron(-.005f, .09f);
-                    break;
-                case "armory":                                    // a shield: a chevron under a bar
-                    color = new float3(.70f, .52f, .90f);
-                    Bar(0, .045f, .11f, math.PI * .5f); Chevron(.0f, .1f);
-                    break;
-                case "depot":                                     // materials: a crate
-                    color = new float3(.96f, .66f, .20f);
-                    Bar(0, .05f, .11f, math.PI * .5f); Bar(0, -.05f, .11f, math.PI * .5f);
-                    Bar(.05f, 0, .1f, 0); Bar(-.05f, 0, .1f, 0); Bar(0, 0, .13f, .785f, .014f);
-                    break;
-                case "power_plant":                               // energy: a lightning bolt
-                    color = new float3(1f, .86f, .24f);
-                    Bar(.022f, .04f, .07f, .45f); Bar(0, 0, .07f, math.PI * .5f - .2f); Bar(-.022f, -.04f, .07f, .45f);
-                    break;
-                case "motor_works":                               // vehicles: track links
-                    color = new float3(.46f, .66f, .96f);
-                    for (int k = -1; k <= 1; k++) Bar(0, k * .042f, .12f, math.PI * .5f);
-                    Bar(.065f, 0, .11f, 0, .014f); Bar(-.065f, 0, .11f, 0, .014f);
-                    break;
-                case "heavy_weapons":                             // heavy weapons: a crosshair
-                    color = new float3(.96f, .46f, .30f);
-                    GroundSector(at, .045f, .065f, 0, 2 * math.PI, Lift, color * memory, SurfaceKind.Plain, 12);
-                    Bar(0, 0, .16f, 0, .016f); Bar(0, 0, .16f, math.PI * .5f, .016f);
-                    break;
-                case "airfield":                                  // aircraft: a plan-view plane
-                    color = new float3(.76f, .88f, 1f);
-                    Bar(0, 0, .15f, 0); Bar(0, .015f, .14f, math.PI * .5f); Bar(0, -.055f, .06f, math.PI * .5f);
-                    break;
-                case "advanced_lab":                              // systems: a ring and a core
-                    color = new float3(.40f, .95f, .90f);
-                    GroundSector(at, .045f, .066f, 0, 2 * math.PI, Lift, color * memory, SurfaceKind.Plain, 12);
-                    GroundSector(at, 0, .022f, 0, 2 * math.PI, Lift, color * memory, SurfaceKind.Plain, 8);
-                    break;
-                case "missile_silo":                              // strategic: an arrow up
-                    color = new float3(.96f, .32f, .30f);
-                    Bar(0, -.01f, .12f, 0); Chevron(.06f, .08f);
-                    break;
-                default:
-                    color = new float3(.80f, .80f, .76f);
-                    GroundSector(at, 0, .035f, 0, 2 * math.PI, Lift, color * memory, SurfaceKind.Plain, 8);
-                    break;
-            }
-        }
-
-        /// <summary>A built socket's own ground: a rounded pad by type, a light kerb, team corner arcs, hazard threshold.</summary>
+        /// <summary>A built socket's own ground: a rounded pad by type, a light kerb, an accent rim, team corner arcs, hazard threshold.</summary>
         void SocketPad(float2 center, float yaw, float w, float d, string type, float3 team, float memory, float alt)
         {
             float3 padColor; SurfaceKind padKind;
@@ -256,6 +195,10 @@ namespace SE.Runtime.Cities
             const float Round = .14f;
             GroundRoundRect(center, yaw, pw, pd, Round, -.0030f - alt, padColor * memory, padKind);
             GroundRoundOutline(center, yaw, pw, pd, Round, .024f, -.0026f - alt, KerbConcrete * memory, SurfaceKind.Concrete);
+            // the facility's accent colour (CityRenderer.FacilityIdentity.cs) as a broad rim inside the kerb, so a
+            // base reads by building type at a glance, even where the building hides most of its pad
+            if (FacilityAccent(type, out var accent))
+                GroundRoundOutline(center, yaw, pw - .048f, pd - .048f, Round - .024f, .05f, -.0020f - alt, accent * memory, SurfaceKind.Plain);
             // team arcs on the rounded corners
             for (int sx = -1; sx <= 1; sx += 2)
                 for (int sz = -1; sz <= 1; sz += 2)
@@ -273,20 +216,28 @@ namespace SE.Runtime.Cities
             }
         }
 
-        /// <summary>An open socket: an empty rounded pad, a dashed team outline, corner lamps and a build cross.</summary>
+        /// <summary>
+        /// An open socket (2026-11-19, user: "the empty but available base build pads need to stick out more, thicker
+        /// lines"): a team-washed floor, a thick bright team outline (3× the old dashed line) with a dark keyline
+        /// inside it, a dashed inner line, a large build cross and bright corner lamps. Distinct from a built pad
+        /// (accent rim, building) and a locked one (faint grey, dots).
+        /// </summary>
         void OpenSocket(float2 center, float yaw, float w, float d, float3 team, float glow, float memory, float alt)
         {
             float pw = w + .02f, pd = d + .02f;
             const float Round = .14f;
-            GroundRoundRect(center, yaw, pw, pd, Round, -.0030f - alt, PadConcrete * 1.06f * memory, SurfaceKind.Concrete);
-            GroundRoundOutline(center, yaw, pw, pd, Round, .02f, -.0012f - alt, team * .85f * memory, SurfaceKind.Plain, .09f);
-            GroundRect(center, yaw, 0, 0, .22f, .03f, -.0011f - alt, team * .6f * memory, SurfaceKind.Plain);
-            GroundRect(center, yaw, 0, 0, .03f, .22f, -.0011f - alt, team * .6f * memory, SurfaceKind.Plain);
+            var bright = math.lerp(team, new float3(1f), .30f);
+            GroundRoundRect(center, yaw, pw, pd, Round, -.0030f - alt, math.lerp(PadConcrete * 1.06f, team, .16f) * memory, SurfaceKind.Concrete);
+            GroundRoundOutline(center, yaw, pw, pd, Round, .06f, -.0013f - alt, bright * memory, SurfaceKind.Plain);
+            GroundRoundOutline(center, yaw, pw - .12f, pd - .12f, Round - .06f, .012f, -.0012f - alt, PaintDark * memory, SurfaceKind.Plain);
+            GroundRoundOutline(center, yaw, pw - .20f, pd - .20f, Round - .10f, .026f, -.0011f - alt, team * .95f * memory, SurfaceKind.Plain, .08f);
+            GroundRect(center, yaw, 0, 0, .30f, .06f, -.0010f - alt, bright * memory, SurfaceKind.Plain);
+            GroundRect(center, yaw, 0, 0, .06f, .30f, -.0010f - alt, bright * memory, SurfaceKind.Plain);
             for (int sx = -1; sx <= 1; sx += 2)
                 for (int sz = -1; sz <= 1; sz += 2)
                 {
                     var at = LocalToMap(center, yaw, sx * (pw * .5f - Round * .3f), sz * (pd * .5f - Round * .3f));
-                    GroundLight(at, yaw, new float3(.026f, .02f, .026f), team, .8f * glow);
+                    GroundLight(at, yaw, new float3(.045f, .03f, .045f), bright, 1.6f * glow);
                 }
         }
 

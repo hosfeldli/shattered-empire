@@ -459,6 +459,15 @@ namespace SE.Runtime.UI
                 sb.Append(terrain);
                 if (w.IsRiver(t)) sb.Append(" · river");
                 if ((w.GeoFlags[t] & 128) != 0) sb.Append(" · stream");
+                // HILLS_MOUNTAINS (2026-11-19): mountains and peaks are walls for every ground unit (actionNavigation.isMountain);
+                // infantry climb hills at RULESET.mobility.hillPace (0.7) and units on hills see farther
+                if (session.ActionRts && (w.Terrain[t] == 9 || w.Terrain[t] == 10))
+                    sb.Append('\n').Append("Impassable · no ground unit can cross or build here; aircraft fly over");
+                else if (session.ActionRts && w.Terrain[t] == 8)
+                {
+                    float pace = ProtocolDecoder.Float(Defs?["RULESET"]?["mobility"]?["hillPace"]?["infantry"], .7f);
+                    sb.Append('\n').Append($"Hills: infantry move slower ({Mathf.RoundToInt(pace * 100)}% pace) · farther sight, some cover");
+                }
                 // §30 dense forest (welcome world.dense): infantry-class units cannot cross it off-road
                 if (w.IsDense(t)) sb.Append('\n').Append("Dense forest · infantry cannot pass (tanks can clear it)");
                 int owner = w.Owner[t];

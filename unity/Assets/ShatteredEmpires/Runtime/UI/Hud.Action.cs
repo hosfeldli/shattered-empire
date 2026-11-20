@@ -83,7 +83,8 @@ namespace SE.Runtime.UI
             "mech_infantry" => "Fast armored infantry · weak to anti-armor",
             "tank" or "autonomous_tank" => "Armored front line · weak to anti-armor teams and aircraft",
             "mortar_team" => "Indirect fire on dug-in troops · weak to fast raiders",
-            "sp_artillery" or "missile_battery" => "Long-range bombardment · weak to aircraft and raids",
+            "sp_artillery" => "Long-range bombardment · weak to aircraft and raids",
+            "missile_battery" => "Long-range missile bombardment; sets up (5 s) before firing and cannot engage within 3.5 hexes · weak to aircraft and anything that closes in",
             "fighter" => "Warthog: strafing runs with a 30 mm cannon, deadly to armor · cannot hit aircraft, slow and fragile under air defense",
             "air_defense" => "Shoots down aircraft · weak to tanks and infantry",
             "scout_buggy" or "armored_car" => "Fast scout and raider · weak to anti-armor and tanks",
@@ -217,7 +218,21 @@ namespace SE.Runtime.UI
         {
             if (!session.Pickups.TryGetValue(commander.SelectedPickup, out var pickup))
             { CardHeader("materials", "Materials collected", out _); return; }
-            CardHeader("materials", $"+{pickup.Amount} {(pickup.Resource == "energy" ? "Energy" : "Materials")}", out _);
+            bool energy = pickup.Resource == "energy";
+            var head = CardHeader(energy ? "energy" : "materials", $"{(energy ? "Energy" : "Materials")} cache", out _);
+            // gradual collection (2026-11-19): what is left, live, and the pace (5 a second per unit at the cache)
+            int id = pickup.Id;
+            var meta = UiKit.Text("", "se-cmd-card-meta", head);
+            void Refresh()
+            {
+                if (!session.Pickups.TryGetValue(id, out var p)) { meta.text = "Collected"; return; }
+                string left = p.Max > 0 && p.Max != p.Amount ? $"{p.Amount} / {p.Max} left" : $"{p.Amount} {(energy ? "Energy" : "Materials")}";
+                meta.text = p.Memory ? left + " · last seen" : p.Collecting > 0
+                    ? $"{left} · {p.Collecting} unit{(p.Collecting == 1 ? "" : "s")} collecting, +{5 * p.Collecting}/s"
+                    : $"{left} · units collect 5 a second each";
+            }
+            Refresh();
+            cmdCardLive.Add(Refresh);
         }
 
         void SiteCard(ObjectiveSite site)

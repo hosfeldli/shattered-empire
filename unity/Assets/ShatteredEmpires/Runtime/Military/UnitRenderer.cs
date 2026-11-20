@@ -20,13 +20,13 @@ namespace SE.Runtime.Military
     /// </summary>
     public sealed partial class UnitRenderer : IDisposable
     {
-        enum Model { Soldier, Hull, Turret, Apc, Truck, Car, Buggy, Gun, Launcher, Exo, Fighter, Bomber, Heli, Rotor, Drone, Marker, Ring, AutoHull, AutoTurret, Plate, Disc, CarGun, RingThin, Count }
+        enum Model { Soldier, Hull, Turret, Apc, Truck, Car, Buggy, Gun, Launcher, Exo, Fighter, Bomber, Heli, Rotor, Drone, Marker, Ring, AutoHull, AutoTurret, Plate, Disc, CarGun, RingThin, LauncherPod, Count }
         enum Detail
         {
             Tank, Autonomous, Howitzer, Turret, RemoteTurret, HowitzerTurret, Barrel, HowitzerBarrel,
             Carrier, Scout, ArmoredCar, ArmoredCarMount, Truck, RocketTruck, AirDefense, FieldGun, Mortar, ReconDrone, StrikeDrone,
             Fighter, Bomber, Helicopter, Rotor, Wheel, RoadWheel, Rifle, Engineer, Militia, Special, Exo, AntiArmor, MortarCrew,
-            Thigh, Shin, UpperArm, Forearm, RifleWeapon, LauncherWeapon, PistolWeapon, Ifv, IfvTurret, Count
+            Thigh, Shin, UpperArm, Forearm, RifleWeapon, LauncherWeapon, PistolWeapon, Ifv, IfvTurret, RocketPod, Count
         }
 
         enum Kind { Infantry, Exo, Tank, AutoTank, Apc, ArmoredCar, Buggy, Truck, FieldGun, SpGun, Launcher, AirDefense, Heli, Fighter, Bomber, Drone, Swarm, Mortar, Ifv }   // Ifv: exo_infantry since 2026-11-18
@@ -110,7 +110,7 @@ namespace SE.Runtime.Military
                 // Model.Car is the armored car: the whole gun truck (wheels included) with its roof mount as CarGun
                 MeshKit.Soldier, MeshKit.TankHull, MeshKit.TankTurret, MeshKit.Apc, MeshKit.Truck, MilitaryMeshes.ArmoredCarLo, MeshKit.Buggy, MeshKit.Gun,
                 MeshKit.Rocket, MeshKit.Mech, MeshKit.Fighter, MeshKit.Bomber, MeshKit.HeliBody, MeshKit.Rotor, MeshKit.Drone, MeshKit.Marker, MeshKit.Ring, MeshKit.AutoTankHull, MeshKit.AutoTankTurret, MeshKit.Box, MeshKit.Disc,
-                MilitaryMeshes.ArmoredCarMount, MeshKit.RingThin,
+                MilitaryMeshes.ArmoredCarMount, MeshKit.RingThin, MeshKit.RocketPod,
             };
             for (int i = 0; i < batches.Length; i++)
             {
@@ -135,7 +135,7 @@ namespace SE.Runtime.Military
                 MilitaryMeshes.RoadWheel, MilitaryMeshes.Torsos[0], MilitaryMeshes.Torsos[1], MilitaryMeshes.Torsos[2],
                 MilitaryMeshes.Torsos[3], MilitaryMeshes.Torsos[4], MilitaryMeshes.Torsos[5], MilitaryMeshes.Torsos[6],
                 MilitaryMeshes.Thigh, MilitaryMeshes.Shin, MilitaryMeshes.UpperArm, MilitaryMeshes.Forearm, MilitaryMeshes.Rifle, MilitaryMeshes.InfantryLauncher,
-                MilitaryMeshes.Pistol, MilitaryMeshes.Ifv, MilitaryMeshes.IfvTurret,
+                MilitaryMeshes.Pistol, MilitaryMeshes.Ifv, MilitaryMeshes.IfvTurret, MilitaryMeshes.RocketPod,
             };
             for (int i = 0; i < detailed.Length; i++)
                 details[i] = new InstanceBatch(detailed[i], RenderResources.Instanced, 64)
@@ -308,7 +308,7 @@ namespace SE.Runtime.Military
             for (int s = 0; s < store.SlotCount; s++)
             {
                 ref var u = ref store.Records[s];
-                if (!u.InUse) continue;
+                if (!u.InUse || SE.Runtime.Horde.HordeTypes.Is(store.Types, u.TypeIndex)) continue;   // the Blight draws itself (HordeRenderer)
                 bool fresh = ids[s] != u.Id;
                 float oldX = px[s], oldZ = pz[s];
                 if (fresh)
@@ -360,7 +360,7 @@ namespace SE.Runtime.Military
             for (int s = 0; s < store.SlotCount; s++)
             {
                 ref var u = ref store.Records[s];
-                if (!u.InUse) continue;
+                if (!u.InUse || SE.Runtime.Horde.HordeTypes.Is(store.Types, u.TypeIndex)) continue;   // the Blight draws itself (HordeRenderer)
                 // garrisoned squads are inside their structure (server flag 16384, actionGarrison.js): not drawn
                 if ((u.Flags & GarrisonedFlag) != 0) continue;
                 var kind = kindOf[s];
@@ -433,7 +433,7 @@ namespace SE.Runtime.Military
                 if (level > 0 && (selectedUnit || !IsAir(kind)))
                 {
                     // whose unit it is, at a glance and at any zoom: the team outline circle (or the selection ring)
-                    if (!ringless) GroundRing(x, RingGround(view, x, ground, z, s), z, s, team, selectedUnit, camDist);
+                    if (!ringless) GroundRing(x, RingGround(view, x, ground, z, s), z, s, team, selectedUnit, camDist, RingStyleOf(u.Stance, u.Flags));
                     // and what it is, over every enemy: a role glyph
                     if (hostile) RoleGlyph(s, kind, p, team, camDist);
                 }
@@ -452,26 +452,30 @@ namespace SE.Runtime.Military
                     var mc = HighContrast ? new float4(math.saturate(team.xyz * 1.6f), 0.8f) : new float4(team.xyz, cat == 2 ? 0.35f : 0.2f);
                     var rim = new float4(team.xyz * 0.25f, 0f);
                     float m = markerScale;
-                    var bp = p + new float3(0, alt, 0);
+                    // 2026-11-19 (dots under the terrain): on the highest ground under the whole badge (its team circle,
+                    // m * 1.15 across the radius) plus a zoom-scaled clearance, drawn depth-blind (UnitRenderer.Badges.cs)
+                    var bp = cat == 2 ? p + new float3(0, alt, 0) : new float3(p.x, BadgeGround(view, x, z, ground, m * 1.15f, camDist), p.z);
+                    var discs = badgeDiscs ?? batches[(int)Model.Disc];
+                    var plates = badgePlates ?? batches[(int)Model.Plate];
                     switch (cat)
                     {
                         case 0:
-                            batches[(int)Model.Disc].Add(T(bp, 0, new float3(m * 1.5f, 1f, m * 1.5f), rim));
-                            batches[(int)Model.Disc].Add(T(bp + new float3(0, 0.01f, 0), 0, new float3(m * 1.2f, 1f, m * 1.2f), mc));
+                            discs.Add(T(bp, 0, new float3(m * 1.5f, 1f, m * 1.5f), rim));
+                            discs.Add(T(bp + new float3(0, 0.01f, 0), 0, new float3(m * 1.2f, 1f, m * 1.2f), mc));
                             break;
                         case 1:
-                            batches[(int)Model.Plate].Add(T(bp, 0, new float3(m * 1.7f, m * 0.08f, m * 1.15f), rim));
-                            batches[(int)Model.Plate].Add(T(bp + new float3(0, m * 0.04f, 0), 0, new float3(m * 1.45f, m * 0.08f, m * 0.92f), mc));
+                            plates.Add(T(bp, 0, new float3(m * 1.7f, m * 0.08f, m * 1.15f), rim));
+                            plates.Add(T(bp + new float3(0, m * 0.04f, 0), 0, new float3(m * 1.45f, m * 0.08f, m * 0.92f), mc));
                             break;
                         default:
-                            batches[(int)Model.Plate].Add(T(bp, 0.785f, new float3(m * 1.3f, m * 0.08f, m * 1.3f), rim));
-                            batches[(int)Model.Plate].Add(T(bp + new float3(0, m * 0.04f, 0), 0.785f, new float3(m * 1.05f, m * 0.08f, m * 1.05f), mc));
+                            plates.Add(T(bp, 0.785f, new float3(m * 1.3f, m * 0.08f, m * 1.3f), rim));
+                            plates.Add(T(bp + new float3(0, m * 0.04f, 0), 0.785f, new float3(m * 1.05f, m * 0.08f, m * 1.05f), mc));
                             break;
                     }
                     if (cat != 2)
                     {
                         // the team outline circle stays on at strategic zoom, around the badge
-                        batches[(int)Model.Ring].Add(T(bp + new float3(0, 0.012f, 0), 0, new float3(m * 2.3f), new float4(TeamWear(team.xyz), .3f)));
+                        (badgeRings ?? batches[(int)Model.Ring]).Add(T(bp + new float3(0, 0.012f, 0), 0, new float3(m * 2.3f), new float4(TeamWear(team.xyz), .3f)));
                         if (hostile) RoleGlyph(s, kind, p, team, camDist);
                     }
                     badgeIndex[key] = Badges.Count;
@@ -479,6 +483,7 @@ namespace SE.Runtime.Military
                     continue;
                 }
                 float sc = vehicleScale;
+                if (kind == Kind.Launcher) LauncherStep(s, u.Flags, moving);   // pod and stabilisers (UnitRenderer.Launcher.cs)
                 if (close && kind != Kind.Infantry && kind != Kind.Mortar && kind != Kind.Exo && !IsAir(kind))
                 {
                     AddVehicle(kind, s, p, sc, body, team, shotAge, view, moving, u.Motion.Equipment);
@@ -548,6 +553,7 @@ namespace SE.Runtime.Military
                         break;
                     case Kind.Launcher:
                         batches[(int)Model.Launcher].Add(T(p, yaw[s], new float3(sc), body));
+                        AddLauncherRig(s, MapSpace.W(p), quaternion.RotateY(MapSpace.Yaw(yaw[s])), sc, body, true);
                         break;
                     case Kind.AirDefense:
                         batches[(int)Model.Truck].Add(T(p, yaw[s], new float3(sc * 0.95f), body));
@@ -1011,6 +1017,7 @@ namespace SE.Runtime.Military
             float3 prop = tracked ? new float3(.64f, 1f, 1.12f) : new float3(1f);
             details[(int)model].Add(InstanceData.TRS(at, rot, prop * scale, paint));
             if (kind == Kind.FieldGun) return;
+            if (kind == Kind.Launcher) AddLauncherRig(slot, at, rot, scale, paint, false);
             if (tracked)
             {
                 for (int side = -1; side <= 1; side += 2) for (int link = 0; link < 26; link++)

@@ -417,11 +417,14 @@ def cargo_truck(name, kind='cargo'):
         for s in (-1, 1):
             for k in range(5): a.beam((s * .248, -.46 + k * .14, .26), (s * .248, -.46 + k * .14, .29), .003, 'dark')   # tie-down straps
     elif kind == 'rocket':
-        a.box((0, -.20, .27), (.46, .52, .14), 'edge', bevel=.008)
-        for i in range(8):
-            a.cyl(((i % 4 - 1.5) * .10, -.47, .29 + i // 4 * .068), 'y', .035, .035, .56, 'dark', segs=12)
-            a.cyl(((i % 4 - 1.5) * .10, .095, .29 + i // 4 * .068), 'y', .025, .02, .01, 'paint', segs=12)
-        a.box((0, -.20, .345), (.44, .50, .008), 'paint', bevel=.002)
+        # 2026-11-19: the chassis only. The launch pod is its own model (rocket_pod, RocketPod) hinged at
+        # (0, -.46, .20) so it can lie flat for travel and raise to fire; UnitRenderer draws the stabiliser jacks.
+        for s in (-1, 1):
+            a.box((s * .20, -.46, .215), (.05, .07, .05), 'dark', bevel=.004)       # pod hinge brackets
+            a.box((s * .27, -.47, .17), (.06, .06, .06), 'steel', bevel=.004)       # rear stabiliser housings
+            a.box((s * .27, .12, .17), (.06, .06, .06), 'steel', bevel=.004)        # forward stabiliser housings
+        a.box((0, .02, .215), (.30, .04, .03), 'dark', bevel=.003)                    # travel rest under the pod's nose
+        a.cyl((0, -.30, .20), 'z', .045, .045, .05, 'steel', segs=12)                 # elevation ram mount
     else:
         # Air defence: rotating radar dish on a mast and four ready missiles.
         a.cyl((0, -.20, .20), 'z', .16, .15, .10, 'paint', segs=20)
@@ -432,6 +435,18 @@ def cargo_truck(name, kind='cargo'):
             a.cyl((x, -.44, .32), (0, 1, .55), .03, .028, .26, 'edge', segs=10)
             a.cyl((x, -.44 + .23, .32 + .126), (0, 1, .55), .028, .002, .05, 'paint', segs=10)
     save(a, ground_ao=.075)
+
+def rocket_pod(name):
+    # The missile battery's launch pod about its hinge (origin; on the chassis at (0, -.46, .20)): eight tubes
+    # along +Y with their caps at the front; UnitRenderer raises it about X to fire.
+    a = Asset(name)
+    a.box((0, .26, .07), (.46, .52, .14), 'edge', bevel=.008)
+    for i in range(8):
+        a.cyl(((i % 4 - 1.5) * .10, -.01, .09 + i // 4 * .068), 'y', .035, .035, .56, 'dark', segs=12)
+        a.cyl(((i % 4 - 1.5) * .10, .555, .09 + i // 4 * .068), 'y', .025, .02, .01, 'paint', segs=12)
+    a.box((0, .26, .145), (.44, .50, .008), 'paint', bevel=.002)
+    a.cyl((0, .16, 0), 'z', .03, .03, .02, 'steel', segs=10)                       # elevation ram eye
+    save(a, ground_ao=None)
 
 # ======================================================================= aircraft
 def fighter(name, bomber=False):
@@ -602,7 +617,7 @@ turret('Turret', 0); turret('RemoteTurret', 1); turret('HowitzerTurret', 2)
 barrel('GunBarrel'); barrel('HowitzerBarrel', artillery=True)
 road_wheel('RoadWheel'); truck_wheel('Wheel')
 carrier('Carrier'); armored_car('ArmoredCar'); armored_car_lo('ArmoredCarLo'); armored_car_mount('ArmoredCarMount')
-cargo_truck('CargoTruck', 'cargo'); cargo_truck('RocketTruck', 'rocket'); cargo_truck('AirDefense', 'radar')
+cargo_truck('CargoTruck', 'cargo'); cargo_truck('RocketTruck', 'rocket'); rocket_pod('RocketPod'); cargo_truck('AirDefense', 'radar')
 fighter('Fighter'); fighter('Bomber', bomber=True); warthog('Warthog')
 helicopter('Helicopter'); rotor('Rotor')
 rifle('Rifle')

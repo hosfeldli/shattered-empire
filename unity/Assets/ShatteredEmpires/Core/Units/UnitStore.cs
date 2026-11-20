@@ -77,6 +77,26 @@ namespace SE.Core.Units
         HexGrid grid;
         readonly HashSet<int> seen = new HashSet<int>();
 
+        // Units just produced (server 'emerge' event, 2026-11-19): drawn sliding out of their facility's doorway over
+        // EmergeSeconds of render time, from the doorway point to where the server has them.
+        public const float EmergeSeconds = .7f;
+        readonly Dictionary<int, (float x, float z, float at)> emerging = new Dictionary<int, (float, float, float)>();
+
+        /// <summary>Unit <paramref name="id"/> came out of a facility's door at (x, z) in the newest snapshot.</summary>
+        public void Emerge(int id, float x, float z) { if (id >= 0) emerging[id] = (x, z, NewestTime); }
+
+        void EmergeBlend(int id, ref float x, ref float z)
+        {
+            if (emerging.Count == 0 || !emerging.TryGetValue(id, out var e)) return;
+            float t = (RenderTime - e.at) / EmergeSeconds;
+            if (t >= 1f || float.IsNaN(t)) { emerging.Remove(id); return; }
+            if (t < 0f) t = 0f;
+            float s = t * t * (3f - 2f * t);
+            float dx = grid != null ? grid.DxWrap(e.x, x) : x - e.x;
+            x = e.x + dx * s;
+            z = e.z + (z - e.z) * s;
+        }
+
         public UnitStore(UnitTypes types)
         {
             Types = types;
@@ -88,7 +108,7 @@ namespace SE.Core.Units
             grid = g;
             Array.Clear(Records, 0, Records.Length);
             SlotCount = 0; Count = 0;
-            SlotOf.Clear(); free.Clear(); Paths.Clear(); WorldPaths.Clear();
+            SlotOf.Clear(); free.Clear(); Paths.Clear(); WorldPaths.Clear(); emerging.Clear();
             frameHead = -1; frameCount = 0; RenderTime = 0; SnapshotCount = 0;
             preparedFor = float.NaN; s0 = s1 = null;
             MembershipRevision++; Revision++;
@@ -114,6 +134,7 @@ namespace SE.Core.Units
             if (!SlotOf.TryGetValue(id, out int slot)) return;
             SlotOf.Remove(id);
             WorldPaths.Remove(id);
+            emerging.Remove(id);
             Records[slot] = default;
             free.Push(slot);
             Count--;
@@ -240,6 +261,12 @@ namespace SE.Core.Units
         /// <summary>Where the unit in this slot is drawn at the current render time (base image).</summary>
         public void Position(int slot, out float x, out float z)
         {
+            BasePosition(slot, out x, out z);
+            if (emerging.Count > 0) EmergeBlend(Records[slot].Id, ref x, ref z);
+        }
+
+        void BasePosition(int slot, out float x, out float z)
+        {
             Prepare();
             ref var u = ref Records[slot];
             if (s1 == null) { Latest(u, out x, out z); return; }
@@ -284,6 +311,7 @@ namespace SE.Core.Units
             vz = (d10 * span * a.Vz + d01 * dz + d11 * span * b.Vz) / span;
             // a teleport (respawn, spawn at a pad) between the snapshots: no curve through it
             if (dx * dx + dz * dz > 25f) Position(slot, out x, out z);
+            else if (emerging.Count > 0) EmergeBlend(u.Id, ref x, ref z);
         }
 
         /// <summary>Altitude at the current render time, eased between the bracketing snapshots.</summary>

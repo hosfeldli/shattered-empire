@@ -617,23 +617,8 @@ namespace SE.Runtime.Session
                     else Ring(p.Ax, p.Az, .29f, color);
                 }
             }
-            else if (units.Selected.Count <= 16)
-            {
-                foreach (int id in units.Selected)
-                {
-                    if (!session.Units.WorldPaths.TryGetValue(id, out var path) || !units.TryGetPosition(session.Units, id, out var u)) continue;
-                    var a = At(u.x, u.y);
-                    for (int j = 0; j < Math.Min(8, path.Length); j++)
-                    {
-                        var b = At(path[j].X, path[j].Z);
-                        float dx = w.Grid.DxWrap(a.x, b.x), dz = b.z - a.z;
-                        int steps = Mathf.Clamp(Mathf.CeilToInt(math.length(new float2(dx, dz)) / .8f), 1, 12);
-                        for (int k = 1; k <= steps; k++)
-                            Line(At(a.x + dx * (k - 1f) / steps, a.z + dz * (k - 1f) / steps), At(a.x + dx * k / steps, a.z + dz * k / steps), Valid * .67f, .014f);
-                        a = b;
-                    }
-                }
-            }
+            else if (units.Selected.Count <= 64)
+                DrawOrderRoutes();   // 2026-11-19: the current route and the whole Shift-queued chain (Commander.Waypoints.cs)
             routeLines.DrawImages(images);
         }
 

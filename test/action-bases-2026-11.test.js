@@ -168,45 +168,36 @@ test('era levels on buildings and perimeter upgrades (level 2 gives the city bui
   assert.equal(wire.defenseLevel, 2); assert.equal(wire.aa, 1); assert.equal(wire.capacity, 3);
 });
 
-test('functional upgrades change behaviour: heavy armor, body armour, men and squad firepower', () => {
+test('men and squad firepower; small arms still hurt tracked armour (no Heavy Armor upgrade since 2026-11-19)', () => {
   const g = create(), s = g.sites.find((v) => v.slots && v.owner < 0); g.units.clear(); reindex(g);
   const at = (owner, type, dx) => { const u = g.spawn(g.civs[owner], type, { x: s.x + dx, z: s.z }, .2); u.x = s.x + dx; u.z = s.z; u.tile = tileAt(u.x, u.z); reindex(g); return u; };
   const shooter = at(1, 'rifle_squad', 2), tank = at(0, 'tank', -1), squad = at(0, 'rifle_squad', 0);
   damageActionTarget(g, tank, shooter, 40, 'rifle');
   const plain = tank.maxHp - tank.hp; tank.hp = tank.maxHp;
   assert.ok(plain > 0);
-  g.civs[0].techs.add('heavy_armor');
-  damageActionTarget(g, tank, shooter, 40, 'rifle');
-  assert.equal(tank.hp, tank.maxHp, 'tracked vehicles ignore small arms with Heavy Armor');
   // squads: 12 men (W3 2026-11-17, R3 decision: more men per squad; was 8), firepower falls with casualties
   assert.equal(ACTION_UNITS.rifle_squad.men, 12);
   assert.equal(menOf(squad), 12); assert.equal(squadFirepower(squad), 1);
   squad.hp = squad.maxHp / 2;
   assert.equal(menOf(squad), 6); assert.equal(squadFirepower(squad), .5);
-  // body armour: a lethal hit spares one of the men it would kill, once per man (2026-11-17: not the whole hit)
+  // a lethal hit kills men outright (no Body Armour saves since the troop upgrades were removed, 2026-11-19)
   squad.hp = squad.maxHp;
-  g.civs[0].techs.add('body_armor');
+  g.civs[0].techs.add('body_armor');   // an unknown tech has no effect
   const per = squad.maxHp / 12;
-  damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);   // kills two men unarmoured (cover and def take the rest)
-  assert.equal(menOf(squad), 11, 'one of the two men is spared');
-  assert.equal(squad.plates, 1);
-  // a spared man is not spared twice, and later hits still land (it used to absorb every hit until the plates ran out)
-  const before = squad.hp;
-  g.time += 1;
-  damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);
-  assert.ok(squad.hp <= before - per, 'the next lethal hit still kills men');
+  damageActionTarget(g, squad, shooter, per * 3, 'rifle', true);   // kills two men (cover and def take the rest)
+  assert.equal(menOf(squad), 10, 'both men fall');
+  assert.equal(squad.plates, undefined);
   const snap = g.unitSnapshot(g.civs[0], { god: true });
   const row = snap.units.find((r) => r[0] === squad.id);
   assert.equal(row[row.length - 1][8], menOf(squad), 'men count in the unit record extra[8]');
 });
 
-test('rocket teams fire a real rocket at vehicles; networked command widens vision', () => {
+test('networked command widens vision', () => {
   const g = create(), s = g.sites.find((v) => v.slots && v.owner < 0); g.units.clear(); reindex(g);
-  g.civs[0].techs.add('rocket_teams'); g.civs[0].visible.fill(1); g.civs[0].detect.fill(1);
-  const squad = g.spawn(g.civs[0], 'rifle_squad', s, .2), car = g.spawn(g.civs[1], 'armored_car', { x: s.x + 1.6, z: s.z }, .1);
-  assert.ok(squad && car);
-  ticks(g, 60);
-  assert.ok(g.events.some((e) => e.k === 'launch' && e.s === squad.id && e.rk === 1), 'a rocket launch event (rk:1)');
+  g.civs[0].visible.fill(1); g.civs[0].detect.fill(1);
+  const squad = g.spawn(g.civs[0], 'rifle_squad', s, .2);
+  assert.ok(squad);
+  ticks(g, 10);
   const before = g.civs[0].visible.reduce((n, v) => n + v, 0);
   g.civs[0].techs.add('networked_command'); g.refreshVisibility();
   assert.ok(g.civs[0].visible.reduce((n, v) => n + v, 0) > before);

@@ -9,6 +9,7 @@ import os from 'node:os';
 import { monitorEventLoopDelay, performance, PerformanceObserver } from 'node:perf_hooks';
 import { CLIENT_TABLES, COMMON, SCHEMA_VERSION, TABLES, fieldsOf } from './schema.js';
 import { insertAll, projectId, tokenSource } from './bigquery.js';
+import { cores as effectiveCores } from '../cpuCores.js';
 
 export const LIMITS = Object.freeze({
   bufferRows: 6000,          // rows kept in memory; the oldest are dropped beyond this
@@ -96,14 +97,15 @@ export class Telemetry {
     this.backoffUntil = 0; this.backoffS = 0; this.flushing = null;
     this.minute = this.freshMinute();
     this.timers = [];
-    this.manager = null; this.connections = () => 0;
+    this.manager = null; this.connections = () => 0; this.wireBytes = null; this.wirePrev = null;
   }
   get enabled() { return true; }
   freshMinute() { return { sent: 0, dropped: 0, rejected: 0, failures: 0, bytes: 0, clientRows: 0, clientRefused: 0, optouts: 0 }; }
 
   /** Start the flush timer and the per-instance minute sampler. */
-  start({ manager = null, connections = null } = {}) {
+  start({ manager = null, connections = null, wireBytes = null } = {}) {
     this.manager = manager; if (connections) this.connections = connections;
+    if (wireBytes) { this.wireBytes = wireBytes; this.wirePrev = wireBytes(); }
     const flush = setInterval(() => { this.flush().catch(() => {}); }, LIMITS.flushSeconds * 1000); flush.unref?.();
     this.lag = monitorEventLoopDelay({ resolution: 20 }); this.lag.enable();
     this.elu = performance.eventLoopUtilization();
@@ -285,19 +287,21 @@ export class Telemetry {
     const mem = process.memoryUsage();
     const cpu = process.cpuUsage(this.cpu), at = performance.now(), wall = Math.max(1, at - this.cpuAt);
     this.cpu = process.cpuUsage(); this.cpuAt = at;
-    const cores = os.cpus().length || 1, cpuMs = (cpu.user + cpu.system) / 1000;
+    // the service's real allotment (cgroup quota), not the host's processor count (server/cpuCores.js)
+    const cores = effectiveCores(), cpuMs = (cpu.user + cpu.system) / 1000;
+    let wire; if (this.wireBytes) { const w = this.wireBytes(); wire = Math.max(0, w - this.wirePrev); this.wirePrev = w; }
     const elu = performance.eventLoopUtilization(this.elu); this.elu = performance.eventLoopUtilization();
     const lag = this.lag; const ms = (n) => (Number.isFinite(n) ? n / 1e6 : null);
     const st = this.manager?.stats?.() || {}, ms2 = this.manager ? [...this.manager.matches.values()] : [];
     const mi = this.minute; this.minute = this.freshMinute();
     const gc = this.gc || { count: 0, ms: 0 }; this.gc = { count: 0, ms: 0 };
     this.record('server_instance_minute', {
-      uptime_s: process.uptime(), cpu_cores: cores, cpu_util: cpuMs / (wall * cores), cpu_ms: cpuMs,
+      uptime_s: process.uptime(), cpu_cores: Math.max(1, Math.round(cores)), cpu_cores_effective: cores, cpu_cores_host: os.cpus().length, cpu_util: cpuMs / (wall * cores), cpu_ms: cpuMs,
       rss_mb: mem.rss / 1048576, heap_used_mb: mem.heapUsed / 1048576, external_mb: (mem.external + (mem.arrayBuffers || 0)) / 1048576, free_mb: os.freemem() / 1048576,
       loop_lag_p50_ms: ms(lag?.percentile(50)), loop_lag_p99_ms: ms(lag?.percentile(99)), loop_lag_max_ms: ms(lag?.max), loop_utilization: elu.utilization,
       gc_count: gc.count, gc_ms_total: gc.ms, load_cores: st.load?.cores,
       matches: st.matches, matches_running: st.running, matches_parked: st.parked, matches_lobby: ms2.filter((m) => m.status === 'lobby').length,
-      players: st.players, spectators: st.spectators, connections: this.connections(),
+      players: st.players, spectators: st.spectators, connections: this.connections(), wire_bytes_out: wire,
       rows_buffered: this.buffer.length, rows_sent: mi.sent, rows_dropped: mi.dropped, rows_rejected: mi.rejected, flush_failures: mi.failures, bytes_sent: mi.bytes,
       client_rows: mi.clientRows, client_rows_refused: mi.clientRefused, client_optouts: mi.optouts,
     });

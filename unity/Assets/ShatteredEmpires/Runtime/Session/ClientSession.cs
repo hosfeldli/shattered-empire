@@ -48,6 +48,15 @@ namespace SE.Runtime.Session
         public string LastError;
         public int GeoMessages, Snapshots;
         public double ApplyMs;
+        /// <summary>B7 (2026-11-19): the server's measured pace (simulated seconds per real second, the econ snapshots' 'pace'); -1 unknown.</summary>
+        public float Pace = -1;
+        /// <summary>The rate the playback clock runs at: the chosen speed, or the measured pace when the server falls clearly behind it.</summary>
+        public float ClockRate => Pace > 0 && Pace < PlayRate * 0.9f ? Pace : PlayRate;
+        /// <summary>The server announced the end of the match ('over'); cleared by a new match's welcome.</summary>
+        public bool MatchOver;
+        /// <summary>Telemetry: cumulative snapshot decode (off the main thread) and apply times, and keyed resyncs asked for.</summary>
+        public double SnapshotDecodeMsTotal, SnapshotDecodeMsMax, SnapshotApplyMsTotal, SnapshotApplyMsMax;
+        public int KeyedResyncs;
 
         /// <summary>Raised before terrain arrays change (renderers must finish jobs reading them).</summary>
         public Action BeforeGeometryChange;
@@ -107,6 +116,7 @@ namespace SE.Runtime.Session
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
             if (resyncAskedAt != 0 && now - resyncAskedAt < 2 * System.Diagnostics.Stopwatch.Frequency) return;
             resyncAskedAt = now;
+            KeyedResyncs++;
             Net?.Command(new JObject { ["c"] = "resync" });
         }
 
@@ -251,7 +261,10 @@ namespace SE.Runtime.Session
             {
                 case "welcome": ApplyWelcome(m.Welcome); break;
                 case "geo": if (World.Ready) ApplyGeo(m.Geo); break;
-                case "s": if (World.Ready) ApplySnapshot(m.Snapshot); break;
+                case "s":
+                    if (World.Ready) ApplySnapshot(m.Snapshot);
+                    SnapshotDecodeMsTotal += m.DecodeMs; if (m.DecodeMs > SnapshotDecodeMsMax) SnapshotDecodeMsMax = m.DecodeMs;
+                    break;
                 case "note":
                     Notes.Add((ProtocolDecoder.Float(m.Raw["time"]), ProtocolDecoder.Str(m.Raw["text"], ""), ProtocolDecoder.Str(m.Raw["level"], "info")));
                     NoteMeta.Add(new NoteInfo { Tile = ProtocolDecoder.Int(m.Raw["tile"], -1), Kind = ProtocolDecoder.Str(m.Raw["kind"], ""), Title = ProtocolDecoder.Str(m.Raw["title"]) });
@@ -266,6 +279,11 @@ namespace SE.Runtime.Session
                 case "paused":
                     Paused = ProtocolDecoder.Bool(m.Raw["on"]);
                     if (m.Raw["speed"] != null && !Paused) PlayRate = ProtocolDecoder.Float(m.Raw["speed"], 1);
+                    Pace = -1;   // a new speed: the next measured pace follows it
+                    break;
+                case "over":
+                    MatchOver = true;
+                    Other?.Invoke(m);
                     break;
                 case "joined":
                     StatusText = ProtocolDecoder.Str(m.Raw["status"]) == "lobby" ? "Waiting in the match lobby…" : "Joined " + ProtocolDecoder.Str(m.Raw["match"], "");
@@ -280,6 +298,7 @@ namespace SE.Runtime.Session
                     break;
             }
             ApplyMs = sw.Elapsed.TotalMilliseconds;
+            if (m.T == "s") { SnapshotApplyMsTotal += ApplyMs; if (ApplyMs > SnapshotApplyMsMax) SnapshotApplyMsMax = ApplyMs; }
         }
 
         bool RuinsChanged(RuinRecord[] next)
@@ -302,7 +321,7 @@ namespace SE.Runtime.Session
             if (same)
             {
                 Welcome = w;
-                PlayRate = w.Speed; Paused = w.Paused;
+                PlayRate = w.Speed; Paused = w.Paused; Pace = -1;
                 RebuildCivColors();
                 softGeo = true;
                 Welcomed?.Invoke();
@@ -319,6 +338,7 @@ namespace SE.Runtime.Session
             CivId = w.CivId;
             PlayRate = w.Speed;
             Paused = w.Paused;
+            Pace = -1; MatchOver = false;
             RebuildCivColors();
             World.ActionLandscape = w.Ruleset == "action-v2";
             World.Reset(w.W, w.H, w.Wrap);
@@ -364,6 +384,7 @@ namespace SE.Runtime.Session
                 PlayRate = ProtocolDecoder.Float(s.Observer["speed"], PlayRate);
                 ObserverFog = ProtocolDecoder.Bool(s.Observer["fog"]);
             }
+            if (s.Pace >= 0) Pace = s.Pace;
             if (s.Tiles != null) World.ApplyTiles(s.Tiles, null, DirtyCells);
             if (s.Visibility != null) World.ApplyVisibility(s.Visibility);
             if (s.Urban != null) World.ApplyUrban(s.Urban, DirtyCells);

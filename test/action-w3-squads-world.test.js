@@ -110,17 +110,6 @@ test('firepower is living men x per-man weapon, falls off with range and under s
   assert.equal(squadFirepower(m, g), 1);
 });
 
-test('body armour spares one man per lethal hit inside the squad model', () => {
-  const g = create(), s = g.sites[0];
-  g.units.clear();
-  g.civs[0].techs.add('body_armor');
-  const d = ACTION_UNITS.rifle_squad, u = g.spawn(g.civs[0], 'rifle_squad', { x: s.x + 4, z: s.z }, .2);
-  u.hp -= squadHit(g, u, d, 'mortar', 38, .92);   // would kill 4: one is spared on 1 HP
-  assert.equal(menOf(u), 9);
-  assert.ok(Math.abs(woundedHp(u) - 1) < 1e-6);
-  assert.equal(u.plates, 1);
-});
-
 // ------------------------------------------------------------------ forest clearing (directive Test E)
 function forestPocket(g, from) {
   // the nearest forest hex with a non-forest, land neighbour, both standable for a tank

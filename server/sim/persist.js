@@ -5,7 +5,7 @@ import { Game } from './game.js';
 import { ActionGame } from './actionGame.js';
 import { migrateProduction } from './actionProduction.js';
 import { markDenseForest } from './actionMap.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES } from './actionDefinitions.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, REMOVED_UPGRADES } from './actionDefinitions.js';
 import { WRAP } from './hex.js';
 import { BUILDINGS, TECHS, POLICIES } from './constants.js';
 import { AI } from './ai.js';
@@ -14,6 +14,7 @@ import { getNextArmyId, setNextArmyId } from './armies.js';
 import { serializeBattlefield, restoreBattlefield } from './battlefield.js';
 import { serializeFieldworks, restoreFieldworks } from './fieldworks.js';
 import { battleBacklog } from './battles.js';
+import { restoreHorde, serializeHorde } from './horde.js';
 
 const WORLD_ARRAYS = ['elev', 'stab', 'moist', 'temp', 'rate', 'stress', 'plate', 'terr', 'res', 'river', 'lake', 'flowDir', 'flow', 'road', 'soil', 'lava', 'ash', 'drought', 'owner', 'ver'];
 const CIV_ARRAYS = ['explored', 'lastOwner', 'visible', 'detect', 'supply', 'airSupply'];
@@ -52,14 +53,16 @@ export function serializeGame(g) {
     v: actionRules(g) ? 5 : 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, map: g.mapId, tutorial: g.tutorial,
       tutorialSite: g.tutorialSite, teamHold: g.teamHold, engagements: mapOut(g.engagements), reports: g.reports,
-      materialCaches: mapOut(g.materialCaches), roadProjects: g.roadProjects, armyLimit: g.armyLimit,
+      materialCaches: mapOut(g.materialCaches), energyCacheAt: g.energyCacheAt ?? null, roadProjects: g.roadProjects, armyLimit: g.armyLimit,
       dominance: g.dominance || null, territoryDirty: !!g.territoryDirty, groupJobs: g.groupJobs || [], nextGroupJob: g.nextGroupJob || 0,
       // Pass 3: convoy pace (actionOrders.unitMotion) reads last tick's lead distance; unsaved, a restored match drove
       // its convoys at a different speed on the first tick and diverged from the uninterrupted one (Infinity -> null)
       convoys: [...(g.convoys || new Map())].map(([id, c]) => [id, Number.isFinite(c.lead) ? c.lead : null, Number.isFinite(c.next) ? c.next : null, c.tick]),
       // Pass 3: units compare a path's u.navVer with the navigation's terrain version (stuck ladder: replan a path planned
       // before a terrain change); the counter restarted on restore, so every moving unit replanned at its first stall check
-      navTerrainVersion: g.nav?.terrainVersion ?? 0, nextConvoy: g.nextConvoy || 0 } } : {}),
+      navTerrainVersion: g.nav?.terrainVersion ?? 0, nextConvoy: g.nextConvoy || 0,
+      // BLIGHT survival mode (horde.js): waves, pending spawns, risings, hives, statistics and the shared flow fields
+      ...(g.horde ? { horde: serializeHorde(g) } : {}) } } : {}),
     over: g.over, winner: g.winner, log: g.log.slice(-60), navVersion: g.navVersion, nextArmyId: getNextArmyId(),
     // v2: wrapped topology and world style
     wrap: WRAP, worldStyle: g.worldStyle, style: g.world.style,
@@ -120,7 +123,9 @@ export function restoreGame(data) {
     for (const k of CIV_ARRAYS) c[k] = fromB64(o.$arrays[k], c[k].constructor);
     // saves from before difficulty profile v2 keep the multipliers they were started with
     if (o.diffProfile === undefined && c.isAI && !c.isRebel) { c.diffProfile = 'legacy'; c.fairPlay = false; }
-    // technologies and policies that have since left the game are forgotten
+    // technologies and policies that have since left the game are forgotten; a removed troop upgrade (2026-11-19)
+    // the save owned is refunded at its full cost
+    if (action && c.techs instanceof Set) for (const t of c.techs) if (Object.hasOwn(REMOVED_UPGRADES, t)) refundUpgrade(c, t);
     if (c.techs instanceof Set) for (const t of [...c.techs]) if (!(action ? ACTION_UPGRADES : TECHS)[t]) c.techs.delete(t);
     if (c.policies instanceof Set) for (const t of [...c.policies]) if (!POLICIES[t]) c.policies.delete(t);
     if (Array.isArray(c.queue)) c.queue = c.queue.filter((t) => TECHS[t]);
@@ -143,7 +148,15 @@ export function restoreGame(data) {
     if (data.world.arrays.dense) { w.dense = fromB64(data.world.arrays.dense, Uint8Array); g.nav.invalidate(); } else markDenseForest(g);
     g.rebuildBuildingIndex();
     migrateProduction(g);   // W1: pre-scheduler saves carry one FIFO `queue` per building
+    // 2026-11-19: a removed troop upgrade in progress is abandoned and its cost (paid up front) refunded
+    for (const b of g.buildings.values())
+      if (b.project?.kind === 'upgrade' && Object.hasOwn(REMOVED_UPGRADES, b.project.key)) {
+        if (g.civs[b.owner]) refundUpgrade(g.civs[b.owner], b.project.key);
+        b.project = null;
+      }
     g.materialCaches = new Map(data.action.materialCaches || []);
+    // energy caches (2026-11-19): the spawn schedule; a save from before them starts it at its first step
+    if (data.action.energyCacheAt != null) g.energyCacheAt = data.action.energyCacheAt;
     g.roadProjects = data.action.roadProjects || [];
     for (const civ of g.civs) civ.cacheIntel ??= new Map();
     g.tutorialSite = data.action.tutorialSite || 0;
@@ -180,8 +193,15 @@ export function restoreGame(data) {
     }
     for (const b of g.buildings.values()) g.targets.add(b);
     if (data.action.navTerrainVersion != null) g.nav.terrainVersion = data.action.navTerrainVersion;
+    if (data.action.horde) restoreHorde(g, data.action.horde);
   } else g.rebuildTileUnits();
   return g;
+}
+
+/** Gives a civ back what a removed troop upgrade cost (actionDefinitions REMOVED_UPGRADES). */
+function refundUpgrade(civ, key) {
+  if (!civ.res) return;
+  for (const [k, v] of Object.entries(REMOVED_UPGRADES[key].cost)) civ.res[k] = (civ.res[k] || 0) + v;
 }
 
 // A compact fingerprint of the full state, for determinism tests.

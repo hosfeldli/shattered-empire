@@ -157,43 +157,10 @@ namespace SE.Runtime.Effects
                     col.a = Mathf.Clamp01(Mathf.Max(Mathf.Max(c, r), s));
                     minimapPx[(ch - 1 - cy) * cw + cx] = col;
                 }
-            // each system's forecast track: dots every 20 seconds for the next four minutes, fading with time
-            for (int i = 0; i < Systems.Count; i++)
-            {
-                var s = Systems[i];
-                if (s.Intensity < .05f) continue;
-                for (int k = 1; k <= 12; k++)
-                {
-                    if (k * 20f > Systems.Remaining(i)) break;
-                    var at = Systems.Track(i, k * 20f);
-                    Dot(at.x / cellX * MiniRes, at.y / cellZ * MiniRes, cw, ch, k % 3 == 0 ? 1.3f : .8f, new Color(1f, .86f, .45f, .95f - k * .045f));
-                }
-                // the centre: the eye of a hurricane, the middle of a squall line
-                Dot(s.X / cellX * MiniRes, s.Z / cellZ * MiniRes, cw, ch, 1.6f, new Color(1f, .95f, .8f, s.Hurricane ? .95f : .7f));
-            }
+            // the systems themselves (silhouette, symbol, forecast track) are drawn as vectors by Minimap.DrawStorms
             minimapTex.SetPixels32(minimapPx);
             minimapTex.Apply(false, false);
             MinimapRevision++;
-        }
-
-        // a soft dot on the minimap layer (texel coordinates, y south-down as the cells; wraps in x)
-        void Dot(float px, float py, int cw, int ch, float radius, Color col)
-        {
-            int r = Mathf.CeilToInt(radius);
-            int x0 = Mathf.FloorToInt(px), y0 = Mathf.FloorToInt(py);
-            for (int dy = -r; dy <= r; dy++)
-                for (int dx = -r; dx <= r; dx++)
-                {
-                    int y = y0 + dy;
-                    if (y < 0 || y >= ch) continue;
-                    float ox = x0 + dx + .5f - px, oy = y + .5f - py;
-                    float a = Mathf.Clamp01(radius + .5f - Mathf.Sqrt(ox * ox + oy * oy)) * col.a;
-                    if (a <= 0) continue;
-                    int x = (((x0 + dx) % cw) + cw) % cw;
-                    int idx = (ch - 1 - y) * cw + x;
-                    Color c0 = minimapPx[idx];
-                    minimapPx[idx] = new Color(Mathf.Lerp(c0.r, col.r, a), Mathf.Lerp(c0.g, col.g, a), Mathf.Lerp(c0.b, col.b, a), Mathf.Max(c0.a, a));
-                }
         }
 
         // ------------------------------------------------------------------ hover

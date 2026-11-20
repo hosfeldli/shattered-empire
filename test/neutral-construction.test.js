@@ -91,7 +91,8 @@ test('placement refusals carry precise codes', () => {
   assert.equal(why(preview(g, 'guard_post', centerOf(water))), 'water');
   const codes = new Set();
   for (let t = 0; t < g.world.terr.length; t++) if (g.world.terr[t] >= T.MOUNTAIN && g.world.owner[t] !== 1) codes.add(why(preview(g, 'guard_post', centerOf(t))));
-  assert.ok(codes.has('slope'), `mountains refuse as slope (${[...codes]})`);
+  // HILLS_MOUNTAINS (2026-11-19): mountains and peaks refuse with their own code (impassable, never built on)
+  assert.ok(codes.has('mountain'), `mountains refuse as mountain (${[...codes]})`);
   // a valid spot, then blockers
   const p = spot(g, 'bunker', (t) => g.world.owner[t] === 0);
   const t = tileAt(p.x, p.z);

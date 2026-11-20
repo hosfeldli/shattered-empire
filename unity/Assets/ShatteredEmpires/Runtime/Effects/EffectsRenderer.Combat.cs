@@ -17,6 +17,8 @@ namespace SE.Runtime.Effects
             // that found no visible missile bursts on arrival, and the path length since the last trail puff
             public bool Missile, Interceptor, BurstAtEnd;
             public float KillAt, TrailDistance;
+            // 2026-11-19: an indirect-fire round drawn as a dark shell body instead of a tracer (1 mortar bomb, 2 howitzer shell)
+            public byte Shell;
         }
         readonly Flight[] flights = new Flight[512];
         int flightCount;
@@ -58,7 +60,8 @@ namespace SE.Runtime.Effects
                 new float3(.49f, .43f, .33f), new float3(.55f, .52f, .45f), .18f * math.min(1, speed), false, 0, .8f, .01f);
         }
 
-        public void Projectile(float3 from, float3 to, string weapon, float duration)
+        /// <param name="emplacement">fired by a structure (the Artillery Emplacement): a heavier shell (EffectsRenderer.Shells.cs)</param>
+        public void Projectile(float3 from, float3 to, string weapon, float duration, bool emplacement = false)
         {
             if (flightCount >= flights.Length) return;
             bool strategic = weapon == "warhead" && duration > 3;
@@ -73,6 +76,7 @@ namespace SE.Runtime.Effects
                 Strategic = strategic,
                 Warhead = weapon == "warhead",
                 Missile = missile, KillAt = -1,
+                Shell = (byte)(weapon == "mortar" ? 1 : weapon == "howitzer" ? (emplacement ? 3 : 2) : 0),
             };
             if (strategic || missile) MissileLaunch(from, to, strategic ? 1f : .6f, strategic);
         }
@@ -83,6 +87,7 @@ namespace SE.Runtime.Effects
             if (missileBodies == null) missileBodies = new InstanceBatch(MeshKit.StrategicMissile, RenderResources.Instanced, 64)
                 { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e4f) };
             missileBodies.Clear();
+            BeginShells();
             for (int i = 0; i < flightCount; i++)
             {
                 ref var f = ref flights[i];
@@ -103,6 +108,12 @@ namespace SE.Runtime.Effects
                 {
                     // guided missiles (effects pass): the body, a hot motor and a lingering, drifting smoke trail
                     MissileTravel(ref f, p, heading, math.length(step));
+                    f.Last = p;
+                    continue;
+                }
+                if (f.Shell != 0)
+                {
+                    ShellTravel(ref f, p, heading, math.length(step));
                     f.Last = p;
                     continue;
                 }
@@ -129,6 +140,7 @@ namespace SE.Runtime.Effects
                 f.Last = p;
             }
             missileBodies.MarkDirty();
+            EndShells();
         }
 
         public void Impact(float3 p, float scale, int biome, bool armor = false)

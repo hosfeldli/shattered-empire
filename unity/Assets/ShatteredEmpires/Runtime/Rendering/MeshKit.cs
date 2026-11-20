@@ -211,7 +211,7 @@ namespace SE.Runtime.Rendering
 
         public static Mesh Box, Roof, Cylinder, Cone, Quad, Disc, Marker, Ring, RingThin;
         public static Mesh Deciduous, Conifer, DeciduousLo, ConiferLo, DeciduousFar, ConiferFar, DeciduousSpeck, ConiferSpeck, Shrub, Grass, Understory, TankObstacle, StrategicHatch, StrategicMissile, Sandbag;
-        public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
+        public static Mesh TankHull, TankTurret, Apc, Truck, Car, Buggy, Gun, Rocket, RocketPod, Soldier, Fighter, Bomber, HeliBody, Rotor, Drone, Mech;
         public static Mesh Tower, Skyscraper, Silo, Chimney, Crane, Wreck;
         public static Mesh ShipHull, Coil, Sandbags, Stump, Rotor4, AutoTankHull, AutoTankTurret, Dome, BrokenTower, RuinShell, CollapsedBlock;
 
@@ -306,11 +306,16 @@ namespace SE.Runtime.Rendering
                 .Box(new Vector3(-0.15f, 0.02f, -0.35f), new Vector3(0.05f, 0.05f, 0.55f), Dark).Box(new Vector3(0.15f, 0.02f, -0.35f), new Vector3(0.05f, 0.05f, 0.55f), Dark)
                 .Cylinder(new Vector3(-0.28f, 0, 0), 0.1f, 0.1f, 0.05f, 8, Dark).Cylinder(new Vector3(0.28f, 0, 0), 0.1f, 0.1f, 0.05f, 8, Dark)
                 .Build("field_gun");
+            // the missile battery at operational zoom: chassis and cab, and the launch pod apart (origin on its hinge at
+            // (0, .2, -.5) on the chassis) so UnitRenderer can raise it to fire (2026-11-19)
             Rocket = new MeshBuilder()
                 .Box(new Vector3(0, 0, 0), new Vector3(0.56f, 0.2f, 1f), Dark)
                 .Box(new Vector3(0, 0.2f, 0.3f), new Vector3(0.52f, 0.22f, 0.3f), White)
-                .Box(new Vector3(0, 0.3f, -0.2f), new Vector3(0.5f, 0.24f, 0.6f), new Color(0.75f, 0.75f, 0.72f))
                 .Build("launcher");
+            RocketPod = new MeshBuilder()
+                .Box(new Vector3(0, 0, 0.3f), new Vector3(0.5f, 0.24f, 0.6f), new Color(0.75f, 0.75f, 0.72f))
+                .Box(new Vector3(0, 0.06f, 0.6f), new Vector3(0.44f, 0.14f, 0.012f), Dark)
+                .Build("launcher pod");
             Mech = new MeshBuilder()
                 .Box(new Vector3(-0.12f, 0, 0), new Vector3(0.1f, 0.5f, 0.12f), Dark).Box(new Vector3(0.12f, 0, 0), new Vector3(0.1f, 0.5f, 0.12f), Dark)
                 .Box(new Vector3(0, 0.45f, 0), new Vector3(0.42f, 0.36f, 0.3f), White)

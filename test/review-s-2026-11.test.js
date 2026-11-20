@@ -47,38 +47,6 @@ test('a running decisive-domination countdown survives a save and restore', () =
   assert.equal(r.winner.team, r.civs[0].team, 'the winner names the winning team');
 });
 
-test('Aircraft Systems is functional: drop tanks lengthen endurance and patrol range, not air speed', () => {
-  const g = create(), hq = [...g.buildings.values()].find((b) => b.owner === 0 && b.type === 'town');
-  const f = g.spawn(g.civs[0], 'fighter', hq, 1.2);
-  const before = { fuel: maxFuel(g, f), range: patrolRange(g, f), speed: airSpeed(g, f) };
-  assert.equal(before.fuel, ACTION_UNITS.fighter.fuel);
-  g.civs[0].techs.add('aircraft_systems');
-  assert.equal(maxFuel(g, f), before.fuel * 1.5);
-  assert.ok(Math.abs(patrolRange(g, f) - before.range * 1.5) < 1e-9);
-  assert.equal(airSpeed(g, f), before.speed);
-  // the snapshot's fuel byte is relative to the bigger tank
-  f.fuel = before.fuel * .75;
-  const air = g.unitSnapshot(g.civs[0], { god: false }).units.find((x) => x[0] === f.id)[18];
-  assert.equal(air[1], Math.round(255 * .5));
-});
-
-test('Infantry Training is functional: halted infantry take cover, moving infantry do not; no flat damage bonus', () => {
-  const g = create(), civ = g.civs[1];
-  const shooter = [...g.units.values()].find((u) => u.owner === 0 && u.type === 'rifle_squad');
-  const target = [...g.units.values()].find((u) => u.owner === 1 && u.type === 'rifle_squad');
-  const hit = (halted) => {
-    target.hp = target.maxHp; target.goal = halted ? null : { x: target.x + 1, z: target.z };
-    // 2026-11-18: 20, not 40: with 9-HP riflemen a 40 volley hits the rifle kill cap (3 men) with or without cover
-    damageActionTarget(g, target, shooter, 20, 'rifle');
-    return target.maxHp - target.hp;
-  };
-  const plain = hit(true);
-  civ.techs.add('infantry_training');
-  const halted = hit(true), moving = hit(false);
-  assert.ok(halted < plain, `halted trained infantry take less (${halted} < ${plain})`);
-  assert.equal(moving, plain, 'on the move there is no cover');
-});
-
 test('snapshots between econ updates carry the stockpile so per-tick income shows smoothly', () => {
   const g = create(), civ = g.civs[0];
   const view = { civ, vis: civ.visible, explored: civ.explored, god: false };

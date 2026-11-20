@@ -63,7 +63,10 @@ test(`AI bases get defenses on their threat axes within ${MINUTES} minutes, at l
     // the main axis of the main base faces the enemy (a known or presumed enemy base, or the attacks it suffered)
     const home = bases.sort((x, y) => y.tier - x.tier || x.id - y.id)[0];
     const axes = home && w.bases[home.id]?.axes;
-    if (axes?.length) assert.ok(axes[0].kinds.some((k) => k === 'enemy' || k === 'attack' || k === 'border'), `main axis kinds ${axes[0].kinds}`);
+    // (only while a rival is alive: this seed's match can end before minute 15, and a winner's axes recomputed after
+    // the last rival fell face its roads; 2026-11-19 the plan stages moved the works pass, and with it that timing)
+    const rivals = g.civs.some((c) => c.alive && c.id !== civ.id && g.hostile(civ.id, c.id));
+    if (axes?.length && rivals) assert.ok(axes[0].kinds.some((k) => k === 'enemy' || k === 'attack' || k === 'border'), `main axis kinds ${axes[0].kinds}`);
   }
   assert.ok(total >= 3, `the AIs built ${total} armed field defenses in ${MINUTES} minutes (before AI works: 0-1)`);
   const dug = g.civs.reduce((n, c) => n + trenchesOf(g, c.id).length, 0);

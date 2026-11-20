@@ -827,7 +827,13 @@ export class Game {
       const catchUp = !full && civ.catchUp; if (catchUp) civ.catchUp = false;
       out.push([civ.id, this.viewerSnapshot(civ, { civ, vis: civ.visible, explored: civ.explored, god: false }, full, econ || catchUp)]);
     }
-    if (!full && this.observer && this.observer.connected && !(skip && skip.has(-2))) out.push([-2, this.observerSnapshot(false, econ)]);
+    if (!full && this.observer && this.observer.connected && !(skip && skip.has(-2))) {
+      const catchUp = !!this.observer.catchUp; if (catchUp) this.observer.catchUp = false;   // a resync / drained connection
+      // Pass 7: !! matters. catchUp is undefined until the first resync, and observerSnapshot(full, econ = true) took the
+      // undefined of `false || undefined` as its default: the spectator got the whole econ block (buildings, battlefield,
+      // cities, AI plan...) in every 5 Hz snapshot instead of once a second like players
+      out.push([-2, this.observerSnapshot(false, econ || catchUp)]);
+    }
     return out;
   }
 
@@ -877,7 +883,11 @@ export class Game {
     const vis = view.vis, explored = view.explored;
     const tiles = [];
     const stabOK = view.god || civ.techs.has('surveying');
-    for (let i = 0; i < N; i++) {
+    // B5 (2026-11-19): the god view sees every tile, so its scan only finds tiles whose version or owner moved. Tile
+    // versions move only through world.touch() and owners with a touch() (action) or a navVersion bump (legacy
+    // economy), so while neither counter moved since the last god-view scan nothing can have changed: skip the N loop.
+    const unchanged = view.god && !full && k.knownStab === true && k.godTouches === w.touches && k.godNav === this.navVersion;
+    if (!unchanged) for (let i = 0; i < N; i++) {
       const lost = k.knownOwner[i] === civ.id && w.owner[i] !== civ.id;
       if (!vis[i] && !(full && explored[i]) && !lost) continue;
       if (k.knownVer[i] !== w.ver[i] || k.knownOwner[i] !== w.owner[i] || (stabOK && k.knownStab !== true)) {
@@ -886,13 +896,15 @@ export class Game {
       }
     }
     if (stabOK) k.knownStab = true;
+    if (view.god) { k.godTouches = w.touches; k.godNav = this.navVersion; } else k.godTouches = -1;
     // combat events since this viewer's last delivery (a fresh view starts from now)
     if (full) k.evSeq = this.eventSeq;
     const ev = eventsFor(this, k.evSeq || 0, vis, view.god);
     k.evSeq = this.eventSeq;
     let visB64;
-    const key = packBits(vis).toString('base64');
-    if (key !== k.visKey) { k.visKey = key; visB64 = key; }
+    // the god view's bitmap is all ones and never changes: pack it once per (re)start, not every round
+    const key = view.god && k.visKey === GOD_VIS ? GOD_VIS : packBits(vis).toString('base64');
+    if (key !== k.visKey) { k.visKey = view.god ? GOD_VIS : key; visB64 = key; }
     const msg = { t: 's', time: +this.time.toFixed(1), tick: this.tickN, ...this.unitSnapshot(civ, view) };
     if (ev.length) msg.ev = ev;
     if (tiles.length) msg.tiles = tiles;
@@ -1916,6 +1928,8 @@ export class Game {
   }
 }
 
+// a viewer's visKey while it holds the god view's all-ones bitmap (never a base64 string: those are multiples of 4 long)
+const GOD_VIS = 'god';
 export function packBits(arr) {
   const out = Buffer.alloc(Math.ceil(arr.length / 8));
   for (let i = 0; i < arr.length; i++) if (arr[i]) out[i >> 3] |= 1 << (i & 7);

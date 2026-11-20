@@ -66,12 +66,9 @@ const hash = (a, b, c = 0) => {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
 
-// Aircraft Systems (functional upgrade, review S): drop tanks give +50% endurance (so +50% patrol range) and
-// faster turnarounds (refuel twice as fast). It replaces the old flat +18% air speed.
-export const DROP_TANKS = { endurance: 1.5, refuel: 2 };
-const dropTanks = (game, u) => !!game?.civs[u.owner]?.techs.has('aircraft_systems');
+// (2026-11-19: the Aircraft Systems troop upgrade, drop tanks with +50% endurance and twice-as-fast refuelling, was removed.)
 /** Full tank of this aircraft in seconds of flight. */
-export const maxFuel = (game, u) => (ACTION_UNITS[u.type]?.fuel || 0) * (dropTanks(game, u) ? DROP_TANKS.endurance : 1);
+export const maxFuel = (game, u) => ACTION_UNITS[u.type]?.fuel || 0;
 export const fuelOf = (u, game = null) => u.fuel ?? maxFuel(game, u);
 export function airSpeed(game, u) { return ACTION_UNITS[u.type].speed; }
 /** How far from a refuelling base this aircraft may patrol (map units). */
@@ -277,7 +274,7 @@ export function airStep(game, u) {
     if (!base?.done || base.owner !== u.owner) { u.grounded = false; u.airOrder = null; return true; }
     if (u.altitude < .16) {
       u.hp = Math.min(u.maxHp, u.hp + u.maxHp * .015);
-      u.fuel = Math.min(full, u.fuel + full / AIR.refuelTime * (dropTanks(game, u) ? DROP_TANKS.refuel : 1) * DT);
+      u.fuel = Math.min(full, u.fuel + full / AIR.refuelTime * DT);
     }
     if (u.fuel >= full) {
       u.bingo = false;

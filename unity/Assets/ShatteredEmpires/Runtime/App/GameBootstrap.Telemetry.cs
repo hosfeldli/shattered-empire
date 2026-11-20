@@ -15,7 +15,7 @@ namespace SE.Runtime.App
             telemetry ??= new ClientTelemetry();
             bool inMatch = phase == Phase.Playing && session != null && session.Ready;
             float interp = inMatch ? session.Units.NewestTime - session.Units.RenderTime : 0f;
-            telemetry.Frame(Now, frameMs, mainMs, inMatch, PhaseNames, phaseMs, inMatch && rts != null ? rts.Distance : 0f, inMatch && units != null ? units.Drawn : 0, interp);
+            telemetry.Frame(Now, frameMs, mainMs, inMatch, PhaseNames, phaseMs, inMatch && rts != null ? rts.Distance : 0f, inMatch && units != null ? units.Drawn : 0, interp, inMatch && !session.MatchOver);
             telemetry.Step(Now, net, session);
         }
     }

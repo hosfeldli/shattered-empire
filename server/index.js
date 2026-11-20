@@ -96,7 +96,11 @@ wss.on('connection', (ws, req) => {
 const heartbeat = setInterval(() => {
   for (const ws of wss.clients) { if (!ws.isAlive) { ws.terminate(); continue; } ws.isAlive = false; ws.ping(); }
 }, 25_000);
-telemetry.start({ manager, connections: () => wss.clients.size });
+// bytes the WebSocket connections actually wrote (after permessage-deflate), for telemetry: open sockets plus closed ones
+let wireClosed = 0;
+wss.on('connection', (ws) => { ws.on('close', () => { wireClosed += ws._socket?.bytesWritten || 0; }); });
+const wireBytes = () => { let n = wireClosed; for (const ws of wss.clients) n += ws._socket?.bytesWritten || 0; return n; };
+telemetry.start({ manager, connections: () => wss.clients.size, wireBytes });
 
 server.listen(PORT, process.env.HOST || undefined, () => { log.info(`Shattered Empires server ${VERSION} listening on :${server.address().port}`); process.send?.({ t: 'listening', port: server.address().port }); });
 

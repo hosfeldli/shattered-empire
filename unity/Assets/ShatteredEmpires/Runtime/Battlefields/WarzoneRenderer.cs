@@ -4,6 +4,8 @@ using SE.Core.Protocol;
 using SE.Core.World;
 using SE.Runtime.Cities;
 using SE.Runtime.Rendering;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -16,7 +18,7 @@ namespace SE.Runtime.Battlefields
     /// on the enemy side and a lower parados behind, following the terrain; construction shown as it
     /// progresses). No-man's land gets
     /// barbed-wire belts, shattered stumps and debris; destroyed vehicles stay where they fell.
-    /// Rebuilt only when trenches, battlefield or terrain change.
+    /// Cached per tile and rebuilt incrementally, a few tiles per frame, when trenches, battlefield or terrain change.
     /// </summary>
     public sealed unsafe class WarzoneRenderer : IDisposable
     {
@@ -117,15 +119,15 @@ namespace SE.Runtime.Battlefields
         }
 
         void Put(Part part, float3 mapPos, float mapYaw, float3 size, float3 color)
-            => batches[(int)part].Add(InstanceData.TRS(MapSpace.W(mapPos), MapSpace.Yaw(mapYaw), size, new float4(color, 0)));
+            => scratch[(int)part].Add(InstanceData.TRS(MapSpace.W(mapPos), MapSpace.Yaw(mapYaw), size, new float4(color, 0)));
 
         /// <summary>The soft scorch decal (rgb tint, a = opacity); the opaque disc fallback takes the tint only.</summary>
         void PutScorch(float3 mapPos, float mapYaw, float3 size, float4 color)
-            => batches[(int)Part.Scorch].Add(InstanceData.TRS(MapSpace.W(mapPos), MapSpace.Yaw(mapYaw), size,
+            => scratch[(int)Part.Scorch].Add(InstanceData.TRS(MapSpace.W(mapPos), MapSpace.Yaw(mapYaw), size,
                 scorchMaterial != null ? color : new float4(color.xyz * .8f, 0)));
 
         void PutQ(Part part, float3 mapPos, quaternion unityRotation, float3 size, float3 color)
-            => batches[(int)part].Add(InstanceData.TRS(MapSpace.W(mapPos), unityRotation, size, new float4(color, 0)));
+            => scratch[(int)part].Add(InstanceData.TRS(MapSpace.W(mapPos), unityRotation, size, new float4(color, 0)));
 
         /// <summary>Wreck size by vehicle type (the same scale the living vehicle is drawn at, never oversized).</summary>
         static float WreckScale(string type, bool air)
@@ -169,64 +171,298 @@ namespace SE.Runtime.Battlefields
         // relief. That costs no draw calls or instances and fades with the server's crater healing (the spoil is
         // gone halfway through the heal, the bowl when the record is removed). Nothing is cached here any more.
 
-        /// <summary>Diagnostics: full rebuilds, and their cumulative ms split into trenches / no-man's-land and wrecks / (formerly crater spoil, now always 0).</summary>
+        // ------------------------------------------------------------------ incremental battlefield (2026-11-19)
+        // The no-man's-land dressing and the wrecks (hull, scorch decal, gun barrel, thrown debris) are cached per tile,
+        // keyed by everything they read: the tile's wreck records and shelling stage, whether it is known, trenched or
+        // urban, and the ground (heights, water, crater relief) within two hexes, where their samples can reach.
+        // A battlefield, terrain or trench change only re-keys the tiles (cheap); the tiles whose key changed are
+        // queued and rebuilt a few per frame within BudgetMs, and the instance batches are re-joined from the
+        // per-tile arrays (a memcpy per tile and part) once per frame when anything changed. Trench works are re-keyed
+        // only when the trenches, roads, defences or terrain change, and their changed nodes are pumped the same way.
+        // Before this a battlefield change cleared and re-placed every wreck and patch on the map in one frame
+        // (TELEMETRY_ANALYSIS_2026-11-19 B3: 10 ms/frame average, frames up to 5 s late in a 4v4).
+
+        sealed class Cell
+        {
+            public ulong Key, PendingKey, GroundKey;
+            public int GroundRev = int.MinValue, Stamp;
+            public bool Pending;
+            public InstanceData[] Items = Array.Empty<InstanceData>();
+            public readonly int[] Start = new int[(int)Part.Count + 1];   // Items[Start[p]..Start[p+1]) belong to part p
+            public readonly List<float3> Burning = new List<float3>();
+        }
+
+        /// <summary>Main-thread milliseconds per frame for rebuilding changed trench nodes and battlefield tiles (at least one item each frame).</summary>
+        public static double BudgetMs = 1.5;
+
+        readonly Dictionary<int, Cell> cells = new Dictionary<int, Cell>();
+        readonly List<int> pendingCells = new List<int>();
+        readonly Dictionary<int, List<int>> wrecksByTile = new Dictionary<int, List<int>>();   // tile -> indices into the current wreck array
+        readonly Stack<List<int>> listPool = new Stack<List<int>>();
+        readonly Dictionary<int, float> stageByTile = new Dictionary<int, float>();
+        readonly List<int> scratchTiles = new List<int>();
+        readonly List<InstanceData>[] scratch = new List<InstanceData>[(int)Part.Count];
+        ulong[] groundHash = Array.Empty<ulong>();
+        int[] groundStamp = Array.Empty<int>();
+        WreckRecord[] wrecks = Array.Empty<WreckRecord>();
+        int cellStamp, epochSeen = int.MinValue;
+        bool assemble, scanCells, keyTrenches;
+
+        /// <summary>
+        /// Diagnostics: re-key passes (battlefield or trench input changes), and their cumulative ms split into
+        /// trench works (re-key and node rebuilds) / battlefield tiles (re-key and rebuilds) / joining the batches.
+        /// </summary>
         public int Rebuilds;
         public readonly double[] PartMs = new double[3];
+        /// <summary>Diagnostics: battlefield tiles rebuilt, and tiles waiting.</summary>
+        public int CellsBuilt;
+        /// <summary>Diagnostics: ms of the last re-key pass over the battlefield tiles.</summary>
+        public double LastScanMs;
+        public int CellsPending => pendingCells.Count;
+
+        static ulong Mix(ulong h, uint v) { unchecked { h ^= v; h *= 1099511628211UL; return h; } }
+        static ulong MixF(ulong h, float v) => Mix(h, (uint)BitConverter.SingleToInt32Bits(v));
+        static ulong MixL(ulong h, ulong v) => Mix(Mix(h, (uint)v), (uint)(v >> 32));
 
         public void Update(TrenchRecord[] trenches, int trenchRevision, BattlefieldState bf, int bfRevision, int structureRevision, Func<int, bool> wasteland)
         {
             if (!world.Ready) return;
-            // trenches stop at the roads drawn across them, so a change of roads rebuilds them too
-            int roads = world.LayoutRevision * 7919 + RoadCurve.LaneRevision;
-            if (trenchRev == trenchRevision && bfRev == bfRevision && geoRev == world.GeometryRevision && structRev == structureRevision
-                && (trenches.Length == 0 || roadRev == roads)) return;
-            trenchRev = trenchRevision; bfRev = bfRevision; geoRev = world.GeometryRevision; structRev = structureRevision; roadRev = roads;
-            Rebuilds++;
+            double msPerTick = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             long w0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            foreach (var b in batches) b.Clear();
-            byTile.Clear(); trenchTiles.Clear(); BurningWrecks.Clear();
-            foreach (var t in trenches) if (t.Tile >= 0 && t.Tile < world.Grid.N) { byTile[t.Tile] = t; trenchTiles.Add(t.Tile); }
-            Works.Build(trenches);
+            if (epochSeen != world.Epoch)
+            {
+                // a new world: nothing cached survives
+                epochSeen = world.Epoch;
+                cells.Clear(); pendingCells.Clear(); BurningWrecks.Clear();
+                foreach (var b in batches) b.Clear();
+                trenchRev = bfRev = geoRev = structRev = -1; roadRev = int.MinValue;
+                int n = world.Grid.N;
+                if (groundHash.Length != n) { groundHash = new ulong[n]; groundStamp = new int[n]; }
+                Array.Clear(groundStamp, 0, groundStamp.Length);
+            }
+            // trenches stop at the roads drawn across them, so a change of roads re-keys them too
+            int roads = world.LayoutRevision * 7919 + RoadCurve.LaneRevision;
+            bool geo = geoRev != world.GeometryRevision;
+            if (trenchRev != trenchRevision || structRev != structureRevision || geo || (trenches.Length > 0 && roadRev != roads))
+            {
+                if (trenchRev != trenchRevision)
+                {
+                    byTile.Clear(); trenchTiles.Clear();
+                    foreach (var t in trenches) if (t.Tile >= 0 && t.Tile < world.Grid.N) { byTile[t.Tile] = t; trenchTiles.Add(t.Tile); }
+                    scanCells = true;   // no-man's land is not dressed on trenched tiles
+                }
+                keyTrenches = true;
+            }
+            if (bfRev != bfRevision || geo) scanCells = true;
+            trenchRev = trenchRevision; bfRev = bfRevision; geoRev = world.GeometryRevision; structRev = structureRevision; roadRev = roads;
+            if (keyTrenches) { keyTrenches = false; Rebuilds++; Works.Build(trenches); }
             long w1 = System.Diagnostics.Stopwatch.GetTimestamp();
+            Works.Pump(BudgetMs * .5);
+            long w2 = System.Diagnostics.Stopwatch.GetTimestamp();
+            PartMs[0] += (w2 - w0) * msPerTick;
+            if (scanCells) { scanCells = false; Rebuilds++; long s0 = System.Diagnostics.Stopwatch.GetTimestamp(); ScanCells(bf); LastScanMs = (System.Diagnostics.Stopwatch.GetTimestamp() - s0) * msPerTick; }
+            double left = BudgetMs - (w2 - w1) * msPerTick;
+            PumpCells(w2 + (long)(math.max(0, left) / msPerTick));
+            long w3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            PartMs[1] += (w3 - w2) * msPerTick;
+            if (assemble) { assemble = false; Assemble(); }
+            PartMs[2] += (System.Diagnostics.Stopwatch.GetTimestamp() - w3) * msPerTick;
+        }
+
+        /// <summary>Re-keys every tile carrying wrecks or shelled ground; queues the changed ones, drops the emptied ones.</summary>
+        void ScanCells(BattlefieldState bf)
+        {
+            foreach (var l in wrecksByTile.Values) { l.Clear(); listPool.Push(l); }
+            wrecksByTile.Clear(); stageByTile.Clear();
+            wrecks = bf?.Wrecks ?? Array.Empty<WreckRecord>();
+            int n = world.Grid.N;
             if (bf != null)
             {
-                foreach (var it in bf.Intensity) if (it.Value >= 2f && it.Tile >= 0 && it.Tile < world.Grid.N && world.Known[it.Tile] != 0 && !trenchTiles.Contains(it.Tile)) NoMansLand(it.Tile, it.Value);
-                int n = 0;
-                foreach (var w in bf.Wrecks)
+                for (int i = 0; i < wrecks.Length; i++)
                 {
-                    if (w.Tile < 0 || w.Tile >= world.Grid.N || world.Known[w.Tile] == 0) continue;
-                    var g = world.Grid;
-                    float x = w.HasPosition ? w.X : g.CenterX(w.Tile) + (Hash(w.Tile, n) - 0.5f) * 0.9f, z = w.HasPosition ? w.Z : g.CenterZ(w.Tile) + (Hash(n, w.Tile) - 0.5f) * 0.9f;
-                    string wreckType = w.Type ?? "";
-                    var part = wreckType == "sp_artillery" ? Part.GunWreck : wreckType == "fighter" || wreckType == "bomber" || wreckType == "helicopter" ? Part.AirWreck
-                        : wreckType.Contains("tank") ? Part.Wreck : Part.LightWreck;
-                    float s = WreckScale(wreckType, part == Part.AirWreck);
-                    float wreckYaw = w.HasPosition ? w.Yaw : Hash(w.Tile, n + 7) * 6.28f;
-                    // burnt out: blackened, the paint gone to rust-brown; still burning ones darker still
-                    float char0 = .45f + Hash(w.Tile * 7 + n, 3) * .12f - (w.Burning ? .1f : 0f);
-                    var burnt = new float3(char0, char0 * .9f, char0 * .82f);
-                    PlaceWreck(part, x, z, wreckYaw, s, burnt, out float y);
-                    // the scorched patch it burned out on, and fragments thrown around it
-                    PutScorch(new float3(x, y + .004f, z), wreckYaw, new float3(s * 1.9f, 1f, s * 2.3f), new float4(.26f, .22f, .17f, .78f));   // soft burnt earth, not a black blob
-                    if (part == Part.GunWreck)
-                        Put(Part.Plank, new float3(x + math.sin(wreckYaw) * .055f, y + .05f, z + math.cos(wreckYaw) * .055f), wreckYaw,
-                            new float3(.014f, .014f, .26f), new float3(.20f, .20f, .18f));
-                    for (int k = 0; k < 5; k++)
-                    {
-                        float fa = Hash(w.Tile + n, k) * 6.283f, fr = s * (.6f + Hash(n + k, w.Tile) * .9f);
-                        float fx = x + Mathf.Cos(fa) * fr, fz = z + Mathf.Sin(fa) * fr, piece = s * (.05f + Hash(k, n + 5) * .08f);
-                        var tumble = quaternion.EulerZXY((Hash(k, n) - .5f) * .8f, fa * 3f, (Hash(n, k + 2) - .5f) * .8f);
-                        PutQ(Part.Debris, new float3(fx, Surface(fx, fz) + piece * .1f, fz), tumble, new float3(piece * 1.4f, piece * .35f, piece), new float3(.30f, .28f, .25f));
-                    }
-                    if (w.Burning) BurningWrecks.Add(new float3(x, y + 0.05f, z));
-                    n++;
+                    int t = wrecks[i].Tile;
+                    if (t < 0 || t >= n || world.Known[t] == 0) continue;
+                    if (!wrecksByTile.TryGetValue(t, out var l)) wrecksByTile[t] = l = listPool.Count > 0 ? listPool.Pop() : new List<int>(4);
+                    l.Add(i);
                 }
+                foreach (var it in bf.Intensity)
+                    if (it.Value >= 2f && it.Tile >= 0 && it.Tile < n && world.Known[it.Tile] != 0 && !trenchTiles.Contains(it.Tile)) stageByTile[it.Tile] = it.Value;
             }
-            long w2 = System.Diagnostics.Stopwatch.GetTimestamp();
-            long w3 = System.Diagnostics.Stopwatch.GetTimestamp();
-            foreach (var b in batches) b.MarkDirty();
-            double msPerTick = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-            PartMs[0] += (w1 - w0) * msPerTick; PartMs[1] += (w2 - w1) * msPerTick; PartMs[2] += (w3 - w2) * msPerTick;
+            cellStamp++;
+            int geoRevision = world.GeometryRevision;
+            foreach (var kv in wrecksByTile) KeyCell(kv.Key, geoRevision);
+            foreach (var kv in stageByTile) if (!wrecksByTile.ContainsKey(kv.Key)) KeyCell(kv.Key, geoRevision);
+            scratchTiles.Clear();
+            foreach (var kv in cells) if (kv.Value.Stamp != cellStamp) scratchTiles.Add(kv.Key);
+            foreach (int t in scratchTiles) { cells.Remove(t); assemble = true; }
+            // drop queue entries whose cell went away or caught up again
+            for (int i = pendingCells.Count - 1; i >= 0; i--)
+                if (!cells.TryGetValue(pendingCells[i], out var c) || !c.Pending) { pendingCells[i] = pendingCells[pendingCells.Count - 1]; pendingCells.RemoveAt(pendingCells.Count - 1); }
+        }
+
+        void KeyCell(int tile, int geoRevision)
+        {
+            if (!cells.TryGetValue(tile, out var c)) cells[tile] = c = new Cell { Key = ulong.MaxValue };
+            c.Stamp = cellStamp;
+            if (c.GroundRev != geoRevision) { c.GroundRev = geoRevision; c.GroundKey = GroundKey(tile); }
+            ulong h = c.GroundKey;
+            h = Mix(h, (uint)tile); h = Mix(h, world.Known[tile]);
+            h = Mix(h, (uint)((world.ActionLandscape ? 1 : 0) | (world.IsUrban(tile) ? 2 : 0)));
+            h = MixF(h, stageByTile.TryGetValue(tile, out float stage) ? stage : 0f);
+            if (wrecksByTile.TryGetValue(tile, out var l))
+                foreach (int i in l)
+                {
+                    var w = wrecks[i];
+                    h = Mix(h, (uint)(w.Type?.GetHashCode() ?? 0));
+                    h = Mix(h, (uint)((w.Burning ? 1 : 0) | (w.HasPosition ? 2 : 0)));
+                    if (w.HasPosition) { h = MixF(h, w.X); h = MixF(h, w.Z); h = MixF(h, w.Yaw); }
+                }
+            if (h == c.Key) { c.Pending = false; return; }
+            c.PendingKey = h;
+            if (!c.Pending) { c.Pending = true; pendingCells.Add(tile); }
+        }
+
+        /// <summary>The ground a tile's dressing samples: its own and every neighbour's heights and craters, two rings out.</summary>
+        ulong GroundKey(int tile)
+        {
+            var nb = world.Grid.Nb;
+            ulong h = 1469598103934665603UL;
+            h = MixL(h, LocalGround(tile));
+            for (int d = 0; d < 6; d++)
+            {
+                // the 19-hex disk: ring 1 (a), and ring 2 straight on (a's neighbour in direction d) and turning (d + 1)
+                int a = nb[tile * 6 + d];
+                if (a < 0) { h = Mix(h, 0xffffffffu); continue; }
+                h = MixL(h, LocalGround(a));
+                int b = nb[a * 6 + d], c = nb[a * 6 + (d + 1) % 6];
+                h = b < 0 ? Mix(h, 0xffffffffu) : MixL(h, LocalGround(b));
+                h = c < 0 ? Mix(h, 0xffffffffu) : MixL(h, LocalGround(c));
+            }
+            return h;
+        }
+
+        ulong LocalGround(int c)
+        {
+            int rev = world.GeometryRevision + 1;   // never 0, the cleared stamp
+            if (groundStamp[c] == rev) return groundHash[c];
+            ulong h = 1469598103934665603UL;
+            h = Mix(h, world.Known[c]);
+            h = MixF(h, world.Height[c]); h = MixF(h, world.Water[c]);
+            h = Mix(h, world.GeoFlags[c]); h = Mix(h, world.Biome[c]);
+            int k = world.ImpactCounts[c];
+            h = Mix(h, (uint)k);
+            for (int i = 0; i < k * 4; i++) h = MixF(h, world.Impacts[c * 24 + i]);
+            if (c * 4 + 3 < world.TrenchGeometry.Length) for (int i = 0; i < 4; i++) h = MixF(h, world.TrenchGeometry[c * 4 + i]);
+            groundStamp[c] = rev; groundHash[c] = h;
+            return h;
+        }
+
+        void PumpCells(long until)
+        {
+            int done = 0;
+            while (pendingCells.Count > 0 && (done == 0 || System.Diagnostics.Stopwatch.GetTimestamp() < until))
+            {
+                int last = pendingCells.Count - 1, tile = pendingCells[last];
+                pendingCells.RemoveAt(last);
+                if (!cells.TryGetValue(tile, out var c) || !c.Pending) continue;
+                c.Pending = false;
+                c.Key = c.PendingKey;
+                BuildCell(tile, c);
+                done++; CellsBuilt++;
+                assemble = true;
+            }
+        }
+
+        /// <summary>Places one tile's no-man's-land dressing and wrecks into its own arrays.</summary>
+        void BuildCell(int tile, Cell c)
+        {
+            for (int p = 0; p < scratch.Length; p++) { if (scratch[p] == null) scratch[p] = new List<InstanceData>(); scratch[p].Clear(); }
+            c.Burning.Clear();
+            if (stageByTile.TryGetValue(tile, out float stage)) NoMansLand(tile, stage);
+            if (wrecksByTile.TryGetValue(tile, out var list))
+                for (int k = 0; k < list.Count; k++) Wreck(wrecks[list[k]], k, c.Burning);
+            int total = 0;
+            for (int p = 0; p < scratch.Length; p++) total += scratch[p].Count;
+            if (c.Items.Length != total) c.Items = total == 0 ? Array.Empty<InstanceData>() : new InstanceData[total];
+            int at = 0;
+            for (int p = 0; p < scratch.Length; p++)
+            {
+                c.Start[p] = at;
+                scratch[p].CopyTo(c.Items, at);
+                at += scratch[p].Count;
+            }
+            c.Start[scratch.Length] = at;
+        }
+
+        /// <summary>Joins every tile's arrays into the part batches (one memcpy per tile and part).</summary>
+        void Assemble()
+        {
+            BurningWrecks.Clear();
+            const int parts = (int)Part.Count;
+            int* total = stackalloc int[parts];
+            int* at = stackalloc int[parts];
+            InstanceData** dst = stackalloc InstanceData*[parts];
+            for (int p = 0; p < parts; p++) { total[p] = 0; at[p] = 0; }
+            foreach (var c in cells.Values)
+            {
+                var start = c.Start;
+                for (int p = 0; p < parts; p++) total[p] += start[p + 1] - start[p];
+                if (c.Burning.Count > 0) BurningWrecks.AddRange(c.Burning);
+            }
+            for (int p = 0; p < parts; p++)
+            {
+                var b = batches[p];
+                b.Clear();
+                if (total[p] > 0) b.Grow(total[p]);
+                dst[p] = (InstanceData*)NativeArrayUnsafeUtility.GetUnsafePtr(b.Data);
+            }
+            foreach (var c in cells.Values)
+            {
+                if (c.Items.Length == 0) continue;
+                var start = c.Start;
+                fixed (InstanceData* src = c.Items)
+                    for (int p = 0; p < parts; p++)
+                    {
+                        int len = start[p + 1] - start[p];
+                        if (len == 0) continue;
+                        UnsafeUtility.MemCpy(dst[p] + at[p], src + start[p], (long)len * sizeof(InstanceData));
+                        at[p] += len;
+                    }
+            }
+            for (int p = 0; p < parts; p++)
+            {
+                batches[p].Count = total[p];
+                batches[p].MarkDirty();
+            }
+        }
+
+        /// <summary>One wreck (n: its index among its tile's wrecks, which seeds its scatter and char).</summary>
+        void Wreck(in WreckRecord w, int n, List<float3> burning)
+        {
+            var g = world.Grid;
+            float x = w.HasPosition ? w.X : g.CenterX(w.Tile) + (Hash(w.Tile, n) - 0.5f) * 0.9f, z = w.HasPosition ? w.Z : g.CenterZ(w.Tile) + (Hash(n, w.Tile) - 0.5f) * 0.9f;
+            string wreckType = w.Type ?? "";
+            var part = wreckType == "sp_artillery" ? Part.GunWreck : wreckType == "fighter" || wreckType == "bomber" || wreckType == "helicopter" ? Part.AirWreck
+                : wreckType.Contains("tank") ? Part.Wreck : Part.LightWreck;
+            float s = WreckScale(wreckType, part == Part.AirWreck);
+            float wreckYaw = w.HasPosition ? w.Yaw : Hash(w.Tile, n + 7) * 6.28f;
+            // burnt out: blackened, the paint gone to rust-brown; still burning ones darker still
+            float char0 = .45f + Hash(w.Tile * 7 + n, 3) * .12f - (w.Burning ? .1f : 0f);
+            var burnt = new float3(char0, char0 * .9f, char0 * .82f);
+            PlaceWreck(part, x, z, wreckYaw, s, burnt, out float y);
+            // the scorched patch it burned out on, and fragments thrown around it
+            PutScorch(new float3(x, y + .004f, z), wreckYaw, new float3(s * 1.9f, 1f, s * 2.3f), new float4(.26f, .22f, .17f, .78f));   // soft burnt earth, not a black blob
+            if (part == Part.GunWreck)
+                Put(Part.Plank, new float3(x + math.sin(wreckYaw) * .055f, y + .05f, z + math.cos(wreckYaw) * .055f), wreckYaw,
+                    new float3(.014f, .014f, .26f), new float3(.20f, .20f, .18f));
+            for (int k = 0; k < 5; k++)
+            {
+                float fa = Hash(w.Tile + n, k) * 6.283f, fr = s * (.6f + Hash(n + k, w.Tile) * .9f);
+                float fx = x + Mathf.Cos(fa) * fr, fz = z + Mathf.Sin(fa) * fr, piece = s * (.05f + Hash(k, n + 5) * .08f);
+                var tumble = quaternion.EulerZXY((Hash(k, n) - .5f) * .8f, fa * 3f, (Hash(n, k + 2) - .5f) * .8f);
+                PutQ(Part.Debris, new float3(fx, Surface(fx, fz) + piece * .1f, fz), tumble, new float3(piece * 1.4f, piece * .35f, piece), new float3(.30f, .28f, .25f));
+            }
+            if (w.Burning) burning.Add(new float3(x, y + 0.05f, z));
         }
 
         // ------------------------------------------------------------------ trenches

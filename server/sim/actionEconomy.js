@@ -8,27 +8,53 @@ import { emit } from './combat.js';
 import { applyTerrain, engineerStep as baseEngineers } from './actionEngineers.js';
 import { roadEdgesCost } from './actionMap.js';
 
+// Supply caches on the map (game.materialCaches: the name predates energy caches, which share the map since
+// 2026-11-19). A record: { id, x, z, tile, resource: 'materials' | 'energy', amount (left), max, active, replenishes,
+// respawnAt, collectedBy, spawned, work: { [owner]: progress } }.
+// 2026-11-19 (user: "Picking up supplies on the map takes 1 second per 5 supplies per unit. The same goes for power
+// supplies"): collection is gradual. Every living ground unit within reach of an active cache adds CACHE_COLLECT.rate
+// supplies a second to its owner's progress there; each whole CACHE_COLLECT.chunk is moved from the cache to the
+// owner's stockpile (a 50 cache: one unit 10 s, two units 5 s). An owner with no unit at the cache in a tick loses its
+// unfinished chunk (stepping away stops collection); what is left stays on the map for anyone to finish.
+export const CACHE_COLLECT = { rate: 5, chunk: 5, reach: .5 };
+// 2026-11-19 (user: "The game needs power supplies to generate on the map"): energy caches appear over time on neutral,
+// walkable ground away from bases, at most `cap(players)` at once. Placement draws from game.rng (deterministic, saved);
+// the schedule (game.energyCacheAt) is saved with the match (persist.js).
+export const ENERGY_CACHES = {
+  first: 60, every: 70, jitter: 20,          // first spawn at 60 s, then every 70-90 s
+  amounts: [30, 35, 40, 45, 50],             // energy per cache (a generator makes 65 a minute)
+  cap: (players) => Math.min(6, players + 1),
+  baseGap: 7, outpostGap: 3, cacheGap: 3,    // clearance from base sites, other sites and other caches (world units)
+  tries: 24,
+};
+
 export function seedMaterialCaches(game) {
   const add = (site, index, amount, radius, replenishes = false) => {
     const angle = hash2(site.tile, index, game.seed + 1783) * Math.PI * 2;
     const point = game.nav.nearest({ x: site.x + Math.sin(angle) * radius, z: site.z + Math.cos(angle) * radius }, LIGHT_GROUND, 1.1);
     if (!point || [...game.materialCaches.values()].some((c) => distance(c, point) < .8)) return;
     const id = game.id_();
-    game.materialCaches.set(id, { id, ...point, tile: tileAt(point.x, point.z), amount, active: true, replenishes, respawnAt: 0, collectedBy: -1 });
+    game.materialCaches.set(id, { id, ...point, tile: tileAt(point.x, point.z), resource: 'materials', amount, max: amount, active: true, replenishes, respawnAt: 0, collectedBy: -1 });
   };
   for (const site of game.sites.filter((s) => s.slots)) {
     if (site.start !== undefined) { add(site, 0, 55, 3.2); add(site, 1, 55, 4.4); add(site, 2, 110, 6.1); }
     else { add(site, 3, 110, 2.9); if (site.kind === 'industrial' || site.kind === 'military') add(site, 4, 55, 3.6, true); }
   }
+  game.energyCacheAt = game.time + ENERGY_CACHES.first;
 }
+
+const resourceOf = (c) => c.resource || 'materials';
+const maxOf = (c) => c.max || c.amount;
 
 export function visibleCaches(game, civ, god = false) {
   const result = [];
   for (const c of game.materialCaches.values()) {
     if (god || civ.visible[c.tile]) {
       if (!c.active) { civ.cacheIntel.delete(c.id); continue; }
-      const record = { id: c.id, tile: c.tile, x: c.x, z: c.z, resource: 'materials', amount: c.amount, memory: false, replenishes: c.replenishes };
-      civ.cacheIntel.set(c.id, record); result.push(record);
+      const record = { id: c.id, tile: c.tile, x: c.x, z: c.z, resource: resourceOf(c), amount: c.amount, max: maxOf(c), memory: false, replenishes: c.replenishes };
+      civ.cacheIntel.set(c.id, record);
+      // units collecting there now (live only, never remembered)
+      result.push(c.collectors ? { ...record, collecting: c.collectors } : record);
     } else if (civ.cacheIntel.has(c.id)) result.push({ ...civ.cacheIntel.get(c.id), memory: true });
   }
   return result;
@@ -36,29 +62,93 @@ export function visibleCaches(game, civ, god = false) {
 
 export function collectOrder(game, civ, ids, cache, queue) {
   const c = game.materialCaches.get(cache);
-  if (!c?.active || !civ.visible[c.tile]) return { error: 'Choose a currently visible Materials cache.' };
+  const name = resourceOf(c || {}) === 'energy' ? 'Energy' : 'Materials';
+  if (!c?.active || !civ.visible[c.tile]) return { error: `Choose a currently visible ${name} cache.` };
   const group = ids.filter((u) => !ACTION_UNITS[u.type].air);
-  if (!group.length) return { error: 'Mobile ground units collect Materials. Aircraft cannot collect ground caches.' };
+  if (!group.length) return { error: `Mobile ground units collect ${name}. Aircraft cannot collect ground caches.` };
   return moveGroup(game, group, c, { mode: 'move', exact: true, queue });
 }
 
-function cacheStep(game) {
-  for (const c of game.materialCaches.values()) {
+/** Ground units of living civs close enough to collect from cache c, in a fixed order. */
+function collectorsAt(game, c) {
+  const near = game.movers.query(c.x, c.z, CACHE_COLLECT.reach + .3, []).filter((u) => u.hp > 0 && !u.inside && !ACTION_UNITS[u.type].air &&
+    game.civs[u.owner]?.alive && distance(c, u) <= CACHE_COLLECT.reach + u.radius);
+  return near.sort((a, b) => a.id - b.id);
+}
+
+function cacheStep(game, dt) {
+  for (const c of [...game.materialCaches.values()]) {
     if (!c.active) {
       if (!c.replenishes || game.time < c.respawnAt) continue;
       // Supply drops never appear beneath a waiting army.
       if (game.movers.query(c.x, c.z, 1.5, []).some((u) => u.hp > 0)) { c.respawnAt = game.time + 12; continue; }
-      c.active = true; continue;
+      c.active = true; c.amount = maxOf(c); continue;
     }
-    const near = game.movers.query(c.x, c.z, .64, []).filter((u) => u.hp > 0 && !ACTION_UNITS[u.type].air &&
-      game.civs[u.owner].alive && distance(c, u) <= .25 + u.radius);
-    near.sort((a, b) => distance(c, a) - distance(c, b) || (a.id ^ c.id) - (b.id ^ c.id));
-    const collector = near[0]; if (!collector) continue;
-    const civ = game.civs[collector.owner]; civ.res.materials += c.amount;
-    c.active = false; c.collectedBy = collector.owner; c.respawnAt = c.replenishes ? game.time + 180 : 0;
-    civ.cacheIntel.delete(c.id);
-    emit(game, { k: 'pickup', a: c.tile, ax: c.x, az: c.z, ow: collector.owner, s: collector.id, cache: c.id, amount: c.amount, resource: 'materials' });
+    const near = collectorsAt(game, c);
+    c.collectors = near.length;
+    if (!near.length) { if (c.work) c.work = null; continue; }
+    // progress per owner present; an owner who left loses its unfinished chunk
+    const count = new Map();
+    for (const u of near) count.set(u.owner, (count.get(u.owner) || 0) + 1);
+    const work = {};
+    for (const [owner, n] of [...count].sort((a, b) => a[0] - b[0])) work[owner] = (c.work?.[owner] || 0) + CACHE_COLLECT.rate * n * dt;
+    c.work = work;
+    for (const owner of Object.keys(work).map(Number).sort((a, b) => a - b)) {
+      while (c.amount > 0 && work[owner] >= Math.min(CACHE_COLLECT.chunk, c.amount) - 1e-9) {
+        const take = Math.min(CACHE_COLLECT.chunk, c.amount);
+        work[owner] -= take; c.amount -= take;
+        const civ = game.civs[owner], res = resourceOf(c);
+        civ.res[res] = (civ.res[res] || 0) + take;
+        const unit = near.find((u) => u.owner === owner);
+        emit(game, { k: 'pickup', a: c.tile, ax: c.x, az: c.z, ow: owner, s: unit.id, cache: c.id, amount: take, resource: res,
+          ...(c.amount <= 0 && { o: 'empty' }) });
+      }
+    }
+    if (c.amount > 0) continue;
+    // emptied: a replenishing site restocks later; a spawned energy cache leaves the map
+    const last = near[near.length - 1];
+    c.active = false; c.collectedBy = last.owner; c.respawnAt = c.replenishes ? game.time + 180 : 0; c.work = null; c.collectors = 0;
+    for (const civ of game.civs) civ.cacheIntel?.delete(c.id);
+    if (c.spawned) game.materialCaches.delete(c.id);
   }
+  energyCacheSpawn(game);
+}
+
+/** A neutral, walkable spot away from bases, reachable on foot from a living player's start, or null. */
+function energyCacheSpot(game) {
+  const E = ENERGY_CACHES, w = game.world;
+  const starts = game.civs.filter((civ) => civ.alive && game.sites[civ.id]).map((civ) => game.nav.componentOf(game.sites[civ.id].tile, LIGHT_GROUND));
+  for (let k = 0; k < E.tries; k++) {
+    const t = Math.floor(game.rng() * N), jx = game.rng() - .5, jz = game.rng() - .5;
+    if (w.owner[t] >= 0) continue;
+    const centre = centerOf(t);
+    const point = game.nav.nearest({ x: centre.x + jx * .6, z: centre.z + jz * .6 }, LIGHT_GROUND, .5);
+    if (!point) continue;
+    const tile = tileAt(point.x, point.z);
+    if (tile < 0 || w.owner[tile] >= 0) continue;
+    if (game.sites.some((s) => distance(s, point) < (s.slots ? E.baseGap : E.outpostGap))) continue;
+    if ([...game.materialCaches.values()].some((c) => distance(c, point) < E.cacheGap)) continue;
+    const comp = game.nav.componentOf(tile, LIGHT_GROUND);
+    if (comp >= 0 && starts.length && !starts.includes(comp)) continue;
+    return { x: point.x, z: point.z, tile };
+  }
+  return null;
+}
+
+function energyCacheSpawn(game) {
+  const E = ENERGY_CACHES;
+  game.energyCacheAt ??= game.time + E.first;   // a save from before energy caches starts its schedule now
+  if (game.time < game.energyCacheAt) return;
+  game.energyCacheAt = game.time + E.every + game.rng() * E.jitter;
+  const players = game.civs.filter((civ) => civ.alive && !civ.isRebel).length;
+  let active = 0;
+  for (const c of game.materialCaches.values()) if (c.spawned && c.active) active++;
+  if (active >= E.cap(players)) return;
+  const spot = energyCacheSpot(game);
+  if (!spot) return;
+  const amount = E.amounts[Math.floor(game.rng() * E.amounts.length)];
+  const id = game.id_();
+  game.materialCaches.set(id, { id, ...spot, resource: 'energy', amount, max: amount, active: true, replenishes: false, respawnAt: 0, collectedBy: -1, spawned: true });
 }
 
 // Player-controlled engineers from older saves keep their former support behaviour; base engineers
@@ -85,7 +175,7 @@ function engineerStep(game, dt) {
     if (distance(u, target) <= reach) {
       if (u.goal) { stopUnit(game, u); u.mode = 'guard'; }
       u.assisting = true;
-      if (target.done !== false) target.hp = Math.min(target.maxHp, target.hp + dt * (target.isUnit ? 4.5 : 13) * (game.civs[u.owner].techs.has('field_engineering') ? 1.25 : 1));
+      if (target.done !== false) target.hp = Math.min(target.maxHp, target.hp + dt * (target.isUnit ? 4.5 : 13));
       continue;
     }
     if (game.time - u.supportAt > 18) {
@@ -185,7 +275,7 @@ export function roadBuild(game, civ, points, preview = false) {
 }
 
 export function fieldEconomyStep(game, dt) {
-  cacheStep(game); engineerStep(game, dt); baseEngineers(game, dt);
+  cacheStep(game, dt); engineerStep(game, dt); baseEngineers(game, dt);
   for (let i = game.roadProjects.length - 1; i >= 0; i--) {
     // automatic links lay themselves; player roads and terrain works advance only while engineers work them
     const p = game.roadProjects[i]; if (p.auto) p.left -= dt;

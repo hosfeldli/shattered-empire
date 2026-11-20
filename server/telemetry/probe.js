@@ -8,12 +8,15 @@
 // every wall minute it posts compact aggregate rows to the main thread: {t:'tm', rows:[[table, row], ...]}.
 import { performance, monitorEventLoopDelay, PerformanceObserver } from 'node:perf_hooks';
 import v8 from 'node:v8';
+import zlib from 'node:zlib';
 
 const q = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : null);
 const sortNum = (a) => Float64Array.from(a).sort();
 const toCounts = (m) => [...m].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).map(([type, count]) => ({ type, count }));
 const inc = (m, k, n = 1) => m.set(k, (m.get(k) || 0) + n);
 const AI_ROWS_PER_MINUTE = 40;
+const DEFLATE_SAMPLE_EVERY = 64;   // v3: every 64th message over 1 KB is deflated here to estimate the wire ratio and cost
+const GC_KIND = { 1: 'minor', 2: 'major', 4: 'incremental', 8: 'weak' };
 const MIN_BATTLE_DAMAGE = 110;   // the same bar the battle reports use (actionGame.engagementReports)
 
 export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDINGS = {}, centerOf = null, minuteMs = 60_000, wallNow = () => Date.now() } = {}) {
@@ -28,32 +31,56 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
   // ---------------------------------------------------------------- per-minute performance accumulators
   let started = performance.now(), minuteIndex = 0;
   const perf = () => ({ at: performance.now(), sim: game.time, ticks: 0, intervals: 0, intervalMax: 0, over100: 0, paused: 0, idle: 0,
-    snapshots: 0, snapMs: 0, snapMax: 0, msgs: 0, bytes: 0, commands: 0, routes: [], routeN: 0, routeMs: 0, routeMax: 0, routeFail: new Map(),
-    groupMax: 0, unitsMax: 0, projMax: 0, autosaves: 0, autosaveMax: 0, sys: new Map() });
+    snapshots: 0, snapMs: 0, snapMax: 0, msgs: 0, bytes: 0, specBytes: 0, commands: 0, resyncs: 0, catchUps: 0, congestionSkips: 0, routes: [], routeN: 0, routeMs: 0, routeMax: 0, routeFail: new Map(),
+    groupMax: 0, unitsMax: 0, projMax: 0, autosaves: 0, autosaveMax: 0, sys: new Map(),
+    // v3 (Pass 7): memo hits, routes by calling system, sub-timings, AI plans per seat, bytes by message kind, deflate sample
+    routeMemo: 0, callers: new Map(), spans: new Map(), aiSeats: new Map(), kindBytes: new Map(), kindMsgs: new Map(), defIn: 0, defOut: 0, defMs: 0, msgN: 0 });
   let cur = perf();
   const lag = monitorEventLoopDelay({ resolution: 20 }); lag.enable();
   let elu = performance.eventLoopUtilization();
-  const gc = { n: 0, ms: 0, max: 0 };
+  const gc = { n: 0, ms: 0, max: 0, kinds: new Map() };
   let gcObs = null;
-  try { gcObs = new PerformanceObserver((l) => { for (const e of l.getEntries()) { gc.n++; gc.ms += e.duration; if (e.duration > gc.max) gc.max = e.duration; } }); gcObs.observe({ entryTypes: ['gc'] }); } catch { /* unsupported */ }
+  try {
+    gcObs = new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) {
+        gc.n++; gc.ms += e.duration; if (e.duration > gc.max) gc.max = e.duration;
+        const k = GC_KIND[e.detail?.kind ?? e.kind] || 'other', a = gc.kinds.get(k) || (gc.kinds.set(k, { calls: 0, total: 0, max: 0 }).get(k));
+        a.calls++; a.total += e.duration; if (e.duration > a.max) a.max = e.duration;
+      }
+    });
+    gcObs.observe({ entryTypes: ['gc'] });
+  } catch { /* unsupported */ }
+  const span = (m, name, ms) => { const a = m.get(name) || (m.set(name, { calls: 0, total: 0, max: 0 }).get(name)); a.calls++; a.total += ms; if (ms > a.max) a.max = ms; };
+  const spanRows = (m) => [...m].sort((a, b) => b[1].total - a[1].total).map(([name, a]) => ({ name, calls: a.calls, total_ms: a.total, avg_ms: a.calls ? a.total / a.calls : 0, max_ms: a.max }));
 
   // ---------------------------------------------------------------- route timing (wraps the instance method)
   const nav = game.nav;
   if (nav && typeof nav.route === 'function' && !nav.route.tmWrapped) {
     const route = nav.route;
+    // v3 (Pass 7): a failure's reason is nav.lastFail (goal, cut, coarse, fine; 'air' for an aircraft route). A failed-route
+    // memo hit (lastFail 'memo': the same request failed within the last few seconds, answered without a search) is
+    // counted apart in route_memo_hits, not as a failure (v1/v2 counted memo hits as failures under 'other').
+    // The caller is the scheduler system running (game.sched.current), or 'command' / 'outside' between ticks.
     const timed = function (from, to, def) {
-      const s = game.navStats, cut = s?.routeCutOff || 0, t0 = performance.now();
+      const t0 = performance.now();
       const r = route.call(this, from, to, def);
       const ms = performance.now() - t0;
       cur.routeN++; cur.routeMs += ms; if (ms > cur.routeMax) cur.routeMax = ms;
       if (cur.routes.length < 20000) cur.routes.push(ms);
-      if (!r) inc(cur.routeFail, (game.navStats?.routeCutOff || 0) > cut ? 'cutoff' : 'other');
+      const who = game.sched?.current || (inCommand ? 'command' : 'outside');
+      const c = cur.callers.get(who) || (cur.callers.set(who, { calls: 0, ms: 0, fail: 0, memo: 0 }).get(who));
+      c.calls++; c.ms += ms;
+      if (!r) {
+        const why = def?.air ? 'air' : this.lastFail || 'other';
+        if (why === 'memo') { cur.routeMemo++; c.memo++; } else { inc(cur.routeFail, why); c.fail++; }
+      }
       return r;
     };
     timed.tmWrapped = true;
     nav.route = timed;
   }
   let navPrev = flatNav(game.navStats);
+  let inCommand = false;
 
   // ---------------------------------------------------------------- scheduler samples (read from its rings)
   const sysSeen = new Map();   // name -> last n
@@ -75,7 +102,7 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
   const known = { units: new Map(), buildings: new Map(), sites: new Map(), techs: new Map(), age: new Map(), alive: new Map(), res: new Map(), speed: game.speed, proj: new Set() };
   const player = new Map();   // seat -> per-minute economy and production
   const totals = new Map();   // seat -> match totals for match_results
-  const pl = (seat) => player.get(seat) || (player.set(seat, { produced: new Map(), lost: new Map(), incM: 0, incE: 0, spM: 0, spE: 0 }).get(seat));
+  const pl = (seat) => player.get(seat) || (player.set(seat, { produced: new Map(), lost: new Map(), incM: 0, incE: 0, spM: 0, spE: 0, plans: 0 }).get(seat));
   const tot = (seat) => totals.get(seat) || (totals.set(seat, { produced: new Map(), units: 0, built: 0, lostB: 0, battles: 0, won: 0 }).get(seat));
   const eliminations = [];
   let lastEvent = game.eventSeq || 0, primed = false, overDone = false, simPrev = game.time;
@@ -130,12 +157,19 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
     },
     aiBuild(civ, type, at, forward) { if (civ) aiRow(civ, 'defense', { type, details: { x: at?.x, z: at?.z, forward: !!forward, surcharge: at?.surcharge } }); },
     aiDig(civ, hexes, label) { if (civ) aiRow(civ, 'trench', { value: hexes, text: label || undefined }); },
+    // v3 (Pass 7): sub-timings from the simulation (actionGame.refreshVisibility, actionCombat) and one AI plan's time
+    // (actionGame.runAI, around planActionAI). AI planning code may report its own phases the same way:
+    // game.tm?.span('ai.<phase>', ms).
+    span(name, ms) { span(cur.spans, name, ms); },
+    aiPlan(seat, ms) { const a = cur.aiSeats.get(seat) || (cur.aiSeats.set(seat, { calls: 0, total: 0, max: 0 }).get(seat)); a.calls++; a.total += ms; if (ms > a.max) a.max = ms; span(cur.spans, 'ai.plan', ms); },
   };
 
   function pollAiOps() {
     for (const civ of game.civs) {
       const p = civ.aiPlan; if (!p || civ.human || civ.isRebel) continue;
       const st = aiState(civ.id), op = p.op || null;
+      if (st.next !== undefined && p.next !== st.next) pl(civ.id).plans++;
+      st.next = p.next;
       if (op && op !== st.op) {
         if (st.op) opEnd(civ, st.op, 'retargeted');
         st.op = op; st.launched = !!op.launched;
@@ -259,7 +293,7 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
         for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) { const c = `${s.cx + dx}:${s.cz + dz}`; (need.get(c) || need.set(c, []).get(c)).push(s); }
       }
       for (const u of game.units.values()) {
-        if (u.auto || !(u.hp > 0)) continue;
+        if (!(u.hp > 0)) continue;
         const list = need.get(cellOf(u.x, u.z)); if (!list) continue;
         for (const s of list) { const m = s.now.get(u.owner); if (m) inc(m, u.type); }
       }
@@ -305,17 +339,22 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
     const navNow = flatNav(game.navStats), stuck = new Map();
     for (const [k, v] of navNow) { const d = v - (navPrev.get(k) || 0); if (d > 0 && k.startsWith('stuck.')) stuck.set(k.slice(6), d); }
     const retries = (navNow.get('routeRetry') || 0) - (navPrev.get('routeRetry') || 0);
+    const navCounters = new Map();
+    for (const [k, v] of navNow) { const d = v - (navPrev.get(k) || 0); if (d > 0 && !k.startsWith('stuck.') && k !== 'routeRetry') navCounters.set(k, d); }
     navPrev = navNow;
     const heap = v8.getHeapStatistics(), mb = (n) => n / 1048576, ns = (n) => (Number.isFinite(n) ? n / 1e6 : null);
     const e2 = performance.eventLoopUtilization(elu); elu = performance.eventLoopUtilization();
     let units = 0; for (const _ of game.units?.values?.() || []) units++;
     push('server_match_minute', {
       minute_index: minuteIndex, wall_s: wall, sim_time_s: game.time, sim_advanced_s: simAdv, game_speed: game.speed, pace: wall > 0 ? simAdv / wall : null,
-      paused_s: cur.paused / 10, idle_s: Math.max(0, wall - (cur.intervals + cur.paused) / 10),
+      // idle: loop iterations skipped because nobody was connected; overrun: wall time the 10 Hz loop lost to iterations
+      // running long (it used to be counted as idle)
+      paused_s: cur.paused / 10, idle_s: cur.idle / 10, overrun_s: Math.max(0, wall - (cur.intervals + cur.paused + cur.idle) / 10),
       ticks: tickStats?.calls ?? cur.ticks, intervals: cur.intervals,
       tick_ms_avg: tickStats?.calls ? tickStats.total / tickStats.calls : null, tick_ms_p50: q(ts, .5), tick_ms_p95: q(ts, .95), tick_ms_p99: q(ts, .99), tick_ms_max: tickStats?.max ?? null,
       interval_ms_max: cur.intervalMax, intervals_over_100ms: cur.over100, systems,
-      snapshots: cur.snapshots, snapshot_ms_total: cur.snapMs, snapshot_ms_max: cur.snapMax, msgs_out: cur.msgs, bytes_out: cur.bytes, commands: cur.commands,
+      snapshots: cur.snapshots, snapshot_ms_total: cur.snapMs, snapshot_ms_max: cur.snapMax, msgs_out: cur.msgs, bytes_out: cur.bytes, bytes_out_spectators: cur.specBytes, commands: cur.commands,
+      resyncs: cur.resyncs, catch_ups: cur.catchUps, congestion_skips: cur.congestionSkips,
       routes: cur.routeN, route_ms_total: cur.routeMs, route_ms_p50: q(rs, .5), route_ms_p95: q(rs, .95), route_ms_max: cur.routeMax,
       route_failures: [...cur.routeFail.values()].reduce((a, c) => a + c, 0), route_fail_reasons: toCounts(cur.routeFail), route_retries: retries, stuck: toCounts(stuck),
       group_route_queue_max: cur.groupMax, group_route_queue_end: game.groupJobs?.length ?? null,
@@ -325,6 +364,15 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
       gc_count: gc.n, gc_ms_total: gc.ms, gc_ms_max: gc.max,
       loop_lag_p50_ms: ns(lag.percentile(50)), loop_lag_p99_ms: ns(lag.percentile(99)), loop_lag_max_ms: ns(lag.max), loop_utilization: e2.utilization,
       autosaves: cur.autosaves, autosave_ms_max: cur.autosaveMax,
+      // v3 (Pass 7)
+      route_memo_hits: cur.routeMemo, nav_counters: toCounts(navCounters),
+      routes_by_caller: [...cur.callers].sort((a, b) => b[1].ms - a[1].ms).map(([name, c]) => ({ name, calls: c.calls, total_ms: c.ms, failures: c.fail, memo_hits: c.memo })),
+      subsystems: spanRows(cur.spans),
+      ai_seats: [...cur.aiSeats].sort((a, b) => a[0] - b[0]).map(([seat, a]) => ({ seat, plans: a.calls, total_ms: a.total, max_ms: a.max })),
+      gc_kinds: spanRows(gc.kinds),
+      heap_old_space_mb: oldSpaceMb(),
+      bytes_by_kind: toCounts(cur.kindBytes), msgs_by_kind: toCounts(cur.kindMsgs),
+      deflate_sample_ratio: cur.defIn ? cur.defOut / cur.defIn : null, deflate_sample_ms_per_mb: cur.defIn ? cur.defMs / (cur.defIn / 1048576) : null,
     });
     // players: economy, production, losses
     if (simAdv > 0 || force) for (const c of playable()) {
@@ -334,15 +382,17 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
       const bases = (game.sites || []).filter((s) => s.owner === c.id && s.slots && game.buildings.get(s.hq)?.done).length;
       push('player_minute', { seat: c.id, ...who(c.id), minute_index: Math.floor(game.time / 60), sim_time_s: game.time, alive: !!c.alive, age: c.age,
         materials: c.res?.materials, energy: c.res?.energy, income_materials: a.incM, income_energy: a.incE, spend_materials: Math.max(0, a.spM), spend_energy: Math.max(0, a.spE),
-        units: n, army_value: value, buildings: bld, bases, produced: toCounts(a.produced), lost: toCounts(a.lost), kills: c.kills, casualties: c.casualties, ai_state: c.human ? undefined : c.aiPlan?.state });
+        units: n, army_value: value, buildings: bld, bases, produced: toCounts(a.produced), lost: toCounts(a.lost), kills: c.kills, casualties: c.casualties, ai_state: c.human ? undefined : c.aiPlan?.state,
+        ai_plans: c.human || !c.aiPlan ? undefined : a.plans });
     }
     player.clear();
     for (const st of ai.values()) st.rows = 0;
     minuteIndex++;
     reset(t);
   }
+  function oldSpaceMb() { try { const s = v8.getHeapSpaceStatistics().find((x) => x.space_name === 'old_space'); return s ? s.space_used_size / 1048576 : null; } catch { return null; } }
   function reset(t) {
-    gc.n = 0; gc.ms = 0; gc.max = 0; lag.reset();
+    gc.n = 0; gc.ms = 0; gc.max = 0; gc.kinds.clear(); lag.reset();
     const prevSys = cur.sys;
     cur = perf(); cur.at = t;
     for (const [name, a] of prevSys) cur.sys.set(name, { calls: 0, total: 0, max: 0, over: a.overEnd ?? a.over, deferred: a.deferredEnd ?? a.deferred, samples: [] });
@@ -375,8 +425,32 @@ export function createProbe(game, { post, units: UNITS = {}, buildings: BUILDING
       if (ms > cur.intervalMax) cur.intervalMax = ms;
       if (ms > 100) cur.over100++;
     },
-    snapshot(ms) { cur.snapshots++; cur.snapMs += ms; if (ms > cur.snapMax) cur.snapMax = ms; },
-    out(msgs) { cur.msgs += msgs.length; for (const m of msgs) cur.bytes += m[1].length; },
+    /** One snapshot round: its ms, and how many viewers it skipped because their connection was backed up. */
+    snapshot(ms, skipped = 0) { cur.snapshots++; cur.snapMs += ms; if (ms > cur.snapMax) cur.snapMax = ms; cur.congestionSkips += skipped; },
+    out(msgs) {
+      cur.msgs += msgs.length;
+      for (const m of msgs) {
+        const s = m[1], n = s.length;
+        cur.bytes += n; if (m[0] === -2) cur.specBytes += n;
+        // v3: kind from the message's leading {"t":"..."} (snapshots tagged by the worker: snap / econ), geo by its channel
+        const kind = m[3] || (m[2] === 'geo' ? 'geo' : s.startsWith('{"t":"') ? s.slice(6, s.indexOf('"', 6)) : 'other');
+        inc(cur.kindBytes, kind, n); inc(cur.kindMsgs, kind);
+        if (n > 1024 && ++cur.msgN % DEFLATE_SAMPLE_EVERY === 0) {
+          const t0 = performance.now(), z = zlib.deflateRawSync(s);
+          cur.defMs += performance.now() - t0; cur.defIn += n; cur.defOut += z.length;
+        }
+      }
+    },
+    /** v3: a worker-side sub-timing (snapshot build / delta / stringify, autosave phases, posting). */
+    span(name, ms) { span(cur.spans, name, ms); },
+    /** v3: a player or spectator command is being applied (routes it triggers are attributed to 'command'). */
+    commandBegin() { inCommand = true; }, commandEnd() { inCommand = false; },
+    /** A loop iteration skipped because nobody is connected. */
+    idle() { cur.idle++; },
+    /** A keyed-delta client asked for a resync (version gap). */
+    resync() { cur.resyncs++; },
+    /** A backed-up connection drained and gets a catch-up snapshot. */
+    catchUp() { cur.catchUps++; },
     command() { cur.commands++; },
     autosave(ms) { cur.autosaves++; if (ms > cur.autosaveMax) cur.autosaveMax = ms; },
     /** Once a second (its own timer in the worker). */

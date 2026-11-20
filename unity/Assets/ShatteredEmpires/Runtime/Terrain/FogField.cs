@@ -70,8 +70,9 @@ namespace SE.Runtime.Landscape
         }
 
         int visibilityOnly;
-        /// <summary>Explored-but-unseen dimming strength (SE_ApplyFog: grey and darker; 0.35 read as fully visible).</summary>
-        public float UnseenDim = 0.62f;
+        /// <summary>Explored-but-unseen dimming strength (SE_ApplyFog: grey and darker; 0.35 read as fully visible,
+        /// 0.62 still too close to lit ground). 0.92 leaves about a third of the lit brightness.</summary>
+        public float UnseenDim = 0.92f;
         byte[] explored;
         int exploredEpoch = -1, exploredCount;
         bool discoveredOnly;

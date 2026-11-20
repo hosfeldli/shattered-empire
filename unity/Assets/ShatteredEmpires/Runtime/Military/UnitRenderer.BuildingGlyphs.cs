@@ -27,7 +27,7 @@ namespace SE.Runtime.Military
         const int MaxBuildingGlyphs = 64;
         const float GlyphNearDistance = 16f, GlyphRefresh = .25f;
 
-        struct BuildingGlyph { public float X, Y, Z; public int Owner; public byte Kind; public bool Memory; }
+        struct BuildingGlyph { public float X, Y, Z; public int Owner; public byte Kind; public bool Memory, HasAccent; public float3 Accent; }
         readonly BuildingGlyph[] buildingGlyphs = new BuildingGlyph[MaxBuildingGlyphs];
         int buildingGlyphCount;
         float buildingGlyphAt = -10f, buildingGlyphZoom;
@@ -69,7 +69,7 @@ namespace SE.Runtime.Military
                 ref var g = ref buildingGlyphs[i];
                 var team = g.Memory ? new float4(.55f, .55f, .55f, 1) : civColor(g.Owner);
                 var centre = MapSpace.W(new float3(grid.NearX(g.X, camX), g.Y, g.Z)) + new float3(0, s * 1.1f, 0);
-                BuildingGlyphCard(g.Kind, centre, s, team.xyz);
+                BuildingGlyphCard(g.Kind, centre, s, team.xyz, g.HasAccent && !g.Memory ? g.Accent : new float3(-1));
             }
         }
 
@@ -94,9 +94,11 @@ namespace SE.Runtime.Military
                     if (dx * dx + dz * dz > reach * reach) continue;
                     long key = ((long)Mathf.FloorToInt((focus.x + dx) / cell) << 32) ^ (uint)Mathf.FloorToInt(b.Z / cell);
                     if (!glyphCells.Add(key)) continue;
+                    bool accented = SE.Runtime.Cities.CityRenderer.FacilityAccent(b.Type, out var accent);
                     buildingGlyphs[buildingGlyphCount++] = new BuildingGlyph
                     {
                         X = b.X, Z = b.Z, Y = view.GroundHeight(b.X, b.Z) + .55f, Owner = b.Owner, Kind = kind, Memory = b.Memory,
+                        HasAccent = accented, Accent = accent,
                     };
                     if (buildingGlyphCount >= MaxBuildingGlyphs) break;
                 }
@@ -106,11 +108,12 @@ namespace SE.Runtime.Military
         void CardBar(float3 centre, float s, float ox, float oy, float angle, float w, float h, float layer, float4 colour)
             => GlyphBar(centre + math.rotate(cameraRotation, new float3(ox * s, oy * s, 0)), angle, w * s, h * s, layer, s * .04f, colour);
 
-        void BuildingGlyphCard(byte kind, float3 centre, float s, float3 team)
+        /// <param name="accent">A base facility's accent colour (CityRenderer.FacilityAccent; x &lt; 0: none): the card wears it, as the roof emblem does.</param>
+        void BuildingGlyphCard(byte kind, float3 centre, float s, float3 team, float3 accent)
         {
             float th = s * .04f, L = 2.2f * th;
             var frame = new float4(TeamWear(team), .25f);
-            var card = new float4(.13f, .14f, .15f, 0);
+            var card = accent.x >= 0 ? new float4(accent * .55f, .25f) : new float4(.13f, .14f, .15f, 0);
             var ink = new float4(.97f, .96f, .92f, .2f);
             const float w = .085f, diag = .785f, right = 1.5708f;
             if (kind >= BgFirstDefense)

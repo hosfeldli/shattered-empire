@@ -565,7 +565,7 @@ export const MAP_CATALOG = [
   },
   {
     id: 'serpentine', name: 'Serpentine', players: 2, teamSize: 1, size: 80, style: 'continents',
-    description: 'Long ridges fold the valley into an S: the way across winds around the ridge ends and the Coil, a ridge in the centre. River fords cut the bends; a saddle lets infantry climb straight over.',
+    description: 'Long ridges fold the valley into an S: the way across winds around the ridge ends and the Coil, a ridge in the centre. River fords cut the bends; a hill saddle crosses the northern ridge, slow going for infantry.',
     base: { elev: .14, moist: .45 },
     noise: { elev: .04, moist: .14, scale: 7, moistScale: 6, warp: 6, warpScale: 14, knolls: { amp: 2.4, scale: 5, above: .1 } },
     border: 5,
@@ -573,8 +573,9 @@ export const MAP_CATALOG = [
       // the long ridge from the north coast (its twin rises from the south coast)
       { op: 'ridge', line: [[.31, -.05], [.32, .2], [.3, .42], [.32, .62]], w: 4.6, h: .86, soft: 3 },
       { op: 'elev', mode: 'min', value: -.3, soft: 3, line: [[.25, -.02], [.37, -.02]], w: 10 },
-      // its saddle: mountain, not peak (infantry climb over, vehicles go around)
-      { op: 'elev', mode: 'min', value: .56, soft: 4, ellipse: [.32, .2], rx: 9, rz: 3, rot: 0 },
+      // its saddle: high hills, not mountain (HILLS_MOUNTAINS 2026-11-19: mountains are walls for every ground unit),
+      // a hill pass: the short way over for everyone, slow going for infantry
+      { op: 'elev', mode: 'min', value: .5, soft: 4, ellipse: [.32, .2], rx: 9, rz: 3, rot: 0 },
       // the Coil: a ridge across the centre
       { op: 'ridge', line: [[.44, .36], [.5, .5], [.56, .64]], w: 4.2, h: .86, soft: 3 },
       // coves and the uplands behind the start

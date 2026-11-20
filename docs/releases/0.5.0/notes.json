@@ -11,6 +11,7 @@
   "sections": [
     {
       "heading": "Smoother late-game battles",
+      "category": "performance",
       "blocks": [
         {
           "type": "text",
@@ -225,6 +226,7 @@
     },
     {
       "heading": "Smooth at every zoom",
+      "category": "performance",
       "blocks": [
         {
           "type": "text",
@@ -359,6 +361,7 @@
     },
     {
       "heading": "A faster server",
+      "category": "performance",
       "blocks": [
         {
           "type": "text",
@@ -405,6 +408,7 @@
     },
     {
       "heading": "Battlefields that heal",
+      "category": "visuals",
       "blocks": [
         {
           "type": "bullets",
@@ -420,6 +424,7 @@
     },
     {
       "heading": "Trenches that follow the ground",
+      "category": "visuals",
       "blocks": [
         {
           "type": "bullets",
@@ -435,6 +440,7 @@
     },
     {
       "heading": "Bases, roads and rivers",
+      "category": "gameplay",
       "blocks": [
         {
           "type": "bullets",
@@ -467,6 +473,13 @@
     },
     {
       "heading": "Claim a city, build its road",
+      "category": "gameplay",
+      "later": [
+        {
+          "version": "0.6.0",
+          "text": "Bridges are no longer on the map from the start: they are laid when a road is built across a river. Infantry can wade any river."
+        }
+      ],
       "blocks": [
         {
           "type": "text",
@@ -484,6 +497,13 @@
     },
     {
       "heading": "Units and combat",
+      "category": "units",
+      "later": [
+        {
+          "version": "0.7.0",
+          "text": "Nukes are far more devastating: the blast reaches 7.5 hexes instead of 2.7, with damage falling off from the centre, and leaves a solid mushroom cloud."
+        }
+      ],
       "blocks": [
         {
           "type": "bullets",
@@ -506,6 +526,13 @@
     },
     {
       "heading": "Building, upgrades and the economy",
+      "category": "gameplay",
+      "later": [
+        {
+          "version": "0.7.0",
+          "text": "Borders are now drawn only on territory connected to one of your cities, bases or captured outposts."
+        }
+      ],
       "blocks": [
         {
           "type": "bullets",
@@ -524,6 +551,7 @@
     },
     {
       "heading": "Forests, capture and garrisons",
+      "category": "gameplay",
       "blocks": [
         {
           "type": "bullets",
@@ -539,6 +567,7 @@
     },
     {
       "heading": "Units get unstuck",
+      "category": "gameplay",
       "blocks": [
         {
           "type": "text",
@@ -579,6 +608,7 @@
     },
     {
       "heading": "Map builder: choose who starts where",
+      "category": "interface",
       "blocks": [
         {
           "type": "text",

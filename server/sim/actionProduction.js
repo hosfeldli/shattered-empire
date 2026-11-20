@@ -248,7 +248,7 @@ function reserve(game, civ, need) {
 
 /** Hands a finished item to the battlefield. False (exit blocked) keeps it, paid and reserved, for a retry. */
 function deliver(game, civ, b, q) {
-  const u = game.spawn(civ, q.unit, b);
+  const u = game.spawn(civ, q.unit, b, 1.2, true);   // at the facility's door (actionGame.spawn)
   if (!u) { q.state = 'exit'; b.state = 'exit blocked'; return false; }
   b.state = 'operational';
   q.ready = false; q.work = 0; q.reserved = 0;
@@ -256,6 +256,7 @@ function deliver(game, civ, b, q) {
   if (!(q.repeat && q.count === 1)) q.count--;
   q.state = q.count > 0 ? 'waiting' : 'idle';
   game.reinforce(b, u);
+  game.emerge(b, u);
   if (civ.techs.has('improved_logistics') && u.goal) u.hasteUntil = game.time + HASTE.seconds;
   return true;
 }

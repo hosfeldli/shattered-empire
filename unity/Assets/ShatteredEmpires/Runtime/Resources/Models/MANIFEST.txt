@@ -14,7 +14,8 @@ ArmoredCar 4919 2900
 ArmoredCarLo 1566 1152
 ArmoredCarMount 1840 1188
 CargoTruck 5136 2900
-RocketTruck 4032 2724
+RocketTruck 2664 1460
+RocketPod 2600 1868
 AirDefense 3416 2208
 Fighter 2926 1962
 Bomber 761 420

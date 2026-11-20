@@ -11,7 +11,6 @@ const { ACTION_BUILDINGS, ACTION_UNITS, CITY_DEFENSES } = await import('../serve
 const { addFacility } = await import('../server/sim/actionBases.js');
 const { centerOf, distance, tileAt } = await import('../server/sim/actionNavigation.js');
 const { damageActionTarget, structureArmour, FORTIFIED_VS } = await import('../server/sim/actionCombat.js');
-const { KIT } = await import('../server/sim/actionUpgrades.js');
 const { disk } = await import('../server/sim/hex.js');
 
 const create = () => new ActionGame({ id: 'b-1117', seed: 41, style: 'pangaea', slots: [{ human: true }, { human: true }] });
@@ -50,23 +49,10 @@ test('tracked armour takes half the small-arms rate; tanks fire HE at infantry',
   assert.ok(ACTION_UNITS.tank.vsInfantry > 1 && ACTION_UNITS.autonomous_tank.vsInfantry > 1);
 });
 
-test('body armour spares one man per lethal hit, never the whole hit, and never the same man twice', () => {
-  const g = create(), s = g.sites[0];
-  g.units.clear();
-  g.civs[0].techs.add('body_armor');
-  const squad = g.spawn(g.civs[0], 'rifle_squad', { x: s.x + 4, z: s.z }, .2), tank = g.spawn(g.civs[1], 'tank', { x: s.x + 6, z: s.z }, .2);
-  let hits = 0;
-  while (squad.hp > 0 && hits < 20) { damageActionTarget(g, squad, tank, 57, 'cannon'); hits++; g.time += 1; }
-  assert.equal(squad.hp, 0, 'the squad dies');
-  assert.ok(hits <= 5, `tank shells kill an armoured squad in a handful of hits (took ${hits}; it used to absorb ~8 shells)`);
-  assert.ok(squad.plates <= ACTION_UNITS.rifle_squad.men);
-});
-
-test('rocket kit and mortar numbers (balance pass)', () => {
-  assert.deepEqual(KIT.rocket, { damage: 20, cooldown: 24 });
+test('mortar numbers (balance pass)', () => {
   const m = ACTION_UNITS.mortar_team;
   assert.deepEqual(m.cost, { materials: 150, energy: 45 });
-  assert.equal(m.fireCooldown, 4.5);
+  assert.equal(m.fireCooldown, 5.4);   // 2026-11-19: indirect fire 20 % slower (was 4.5)
   assert.equal(m.hp, 120);
   // the per-unit fire cooldown is honoured in combat
   const g = create(), s = g.sites[0];
@@ -78,7 +64,7 @@ test('rocket kit and mortar numbers (balance pass)', () => {
   const shots = [];
   for (let i = 0; i < 300; i++) { const before = mortar.readyAt; g.tick(); if (mortar.readyAt !== before) shots.push(g.time); }
   assert.ok(shots.length >= 2, 'the mortar fires');
-  for (let i = 1; i < shots.length; i++) assert.ok(shots[i] - shots[i - 1] >= 4.5 - 1e-6, 'at most one bomb per 4.5 s');
+  for (let i = 1; i < shots.length; i++) assert.ok(shots[i] - shots[i - 1] >= 5.4 - 1e-6, 'at most one bomb per 5.4 s');
 });
 
 test('a trench stroke half outside your territory digs the inside half and lists the rest as skipped', () => {

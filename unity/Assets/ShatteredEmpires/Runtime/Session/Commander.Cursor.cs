@@ -20,7 +20,7 @@ namespace SE.Runtime.Session
     /// </list>
     /// The hover look-up is the O(units) part, so it runs at most 10 times a second and only when the mouse moved more
     /// than 2 px, the selection or the mode changed, or 0.3 s passed (the world under a still mouse moves too).
-    /// Cursor textures are drawn in code once per kind (32×32, coloured core with a dark outline so they read on any
+    /// Cursor textures are drawn in code once per kind and display scale (32 px at 1080p up to 128 px, anti-aliased, coloured core with a dark outline and a soft shadow so they read on any
     /// ground) and set only when the kind changes.
     /// </summary>
     public sealed partial class Commander
@@ -179,16 +179,43 @@ namespace SE.Runtime.Session
         }
 
         // ------------------------------------------------------------------ cursor images
+        // 2026-11-19 (user: "improve the resolution/quality of the contextual crosshairs"): the glyphs are signed
+        // distance shapes designed on a 32-unit grid. Each is rendered once per kind and display scale at the
+        // screen's own pixel size (32 px at 1080p, 43 at 1440p, 64 at 4K, scaled with the interface scale and high
+        // DPI), anti-aliased analytically from the distance (no jaggies at any size), with a dark outline and a
+        // soft drop shadow so it reads on snow, sand, grass and water alike. Hotspots scale with the image.
         static readonly Texture2D[] cursorImages = new Texture2D[(int)CursorContext.Count];
         static int cursorShown;
+        static float cursorScale, cursorScaleWanted, cursorScaleAt;
+        const float CursorPad = 2.5f;   // design units of margin round the 32-unit glyph grid
+
+        /// <summary>Design units to screen pixels for the cursor (1 = the 32-px design at 1080p), in quarter steps.</summary>
+        static float CursorScale()
+        {
+            float byHeight = Screen.height / 1080f;
+            float byDpi = Screen.dpi > 0 ? Screen.dpi / 96f : 1f;
+            float s = Mathf.Max(byHeight, byDpi) * Mathf.Clamp(SE.Runtime.App.GameSettings.UiScale, .75f, 1.6f);
+            // Windows hardware cursors stay sharp up to 128 px (scale 4)
+            return Mathf.Clamp(Mathf.Round(s * 4f) / 4f, 1f, 4f);
+        }
 
         static void SetContextCursor(CursorContext kind)
         {
-            if ((int)kind == cursorShown) return;
+            // the scale is re-read once a second (resolution, DPI and interface scale rarely change)
+            float now = Time.unscaledTime;
+            if (now >= cursorScaleAt || cursorScale <= 0) { cursorScaleAt = now + 1f; cursorScaleWanted = CursorScale(); }
+            float scale = cursorScaleWanted;
+            if ((int)kind == cursorShown && scale == cursorScale) return;
+            if (scale != cursorScale)
+            {
+                // resolution or interface scale changed: redraw every kind at the new size
+                for (int i = 0; i < cursorImages.Length; i++) { if (cursorImages[i] != null) Object.Destroy(cursorImages[i]); cursorImages[i] = null; }
+                cursorScale = scale;
+            }
             cursorShown = (int)kind;
             if (kind == CursorContext.System) { Cursor.SetCursor(null, Vector2.zero, CursorMode.Auto); return; }
-            var image = cursorImages[(int)kind] ??= MakeCursor(kind);
-            Cursor.SetCursor(image, Hotspot(kind), CursorMode.Auto);
+            var image = cursorImages[(int)kind] ??= MakeCursor(kind, scale);
+            Cursor.SetCursor(image, (Hotspot(kind) + new Vector2(CursorPad, CursorPad)) * scale, CursorMode.Auto);
         }
 
         /// <summary>Earlier API: 0 the system cursor, 1 the red attack crosshair, 2 the crossed-out circle.</summary>
@@ -197,50 +224,74 @@ namespace SE.Runtime.Session
         /// <summary>Back to the system cursor (leaving the match, disposing).</summary>
         public static void ResetOrderCursor() => SetContextCursor(CursorContext.System);
 
+        /// <summary>The click point in design units (screen pixels at scale 1, from the top left).</summary>
         static Vector2 Hotspot(CursorContext kind) => kind switch
         {
-            CursorContext.Select => new Vector2(2, 2),     // the arrow's tip
+            CursorContext.Select => new Vector2(3, 2),     // the arrow's tip
             CursorContext.Capture => new Vector2(9, 28),   // the foot of the flag pole
             _ => new Vector2(16, 16),
         };
 
         static Color32 InkOf(CursorContext kind) => kind switch
         {
-            CursorContext.Select => new Color32(246, 244, 236, 255),
-            CursorContext.Move => new Color32(98, 226, 128, 255),
-            CursorContext.Attack => new Color32(240, 72, 56, 255),
-            CursorContext.Invalid => new Color32(240, 72, 56, 255),
-            CursorContext.Collect => new Color32(244, 182, 56, 255),
-            CursorContext.Capture => new Color32(120, 182, 255, 255),
-            CursorContext.Build => new Color32(80, 214, 210, 255),
-            CursorContext.Repair => new Color32(255, 154, 60, 255),
-            CursorContext.Garrison => new Color32(170, 204, 255, 255),
-            CursorContext.Terrain => new Color32(222, 184, 116, 255),
+            CursorContext.Select => new Color32(248, 246, 238, 255),
+            CursorContext.Move => new Color32(98, 230, 128, 255),
+            CursorContext.Attack => new Color32(250, 70, 52, 255),
+            CursorContext.Invalid => new Color32(250, 70, 52, 255),
+            CursorContext.Collect => new Color32(248, 186, 56, 255),
+            CursorContext.Capture => new Color32(120, 186, 255, 255),
+            CursorContext.Build => new Color32(80, 220, 214, 255),
+            CursorContext.Repair => new Color32(255, 158, 60, 255),
+            CursorContext.Garrison => new Color32(170, 206, 255, 255),
+            CursorContext.Terrain => new Color32(228, 190, 120, 255),
             _ => new Color32(255, 255, 255, 255),
         };
 
-        /// <summary>A 32×32 cursor drawn in code: the kind's glyph in its colour with a dark outline.</summary>
-        static Texture2D MakeCursor(CursorContext kind)
+        /// <summary>
+        /// The kind's glyph at <paramref name="scale"/> screen pixels per design unit: its colour, a dark outline
+        /// (1.5 design units) and a soft shadow offset down-right, composited with analytic anti-aliasing.
+        /// </summary>
+        static Texture2D MakeCursor(CursorContext kind, float scale)
         {
-            const int n = 32;
-            var tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, name = "Cursor" + kind };
+            // the 32-unit design plus a CursorPad margin on every side, so outlines and the shadow are never clipped
+            int n = Mathf.Clamp(Mathf.CeilToInt((32 + 2 * CursorPad) * scale), 32, 160);
+            var tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, name = "Cursor" + kind + "@" + scale };
             var px = new Color32[n * n];
-            var ink = InkOf(kind);
+            Color ink = InkOf(kind);
+            // a slightly darker ink toward the bottom of the glyph gives it a little body at large sizes
+            Color inkLow = ink * .82f; inkLow.a = 1;
+            var rim = new Color(.06f, .045f, .04f);
+            const float edge = 1.5f, shadowX = 1.1f, shadowY = 1.6f, shadowSoft = 2.2f;
+            float aa = .5f / scale;   // half a screen pixel, in design units
             for (int y = 0; y < n; y++)
                 for (int x = 0; x < n; x++)
                 {
-                    // shapes are written in screen pixels (y down); texture rows run bottom-up
-                    float d = Shape(kind, x, n - 1 - y);
-                    const float edge = 1.4f;
-                    Color32 col;
-                    if (d <= 0f) col = ink;
-                    else if (d <= edge) col = new Color32(20, 12, 10, (byte)(220 * Mathf.Clamp01(edge - d + .3f)));
-                    else col = new Color32(0, 0, 0, 0);
+                    // the pixel centre in design units (screen y down; texture rows run bottom-up)
+                    float dxu = (x + .5f) / scale - .5f - CursorPad, dyu = (n - 1 - y + .5f) / scale - .5f - CursorPad;
+                    float d = Shape(kind, dxu, dyu);
+                    float inkA = Mathf.Clamp01((aa - d) / (2 * aa));
+                    float rimA = Mathf.Clamp01((aa - (d - edge)) / (2 * aa));
+                    float sd = Shape(kind, dxu - shadowX, dyu - shadowY) - edge;
+                    float shadowA = .42f * (1f - Mathf.SmoothStep(0f, 1f, Mathf.Max(0f, sd) / shadowSoft));
+                    // composite back to front: shadow, outline, ink (straight alpha)
+                    var col = new Color(0, 0, 0, shadowA);
+                    col = Over(new Color(rim.r, rim.g, rim.b, rimA * .94f), col);
+                    var tint = Color.Lerp(ink, inkLow, Mathf.Clamp01(dyu / 32f));
+                    col = Over(new Color(tint.r, tint.g, tint.b, inkA), col);
                     px[y * n + x] = col;
                 }
             tex.SetPixels32(px);
             tex.Apply(false, false);
             return tex;
+        }
+
+        /// <summary>Straight-alpha "a over b".</summary>
+        static Color Over(Color a, Color b)
+        {
+            float outA = a.a + b.a * (1 - a.a);
+            if (outA <= 1e-5f) return new Color(0, 0, 0, 0);
+            float k = b.a * (1 - a.a);
+            return new Color((a.r * a.a + b.r * k) / outA, (a.g * a.a + b.g * k) / outA, (a.b * a.a + b.b * k) / outA, outA);
         }
 
         /// <summary>Signed distance (pixels, ≤ 0 inside) from a pixel to the kind's glyph.</summary>
@@ -254,8 +305,9 @@ namespace SE.Runtime.Session
                 {
                     // the red crosshair: a ring, four ticks and a centre point
                     float ring = Mathf.Abs(r - 8.5f);
-                    float ticks = Mathf.Min(Mathf.Abs(dy) >= 5f && Mathf.Abs(dy) <= 14f ? Mathf.Abs(dx) : 99f,
-                                            Mathf.Abs(dx) >= 5f && Mathf.Abs(dx) <= 14f ? Mathf.Abs(dy) : 99f);
+                    // ticks as true segments, so their ends carry the outline too (they were cut off flat)
+                    float ticks = Mathf.Min(Mathf.Min(Segment(dx, dy, 0, -14f, 0, -6f), Segment(dx, dy, 0, 6f, 0, 14f)),
+                                            Mathf.Min(Segment(dx, dy, -14f, 0, -6f, 0), Segment(dx, dy, 6f, 0, 14f, 0)));
                     return Mathf.Min(Mathf.Min(ring, ticks), r) - 1.1f;
                 }
                 case CursorContext.Invalid:

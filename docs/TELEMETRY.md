@@ -83,6 +83,51 @@ Only add nullable columns (BigQuery cannot drop or retype one in place), bump `S
 then deploy. Unknown columns are ignored on insert (`ignoreUnknownValues`), so a server that ships before the setup
 runs loses only the new columns, not rows.
 
+**Schema v2 (2026-11-19, docs/performance/TELEMETRY_ANALYSIS_2026-11-19.md section 5):** added columns only.
+`server_match_minute`: `overrun_s` (loop time lost to long iterations; `idle_s` now counts only time with nobody
+connected), `bytes_out_spectators`, `resyncs`, `catch_ups`, `congestion_skips`. `server_instance_minute`: `cpu_cores`
+is now the cgroup quota (or `SE_CPU_CORES`), plus `cpu_cores_effective`, `cpu_cores_host` and `wire_bytes_out`
+(after permessage-deflate). `player_minute`: `ai_plans`. `client_minute`: `game_pace`, `snapshot_decode_ms_avg/max`,
+`snapshot_apply_ms_avg/max`, `keyed_resyncs`; `in_match` is false for minutes spent on a finished match's screen;
+`process_mem_mb` comes from the OS on Windows (null where unknown) and `gc_alloc_kb_per_frame` from
+`GC.GetAllocatedBytesForCurrentThread` (main thread) in player builds. Battles' `sides[].units` include base engineers.
+Run `node tools/telemetry-setup.mjs` before (or soon after) deploying to add the columns.
+
+**Schema v3 (2026-11-19, Pass 7 in docs/performance/IMPLEMENTATION_LOG.md):** added columns only (not yet created in
+BigQuery: run `node tools/telemetry-setup.mjs --dry-run`, then without `--dry-run`, before the deploy that ships them;
+the tool only ever adds columns).
+`server_match_minute`:
+* Routing: `route_fail_reasons` now uses `nav.lastFail` (`goal`, `cut`, `coarse`, `fine`, `air`, `other`); a failed-route
+  memo hit is no longer a failure (v1/v2 counted memo hits as `other` failures, which made the late 4v4 look like 17 %
+  of routes failing) and goes to `route_memo_hits`. `routes_by_caller[]` (name, calls, total_ms, failures, memo_hits):
+  the scheduler system that was running (`navigation`, `combat`, `ai`, `field economy`, `production`, ...), `command`
+  (a player order) or `outside`. `nav_counters[]`: every other `game.navStats` counter's delta (deferrals, refusals,
+  admitted, wait ticks, local / full invalidations, memo and corridor kept / dropped, soft-wreck routes...).
+* `subsystems[]` (name, calls, total_ms, avg_ms, max_ms): `snapshot.build`, `snapshot.delta`, `snapshot.stringify`,
+  `snapshot.geo`, `post.out` (postMessage to the main thread), `autosave.serialize`, `autosave.stringify`,
+  `autosave.gzip_wall` (pool thread, start to callback), `visibility.stamp` (sources into team bitmaps),
+  `visibility.civs` (explored, intel, battlefield memory), `combat.projectiles`, `ai.plan`. AI planning code can add its
+  own phases with `game.tm?.span('ai.<phase>', ms)` (the hook is null when telemetry is off).
+* `ai_seats[]` (seat, plans, total_ms, max_ms): planner runs and time per seat (B2-style starvation shows at once).
+* `gc_kinds[]` (minor, major, incremental, weak: calls, total_ms, max_ms), `heap_old_space_mb`.
+* `bytes_by_kind[]` / `msgs_by_kind[]` (snap, econ, geo, note, ack, ...), `deflate_sample_ratio` and
+  `deflate_sample_ms_per_mb` (1 in 64 messages over 1 KB is deflated in the worker to estimate wire size and the main
+  thread's permessage-deflate cost).
+
+`client_minute`:
+* `main_thread_ms_avg`, `render_thread_ms_avg`, `present_wait_ms_avg` (FrameTimingManager) and `untracked_ms_avg`
+  (main thread minus present wait minus `main_ms`: the B4 gap). `cpu_frame_ms_avg` turned out to track the whole frame
+  interval, so it cannot tell CPU from waiting on its own.
+* `loop_phases[]` (name, avg_ms, max_ms per frame): player-loop phases timed by markers inserted into the player loop
+  (`Runtime/App/FrameLoopTimer.cs`): `initialization`, `early_update`, `fixed_update`, `pre_update`, `update`,
+  `pre_late_update`, `post_late_update`, and inside them `scripts` (all MonoBehaviour Updates), `ui` (UI Toolkit panel
+  update + repaint), `render` (FinishFrameRendering: culling and draw submission), `present`, plus `between_frames`.
+* `draw_calls_avg`, `batches_avg`, `setpass_calls_avg`, `triangles_avg` (profiler render counters; null where a release
+  player does not report them).
+* `objects[]`: live counts at the end of the minute (`game_object`, `object`, `mesh`, `material`, `texture`, `asset`
+  from the memory profiler counters; `ui_element` every fifth minute), for the long-session creep.
+* `post_match_s`: seconds of the minute spent on a finished match's screen.
+
 ## Privacy
 
 * No names, emails, IP addresses or Steam ids are collected; there are no such columns. Civ names and player names

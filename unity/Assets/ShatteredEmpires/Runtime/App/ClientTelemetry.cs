@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using SE.Net;
@@ -66,7 +67,11 @@ namespace SE.Runtime.App
         readonly int[] hist = new int[Bins + 1];
         int frames, over33, over50, over100;
         double frameSum, frameMax, mainSum, cpuSum, gpuSum, allocSum, distSum, interpSum;
-        int cpuN, gpuN, allocN, interpN;
+        int cpuN, gpuN, allocN, interpN, liveFrames;
+        long allocLast = -1;
+        bool allocByThread = true;     // GC.GetAllocatedBytesForCurrentThread works in players (the recorder only in development builds)
+        double decodeStart, applyStart;
+        int resyncStart;
         long visibleSum;
         readonly List<double> mainSamples = new List<double>(4096);
         double[] phaseSum, phaseMax;
@@ -82,23 +87,45 @@ namespace SE.Runtime.App
         int errorRowsThisMinute;
         ProfilerRecorder gcAlloc;
         readonly FrameTiming[] timing = new FrameTiming[1];
+        // v3 (Pass 7): where the frame goes outside GameBootstrap.Update (main / render thread, present wait, player-loop
+        // phases), render counters, live object counts and time on a finished match's screen
+        double mainThreadSum, renderThreadSum, presentWaitSum, untrackedSum, postMatchS;
+        int mainThreadN, renderThreadN, presentWaitN, untrackedN, loopN, minutesSent;
+        readonly double[] loopSum = new double[FrameLoopTimer.Names.Length], loopMax = new double[FrameLoopTimer.Names.Length];
+        static readonly string[] RenderCounters = { "Draw Calls Count", "Batches Count", "SetPass Calls Count", "Triangles Count" };
+        static readonly string[] RenderKeys = { "draw_calls_avg", "batches_avg", "setpass_calls_avg", "triangles_avg" };
+        readonly ProfilerRecorder[] render = new ProfilerRecorder[4];
+        readonly double[] renderSum = new double[4];
+        readonly int[] renderN = new int[4];
+        static readonly string[] MemoryCounters = { "Game Object Count", "Object Count", "Mesh Count", "Material Count", "Texture Count", "Asset Count" };
+        static readonly string[] MemoryKeys = { "game_object", "object", "mesh", "material", "texture", "asset" };
+        readonly ProfilerRecorder[] memory = new ProfilerRecorder[6];
 
         public ClientTelemetry()
         {
             Identify();
             if (!errorHook) { errorHook = true; Application.logMessageReceivedThreaded += OnLog; }
+            if (Enabled) FrameLoopTimer.Install();
         }
 
-        /// <summary>Once per frame (end of GameBootstrap.Update).</summary>
-        public void Frame(double now, double frameMs, double mainMs, bool inMatch, string[] names, double[] phaseMs, float camDistance, int visibleUnits, float interpDelayS)
+        /// <summary>
+        /// Once per frame (end of GameBootstrap.Update). <paramref name="inMatch"/>: a match is on screen (frames are
+        /// measured); <paramref name="live"/>: and it has not ended. The minute's in_match is whether most of it was live,
+        /// so time spent on a finished match's screen is no longer counted as match time (2026-11-19).
+        /// </summary>
+        public void Frame(double now, double frameMs, double mainMs, bool inMatch, string[] names, double[] phaseMs, float camDistance, int visibleUnits, float interpDelayS, bool live = true)
         {
-            inMatchFlag = inMatch; enabledFlag = Enabled;
-            if (!Enabled) { if (gcAlloc.Valid) gcAlloc.Dispose(); minuteStart = -1; any = false; return; }
-            if (!gcAlloc.Valid) gcAlloc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame");
+            inMatchFlag = inMatch && live; enabledFlag = Enabled;
+            if (!Enabled) { if (gcAlloc.Valid) gcAlloc.Dispose(); StopRecorders(); minuteStart = -1; any = false; return; }
+            if (!FrameLoopTimer.Installed) FrameLoopTimer.Install();
+            StartRecorders();
+            if (!allocByThread && !gcAlloc.Valid) gcAlloc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame");
             if (minuteStart < 0) Begin(now, names);
+            long allocBytes = SampleAlloc();
             if (!inMatch) return;
             any = true;
             frames++;
+            if (live) liveFrames++;
             frameSum += frameMs; if (frameMs > frameMax) frameMax = frameMs;
             hist[Math.Min(Bins, (int)(frameMs * 2))]++;
             if (frameMs > 33.4) over33++;
@@ -107,10 +134,26 @@ namespace SE.Runtime.App
             mainSum += mainMs; if (mainSamples.Count < 16384) mainSamples.Add(mainMs);
             if (FrameTimingManager.GetLatestTimings(1, timing) > 0)
             {
-                if (timing[0].cpuFrameTime > 0) { cpuSum += timing[0].cpuFrameTime; cpuN++; }
-                if (timing[0].gpuFrameTime > 0) { gpuSum += timing[0].gpuFrameTime; gpuN++; }
+                var ft = timing[0];
+                if (ft.cpuFrameTime > 0) { cpuSum += ft.cpuFrameTime; cpuN++; }
+                if (ft.gpuFrameTime > 0) { gpuSum += ft.gpuFrameTime; gpuN++; }
+                if (ft.cpuMainThreadFrameTime > 0)
+                {
+                    mainThreadSum += ft.cpuMainThreadFrameTime; mainThreadN++;
+                    presentWaitSum += Math.Max(0, ft.cpuMainThreadPresentWaitTime); presentWaitN++;
+                    untrackedSum += Math.Max(0, ft.cpuMainThreadFrameTime - Math.Max(0, ft.cpuMainThreadPresentWaitTime) - mainMs); untrackedN++;
+                }
+                if (ft.cpuRenderThreadFrameTime > 0) { renderThreadSum += ft.cpuRenderThreadFrameTime; renderThreadN++; }
             }
-            if (gcAlloc.Valid) { allocSum += gcAlloc.LastValue; allocN++; }
+            if (!live) postMatchS += frameMs / 1000.0;
+            if (FrameLoopTimer.Installed)
+            {
+                var lf = FrameLoopTimer.LastFrameMs;
+                for (int k = 0; k < loopSum.Length; k++) { loopSum[k] += lf[k]; if (lf[k] > loopMax[k]) loopMax[k] = lf[k]; }
+                loopN++;
+            }
+            for (int k = 0; k < render.Length; k++) if (render[k].Valid && render[k].Count > 0) { renderSum[k] += render[k].LastValue; renderN[k]++; }
+            if (allocBytes >= 0) { allocSum += allocBytes; allocN++; }
             if (phaseMs != null && phaseSum != null)
                 for (int k = 0; k < phaseSum.Length && k < phaseMs.Length; k++) { phaseSum[k] += phaseMs[k]; if (phaseMs[k] > phaseMax[k]) phaseMax[k] = phaseMs[k]; }
             distSum += camDistance;
@@ -126,7 +169,11 @@ namespace SE.Runtime.App
             Array.Clear(hist, 0, hist.Length);
             frames = over33 = over50 = over100 = 0;
             frameSum = frameMax = mainSum = cpuSum = gpuSum = allocSum = distSum = interpSum = 0;
-            cpuN = gpuN = allocN = interpN = 0; visibleSum = 0;
+            cpuN = gpuN = allocN = interpN = liveFrames = 0; visibleSum = 0;
+            mainThreadSum = renderThreadSum = presentWaitSum = untrackedSum = postMatchS = 0;
+            mainThreadN = renderThreadN = presentWaitN = untrackedN = loopN = 0;
+            Array.Clear(loopSum, 0, loopSum.Length); Array.Clear(loopMax, 0, loopMax.Length);
+            Array.Clear(renderSum, 0, renderSum.Length); Array.Clear(renderN, 0, renderN.Length);
             mainSamples.Clear();
             Array.Clear(bandTime, 0, bandTime.Length);
             if (names != null && (phaseNames == null || phaseNames.Length != names.Length)) { phaseNames = names; phaseSum = new double[names.Length]; phaseMax = new double[names.Length]; }
@@ -134,6 +181,80 @@ namespace SE.Runtime.App
             gcStart = GC.CollectionCount(0);
             errorRowsThisMinute = 0;
             try { cpuStart = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime; } catch { cpuStart = TimeSpan.Zero; }
+        }
+
+        void StartRecorders()
+        {
+            for (int k = 0; k < render.Length; k++) if (!render[k].Valid) { try { render[k] = ProfilerRecorder.StartNew(ProfilerCategory.Render, RenderCounters[k]); } catch { } }
+            for (int k = 0; k < memory.Length; k++) if (!memory[k].Valid) { try { memory[k] = ProfilerRecorder.StartNew(ProfilerCategory.Memory, MemoryCounters[k]); } catch { } }
+        }
+        void StopRecorders()
+        {
+            for (int k = 0; k < render.Length; k++) if (render[k].Valid) render[k].Dispose();
+            for (int k = 0; k < memory.Length; k++) if (memory[k].Valid) memory[k].Dispose();
+        }
+
+        /// <summary>v3: live object counts (profiler memory counters; UI Toolkit elements every fifth minute).</summary>
+        JArray ObjectCounts()
+        {
+            var a = new JArray();
+            for (int k = 0; k < memory.Length; k++) if (memory[k].Valid && memory[k].Count > 0) a.Add(new JObject { ["type"] = MemoryKeys[k], ["count"] = memory[k].LastValue });
+            if (minutesSent % 5 == 0)
+            {
+                int n = 0;
+                foreach (var d in UnityEngine.Object.FindObjectsByType<UnityEngine.UIElements.UIDocument>(FindObjectsSortMode.None))
+                    if (d != null && d.rootVisualElement != null) n += CountElements(d.rootVisualElement);
+                a.Add(new JObject { ["type"] = "ui_element", ["count"] = n });
+            }
+            return a;
+        }
+        static int CountElements(UnityEngine.UIElements.VisualElement e)
+        {
+            int n = 1;
+            for (int i = 0; i < e.hierarchy.childCount; i++) n += CountElements(e.hierarchy[i]);
+            return n;
+        }
+
+        /// <summary>Managed bytes allocated on the main thread since the last frame, or -1 when unknown.</summary>
+        long SampleAlloc()
+        {
+            if (allocByThread)
+            {
+                try
+                {
+                    long now = GC.GetAllocatedBytesForCurrentThread(), d = allocLast < 0 ? -1 : now - allocLast;
+                    allocLast = now;
+                    return d;
+                }
+                catch { allocByThread = false; }
+            }
+            return gcAlloc.Valid && (Debug.isDebugBuild || Application.isEditor) ? gcAlloc.LastValue : -1;
+        }
+
+        // the working set: Process.WorkingSet64 reads 0 in player builds, so on Windows the OS is asked directly
+        [StructLayout(LayoutKind.Sequential)]
+        struct ProcessMemoryCounters
+        {
+            public uint cb, PageFaultCount;
+            public UIntPtr PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage;
+        }
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll")] static extern bool K32GetProcessMemoryInfo(IntPtr process, out ProcessMemoryCounters counters, uint size);
+#endif
+        /// <summary>Process working set in MB, or null when the platform does not say.</summary>
+        static double? WorkingSetMb()
+        {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            try
+            {
+                if (K32GetProcessMemoryInfo(GetCurrentProcess(), out var c, (uint)Marshal.SizeOf<ProcessMemoryCounters>()) && c.WorkingSetSize.ToUInt64() > 0)
+                    return c.WorkingSetSize.ToUInt64() / 1048576.0;
+            }
+            catch { /* fall through */ }
+#endif
+            try { long ws = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64; if (ws > 0) return ws / 1048576.0; } catch { }
+            return null;
         }
 
         /// <summary>Once per frame after <see cref="Frame"/>: closes the minute and sends what is due.</summary>
@@ -146,12 +267,13 @@ namespace SE.Runtime.App
                 return;
             }
             if (minuteStart < 0) return;
-            if (net != lastNet) { lastNet = net; bytesStart = net?.Link.BytesIn ?? 0; snapshotsStart = session?.Snapshots ?? 0; }   // a new connection: new baselines
+            if (net != lastNet) { lastNet = net; bytesStart = net?.Link.BytesIn ?? 0; snapshotsStart = session?.Snapshots ?? 0; Baseline(session); }   // a new connection: new baselines
             if (now - minuteStart >= MinuteSeconds)
             {
-                if (any && frames > 0) Enqueue(MinuteRow(now, net, session));
+                if (any && frames > 0) { Enqueue(MinuteRow(now, net, session)); minutesSent++; }
                 bytesStart = net?.Link.BytesIn ?? 0;
                 snapshotsStart = session?.Snapshots ?? 0;
+                Baseline(session);
                 Begin(now, phaseNames);
             }
             if (!ready) return;
@@ -166,6 +288,15 @@ namespace SE.Runtime.App
             foreach (var r in queued) rows.Add(r);
             queued.Clear();
             net.Send(new JObject { ["t"] = "telemetry", ["install"] = InstallId, ["build"] = Build, ["version"] = Version, ["platform"] = Platform, ["rows"] = rows });
+        }
+
+        Session.ClientSession timedSession;
+        void Baseline(Session.ClientSession session)
+        {
+            timedSession = session;
+            if (session == null) return;
+            decodeStart = session.SnapshotDecodeMsTotal; applyStart = session.SnapshotApplyMsTotal; resyncStart = session.KeyedResyncs;
+            session.SnapshotDecodeMsMax = 0; session.SnapshotApplyMsMax = 0;
         }
 
         void Enqueue(JObject row)
@@ -190,18 +321,20 @@ namespace SE.Runtime.App
             if (phaseNames != null && phaseSum != null)
                 for (int k = 0; k < phaseNames.Length; k++) phases.Add(new JObject { ["name"] = phaseNames[k], ["avg_ms"] = Round(phaseSum[k] / frames), ["max_ms"] = Round(phaseMax[k]) });
             int band = 0; for (int i = 1; i < 4; i++) if (bandTime[i] > bandTime[band]) band = i;
-            double cpuPct = 0, memMb = 0;
+            double cpuPct = 0;
             try
             {
                 var p = System.Diagnostics.Process.GetCurrentProcess();
                 cpuPct = (p.TotalProcessorTime - cpuStart).TotalSeconds / Math.Max(1, seconds) * 100.0;
-                memMb = p.WorkingSet64 / 1048576.0;
             }
             catch { /* not available on this platform */ }
+            double? memMb = WorkingSetMb();
             var units = session?.Units;
-            return new JObject
+            int snaps = session != null ? session.Snapshots - snapshotsStart : 0;
+            bool timed = session != null && session == timedSession && snaps > 0;
+            var row = new JObject
             {
-                ["table"] = "client_minute", ["in_match"] = true, ["wall_s"] = Round(seconds), ["frames"] = frames,
+                ["table"] = "client_minute", ["in_match"] = liveFrames * 2 >= frames, ["wall_s"] = Round(seconds), ["frames"] = frames,
                 ["fps_avg"] = Round(frames / Math.Max(0.001, frameSum / 1000.0)),
                 ["frame_ms_p50"] = Percentile(.5), ["frame_ms_p95"] = Percentile(.95), ["frame_ms_p99"] = Percentile(.99), ["frame_ms_max"] = Round(frameMax),
                 ["frames_over_33ms"] = over33, ["frames_over_50ms"] = over50, ["frames_over_100ms"] = over100,
@@ -211,20 +344,43 @@ namespace SE.Runtime.App
                 ["gc_alloc_kb_per_frame"] = allocN > 0 ? (JToken)Round(allocSum / allocN / 1024.0) : null, ["gc_collections"] = GC.CollectionCount(0) - gcStart,
                 ["mono_heap_mb"] = Round(UnityEngine.Profiling.Profiler.GetMonoUsedSizeLong() / 1048576.0),
                 ["total_alloc_mb"] = Round(UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / 1048576.0),
-                ["process_mem_mb"] = Round(memMb), ["process_cpu_pct"] = Round(cpuPct),
+                ["process_mem_mb"] = memMb.HasValue ? (JToken)Round(memMb.Value) : null, ["process_cpu_pct"] = Round(cpuPct),
                 ["zoom_band"] = new[] { "close", "mid", "far", "strategic" }[band], ["camera_distance"] = Round(distSum / frames),
                 ["visible_units"] = visibleSum / frames, ["units_known"] = units?.Count ?? 0,
                 ["net_bytes_in"] = net != null ? net.Link.BytesIn - bytesStart : 0, ["snapshots"] = session != null ? session.Snapshots - snapshotsStart : 0,
                 ["rtt_ms"] = net != null ? (JToken)Round(net.RttMs) : null, ["interp_delay_ms"] = interpN > 0 ? (JToken)Round(interpSum / interpN * 1000.0) : null,
                 ["game_speed"] = session?.PlayRate ?? 1, ["paused"] = session?.Paused ?? false, ["spectator"] = session?.Spectator ?? false,
+                ["game_pace"] = session != null && session.Pace >= 0 ? (JToken)Round(session.Pace) : null,
+                ["snapshot_decode_ms_avg"] = timed ? (JToken)Round((session.SnapshotDecodeMsTotal - decodeStart) / snaps) : null,
+                ["snapshot_decode_ms_max"] = timed ? (JToken)Round(session.SnapshotDecodeMsMax) : null,
+                ["snapshot_apply_ms_avg"] = timed ? (JToken)Round((session.SnapshotApplyMsTotal - applyStart) / snaps) : null,
+                ["snapshot_apply_ms_max"] = timed ? (JToken)Round(session.SnapshotApplyMsMax) : null,
+                ["keyed_resyncs"] = session != null && session == timedSession ? session.KeyedResyncs - resyncStart : 0,
                 ["quality"] = Quality(), ["resolution"] = Screen.width + "x" + Screen.height,
+                // v3 (Pass 7)
+                ["main_thread_ms_avg"] = mainThreadN > 0 ? (JToken)Round(mainThreadSum / mainThreadN) : null,
+                ["render_thread_ms_avg"] = renderThreadN > 0 ? (JToken)Round(renderThreadSum / renderThreadN) : null,
+                ["present_wait_ms_avg"] = presentWaitN > 0 ? (JToken)Round(presentWaitSum / presentWaitN) : null,
+                ["untracked_ms_avg"] = untrackedN > 0 ? (JToken)Round(untrackedSum / untrackedN) : null,
+                ["loop_phases"] = LoopPhases(),
+                ["objects"] = ObjectCounts(),
+                ["post_match_s"] = Round(postMatchS),
             };
+            for (int k = 0; k < RenderKeys.Length; k++) row[RenderKeys[k]] = renderN[k] > 0 ? (JToken)Round(renderSum[k] / renderN[k]) : null;
+            return row;
+        }
+
+        JArray LoopPhases()
+        {
+            var a = new JArray();
+            if (loopN == 0) return a;
+            for (int k = 0; k < loopSum.Length; k++) a.Add(new JObject { ["name"] = FrameLoopTimer.Names[k], ["avg_ms"] = Round(loopSum[k] / loopN), ["max_ms"] = Round(loopMax[k]) });
+            return a;
         }
 
         static JObject SessionRow(double now)
         {
-            double memMb = 0;
-            try { memMb = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / 1048576.0; } catch { }
+            double? memMb = WorkingSetMb();
             return new JObject
             {
                 ["table"] = "client_session", ["os"] = SystemInfo.operatingSystem, ["os_family"] = SystemInfo.operatingSystemFamily.ToString(),
@@ -234,7 +390,7 @@ namespace SE.Runtime.App
                 ["resolution"] = Screen.width + "x" + Screen.height, ["refresh_hz"] = Round(Screen.currentResolution.refreshRateRatio.value),
                 ["fullscreen"] = Screen.fullScreenMode.ToString(), ["quality"] = Quality(), ["vsync"] = QualitySettings.vSyncCount, ["target_fps"] = Application.targetFrameRate,
                 ["unity_version"] = Application.unityVersion, ["editor"] = Application.isEditor, ["debug_build"] = Debug.isDebugBuild,
-                ["process_mem_mb"] = Round(memMb), ["startup_s"] = Round(Time.realtimeSinceStartupAsDouble),
+                ["process_mem_mb"] = memMb.HasValue ? (JToken)Round(memMb.Value) : null, ["startup_s"] = Round(Time.realtimeSinceStartupAsDouble),
             };
         }
 

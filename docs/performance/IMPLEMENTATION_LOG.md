@@ -838,3 +838,207 @@ Details and numbers are in docs/gameplay-overhaul/NAV_BRIDGES.md, "Pass 5".
   roughly halved (1,784 → 801 ms in minutes 21–30, 2,635 → 1,438 ms in minutes 31–40). The worst tick fell from
   439–490 to 202–250 ms.
 - Hash-changing (behaviour change), deterministic.
+
+# Pass 6: incremental warzone (2026-11-19, client, TELEMETRY_ANALYSIS_2026-11-19 B3)
+
+`WarzoneRenderer.Update` used to clear every batch and re-place every trench detail, no-man's-land patch and wreck
+(hull, scorch decal, gun barrel, five debris pieces) on the main thread in one frame whenever any of the trench,
+battlefield, terrain, defence or road revisions changed. In a 4v4 that is several times a second, and the cost grows
+with the wreck count (production i5: warzone 10.2 ms/frame average, frames up to 5 s).
+
+**Changes** (`Runtime/Battlefields/WarzoneRenderer.cs`, `TrenchRenderer.cs`):
+- **Per-tile cache.** Wrecks and no-man's-land are built per tile into a cell (`Cell`: one packed `InstanceData[]` with
+  per-part ranges, plus the tile's burning-wreck points). A cell's key covers everything it reads: its wreck records,
+  shelling stage, known/urban flags, `ActionLandscape`, and a ground key over the 19-hex disk (heights, water, flags,
+  biome, crater impacts, trench geometry; local hashes memoised per tile per `GeometryRevision`). A revision change only
+  re-keys the cells (0.1–1.5 ms in the editor); changed cells are queued.
+- **Time-sliced rebuilds.** `WarzoneRenderer.BudgetMs` (1.5 ms) per frame: trench nodes get up to half, battlefield
+  cells the rest; always at least one item a frame. The part batches are re-joined from the cells with one `MemCpy` per
+  cell and part, at most once a frame, only when a cell changed.
+- **Trenches** are re-keyed only on a trench, defence, road or terrain change (no longer on every battlefield change).
+  `TrenchRenderer.Build` now only re-keys and queues; `Pump(budget)` rebuilds queued nodes, bakes each node into packed
+  arrays, re-joins the changed groups within the budget (at least one a frame once no node is waiting) and re-collects
+  the details by memcpy once everything is joined. Trench meshes are joined per 8×8-hex group instead of per 16×16
+  terrain chunk (a quarter of the join per change, a few more draws).
+- Wreck scatter (debris, char tint, position of wrecks without `HasPosition`) is seeded by the wreck's index within its
+  tile instead of its index in the whole wreck list, so adding a wreck no longer reshuffles every other wreck's debris.
+- Diagnostics: `Rebuilds` now counts re-key passes; `PartMs` = trench / battlefield cells / join ms (the bench JSON
+  still labels the third one `spoilMs`); `CellsBuilt`, `CellsPending`, `LastScanMs`, `TrenchRenderer.LastPumpMs`.
+
+**Measurement** (edit-mode harness in the Unity editor, Release code optimisation; 256² stress world, the stress
+scenario's 24-node trench lines, 600→750 wrecks, 1,587 shelled tiles, 500 craters; a battlefield change every 12
+frames with 2 new wrecks, 4 stage changes and 3 new craters, a trench revision every 60 frames; 900 frames timed):
+
+| | before | after |
+|---|---|---|
+| warzone ms / frame, average | 10.06 | 0.60 |
+| p95 / p99 | – / 173.8 | 2.66 / 3.56 |
+| worst frame | 558.8 | 4.31 |
+| first full build | 350 ms in one frame | 97 ms spread over 50 frames (≤ ~3 ms each) |
+
+The before figure matches the production average (10.2 ms). Remaining frames over 1.5 ms are single trench-node builds
+(0.3–2.6 ms each, the minimum one item a frame). Equivalence: after 600 frames of churn (wrecks added and removed,
+stages changed and removed, craters added and removed, a trench node removed and one re-dug, wrecks without a
+position), the incrementally maintained batches equal a fresh build of the final state part by part (count and
+position/colour checksums of all 14 warzone parts and 3 trench detail batches, trench vertex count, burning wrecks).
+
+**Check visually:** wrecks and no-man's-land appear within a few frames of the server reporting them (a fresh match or
+rejoin with hundreds of wrecks fills in over ~1 s); trench works over 8×8 groups join seamlessly; debris around
+existing wrecks looks the same in kind but is laid out differently than before (new seeding).
+
+**B4 (session creep), not resolved in this pass.** A real soak was not possible: the editor's play mode was shared with
+another agent restarting the stress scene. Object counts sampled inside that session (GameObjects 76, Meshes
+968→974, Materials 310→319, Texture2D 1,175→1,186 over a few minutes, across at least one scene restart) are not
+conclusive. One churn source found and reduced here: every trench re-join made a new `Mesh` and `InstanceBatch` (three
+`MaterialPropertyBlock`s, freed only by the finaliser, which rarely runs with GC near 0); that now happens per 8×8 group
+and only once a slice. Still to do: a standalone player soak (2–3 h, two matches and a post-match screen) logging
+`Resources.FindObjectsOfTypeAll` counts per type and `cpu_frame_ms - main_ms` every minute.
+
+# Pass 6: routing load (2026-11-19, server navigation, TELEMETRY_ANALYSIS_2026-11-19 B1)
+
+Reproduction: `tools/route-load-bench.mjs` (pangaea, size 104, 4v4 of 8 brutal AIs, max starting resources), HEAD
+e1aae82 against HEAD plus only these edits, each pair run side by side on the same (loaded) machine.
+
+- **Localized invalidation** (`actionNavigation.invalidate(tiles, 'added'|null)` → `invalidateNear`): a building or wreck
+  change drops only the corridors it lies on (or, for removals, whose A* lower bound through the change beats their
+  cost), the flow fields that reached it, and the failure-memo entries it can affect. Crowding cache kept; bridge
+  crossings rebuilt only on ground changes (`groundVersion`). Call sites: `actionBases.addFacility`, wreck clearing,
+  `actionGame.removeBuilding`.
+- **Per-tick routing budget** (`ROUTE_BUDGET = { work: 12000, admit: 6, expire: 25 }`, counted in deterministic work
+  units, not wall clock): deferrable requests (chases, collision re-routes, stuck replans, return-after-chase, AI group
+  members) queue FIFO on the unit (saved) once it is spent; 6 are admitted per tick regardless. `actionOrders.budgetRoute`,
+  `DEFERRED`, `settleRoute`; `GROUP_ROUTE.min = 4`.
+- **Cheaper failures**: one batch per `route()` so retries reuse work, retry stops when the penalised corridor still
+  crosses the failed hex, unthreadable steps remembered 50 ticks per class, group orders skip remaining slots/start hex
+  after a far failure.
+
+| Seed | Run | Length | Tick mean / p95 / p99 / max (ms) | Route s | Fail ms |
+|---|---|---|---|---|---|
+| 2 | before | 21 min | 30.5 / 103 / 244 / 2394 | 94.9 | 42,230 |
+| 2 | after | 22 min | 19.9 / 83 / 151 / 656 | 52.0 | 10,462 |
+| 3 | before (quiet, sequential) | 16 min | 4.6 / 10.6 / 22.7 / 72 | 6.1 | 797 |
+| 3 | after (quiet, sequential) | 18.5 min | 10.4 / 35 / 68 / 693 | 16.7 | 289 |
+| 4 | before | 27 min | 17.3 / 77 / 136 / 514 | 25.3 | 1,265 |
+| 4 | after | 27 min | 16.8 / 74 / 131 / 607 | 17.5 | 610 |
+
+Seed 3 is not routing-bound; an earlier paired seed 3 result (20.7 → 10.8 ms) was load noise and is dropped. The seed 3
+"after" row above ran later than "before" under different machine load: run side by side over minutes 0–10, the final
+tree and the variant without its last four additions (batch work-charging, bad-step memory, retry stop, group
+short-cut) did identical work in identical thread CPU (26.5 vs 26.6 s), with ~11 % more route wall time. Those additions
+pay off on seed 2 (failures per minute 283 → 116 in minutes 11–15). Seed 2 minutes 11–15: tick mean 43 → 23 ms, p99 667 → 202 ms, max 2.4 s → 0.63 s. Deferral is rare (0–60 requests per
+game minute, mean wait ≤ 9 ticks, max 22); most of the gain is localized invalidation and cheaper failures. Most of
+seed 2's failure time came from an AI barricade on a road-only hex (fixed in actionAIWorks). Tests:
+`test/nav-route-budget-2026-11-19.test.js`. Risks: a remembered unthreadable step can block approaches from other sides
+for 5 s; deferred routes shift movement timing slightly; `ROUTE_BUDGET.work` was calibrated on one machine.
+
+# Pass 7: diagnostics-driven (2026-11-19, server perf + telemetry)
+
+## Data: BigQuery after the 2026-11-19 analysis (2026-11-20 01:11 to 03:32 UTC, build 9700bb8, `env = 'prod'`)
+
+Four new matches: 0ed268 (PvP 2v2 with 2 AIs, saltmarsh_estuary 108, 81 min, up to 305 units), fdf76c (observed 1v1 of
+AIs on a custom 232 map at 8x, up to 205 units), 23017c and 43a1cf (small).
+
+| Match | Tick mean | p99 worst | Max | Pace | Route share of tick | Route failures | Snapshot share of worker | ms per snapshot round |
+|---|---|---|---|---|---|---|---|---|
+| 0ed268 | 7.4 | 64 | 189 | 1.0 | 13 % | 8 | **24.6 %** | 4.84 |
+| fdf76c | 6.9 | 139 | 1,071 | 6.58 (8x asked) | 38 % | 4,984 (4,979 `other`) | 9.7 % | 10.9 |
+
+* Scheduler shares outside navigation (31 to 43 %) and AI (10 to 32 %): **combat 11 to 20 %, visibility 11 to 18 %**,
+  field economy 4 to 7 %, production 4 to 5 %. Snapshot building and encoding is the largest non-sim cost in every
+  human match (25 % of worker time in 0ed268).
+* fdf76c's 4,979 `other` route failures could not be read: v2 counted failed-route memo hits as `other` failures
+  (fixed below, `route_memo_hits` and `nav.lastFail` reasons).
+* **Client:** `cpu_frame_ms_avg` 25 to 47 ms while `main_ms_avg` (GameBootstrap.Update) was 4.6 to 9.5 ms and the GPU
+  13.6 to 18.3 ms. Over 0ed268 (64 minutes) the 7950X went from 17 to 34 ms CPU frame (main 2 to 8 ms) and the i5 from 37
+  to 65 ms (main 4 to 19 ms); Unity's allocated memory rose 323 to 451 MB and 378 to 694 MB. `cpu_frame_ms` turned out to
+  equal the whole frame interval (including waits), so v2 cannot say whether the gap is render submission, the render
+  thread, UI Toolkit or waiting: new client columns below.
+
+## Local profile (where the server's time goes)
+
+`D:/Projects/se_scratch/p7/bench.mjs`: the production 4v4 (pangaea 104, 8 brutal AIs, max resources, as
+tools/route-load-bench.mjs) with the live worker's per-interval work: one tick per 100 ms interval, 5 Hz snapshots for
+the god-view spectator **and** one fog-of-war player (keyed-delta encoded and stringified), econ every second, autosave
+serialize + stringify every 60 game-seconds; `--cpu-prof`, samples attributed to the outermost system frame
+(`analyze.mjs`). Seed 2, game minutes 0 to 20 (390 to 505 units), share of tick + snapshot time:
+
+| System | Share | of which routing (nav) | Notes |
+|---|---|---|---|
+| navigation (`unitMotion`) | 40 % | 23 % | off limits (navigation agent) |
+| **snapshots** | **24 %** | – | build 15.5 % (per-unit records ~45 % of it, sites ~14 %, 1 Hz econ block ~22 %), keyed delta 6.6 %, stringify 1.9 %; permessage-deflate (main thread) another 2.3 % |
+| **combat** | **14 %** | 4 % (chase routes + line of sight) | target acquisition (`acquire`: spatial query, then friendly entries rejected one by one) about a third of combat |
+| **field economy** | **6.7 %** | 0.6 % | engineers: `threatsFor` (every unit and building scanned per civ, every other tick) + `rawJobsFor` (same) two thirds |
+| **visibility** | **6.6 %** | – | `fogTiles` cache churn (FIFO eviction at 6,000 entries) 30 %; per-civ site intel (`siteWire` with two whole-map filters per own site) 25 % |
+| AI planning | 5.9 % | 2.1 % | off limits (AI agent) |
+| production | 2.1 % | 1.3 % | |
+| capture, warzone, income, victory, weather, garrison | < 1 % together | | weather 0.03 %, territory refresh ~0 |
+| persistence (autosave serialize + stringify) | 0.15 % | | gzip runs on the pool |
+| GC outside the scheduler | 1.1 % | | |
+
+**Horde (Blight) mode**, 4 brutal AI defenders, seed 3, until they fell at game minute 9.8 (≤ 121 units): mean tick 1.2 ms,
+p99 5 ms. The `horde` system is 22 % of tick time (13 % of all samples): creature steering (`step`, `creatureStep`),
+the two flow fields (`buildField`, heap) and their navigation cost reads; no hotspot worth a change at this size. The
+same paired check (before / after this pass) gave identical stateHashes; spectator bytes −19 % from P7-5.
+
+## Changes (all hash-neutral)
+
+| # | File | Change |
+|---|---|---|
+| P7-1 | `server/sim/targetIndex.js` (new), `actionGame.js` (`this.targets`), `actionCombat.js` `acquire` | **Per-side target cells.** `TargetIndex` extends the combat `SpatialIndex` (same cells, same `query()`), and also keeps each cell's entries per side (team; each negative owner its own side). `acquire` reads only the other sides (`hostileQuery`), with each entry's rank in the order the full query would have listed it; a tie in score goes to the lower rank, so the pick equals walking the full list and keeping the first best. The score is computed before `sees` / `attackRange` / `hitChance` (all side-effect free) and a candidate that cannot beat the best so far skips them. |
+| P7-2 | `actionEngineers.js` `threatsFor`, `underThreat`, `rawJobsFor`, `engineerStep` | **Engineers' threat and job scans once per step.** `armedList` lists the armed units and defences (with tile and danger radius) and every civ's own buildings and units once per `engineerStep`, not once per civ; liveness, completion and ownership are read live per civ; the list is rebuilt when an entity was created or removed since (`game.nextId`, map sizes). Threats are sorted by z and `underThreat` scans only the z band a threat can reach (radius ≤ 5.8). |
+| P7-3 | `actionGame.js` `fogTiles` | **Two-generation fog cache** (8,000 entries each) instead of FIFO eviction at 6,000 (an iterator, a delete and a set per miss once full). A hit is still exactly the tiles a fresh computation gives. |
+| P7-4 | `actionGame.js` `siteCount`, `siteWire`, `refreshVisibility`, `viewerSnapshot` | **Site counts by index.** Inside a batch of `siteWire` calls (the site intel loop of `refreshVisibility`, a viewer's site list) one pass over buildings and units counts perimeter defences and base engineers for every site; outside a batch the old filter. |
+| P7-5 | `server/sim/game.js` `snapshots` | **Spectator econ at 1 Hz (bug fix).** `observerSnapshot(full, econ = true)` was called with `econ || catchUp`, and `catchUp` is `undefined` until a spectator's first resync: `false || undefined` is `undefined`, which took the default `true`. Every spectator snapshot (5 Hz) carried the whole econ block (buildings, battlefield, cities, civs, the followed AI's plan) instead of one a second as for players. Now `!!catchUp`. Changes what spectators are sent (behaviour change of the protocol stream only; the Unity client already gates on `econ` like for players); simulation hash unchanged. |
+| – | `server/delta.js` | Tried and **reverted**: comparing unit records structurally instead of as JSON strings measured the same (V8's `JSON.stringify` is as fast as the walk) with more GC. |
+
+**Equivalence.** stateHash identical before/after every 2 game minutes on seed 2 (20 minutes, 390 to 505 units) and
+every 3 minutes on seed 4 (15 minutes, ~500 units), and the FNV checksum of every snapshot string sent to both viewers
+(353 MB for seed 2) identical. The "before" tree is the same working-tree snapshot with only these edits reversed
+(`D:/Projects/se_scratch/p7/mkbefore.mjs`), so other agents' concurrent edits are in both.
+
+**Paired runs** (before and after side by side on the same loaded machine; thread CPU and CPU-profile samples; wall
+times were 2 to 3x inflated by other agents' load, so systems are also given normalised to navigation, which neither
+side changed):
+
+| Run | Thread CPU before → after | combat | field economy | visibility | snapshots |
+|---|---|---|---|---|---|
+| seed 2, 20 min (profile samples) | 163.4 → 157.1 s (−3.9 %) | 50.9 → 34.7 s (−32 %) | 30.9 → 20.9 s (−32 %) | 24.1 → 16.8 s (−30 %) | 88.8 → 88.8 s (unchanged) |
+| seed 2, 20 min, earlier pair (P7-1 without ranks, P7-3, P7-4, threat sort only) | 142.4 → 138.4 s (−2.8 %) | −13 % | −9 % | −11 % | ±2 % |
+| seed 4, 15 min (bench timers, ÷ navigation) | 83.7 → 81.3 s (−2.9 %) | −23 % | −19 % | −30 % | ±5 % |
+
+**P7-5, paired** (seed 2, 20 min, god-view spectator + one player, both keyed-delta; before = everything above, after = plus P7-5; same stateHash 871ab1c5): thread CPU 181.7 → 170.8 s (−6 %); snapshot build + delta + stringify 338.8 → 267.7 s of wall (−21 %; −18 % normalised to navigation); JSON sent 353 → 279 MB (−21 %) and deflated 104 → 80 MB (−23 %); deflate time (main thread in production) 25.2 → 19.6 s. For a spectator alone the econ share drops from every snapshot to one in five, which is where production's 35 to 100 KB spectator messages (TELEMETRY_ANALYSIS B5) came from.
+
+Tick p99 / max moved with the load (seed 2 after vs before: p95 67.7 vs 77.6 ms, p99 273 vs 309 ms); the robust results
+are the per-system reductions and the thread-CPU drop. Navigation (40 %) and AI planning (6 %) are the other agents'.
+
+## New diagnostics (schema v3, docs/TELEMETRY.md; columns not yet created in BigQuery)
+
+* **Server** (`server/telemetry/probe.js`, `worker.js`, hooks in `actionGame.js` / `actionCombat.js` / `scheduler.js`,
+  each a `game.tm?.` call that is null without telemetry): route failures by `nav.lastFail` with failed-route memo hits
+  counted apart (`route_memo_hits`; the v2 miscount), `routes_by_caller[]` (the scheduler system running, `command`,
+  `outside`), `nav_counters[]` (all navStats deltas), `subsystems[]` (snapshot build / delta / stringify / geo,
+  `post.out`, autosave serialize / stringify / gzip wall, visibility stamp / civs, combat projectiles, `ai.plan`),
+  `ai_seats[]` (plans, ms, max per seat; the AI agent can add `game.tm?.span('ai.<phase>', ms)` inside the planner),
+  `gc_kinds[]` (minor / major / incremental / weak), `heap_old_space_mb`, `bytes_by_kind[]` / `msgs_by_kind[]`,
+  `deflate_sample_ratio` / `deflate_sample_ms_per_mb` (1 in 64 messages over 1 KB). Test:
+  `test/telemetry-v3-2026-11-19.test.js`; the existing probe test still proves hash identity with telemetry on.
+* **Client** (`Runtime/App/FrameLoopTimer.cs` new, `ClientTelemetry.cs`): FrameTimingManager main-thread, render-thread
+  and present-wait ms and the untracked gap; `loop_phases[]` from timestamp systems inserted into the player loop (all
+  seven top-level phases, script Update, UI Toolkit update + repaint, FinishFrameRendering, PresentAfterDraw, between
+  frames; removed again on quit / leaving play mode); draw calls, batches, SetPass calls and triangles (profiler render
+  counters, null where a release player lacks them); `objects[]` (GameObjects, objects, meshes, materials, textures,
+  assets every minute; UI Toolkit elements every fifth); `post_match_s`. Compile-checked with Unity's Roslyn against the
+  project's assemblies (`D:/Projects/se_scratch/p7/cscheck.ps1`; the editor was not running).
+
+## Not done / open
+
+* **Client profiling of the stress scenario**: the editor was in another agent's play session at the start of the pass
+  and closed afterwards; it was not relaunched. Earlier in-session ProfilerRecorder sampling of that live (small) match
+  showed nothing beyond the known phases (script Update 0.8 to 1.3 ms, camera rendering 1.75 ms), so the production gap
+  (15 to 40 ms per frame, growing over a match) is not reproduced by small editor scenes. The new `loop_phases`,
+  render-thread and object-count columns will locate it in the first prod session after the next client release.
+* **Snapshots (24 %)** are the largest remaining non-nav cost: per-unit records for every viewer at 5 Hz (5.6 M records
+  in 20 minutes, ~2.3 µs each), the 1 Hz econ block (whole building list, battlefield) and keyed deltas. Candidates:
+  share unit records between viewers of the same side (pvp teams), build the econ block's battlefield once per round for
+  all god views, send paths only for selected units (protocol change), or move encoding to a second worker thread.
+* Run `node tools/telemetry-setup.mjs` (additive) before deploying a server with schema v3.

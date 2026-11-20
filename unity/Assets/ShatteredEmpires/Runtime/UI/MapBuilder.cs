@@ -10,18 +10,24 @@ namespace SE.Runtime.UI
 {
     /// <summary>
     /// A map-builder sketch (server/sim/sketchMaps.js, map id "custom"): a coarse grid of ocean / land /
-    /// mountain cells over the whole world rectangle plus the bases the player placed. The server's world
-    /// generator honours the classes and fills in the rest (coasts, hills, rivers, forests, resources,
+    /// mountain / hills cells over the whole world rectangle plus the bases the player placed. The server's world
+    /// generator honours the classes and fills in the rest (coasts, foothills, rivers, forests, resources,
     /// neutral cities, outposts, roads). Every base is a start; with fewer players the spare ones stay neutral.
+    /// HILLS_MOUNTAINS (2026-11-19): painted mountains are impassable to every ground unit (aircraft fly over) and
+    /// carry no buildings; painted hills (class 'h', new) are passable, infantry climb them slower. Older sketches
+    /// (o / l / m only) load unchanged.
     /// Cell (col, row) covers u ∈ [col/W, (col+1)/W), v ∈ [row/H, (row+1)/H); row 0 is the north edge.
     /// </summary>
     public sealed class MapSketch
     {
         public const int GridW = 64, GridH = 64, MaxBases = 8, MinBases = 2, Slots = 4;
-        public const byte Ocean = 0, Land = 1, Mountain = 2;
+        public const byte Ocean = 0, Land = 1, Mountain = 2, Hills = 3;
         /// <summary>The world is √3 : 1.5 wider than tall.</summary>
         public const float Aspect = 1.1547f;
-        const string Classes = "olm";
+        const string Classes = "olmh";
+
+        /// <summary>Ground units cross this class (land or hills): the seat metrics walk it and it counts as land.</summary>
+        public static bool Walkable(byte c) => c == Land || c == Hills;
 
         public int W = GridW, H = GridH;
         public byte[] Cells = new byte[GridW * GridH];
@@ -127,7 +133,7 @@ namespace SE.Runtime.UI
 
         public float LandShare
         {
-            get { int n = 0; foreach (var c in Cells) if (c == Land) n++; return Cells.Length == 0 ? 0 : n / (float)Cells.Length; }
+            get { int n = 0; foreach (var c in Cells) if (Walkable(c)) n++; return Cells.Length == 0 ? 0 : n / (float)Cells.Length; }
         }
 
         /// <summary>Why the server would refuse this sketch, or null when it is playable.</summary>
@@ -148,7 +154,7 @@ namespace SE.Runtime.UI
             {
                 int j = i;
                 while (j < cells.Length && cells[j] == cells[i]) j++;
-                sb.Append(Classes[Mathf.Clamp(cells[i], 0, 2)]).Append(j - i);
+                sb.Append(Classes[Mathf.Clamp(cells[i], 0, Classes.Length - 1)]).Append(j - i);
                 i = j;
             }
             return sb.ToString();
@@ -229,7 +235,7 @@ namespace SE.Runtime.UI
                     for (int dir = 0; dir < 4; dir++)
                     {
                         int m = dir == 0 ? (x > 0 ? c - 1 : -1) : dir == 1 ? (x < W - 1 ? c + 1 : -1) : dir == 2 ? (y > 0 ? c - W : -1) : (y < H - 1 ? c + W : -1);
-                        if (m >= 0 && d[m] < 0 && Cells[m] == Land) { d[m] = d[c] + 1; queue[tail++] = m; }
+                        if (m >= 0 && d[m] < 0 && Walkable(Cells[m])) { d[m] = d[c] + 1; queue[tail++] = m; }
                     }
                 }
                 for (int j = 0; j < P; j++) { int t = d[CellOf(Bases[j].U, Bases[j].V)]; steps[i, j] = t < 0 ? 1e4 : t; }
@@ -243,7 +249,7 @@ namespace SE.Runtime.UI
             var e = new MapCatalogEntry
             {
                 Id = "custom", Name = string.IsNullOrEmpty(Name) ? "Custom map" : Name, Players = Math.Max(2, Bases.Count), TeamSize = 1, Size = TilesOf(Size),
-                Description = $"Your map-builder sketch: {Bases.Count} bases. The painted sea, land and mountains are kept; coasts, hills, rivers, forests, resources and neutral cities are generated around them.",
+                Description = $"Your map-builder sketch: {Bases.Count} bases. The painted sea, land, hills and mountains are kept (mountains are impassable; infantry climb hills slower); coasts, rivers, forests, resources and neutral cities are generated around them.",
             };
             var cls = new byte[W * H];
             for (int i = 0; i < cls.Length; i++)
@@ -259,7 +265,7 @@ namespace SE.Runtime.UI
                     if (c == Mountain) mountain = true;
                 }
                 // preview classes (actionMap.js PREVIEW_CLASSES): 0 deep, 1 shallow, 2 open, 5 hills, 6 mountains
-                cls[i] = (byte)(Cells[i] == Ocean ? (land ? 1 : 0) : Cells[i] == Mountain ? 6 : mountain ? 5 : 2);
+                cls[i] = (byte)(Cells[i] == Ocean ? (land ? 1 : 0) : Cells[i] == Mountain ? 6 : Cells[i] == Hills || mountain ? 5 : 2);
             }
             var (steps, reach) = Metrics();
             var starts = new JArray();
@@ -328,7 +334,7 @@ namespace SE.Runtime.UI
     }
 
     /// <summary>
-    /// The map builder page body: a paint canvas over the sketch grid (Land, Ocean, Mountain brushes in four
+    /// The map builder page body: a paint canvas over the sketch grid (Land, Sea, Hills, Mountains brushes in four
     /// sizes, Place / Remove base), the map size, undo and clear, a name and four local save slots. The
     /// caller supplies what "use" means (New Skirmish, or the lobby host's map).
     /// </summary>
@@ -350,7 +356,17 @@ namespace SE.Runtime.UI
         Vector2 last;
 
         static readonly Color32 DeepC = new Color32(40, 66, 84, 255), ShallowC = new Color32(70, 106, 120, 255);
-        static readonly Color32 LandC = new Color32(108, 124, 80, 255), HillC = new Color32(126, 128, 90, 255), MountC = new Color32(150, 138, 118, 255);
+        // land, the generated foothills beside a range, painted hills (olive downs), mountains (rock) and their snowy hearts
+        static readonly Color32 LandC = new Color32(108, 124, 80, 255), FootC = new Color32(118, 126, 86, 255), HillC = new Color32(150, 146, 78, 255);
+        static readonly Color32 MountC = new Color32(124, 114, 104, 255), PeakC = new Color32(206, 204, 198, 255);
+        /// <summary>The paint brushes: id, label, canvas colour, tooltip.</summary>
+        static readonly (string id, string label, Color32 color, string tip)[] Brushes =
+        {
+            ("land", "Land", LandC, "Land: open lowland. Grass, plains, forests and rivers are generated on it."),
+            ("ocean", "Sea", ShallowC, "Sea: open water. Ground units cross it only by bridges; aircraft fly over."),
+            ("hills", "Hills", HillC, "Hills: rolling high ground. Passable, but infantry move slower (x0.7) and vehicles slow down; troops on hills see farther and fight from cover."),
+            ("mountain", "Mountains", MountC, "Mountains: high, steep peaks and ridges. Impassable to every ground unit and nothing can be built on them; aircraft fly over. Paint with M or larger for an unbroken wall; leave gaps for passes."),
+        };
 
         public MapSketch Sketch => sketch;
 
@@ -391,7 +407,24 @@ namespace SE.Runtime.UI
             columns.Add(right);
             Label("Brush", right);
             Segmented paint = null, bases = null;
-            paint = UiKit.Segmented(Opts(("land", "Land"), ("ocean", "Ocean"), ("mountain", "Mountain")), tool, v => { tool = v; if (bases != null) bases.Value = ""; }, right, 86);
+            var brushOpts = new List<(string id, string label, string icon)>();
+            foreach (var b in Brushes) brushOpts.Add((b.id, b.label, null));
+            paint = UiKit.Segmented(brushOpts, tool, v => { tool = v; if (bases != null) bases.Value = ""; }, right, 80);
+            foreach (var b in Brushes)
+            {
+                // a colour swatch (the brush's canvas colour) before the label, and what the terrain does in the tooltip
+                var seg = paint.Segment(b.id);
+                if (seg == null) continue;
+                seg.tooltip = b.tip;
+                seg.style.flexDirection = FlexDirection.Row;
+                seg.style.justifyContent = Justify.Center;
+                seg.style.alignItems = Align.Center;
+                var sw = new VisualElement { pickingMode = PickingMode.Ignore };
+                sw.style.width = 10; sw.style.height = 10; sw.style.marginRight = 4; sw.style.flexShrink = 0;
+                sw.style.borderTopLeftRadius = 2; sw.style.borderTopRightRadius = 2; sw.style.borderBottomLeftRadius = 2; sw.style.borderBottomRightRadius = 2;
+                sw.style.backgroundColor = (Color)b.color;
+                seg.Insert(0, sw);
+            }
             Label("Bases", right);
             bases = UiKit.Segmented(Opts(("base", "Place base"), ("erase", "Remove base")), "", v => { tool = v; paint.Value = ""; }, right, 130);
             Label("Brush size", right);
@@ -423,7 +456,7 @@ namespace SE.Runtime.UI
                 UiKit.Button("Load", () => LoadSlot(slot), row, null, "se-menu-action").AddToClassList("se-builder-slot-btn");
             }
             RefreshSlots();
-            var help = new Label("Paint the sea, land and mountain ranges, then place a base for each start. The generator keeps your shapes and adds coasts, hills, rivers, forests, resources and neutral cities. With fewer players than bases, the spare ones stay neutral.");
+            var help = new Label("Paint the sea, land, hills and mountain ranges, then place a base for each start. Mountains are impassable walls (aircraft fly over them); hills are passable, but infantry climb them slower. The generator keeps your shapes and adds coasts, foothills, rivers, forests, resources and neutral cities. With fewer players than bases, the spare ones stay neutral.");
             help.AddToClassList("se-menu-note");
             help.AddToClassList("se-menu-note--wrap");
             help.style.whiteSpace = WhiteSpace.Normal;
@@ -524,7 +557,7 @@ namespace SE.Runtime.UI
 
         void Stamp(double u, double v)
         {
-            byte cls = tool == "ocean" ? MapSketch.Ocean : tool == "mountain" ? MapSketch.Mountain : MapSketch.Land;
+            byte cls = tool == "ocean" ? MapSketch.Ocean : tool == "mountain" ? MapSketch.Mountain : tool == "hills" ? MapSketch.Hills : MapSketch.Land;
             float cx = (float)(u * sketch.W), cy = (float)(v * sketch.H), rad = brush - .5f;
             // the brush is round on screen: a cell is Aspect times wider than tall
             int rx = Mathf.CeilToInt(rad / MapSketch.Aspect) + 1, ry = Mathf.CeilToInt(rad) + 1;
@@ -547,7 +580,9 @@ namespace SE.Runtime.UI
         void PlaceBase(double u, double v)
         {
             if (sketch.Bases.Count >= MapSketch.MaxBases) { Say($"At most {MapSketch.MaxBases} bases"); return; }
-            if (sketch.Cells[sketch.CellOf(u, v)] == MapSketch.Ocean) { Say("Bases stand on land"); return; }
+            byte under = sketch.Cells[sketch.CellOf(u, v)];
+            if (under == MapSketch.Ocean) { Say("Bases stand on land"); return; }
+            if (under == MapSketch.Mountain) { Say("Mountains are impassable: place bases on land or hills"); return; }
             foreach (var b in sketch.Bases) if (Gap(b, u, v) < .1) { Say("Too close to another base"); return; }
             Push();
             sketch.Bases.Add(new Vector2Double(MapSketch.Round4(u), MapSketch.Round4(v)));
@@ -605,15 +640,16 @@ namespace SE.Runtime.UI
                 for (int x = 0; x < w; x++)
                 {
                     byte c = sketch.Cells[y * w + x];
-                    bool nearLand = false, nearMountain = false;
+                    bool nearLand = false, nearMountain = false, allMountain = true;
                     for (int d = 0; d < 4; d++)
                     {
                         int nx = x + (d == 0 ? 1 : d == 1 ? -1 : 0), ny = y + (d == 2 ? 1 : d == 3 ? -1 : 0);
                         if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
                         byte n = sketch.Cells[ny * w + nx];
-                        nearLand |= n != MapSketch.Ocean; nearMountain |= n == MapSketch.Mountain;
+                        nearLand |= n != MapSketch.Ocean; nearMountain |= n == MapSketch.Mountain; allMountain &= n == MapSketch.Mountain;
                     }
-                    var col = c == MapSketch.Ocean ? (nearLand ? ShallowC : DeepC) : c == MapSketch.Mountain ? MountC : nearMountain ? HillC : LandC;
+                    var col = c == MapSketch.Ocean ? (nearLand ? ShallowC : DeepC) : c == MapSketch.Mountain ? (allMountain ? PeakC : MountC)
+                        : c == MapSketch.Hills ? HillC : nearMountain ? FootC : LandC;
                     // faint grid every 8 cells, to judge distances
                     if ((x % 8 == 0 || y % 8 == 0) && c != MapSketch.Mountain) col = new Color32((byte)(col.r + 8), (byte)(col.g + 8), (byte)(col.b + 8), 255);
                     px[(h - 1 - y) * w + x] = col;   // texture rows go up; row 0 is the north edge

@@ -8,7 +8,9 @@ using UnityEngine;
 namespace SE.Runtime.Cities
 {
     /// <summary>
-    /// Damage is shown on the building itself, never as a health bar, in three stages (StructureStore bands):
+    /// Damage is shown on the building itself (the HUD adds a health bar over damaged structures, Hud.BuildingBars.cs),
+    /// with the whole body darkened by band (ComposeBuilding) and charred patches on the roof, in three stages
+    /// (StructureStore bands):
     ///
     /// 1. Light (below 85%): soot streaks above the openings, hairline cracks, charred ground and debris.
     /// 2. Heavy (below 60%): a missing corner (charred cavity, jagged slab, rubble spilling down), more cracks,
@@ -132,6 +134,25 @@ namespace SE.Runtime.Cities
                 float s = (.05f + Hash(seed, 520 + i) * .05f) * (.7f + band * .25f);
                 Module(c, Part.Cone, lx, lz, new float3(s * 1.7f, s * .55f, s * 1.7f), Rubble * (.85f + .2f * Hash(seed, 530 + i)));
                 Module(c, Part.Box, lx + s * .6f, lz - s * .4f, new float3(s * .5f, s * .3f, s * .4f), Rubble * .9f, Hash(seed, 540 + i) * 3, 0);
+            }
+            // charred patches on the roof (2026-11-19): the face the RTS camera actually sees. Base facilities know their
+            // roof (the authored mesh, or the recipe roof: CityRenderer.FacilityIdentity.cs); 2 / 4 / 7 patches by band
+            if (b.HasPosition && b.City > 0)
+            {
+                float datum = BuildingDatum(cx, cz, yaw);
+                int patches = band == 1 ? 2 : band == 2 ? 4 : 7;
+                for (int i = 0; i < patches * 2 && patches > 0; i++)
+                {
+                    float lx = main.X + (Hash(seed, 600 + i) * 2 - 1) * main.HalfW * .8f;
+                    float lz = main.Z + (Hash(seed, 620 + i) * 2 - 1) * main.HalfD * .8f;
+                    if (!RoofTopAt(b.Type, lx, lz, out float top)) continue;
+                    patches--;
+                    float x = cx + lx * cs + lz * sn, z = cz - lx * sn + lz * cs;
+                    float size = (.07f + Hash(seed, 640 + i) * .07f) * (.8f + band * .2f);
+                    var scorch = Hash(seed, 660 + i) < .5f ? new float3(.07f, .065f, .06f) : new float3(.12f, .10f, .085f);
+                    Put(Part.Box, new float3(x, datum + top - .002f, z), Hash(seed, 680 + i) * 3f, new float3(size, .008f, size * .75f), scorch);
+                    Put(Part.Box, new float3(x, datum + top - .001f, z), Hash(seed, 700 + i) * 3f, new float3(size * .55f, .008f, size * 1.1f), scorch * .8f);
+                }
             }
             if (band < 2) return;
 

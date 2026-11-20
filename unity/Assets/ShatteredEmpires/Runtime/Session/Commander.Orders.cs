@@ -196,12 +196,12 @@ namespace SE.Runtime.Session
             var order = new Order { MapPoint = point, Time = time, Kind = "attackMove" };
             Orders.Add(order);
             UI.Hud.NoteOrder(units.Selected, point, "attack", time);
-            OrderIssued?.Invoke("attackMove", point);
+            NoteIssued("attackMove", point);
             order.Rid = session.Net?.Command(cmd, r => { Resolve(order, r); if (r.Error == null) ActionMoveOrders++; }) ?? -1;
             if (session.Net == null) order.State = "accepted";
         }
 
-        void NoteIssued(string kind, Vector3 point) => OrderIssued?.Invoke(kind, point);
+        void NoteIssued(string kind, Vector3 point) { TrackOrderLegs(kind, point); OrderIssued?.Invoke(kind, point); }   // Commander.Waypoints.cs: the order chain
 
         // ------------------------------------------------------------------ impassable target cursor
         void UpdateTargetCursor(bool overUi)
@@ -234,6 +234,8 @@ namespace SE.Runtime.Session
             int t = w.Grid.TileAt(mapPoint.x, mapPoint.z);
             if (t < 0) return true;
             if (t >= w.Known.Length || w.Known[t] == 0) return false;
+            // HILLS_MOUNTAINS (2026-11-19): mountains (9) and peaks (10) are walls for every ground unit, road or not
+            if (session.ActionRts && t < w.Terrain.Length && (w.Terrain[t] == 9 || w.Terrain[t] == 10)) return true;
             if (t < w.Road.Length && w.Road[t] != 0) return false;   // roads and bridges carry every vehicle
             float water = w.View.WaterLevel(mapPoint.x, mapPoint.z);
             if (water > TerrainView.NoWater * .5f && water > w.GroundHeight(mapPoint.x, mapPoint.z) + .01f) return true;

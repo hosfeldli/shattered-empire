@@ -20,12 +20,33 @@
 // above the reserves buildArmy saves for (a new base, the next era), and stops while the army is below 60% of its floor.
 // Deterministic: no randomness, ordered scans only; cost bounded (a works pass every few seconds, a few dry runs).
 import { T, W, H, isWater } from './constants.js';
-import { disk, dist as hexDist, idx } from './hex.js';
+import { NB, disk, dist as hexDist, idx } from './hex.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, CITY_DEFENSES, TIERS } from './actionDefinitions.js';
 import { armyCapacity, constructDefense, fieldCost, fortifyBase, headquarters, openSlots, settlementCost, trenchLine, upgradeBuilding,
   upgradeDefenses } from './actionBases.js';
 import { productionCommitment } from './actionProduction.js';
 import { centerOf, distance, dxBetween, tileAt, wrapX } from './actionNavigation.js';
+import { enemyGrid, UnitGrid } from './actionAIOps.js';
+
+// Perf (2026-11-19): a works pass asked "which of my structures / trench hexes are near here" dozens of times, each a
+// scan of every building (or fieldwork) in the game. The civ's own lists are gathered once per tick and refreshed
+// whenever the game's building (fieldwork) count changes, so a structure placed earlier in the same pass is seen, in
+// the same order as before. Not saved: rebuilt from the game on demand.
+let OWN = null, DUG = null;
+function ownStructures(game, civ) {
+  if (OWN && OWN.game === game && OWN.tick === game.tickN && OWN.civ === civ.id && OWN.size === game.buildings.size) return OWN.list;
+  const list = [];
+  for (const b of game.buildings.values()) if (b.owner === civ.id) list.push(b);
+  OWN = { game, tick: game.tickN, civ: civ.id, size: game.buildings.size, list };
+  return list;
+}
+function ownWorks(game, civ) {
+  if (DUG && DUG.game === game && DUG.tick === game.tickN && DUG.civ === civ.id && DUG.size === game.fieldworks.size) return DUG.list;
+  const list = [];
+  for (const f of game.fieldworks.values()) if (f.owner === civ.id) list.push(f);
+  DUG = { game, tick: game.tickN, civ: civ.id, size: game.fieldworks.size, list };
+  return list;
+}
 
 const LEVEL = { easy: 0, normal: 1, hard: 2, expert: 3, brutal: 4 };
 export const AI_WORKS = {
@@ -57,6 +78,26 @@ const along = (o, a, d, side = 0) => ({ x: wrapX(o.x + Math.sin(a) * d + Math.co
 const isVehicle = (u) => ['wheeled', 'tracked'].includes(ACTION_UNITS[u.type]?.move) && !ACTION_UNITS[u.type]?.air;
 const armed = (b) => { const d = ACTION_BUILDINGS[b.type]; return !!d?.field && !!d.attack && !b.perimeterSlot; };
 const round2 = (v) => Math.round(v * 100) / 100;
+const isBarricade = (o) => o.type === 'barricade' && !o.perimeterSlot;
+const VEHICLES = [ACTION_UNITS.armored_car, ACTION_UNITS.tank];
+const onMountain = (game, p) => { const t = tileAt(p.x, p.z), terr = t < 0 ? -1 : game.world.terr[t]; return t < 0 || terr === T.MOUNTAIN || terr === T.PEAK || terr === T.LAVA; };
+/** A road hex that wheeled or tracked hulls can use only along the road (a bridge deck, a causeway, a cutting or a
+ *  steep-bank crossing: actionNavigation.roadOnly). */
+const vehicleRoadOnly = (game, t) => t >= 0 && !!game.world.road[t] && !!game.nav?.roadOnly && VEHICLES.some((d) => game.nav.roadOnly(t, d));
+/**
+ * 2026-11-19 (routing review: one AI barricade on a bridge deck failed 451 wheeled routes in 6 minutes): the AI never
+ * puts a field structure on a road hex its vehicles can only cross along the road, and never a barricade on any road
+ * hex or beside such a road-only hex. Barricades go beside the road (the player rules still allow them on roads).
+ */
+export function blocksVehicleRoad(game, type, point) {
+  const t = tileAt(point.x, point.z);
+  if (t < 0) return true;
+  if (vehicleRoadOnly(game, t)) return true;
+  if (type !== 'barricade') return false;
+  if (game.world.road[t]) return true;
+  for (let d = 0; d < 6; d++) if (vehicleRoadOnly(game, NB[t * 6 + d])) return true;
+  return false;
+}
 
 function state(game, civ, p) {
   const w = p.works ??= { at: game.time, next: 0, wallet: 0, spent: 0, built: 0, dug: 0, armor: 0, attacks: [], bases: {}, front: null, frontAt: 0 };
@@ -132,7 +173,7 @@ export function threatAxes(game, civ, s, w = civ.aiPlan?.works || { attacks: [] 
 /** Records where attacks on this civ's bases and outposts came from (bearing from the site). */
 function recordAttacks(game, civ, w, sites, enemy) {
   for (const s of sites) {
-    const near = enemy.filter((u) => !ACTION_UNITS[u.type].air && distance(u, s) < 7);
+    const near = enemyGrid(enemy).near(s, 7).filter((u) => !ACTION_UNITS[u.type].air);
     if (near.length < (s.slots ? 1 : 2)) continue;
     const c = { x: s.x + near.reduce((n, u) => n + dxBetween(s.x, u.x), 0) / near.length, z: near.reduce((n, u) => n + u.z, 0) / near.length };
     const a = round2(bearing(s, c));
@@ -154,7 +195,10 @@ function budget(game, civ, p, w, bases, own) {
   const phase = minute < 5 ? .3 : minute < 10 ? .6 : minute < 15 ? 1 : minute < 20 ? 1.15 : 1.2;
   const threatened = w.attacks.some((r) => game.time - r.t < 150);
   const cap = armyCapacity(game, civ), full = cap.limit <= cap.used + cap.queued + 6;
-  const share = AI_WORKS.share[level] * phase * (threatened ? 1.3 : 1) * (full ? 2.5 : 1);
+  // stalemate pass (2026-11-19): from minute 20 an unthreatened AI puts 40 % less into works (fortifying every base
+  // while the army sat at its cap was what turned the 4v4 into a stalemate); attacked, it fortifies as before
+  const late = minute >= 20 && !threatened;
+  const share = AI_WORKS.share[level] * phase * (threatened ? 1.3 : 1) * (full ? 2.5 : 1) * (late ? .6 : 1);
   const limit = (AI_WORKS.wallet[level] + 120 * bases.length) * (full ? 1.6 : 1);
   w.wallet = Math.min(limit, w.wallet + (civ.rates?.materials || 0) * dt * share);
   // The wallet is income set aside, so it is spent from the stockpile itself: production is paid progressively and
@@ -177,7 +221,7 @@ function budget(game, civ, p, w, bases, own) {
   reserve = Math.max(reserve, keepM);
   const energyReserve = Math.max(keepE, nuke ? nuke.energy || 0 : 0);
   // a stock banked beyond the new-base threshold (developBases: 1350) is idle money: part of it may go to works
-  const surplus = Math.max(0, civ.res.materials - owed.materials - 1500) * .5;
+  const surplus = Math.max(0, civ.res.materials - owed.materials - 1500) * (late ? .25 : .5);
   const starving = own.length < armyFloor(game) * AI_WORKS.starve[level] && !full;
   return { stock, reserve, energyReserve, surplus, starving, full, threatened, level };
 }
@@ -214,8 +258,11 @@ function place(game, civ, w, b, ctx, type, point, yaw, { forward = false } = {})
   if (dry.error || !at) return 0;
   const surcharged = (at.surcharge || 1) > 1;
   if (surcharged && !forward) return 0;
+  if (blocksVehicleRoad(game, type, at)) return 0;
+  // never on mountains (impassable to every ground unit since 2026-11-19): nobody can reach or man it there
+  if (onMountain(game, at)) return 0;
   // never stack on another structure the snap moved it next to
-  for (const o of game.buildings.values()) if (o.owner === civ.id && ACTION_BUILDINGS[o.type]?.field && distance(o, at) < def.radius + ACTION_BUILDINGS[o.type].radius + .45) return 0;
+  for (const o of ownStructures(game, civ)) if (ACTION_BUILDINGS[o.type]?.field && distance(o, at) < def.radius + ACTION_BUILDINGS[o.type].radius + .45) return 0;
   if (!affordable(b, w, at.cost, surcharged)) return 0;
   const done = constructDefense(game, civ, type, { x: at.x, z: at.z }, false, yaw);
   if (done.error || !done.building) return 0;
@@ -253,15 +300,15 @@ function shortage(list, present) {
 /** Field structures of this civ within r of a point (done or under construction). */
 const fieldNear = (game, civ, point, r, test = armed) => {
   const out = [];
-  for (const b of game.buildings.values()) if (b.owner === civ.id && b.hp > 0 && test(b) && distance(b, point) < r) out.push(b);
+  for (const b of ownStructures(game, civ)) if (b.hp > 0 && test(b) && distance(b, point) < r) out.push(b);
   return out;
 };
-const trenchNear = (game, civ, point, r) => { let n = 0; for (const f of game.fieldworks.values()) if (f.owner === civ.id && distance(f, point) < r) n++; return n; };
+const trenchNear = (game, civ, point, r) => { let n = 0; for (const f of ownWorks(game, civ)) if (distance(f, point) < r) n++; return n; };
 
 /** A base's defenses along its axes. Returns true when something was wanted but not affordable (save for it). */
 function defendBase(game, civ, p, w, b, ctx, s, plan, main) {
   const level = b.level, era = civ.age >= 1 ? 1 : 0, minute = game.time / 60;
-  const attacked = w.attacks.some((r) => r.site === s.id && game.time - r.t < 180);
+  const attacked = w.attacks.some((r) => r.site === s.id && game.time - r.t < 180), recent = attacked || w.attacks.some((r) => r.site === s.id && game.time - r.t < 300);
   let cap = AI_WORKS.baseCap[level] + (minute >= 18 && level >= 1 ? 2 : 0) + (attacked ? 1 : 0);
   if (!main && !attacked) cap = Math.max(1, Math.ceil(cap * .6));
   let total = fieldNear(game, civ, s, 11).length, waiting = false;
@@ -291,9 +338,15 @@ function defendBase(game, civ, p, w, b, ctx, s, plan, main) {
       if (!fieldNear(game, civ, spot, 2.4).length) place(game, civ, w, b, ctx, era && w.armor >= 2 ? 'turret' : 'bunker', spot, x.a, { forward: true });
     }
     // a sandbag barricade where a road crosses the axis (barricades may stand on roads)
-    if (x.road != null && level >= 1 && minute >= 6) {
-      const road = centerOf(x.road), bars = fieldNear(game, civ, road, 1.6, (o) => o.type === 'barricade' && !o.perimeterSlot);
-      if (bars.length < (level >= 2 ? 2 : 1)) place(game, civ, w, b, ctx, 'barricade', bars.length ? along(road, x.a, 0, 1.05) : road, x.a);
+    // Stalemate pass (2026-11-19, TELEMETRY_ANALYSIS B6: barricades were the most-built structure, 358 in two matches):
+    // the count is taken over the 2-hex snap radius (the second one was snapped beyond the old 1.6 and never counted,
+    // so a new one went up every pass), a base keeps at most one per two armed structures standing there, and from
+    // minute 20 only the main base or a base attacked in the last 5 minutes adds any.
+    if (x.road != null && level >= 1 && minute >= 6 && (minute < 20 || main || recent)) {
+      const road = centerOf(x.road), bars = fieldNear(game, civ, road, 3.6, isBarricade);
+      const allowed = Math.max(1, Math.floor(total / 2)) + (attacked ? 1 : 0);
+      if (bars.length < (level >= 2 ? 2 : 1) && fieldNear(game, civ, s, 11, isBarricade).length < allowed)
+        for (const side of bars.length ? [-1.05, 1.05] : [1.05, -1.05]) if (place(game, civ, w, b, ctx, 'barricade', along(road, x.a, 0, side), x.a)) break;
     }
   }
   // one AA battery per base against enemy air, from era II
@@ -343,9 +396,9 @@ function note(game, p, text) {
 
 /** Where our troops are in contact away from home: their centroid and the bearing to the enemy, or null. */
 function frontOf(game, civ, p, own, enemy, sites) {
-  const ground = enemy.filter((u) => !ACTION_UNITS[u.type].air);
+  const ground = enemy.filter((u) => !ACTION_UNITS[u.type].air), grid = new UnitGrid(ground);
   const engaged = own.filter((u) => !ACTION_UNITS[u.type].air && ACTION_UNITS[u.type].atk > 0 &&
-    ground.some((e) => distance(e, u) < 6.5) && !sites.some((s) => distance(s, u) < 6));
+    grid.any(u, 6.5) && !sites.some((s) => distance(s, u) < 6));
   let group = engaged;
   if (group.length < 3) {
     // a stalled operation: the committed troops have made no progress for a while
@@ -356,7 +409,7 @@ function frontOf(game, civ, p, own, enemy, sites) {
   }
   const o = group[0];
   const c = { x: wrapX(o.x + group.reduce((n, u) => n + dxBetween(o.x, u.x), 0) / group.length), z: group.reduce((n, u) => n + u.z, 0) / group.length };
-  const foes = ground.filter((e) => distance(e, c) < 9);
+  const foes = grid.near(c, 9);
   let toward = null;
   if (foes.length) toward = { x: wrapX(c.x + foes.reduce((n, e) => n + dxBetween(c.x, e.x), 0) / foes.length), z: foes.reduce((n, e) => n + e.z, 0) / foes.length };
   else { const t = game.siteById.get(p.target); if (t) toward = t; }
@@ -391,7 +444,7 @@ function wantsAdvance(game, civ, s, main) {
 function upgrade(game, civ, w, b, bases) {
   if (b.level < 1) return;
   // era levels of the AI's own field defenses: the most exposed (fewest levels) first
-  const target = [...game.buildings.values()].filter((o) => o.owner === civ.id && o.done && !o.project && !o.perimeterSlot &&
+  const target = ownStructures(game, civ).filter((o) => o.done && !o.project && !o.perimeterSlot &&
     ACTION_BUILDINGS[o.type].field && ACTION_BUILDINGS[o.type].levels && (o.level || 1) < Math.min(3, civ.age + 1))
     .sort((x, y) => (x.level || 1) - (y.level || 1) || Number(!!ACTION_BUILDINGS[y.type].attack) - Number(!!ACTION_BUILDINGS[x.type].attack) || x.id - y.id)[0];
   if (target) {
@@ -403,7 +456,7 @@ function upgrade(game, civ, w, b, bases) {
   for (const s of bases) {
     const hq = headquarters(game, s);
     if (!hq?.done || hq.project || wantsAdvance(game, civ, s, s === bases[0])) continue;
-    const pieces = [...game.buildings.values()].filter((o) => o.owner === civ.id && o.site === s.id && o.perimeterSlot).length;
+    const pieces = ownStructures(game, civ).filter((o) => o.site === s.id && o.perimeterSlot).length;
     if (pieces < 6 && (b.level >= 2 || !pieces || w.attacks.some((r) => r.site === s.id && game.time - r.t < 300))) {
       const cost = { materials: Math.ceil(CITY_DEFENSES.cost.materials * (6 - pieces) / 6), energy: Math.ceil(CITY_DEFENSES.cost.energy * (6 - pieces) / 6) };
       if (affordable(b, w, cost) && !fortifyBase(game, civ, s).error) { spend(b, w, cost); return; }
@@ -442,9 +495,9 @@ export function aiWorks(game, civ, bases, own, enemy, p) {
   const ctx = { tries: AI_WORKS.tries, builds: AI_WORKS.builds + (level >= 3 ? 1 : 0), strokes: 1 };
   // engineers can only build so much at once: no new orders while several are still unbuilt
   let pending = 0;
-  for (const o of game.buildings.values()) if (o.owner === civ.id && !o.done && ACTION_BUILDINGS[o.type]?.field && !o.perimeterSlot && !ACTION_BUILDINGS[o.type].newBase) pending++;
+  for (const o of ownStructures(game, civ)) if (!o.done && ACTION_BUILDINGS[o.type]?.field && !o.perimeterSlot && !ACTION_BUILDINGS[o.type].newBase) pending++;
   let undug = 0;
-  for (const f of game.fieldworks.values()) if (f.owner === civ.id && f.progress < 1) undug++;
+  for (const f of ownWorks(game, civ)) if (f.progress < 1) undug++;
   if (pending >= 2 + bases.length) ctx.builds = 0;
   const digging = undug < 8 + 2 * level;
   if (!digging) ctx.strokes = 0;
@@ -540,6 +593,7 @@ export function aiEmergencyWorks(game, civ, defended, vanguard, enemiesNearHome,
     for (const side of [0, .9, -.9]) {
       const spot = along(forward, a, 0, side), dry = constructDefense(game, civ, type, spot, true, a), at = dry.reply?.placement;
       if (dry.error || !at || (at.surcharge || 1) > 1) continue;   // never pay the ring-of-influence surcharge in an emergency
+      if (blocksVehicleRoad(game, type, at) || onMountain(game, at)) continue;
       if (constructDefense(game, civ, type, { x: at.x, z: at.z }, false, a).error) continue;
       w.wallet = Math.max(0, w.wallet - (at.cost.materials || 0));
       w.spent += at.cost.materials || 0; w.built++;

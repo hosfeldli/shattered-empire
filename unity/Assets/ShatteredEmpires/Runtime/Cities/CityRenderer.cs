@@ -602,9 +602,10 @@ namespace SE.Runtime.Cities
             var district = Districts.At(b.Tile);
             styleSeed = district?.Seed ?? seed;
             float4 civ = CivColor(b.Owner);
-            // damage darkens a little by band; the damage stages themselves are drawn (DamageOverlay)
+            // damage darkens the whole body by band (2026-11-19, user: "make damage to these buildings very obvious");
+            // the damage stages themselves are drawn on it (DamageOverlay)
             int band = StructureStore.DamageBand(b.Hp);
-            float dmg = band == 0 ? 1f : band == 1 ? 0.96f : band == 2 ? 0.9f : 0.82f;
+            float dmg = band == 0 ? 1f : band == 1 ? 0.86f : band == 2 ? 0.72f : 0.56f;
             if (b.Id >= 0) DamageEmitters.Remove(b.Id);
             float memory = b.Memory ? 0.6f : 1f;
             float3 tint = new float3(dmg * memory);
@@ -689,6 +690,8 @@ namespace SE.Runtime.Cities
                 default: Industry(ctx); break;
             }
             EndFootprint();
+            // Base facility identity (CityRenderer.FacilityIdentity.cs): accent, roof emblem and landmark silhouette.
+            if (b.HasPosition && b.City > 0) FacilityIdentity(ctx, b.Type, b.Memory);
             // The authored HQ model gains its tier silhouette here (the recipe HQ grows by itself).
             if (authored && b.Type == "town") HeadquartersTierDressing(ctx, siteTier);
             // Positioned structures outside a base stand on their own pad with a team ring.

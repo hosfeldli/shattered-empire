@@ -21,6 +21,10 @@ namespace SE.Runtime.Landscape
         static readonly int RayOriginId = Shader.PropertyToID("_SE_ShroudRayO");
         static readonly int RayDirectionId = Shader.PropertyToID("_SE_ShroudRayD");
         static readonly int CameraId = Shader.PropertyToID("_SE_ShroudCam");
+        static readonly int ToneId = Shader.PropertyToID("_SE_ShroudTone");
+        /// <summary>Brightness of the unexplored cloud bank (1 = the old pale cloud). 2026-11-19: a dark overcast, so
+        /// ground you have no sight of reads as dark at a glance.</summary>
+        public float BankTone = .4f;
         readonly Material material;
         readonly Mesh triangle;
         Vector2 drift;
@@ -64,6 +68,7 @@ namespace SE.Runtime.Landscape
             Shader.SetGlobalColor(LitId, lit);
             Shader.SetGlobalFloat(OnId, fogOfWar ? 1 : 0);
             Shader.SetGlobalColor(ShadeId, shade);
+            Shader.SetGlobalFloat(ToneId, BankTone);
             Shader.SetGlobalVector(WindId, new Vector4(drift.x, Time.time, drift.y, 0));
             SetRays(cam);
             Graphics.RenderMesh(new RenderParams(material) { camera = cam, shadowCastingMode = ShadowCastingMode.Off, receiveShadows = false,

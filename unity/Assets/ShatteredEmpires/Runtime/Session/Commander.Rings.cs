@@ -80,6 +80,7 @@ namespace SE.Runtime.Session
                 case "trench": return "A trench already runs here";
                 case "water": return "Water, a deep river or a bridge · structures need dry ground";
                 case "slope": return "Too steep · choose level ground";
+                case "mountain": return "Mountains are impassable · nothing can be built on them";
                 case "blocked": return "Something is in the way · choose clear ground";
                 case "enemy": return "Hostile troops contest this spot";
                 case "influence": return "Not enough resources for the ×3 price outside your ring of influence" + FundsShortfall(type, true);
@@ -124,6 +125,7 @@ namespace SE.Runtime.Session
             "trench" => "A trench runs here · will be placed beside it",
             "pad" => "On a building pad · will be placed clear of the pads",
             "forest" => "Dense forest · will be placed at its edge",
+            "mountain" => "Mountain · will be placed on open ground nearby",
             _ => "Will be placed on the nearest clear spot",
         };
 
@@ -132,7 +134,7 @@ namespace SE.Runtime.Session
         {
             "road" => "kept off the road", "slope" => "moved to level ground", "blocked" => "moved to clear ground",
             "water" => "moved out of the water", "trench" => "moved off the trench", "pad" => "kept clear of the building pads",
-            "forest" => "moved out of the dense forest", _ => "moved to the nearest clear spot",
+            "forest" => "moved out of the dense forest", "mountain" => "moved off the mountain", _ => "moved to the nearest clear spot",
         };
 
         void DrawInfluenceEdge(float time)

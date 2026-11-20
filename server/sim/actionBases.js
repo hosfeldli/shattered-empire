@@ -1,7 +1,7 @@
 import { N, T, isWater } from './constants.js';
 import { NB, disk, dist } from './hex.js';
-import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, DEFENSE_INFLUENCE, MISSILE_PROJECT, NEW_BASE_GAP, OUTPOST_TYPES, PLACEMENT, TIERS, UPGRADE_LINES } from './actionDefinitions.js';
-import { centerOf, distance, dxBetween, HEAVY_GROUND, LIGHT_GROUND, structureOnSegment, tileAt, wrapX } from './actionNavigation.js';
+import { ABILITIES, ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, ACTION_UPGRADES, CITY_DEFENSES, DEFENSE_INFLUENCE, MISSILE_PROJECT, NEW_BASE_GAP, OUTPOST_TYPES, PLACEMENT, REMOVED_UPGRADES, TIERS } from './actionDefinitions.js';
+import { centerOf, distance, dxBetween, HEAVY_GROUND, isMountain, LIGHT_GROUND, structureOnSegment, tileAt, wrapX } from './actionNavigation.js';
 import { baseStreets, hubRoute, hubTiles, roadEdgesCost, ROAD_SEARCH } from './actionMap.js';
 import { launchStrategic } from './actionCombat.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
@@ -53,7 +53,9 @@ export function addFacility(game, civ, site, type, tile, { instant = false, poin
     if (remaining.length) game.wrecks.set(tile, remaining); else game.wrecks.delete(tile);
     game.bfVer++;
   }
-  game.nav.invalidate();
+  // Pass 6: only the caches around the new building (actionNavigation.invalidateNear); a placement that also cleared
+  // wrecks freed ground too and is checked as a change both ways
+  game.nav.invalidate([tile], wrecks?.length ? null : 'added');
   game.clearFootprint(b);
   if (instant && site) growBase(game, site);
   return b;
@@ -158,6 +160,7 @@ export const PLACEMENT_REASONS = {
   trench: 'A trench already runs here.',
   water: 'Structures cannot stand in water or on a bridge.',
   slope: 'The ground is too steep here.',
+  mountain: 'Mountains are impassable: nothing can be built on them.',   // HILLS_MOUNTAINS (2026-11-19)
   blocked: 'Something is in the way: choose clear ground.',
   enemy: 'Hostile troops contest the position.',
   // 2026-11-18: defenses other than the sandbag barricade keep off roads (they are offset, never rerouted around)
@@ -171,7 +174,7 @@ const refuse = (code, error = PLACEMENT_REASONS[code]) => ({ error, code });
 
 /** Refusals the server resolves by moving the structure to the nearest valid spot nearby (2026-11-18). Never
  *  snapped: hidden, territory, base, enemy (the player must choose again), and funds. */
-const SNAP_CODES = new Set(['road', 'slope', 'blocked', 'water', 'trench', 'pad', 'forest']);
+const SNAP_CODES = new Set(['road', 'slope', 'blocked', 'water', 'trench', 'pad', 'forest', 'mountain']);
 // Snap rule (contract mirrored by the client preview, CONSTRUCTION_DESIGN.md): the candidates are the centres of the
 // hexes within PLACEMENT.snapHexes (2) of the requested hex, the requested hex's own centre included, ordered by
 // straight-line distance from the requested point (rounded to 1e-6), ties broken by the lowest tile id. The first
@@ -234,6 +237,7 @@ function groundRefusal(game, x, z, r, edgeFactor = PLACEMENT.edge) {
     const xx = wrapX(x + ox), zz = z + oz, n = tileAt(xx, zz);
     if (n < 0) return 'blocked';
     if (isWater(w.terr[n]) || w.lake[n]) return 'water';
+    if (isMountain(w.terr[n])) return 'mountain';   // HILLS_MOUNTAINS (2026-11-19)
     if (!Number.isFinite(nav.cost(n, xx, zz, LIGHT_GROUND))) return w.river[n] ? 'water' : w.dense?.[n] && w.terr[n] === T.FOREST ? 'forest' : 'slope';
   }
   if (nav.obstacleAt(t, x, z, r)) return 'blocked';
@@ -287,7 +291,7 @@ export function constructDefense(game, civ, type, point, preview = false, yaw = 
 
 const round3 = (v) => Math.round(v * 1000) / 1000;
 const SNAPPED_TEXT = { road: 'kept off the road', slope: 'moved to level ground', blocked: 'moved to clear ground', water: 'moved out of the water',
-  trench: 'moved off the trench', pad: 'kept clear of the building pads', forest: 'moved out of the dense forest' };
+  trench: 'moved off the trench', pad: 'kept clear of the building pads', forest: 'moved out of the dense forest', mountain: 'moved off the mountain' };
 
 /** Why a build-wheel structure (not a New Base) cannot stand at `point` (a refusal with code), or null. */
 function siteRefusal(game, civ, def, type, point, yaw, pending) {
@@ -448,26 +452,21 @@ export function fortifyBase(game, civ, site) {
   return { placed: plans.length, skipped: missing.length - plans.length };
 }
 
-/** The upgrade that already holds `key`'s line for this civ (researched, or in progress at any of its buildings), or null. */
-export function upgradeLineHolder(game, civ, key) {
-  const line = ACTION_UPGRADES[key]?.line;
-  if (!line) return null;
-  for (const k of civ.techs) if (k !== key && ACTION_UPGRADES[k]?.line === line) return k;
-  for (const b of game.buildings.values())
-    if (b.owner === civ.id && b.project?.kind === 'upgrade' && b.project.key !== key && ACTION_UPGRADES[b.project.key]?.line === line) return b.project.key;
-  return null;
-}
+/** The upgrade that already holds `key`'s line for this civ. Always null since the troop upgrades (the only
+ *  upgrades with a line, one per unit class) were removed on 2026-11-19; kept for existing importers (actionAI). */
+export function upgradeLineHolder() { return null; }
+
+export const UPGRADE_REMOVED = 'Troop upgrades have been removed: every unit now fights with its standard equipment.';
 
 export function startUpgrade(game, civ, key, buildingId = 0) {
+  if (Object.hasOwn(REMOVED_UPGRADES, key)) return { error: UPGRADE_REMOVED, code: 'upgrade_removed' };
   const def = Object.hasOwn(ACTION_UPGRADES, key) ? ACTION_UPGRADES[key] : null;
   if (!def || civ.techs.has(key)) return { error: 'That upgrade is unavailable.' };
-  const holder = upgradeLineHolder(game, civ, key);
-  if (holder) return { error: `Your ${UPGRADE_LINES[def.line]} already follow the ${ACTION_UPGRADES[holder].name} path: one upgrade per unit class.`, code: 'upgrade_line_taken', holder };
-  const facility = def?.at || 'armory';
+  const facility = 'armory';
   const armories = [...game.buildings.values()].filter((b) => b.type === facility && b.done && b.owner === civ.id);
   if (armories.some((b) => b.project?.key === key)) return { error: 'This upgrade is already in progress.' };
   const b = civ.age + 1 >= def.tier ? armories.find((b) => !b.project && (!buildingId || b.id === buildingId)) : null;
-  if (!b) return { error: `An idle Tier ${TIERS[def.tier - 1].label} ${facility === 'barracks' ? 'Barracks' : 'Armory'} is required.` };
+  if (!b) return { error: `An idle Tier ${TIERS[def.tier - 1].label} Armory is required.` };
   const error = affordable(civ, def.cost);
   if (error) return error;
   const duration = def.time * (game.siteById.get(b.site).kind === 'research' ? .88 : 1);
@@ -476,13 +475,12 @@ export function startUpgrade(game, civ, key, buildingId = 0) {
   return {};
 }
 
-/** Command cancelResearch { tech }: abandons an upgrade in progress. Its cost was paid up front and is not refunded (R2);
- *  the upgrade's line is free again. */
+/** Command cancelResearch { tech }: abandons an upgrade in progress. Its cost was paid up front and is not refunded (R2). */
 export function cancelUpgrade(game, civ, key) {
   const b = [...game.buildings.values()].find((b) => b.owner === civ.id && b.project?.kind === 'upgrade' && b.project.key === key);
   if (!b) return { error: 'That upgrade is not in progress.', code: 'not_researching' };
   b.project = null;
-  const lost = { ...ACTION_UPGRADES[key].cost };
+  const lost = { ...(ACTION_UPGRADES[key] || REMOVED_UPGRADES[key])?.cost };
   return { reply: { t: 'ack', cancelled: { tech: key, lost } } };
 }
 
@@ -647,6 +645,7 @@ function completeProject(game, civ, b, p) {
   } else if (p.kind === 'perimeter') {
     game.notify(civ.id, `${site.name} perimeter defenses constructed.`, { kind: 'building', tile: site.tile });
   } else if (p.kind === 'upgrade') {
+    if (!ACTION_UPGRADES[p.key]) return;   // a removed troop upgrade (persist.js refunds these on load)
     civ.techs.add(p.key);
     game.notify(civ.id, `${ACTION_UPGRADES[p.key].name} complete.`, { kind: 'tech', tile: b.tile });
   } else if (p.kind === 'missile') {
@@ -661,7 +660,7 @@ export function productionStep(game, dt) {
   for (const b of game.buildings.values()) {
     const civ = game.civs[b.owner], site = game.siteById.get(b.site), def = ACTION_BUILDINGS[b.type];
     const helpers = game.movers.query(b.x, b.z, b.radius + 1, []).filter((u) => u.owner === b.owner && u.type === 'engineer' && game.time - u.lastCombat > 4 && !u.attack && distance(u, b) < b.radius + 1).length;
-    const buildRate = (civ.techs.has('field_engineering') ? 1.25 : 1) * (1 + Math.min(2, helpers) * .20);
+    const buildRate = 1 + Math.min(2, helpers) * .20;
     b.fire = Math.max(0, b.fire - dt);
     // field structures are built by the base engineers (actionEngineers.js); perimeter pieces by the HQ project
     if (!b.done && def.field && !b.perimeterSlot) continue;
@@ -907,7 +906,7 @@ function repairInfrastructure(game, civ, engineer) {
       game.world.touch(tile); game.bfVer++;
     }
   }
-  if (changed) game.nav.invalidate();
+  if (changed) game.nav.invalidate(disk(engineer.tile, 1));   // Pass 6: only the caches around the cleared wrecks
 }
 
 // Demolition: the owner tears down a finished facility or field work (never a headquarters), recovering
@@ -949,13 +948,19 @@ export function demolish(game, civ, id) {
 export function useAbility(game, civ, group, kind, point) {
   const def = Object.hasOwn(ABILITIES, kind) ? ABILITIES[kind] : null;
   if (!def || def.point && !point) return { error: 'Choose an ability and its target.' };
-  let used = 0;
+  let used = 0, tooClose = null;
   for (const u of group) {
     const spec = ACTION_UNITS[u.type];
     if (spec.ability !== kind || u.abilityReady > game.time) continue;
     if (kind === 'bombard') {
       if (distance(u, point) > spec.range * 1.35 || !civ.explored[tileAt(point.x, point.z)]) continue;
-      game.bombard(u, point);
+      if (spec.minRange && distance(u, point) < spec.minRange) { tooClose = spec; continue; }   // inside the dead zone
+      // Crew weapons and launchers (spec.setup) must be set up first: halt, and actionCombat fires the salvo once
+      // the unit has stood still for spec.setup seconds (moving again cancels it and returns the cooldown).
+      if (spec.setup && (!u.deployed || u.vx || u.vz)) {
+        if (!u.bombardAt) { u.orders.length = 0; u.pursuit = null; stopUnit(game, u); }
+        u.bombardAt = { x: point.x, z: point.z };
+      } else game.bombard(u, point);
     } else if (kind === 'repair') { game.repairAround(civ, u, 2.35, 39, true); repairInfrastructure(game, civ, u); }
     else if (kind === 'patrol' || kind === 'strike' || kind === 'gun_run') {
       const issued = moveGroup(game, [u], point, { mode: 'assault' });
@@ -966,5 +971,6 @@ export function useAbility(game, civ, group, kind, point) {
     u.abilityUntil = game.time + (def.duration || 0);
     used++;
   }
+  if (!used && tooClose) return { error: `Too close: the ${tooClose.name} cannot fire within ${tooClose.minRange} hexes.`, code: 'minRange' };
   return used ? { used } : { error: 'No selected unit can use that ability here.' };
 }

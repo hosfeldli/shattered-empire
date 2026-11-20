@@ -11,6 +11,7 @@ Shader "SE/InstancedLit"
         _Cull ("Cull", Float) = 2
         _LeavesTex ("Leafy branch cutout", 2D) = "white" {}
         _Skinned ("Skinned (bone animation texture)", Float) = 0
+        _ZTest ("ZTest (forward pass; 4 = LessEqual, 8 = Always for map markers)", Float) = 4
     }
     SubShader
     {
@@ -90,6 +91,7 @@ Shader "SE/InstancedLit"
         {
             Name "ForwardLit"
             AlphaToMask On
+            ZTest [_ZTest]
             Tags { "LightMode" = "UniversalForward" }
             HLSLPROGRAM
             #pragma target 4.5

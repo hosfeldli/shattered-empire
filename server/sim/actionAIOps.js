@@ -17,12 +17,67 @@
 // Determinism: no randomness at all (ties break on ids). Cost: per planning tick O(own units + seen enemies + sites);
 // corridors are cached per operation (7 nav.nearest probes), region checks use the nav's cached components.
 import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, TIERS } from './actionDefinitions.js';
+import { W } from './constants.js';
+import { WRAP } from './hex.js';
 import * as basesApi from './actionBases.js';
 import * as engineersApi from './actionEngineers.js';
 import { distance, tileAt } from './actionNavigation.js';
-import { GROUND_PACE, moveGroup } from './actionOrders.js';
+import { GROUND_PACE, moveGroup as orderGroup } from './actionOrders.js';
 
 const { advanceBase, construct, demolish, facilitiesAt, headquarters, openSlots } = basesApi;
+
+// ---------------------------------------------------------------- perception index (perf, 2026-11-19)
+// TELEMETRY_ANALYSIS_2026-11-19 B1: a plan call filtered the whole seen-enemy list once per site, unit and candidate
+// (O(sites x units), inside sort comparators too). UnitGrid buckets a list once per call; near() returns exactly what
+// `list.filter((u) => distance(u, p) < r)` returns, in the same order (indices are sorted), so sums and tie-breaks are
+// unchanged. Built from the list it is given, never persisted (rebuilt on demand: save compatible, deterministic).
+const PERIOD = W * Math.sqrt(3), CELLS_X = Math.max(1, Math.floor(PERIOD / 3.5)), CELL = PERIOD / CELLS_X;
+export class UnitGrid {
+  constructor(list) {
+    this.list = list;
+    this.n = list.length;
+    this.cells = new Map();
+    for (let i = 0; i < list.length; i++) {
+      const k = this.key(this.col(list[i].x), Math.floor(list[i].z / CELL));
+      const cell = this.cells.get(k);
+      if (cell) cell.push(i); else this.cells.set(k, [i]);
+    }
+  }
+  col(x) { const c = Math.floor((WRAP ? ((x % PERIOD) + PERIOD) % PERIOD : x) / CELL); return WRAP ? ((c % CELLS_X) + CELLS_X) % CELLS_X : c; }
+  key(cx, cz) { return cx * 4096 + cz; }
+  /** Members with distance(u, p) < r (or <= r with `inclusive`), in list order. */
+  near(p, r, inclusive = false) {
+    const out = [];
+    if (!this.list.length) return out;
+    if (WRAP && 2 * r + 2 * CELL >= PERIOD) return this.list.filter((u) => inclusive ? distance(u, p) <= r : distance(u, p) < r);
+    const x0 = Math.floor((p.x - r) / CELL), x1 = Math.floor((p.x + r) / CELL), z0 = Math.floor((p.z - r) / CELL), z1 = Math.floor((p.z + r) / CELL);
+    const idx = [];
+    for (let cx = x0; cx <= x1; cx++) {
+      const c = WRAP ? ((cx % CELLS_X) + CELLS_X) % CELLS_X : cx;
+      for (let cz = z0; cz <= z1; cz++) {
+        const cell = this.cells.get(this.key(c, cz));
+        if (!cell) continue;
+        for (const i of cell) { const d = distance(this.list[i], p); if (inclusive ? d <= r : d < r) idx.push(i); }
+      }
+    }
+    if (idx.length > 1) idx.sort((a, b) => a - b);
+    for (const i of idx) out.push(this.list[i]);
+    return out;
+  }
+  any(p, r, test) {
+    if (!this.list.length) return false;
+    for (const u of this.near(p, r)) if (!test || test(u)) return true;
+    return false;
+  }
+}
+/** The grid over a plan's seen enemies, built once per list. */
+export function enemyGrid(enemy) {
+  if (!enemy) return new UnitGrid([]);
+  if (enemy._grid?.list === enemy && enemy._grid.n === enemy.length) return enemy._grid;
+  const g = new UnitGrid(enemy);
+  Object.defineProperty(enemy, '_grid', { value: g, enumerable: false, configurable: true, writable: true });
+  return g;
+}
 
 // Per difficulty. axes: assault task forces at most; raid: 0 never, 1 once the enemy turtles, 2 whenever the army
 // is large enough; reserve: share of the ground army kept home; pickets: squads left on captured/passed sites;
@@ -58,6 +113,46 @@ function note(game, p, text) {
   if (p.notes.length > 18) p.notes.pop();
 }
 
+/**
+ * Perf (2026-11-19, TELEMETRY_ANALYSIS B1): two thirds of a late plan call was spent routing re-issued orders. A unit
+ * needs a fresh order toward `point` only when it is not already on its way there (a goal near it, or a group route
+ * still queued: re-ordering those re-queued them every pass), not standing there, not executing an attack order and
+ * not in a firefight right now.
+ */
+export function needsOrder(game, u, point, near = 3.5) {
+  if (u.groupJob) return false;
+  if (u.goal) return distance(u.goal, point) > near;
+  if (u.attack) { const t = game.units.get(u.attack) || game.buildings.get(u.attack); if (t && t.hp > 0) return false; }
+  if (u.target && game.time - (u.lastCombat ?? -99) < 3) return false;
+  return distance(u, point) > near + 1.5;
+}
+
+/** The members of `list` within r of any of `units` (as list.filter(... units.some ...)), in list order. */
+export function nearAny(list, units, r) {
+  if (!list.length || !units.length) return [];
+  const grid = enemyGrid(list), hit = new Set();
+  for (const u of units) for (const e of grid.near(u, r)) hit.add(e);
+  return hit.size ? list.filter((e) => hit.has(e)) : [];
+}
+const closest = (units, p) => { let best = Infinity; for (const u of units) { const d = distance(u, p); if (d < best) best = d; } return best; };
+
+/**
+ * Perf (2026-11-19): every group order of 4+ ground units builds a shared flow field over the map (nav.primeGroup) in
+ * the call that gives it, even when all its routes are queued. A plan call gives at most `aiOrders.left` such orders
+ * (planActionAI sets AI_GROUP_ORDERS per call and lifts the limit afterwards); the rest wait for the next plan call
+ * (each caller retries on its own timer). Withdrawals and blast clearances are `urgent` and always go out.
+ */
+export const aiOrders = { left: Infinity };
+export function moveGroup(game, group, point, opts = {}) {
+  let ground = 0;
+  for (const u of group) if (!ACTION_UNITS[u.type].air) ground++;
+  if (ground >= 4 && !opts.urgent) {
+    if (aiOrders.left <= 0) return { error: 'Order deferred to the next plan.', code: 'deferred', deferred: true };
+    aiOrders.left--;
+  }
+  return orderGroup(game, group, point, opts);
+}
+
 /** Connected land region of a point for a movement class (cached by the navigation), -1 when unknown. */
 function region(game, point, def) {
   const t = tileAt(point.x, point.z);
@@ -83,7 +178,7 @@ export function knownDefences(game, civ, p) {
   for (const b of game.buildings.values()) {
     const def = ACTION_BUILDINGS[b.type];
     if (!def?.field || !def.attack || b.done === false || !game.hostile(civ.id, b.owner) || !civ.visible[b.tile]) continue;
-    seen[b.id] = { x: b.x, z: b.z, tile: b.tile, owner: b.owner };
+    seen[b.id] = { x: b.x, z: b.z, tile: b.tile, owner: b.owner, atk: def.attack };
   }
   const list = Object.values(seen);
   p.defenceMemo = { at: game.time, list };
@@ -118,14 +213,14 @@ export function secureSite(game, civ, holder, group, site, enemy) {
   // escorts: clear contesters first, otherwise screen the zone on the side the enemy comes from
   const busy = new Set([...holders, ...bring].map((u) => u.id));
   const escorts = group.filter((u) => !busy.has(u.id) && !isAir(u) && canReach(game, u, live));
-  const threats = enemy.filter((e) => !isAir(e) && distance(e, live) < live.radius + 2.4);
+  const threats = enemyGrid(enemy).near(live, live.radius + 2.4).filter((e) => !isAir(e));
   if (escorts.length && threats.length && game.time - st.escortAt > 6) {
     const front = threats.sort((a, b) => distance(a, live) - distance(b, live) || a.id - b.id)[0];
-    const near = escorts.filter((u) => distance(u, live) < 10);
+    const near = escorts.filter((u) => distance(u, live) < 10 && needsOrder(game, u, front, 2.5));
     if (near.length) moveGroup(game, near, front, { mode: 'assault' });
     st.escortAt = game.time;
   } else if (escorts.length && game.time - st.escortAt > 12) {
-    const foe = enemy.filter((e) => !isAir(e) && distance(e, live) < 12).sort((a, b) => distance(a, live) - distance(b, live) || a.id - b.id)[0];
+    const foe = enemyGrid(enemy).near(live, 12).filter((e) => !isAir(e)).sort((a, b) => distance(a, live) - distance(b, live) || a.id - b.id)[0];
     const centre = escorts.reduce((c, u) => ({ x: c.x + game.dx(live.x, u.x) / escorts.length, z: c.z + (u.z - live.z) / escorts.length }), { x: live.x, z: live.z });
     const guard = foe ? lerp(game, live, foe, Math.min(.6, 2.3 / Math.max(.1, distance(live, foe)))) : lerp(game, live, centre, Math.min(.8, 2.3 / Math.max(.1, distance(live, centre))));
     const idle = escorts.filter((u) => !u.goal && !u.attack && distance(u, guard) > 2.6);
@@ -146,6 +241,7 @@ function advance(game, holder, group, point, mode) {
   const moving = group.some((u) => u.goal && distance(u.goal, point) < 4);
   if (holder.issued && (moving && game.time - holder.progressAt < 19 || game.time - holder.issued < 8)) return true;
   const result = moveGroup(game, group, point, { mode, exact: mode === 'assault' && group.length <= 12 });
+  if (result.deferred) return true;
   holder.issued = game.time;
   // a 'bridge' refusal (vehicles only, the river unbridged) is not a stall: the road is being built (bridgeToward)
   if (result.error && result.code === 'bridge') { holder.progressAt = game.time; return false; }
@@ -184,7 +280,7 @@ export function managePickets(game, civ, p, owned, enemy) {
       if (game.time - k.securedAt > (s.slots ? (s.hq ? 0 : 100) : 45)) return false;
     } else {
       if (game.time - k.since > 120 && !(s.by === civ.id && s.progress > 0)) return false;   // bounded attempt
-      if (sumStrength(enemy.filter((e) => !isAir(e) && distance(e, s) < 3.5)) > strength(u) * 3) return false;   // overrun: let it go
+      if (sumStrength(enemyGrid(enemy).near(s, 3.5).filter((e) => !isAir(e))) > strength(u) * 3) return false;   // overrun: let it go
     }
     return true;
   });
@@ -206,7 +302,7 @@ export function managePickets(game, civ, p, owned, enemy) {
     const mine = game.movers.query(s.x, s.z, 3.2, []).filter((u) => u.owner === civ.id && u.hp > 0 && !u.auto && capturer(u) &&
       !taken.has(u.id) && !wounded.has(u.id) && u.id !== p.scoutId);
     if (!mine.length) continue;
-    const danger = enemy.filter((e) => !isAir(e) && distance(e, s) < 4.5);
+    const danger = enemyGrid(enemy).near(s, 4.5).filter((e) => !isAir(e));
     if (sumStrength(danger) > sumStrength(mine) * .8) continue;
     const u = mine.sort((a, b) => ACTION_UNITS[a.type].atk - ACTION_UNITS[b.type].atk || distance(a, s) - distance(b, s) || a.id - b.id)[0];
     p.pickets.push({ unit: u.id, site: s.id, since: game.time });
@@ -315,8 +411,11 @@ function assignForces(game, civ, p, op, pool, home, target) {
   }
   const ground = pool.filter((u) => !isAir(u));
   const fresh = pool.filter((u) => !inForce.has(u.id)).sort((a, b) => ROLE_ORDER(a) - ROLE_ORDER(b) || strength(b) - strength(a) || a.id - b.id);
+  const final = p.state === 'Final Assault';
   if (!op.forces.length) {
-    const axes = Math.min(prof.axes, ground.length >= 30 ? 3 : ground.length >= 14 ? 2 : 1);
+    // Stalemate pass (2026-11-19): a Final Assault is one concentrated blow: a main thrust and at most one flank, no
+    // raiders, a smaller home reserve
+    const axes = Math.min(final ? 2 : prof.axes, ground.length >= 30 ? 3 : ground.length >= 14 ? 2 : 1);
     let lanes = corridors(game, civ, p, home, target, axes);
     if (!lanes.length) {
       // no rally point reachable from home: take the straight line (a target over water fails and is avoided)
@@ -324,10 +423,10 @@ function assignForces(game, civ, p, op, pool, home, target) {
       lanes = [{ angle: bearing(game, target, home), delta: 0, rally: lerp(game, target, home, Math.min(.5, R / Math.max(.1, distance(home, target)))), stage: null, vehicles: { tracked: true, wheeled: true } }];
       op.unreachable = true;
     }
-    const shares = SHARES[lanes.length - 1];
+    const shares = final && lanes.length === 2 ? [.72, .28] : SHARES[lanes.length - 1];
     lanes.forEach((lane, i) => op.forces.push({ role: i ? 'flank' : 'main', share: shares[i], ids: [], ...lane, failures: 0, progressAt: game.time, best: 1e6, issued: 0 }));
     const turtled = isTurtled(game, civ, p, target);
-    if (prof.raid === 2 && ground.length >= 18 || prof.raid >= 1 && turtled && ground.length >= 14)
+    if (!final && (prof.raid === 2 && ground.length >= 18 || prof.raid >= 1 && turtled && ground.length >= 14))
       op.forces.push({ role: 'raid', share: 0, ids: [], failures: 0, progressAt: game.time, best: 1e6, issued: 0 });
     if (prof.reserve && ground.length >= 16) op.forces.push({ role: 'reserve', share: 0, ids: [], post: lerp(game, home, target, .1) });
   }
@@ -382,15 +481,15 @@ function march(game, f, units, target) {
   if (game.time - (f.marchAt ?? -99) > 11) {
     let ordered = false;
     for (const [leg, list] of legs) {
-      const idle = list.filter((u) => !u.goal || distance(u.goal, leg) > 3.5);
+      const idle = list.filter((u) => needsOrder(game, u, leg));
       if (!idle.length) continue;
       // the march fights its way (attack-move). Only a wide flank's leg from its stage round the objective to its rally
       // is a plain move, or that column is drawn into the defences it is meant to bypass. (Plain moves on every axis
       // cost fights: 7 of 15 test matches ended in 30 min against 10 of 15 with attack-moves.)
       const close = f.stage && leg === f.rally ? idle.filter((u) => distance(u, target) < distance(f.rally, target) + 5) : [];
-      if (close.length) moveGroup(game, close, leg, { mode: 'move' });
-      if (close.length < idle.length) moveGroup(game, idle.filter((u) => !close.includes(u)), leg, { mode: 'assault' });
-      ordered = true;
+      const a = close.length ? moveGroup(game, close, leg, { mode: 'move' }) : null;
+      const b = close.length < idle.length ? moveGroup(game, idle.filter((u) => !close.includes(u)), leg, { mode: 'assault' }) : null;
+      if (!a?.deferred && !b?.deferred) ordered = true;
     }
     if (ordered) f.marchAt = game.time;
   }
@@ -418,26 +517,30 @@ function engage(game, civ, p, f, units, target, enemy) {
   if (f.pressure != null && pressure < f.pressure - 2) progress();
   f.pressure = pressure;
   // Fight the defenders first: troops locked onto the headquarters would ignore the units and emplacements shooting them.
-  const threats = enemy.filter((e) => !isAir(e) && distance(e, target) < 7 && local.some((u) => distance(u, e) < 4.5));
+  const threats = enemyGrid(enemy).near(target, 7).filter((e) => !isAir(e) && local.some((u) => distance(u, e) < 4.5));
   const emplacements = [...game.buildings.values()].filter((b) => game.hostile(civ.id, b.owner) && b.done !== false && b.hp > 0 &&
     ACTION_BUILDINGS[b.type]?.field && ACTION_BUILDINGS[b.type].attack && distance(b, target) < 6 && game.sees(civ, b));
   if (threats.length && local.length >= 3) {
     if (game.time - (f.threatAt ?? -30) > 7) {
-      const front = threats.sort((a, b) => Math.min(...local.map((u) => distance(u, a))) - Math.min(...local.map((u) => distance(u, b))) || a.id - b.id)[0];
-      const assault = local.filter((u) => !artillery(u));
+      const gap = new Map(threats.map((e) => [e, closest(local, e)]));
+      const front = threats.sort((a, b) => gap.get(a) - gap.get(b) || a.id - b.id)[0];
+      const assault = local.filter((u) => !artillery(u) && needsOrder(game, u, front, 2.5));
       if (assault.length) moveGroup(game, assault, front, { mode: 'assault' });
       for (const u of local) if (artillery(u) && ACTION_UNITS[u.type].ability === 'bombard' && (u.abilityReady || 0) <= game.time)
         game.command(civ.id, { c: 'ability', ability: 'bombard', units: [u.id], point: { x: front.x, z: front.z } });
       f.threatAt = game.time; progress();
     }
   } else if (emplacements.length && local.length >= 3 && game.time - (f.attackAt ?? -30) > 13) {
-    const nearest = emplacements.sort((a, b) => Math.min(...local.map((u) => distance(u, a))) - Math.min(...local.map((u) => distance(u, b))) || a.id - b.id)[0];
-    game.command(civ.id, { c: 'attack', target: nearest.id, units: local.map((u) => u.id) });
+    const gap = new Map(emplacements.map((b) => [b, closest(local, b)]));
+    const nearest = emplacements.sort((a, b) => gap.get(a) - gap.get(b) || a.id - b.id)[0];
+    const fresh = local.filter((u) => u.attack !== nearest.id);
+    if (fresh.length) game.command(civ.id, { c: 'attack', target: nearest.id, units: fresh.map((u) => u.id) });
     f.attackAt = game.time;
     if (nearest.hp < (f.lastEmplacementHp ?? Infinity)) progress();
     f.lastEmplacementHp = nearest.hp;
   } else if (local.length >= 3 && game.time - (f.attackAt ?? -30) > 13) {
-    game.command(civ.id, { c: 'attack', target: visible.id, units: local.map((u) => u.id) });
+    const fresh = local.filter((u) => u.attack !== visible.id);
+    if (fresh.length) game.command(civ.id, { c: 'attack', target: visible.id, units: fresh.map((u) => u.id) });
     for (const u of local) if (ACTION_UNITS[u.type].ability === 'bombard') game.command(civ.id, { c: 'ability', ability: 'bombard', units: [u.id], point: target });
     f.attackAt = game.time;
     if (visible.hp < (f.lastHp ?? Infinity)) progress();
@@ -468,7 +571,7 @@ function runRaid(game, civ, p, op, f, units, home, target, enemy) {
       if (!civ.siteIntel.has(s.id) || s.id === target.id || (p.raidAvoid[s.id] || 0) > game.time || distance(s, target) < 7) continue;
       if (!units.some((u) => canReach(game, u, s))) continue;
       const hostile = s.owner >= 0 && game.hostile(civ.id, s.owner);
-      const danger = sumStrength(enemy.filter((e) => distance(e, s) < 6)) + defences.filter((d) => distance(d, s) < 5).length * 25;
+      const danger = sumStrength(enemyGrid(enemy).near(s, 6)) + defences.filter((d) => distance(d, s) < 5).length * 25;
       if (danger > sumStrength(units) * 1.1) continue;
       if (!s.slots && !s.hq && (hostile || s.owner < 0 && distance(s, home) > 9)) options.push({ s, kind: 'capture', score: distance(centre, s) + danger * .2 - (hostile ? 6 : 0) });
       else if (s.hq && hostile) options.push({ s, kind: 'strike', score: distance(centre, s) + danger * .2 + 4 });
@@ -486,11 +589,11 @@ function runRaid(game, civ, p, op, f, units, home, target, enemy) {
     if (main && game.time - (f.marchAt ?? -99) > 15) { const idle = units.filter((u) => !u.goal && distance(u, main.rally) > 4); if (idle.length) moveGroup(game, idle, main.rally, { mode: 'assault' }); f.marchAt = game.time; }
     return;
   }
-  const opposed = enemy.filter((e) => units.some((u) => distance(u, e) < 5));
+  const opposed = nearAny(enemy, units, 5);
   if (opposed.length && sumStrength(opposed) > sumStrength(units) * 1.3) {
     p.raidAvoid[raid.id] = game.time + 180;
     f.raid = null;
-    moveGroup(game, units, lerp(game, home, target, .2), { mode: 'move' });
+    moveGroup(game, units, lerp(game, home, target, .2), { mode: 'move', urgent: true });
     note(game, p, `Raiders pulled back from ${raid.name}.`);
     return;
   }
@@ -527,8 +630,16 @@ export function runOperation(game, civ, p, owned, enemy, home, target) {
   const assault = op.forces.filter((f) => f.role === 'main' || f.role === 'flank');
   // a Final Assault (clear superiority, finishing a rival) throws everything in: the home reserve and the raiders join the
   // main thrust, and new units are no longer held back for them
-  if (p.state === 'Final Assault' && assault[0]) for (const f of op.forces) if ((f.role === 'reserve' || f.role === 'raid') && f.ids.length) {
-    assault[0].ids.push(...f.ids); f.ids = []; f.closed = true;
+  if (p.state === 'Final Assault' && assault[0]) {
+    for (const f of op.forces) if ((f.role === 'reserve' || f.role === 'raid') && f.ids.length) {
+      assault[0].ids.push(...f.ids); f.ids = []; f.closed = true;
+    }
+    // an operation that escalated keeps one flank at most: the third axis folds into the main thrust
+    while (assault.length > 2) {
+      const f = assault.pop();
+      assault[0].ids.push(...f.ids); f.ids = []; f.role = 'merged';
+      note(game, p, 'Final assault: forces concentrated on the main thrust.');
+    }
   }
   p.troops = assault.flatMap((f) => f.ids);
   // RIVERS (NAV_BRIDGES, 2026-11-18): no bridges exist at match start, so vehicles may be cut off from the axis by a
@@ -603,7 +714,7 @@ export function runOperation(game, civ, p, owned, enemy, home, target) {
       const close = units.filter((u) => distance(u, target) < danger);
       if (close.length && game.time - (f.clearAt ?? -99) > 6) {
         const hold = game.nav.nearest(toward(target, bearing(game, target, f.rally), danger + .6), INFANTRY, 2.2) || f.rally;
-        moveGroup(game, close, hold, { mode: 'move' }); f.clearAt = game.time;
+        moveGroup(game, close, hold, { mode: 'move', urgent: true }); f.clearAt = game.time;
       }
       if (distance(f.rally, target) >= danger) march(game, f, units.filter((u) => !close.includes(u)), target);
       p.progressAt = game.time;
@@ -611,10 +722,10 @@ export function runOperation(game, civ, p, owned, enemy, home, target) {
     }
     if (game.time < (f.goAt || 0)) { march(game, f, units, target); p.progressAt = Math.max(p.progressAt, game.time - 1); continue; }
     // a force beaten back regroups at its rally (the others carry on); after two setbacks it folds into the main force
-    const opposed = enemy.filter((e) => units.some((u) => distance(e, u) < 5.5));
+    const opposed = nearAny(enemy, units, 5.5);
     if (units.length >= 3 && opposed.length >= 3 && sumStrength(opposed) > sumStrength(units) * 1.85 && game.time > (f.regroupUntil || 0)) {
       f.regroupUntil = game.time + 25; f.setbacks = (f.setbacks || 0) + 1;
-      moveGroup(game, units.filter((u) => !isAir(u)), f.rally, { mode: 'move' });
+      moveGroup(game, units.filter((u) => !isAir(u)), f.rally, { mode: 'move', urgent: true });
       if (f.role === 'flank' && f.setbacks >= 2) {
         const main = assault.find((x) => x.role === 'main');
         if (main && main !== f) { main.ids.push(...f.ids); f.ids = []; note(game, p, 'Flank force merged into the main thrust.'); }

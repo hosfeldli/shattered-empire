@@ -1,0 +1,479 @@
+{
+  "schema": 1,
+  "version": "0.7.0",
+  "date": "2026-11-19",
+  "draft": true,
+  "title": "Warthogs, devastating nukes and storms that travel",
+  "summary": "New Blight survival mode against an endless infection. The fighter becomes the Warthog, nukes flatten cities, rare storms cross the map, and mountains are now walls. Bases are easy to read, damaged buildings show health, fog of war is clearer, and pathfinding and AI were rebuilt so big matches run smoother and stalemates break.",
+  "since": {
+    "version": "0.6.0",
+    "commit": "9700bb8"
+  },
+  "sections": [
+    {
+      "category": "gameplay",
+      "heading": "New mode: Blight survival",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Pick Blight under Victory in New Skirmish, a lobby or Watch AI. You and up to three allies (human or AI: the format sets the squad, 1v1 is solo, 2v2 brings one ally) hold your bases against endless waves of the Blight, an infection that grows out of hives at the far edges of the map. There is no victory: survive as long as you can and set a high score."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Waves never stop growing. Each one is bigger, tougher and faster than the last, and the pressure keeps rising with time too, so turtling forever does not work. Late waves bring elite creatures: bigger, darker, much harder to kill.",
+            "Six creatures: skittering Crawlers, acid-lobbing Spitters, Maulers that smash walls and guns, Broodsacs that burst into Crawlers, and a towering Colossus every fifth wave. From wave 8 some packs tunnel up right beside your lines.",
+            "Soldiers the Blight kills rise again as Husks a few seconds later, still in uniform. Losing infantry feeds the horde.",
+            "Hives spread corrupted ground that heals the creatures and speeds them up. Burn a hive for a big supply payout; a new one grows back later.",
+            "Short breathers between waves (shorter every wave) with a supply drop for everyone left standing.",
+            "A wave counter, countdown, creatures left and score at the top of the screen; edge arrows and minimap pings show where they mass. The light turns sick as a wave closes in, a horn sounds when it starts and the tension music rises.",
+            "When the last of you falls, the defeat screen shows the wave you reached, your score, kills by creature, hives burned and your best runs on that map."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "gameplay",
+      "heading": "Nukes that live up to their price",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A strategic missile now does full damage out to 3.2 hexes and keeps hurting, less and less, out to 7.5 hexes. A direct hit on a city leaves its headquarters on about a tenth of its health and destroys the buildings around it; troops near ground zero are wiped out. Roads are torn up across the whole core and trenches are damaged across the whole blast. Cost, build time, range and interception by air defense are unchanged."
+        },
+        {
+          "type": "comparison",
+          "title": "Strategic missile blast",
+          "columns": [
+            "0.6.0",
+            "0.7.0"
+          ],
+          "rows": [
+            {
+              "label": "Blast radius",
+              "before": "2.7 hexes",
+              "after": "7.5 hexes (full damage to 3.2)"
+            },
+            {
+              "label": "Damage to a unit at ground zero",
+              "before": "480",
+              "after": "1500"
+            },
+            {
+              "label": "Damage to a unit 5 hexes out",
+              "before": "0",
+              "after": "716"
+            },
+            {
+              "label": "Headquarters, direct hit",
+              "before": "loses 33%",
+              "after": "loses 90%"
+            },
+            {
+              "label": "City buildings near the hit",
+              "before": "often survive",
+              "after": "destroyed"
+            },
+            {
+              "label": "Trenches damaged",
+              "before": "centre hex only",
+              "after": "the whole blast"
+            }
+          ],
+          "source": "docs/gameplay-overhaul/NUKES.md"
+        },
+        {
+          "type": "text",
+          "text": "The AI knows the bigger blast too: it pulls its own troops well clear of the target before it launches."
+        }
+      ]
+    },
+    {
+      "category": "gameplay",
+      "heading": "Rare storms that cross the map",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The weather is now mostly fair or lightly overcast, and the old random storms every few minutes are gone. Instead, real storm systems arrive now and then: the first 6 to 12 minutes into a match, then one every 9 to 18 minutes, each lasting 4.5 to 9 minutes. That is about two a match. Maps with a lot of sea mostly get hurricanes, which form over water, swing towards land and weaken once ashore. Dry maps get squall lines that sweep across from upwind."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Aircraft cannot take off or land at bases under the strongest part of a storm (a hurricane's eyewall, the squall line itself), and aircraft inside fly slower and burn fuel faster.",
+            "The eye of a hurricane is clear and calm.",
+            "Heavy rain slows movement off roads, and the driving rain in a storm's core cuts vision by one hex, like dense fog.",
+            "Older saves pick up the new weather and get their first storm 6 to 12 minutes after loading."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "gameplay",
+      "heading": "Hills and mountains",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Mountains are now walls for every ground unit, even with a road; aircraft fly over them and nothing can be built on them.",
+            "Infantry climb hills at 70% speed, and routes go round hills when that is faster.",
+            "Infantry can no longer scale steep slopes: about 27° at most (was 33°), still more than tanks (24°) and wheeled vehicles (17°).",
+            "Map builder: paint Hills and Mountains. A painted range is an unbroken wall with snowy peaks. Older maps still load; a base painted on a mountain gets hills around it so every start stays reachable.",
+            "Serpentine's saddle is now a hill pass open to every unit."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "gameplay",
+      "heading": "Supplies, production and borders",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Supply caches take time to collect: each unit gathers 5 a second and must stay at the cache. Leave and the rest stays on the map.",
+            "Energy caches now appear over time on neutral ground away from bases (the first after a minute, then every 70–90 seconds).",
+            "New units roll or march out of the door of the building that produced them.",
+            "Troop upgrades have been removed; every unit fights with its standard equipment. Anything you owned or were researching is refunded. The Armory keeps its two army-wide upgrades."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Territory now has to connect, through your own ground, to a city, base or captured outpost you hold. Old borders no longer linger as scattered islands after a headquarters falls. Towers, bunkers and trenches left on cut-off ground stay standing and keep fighting, but no longer claim land; reconnect them and their ground comes back."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A watchtower or bunker extends your border when it stands up to 2 hexes outside it, an Outpost up to 3. Farther out, it is a lone strongpoint and claims nothing.",
+            "Chains of defenses still work, but destroying a link releases everything beyond it.",
+            "Losing a headquarters or outpost clears all the territory it held, and a rival can claim the freed ground with its own connected defenses."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "units",
+      "heading": "The Warthog replaces the fighter",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The fighter is now the Warthog, a ground-attack jet with a 30 mm rotary cannon. It attacks in strafing runs: it lines up, dives, fires a one-second burst whose hits walk along its path through the target, pulls away, then comes round from a new direction. Its new Gun Run ability strafes everything around a point, armour first. It is slow and vulnerable to anti-air fire, and it cannot attack aircraft."
+        },
+        {
+          "type": "comparison",
+          "title": "Fighter to Warthog",
+          "columns": [
+            "0.6.0",
+            "0.7.0"
+          ],
+          "rows": [
+            {
+              "label": "Role",
+              "before": "Air-to-air fighter",
+              "after": "Ground attack"
+            },
+            {
+              "label": "Weapon",
+              "before": "Air-to-air missiles",
+              "after": "30 mm cannon, ground targets only"
+            },
+            {
+              "label": "Speed",
+              "before": "6.5 (fastest aircraft)",
+              "after": "3.8 (slower than the bomber)"
+            },
+            {
+              "label": "Health",
+              "before": "120",
+              "after": "110"
+            },
+            {
+              "label": "Attack",
+              "before": "16",
+              "after": "26"
+            },
+            {
+              "label": "Damage taken from anti-air",
+              "before": "normal",
+              "after": "1.35×"
+            },
+            {
+              "label": "Ability",
+              "before": "Air Superiority Patrol",
+              "after": "Gun Run"
+            }
+          ],
+          "source": "docs/gameplay-overhaul/WARTHOG_AND_FLIGHT.md"
+        },
+        {
+          "type": "text",
+          "text": "No aircraft fights other aircraft any more: air defense vehicles, anti-aircraft batteries and upgraded city defenses are the answer to enemy planes. An air defense vehicle downs a Warthog in about three volleys, an anti-aircraft battery in two. The bomber also attacks in runs now, dropping its bombs as it passes over."
+        }
+      ]
+    },
+    {
+      "category": "units",
+      "heading": "Artillery and missile trucks rebalanced",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Missile trucks (the Missile Battery) now have to stop and set up for 5 seconds before they can fire: the stabilisers come down and the launch rails rise. Moving packs them up again. They also have a minimum range of 3.5 hexes and will not fire at anything closer, so they need an escort. Ordering a bombardment with a mortar team, field gun or missile truck that is not set up now makes it set up first and then fire."
+        },
+        {
+          "type": "comparison",
+          "title": "Indirect fire: 15% less damage, 20% slower",
+          "columns": [
+            "0.6.0",
+            "0.7.0"
+          ],
+          "rows": [
+            {
+              "label": "Mortar Team damage",
+              "before": "15",
+              "after": "13"
+            },
+            {
+              "label": "Mortar Team time between shots",
+              "before": "4.5 s",
+              "after": "5.4 s"
+            },
+            {
+              "label": "Self-Propelled Gun damage",
+              "before": "34",
+              "after": "29"
+            },
+            {
+              "label": "Self-Propelled Gun time between shots",
+              "before": "3.5 s",
+              "after": "4.2 s"
+            },
+            {
+              "label": "Missile Battery damage",
+              "before": "42",
+              "after": "36"
+            },
+            {
+              "label": "Missile Battery time between shots",
+              "before": "4.0 s",
+              "after": "4.8 s"
+            },
+            {
+              "label": "Missile Battery set-up time",
+              "before": "none",
+              "after": "5 s"
+            },
+            {
+              "label": "Missile Battery minimum range",
+              "before": "none",
+              "after": "3.5 hexes"
+            }
+          ],
+          "caption": "Together, about 29% less damage over time from each of these units. The artillery emplacement building is unchanged.",
+          "source": "server/sim/actionDefinitions.js"
+        }
+      ]
+    },
+    {
+      "category": "ai",
+      "heading": "A fairer, sharper AI",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "In matches with many AIs, the last seats could be starved of turns. With eight brutal AIs, the eighth never acted: it built nothing and was eliminated with 5,921 materials banked. Every AI now gets its turn in fair order, every few seconds.",
+            "Automatic engineers no longer walk into enemy territory to finish old jobs, and skip work within reach of enemy guns they can see.",
+            "The AI no longer sends jets after enemy aircraft. It builds air defense instead, and sends Warthogs on gun runs against ground forces that are not covered by air defense.",
+            "The AI no longer puts barricades on roads or beside bridges, where they jammed its own vehicles.",
+            "AI turns are about 7× cheaper: the AI no longer works out routes while it plans, so big AI matches keep pace.",
+            "The AI only pulls its army home when the threat is real; otherwise it sends a guard and keeps attacking. Fewer operations are called off (24 recalls instead of 43 over five test matches) and more end in a capture (31% instead of 18%).",
+            "An all-out assault is only launched with good odds and stays concentrated on at most two fronts; otherwise the AI picks off outposts.",
+            "Barricade spam is gone (88 instead of 485 over five matches), and late in a match an unthreatened AI spends less on fortifications.",
+            "Energy-starved AIs build generators instead of more materials processors.",
+            "The AI never builds on mountains, bridge roads or road cuttings."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "performance",
+      "heading": "Smoother big matches",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Matches with many trenches and wrecks no longer freeze for a moment every time the battlefield changes. The game now rebuilds only the part of the battlefield that changed, spread over several frames."
+        },
+        {
+          "type": "comparison",
+          "title": "Battlefield drawing, heavy test scene",
+          "columns": [
+            "0.6.0",
+            "0.7.0"
+          ],
+          "rows": [
+            {
+              "label": "Average time per frame",
+              "before": "10.1 ms",
+              "after": "0.6 ms"
+            },
+            {
+              "label": "Worst frame",
+              "before": "559 ms",
+              "after": "4 ms"
+            },
+            {
+              "label": "First full build",
+              "before": "350 ms in one frame",
+              "after": "97 ms over 50 frames"
+            }
+          ],
+          "caption": "A test battlefield with 600 to 750 wrecks, 500 craters and long trench lines, changing every few frames.",
+          "source": "docs/performance/IMPLEMENTATION_LOG.md"
+        },
+        {
+          "type": "text",
+          "text": "The server also does far less route-finding work. A new building or wreck now only clears the routes it actually touches, failed routes cost less, and when a busy moment asks for too many new routes at once, the less urgent ones (chases, re-routes around traffic) wait a few steps."
+        },
+        {
+          "type": "comparison",
+          "title": "Server, 4v4 of brutal AIs",
+          "columns": [
+            "0.6.0",
+            "0.7.0"
+          ],
+          "rows": [
+            {
+              "label": "Average server step (match 1)",
+              "before": "30.5 ms",
+              "after": "19.9 ms"
+            },
+            {
+              "label": "Worst server step (match 1)",
+              "before": "2.4 s",
+              "after": "0.66 s"
+            },
+            {
+              "label": "Time spent finding routes (match 1)",
+              "before": "95 s",
+              "after": "52 s"
+            },
+            {
+              "label": "Average server step (match 2)",
+              "before": "20.7 ms",
+              "after": "10.8 ms"
+            }
+          ],
+          "caption": "Two of three test matches; the third changed little.",
+          "source": "docs/performance/IMPLEMENTATION_LOG.md"
+        },
+        {
+          "type": "text",
+          "text": "Spectators now receive only what changed in each update, as players already did, instead of the whole match five times a second. A typical spectator update shrinks from about 53 KB to about 11 KB, and the server does less work for them."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Spectators were sent the full economy and battlefield picture in every update instead of once a second. Fixing it cuts what the server builds and sends to a spectator by about a fifth in a big match.",
+            "Combat target finding, engineer job planning and the fog of war do about a third less work on the server in a big battle.",
+            "Better diagnostics (when Share diagnostics is on): where each frame spends its time on your computer, and where the server spends it, so the next slowdowns can be found and fixed."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "The route finder was reworked after a survey of RTS pathfinding methods. Route work is 21–41% cheaper on route-heavy matches, a blocked detour search is far more thorough, and an order onto ground a unit cannot reach now takes it to the nearest reachable spot (the river bank, the shore) instead of standing still."
+        }
+      ]
+    },
+    {
+      "category": "visuals",
+      "heading": "Infantry and aircraft that move naturally",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Squads glide smoothly instead of stepping with each server update.",
+            "Each soldier moves on his own: the file stretches out on the march and closes up on a halt, and men walk round when the squad turns instead of snapping.",
+            "Every soldier has his own stride, with steps that match his speed and no sliding feet. Runners lean, bank into turns and lift their knees.",
+            "Idle soldiers breathe, shift their weight and look around.",
+            "Kneeling eases in and out, men flinch when hit, and fallen soldiers buckle, topple and bounce before they fade.",
+            "Jets bank into smooth curves and never snap to a new heading. They fly attack runs instead of circling the target.",
+            "Helicopters and drones speed up and slow down smoothly, brake to a hover, dip their nose when accelerating and flare when braking.",
+            "Aircraft movement is smoothed between server updates, with pitch that follows climbs and dives.",
+            "The Warthog has its own model and icon, and its gun runs come with muzzle flash, a stream of tracers, impacts walking across the ground and a deep \"brrrt\"."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "visuals",
+      "heading": "Storm clouds, mushroom clouds and shells",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Storm systems are drawn as a real cloud deck: hurricanes turn with a clear eye, a solid core and spiral bands; squall lines show towering storm clouds, a shelf cloud on the leading edge and grey rain behind.",
+            "The ground, units and buildings under a storm darken, and rain falls only where the storm is. The deck thins as you zoom in, so it never hides the units you command.",
+            "You hear a storm coming: the wind rises and distant thunder rumbles from its direction before it arrives.",
+            "The nuclear mushroom cloud is now one solid, billowing plume that glows from the fireball, cools to brown-grey and slowly breaks up, instead of a cloud of separate puffs. It is sized to the new blast.",
+            "Mortar bombs and artillery shells are now visible in flight as small finned bombs and shells with a faint smoke trail, instead of a bullet-like glow."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "visuals",
+      "heading": "Bases you can read at a glance",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Every base building has its own colour, roof emblem and landmark: a flag on the barracks, cooling towers on the generator, silos on the processor, a crane on heavy weapons, a runway and parked jet on the airfield, a radome on the lab, a missile on the silo.",
+            "Damaged buildings and defenses show a health bar and visibly darken and char as they take damage.",
+            "Empty build pads have thick, bright outlines, a build cross and corner lamps.",
+            "Building type emblems sit on the roof instead of the ground in front."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "interface",
+      "heading": "Honest game speed and clearer storms",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "When the server cannot keep up the chosen speed, the speed control now shows how fast the match really runs, for example \"running 2.4×\". A big match asked to run at 8× could run at 1.1× to 2.4× while showing 8×.",
+            "Spectators asking for a faster speed than the server can sustain now get a message instead, as players already did.",
+            "The minimap shows each storm system in its real shape, with a hurricane symbol at the eye or a front line on a squall, and an amber track showing where it will go over the next four minutes.",
+            "Hovering ground under a storm names it and says what it does there, which way it is moving, how fast, and whether it is weakening.",
+            "While aiming a strategic missile, the cursor shows the full-damage core in red and the full blast in amber.",
+            "A missile truck ordered to bombard a point too close to it explains why it cannot fire."
+          ]
+        }
+      ]
+    },
+    {
+      "category": "interface",
+      "heading": "Clearer battlefield information",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Ground you cannot currently see is much darker, with a crisp edge where your vision ends; unexplored land sits under a dark overcast.",
+            "Click a defense to see its range; a new button by the minimap shows every defense's range at once.",
+            "Hover a unit to see the steepest slope it can climb and how it handles hills, mountains, marsh and rivers.",
+            "Shift-queued orders show the whole path: the route to the current waypoint, dashed links to later ones, and numbered markers coloured by order type.",
+            "A unit's ring shows its stance: solid defensive, dashed aggressive, double for holding position, dotted for hold fire.",
+            "Context cursors are crisp at any resolution.",
+            "Unit markers at strategic zoom no longer sink into hills.",
+            "The Pads entry is gone from the base menu (click an empty pad to build), and the era badge is gone from the minimap.",
+            "What's new is now a running changelog of every version, with a version list, categories, a jump list and search."
+          ]
+        }
+      ]
+    }
+  ],
+  "fixes": [
+    "A missile truck whose target slipped out of sight while it was setting up finishes setting up instead of staying stuck.",
+    "Old borders no longer reappear round finished defenses after a player loses all their territory.",
+    "Wreck debris no longer reshuffles around every wreck each time a new one appears.",
+    "Optional diagnostics now report the real game speed, memory use and time spent on the post-match screen correctly, and count engineers in battles."
+  ]
+}

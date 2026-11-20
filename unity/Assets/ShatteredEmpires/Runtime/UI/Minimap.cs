@@ -30,7 +30,7 @@ namespace SE.Runtime.UI
         const int MaxPings = 8;
 
         readonly ClientSession session;
-        readonly VisualElement clip, dots, marks, bezel;
+        readonly VisualElement clip, storms, dots, marks, bezel;
         readonly Image[] terrain = new Image[3];
         Texture2D tex;
         Color32[] px;
@@ -184,6 +184,9 @@ namespace SE.Runtime.UI
                 terrain[k] = img;
                 clip.Add(img);
             }
+            storms = Layer("se-minimap__storms");
+            storms.generateVisualContent += DrawStorms;
+            clip.Add(storms);
             dots = Layer("se-minimap__dots");
             dots.generateVisualContent += DrawDots;
             clip.Add(dots);
@@ -385,6 +388,10 @@ namespace SE.Runtime.UI
             // scrolls); marks also follow the camera footprint and animate only while a ping or contest pulses
             if (gathered || scrolled) dots.MarkDirtyRepaint();
             if (gathered || scrolled || footMoved || anyContested || AnyPing()) marks.MarkDirtyRepaint();
+            // storm systems turn and pulse: redrawn every frame while one is shown (a few quads and short paths)
+            int stormCount = Storms != null ? Storms.Count : 0;
+            if (stormCount > 0 || stormsShown) storms.MarkDirtyRepaint();
+            stormsShown = stormCount > 0;
         }
 
         bool anyContested;
@@ -861,10 +868,237 @@ namespace SE.Runtime.UI
             p.ClosePath(); p.Fill();
         }
 
+        // ---------------------------------------------------------------- storm systems
+
+        /// <summary>
+        /// The live storm systems (WeatherPresenter.Systems). Each is drawn every frame, under the dots and marks,
+        /// as a silhouette in its real shape (a hurricane's spiral bands, central dense overcast and clear eye; a
+        /// squall line's bowed convective band, shelf and trailing deck) from a texture built once per kind: a pale
+        /// cloud fill with a dark rim and a soft dark halo, so it reads over any terrain or territory colour while
+        /// the ground still shows through. A hurricane turns with its flow and carries the tropical-cyclone symbol
+        /// at its eye; a squall line carries front pips along its leading edge and a flickering bolt; both show
+        /// their forecast track (amber dots every 20 s for four minutes, an arrowhead at the end).
+        /// </summary>
+        public SE.Runtime.Effects.StormSystems Storms;
+        bool stormsShown;
+        Texture2D hurricaneTex, squallTex;
+        const int HurRes = 192, SqW = 224, SqH = 144;
+        const float HurExtent = 1.12f;                         // the hurricane quad spans ±this × radius
+        const float SqU = 1.1f, SqB0 = -1.0f, SqB1 = 0.4f;     // squall quad (× radius): along the line ±SqU, along the motion SqB0..SqB1
+        static readonly Color StormInk = new Color(.08f, .09f, .15f, 1f);
+        static readonly Color StormTrack = new Color(1f, .84f, .42f, 1f);
+        static readonly Color StormPip = new Color(.46f, .34f, .86f, 1f);
+
+        void DrawStorms(MeshGenerationContext ctx)
+        {
+            var g = grid; var sys = Storms;
+            if (g == null || sys == null || sys.Count == 0 || !session.World.Ready) return;
+            if (hurricaneTex == null) hurricaneTex = BuildStormTex(true);
+            if (squallTex == null) squallTex = BuildStormTex(false);
+            var p = ctx.painter2D;
+            bool still = App.GameSettings.ReduceUiMotion;
+            float pulse = still ? .5f : .5f + .5f * Mathf.Sin(now * 2.2f);
+            for (int i = 0; i < sys.Count; i++)
+            {
+                var s = sys[i];
+                if (s.Intensity < .02f || s.Radius <= 0) continue;
+                float fade = Mathf.Clamp01(s.Intensity * 2.5f);
+                float R = Mathf.Max(s.Radius * scale, 14f);
+                float y = mapTop + s.Z * scale;
+                int n = ProjectX(g.Wrap ? g.BaseX(s.X) : s.X, R * 1.5f, out float a, out float b);
+                for (int k = 0; k < n; k++)
+                {
+                    var c = new Vector2(k == 0 ? a : b, y);
+                    if (!InCircle(c.x, c.y, R * 1.5f)) continue;
+                    var tint = new Color(1f, 1f, 1f, fade * (.9f + .1f * pulse));
+                    if (s.Hurricane)
+                    {
+                        float turn = still ? 0f : -s.Spin * now * .35f;   // counter-clockwise on screen for spin +1
+                        var ex = new Vector2(Mathf.Cos(turn), Mathf.Sin(turn)) * (R * HurExtent);
+                        var ey = new Vector2(-Mathf.Sin(turn), Mathf.Cos(turn)) * (R * HurExtent);
+                        Quad(ctx, hurricaneTex, c - ex - ey, c + ex - ey, c + ex + ey, c - ex + ey, tint, s.Spin < 0);
+                        StormTrackMarks(p, sys, i, c, fade);
+                        HurricaneGlyph(p, c, turn, s.Spin < 0 ? -1f : 1f, fade, pulse);
+                    }
+                    else
+                    {
+                        var f = new Vector2(Mathf.Cos(s.Heading), Mathf.Sin(s.Heading));
+                        var l = new Vector2(-f.y, f.x);
+                        Vector2 At(float u, float bb) => c + (l * u + f * bb) * R;
+                        Quad(ctx, squallTex, At(-SqU, SqB1), At(SqU, SqB1), At(SqU, SqB0), At(-SqU, SqB0), tint, false);
+                        StormTrackMarks(p, sys, i, c, fade);
+                        // front pips along the leading edge, pointing where it is going
+                        for (int q = -2; q <= 2; q++)
+                        {
+                            float u = q * .28f, e0 = .2f * (1 - u * u) - .06f;
+                            var o = At(u, e0);
+                            float w = Mathf.Clamp(R * .07f, 2.6f, 4.5f);
+                            var tip = o + f * (w * 1.5f);
+                            p.BeginPath(); p.MoveTo(o - l * w); p.LineTo(tip); p.LineTo(o + l * w); p.ClosePath();
+                            p.fillColor = new Color(StormPip.r, StormPip.g, StormPip.b, .95f * fade); p.Fill();
+                            p.strokeColor = new Color(StormInk.r, StormInk.g, StormInk.b, .8f * fade); p.lineWidth = 1f; p.Stroke();
+                        }
+                        // a bolt in the middle of the convective line, flickering
+                        float flick = still ? 1f : Mathf.Sin(now * 9.3f + i) > .55f ? .55f : 1f;
+                        BoltGlyph(p, At(0f, .2f - .08f - .07f), Mathf.Clamp(R * .12f, 5f, 8f), fade * flick);
+                    }
+                }
+            }
+        }
+
+        // a textured quad: TL, TR, BR, BL on screen; the texture's top row at the TL–TR edge (mirrored in u if asked)
+        static void Quad(MeshGenerationContext ctx, Texture2D t, Vector2 tl, Vector2 tr, Vector2 br, Vector2 bl, Color tint, bool mirror)
+        {
+            var mw = ctx.Allocate(4, 6, t);
+            var r = mw.uvRegion;
+            float u0 = mirror ? 1f : 0f, u1 = 1f - u0;
+            Vector2 Uv(float u, float v) => new Vector2(r.x + u * r.width, r.y + v * r.height);
+            mw.SetNextVertex(new Vertex { position = new Vector3(tl.x, tl.y, Vertex.nearZ), tint = tint, uv = Uv(u0, 1f) });
+            mw.SetNextVertex(new Vertex { position = new Vector3(tr.x, tr.y, Vertex.nearZ), tint = tint, uv = Uv(u1, 1f) });
+            mw.SetNextVertex(new Vertex { position = new Vector3(br.x, br.y, Vertex.nearZ), tint = tint, uv = Uv(u1, 0f) });
+            mw.SetNextVertex(new Vertex { position = new Vector3(bl.x, bl.y, Vertex.nearZ), tint = tint, uv = Uv(u0, 0f) });
+            mw.SetNextIndex(0); mw.SetNextIndex(1); mw.SetNextIndex(2);
+            mw.SetNextIndex(0); mw.SetNextIndex(2); mw.SetNextIndex(3);
+        }
+
+        // the forecast track: amber dots every 20 s for the next four minutes (fading), an arrowhead at the end
+        void StormTrackMarks(Painter2D p, SE.Runtime.Effects.StormSystems sys, int i, Vector2 c, float fade)
+        {
+            var s = sys[i];
+            if (s.Speed <= .01f) return;
+            var g = grid;
+            Vector2 prev = c, last = c;
+            int count = 0;
+            for (int k = 1; k <= 12; k++)
+            {
+                if (k * 20f > sys.Remaining(i)) break;
+                var at = sys.Track(i, k * 20f);
+                var v = c + new Vector2(g.DxWrap(s.X, at.x), at.y - s.Z) * scale;
+                float al = fade * (1f - k * .05f);
+                p.fillColor = new Color(StormInk.r, StormInk.g, StormInk.b, .7f * al);
+                p.BeginPath(); p.Arc(v, k % 3 == 0 ? 2.6f : 2f, 0f, 360f); p.ClosePath(); p.Fill();
+                p.fillColor = new Color(StormTrack.r, StormTrack.g, StormTrack.b, al);
+                p.BeginPath(); p.Arc(v, k % 3 == 0 ? 1.7f : 1.2f, 0f, 360f); p.ClosePath(); p.Fill();
+                prev = last; last = v; count++;
+            }
+            if (count < 2) return;
+            var d = last - prev;
+            if (d.sqrMagnitude < 1e-4f) return;
+            d.Normalize();
+            var side = new Vector2(-d.y, d.x);
+            var tip = last + d * 6f;
+            p.BeginPath(); p.MoveTo(last + d * .5f + side * 3.5f); p.LineTo(tip); p.LineTo(last + d * .5f - side * 3.5f); p.ClosePath();
+            p.fillColor = new Color(StormTrack.r, StormTrack.g, StormTrack.b, .85f * fade); p.Fill();
+            p.strokeColor = new Color(StormInk.r, StormInk.g, StormInk.b, .75f * fade); p.lineWidth = 1f; p.Stroke();
+        }
+
+        // the tropical-cyclone symbol at the eye: a ring with two curved hooks, turning with the storm
+        static void HurricaneGlyph(Painter2D p, Vector2 c, float turn, float spin, float fade, float pulse)
+        {
+            p.lineCap = LineCap.Round;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                p.strokeColor = pass == 0 ? new Color(StormInk.r, StormInk.g, StormInk.b, .85f * fade) : new Color(1f, .93f, .78f, fade);
+                p.lineWidth = pass == 0 ? 3.6f : 1.8f;
+                for (int h = 0; h < 2; h++)
+                {
+                    float b0 = turn + h * Mathf.PI;
+                    // a hook from the ring outward, curling back against the flow (screen y down: +spin turns clockwise)
+                    Vector2 P(float rr, float ang) => c + new Vector2(Mathf.Cos(b0 + ang), Mathf.Sin(b0 + ang)) * rr;
+                    p.BeginPath();
+                    p.MoveTo(P(3.6f, 0f));
+                    p.BezierCurveTo(P(8f, spin * .25f), P(10.5f, spin * .95f), P(9.5f, spin * 1.55f));
+                    p.Stroke();
+                }
+                p.BeginPath(); p.Arc(c, 3.6f, 0f, 360f); p.ClosePath(); p.Stroke();
+            }
+            p.fillColor = new Color(StormInk.r, StormInk.g, StormInk.b, (.55f + .3f * pulse) * fade);
+            p.BeginPath(); p.Arc(c, 2.4f, 0f, 360f); p.ClosePath(); p.Fill();
+        }
+
+        // a small lightning bolt (yellow, dark rim)
+        static void BoltGlyph(Painter2D p, Vector2 c, float h, float alpha)
+        {
+            Vector2 B(float x, float y) => c + new Vector2(x, y) * h;
+            p.BeginPath();
+            p.MoveTo(B(.12f, -1f)); p.LineTo(B(-.42f, .12f)); p.LineTo(B(-.04f, .12f)); p.LineTo(B(-.2f, 1f));
+            p.LineTo(B(.46f, -.2f)); p.LineTo(B(.06f, -.2f)); p.LineTo(B(.3f, -1f));
+            p.ClosePath();
+            p.strokeColor = new Color(StormInk.r, StormInk.g, StormInk.b, .9f * alpha); p.lineWidth = 2.2f; p.lineJoin = LineJoin.Round; p.Stroke();
+            p.fillColor = new Color(1f, .9f, .35f, alpha); p.Fill();
+        }
+
+        // fbm from Unity's Perlin noise (0..1), for the silhouettes' ragged edges and lumps
+        static float StormFbm(float x, float y)
+        {
+            float s = 0, a = .5f, nrm = 0;
+            for (int o = 0; o < 4; o++) { s += a * Mathf.PerlinNoise(x + o * 17.3f, y + o * 9.1f); nrm += a; a *= .5f; x *= 2.03f; y *= 2.03f; }
+            return s / nrm;
+        }
+
+        static float Sm(float a, float b, float x) { float t = Mathf.Clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); }
+
+        // A storm silhouette, built once per kind: density D from the system's shape (SECommon SE_SysProfile, frayed
+        // by noise), then a pale cloud fill where D is high, a dark rim around it and a soft dark halo outside.
+        // Hurricane: spin +1 (mirrored in u for the other hemisphere), x and y in radius units, y down.
+        // Squall: x along the line (u), y along the motion (b), both in radius units.
+        static Texture2D BuildStormTex(bool hurricane)
+        {
+            int w = hurricane ? HurRes : SqW, h = hurricane ? HurRes : SqH;
+            var px = new Color32[w * h];
+            var body = new Color(.95f, .96f, .985f);
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    float D, core;
+                    if (hurricane)
+                    {
+                        float xn = (2f * (x + .5f) / w - 1f) * HurExtent, yn = (1f - 2f * (y + .5f) / h) * HurExtent;
+                        float k = Mathf.Sqrt(xn * xn + yn * yn), psi = Mathf.Atan2(yn, xn);
+                        float nz = StormFbm(xn * 2.6f + 11f, yn * 2.6f + 7f), n2 = StormFbm(xn * 5.5f + 3f, yn * 5.5f + 21f);
+                        float eye = Sm(.05f, .085f, k);
+                        float cdo = 1f - Sm(.26f, .4f, k + (nz - .5f) * .14f);
+                        float sp = .5f + .5f * Mathf.Cos(2f * (psi - 1.5f * Mathf.Log(Mathf.Max(k, .05f))) + (nz - .5f) * 1.8f);
+                        float arms = Sm(.48f, .8f, sp) * Sm(.2f, .34f, k) * (1f - Sm(.72f, 1.04f, k + (nz - .5f) * .22f));
+                        arms *= Mathf.Lerp(1f, Sm(.32f, .58f, n2), Sm(.45f, .9f, k));   // the outer bands break up
+                        D = eye * Mathf.Max(cdo, arms);
+                        float wq = (k - .1f) / .05f;
+                        core = Mathf.Exp(-wq * wq) * .8f + (1f - Sm(.15f, .3f, k)) * .2f;
+                    }
+                    else
+                    {
+                        float u = (2f * (x + .5f) / w - 1f) * SqU, bb = SqB0 + (y + .5f) / h * (SqB1 - SqB0);
+                        float nz = StormFbm(u * 3f + 5f, bb * 3f + 13f), cells = StormFbm(u * 7f + 31f, bb * 7f + 2f);
+                        float lat = 1f - Sm(.6f, 1f, Mathf.Abs(u) + (nz - .5f) * .16f);
+                        float e = bb - (.2f * (1f - u * u) - .08f);
+                        float c1 = (e + .07f) / .09f, c2 = (e - .01f) / .04f;
+                        float conv = Mathf.Exp(-c1 * c1), shelf = Mathf.Exp(-c2 * c2);
+                        float trail = e < 0 ? Mathf.Exp(e / .45f) * Sm(.02f, -.04f, e) : 0f;
+                        D = lat * Mathf.Max(conv * (.7f + .6f * cells), Mathf.Max(shelf * .72f, trail * (.3f + .75f * nz)));
+                        core = conv * Sm(.4f, .72f, cells) * lat;
+                    }
+                    float fill = Sm(.42f, .5f, D);
+                    float rim = Sm(.3f, .42f, D);
+                    float halo = Sm(.06f, .3f, D);
+                    Color col = StormInk; float a = halo * .3f;
+                    col = Color.Lerp(col, StormInk, rim); a = Mathf.Lerp(a, .85f, rim);
+                    var bc = Color.Lerp(body, new Color(.56f, .55f, .72f), core);
+                    col = Color.Lerp(col, bc, fill); a = Mathf.Lerp(a, .66f + .12f * core, fill);
+                    px[y * w + x] = new Color(col.r, col.g, col.b, a);
+                }
+            var t = new Texture2D(w, h, TextureFormat.RGBA32, false) { name = hurricane ? "SE minimap hurricane" : "SE minimap squall", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            t.SetPixels32(px);
+            t.Apply(false, true);
+            return t;
+        }
+
         public void Dispose()
         {
             if (tex != null) UnityEngine.Object.Destroy(tex);
             tex = null;
+            if (hurricaneTex != null) UnityEngine.Object.Destroy(hurricaneTex);
+            if (squallTex != null) UnityEngine.Object.Destroy(squallTex);
+            hurricaneTex = squallTex = null;
         }
     }
 }

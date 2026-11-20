@@ -472,6 +472,7 @@ namespace SE.Runtime.UI
                 speedControl.style.display = showSpeed ? DisplayStyle.Flex : DisplayStyle.None;
                 if (showSpeed) speedControl.Value = session.Paused ? "0" : Mathf.Max(1, Mathf.RoundToInt(session.PlayRate)).ToString();
             }
+            UpdatePace(showSpeed);
             observerChip.style.display = spectator ? DisplayStyle.Flex : DisplayStyle.None;
             if (spectator)
             {
@@ -494,6 +495,35 @@ namespace SE.Runtime.UI
             }
         }
 
+        // B7 (2026-11-19): when the server cannot keep up the chosen speed (a big match asked for 8x may run at 2x), the
+        // speed control says how fast the match really runs (the econ snapshots' measured pace).
+        Label paceLabel;
+        string paceText;
+        void UpdatePace(bool showSpeed)
+        {
+            float pace = session.Pace;
+            bool behind = showSpeed && speedControl != null && !session.Paused && pace > 0 && pace < session.PlayRate * 0.85f;
+            if (!behind) { if (paceLabel != null) paceLabel.style.display = DisplayStyle.None; return; }
+            if (paceLabel == null)
+            {
+                paceLabel = new Label();
+                paceLabel.style.alignSelf = Align.Center;
+                paceLabel.style.marginLeft = 4; paceLabel.style.marginRight = 4;
+                paceLabel.style.fontSize = 12;
+                paceLabel.style.opacity = 0.8f;
+                paceLabel.pickingMode = PickingMode.Position;
+            }
+            int at = topRight.IndexOf(speedControl);
+            if (paceLabel.parent != topRight || topRight.IndexOf(paceLabel) != at + 1) { paceLabel.RemoveFromHierarchy(); topRight.Insert(at + 1, paceLabel); }
+            string text = "running " + pace.ToString("0.#") + "×";
+            if (text != paceText)
+            {
+                paceText = text; paceLabel.text = text;
+                paceLabel.tooltip = $"The server cannot keep up {Mathf.RoundToInt(session.PlayRate)}× in this match: it simulates about {pace:0.#} seconds per real second.";
+            }
+            paceLabel.style.display = DisplayStyle.Flex;
+        }
+
         IconElement pauseIcon;
         bool pauseTipPaused;
         KeyCode pauseTipKey = KeyCode.None;
@@ -514,7 +544,7 @@ namespace SE.Runtime.UI
 
         void SetSpeed(int s)
         {
-            if (session.Spectator) { session.Net?.ObserverCommand(new JObject { ["c"] = "speed", ["speed"] = s }); return; }
+            if (session.Spectator) { session.Net?.ObserverCommand(new JObject { ["c"] = "speed", ["speed"] = s }, r => { if (r.Error != null) commander.Say(r.Error, false, Time.unscaledTime); }); return; }
             if (s == 0 && game.CanPause) game.SetPaused(true);
             else if (s == 0) Cmd(new JObject { ["c"] = "pause", ["on"] = true }, "Paused");
             else

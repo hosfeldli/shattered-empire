@@ -9,11 +9,12 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
+import { cores as effectiveCores } from './cpuCores.js';
 import { MAPS_BY_ID, mapList, mapMode } from './sim/mapCatalog.js';
 import { baseOwnersProblem, parseSketch, sketchForTeams } from './sim/sketchMaps.js';
 
 const PARKED_TTL_MS = +(process.env.PARKED_TTL_HOURS || 168) * 3600 * 1000;
-const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, os.cpus().length * 4));
+const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, Math.round(effectiveCores()) * 4));
 const MAX_CIVS = 12;
 const IDLE_MS = 10 * 60 * 1000;
 const SIZES = { small: 128, medium: 192, large: 256 };
@@ -27,7 +28,9 @@ const FORMATS = { '1v1': { teamSize: 1, teams: 2 }, '2v2': { teamSize: 2, teams:
 const AI_DIFFICULTIES = ['easy', 'normal', 'hard', 'expert', 'brutal'];
 const AI_PERSONALITIES = ['warlord', 'merchant', 'builder'];
 // Lobby game options (host, New Skirmish): victory, starting resources and a random world's style and size.
-const OBJECTIVES = ['domination', 'control', 'operation'];
+const OBJECTIVES = ['domination', 'control', 'operation', 'horde'];   // 'horde': BLIGHT survival (sim/horde.js)
+// BLIGHT survival: co-op seats from a format (its team size, or an FFA's player count; at most 4), else what was asked
+const hordeSeats = (fmt, n) => Math.min(4, fmt ? (fmt.teamSize > 1 ? fmt.teamSize : fmt.teams > 2 ? fmt.teams : 1) : n);
 const START_RESOURCES = ['low', 'standard', 'high', 'max'];   // amounts: actionGame.js START_RES
 const STYLES = ['continents', 'pangaea', 'archipelago', 'inlandSea'];
 // a catalog map takes any number of players from 2 up to its starts (actionMap.assignStarts)
@@ -106,6 +109,9 @@ export class MatchManager {
       const diff = DIFFS.includes(r.difficulty) ? r.difficulty : DIFFS.includes(opts.difficulty) ? opts.difficulty : 'normal';
       slots.push({ human: false, name: 'AI', personality: pers, difficulty: diff, fairPlay });
     }
+    // BLIGHT survival (objective 'horde', HORDE_MODE.md): every seat is on one co-op side; a format's team size (or an
+    // FFA's player count) is the squad size, so 1v1 is solo and 2v2 brings one AI ally. Surplus AI seats are dropped.
+    if (action && !sandbox && !pvp && opts.objective === 'horde') slots.splice(Math.max(humans, observe ? 1 : 0, hordeSeats(fmt, slots.length)));
     const mapSize = authored ? authored.size : action ? (sandbox ? 64 : ACTION_SIZES[opts.mapSize] || (slots.length <= 2 ? ACTION_SIZES.small : slots.length <= 4 ? ACTION_SIZES.medium : ACTION_SIZES.large))
       : (sandbox ? 128 : SIZES[opts.mapSize] || autoSize(slots.length));
     const why = this.admit(mapSize);
@@ -113,7 +119,7 @@ export class MatchManager {
     const m = { id, name: String(opts.title || (observe ? `AI exhibition (${ais} empires)` : `${opts.name || 'Player'}'s match`)).slice(0, 40), mode: pvp ? 'pvp' : observe ? 'observe' : sandbox ? 'sandbox' : 'ai', status: 'lobby', watchers: [], created: Date.now(), lastActive: Date.now(),
       seed: Number.isFinite(+opts.seed) && opts.seed !== '' && opts.seed != null ? +opts.seed | 0 : (Math.random() * 2 ** 31) | 0, slots, mapSize, rebels: !action && !sandbox && opts.rebels !== false, worker: null, stats: null,
       ruleset, wrap: !action, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
-      teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation'].includes(opts.objective) ? opts.objective : 'domination',
+      teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation', 'horde'].includes(opts.objective) ? opts.objective : 'domination',
       startRes: START_RESOURCES.includes(opts.startRes) ? opts.startRes : 'standard' };
     // closed seats (uneven teams: 2 v 1, three humans against two AIs), on a random world or a catalog map
     // (whose unused starts stay neutral). Seat indices other than the creator's; dropped when the match starts.
@@ -360,7 +366,13 @@ export class MatchManager {
   }
 
   toWorker(m, msg) { if (!m.worker) return; if (m.ready) m.worker.postMessage(msg); else m.pending.push(msg); }
-  welcome(m, slot) { const caps = slot.ws?.ctx?.caps || []; this.toWorker(m, slot.spectator ? { t: 'obsWelcome', caps } : { t: 'welcome', civId: slot.civId, caps }); }
+  welcome(m, slot) {
+    const caps = slot.ws?.ctx?.caps || [];
+    if (!slot.spectator) return this.toWorker(m, { t: 'welcome', civId: slot.civId, caps });
+    // spectators share one channel: snapshot encodings may use only what every connected spectator negotiated
+    const shared = caps.filter((c) => (m.watchers || []).every((w) => !w.ws || w.ws === slot.ws || w.ws.ctx?.caps?.includes(c)));
+    this.toWorker(m, { t: 'obsWelcome', caps, shared });
+  }
   send(ws, msg) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(msg)); } catch { /* closing */ } } }
   // The pre-game lobby as each seated player sees it: the match code to share, who holds which seat,
   // who is connected and ready, which seat is yours, and whether you (the host, seat 0) may start.
@@ -851,7 +863,7 @@ export class MatchManager {
   load() {
     let cores = 0, heap = 0;
     for (const m of this.matches.values()) if (m.status === 'running' && m.stats) { cores += (m.stats.avg || 0) / 100; heap += m.stats.heapMb || 0; }
-    return { cores: +cores.toFixed(2), capacity: os.cpus().length, heapMb: heap, freeMb: Math.round(os.freemem() / 1048576) };
+    return { cores: +cores.toFixed(2), capacity: effectiveCores(), heapMb: heap, freeMb: Math.round(os.freemem() / 1048576) };
   }
   admit(mapSize) {
     if (process.env.ADMIT_OFF === '1') return null;
@@ -867,7 +879,7 @@ export class MatchManager {
   stats() {
     const ms = [...this.matches.values()];
     return { matches: ms.length, running: ms.filter((m) => m.status === 'running').length, parked: ms.filter((m) => m.status === 'parked').length,
-      players: ms.reduce((s, m) => s + m.slots.filter((x) => x.ws).length, 0), spectators: ms.reduce((s, m) => s + (m.watchers || []).filter((x) => x.ws).length, 0), maxMatches: MAX_MATCHES, cpus: os.cpus().length,
+      players: ms.reduce((s, m) => s + m.slots.filter((x) => x.ws).length, 0), spectators: ms.reduce((s, m) => s + (m.watchers || []).filter((x) => x.ws).length, 0), maxMatches: MAX_MATCHES, cpus: effectiveCores(),
       ticks: ms.filter((m) => m.stats).map((m) => ({ id: m.id, avg: m.stats.avg, max: m.stats.max, units: m.stats.units, heapMb: m.stats.heapMb, slowest: slowest(m.stats.systems) })), store: this.store?.kind || 'none', load: this.load(),
       memMB: Math.round(process.memoryUsage().rss / 1e6) };
   }

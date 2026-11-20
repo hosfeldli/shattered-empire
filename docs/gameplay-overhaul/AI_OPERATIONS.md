@@ -259,6 +259,125 @@ The forced-stalemate test launches within 7 minutes of game time.
 - **Single runs vary by about ±1.5 units at minute 24**, even with 51 matches.
 - **Knobs, in order of effect:** `AI_WORKS.keep[4]` (army ±2 at minute 24 between 150 and 350 energy); the eager economy upgrades; `PROFILES.brutal.nukeAfter` / `failures` / `armyGate`; `FILL_MARGIN`.
 
+## Plan cost and stalemate pass (2026-11-19)
+Source: docs/performance/TELEMETRY_ANALYSIS_2026-11-19.md, B1 (AI planning was 35 % of server time in the 8-brutal 4v4, 33.8 ms per call, up to 1.57 s) and B6 (captures fell from 42 to 2-5 per 10 min after minute 10; 18 % of operations captured anything; barricades were the most-built structure; AIs banked 10-17k materials at 150-500 energy).
+
+### Where the time went
+A CPU profile of the reproduction (8 brutal AIs, 4v4, random 104 map, max start resources) put **65 % of plan time in routing** the plan's own group orders (`moveGroup` -> `nav.route`, ~6 ms a route late in a match, single routes up to 300 ms). Next came the works pass (placement dry runs), then O(sites x units) list filters (enemy lists filtered per site, some inside sort comparators).
+
+### Changes (cost)
+- **No routing inside a plan call.** `AI_SYNC_ROUTES = 0` (actionAI.js). Before the plan runs, it marks the tick's AI routing allowance (`game.groupSpent`, `GROUP_ROUTE.aiTick`) as used. `moveGroup` then queues every member of an AI order on `game.groupJobs`, which is saved with the match and routed a few a tick by `groupRouteStep` under the tick's routing budget. Large AI orders already took this path; now small ones do too. Routes searched inside plan calls fell from 1.34 per call to 0.02.
+- **Orders only where needed.** `needsOrder` (actionAIOps.js) skips a unit when:
+  - its goal is already near the point;
+  - a group route for it is still queued (re-ordering re-queued these every pass);
+  - it is carrying out an attack order or is in a firefight;
+  - it already stands at the point.
+
+  The march, sieges, escorts, guards, the hunt and `approach` all use it. Attack orders skip units already attacking that target.
+- **At most 3 group orders per call** (`AI_GROUP_ORDERS`, `aiOrders` in actionAIOps.js). Every order of 4+ ground units primes a map flow field (`nav.primeGroup`) inside the call. Further orders wait for the next call, and each caller retries on its own timer. Withdrawals, blast clearances and raid guards are `urgent` and always go out. In the measured matches the cap never had to hold an order back.
+- **Stages.** Calls alternate between two heavy stages, tracked in `p.stage` (saved with the plan):
+  - stage 0: the strategic programme and base development;
+  - stage 1: the works pass.
+
+  Perception, production, tactics, pickets and the operation run on every call.
+- **Indexes.** `UnitGrid` / `enemyGrid` bucket the seen enemies once per call. `near()` returns exactly what the old `filter(distance < r)` returned, in the same order (tested). Site ranks, bombard clusters, frontier keys and engagement distances are computed once per element, not inside sort comparators. The works pass gathers the civ's own structures and trench hexes once per tick and refreshes them when the game's counts change.
+- **Save compatibility.** The only new saved state is `p.stage` (a number) and `atk` on remembered enemy works (`p.seenDefences`; older saves default to 18). A save from before the pass restores and plays on (checked with a minute-20 save of the reproduction). A restored game and an uninterrupted one stay hash-identical (test).
+
+### Changes (pacing)
+- **Recall only for a real threat.** An operation is recalled to defend only when one of these holds:
+  - the attack is worth 45 % of the whole army;
+  - the attack is worth 25 % of the army and the base's headquarters is below 70 % and under ground fire;
+  - the army has fewer than 12 units.
+
+  Anything smaller gets a proportional guard (1.7x the raid's force, up to half the army) and the operation carries on.
+- **Objectives the army can take.** An objective's defence is its seen garrison plus the armed works seen within 6 (attack x1.4). Closing in, the AI ranks objectives by that defence against its strike force (85 % of the army).
+  - **A Final Assault is called only at odds >= 1.25.** Otherwise the AI takes the enemy's outposts and lesser sites by expansion, with a 12-30 strong group against a held outpost, while the strategic programme works on the fortress.
+  - A Final Assault is broken off only at 2.4x (1.85x otherwise).
+- **A Final Assault is one concentrated blow:** a main thrust plus at most one flank (72/28), and no raiders. An escalated 3-axis operation folds its third axis into the main thrust.
+- **Barricades are capped** (actionAIWorks.js):
+  - The road barricade count now covers the 2-hex snap radius. A second barricade used to land outside the old 1.6 radius and was never counted, so one went up every pass.
+  - A base keeps at most one barricade per two armed structures.
+  - From minute 20, only the main base, or a base attacked in the last 5 minutes, adds any.
+  - Barricades go beside the road, never on it.
+- **Never on road-only hexes or mountains** (routing review). `blocksVehicleRoad` refuses:
+  - any AI field structure on a road hex that wheeled or tracked units can use only along the road (bridge deck, causeway, cutting, steep bank: `nav.roadOnly`);
+  - any barricade on a road hex or next to a road-only hex.
+
+  One barricade on a bridge deck had failed 451 wheeled routes in 6 minutes. Mountains, peaks and lava are refused too, since they are impassable to ground units from 2026-11-19. Emergency works obey both rules.
+- **Works taper late:** from minute 20, an unthreatened AI puts 40 % less income into works and half as much of its idle bank.
+- **Energy-bound economy.** `energyBound` holds when materials are above 2000, energy is below 500 and energy income is under a quarter of materials income. Then:
+  - build lists put Energy Generators in place of second Materials Processors and in any free ring site;
+  - economy upgrades go to generators only;
+  - with materials above 4000 and no free ring site, one surplus processor (at a base with two) is pulled down every 2 minutes for a generator.
+
+### Measurements
+**Setup:**
+- **Reproduction:** `D:/Projects/se_scratch/aiperf/bigbench.mjs` (not in the repo). 8 brutal AIs, teams of 4, random 104 map, max start resources. Both trees use fair (oldest-first) AI scheduling. Decisive domination is off, so a match runs until a team is eliminated (50 min cap).
+- **Trees:** "Before" is HEAD e1aae82 (`git archive`). "After" is HEAD with only the three AI files replaced. Same seeds.
+- **Timing:** Gameplay counts are deterministic. Wall times were taken on a shared, heavily loaded 6-core machine and vary 2-3x between runs. Cost is therefore also given as thread CPU time and as routes searched per call.
+
+**Cost, late window** (seed 7, restored from the same minute-20 save, minutes 20-26):
+
+| | Before | After |
+|---|---|---|
+| Routes searched inside plan calls (per call) | 1.34 (max 24 in one call) | 0.02 (max 6) |
+| Plan thread CPU time per call (paired run) | 15.6 ms | 5.6 ms |
+| Plan wall time per call, quiet machine (separate runs) | 23.0 ms (max 780 ms) | 4.8-6.9 ms (max 37-79 ms) |
+| Plan wall time per call, loaded machine (paired run) | 67 ms (p50 16, max 688) | 31 ms (p50 6.7, max 503) |
+
+**Cost, whole match** (seed 3, 37.5 / 39.5 min, both runs concurrently on a loaded machine):
+
+| | Before | After |
+|---|---|---|
+| Plan thread CPU time per call | 23.7 ms | 3.4 ms |
+| Plan wall time per call (p99, max) | 55.3 ms (1021 ms, 7013 ms) | 12.5 ms (138 ms, 600 ms) |
+| Routes searched inside plan calls (per call) | 2.35 | 0.01 |
+| Total tick time of the match | 1186 s | 763 s |
+
+**Gameplay, 5 seeds (3, 7, 11, 23, 59), pooled:**
+
+| | Before | After |
+|---|---|---|
+| Operations ending in a capture | 27 of 150 (18 %) | 46 of 146 (31.5 %) |
+| Operations recalled to defend | 43 | 24 |
+| Site captures, minutes 10-20 / 20-30 | 85 / 52 | 102 / 65 |
+| All captures (matches end on elimination) | 348 | 359 |
+| Mean match length | 31.1 min | 30.5 min |
+| Barricades built | 485 | 88 |
+| Bunkers / turrets built | 456 / 244 | 470 / 292 |
+| Army per civ at 16 min | 44.6 | 50.0 |
+| Strategic missiles launched | 4 | 2 |
+| Share of AI minutes in Final Assault | 0.33 | 0.34 |
+
+**Standard probe:** `node tools/ai-ops-probe.mjs all 1 30 --difficulty=brutal` (17 matches; before with `--sim=<HEAD copy>`):
+
+| | Before | After |
+|---|---|---|
+| Capture rate | 85.8 % | 83.0 % |
+| Army per civ at 8 / 16 / 24 min | 20.5 / 36.2 / 32.0 | 20.4 / 34.7 / 31.5 |
+| Bases per civ at 8 / 16 / 24 min | 2.06 / 2.51 / 2.71 | 2.05 / 2.62 / 2.73 |
+| Matches ended within 30 min (mean length) | 11 (26:20) | 12 (25:09) |
+| Missiles launched / own units in a blast | 1 / 0 | 2 / 0 |
+| Failed operations | 29 | 43 |
+
+**Reading:**
+- **The reproduction did not stall for 50 minutes in either tree.** With the fair scheduler every seat plays, and one team is eliminated at 22-40 min. The production match, in which seat 7 never planned, could not be replayed.
+- **The stall pattern is still visible before the pass:** captures went 40 -> 17 -> 7 per 10 min, operation success was 18 %, and barricades were spammed. The pass mainly raises operation success and mid-game captures.
+- **Final Assault time did not fall.** A Final Assault now starts only on an objective the army can take, and it is concentrated, but once started it is as sticky as before.
+- **The probe's army and capture rate are within single-run noise** (±1.5 units, ±2 %). The failed-operation count rose: more operations now end by the bounded-recovery rule rather than by a recall.
+- **What is left of plan cost:**
+  - `nav.primeGroup` for the orders a call still gives (~30 %). NAVIGATION could skip it when every member is queued, since `groupRouteStep` primes again.
+  - The works pass's placement dry runs (~25 %).
+
+**Tests:** `test/ai-stalemate-perf-2026-11-19.test.js` covers:
+- grid equivalence;
+- `needsOrder`;
+- the road-only and barricade placement rules;
+- no routes inside plan calls;
+- the barricade cap;
+- determinism;
+- save/restore hash identity with the stage rotation.
+
 ## Coordination notes
 - **AI WORKS** (`actionAIWorks.js`) used to spend energy down to 0, eating the energy the strategic programme banks. Done in the balance pass below: its budget keeps `p.nuke.reserve` (materials and energy) while the programme saves.
 - **NAVIGATION:** `roadRouteBetween` is wired in (`bridgeToward`). The lookup is at runtime, through a namespace import.

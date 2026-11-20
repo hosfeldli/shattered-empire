@@ -38,7 +38,8 @@ export class Scheduler {
       }
       this.carry.delete(task.name);
       const a = now();
-      task.fn(ctx, tickN);
+      this.current = task.name;   // Pass 7: which system is running (telemetry attributes route() calls to it)
+      try { task.fn(ctx, tickN); } finally { this.current = null; }
       this.record(task.name, now() - a, task.budget);
     }
     this.record('tick', now() - t0, this.tickBudget);

@@ -18,6 +18,9 @@ namespace SE.Runtime.Rendering
         /// ramp on the tank's running gear, and a two-man turret (origin on the hull's turret ring) carrying the
         /// autocannon along +z and a twin anti-tank missile box on its left cheek.</summary>
         public static Mesh Ifv, IfvTurret;
+        /// <summary>The missile battery's launch pod (2026-11-19), apart from its chassis (RocketTruck) so it can raise to
+        /// fire: origin on the hinge at the rear of the load bed (UnitRenderer.PodHinge), eight tubes along +z.</summary>
+        public static Mesh RocketPod;
         static readonly Color Paint = new Color(.88f, .90f, .84f);
         static readonly Color Edge = new Color(.70f, .72f, .66f);
         static readonly Color Dark = new Color(.24f, .26f, .24f);
@@ -51,6 +54,7 @@ namespace SE.Runtime.Rendering
                 .Build("Gun truck roof mount");
             CargoTruck = Wheeled(3).Build("Military cargo truck");
             RocketTruck = Wheeled(4).Build("Rocket artillery truck");
+            RocketPod = RocketPodBody().Build("Missile launch pod");
             AirDefense = Wheeled(5).Build("Air defense radar carrier");
             CivilianCar = Wheeled(6).Build("Civilian saloon");
             ArmoredCarLo = CivilianCar;   // code-built fallback for the operational-zoom gun truck (a car with wheels)
@@ -91,7 +95,7 @@ namespace SE.Runtime.Rendering
             RoadWheel = ModelLibrary.Or("RoadWheel", RoadWheel); Wheel = ModelLibrary.Or("Wheel", Wheel);
             Carrier = ModelLibrary.Or("Carrier", Carrier); ArmoredCar = ModelLibrary.Or("ArmoredCar", ArmoredCar);
             ArmoredCarLo = ModelLibrary.Or("ArmoredCarLo", ArmoredCarLo); ArmoredCarMount = ModelLibrary.Or("ArmoredCarMount", ArmoredCarMount);
-            CargoTruck = ModelLibrary.Or("CargoTruck", CargoTruck); RocketTruck = ModelLibrary.Or("RocketTruck", RocketTruck);
+            CargoTruck = ModelLibrary.Or("CargoTruck", CargoTruck); RocketTruck = ModelLibrary.Or("RocketTruck", RocketTruck); RocketPod = ModelLibrary.Or("RocketPod", RocketPod);
             AirDefense = ModelLibrary.Or("AirDefense", AirDefense);
             Fighter = ModelLibrary.Or("Warthog", Fighter); Bomber = ModelLibrary.Or("Bomber", Bomber);
             Helicopter = ModelLibrary.Or("Helicopter", Helicopter); Rotor = ModelLibrary.Or("Rotor", Rotor);
@@ -286,7 +290,7 @@ namespace SE.Runtime.Rendering
             {
                 m.Armor(P(0, .187f, .315f), P(w, .261f, .34f), V(w * .90f, .295f), .048f, Paint);
                 Glazing(m, .31f, .26f, .308f, w * .72f, .118f);
-                m.Surface(SurfaceKind.SheetMetal).Box(P(0, .192f, -.18f), P(w, .063f, .63f), Steel);
+                m.Surface(SurfaceKind.SheetMetal).Box(P(0, type == 4 ? .137f : .192f, -.18f), P(w, .063f, .63f), Steel);   // the launcher's bed sits at the pod hinge
                 if (type == 3)
                 {
                     m.Surface(SurfaceKind.Fabric).Armor(P(0, .254f, -.18f), P(w * .95f, .235f, .61f), V(w * .79f, .55f), .061f, Edge);
@@ -295,8 +299,10 @@ namespace SE.Runtime.Rendering
                 }
                 else if (type == 4)
                 {
-                    m.Surface(SurfaceKind.Armor).Armor(P(0, .26f, -.20f), P(.49f, .16f, .56f), V(.43f, .47f), .043f, Edge);
-                    for (int i = 0; i < 8; i++) m.Tube(P((i % 4 - 1.5f) * .097f, .305f + i / 4 * .066f, -.475f), .58f, .038f, 8, Dark);
+                    // the launch pod is RocketPod (drawn raised or flat by UnitRenderer); here only its hinge and nose rest
+                    m.Surface(SurfaceKind.Armor);
+                    for (int s = -1; s <= 1; s += 2) m.Box(P(s * .20f, .175f, -.46f), P(.05f, .05f, .07f), Dark);
+                    m.Box(P(0, .20f, .02f), P(.30f, .03f, .04f), Dark);
                 }
                 else
                 {
@@ -336,6 +342,14 @@ namespace SE.Runtime.Rendering
                     foreach (float z in new[] { -.31f, .31f })
                         m.Surface(SurfaceKind.Rubber).Beam(P(x - .022f, .086f, z), P(x + .022f, .086f, z), .087f, .087f, 10, Dark);
             return m;
+        }
+
+        /// <summary>The launch pod about its hinge (origin): matches Resources/Models/RocketPod (build_military.py rocket_pod).</summary>
+        static MeshBuilder RocketPodBody()
+        {
+            var m = new MeshBuilder().Surface(SurfaceKind.Armor).Armor(P(0, 0, .26f), P(.46f, .14f, .52f), V(.42f, .48f), .03f, Edge);
+            for (int i = 0; i < 8; i++) m.Tube(P((i % 4 - 1.5f) * .10f, .09f + i / 4 * .068f, -.01f), .56f, .035f, 8, Dark);
+            return m.Box(P(0, .14f, .26f), P(.44f, .008f, .50f), Paint);
         }
 
         static void Glazing(MeshBuilder m, float z, float y, float length, float w, float h)

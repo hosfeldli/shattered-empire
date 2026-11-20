@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -13,14 +14,18 @@ using UnityEngine.UIElements;
 namespace SE.Runtime.UI
 {
     /// <summary>
-    /// "What's new" (docs/RELEASING.md, release notes): after an in-app update, on the first start of a new client
-    /// version (the build stamp's version compared with PlayerPrefs se.notes.seen), a scrollable window beside the
-    /// main menu shows that version's notes from the server (/api/release-notes/&lt;version&gt;): summary, sections
-    /// with text, bullets, charts drawn here (Painter2D bar and line charts), before/after tables or image pairs,
-    /// screenshots (loaded async, cached on disk, failure-tolerant) and a collapsible "Smaller fixes" list.
-    /// The menu footer's "What's new" link reopens it. It never blocks the menu or play; offline it shows the cached
-    /// copy or a short note. A fresh install (nothing seen yet and no update just installed) shows nothing.
+    /// "What's new": the running changelog (docs/RELEASING.md, release notes). After an in-app update, on the first
+    /// start of a new client version (the build stamp's version compared with PlayerPrefs se.notes.seen), a window
+    /// beside the main menu opens on that version's notes. It is a changelog browser: a version list (newest first,
+    /// the player's version marked, versions newer than the last one seen badged "new") from
+    /// /api/release-notes/index, and per version a summary, a jump list of sections, sections grouped by category
+    /// (collapsible) with text, bullets, charts drawn here (Painter2D), before/after tables or image pairs,
+    /// screenshots (loaded async, cached on disk, failure-tolerant), "Changed in" pointers and the smaller fixes.
+    /// A search box and a category filter search every version. The menu footer's "What's new" link reopens it.
+    /// It never blocks the menu or play; offline it uses the cached index and notes, or a short note. A fresh install
+    /// (nothing seen yet and no update just installed) shows nothing.
     /// Command line: -whats-new opens it at start (any build), -notes-site URL reads another server (dev).
+    /// Keys: Up/Down (or [ ]) switch version, Ctrl+F or / searches, Escape closes (MainMenu.HandleEscape).
     /// </summary>
     public static class ReleaseNotes
     {
@@ -30,8 +35,51 @@ namespace SE.Runtime.UI
         static ReleaseNotesWindow open;
         static bool autoChecked;
 
+        /// <summary>Section categories (tools/release-notes.mjs CATEGORIES): id and label, in display order.</summary>
+        public static readonly (string id, string label)[] Categories =
+        {
+            ("gameplay", "Gameplay"), ("units", "Units & balance"), ("ai", "AI"), ("performance", "Performance"),
+            ("visuals", "Visuals & audio"), ("interface", "Interface"), ("fixes", "Fixes"), ("other", "Other"),
+        };
+
+        public static string CategoryOf(JToken section)
+        {
+            string c = (string)(section as JObject)?["category"];
+            foreach (var (id, _) in Categories) if (id == c) return id;
+            return "other";
+        }
+
+        public static string CategoryLabel(string id)
+        {
+            foreach (var (cid, label) in Categories) if (cid == id) return label;
+            return "Other";
+        }
+
+        public static int CategoryOrder(string id)
+        {
+            for (int i = 0; i < Categories.Length; i++) if (Categories[i].id == id) return i;
+            return Categories.Length;
+        }
+
         public static bool ValidVersion(string v) => !string.IsNullOrEmpty(v) && VersionPattern.IsMatch(v);
         internal static bool ValidImage(string name) => !string.IsNullOrEmpty(name) && ImagePattern.IsMatch(name);
+
+        /// <summary>Semver order (the server's and tools/release-notes.mjs cmpVersion): 0.10.0 &gt; 0.9.9 &gt; 0.9.9-rc1.</summary>
+        public static int Compare(string a, string b)
+        {
+            var pa = (a ?? "").Split('.', '-'); var pb = (b ?? "").Split('.', '-');
+            for (int i = 0; i < Math.Max(pa.Length, pb.Length); i++)
+            {
+                string x = i < pa.Length ? pa[i] : "", y = i < pb.Length ? pb[i] : "";
+                bool nx = int.TryParse(x, out int ix), ny = int.TryParse(y, out int iy);
+                if (nx && ny) { if (ix != iy) return ix.CompareTo(iy); continue; }
+                if (x == y) continue;
+                if (x == "") return 1;
+                if (y == "") return -1;
+                return string.CompareOrdinal(x, y) < 0 ? -1 : 1;
+            }
+            return 0;
+        }
 
         /// <summary>This client's version: the release stamp (build_id.txt version=), else the player's bundle version.</summary>
         public static string CurrentVersion
@@ -42,6 +90,9 @@ namespace SE.Runtime.UI
                 return ValidVersion(v) ? v : Application.version;
             }
         }
+
+        /// <summary>The last version whose notes the player saw ("" when none): versions newer than it are badged new.</summary>
+        public static string SeenVersion => PlayerPrefs.GetString(SeenKey, "");
 
         static string site;
         internal static string ApiBase
@@ -67,7 +118,7 @@ namespace SE.Runtime.UI
             if (footer != null)
             {
                 var link = UiKit.Button("What's new", () => Open(host, false), footer, null, "se-notes-link");
-                link.tooltip = "What changed in this version";
+                link.tooltip = "What changed in this version, and every version before it";
             }
             if (autoChecked) return;
             autoChecked = true;
@@ -82,14 +133,14 @@ namespace SE.Runtime.UI
             Open(host, true);
         }
 
-        /// <summary>Open the window for this version (the latest notes when this version has none). Auto: opened by itself.</summary>
-        public static void Open(VisualElement host, bool auto)
+        /// <summary>Open the changelog on this version (the newest when this version has none). Auto: opened by itself.</summary>
+        public static void Open(VisualElement host, bool auto, string version = null)
         {
             Close();
             open = new ReleaseNotesWindow(auto);
             host.Add(open);
             UiKit.Enter(open);
-            _ = open.Load(CurrentVersion);
+            _ = open.Load(ValidVersion(version) ? version : CurrentVersion);
         }
 
         /// <summary>Close the window; false when it was not open (Escape uses this first).</summary>
@@ -110,7 +161,8 @@ namespace SE.Runtime.UI
         }
 
         // ------------------------------------------------------------------ network and the disk cache
-        internal static string CacheDir(string version) => Path.Combine(Application.persistentDataPath, "ReleaseNotes", version);
+        internal static string CacheRoot => Path.Combine(Application.persistentDataPath, "ReleaseNotes");
+        internal static string CacheDir(string version) => Path.Combine(CacheRoot, version);
 
         /// <summary>GET a URL: (200, bytes) on success, else (HTTP status or 0 without a connection, null).</summary>
         internal static async Task<(long code, byte[] data)> Get(string url, int timeoutSeconds)
@@ -157,13 +209,90 @@ namespace SE.Runtime.UI
             }
             catch (Exception e) { Debug.Log("[notes] fetch failed: " + e.Message); }
             string cv = version == "latest" ? PlayerPrefs.GetString(CachedKey, "") : version;
+            var cached = Cached(cv);
+            if (cached != null) return (cached, true, false);
+            return (null, false, code == 404);
+        }
+
+        /// <summary>The cached notes of a version, or null.</summary>
+        internal static JObject Cached(string version)
+        {
             try
             {
-                string p = ValidVersion(cv) ? Path.Combine(CacheDir(cv), "notes.json") : null;
-                if (p != null && File.Exists(p)) return (JObject.Parse(File.ReadAllText(p, Encoding.UTF8)), true, false);
+                string p = ValidVersion(version) ? Path.Combine(CacheDir(version), "notes.json") : null;
+                if (p != null && File.Exists(p)) return JObject.Parse(File.ReadAllText(p, Encoding.UTF8));
             }
             catch (Exception e) { Debug.LogWarning("[notes] cached copy: " + e.Message); }
-            return (null, false, code == 404);
+            return null;
+        }
+
+        /// <summary>
+        /// Every version's index entry, newest first ({version, date, title, summary, since, sections[{heading,
+        /// category}], fixes, draft?}): /api/release-notes/index (cached on disk), else the cached index, else entries
+        /// made from the notes cached on disk. Null when there is nothing at all. Old servers without the index route
+        /// answer 404, and the cache is used then too.
+        /// </summary>
+        internal static async Task<(List<JObject> entries, bool fromCache)> FetchIndex()
+        {
+            string file = Path.Combine(CacheRoot, "index.json");
+            try
+            {
+                var (_, data) = await Get(ApiBase + "index", 10);
+                if (data != null)
+                {
+                    var list = Entries(JObject.Parse(Encoding.UTF8.GetString(data)));
+                    if (list.Count > 0)
+                    {
+                        try { Directory.CreateDirectory(CacheRoot); File.WriteAllBytes(file, data); }
+                        catch (Exception e) { Debug.LogWarning("[notes] index cache: " + e.Message); }
+                        return (list, false);
+                    }
+                }
+            }
+            catch (Exception e) { Debug.Log("[notes] index fetch failed: " + e.Message); }
+            var merged = new Dictionary<string, JObject>();
+            try { if (File.Exists(file)) foreach (var e in Entries(JObject.Parse(File.ReadAllText(file, Encoding.UTF8)))) merged[(string)e["version"]] = e; }
+            catch (Exception e) { Debug.LogWarning("[notes] cached index: " + e.Message); }
+            // notes cached on disk that the cached index doesn't list (e.g. the index was never fetched)
+            try
+            {
+                if (Directory.Exists(CacheRoot))
+                    foreach (var d in Directory.GetDirectories(CacheRoot))
+                    {
+                        string v = Path.GetFileName(d);
+                        if (!ValidVersion(v) || merged.ContainsKey(v)) continue;
+                        var n = Cached(v);
+                        if (n != null) merged[v] = EntryOf(n, v);
+                    }
+            }
+            catch (Exception e) { Debug.LogWarning("[notes] cache listing: " + e.Message); }
+            if (merged.Count == 0) return (null, true);
+            return (merged.Values.OrderByDescending(e => (string)e["version"], Comparer<string>.Create(Compare)).ToList(), true);
+        }
+
+        static List<JObject> Entries(JObject index)
+        {
+            var list = new List<JObject>();
+            if (index?["versions"] is JArray vs)
+                foreach (var t in vs) if (t is JObject e && ValidVersion((string)e["version"])) list.Add(e);
+            list.Sort((a, b) => Compare((string)b["version"], (string)a["version"]));
+            return list;
+        }
+
+        /// <summary>An index entry made from a full notes object (the server's shape).</summary>
+        internal static JObject EntryOf(JObject n, string version)
+        {
+            var secs = new JArray();
+            if (n["sections"] is JArray ss)
+                foreach (var s in ss) if (s is JObject so) secs.Add(new JObject { ["heading"] = (string)so["heading"] ?? "", ["category"] = CategoryOf(so) });
+            var e = new JObject
+            {
+                ["version"] = version, ["date"] = (string)n["date"] ?? "", ["title"] = (string)n["title"] ?? "",
+                ["summary"] = (string)n["summary"] ?? "", ["since"] = (string)n["since"]?["version"] ?? "",
+                ["sections"] = secs, ["fixes"] = (n["fixes"] as JArray)?.Count ?? 0,
+            };
+            if (n["draft"]?.Type == JTokenType.Boolean && (bool)n["draft"]) e["draft"] = true;
+            return e;
         }
 
         /// <summary>An image of a notes version: the disk cache, else the server (then cached). Null on failure.</summary>
@@ -186,101 +315,552 @@ namespace SE.Runtime.UI
         }
     }
 
-    /// <summary>The "What's new in &lt;version&gt;" window (see <see cref="ReleaseNotes"/>). Styles: SE.uss .se-notes*.</summary>
+    /// <summary>The changelog window (see <see cref="ReleaseNotes"/>). Styles: SE.uss .se-notes*.</summary>
     public sealed class ReleaseNotesWindow : VisualElement
     {
         readonly bool auto;
+        readonly string current, seenBefore;
         readonly Label title, meta;
-        readonly ScrollView body;
+        readonly TextField search;
+        readonly VisualElement filters, sidebar, toc;
+        readonly ScrollView versionList, body;
         readonly List<Texture2D> textures = new List<Texture2D>();
-        bool disposed;
+        readonly Dictionary<string, JObject> loaded = new Dictionary<string, JObject>();
+        readonly HashSet<string> offline = new HashSet<string>();   // versions shown from the disk cache
+        readonly Dictionary<string, Button> versionButtons = new Dictionary<string, Button>();
+        readonly Dictionary<string, Button> filterButtons = new Dictionary<string, Button>();
+        readonly List<Foldout> sectionFolds = new List<Foldout>();
+        List<JObject> entries = new List<JObject>();
+        bool indexFromCache, allLoading, allLoaded, disposed;
+        string shown, category = "all", query = "";
+        int generation;   // bumps on every re-render; late image loads for an old render are dropped
 
         public ReleaseNotesWindow(bool auto)
         {
             this.auto = auto;
+            current = ReleaseNotes.CurrentVersion;
+            seenBefore = ReleaseNotes.SeenVersion;
             name = "se-release-notes";
             AddToClassList("se-notes");
             pickingMode = PickingMode.Position;
+            focusable = true;
+
             var head = UiKit.El("se-notes-head", this);
             title = UiKit.Text("What's new", "se-notes-title", head);
-            var close = UiKit.IconButton("close", () => ReleaseNotes.Close(), "Close", head, 28);
+            var close = UiKit.IconButton("close", () => ReleaseNotes.Close(), "Close (Esc)", head, 28);
             close.focusable = false;
-            meta = UiKit.Text("", "se-notes-meta", this);
-            body = new ScrollView(ScrollViewMode.Vertical);
+
+            var tools = UiKit.El("se-notes-tools", this);
+            search = new TextField();
+            search.AddToClassList("field");
+            search.AddToClassList("se-menu-field");
+            search.AddToClassList("se-notes-search");
+            search.textEdition.placeholder = "Search every version…  (Ctrl+F)";
+            search.RegisterValueChangedCallback(e => { query = (e.newValue ?? "").Trim(); Refresh(); });
+            tools.Add(search);
+            filters = UiKit.El("se-notes-filters", this);
+            Filter("all", "All");
+            foreach (var (id, label) in ReleaseNotes.Categories) Filter(id, label);
+
+            var main = UiKit.El("se-notes-main", this);
+            sidebar = UiKit.El("se-notes-side", main);
+            UiKit.Text("Versions", "se-notes-side-title", sidebar);
+            versionList = new ScrollView(ScrollViewMode.Vertical) { horizontalScrollerVisibility = ScrollerVisibility.Hidden };
+            versionList.AddToClassList("se-notes-versions");
+            sidebar.Add(versionList);
+            UiKit.Text("Loading…", "se-notes-caption", versionList);
+
+            var col = UiKit.El("se-notes-col", main);
+            meta = UiKit.Text("", "se-notes-meta", col);
+            toc = UiKit.El("se-notes-toc", col);
+            body = new ScrollView(ScrollViewMode.Vertical) { horizontalScrollerVisibility = ScrollerVisibility.Hidden, mouseWheelScrollSize = 38 };
             body.AddToClassList("se-notes-scroll");
-            Add(body);
+            col.Add(body);
             UiKit.Text("Loading…", "se-notes-text", body);
+
             var foot = UiKit.El("se-notes-foot", this);
+            UiKit.Text("↑ ↓ change version · Ctrl+F search · Esc close", "se-notes-keys", foot);
             UiKit.Button("Close", () => ReleaseNotes.Close(), foot, null, "se-menu-action");
+
+            RegisterCallback<KeyDownEvent>(OnKey, TrickleDown.TrickleDown);
+            UpdateFilters();
         }
 
         public void Dispose()
         {
             disposed = true;
+            generation++;
+            DropTextures();
+        }
+
+        void DropTextures()
+        {
             foreach (var t in textures) if (t != null) UnityEngine.Object.Destroy(t);
             textures.Clear();
         }
 
+        // ------------------------------------------------------------------ loading
         public async Task Load(string version)
         {
             bool mine = ReleaseNotes.ValidVersion(version);
-            JObject notes = null; bool fromCache = false, missing = true;
-            if (mine) (notes, fromCache, missing) = await ReleaseNotes.Fetch(version);
-            // no notes for this build (a dev build, or released without notes): the published version's, when opened by hand
-            if (notes == null && missing && !auto) (notes, fromCache, missing) = await ReleaseNotes.Fetch("latest");
-            if (disposed) return;
-            body.Clear();
-            if (notes == null)
+            if (auto && mine)
             {
-                if (auto && missing) { ReleaseNotes.MarkSeen(version); ReleaseNotes.Close(); return; }   // nothing to tell
-                title.text = mine ? "What's new in " + version : "What's new";
+                // opened by itself after an update: only when this version has notes
+                var (n, _, missing) = await ReleaseNotes.Fetch(version);
+                if (disposed) return;
+                if (n == null) { if (missing) ReleaseNotes.MarkSeen(version); ReleaseNotes.Close(); return; }
+                loaded[version] = n;
+            }
+            var (list, fromCache) = await ReleaseNotes.FetchIndex();
+            if (disposed) return;
+            indexFromCache = fromCache;
+            entries = list ?? new List<JObject>();
+            // this version's notes may be known without an index (an old server, or a version not listed yet)
+            if (mine && !entries.Any(e => (string)e["version"] == version))
+            {
+                if (!loaded.ContainsKey(version))
+                {
+                    var (n, _, _) = await ReleaseNotes.Fetch(version);
+                    if (disposed) return;
+                    if (n != null) loaded[version] = n;
+                }
+                if (loaded.TryGetValue(version, out var mineNotes)) entries.Insert(0, ReleaseNotes.EntryOf(mineNotes, version));
+                entries.Sort((a, b) => ReleaseNotes.Compare((string)b["version"], (string)a["version"]));
+            }
+            if (entries.Count == 0)
+            {
+                // no index, nothing cached: try the published version's notes on their own (an old server)
+                var (n, _, _) = await ReleaseNotes.Fetch("latest");
+                if (disposed) return;
+                if (n != null && ReleaseNotes.ValidVersion((string)n["version"]))
+                {
+                    loaded[(string)n["version"]] = n;
+                    entries.Add(ReleaseNotes.EntryOf(n, (string)n["version"]));
+                }
+            }
+            BuildVersionList();
+            if (entries.Count == 0)
+            {
+                body.Clear();
                 meta.text = "";
-                UiKit.Text(missing ? "There are no release notes for this version yet."
-                    : "The release notes couldn't be loaded. Connect to the internet and open What's new from the main menu.", "se-notes-text", body);
+                UiKit.Text("The release notes couldn't be loaded. Connect to the internet and open What's new from the main menu.", "se-notes-text", body)
+                    .style.whiteSpace = WhiteSpace.Normal;
                 return;
             }
-            string v = (string)notes["version"] ?? version;
-            title.text = "What's new in " + v;
-            string date = (string)notes["date"] ?? "";
-            string since = (string)notes["since"]?["version"] ?? "";
-            meta.text = (string)notes["title"] + (date.Length > 0 ? " · " + date : "") + (since.Length > 0 ? " · changes since " + since : "")
-                + (fromCache ? " · offline copy" : "") + (notes["draft"]?.Type == JTokenType.Boolean && (bool)notes["draft"] ? " · draft" : "");
-            try { Render(notes, v); }
-            catch (Exception e) { Debug.LogWarning("[notes] render: " + e); UiKit.Text("Some of these notes couldn't be shown.", "se-notes-caption", body); }
-            if (v == version) ReleaseNotes.MarkSeen(v);
+            string first = mine && entries.Any(e => (string)e["version"] == version) ? version : (string)entries[0]["version"];
+            await Show(first);
         }
 
-        // ------------------------------------------------------------------ blocks
-        void Render(JObject n, string version)
+        async Task<JObject> Notes(string version)
+        {
+            if (loaded.TryGetValue(version, out var n)) return n;
+            var (f, fromCache, _) = await ReleaseNotes.Fetch(version);
+            if (f != null) loaded[version] = f;
+            if (fromCache) offline.Add(version);
+            return f;
+        }
+
+        /// <summary>Every version's notes (for search and the category filter); loaded once, in the background.</summary>
+        async void LoadAll()
+        {
+            if (allLoaded || allLoading) return;
+            allLoading = true;
+            try
+            {
+                foreach (var e in entries.ToList())
+                {
+                    if (disposed) return;
+                    await Notes((string)e["version"]);
+                }
+            }
+            catch (Exception ex) { Debug.Log("[notes] load all: " + ex.Message); }
+            allLoading = false;
+            allLoaded = true;
+            if (!disposed) Refresh();
+        }
+
+        // ------------------------------------------------------------------ the version list
+        void BuildVersionList()
+        {
+            versionList.Clear();
+            versionButtons.Clear();
+            foreach (var e in entries)
+            {
+                string v = (string)e["version"];
+                var b = new Button { text = "" };
+                b.AddToClassList("se-notes-ver");
+                b.focusable = false;
+                var top = UiKit.El("se-notes-ver-top", b);
+                UiKit.Text(v, "se-notes-ver-num", top);
+                if (v == current) UiKit.Text("yours", "se-notes-badge se-notes-badge--yours", top);
+                else if (IsNew(v)) UiKit.Text("new", "se-notes-badge se-notes-badge--new", top);
+                if (e["draft"]?.Type == JTokenType.Boolean && (bool)e["draft"]) UiKit.Text("draft", "se-notes-badge", top);
+                var t = UiKit.Text((string)e["title"] ?? "", "se-notes-ver-title", b);
+                t.style.whiteSpace = WhiteSpace.Normal;
+                UiKit.Text((string)e["date"] ?? "", "se-notes-ver-date", b);
+                b.tooltip = v == current ? "The version you are running" : IsNew(v) ? "Newer than the last notes you read" : "";
+                b.clicked += () => { ClearFilters(); _ = Show(v); };
+                versionList.Add(b);
+                versionButtons[v] = b;
+            }
+            if (indexFromCache) UiKit.Text("Offline: showing saved notes", "se-notes-caption se-notes-offline", versionList);
+        }
+
+        /// <summary>Newer than what the player last saw (not shown before any version was seen, e.g. a fresh install).</summary>
+        bool IsNew(string v) => ReleaseNotes.ValidVersion(seenBefore) && ReleaseNotes.Compare(v, seenBefore) > 0;
+
+        void Select(string v)
+        {
+            foreach (var kv in versionButtons) kv.Value.EnableInClassList("selected", kv.Key == v);
+            if (v != null && versionButtons.TryGetValue(v, out var b)) versionList.ScrollTo(b);
+        }
+
+        void Step(int dir)
+        {
+            if (entries.Count == 0) return;
+            int i = entries.FindIndex(e => (string)e["version"] == shown);
+            int j = Mathf.Clamp(i < 0 ? 0 : i + dir, 0, entries.Count - 1);
+            if (j == i) return;
+            ClearFilters();
+            _ = Show((string)entries[j]["version"]);
+        }
+
+        // ------------------------------------------------------------------ filters and search
+        void Filter(string id, string label)
+        {
+            var b = new Button { text = "" };
+            b.AddToClassList("se-notes-chip");
+            b.focusable = false;
+            UiKit.Text(label, "se-notes-chip-label", b);
+            b.clicked += () => { category = category == id ? "all" : id; UpdateFilters(); Refresh(); };
+            filters.Add(b);
+            filterButtons[id] = b;
+        }
+
+        void UpdateFilters()
+        {
+            foreach (var kv in filterButtons) kv.Value.EnableInClassList("selected", kv.Key == category);
+        }
+
+        void ClearFilters()
+        {
+            bool had = query.Length > 0 || category != "all";
+            category = "all";
+            query = "";
+            search.SetValueWithoutNotify("");
+            UpdateFilters();
+            if (had) shown = null;
+        }
+
+        bool Filtering => query.Length > 0 || category != "all";
+
+        /// <summary>Re-render for the current query and category: one version, or the matches across all versions.</summary>
+        void Refresh()
+        {
+            if (disposed) return;
+            if (!Filtering) { if (shown != null) _ = Show(shown, true); else if (entries.Count > 0) _ = Show((string)entries[0]["version"], true); return; }
+            LoadAll();
+            RenderResults();
+        }
+
+        void OnKey(KeyDownEvent e)
+        {
+            bool typing = panel?.focusController?.focusedElement is TextField;
+            if ((e.ctrlKey || e.commandKey) && e.keyCode == KeyCode.F || !typing && e.character == '/')
+            {
+                search.Focus();
+                e.StopPropagation();
+                return;
+            }
+            if (typing)
+            {
+                if (e.keyCode == KeyCode.Escape && search.value.Length > 0) { search.value = ""; e.StopPropagation(); }
+                else if (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter || e.keyCode == KeyCode.DownArrow) { Focus(); e.StopPropagation(); }
+                return;
+            }
+            switch (e.keyCode)
+            {
+                case KeyCode.UpArrow: case KeyCode.LeftBracket: Step(-1); e.StopPropagation(); break;
+                case KeyCode.DownArrow: case KeyCode.RightBracket: Step(1); e.StopPropagation(); break;
+                case KeyCode.PageDown: body.scrollOffset += new Vector2(0, body.contentViewport.layout.height * .9f); e.StopPropagation(); break;
+                case KeyCode.PageUp: body.scrollOffset -= new Vector2(0, body.contentViewport.layout.height * .9f); e.StopPropagation(); break;
+                case KeyCode.Home: body.scrollOffset = Vector2.zero; e.StopPropagation(); break;
+            }
+        }
+
+        // ------------------------------------------------------------------ one version
+        async Task Show(string version, bool keepScroll = false)
+        {
+            int gen = ++generation;
+            shown = version;
+            Select(version);
+            var entry = entries.FirstOrDefault(e => (string)e["version"] == version);
+            title.text = "What's new in " + version;
+            if (!loaded.ContainsKey(version))
+            {
+                body.Clear(); toc.Clear();
+                UiKit.Text("Loading…", "se-notes-text", body);
+            }
+            var notes = await Notes(version);
+            if (disposed || gen != generation) return;
+            float scroll = body.scrollOffset.y;
+            body.Clear(); toc.Clear(); sectionFolds.Clear();
+            DropTextures();
+            if (notes == null)
+            {
+                meta.text = Meta(entry, false);
+                UiKit.Text("These notes aren't saved on this computer yet. Connect to the internet to read them.", "se-notes-text", body).style.whiteSpace = WhiteSpace.Normal;
+                if (entry != null) Para((string)entry["summary"], "se-notes-summary", body);
+                return;
+            }
+            meta.text = Meta(entry ?? ReleaseNotes.EntryOf(notes, version), offline.Contains(version));
+            try { Render(notes, version, gen); }
+            catch (Exception e) { Debug.LogWarning("[notes] render: " + e); UiKit.Text("Some of these notes couldn't be shown.", "se-notes-caption", body); }
+            if (keepScroll) body.schedule.Execute(() => body.scrollOffset = new Vector2(0, scroll)).ExecuteLater(1);
+            else body.scrollOffset = Vector2.zero;
+            if (version == current) ReleaseNotes.MarkSeen(version);
+        }
+
+        static string Meta(JObject e, bool offline)
+        {
+            if (e == null) return "";
+            string date = (string)e["date"] ?? "", since = (string)e["since"] ?? "";
+            return (string)e["title"] + (date.Length > 0 ? " · " + date : "") + (since.Length > 0 ? " · changes since " + since : "")
+                + (offline ? " · offline copy" : "") + (e["draft"]?.Type == JTokenType.Boolean && (bool)e["draft"] ? " · draft" : "");
+        }
+
+        /// <summary>Sections in category order (stable within a category), each under its category heading.</summary>
+        static List<(string cat, List<JObject> sections)> Grouped(JObject n)
+        {
+            var groups = new List<(string, List<JObject>)>();
+            var all = (n["sections"] as JArray)?.OfType<JObject>().ToList() ?? new List<JObject>();
+            foreach (var (id, _) in ReleaseNotes.Categories)
+            {
+                var g = all.Where(s => ReleaseNotes.CategoryOf(s) == id).ToList();
+                if (g.Count > 0) groups.Add((id, g));
+            }
+            return groups;
+        }
+
+        void Render(JObject n, string version, int gen)
         {
             Para((string)n["summary"], "se-notes-summary", body);
-            if (n["sections"] is JArray sections)
-                foreach (var st in sections)
+            var groups = Grouped(n);
+            var fixes = n["fixes"] as JArray;
+            var anchors = new List<(string label, string cat, VisualElement target)>();
+            foreach (var (cat, sections) in groups)
+            {
+                UiKit.Text(ReleaseNotes.CategoryLabel(cat), "se-notes-cat se-notes-cat--" + cat, body);
+                foreach (var s in sections)
                 {
-                    if (!(st is JObject s)) continue;
-                    UiKit.Text((string)s["heading"] ?? "", "se-notes-heading", body);
-                    if (s["blocks"] is JArray blocks) foreach (var bt in blocks) if (bt is JObject b) Block(b, version, body);
+                    var fold = Section(s, version, gen, body);
+                    anchors.Add(((string)s["heading"] ?? "", cat, fold));
                 }
-            if (n["fixes"] is JArray fixes && fixes.Count > 0)
+            }
+            if (fixes != null && fixes.Count > 0)
             {
                 var fold = new Foldout { text = $"Smaller fixes ({fixes.Count})", value = false };
                 fold.AddToClassList("se-notes-fixes");
                 foreach (var f in fixes) Bullet((string)f, fold);
                 body.Add(fold);
+                anchors.Add(($"Smaller fixes ({fixes.Count})", "fixes", fold));
+            }
+            // the jump list: one chip per section, in reading order, coloured by category
+            if (anchors.Count > 1)
+            {
+                UiKit.Text("Jump to", "se-notes-toc-label", toc);
+                foreach (var (label, cat, target) in anchors)
+                {
+                    var t = target;
+                    var b = new Button(() => { if (t is Foldout f) f.value = true; body.schedule.Execute(() => body.ScrollTo(t)).ExecuteLater(30); }) { text = "" };
+                    b.AddToClassList("se-notes-jump");
+                    b.AddToClassList("se-notes-jump--" + cat);
+                    b.focusable = false;
+                    b.tooltip = ReleaseNotes.CategoryLabel(cat);
+                    UiKit.Text(label, "se-notes-jump-label", b);
+                    toc.Add(b);
+                }
+                var all = new Button(() =>
+                {
+                    bool open = sectionFolds.Any(f => !f.value);
+                    foreach (var f in sectionFolds) f.value = open;
+                }) { text = "" };
+                all.AddToClassList("se-notes-jump");
+                all.AddToClassList("se-notes-jump--all");
+                all.focusable = false;
+                UiKit.Text("Collapse / expand all", "se-notes-jump-label", all);
+                toc.Add(all);
             }
         }
 
+        Foldout Section(JObject s, string version, int gen, VisualElement parent)
+        {
+            var fold = new Foldout { text = (string)s["heading"] ?? "", value = true };
+            fold.AddToClassList("se-notes-section");
+            parent.Add(fold);
+            sectionFolds.Add(fold);
+            if (s["blocks"] is JArray blocks) foreach (var bt in blocks) if (bt is JObject b) Block(b, version, gen, fold);
+            Later(s, fold);
+            return fold;
+        }
+
+        /// <summary>"Changed in 0.7.0: …" pointers: the section stays as shipped; clicking opens the later version.</summary>
+        void Later(JObject s, VisualElement parent)
+        {
+            if (!(s["later"] is JArray later)) return;
+            foreach (var lt in later)
+            {
+                if (!(lt is JObject l)) continue;
+                string v = (string)l["version"];
+                if (!ReleaseNotes.ValidVersion(v)) continue;
+                var row = new Button { text = "" };
+                row.AddToClassList("se-notes-later");
+                row.focusable = false;
+                bool known = entries.Any(e => (string)e["version"] == v);
+                UiKit.Text("Changed in " + v, "se-notes-later-tag", row);
+                Para((string)l["text"], "se-notes-later-text", row);
+                if (known) { row.tooltip = "Open the " + v + " notes"; row.clicked += () => { ClearFilters(); _ = Show(v); }; }
+                parent.Add(row);
+            }
+        }
+
+        // ------------------------------------------------------------------ search results across versions
+        void RenderResults()
+        {
+            int gen = ++generation;
+            body.Clear(); toc.Clear(); sectionFolds.Clear();
+            DropTextures();
+            Select(null);
+            string q = query.ToLowerInvariant();
+            title.text = "Changelog";
+            meta.text = (query.Length > 0 ? $"Searching for “{query}”" : "All versions")
+                + (category != "all" ? " · " + ReleaseNotes.CategoryLabel(category) : "")
+                + (allLoaded ? "" : " · loading every version…");
+            int hits = 0;
+            foreach (var e in entries)
+            {
+                string v = (string)e["version"];
+                if (!loaded.TryGetValue(v, out var n) || n == null) continue;
+                var head = (VisualElement)null;
+                VisualElement Head()
+                {
+                    if (head != null) return head;
+                    head = new Button(() => { ClearFilters(); _ = Show(v); }) { text = "" };
+                    head.AddToClassList("se-notes-result-ver");
+                    head.focusable = false;
+                    UiKit.Text(v, "se-notes-ver-num", head);
+                    UiKit.Text(((string)n["title"] ?? "") + ((string)n["date"] is string d && d.Length > 0 ? " · " + d : ""), "se-notes-result-title", head);
+                    head.tooltip = "Open the " + v + " notes";
+                    body.Add(head);
+                    return head;
+                }
+                foreach (var (cat, sections) in Grouped(n))
+                {
+                    if (category != "all" && category != cat) continue;
+                    foreach (var s in sections)
+                    {
+                        string heading = (string)s["heading"] ?? "";
+                        if (q.Length == 0)
+                        {
+                            Head();
+                            UiKit.Text(ReleaseNotes.CategoryLabel(cat), "se-notes-cat se-notes-cat--" + cat, body);
+                            Section(s, v, gen, body);
+                            hits++;
+                            continue;
+                        }
+                        var lines = Lines(s).Where(t => t.ToLowerInvariant().Contains(q)).ToList();
+                        bool headingHit = heading.ToLowerInvariant().Contains(q);
+                        if (!headingHit && lines.Count == 0) continue;
+                        Head();
+                        var box = UiKit.El("se-notes-result", body);
+                        var h = UiKit.Text(Mark(heading, q) + "  <color=#96A4A0><size=11>" + ReleaseNotes.CategoryLabel(cat) + "</size></color>", "se-notes-result-heading", box);
+                        h.enableRichText = true;
+                        foreach (var t in (lines.Count > 0 ? lines : Lines(s).Take(2)).Take(8)) MarkedBullet(t, q, box);
+                        hits++;
+                    }
+                }
+                if ((category == "all" || category == "fixes") && n["fixes"] is JArray fixes)
+                {
+                    var fl = fixes.Select(f => (string)f ?? "").Where(t => q.Length == 0 || t.ToLowerInvariant().Contains(q)).ToList();
+                    if (fl.Count > 0)
+                    {
+                        Head();
+                        var box = UiKit.El("se-notes-result", body);
+                        UiKit.Text("Smaller fixes", "se-notes-result-heading", box);
+                        foreach (var t in fl) MarkedBullet(t, q, box);
+                        hits++;
+                    }
+                }
+            }
+            if (hits == 0)
+                UiKit.Text(allLoaded ? "Nothing in the changelog matches that." : "Searching…", "se-notes-text", body);
+            body.scrollOffset = Vector2.zero;
+        }
+
+        /// <summary>The searchable lines of a section: text, bullets, chart and table titles/captions/rows, "changed in".</summary>
+        static IEnumerable<string> Lines(JObject s)
+        {
+            if (s["blocks"] is JArray blocks)
+                foreach (var bt in blocks)
+                {
+                    if (!(bt is JObject b)) continue;
+                    switch ((string)b["type"])
+                    {
+                        case "text": yield return (string)b["text"] ?? ""; break;
+                        case "bullets": if (b["items"] is JArray items) foreach (var t in items) yield return (string)t ?? ""; break;
+                        case "comparison":
+                            if (b["title"] != null) yield return (string)b["title"];
+                            if (b["rows"] is JArray rows)
+                                foreach (var r in rows.OfType<JObject>()) yield return $"{(string)r["label"]}: {(string)r["before"]} → {(string)r["after"]}";
+                            if (b["caption"] != null) yield return (string)b["caption"];
+                            break;
+                        case "chart":
+                            if (b["title"] != null) yield return (string)b["title"];
+                            if (b["caption"] != null) yield return (string)b["caption"];
+                            break;
+                        case "image": if (b["caption"] != null) yield return (string)b["caption"]; break;
+                    }
+                }
+            if (s["later"] is JArray later)
+                foreach (var l in later.OfType<JObject>()) yield return $"Changed in {(string)l["version"]}: {(string)l["text"]}";
+        }
+
+        /// <summary>Rich text with every match of <paramref name="q"/> highlighted (text with markup of its own is left plain).</summary>
+        static string Mark(string text, string q)
+        {
+            text = text ?? "";
+            if (q.Length == 0 || text.IndexOf('<') >= 0) return text;
+            var sb = new StringBuilder();
+            int i = 0;
+            while (i < text.Length)
+            {
+                int k = text.IndexOf(q, i, StringComparison.OrdinalIgnoreCase);
+                if (k < 0) { sb.Append(text, i, text.Length - i); break; }
+                sb.Append(text, i, k - i).Append("<mark=#E2B66066><color=#FFF3D6>").Append(text, k, q.Length).Append("</color></mark>");
+                i = k + q.Length;
+            }
+            return sb.ToString();
+        }
+
+        static void MarkedBullet(string text, string q, VisualElement parent)
+        {
+            var l = Para("•  " + Mark(text, q), "se-notes-bullet", parent);
+            if (l != null) l.enableRichText = true;
+        }
+
+        // ------------------------------------------------------------------ blocks
         static Label Para(string text, string cls, VisualElement parent)
         {
             if (string.IsNullOrEmpty(text)) return null;
             var l = UiKit.Text(text, cls, parent);
             l.style.whiteSpace = WhiteSpace.Normal;
+            l.enableRichText = false;
             return l;
         }
 
         static void Bullet(string text, VisualElement parent) => Para("•  " + text, "se-notes-bullet", parent);
 
-        void Block(JObject b, string version, VisualElement parent)
+        void Block(JObject b, string version, int gen, VisualElement parent)
         {
             switch ((string)b["type"])
             {
@@ -299,12 +879,12 @@ namespace SE.Runtime.UI
                     else
                     {
                         var pair = UiKit.El("se-notes-pair", parent);
-                        Picture(version, b["before"] as JObject, "Before", pair).AddToClassList("se-notes-pair-item");
-                        Picture(version, b["after"] as JObject, "After", pair).AddToClassList("se-notes-pair-item");
+                        Picture(version, gen, b["before"] as JObject, "Before", pair).AddToClassList("se-notes-pair-item");
+                        Picture(version, gen, b["after"] as JObject, "After", pair).AddToClassList("se-notes-pair-item");
                     }
                     Para(Caption(b), "se-notes-caption", parent);
                     break;
-                case "image": Picture(version, b, null, parent); break;
+                case "image": Picture(version, gen, b, null, parent); break;
             }
         }
 
@@ -325,13 +905,21 @@ namespace SE.Runtime.UI
         static void Row(VisualElement table, string label, string before, string after, bool header)
         {
             var row = UiKit.El("se-notes-row" + (header ? " se-notes-row--head" : ""), table);
-            Para(label ?? "", "se-notes-cell se-notes-cell--label", row);
-            Para(before ?? "", "se-notes-cell", row);
-            Para(after ?? "", "se-notes-cell se-notes-cell--after", row);
+            // every cell exists, even empty (the header's label cell), so the columns line up
+            Cell(label, "se-notes-cell se-notes-cell--label", row);
+            Cell(before, "se-notes-cell", row);
+            Cell(after, "se-notes-cell se-notes-cell--after", row);
+        }
+
+        static void Cell(string text, string cls, VisualElement row)
+        {
+            var l = UiKit.Text(text ?? "", cls, row);
+            l.style.whiteSpace = WhiteSpace.Normal;
+            l.enableRichText = false;
         }
 
         /// <summary>An image with its caption: a placeholder until it loads, a short note if it can't.</summary>
-        VisualElement Picture(string version, JObject img, string tag, VisualElement parent)
+        VisualElement Picture(string version, int gen, JObject img, string tag, VisualElement parent)
         {
             var box = UiKit.El("se-notes-figure", parent);
             var frame = UiKit.El("se-notes-image", box);
@@ -341,15 +929,15 @@ namespace SE.Runtime.UI
             string cap = (string)img?["caption"] ?? "";
             Para(tag != null ? tag + (cap.Length > 0 ? ": " + cap : "") : cap, "se-notes-caption", box);
             if (img?["alt"] != null) frame.tooltip = (string)img["alt"];
-            _ = LoadPicture(version, file, frame, status);
+            _ = LoadPicture(version, gen, file, frame, status);
             return box;
         }
 
-        async Task LoadPicture(string version, string file, VisualElement frame, Label status)
+        async Task LoadPicture(string version, int gen, string file, VisualElement frame, Label status)
         {
             Texture2D tex = null;
             try { tex = await ReleaseNotes.Image(version, file); } catch (Exception e) { Debug.Log("[notes] image: " + e.Message); }
-            if (disposed) { if (tex != null) UnityEngine.Object.Destroy(tex); return; }
+            if (disposed || gen != generation) { if (tex != null) UnityEngine.Object.Destroy(tex); return; }
             if (tex == null) { status.text = "Image unavailable offline"; frame.style.height = 48; return; }
             textures.Add(tex);
             status.RemoveFromHierarchy();

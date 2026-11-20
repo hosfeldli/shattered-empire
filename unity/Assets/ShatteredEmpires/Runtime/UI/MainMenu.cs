@@ -365,6 +365,7 @@ namespace SE.Runtime.UI
             ("domination", "Destroy every rival headquarters."),
             ("control", "Hold most of the command zones for a while."),
             ("operation", "Secure the operation's objective first."),
+            ("horde", "Blight survival: everyone on one side against endless waves of infected creatures. The format sets the squad (1v1 solo, 2v2 with an ally)."),
         };
 
         static string HelpFor((string id, string text)[] table, string id)
@@ -433,7 +434,7 @@ namespace SE.Runtime.UI
         static readonly (string id, string label)[] SizeOptions = { ("small", "Small"), ("medium", "Standard"), ("large", "Large"), ("huge", "Huge") };
         // the lobby's random world follows the seat count unless the host picks a size
         static readonly (string id, string label)[] LobbySizeOptions = { ("auto", "Auto"), ("small", "Small"), ("medium", "Standard"), ("large", "Large"), ("huge", "Huge") };
-        static readonly (string id, string label)[] VictoryOptions = { ("domination", "Domination"), ("control", "Territory"), ("operation", "Operation") };
+        static readonly (string id, string label)[] VictoryOptions = { ("domination", "Domination"), ("control", "Territory"), ("operation", "Operation"), ("horde", "Blight") };   // horde: BLIGHT survival (HORDE_MODE.md)
 
         /// <summary>A section heading inside a menu column (Sides, Rules, Battlefield).</summary>
         static Label Section(string text, VisualElement parent, bool first = false)
@@ -489,7 +490,7 @@ namespace SE.Runtime.UI
             Line("Victory", "se-menu-label", left);
             Label victoryHelp = null;
             UiKit.Segmented(Options(VictoryOptions), skirmish.Objective,
-                v => { skirmish.Objective = v; if (victoryHelp != null) victoryHelp.text = HelpFor(VictoryHelp, v); }, left, 132);
+                v => { skirmish.Objective = v; if (victoryHelp != null) victoryHelp.text = HelpFor(VictoryHelp, v); }, left, 99);   // four victory options (Blight added) in the formats row width
             victoryHelp = Line(HelpFor(VictoryHelp, skirmish.Objective), "se-menu-help-line", left);
             Line("Starting resources", "se-menu-label", left);
             Label resHelp = null;
@@ -885,7 +886,7 @@ namespace SE.Runtime.UI
             browseNote.text = shown == 0 ? "No public lobbies right now. Host one and set it to Public, or join a friend by code." : $"{shown} public lobb{(shown == 1 ? "y" : "ies")} · updated every few seconds";
         }
 
-        static readonly (string id, string text)[] VictoryHelpShort = { ("domination", "Domination"), ("control", "Territory"), ("operation", "Operation") };
+        static readonly (string id, string text)[] VictoryHelpShort = { ("domination", "Domination"), ("control", "Territory"), ("operation", "Operation"), ("horde", "Blight survival") };
 
         void UpdateMultiplayer()
         {
@@ -1152,7 +1153,7 @@ namespace SE.Runtime.UI
             lobbySizeSeg = UiKit.Segmented(Options(LobbySizeOptions), "auto", v => game.SendLobby(LobbyMessages.Option("size", v)), lobbyRandomBox, 79);
             Section("Rules", lobbyRulesHost);
             Line("Victory", "se-menu-label", lobbyRulesHost);
-            lobbyVictorySeg = UiKit.Segmented(Options(VictoryOptions), "domination", v => game.SendLobby(LobbyMessages.Option("objective", v)), lobbyRulesHost, 132);
+            lobbyVictorySeg = UiKit.Segmented(Options(VictoryOptions), "domination", v => game.SendLobby(LobbyMessages.Option("objective", v)), lobbyRulesHost, 99);   // four victory options (Blight added) in the formats row width
             Line("Starting resources", "se-menu-label", lobbyRulesHost);
             lobbyResSeg = UiKit.Segmented(Options(StartResOptions), "standard", v => game.SendLobby(LobbyMessages.Option("startRes", v)), lobbyRulesHost, 99);
             lobbyRules = Line("", "se-lobby-rules-text", right);

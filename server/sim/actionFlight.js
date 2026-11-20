@@ -62,7 +62,7 @@ function settle(game, u, stopUnit) {
 // ------------------------------------------------------------------ motion
 
 export function flyAircraft(game, u, def, stopUnit) {
-  const pace = def.speed * (game.civs[u.owner].techs.has('aircraft_systems') ? 1.18 : 1);
+  const pace = def.speed;
   if (isFixedWing(u.type)) fixedWing(game, u, pace, FLIGHT[u.type], stopUnit);
   else rotary(game, u, pace, stopUnit);
 }

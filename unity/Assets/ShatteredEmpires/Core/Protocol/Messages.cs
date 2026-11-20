@@ -86,7 +86,8 @@ namespace SE.Core.Protocol
         public BaseParcel[] Parcels;
     }
     public struct BaseParcel { public int Tile, Id, Tier; public float X, Z, Yaw, Width, Depth; public string PreviousType; }
-    public struct ResourcePickup { public int Id, Tile, Amount; public float X, Z; public bool Memory, Replenishes; public string Resource; }
+    /// <summary>A supply cache on the map: Amount left of Max; Collecting = units gathering at it now (5 a second each).</summary>
+    public struct ResourcePickup { public int Id, Tile, Amount, Max, Collecting; public float X, Z; public bool Memory, Replenishes; public string Resource; }
 
     public struct TileRecord
     {
@@ -212,6 +213,8 @@ namespace SE.Core.Protocol
         public JToken Fieldworks;
         public JObject Battlefield;
         public JObject Observer;
+        /// <summary>B7 (2026-11-19): the server's measured pace on econ snapshots (simulated s per real s); -1 when absent.</summary>
+        public float Pace = -1;
         public JObject ActionPlan;
         // typed presentation records (decoded off the main thread)
         public TrenchRecord[] Trenches;

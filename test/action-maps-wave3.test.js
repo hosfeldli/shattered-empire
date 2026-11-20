@@ -60,9 +60,11 @@ test('walls hold: peaks and cliffs stop infantry as well as vehicles', async () 
   }
 });
 
-test('Serpentine: the saddle lets infantry climb straight over the ridge; vehicles go the long way round', async () => {
+// HILLS_MOUNTAINS (2026-11-19): mountains are walls for every ground unit, so the saddle is a hill pass now: the short
+// way over the northern ridge for infantry and vehicles alike (infantry climb it at the hill pace)
+test('Serpentine: the hill saddle is the short way over the ridge', async () => {
   const [r] = await routes('serpentine', [['Harrowby', 'Upper Fold']]);
-  assert.ok(Number.isFinite(r.heavy) && r.light * 2 < r.heavy, `on foot ${r.light}, by tank ${r.heavy}`);
+  assert.ok(Number.isFinite(r.heavy) && Number.isFinite(r.light) && r.light < 40, `on foot ${r.light}, by tank ${r.heavy}`);
 });
 
 test('Fortress Pass: the goat trail is a real route, longer than the canyon', async () => {

@@ -794,6 +794,7 @@ namespace SE.Runtime.Session
             }
             if (session.ActionRts) DrawPatrolOverlay(time);   // Commander.Air.cs (D)
             if (session.ActionRts) DrawRallyMarkers(time);   // econ `ra` rally points of the selected production (Commander.Markers.cs)
+            DrawDefenseRanges(images, time);   // selected defenses and the minimap range toggle (Commander.DefenseRanges.cs)
             rings.DrawImages(images);
             discs.DrawImages(images);
         }
@@ -826,6 +827,6 @@ namespace SE.Runtime.Session
             }
         }
 
-        public void Dispose() { ResetOrderCursor(); rings.Dispose(); discs.Dispose(); routeLines.Dispose(); }
+        public void Dispose() { ResetOrderCursor(); rings.Dispose(); discs.Dispose(); routeLines.Dispose(); rangeLines?.Dispose(); }
     }
 }

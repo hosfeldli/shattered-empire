@@ -1,5 +1,5 @@
 // 2026-11-18: strategic missiles cost 3x; units queue without funds and start when funds arrive (every producing
-// building, train / batchTrain / legacy shapes); one upgrade per unit class (UPGRADES.md).
+// building, train / batchTrain / legacy shapes); command upgrades (troop upgrades removed 2026-11-19).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -58,35 +58,18 @@ test('every trainable unit queues with an empty stockpile and starts once funds 
   }
 });
 
-test('one upgrade per unit class: a taken line is refused, cancelling frees it, AI respects it, old saves keep theirs', () => {
-  assert.equal(ACTION_UPGRADES.grenades.line, 'infantry');
-  assert.equal(ACTION_UPGRADES.heavy_armor.line, 'vehicle');
-  assert.equal(ACTION_UPGRADES.aircraft_systems.line, 'air');
-  assert.equal(ACTION_UPGRADES.improved_logistics.line, undefined);
+test('command upgrades: research at the Armory, cancelling gives no refund (troop upgrades removed 2026-11-19)', () => {
   const g = create(), civ = g.civs[0], site = g.sites[0], slots = openSlots(g, site);
   civ.age = 2; civ.res = { materials: 1e5, energy: 1e5 };
-  addFacility(g, civ, site, 'barracks', slots[0], { instant: true });
-  addFacility(g, civ, site, 'barracks', slots[1], { instant: true });
-  addFacility(g, civ, site, 'armory', slots[2], { instant: true });
-  assert.ok(!g.command(0, { c: 'research', tech: 'grenades' }).error);
-  const taken = g.command(0, { c: 'research', tech: 'rocket_teams' });
-  assert.equal(taken.code, 'upgrade_line_taken');
-  assert.match(taken.error, /infantry already follow the Hand Grenades path/);
-  assert.equal(commandAck(taken, 2).reason, 'upgrade_line_taken');
-  assert.ok(g.command(0, { c: 'research', tech: 'infantry_training' }).code === 'upgrade_line_taken', 'armory infantry upgrade too');
-  assert.ok(!g.command(0, { c: 'research', tech: 'improved_logistics' }).error, 'unrestricted upgrades are unaffected');
-  // cancelling frees the line, without refund
+  addFacility(g, civ, site, 'armory', slots[0], { instant: true });
+  const removed = g.command(0, { c: 'research', tech: 'grenades' });
+  assert.equal(removed.code, 'upgrade_removed');
+  assert.equal(commandAck(removed, 2).reason, 'upgrade_removed');
+  assert.ok(!g.command(0, { c: 'research', tech: 'improved_logistics' }).error);
   const res = { ...civ.res };
-  const cancel = g.command(0, { c: 'cancelResearch', tech: 'grenades' });
-  assert.deepEqual(cancel.reply.cancelled.lost, ACTION_UPGRADES.grenades.cost);
+  const cancel = g.command(0, { c: 'cancelResearch', tech: 'improved_logistics' });
+  assert.deepEqual(cancel.reply.cancelled.lost, ACTION_UPGRADES.improved_logistics.cost);
   assert.deepEqual(civ.res, res, 'no refund');
-  assert.equal(upgradeLineHolder(g, civ, 'rocket_teams'), null);
-  assert.ok(!g.command(0, { c: 'research', tech: 'rocket_teams' }).error);
-  // researched upgrades hold the line; grandfathered extra upgrades stay
-  civ.techs.add('body_armor'); civ.techs.add('marksmen');
-  assert.ok(civ.techs.has('body_armor') && civ.techs.has('marksmen'));
-  g.command(0, { c: 'cancelResearch', tech: 'improved_logistics' });   // free the armory
-  assert.equal(g.command(0, { c: 'research', tech: 'heavy_armor' }).error, undefined, 'the vehicle line is still free');
-  assert.equal(g.command(0, { c: 'research', tech: 'field_engineering' }).code, 'upgrade_line_taken');
-  assert.ok(g.defs.TECHS.grenades.line === 'infantry' && g.defs.RULESET.upgradeLines, 'line reaches the client in defs');
+  assert.equal(upgradeLineHolder(g, civ, 'improved_logistics'), null);
+  assert.equal(g.defs.RULESET.upgradeLines, false);
 });

@@ -7,7 +7,10 @@
 //  * every row carries the COMMON columns (version filters, match id, event and ingest time);
 //  * no names, emails, IP addresses or Steam ids: players are an anonymous install id plus a seat index.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;   // v2 (2026-11-19): overrun, resync / congestion, spectator and wire bytes, AI plans, client snapshot timings
+// v3 (2026-11-19, Pass 7): route memo hits / reasons / callers, nav counters, sub-timings, AI plan time per seat, GC by kind,
+// bytes by message kind, deflate sample; client main / render thread, present wait, player-loop phases, render counters,
+// object counts, post-match time
 export const DATASET = 'se_telemetry';
 export const PARTITION_EXPIRATION_MS = 180 * 24 * 3600 * 1000;
 
@@ -37,6 +40,9 @@ const SYSTEM = [f('name', 'STRING', 'scheduler system'), f('calls', 'INT64', 'ru
   f('avg_ms', 'FLOAT64', 'mean per run'), f('p50_ms', 'FLOAT64', 'recent p50'), f('p95_ms', 'FLOAT64', 'recent p95'), f('p99_ms', 'FLOAT64', 'recent p99'),
   f('max_ms', 'FLOAT64', 'max in the minute'), f('over_budget', 'INT64', 'runs over budget in the minute'), f('deferred', 'INT64', 'deferrals in the minute')];
 
+const SPAN = [f('name', 'STRING', 'what was timed'), f('calls', 'INT64', 'times in the minute'), f('total_ms', 'FLOAT64', 'ms in the minute'),
+  f('avg_ms', 'FLOAT64', 'mean per call'), f('max_ms', 'FLOAT64', 'longest')];
+
 const UNIT_SIDE = [f('seat', 'INT64', 'side (civ id)'), f('team', 'INT64', 'team'), f('human', 'BOOL', 'human player'),
   f('ai_difficulty', 'STRING', 'AI difficulty'), f('ai_personality', 'STRING', 'AI personality'),
   f('units_peak', 'INT64', 'most units of this side seen in the battle at once'), counts('units', 'peak units by type'),
@@ -49,16 +55,20 @@ export const TABLES = {
     fields: [
       f('minute_index', 'INT64', 'minutes since the worker started'), f('wall_s', 'FLOAT64', 'wall seconds covered'), f('sim_time_s', 'FLOAT64', 'match clock at the end'),
       f('sim_advanced_s', 'FLOAT64', 'match seconds simulated in this minute'), f('game_speed', 'INT64', 'speed at the end (0 paused)'),
-      f('pace', 'FLOAT64', 'sim seconds per real second'), f('paused_s', 'FLOAT64', 'wall seconds paused'), f('idle_s', 'FLOAT64', 'wall seconds with nobody connected (not ticking)'),
+      f('pace', 'FLOAT64', 'sim seconds per real second'), f('paused_s', 'FLOAT64', 'wall seconds paused'), f('idle_s', 'FLOAT64', 'wall seconds with nobody connected (not ticking; v1 also counted overruns here)'),
+      f('overrun_s', 'FLOAT64', 'v2: wall seconds the 10 Hz loop lost to iterations running over 100 ms'),
       f('ticks', 'INT64', 'simulation ticks'), f('intervals', 'INT64', 'tick intervals (10 Hz loop iterations that ran)'),
       f('tick_ms_avg', 'FLOAT64', 'mean ms per tick'), f('tick_ms_p50', 'FLOAT64', 'p50 ms per tick'), f('tick_ms_p95', 'FLOAT64', 'p95'), f('tick_ms_p99', 'FLOAT64', 'p99'), f('tick_ms_max', 'FLOAT64', 'max'),
       f('interval_ms_max', 'FLOAT64', 'longest whole loop iteration (ticks + snapshots)'), f('intervals_over_100ms', 'INT64', 'loop iterations over the 100 ms budget'),
       rec('systems', 'per-system timings (scheduler)', SYSTEM),
       f('snapshots', 'INT64', 'snapshot rounds built'), f('snapshot_ms_total', 'FLOAT64', 'ms building and encoding snapshots'), f('snapshot_ms_max', 'FLOAT64', 'longest snapshot round'),
       f('msgs_out', 'INT64', 'messages sent to clients'), f('bytes_out', 'INT64', 'JSON bytes sent to clients (before compression)'),
+      f('bytes_out_spectators', 'INT64', 'v2: of which to the spectator channel'),
+      f('resyncs', 'INT64', 'v2: keyed-delta resync requests (version gaps)'), f('catch_ups', 'INT64', 'v2: backed-up connections that drained and got a catch-up'),
+      f('congestion_skips', 'INT64', 'v2: viewer snapshots skipped while a connection was backed up'),
       f('commands', 'INT64', 'player and AI commands received from clients'),
       f('routes', 'INT64', 'nav.route calls'), f('route_ms_total', 'FLOAT64', 'ms routing'), f('route_ms_p50', 'FLOAT64', 'p50'), f('route_ms_p95', 'FLOAT64', 'p95'), f('route_ms_max', 'FLOAT64', 'max'),
-      f('route_failures', 'INT64', 'routes returning no path'), counts('route_fail_reasons', 'failures by reason (cutoff, other)'), f('route_retries', 'INT64', 'coarse re-plans (navStats.routeRetry)'),
+      f('route_failures', 'INT64', 'routes returning no path'), counts('route_fail_reasons', 'failures by reason: v3 nav.lastFail (goal, cut, coarse, fine, air, other); v1/v2 cutoff / other, with memo hits counted as other'), f('route_retries', 'INT64', 'coarse re-plans (navStats.routeRetry)'),
       counts('stuck', 'stuck-ladder steps and give-ups (navStats.stuck deltas)'), f('group_route_queue_max', 'INT64', 'largest group-route queue'), f('group_route_queue_end', 'INT64', 'queue at the end'),
       f('units', 'INT64', 'units at the end'), f('units_max', 'INT64', 'most units'), f('buildings', 'INT64', 'buildings at the end'), f('projectiles', 'INT64', 'projectiles at the end'), f('projectiles_max', 'INT64', 'most projectiles'),
       f('players_connected', 'INT64', 'humans connected'), f('spectators', 'INT64', 'spectators connected'), f('civs', 'INT64', 'nations'), f('alive', 'INT64', 'nations alive'),
@@ -66,17 +76,29 @@ export const TABLES = {
       f('gc_count', 'INT64', 'worker GCs'), f('gc_ms_total', 'FLOAT64', 'worker GC pause total'), f('gc_ms_max', 'FLOAT64', 'longest worker GC pause'),
       f('loop_lag_p50_ms', 'FLOAT64', 'worker event-loop delay p50'), f('loop_lag_p99_ms', 'FLOAT64', 'p99'), f('loop_lag_max_ms', 'FLOAT64', 'max'), f('loop_utilization', 'FLOAT64', 'worker event-loop utilisation 0-1'),
       f('autosaves', 'INT64', 'autosaves'), f('autosave_ms_max', 'FLOAT64', 'longest synchronous serialize'),
+      f('route_memo_hits', 'INT64', 'v3: route() calls answered by the failed-route memo (no search; not counted in route_failures)'),
+      counts('nav_counters', 'v3: navStats counter deltas in the minute (deferrals, refusals, invalidations, memo kept / dropped...)'),
+      rec('routes_by_caller', 'v3: route() calls by the scheduler system running (command: a player order; outside: between ticks)', [f('name', 'STRING', 'system'),
+        f('calls', 'INT64', 'route() calls'), f('total_ms', 'FLOAT64', 'ms routing'), f('failures', 'INT64', 'failed (memo hits excluded)'), f('memo_hits', 'INT64', 'failed-route memo hits')]),
+      rec('subsystems', 'v3: sub-timings: snapshot.build / delta / stringify / geo, post.out, autosave.*, visibility.stamp / civs, combat.projectiles, ai.plan', SPAN),
+      rec('ai_seats', 'v3: AI planner runs per seat', [f('seat', 'INT64', 'seat'), f('plans', 'INT64', 'plans in the minute'), f('total_ms', 'FLOAT64', 'ms planning'), f('max_ms', 'FLOAT64', 'longest plan')]),
+      rec('gc_kinds', 'v3: worker GC pauses by kind (minor, major, incremental, weak)', SPAN),
+      f('heap_old_space_mb', 'FLOAT64', 'v3: worker old-space used'),
+      counts('bytes_by_kind', 'v3: JSON bytes by message kind (snap, econ, geo, note, ack, ...)'), counts('msgs_by_kind', 'v3: messages by kind'),
+      f('deflate_sample_ratio', 'FLOAT64', 'v3: deflated / raw bytes of a 1-in-64 sample of messages over 1 KB (estimates the wire size)'),
+      f('deflate_sample_ms_per_mb', 'FLOAT64', 'v3: deflate cost of that sample, ms per raw MB (the main thread pays it in ws)'),
     ] },
   server_instance_minute: {
     source: 'server', description: 'Per server-process minute: CPU, memory, event loop, matches, players, telemetry health.',
     fields: [
-      f('uptime_s', 'FLOAT64', 'process uptime'), f('cpu_cores', 'INT64', 'cores visible'), f('cpu_util', 'FLOAT64', 'process CPU / (wall x cores), 0-1'), f('cpu_ms', 'FLOAT64', 'process CPU ms in the minute'),
+      f('uptime_s', 'FLOAT64', 'process uptime'), f('cpu_cores', 'INT64', 'cores the service may use (cgroup quota; v1: host cores)'),
+      f('cpu_cores_effective', 'FLOAT64', 'v2: the cgroup quota or SE_CPU_CORES, unrounded'), f('cpu_cores_host', 'INT64', 'v2: host processors (os.cpus)'), f('cpu_util', 'FLOAT64', 'process CPU / (wall x cores), 0-1'), f('cpu_ms', 'FLOAT64', 'process CPU ms in the minute'),
       f('rss_mb', 'FLOAT64', 'resident memory'), f('heap_used_mb', 'FLOAT64', 'main-thread heap used'), f('external_mb', 'FLOAT64', 'external + array buffers'), f('free_mb', 'FLOAT64', 'free system memory'),
       f('loop_lag_p50_ms', 'FLOAT64', 'main event-loop delay p50'), f('loop_lag_p99_ms', 'FLOAT64', 'p99'), f('loop_lag_max_ms', 'FLOAT64', 'max'), f('loop_utilization', 'FLOAT64', 'main event-loop utilisation 0-1'),
       f('gc_count', 'INT64', 'main-thread GCs'), f('gc_ms_total', 'FLOAT64', 'main-thread GC pause total'),
       f('load_cores', 'FLOAT64', 'sum of running matches tick load in cores (admission control)'),
       f('matches', 'INT64', 'matches known'), f('matches_running', 'INT64', 'running'), f('matches_parked', 'INT64', 'parked'), f('matches_lobby', 'INT64', 'in lobby'),
-      f('players', 'INT64', 'players connected'), f('spectators', 'INT64', 'spectators connected'), f('connections', 'INT64', 'WebSocket connections'),
+      f('players', 'INT64', 'players connected'), f('spectators', 'INT64', 'spectators connected'), f('connections', 'INT64', 'WebSocket connections'), f('wire_bytes_out', 'INT64', 'v2: bytes written to WebSocket connections (after compression, minute)'),
       f('rows_buffered', 'INT64', 'telemetry rows waiting'), f('rows_sent', 'INT64', 'rows accepted by BigQuery (minute)'), f('rows_dropped', 'INT64', 'rows dropped: overflow or failed sends (minute)'),
       f('rows_rejected', 'INT64', 'rows BigQuery rejected (minute)'), f('flush_failures', 'INT64', 'failed insert requests (minute)'), f('bytes_sent', 'INT64', 'request bytes to BigQuery (minute)'),
       f('client_rows', 'INT64', 'client rows accepted (minute)'), f('client_rows_refused', 'INT64', 'client rows refused by validation or rate limits (minute)'),
@@ -116,7 +138,7 @@ export const TABLES = {
       f('spend_materials', 'FLOAT64', 'spent in the minute (income - change)'), f('spend_energy', 'FLOAT64', 'spent'),
       f('units', 'INT64', 'units'), f('army_value', 'FLOAT64', 'cost of units'), f('buildings', 'INT64', 'buildings'), f('bases', 'INT64', 'bases with an HQ'),
       counts('produced', 'units produced in the minute by type'), counts('lost', 'units lost in the minute by type'), f('kills', 'INT64', 'kills so far'), f('casualties', 'INT64', 'casualties so far'),
-      f('ai_state', 'STRING', 'AI objective state'),
+      f('ai_state', 'STRING', 'AI objective state'), f('ai_plans', 'INT64', 'v2: AI planner runs for this seat in the minute'),
     ] },
   battles: {
     source: 'server', description: 'One row per engagement (combat clustered by owners and 10x10 area).',
@@ -144,7 +166,7 @@ export const TABLES = {
   client_minute: {
     source: 'client', description: 'Per client minute: frame pacing, phases, GC, camera, units, network, process.',
     fields: [
-      f('in_match', 'BOOL', 'a match was shown'), f('wall_s', 'FLOAT64', 'seconds covered'), f('frames', 'INT64', 'frames'), f('fps_avg', 'FLOAT64', 'mean FPS'),
+      f('in_match', 'BOOL', 'a live match was shown for most of the minute (v1: any match screen, also after it ended)'), f('wall_s', 'FLOAT64', 'seconds covered'), f('frames', 'INT64', 'frames'), f('fps_avg', 'FLOAT64', 'mean FPS'),
       f('frame_ms_p50', 'FLOAT64', 'p50'), f('frame_ms_p95', 'FLOAT64', 'p95'), f('frame_ms_p99', 'FLOAT64', 'p99'), f('frame_ms_max', 'FLOAT64', 'max'),
       f('frames_over_33ms', 'INT64', 'frames over 33 ms'), f('frames_over_50ms', 'INT64', 'over 50 ms'), f('frames_over_100ms', 'INT64', 'over 100 ms'),
       f('main_ms_avg', 'FLOAT64', 'main-thread work per frame'), f('main_ms_p95', 'FLOAT64', 'p95'), f('cpu_frame_ms_avg', 'FLOAT64', 'FrameTimingManager CPU'), f('gpu_frame_ms_avg', 'FLOAT64', 'FrameTimingManager GPU'),
@@ -155,6 +177,19 @@ export const TABLES = {
       f('visible_units', 'INT64', 'units drawn (mean)'), f('units_known', 'INT64', 'units in the client store'),
       f('net_bytes_in', 'INT64', 'bytes received'), f('snapshots', 'INT64', 'snapshots received'), f('rtt_ms', 'FLOAT64', 'ping round trip'), f('interp_delay_ms', 'FLOAT64', 'newest snapshot minus render time'),
       f('game_speed', 'FLOAT64', 'play rate'), f('paused', 'BOOL', 'paused at the end'), f('spectator', 'BOOL', 'spectating'),
+      f('game_pace', 'FLOAT64', 'v2: the server-measured pace (sim s per real s) at the end'),
+      f('snapshot_decode_ms_avg', 'FLOAT64', 'v2: snapshot JSON decode (worker thread) per snapshot'), f('snapshot_decode_ms_max', 'FLOAT64', 'v2: max'),
+      f('snapshot_apply_ms_avg', 'FLOAT64', 'v2: snapshot apply (main thread) per snapshot'), f('snapshot_apply_ms_max', 'FLOAT64', 'v2: max'),
+      f('keyed_resyncs', 'INT64', 'v2: keyed-delta resyncs the client asked for'),
+      f('main_thread_ms_avg', 'FLOAT64', 'v3: FrameTimingManager main-thread frame time (includes present wait)'),
+      f('render_thread_ms_avg', 'FLOAT64', 'v3: FrameTimingManager render-thread frame time'),
+      f('present_wait_ms_avg', 'FLOAT64', 'v3: main thread waiting for Present (vsync / GPU / render thread)'),
+      f('untracked_ms_avg', 'FLOAT64', 'v3: main-thread time outside GameBootstrap.Update and the present wait'),
+      rec('loop_phases', 'v3: player-loop phases per frame (initialization ... post_late_update, scripts, ui, render, between frames)', [f('name', 'STRING', 'phase'), f('avg_ms', 'FLOAT64', 'mean per frame'), f('max_ms', 'FLOAT64', 'max')]),
+      f('draw_calls_avg', 'FLOAT64', 'v3: draw calls per frame (null where the player does not report it)'), f('batches_avg', 'FLOAT64', 'v3: batches per frame'),
+      f('setpass_calls_avg', 'FLOAT64', 'v3: SetPass calls per frame'), f('triangles_avg', 'FLOAT64', 'v3: triangles per frame'),
+      counts('objects', 'v3: live object counts at the end of the minute (game_object, object, mesh, material, texture, asset, ui_element)'),
+      f('post_match_s', 'FLOAT64', 'v3: seconds on a finished match screen in the minute'),
       f('quality', 'STRING', 'quality preset'), f('resolution', 'STRING', 'WxH'),
     ] },
   client_session: {

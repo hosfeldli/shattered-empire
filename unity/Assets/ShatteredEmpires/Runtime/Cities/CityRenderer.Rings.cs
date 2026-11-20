@@ -45,12 +45,21 @@ namespace SE.Runtime.Cities
             foreach (var p in records)
             {
                 next.Add(p.Id);
-                if (!pickups.TryGetValue(p.Id, out var old) || old.Memory != p.Memory || old.Amount != p.Amount)
+                if (!pickups.TryGetValue(p.Id, out var old) || old.Memory != p.Memory || PickupPieces(old) != PickupPieces(p) || old.Resource != p.Resource)
                     dirty.Add(world.ChunkOf(p.Tile));
                 pickups[p.Id] = p;
             }
             foreach (int id in pickups.Keys.Where(id => !next.Contains(id)).ToArray())
             { dirty.Add(world.ChunkOf(pickups[id].Tile)); pickups.Remove(id); }
+        }
+
+        /// <summary>Crates (materials) or cells (energy) drawn for a cache: by its full size, fewer as it is emptied.</summary>
+        static int PickupPieces(in ResourcePickup p)
+        {
+            int full = p.Max >= 100 ? 3 : 2;
+            if (p.Resource == "energy") full++;
+            if (p.Max <= 0 || p.Amount >= p.Max) return full;
+            return Mathf.Clamp(Mathf.CeilToInt(full * p.Amount / (float)p.Max), 1, full);
         }
 
         void MaterialsPickup(in ResourcePickup pickup)
@@ -63,13 +72,13 @@ namespace SE.Runtime.Cities
             bool energy = pickup.Resource == "energy";
             PickupRing(new float2(pickup.X, pickup.Z), c.Yaw, energy ? 6 : 4, energy ? new float3(.30f, .80f, .92f) : new float3(.93f, .68f, .22f), dim);
             Module(c, Part.Siding, 0, 0, new float3(.25f, .018f, .19f), new float3(.46f, .40f, .29f));
-            int count = pickup.Amount >= 100 ? 3 : 2;
+            int count = PickupPieces(pickup);
             if (energy)
             {
-                // energy: upright cells with glowing caps rather than crates
-                for (int i = 0; i < count + 1; i++)
+                // energy: upright fuel cells with glowing cyan caps rather than crates
+                for (int i = 0; i < count; i++)
                 {
-                    float x = (i - count * .5f) * .07f;
+                    float x = (i - (count - 1) * .5f) * .07f;
                     Module(c, Part.Cylinder, x, 0, new float3(.055f, .10f, .055f), new float3(.30f, .36f, .40f), 0, .018f);
                     Module(c, Part.Cylinder, x, 0, new float3(.035f, .014f, .035f), new float3(.40f, .86f, .96f), 0, .118f, .5f);
                 }
@@ -77,7 +86,7 @@ namespace SE.Runtime.Cities
             }
             for (int i = 0; i < count; i++)
             {
-                float x = i == 2 ? 0 : (i - .5f) * .112f, lift = i == 2 ? .10f : .02f;
+                float x = i == 2 ? 0 : count == 1 ? 0 : (i - .5f) * .112f, lift = i == 2 ? .10f : .02f;
                 Module(c, Part.Siding, x, 0, new float3(.105f, .078f, .145f), new float3(.56f, .46f, .29f), 0, lift);
                 Module(c, Part.Siding, x, .074f, new float3(.011f, .074f, .006f), new float3(.79f, .73f, .54f), 0, lift);
                 Module(c, Part.Siding, x, -.074f, new float3(.011f, .074f, .006f), new float3(.79f, .73f, .54f), 0, lift);

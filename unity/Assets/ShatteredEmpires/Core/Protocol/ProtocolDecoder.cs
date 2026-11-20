@@ -266,7 +266,8 @@ namespace SE.Core.Protocol
             {
                 var records = new List<ResourcePickup>(pickups.Count);
                 foreach (var item in pickups) if (item is JObject p) records.Add(new ResourcePickup { Id = Int(p["id"]), Tile = Int(p["tile"], -1),
-                    X = Float(p["x"]), Z = Float(p["z"]), Amount = Int(p["amount"]), Resource = Str(p["resource"], "materials"), Memory = Bool(p["memory"]), Replenishes = Bool(p["replenishes"]) });
+                    X = Float(p["x"]), Z = Float(p["z"]), Amount = Int(p["amount"]), Max = Int(p["max"], Int(p["amount"])), Collecting = Int(p["collecting"]),
+                    Resource = Str(p["resource"], "materials"), Memory = Bool(p["memory"]), Replenishes = Bool(p["replenishes"]) });
                 s.Pickups = records.ToArray();
             }
             if (o["tiles"] is JArray ta)
@@ -311,6 +312,7 @@ namespace SE.Core.Protocol
             s.Weather = o["wx"] as JObject;
             s.WeatherState = WorldRecordDecoder.Weather(s.Weather);
             s.Observer = o["obs"] as JObject;
+            s.Pace = Float(o["pace"], -1f);
             s.ActionPlan = o["actionPlan"] as JObject;
             s.Res = o["res"];
             if (o["econ"] is JObject econ)

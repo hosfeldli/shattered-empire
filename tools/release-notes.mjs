@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Release notes: docs/releases/<version>/notes.json (+ images). Schema and workflow: docs/RELEASING.md.
 //   node tools/release-notes.mjs validate <version> [--allow-draft]   schema, images, version, since
+//   node tools/release-notes.mjs validate-all [--release <version>] [--allow-draft]
+//        every docs/releases/* folder (the running changelog). A draft is allowed only in the newest folder, and
+//        only with --allow-draft or when that folder is newer than --release (the next version, not uploaded).
 //   node tools/release-notes.mjs files <version>                      the files to upload (one per line)
+//   node tools/release-notes.mjs publish-list --release <version>     every version <= release: "<version><TAB><file>"
 //   node tools/release-notes.mjs draft <version> [--since <ver>] [--since-commit <sha>] [--force]
 // validate exits 1 on any error. A draft (draft: true) is an error unless --allow-draft (release.ps1 -DryRun
 // passes it), then a warning. The module also exports validateNotes() for the server test.
@@ -16,6 +20,11 @@ export const LIMITS = {
   imageBytes: 600 * 1024, totalBytes: 8 * 1024 * 1024, imageMaxW: 1920, imageMaxH: 1080,
   title: 80, summary: 500, heading: 60, text: 700, bullet: 260, bullets: 14, sections: 14, blocks: 12,
   labels: 16, series: 4, unit: 16, caption: 260, rows: 16, cell: 80, fixes: 60, fix: 220,
+};
+/** Section categories (the client groups and filters by these; key order = display order). */
+export const CATEGORIES = {
+  gameplay: 'Gameplay', units: 'Units & balance', ai: 'AI', performance: 'Performance',
+  visuals: 'Visuals & audio', interface: 'Interface', fixes: 'Fixes', other: 'Other',
 };
 const SEMVER = /^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$/;
 export const IMAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}\.(png|jpe?g)$/;
@@ -123,8 +132,23 @@ export function validateNotes(n, opts = {}) {
     n.sections.forEach((s, i) => {
       const w = `sections[${i}]`;
       if (!s || typeof s !== 'object') return err(`${w} must be an object`);
-      keys(s, ['heading', 'blocks'], w);
+      keys(s, ['heading', 'category', 'later', 'blocks'], w);
       str(s.heading, `${w}.heading`, LIMITS.heading);
+      if (s.category !== undefined && !Object.hasOwn(CATEGORIES, s.category)) err(`${w}.category must be one of ${Object.keys(CATEGORIES).join(', ')}`);
+      if (s.later !== undefined) {
+        // "Changed in <version>" pointers: the section stays as shipped; later changes are noted, not rewritten
+        if (!Array.isArray(s.later) || s.later.length === 0 || s.later.length > 6) err(`${w}.later must hold 1-6 {version, text} notes`);
+        else s.later.forEach((l, j) => {
+          const lw = `${w}.later[${j}]`;
+          if (!l || typeof l !== 'object') return err(`${lw} must be an object`);
+          keys(l, ['version', 'text'], lw);
+          if (str(l.version, `${lw}.version`, 40)) {
+            if (!SEMVER.test(l.version)) err(`${lw}.version "${l.version}" is not like 0.7.0`);
+            else if (typeof n.version === 'string' && SEMVER.test(n.version) && cmpVersion(l.version, n.version) <= 0) err(`${lw}.version ${l.version} must be newer than ${n.version}`);
+          }
+          str(l.text, `${lw}.text`, LIMITS.bullet);
+        });
+      }
       if (!Array.isArray(s.blocks) || s.blocks.length === 0) return err(`${w}.blocks must hold at least one block`);
       if (s.blocks.length > LIMITS.blocks) err(`${w}: ${s.blocks.length} blocks (max ${LIMITS.blocks})`);
       s.blocks.forEach((b, k) => block(b, `${w}.blocks[${k}]`));
@@ -202,6 +226,15 @@ export function validateNotes(n, opts = {}) {
     else { if (n.fixes.length > LIMITS.fixes) err(`${n.fixes.length} fixes (max ${LIMITS.fixes})`); n.fixes.forEach((t, j) => str(t, `fixes[${j}]`, LIMITS.fix)); }
   }
 
+  // placeholders: "TODO" text is fine while drafting, never in released notes
+  const todo = [];
+  (function walk(v, at) {
+    if (typeof v === 'string') { if (/\bTODO\b/.test(v)) todo.push(at); }
+    else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${at}[${i}]`));
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, at ? `${at}.${k}` : k);
+  })(n, '');
+  if (todo.length) (n.draft === true && opts.allowDraft ? warn : err)(`TODO placeholder(s) left at ${todo.slice(0, 4).join(', ')}${todo.length > 4 ? ', ...' : ''}`);
+
   // images: exist, are PNG/JPEG, small enough
   if (opts.dir) {
     let total = 0;
@@ -248,6 +281,48 @@ function validate(version, allowDraft) {
   return 0;
 }
 
+/**
+ * Validate every notes folder (the running changelog: older notes get corrected too, and are re-published).
+ * A draft is allowed only in the newest folder, and only under allowDraft (-DryRun) or when that folder is newer
+ * than the version being released (the next version's notes, written as changes land; it is not uploaded).
+ */
+export function validateAll({ release, allowDraft, dir = RELEASES, checkGit = true, print = console } = {}) {
+  const versions = listVersions(dir);
+  let bad = 0;
+  if (!versions.length) { print.error('release notes: no docs/releases/<version>/notes.json'); return 1; }
+  if (release && !versions.includes(release)) { print.error(`release notes: docs/releases/${release}/notes.json does not exist`); bad++; }
+  versions.forEach((v, i) => {
+    const vdir = path.join(dir, v), file = path.join(vdir, 'notes.json');
+    let notes;
+    try { notes = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch (e) { print.error(`release notes ${v}: not valid JSON: ${e.message}`); bad++; return; }
+    const newest = i === versions.length - 1;
+    const unreleased = !!release && cmpVersion(v, release) > 0;
+    const { errors, warnings } = validateNotes(notes, { version: v, dir: vdir, previous: versions[i - 1], checkGit, allowDraft: newest && (!!allowDraft || unreleased) });
+    if (unreleased && !newest) errors.push(`${v} is newer than the release ${release} but is not the newest folder: only one unreleased "next" version may exist`);
+    for (const w of warnings) print.log(`  ${v} warning: ${w}`);
+    for (const e of errors) print.error(`  ${v} error: ${e}`);
+    if (errors.length) bad++;
+    else print.log(`release notes ${v}: valid${unreleased ? ' (unreleased, not uploaded)' : ''}${notes.draft ? ' (draft)' : ''}${warnings.length ? `, ${warnings.length} warning(s)` : ''}`);
+  });
+  if (bad) print.error(`release notes: ${bad} version(s) with errors`);
+  return bad ? 1 : 0;
+}
+
+/** The files to publish for every version up to and including release: [{ version, file }] (notes.json first). */
+export function publishList(release, dir = RELEASES) {
+  const out = [];
+  for (const v of listVersions(dir)) {
+    if (release && cmpVersion(v, release) > 0) continue;
+    const vdir = path.join(dir, v), file = path.join(vdir, 'notes.json');
+    out.push({ version: v, file });
+    let notes = null;
+    try { notes = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+    for (const name of imagesOf(notes)) if (IMAGE_NAME.test(name) && fs.existsSync(path.join(vdir, name))) out.push({ version: v, file: path.join(vdir, name) });
+  }
+  return out;
+}
+
 function files(version) {
   const r = readNotes(version);
   if (r.error) { console.error('release notes: ' + r.error); return 1; }
@@ -273,8 +348,8 @@ function draft(version, args) {
     summary: 'TODO: two or three plain sentences on what changed for players.',
     since: { version: prev, commit },
     sections: [
-      { heading: 'Highlights', blocks: [{ type: 'bullets', items: log.slice(0, 8).length ? log.slice(0, 8) : ['TODO'] }] },
-      { heading: 'Sources to write from (delete this section)', blocks: [{ type: 'bullets', items: [...docs].slice(0, LIMITS.bullets).length ? [...docs].slice(0, LIMITS.bullets) : ['no changed docs'] }] },
+      { heading: 'Highlights', category: 'gameplay', blocks: [{ type: 'bullets', items: log.slice(0, 8).length ? log.slice(0, 8) : ['TODO'] }] },
+      { heading: 'Sources to write from (delete this section)', category: 'other', blocks: [{ type: 'bullets', items: [...docs].slice(0, LIMITS.bullets).length ? [...docs].slice(0, LIMITS.bullets) : ['no changed docs'] }] },
     ],
     fixes: log.slice(8, 8 + LIMITS.fixes),
   };
@@ -285,11 +360,23 @@ function draft(version, args) {
 }
 
 function main(argv) {
-  const [cmd, version, ...rest] = argv;
+  const [cmd, ...more] = argv;
+  const all = cmd === 'validate-all' || cmd === 'publish-list';
+  const version = all ? undefined : more[0];
+  const rest = all ? more : more.slice(1);
   const flag = (n) => rest.includes(n);
   const opt = (n) => { const i = rest.indexOf(n); return i >= 0 ? rest[i + 1] : undefined; };
+  if (cmd === 'validate-all') return validateAll({ release: opt('--release'), allowDraft: flag('--allow-draft') });
+  if (cmd === 'publish-list') {
+    const release = opt('--release');
+    if (!release || !SEMVER.test(release)) { console.error('usage: node tools/release-notes.mjs publish-list --release <version>'); return 2; }
+    for (const { version: v, file } of publishList(release)) console.log(`${v}\t${file}`);
+    return 0;
+  }
   if (!version || !['validate', 'files', 'draft'].includes(cmd)) {
-    console.error('usage: node tools/release-notes.mjs validate|files|draft <version> [--allow-draft] [--since <ver> --since-commit <sha> --force]');
+    console.error('usage: node tools/release-notes.mjs validate|files|draft <version> [--allow-draft] [--since <ver> --since-commit <sha> --force]\n'
+      + '       node tools/release-notes.mjs validate-all [--release <version>] [--allow-draft]\n'
+      + '       node tools/release-notes.mjs publish-list --release <version>');
     return 2;
   }
   if (cmd === 'validate') return validate(version, flag('--allow-draft'));

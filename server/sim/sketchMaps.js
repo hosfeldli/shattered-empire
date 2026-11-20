@@ -1,5 +1,5 @@
 // Map-builder sketches (the Unity menu's Map builder, map id 'custom'). A sketch is a coarse paint of the
-// battlefield, not the final map: a grid of three classes (ocean, land, mountain) over the whole world
+// battlefield, not the final map: a grid of four classes (ocean, land, mountain, hills) over the whole world
 // rectangle plus the bases the player placed. The world generator honours the classes and fills in the
 // rest naturally: noisy coastlines and beaches, rolling lowland and knolls, foothills rising into the
 // painted ranges with peaks in their hearts, then the normal climate, hydrology (rivers and lakes),
@@ -11,8 +11,12 @@
 // Wire format (create { map: 'custom', sketch } and the lobby's { t: 'map', map: 'custom', sketch }):
 //   { v: 1, name, size: 'small'|'medium'|'large'|'huge', w, h, cells, bases: [[u, v], ...] }
 //   cells: run-length rows of the grid, row-major from the north-west corner: a class letter
-//          (o ocean, l land, m mountain) followed by its run length, e.g. "o130l60m4o2..." (sum = w * h).
-//   bases: 2..8 normalised [u, v] points (u west → east, v north → south), on land or mountain.
+//          (o ocean, l land, m mountain, h hills) followed by its run length, e.g. "o130l60m4h3o2..." (sum = w * h).
+//          'h' (HILLS_MOUNTAINS, 2026-11-19) is new; older sketches use only o / l / m and load unchanged.
+//   bases: 2..8 normalised [u, v] points (u west → east, v north → south), on land, hills or (older sketches) a
+//          mountain: painted mountain within BASE_CLEAR cells of a base is generated as hills, so no start is walled in.
+// Painted mountains become MOUNTAIN / PEAK hexes (impassable to every ground unit: actionNavigation.isMountain); painted
+// hills become HILLS hexes (passable, infantry slower: actionNavigation.HILL_PACE), rolling high ground below the ranges.
 // Grid cell (col, row) covers u ∈ [col / w, (col + 1) / w) and v ∈ [row / h, (row + 1) / h), like the
 // lobby preview grid (actionMap.mapPreview).
 import { W, H, N } from './constants.js';
@@ -21,11 +25,17 @@ import { pointUV } from './authoredMaps.js';
 
 export const SKETCH_SIZES = { small: 104, medium: 152, large: 208, huge: 232 };   // = matches.js ACTION_SIZES
 export const SKETCH_LIMITS = { minGrid: 16, maxGrid: 128, minBases: 2, maxBases: 8, maxCells: 40000, name: 32 };
-const CLASS = 'olm';   // 0 ocean, 1 land, 2 mountain
+const CLASS = 'olmh';   // 0 ocean, 1 land, 2 mountain, 3 hills
+export const SKETCH_CLASS = Object.freeze({ ocean: 0, land: 1, mountain: 2, hills: 3 });
+// HILLS_MOUNTAINS: painted mountain within this many cells of a base is generated as hills (older sketches allowed bases
+// on mountain cells; mountains are impassable now)
+const BASE_CLEAR = 2.2;
+/** Ground units can cross this class (land or hills): sketchMetrics walks it, and it counts towards the land share. */
+const walkable = (c) => c === 1 || c === 3;
 
 const fail = (why) => { throw new Error(`Map sketch: ${why}`); };
 
-/** Run-length encoding of a class grid (Uint8Array of 0/1/2). */
+/** Run-length encoding of a class grid (Uint8Array of 0..3). */
 export function encodeCells(grid) {
   let out = '';
   for (let i = 0; i < grid.length;) {
@@ -42,7 +52,7 @@ export function decodeCells(cells, n) {
   if (typeof cells !== 'string' || !cells.length || cells.length > SKETCH_LIMITS.maxCells) fail('cells must be a run-length string');
   const grid = new Uint8Array(n);
   let k = 0;
-  const re = /([olm])(\d{1,6})/y;
+  const re = /([olmh])(\d{1,6})/y;
   let at = 0;
   while (at < cells.length) {
     re.lastIndex = at;
@@ -72,7 +82,7 @@ export function parseSketch(raw) {
   if (!size) fail('unknown map size');
   const grid = decodeCells(raw.cells, w * h);
   let land = 0;
-  for (const c of grid) if (c === 1) land++;
+  for (const c of grid) if (walkable(c)) land++;
   if (land < grid.length * .08) fail('paint more land (at least a tenth of the map)');
   if (!Array.isArray(raw.bases) || raw.bases.length < minBases || raw.bases.length > maxBases) fail(`place ${minBases} to ${maxBases} bases`);
   const sk = { v: 1, name: '', size, w, h, cells: encodeCells(grid), bases: [] };
@@ -164,7 +174,7 @@ export function sketchMetrics(sk, grid = sketchGrid(sk)) {
     while (head < tail) {
       const c = queue[head++], x = c % sk.w, y = (c / sk.w) | 0;
       const next = [x > 0 ? c - 1 : -1, x < sk.w - 1 ? c + 1 : -1, y > 0 ? c - sk.w : -1, y < sk.h - 1 ? c + sk.w : -1];
-      for (const m of next) if (m >= 0 && d[m] < 0 && grid[m] === 1) { d[m] = d[c] + 1; queue[tail++] = m; }
+      for (const m of next) if (m >= 0 && d[m] < 0 && walkable(grid[m])) { d[m] = d[c] + 1; queue[tail++] = m; }
     }
     return cells.map((t) => (d[t] < 0 ? 1e4 : d[t]));
   });
@@ -185,7 +195,7 @@ export function sketchPreview(sk) {
       if (nx < 0 || ny < 0 || nx >= sk.w || ny >= sk.h) continue;
       const c = grid[ny * sk.w + nx]; if (c) land = true; if (c === 2) mountain = true;
     }
-    cells[i] = grid[i] === 0 ? (land ? 1 : 0) : grid[i] === 2 ? 6 : mountain ? 5 : 2;
+    cells[i] = grid[i] === 0 ? (land ? 1 : 0) : grid[i] === 2 ? 6 : grid[i] === 3 || mountain ? 5 : 2;
   }
   const m = sketchMetrics(sk, grid);
   return { w: sk.w, h: sk.h, aspect: +(Math.sqrt(3) / 1.5).toFixed(4),
@@ -225,12 +235,26 @@ function sample(f, sk, gx, gy) {
 }
 
 const smooth = (t) => t * t * (3 - 2 * t);
+
+/** HILLS_MOUNTAINS: the class grid the relief is painted from: painted mountain within BASE_CLEAR cells of a base is hills. */
+function clearBases(sk, grid) {
+  const out = Uint8Array.from(grid), aspect = Math.sqrt(3) / 1.5;
+  for (const [u, v] of sk.bases) {
+    const bx = u * sk.w - .5, by = v * sk.h - .5, r = Math.ceil(BASE_CLEAR / Math.min(1, aspect)) + 1;
+    for (let y = Math.floor(by) - r; y <= Math.ceil(by) + r; y++) for (let x = Math.floor(bx) - r; x <= Math.ceil(bx) + r; x++) {
+      if (x < 0 || y < 0 || x >= sk.w || y >= sk.h || out[y * sk.w + x] !== 2) continue;
+      if (Math.hypot((x - bx) * aspect, y - by) <= BASE_CLEAR) out[y * sk.w + x] = 3;
+    }
+  }
+  return out;
+}
 const SQ3 = Math.sqrt(3);
 
 /** Paint the sketch's relief into world `w` (World.generate then runs finishTerrain). */
 export function paintSketchWorld(w, raw) {
   const sk = parseSketch(raw), grid = sketchGrid(sk), seed = w.seed | 0;
-  const landF = blurred(grid, sk, (c) => c > 0), mountF = blurred(grid, sk, (c) => c === 2);
+  const relief = clearBases(sk, grid);
+  const landF = blurred(grid, sk, (c) => c > 0), mountF = blurred(relief, sk, (c) => c === 2), hillF = blurred(relief, sk, (c) => c === 3);
   // hexes per sketch cell: noise scales follow it, so a coarse sketch on a huge map stays as natural
   const cell = Math.max(1, W / sk.w);
   const warp = .55;   // in cells
@@ -252,12 +276,26 @@ export function paintSketchWorld(w, raw) {
       const inland = smooth(Math.min(1, coast / .2));
       e = Math.max(.012, .015 + (.13 + swell + knoll - .015) * inland);
     }
+    // HILLS_MOUNTAINS: painted hills roll up over a cell or two into HILLS ground (world.classify: elevation .34-.52),
+    // a gentle climb (well under every class's slope limit) with swells and saddles, never into mountain heights
+    const hf = sample(hillF, sk, gx, gy) + (fbm(x / 4, z / 4, seed + 108, 3) - .5) * .24;
+    if (hf > .2 && coast > -.08) {
+      const k = smooth(Math.min(1, (hf - .2) / .42));
+      const top = Math.min(.49, Math.max(.36, .41 + (fbm(x / 6, z / 6, seed + 109, 3) - .5) * .22));
+      e = Math.max(e, e + (top - e) * k);
+    }
     // mountains: foothills climb from about a cell outside the paint; the heart of a range turns to peaks
     const mf = sample(mountF, sk, gx, gy) + (fbm(x / 4, z / 4, seed + 106, 3) - .5) * .28;
-    if (mf > .1 && coast > -.08) {
+    // HILLS_MOUNTAINS: every hex whose (warped) cell is painted mountain is mountain ground (elevation above .52: an
+    // impassable MOUNTAIN or PEAK hex), so a painted range is a continuous wall with steep faces, not a row of hills
+    const cx = Math.min(sk.w - 1, Math.max(0, Math.round(gx))), cy = Math.min(sk.h - 1, Math.max(0, Math.round(gy)));
+    const painted = relief[cy * sk.w + cx] === 2;
+    if ((mf > .1 || painted) && coast > -.08) {
       const t = Math.min(1.45, (mf - .1) / .36);
       const crest = Math.max(0, mf - .84) * (1.1 + fbm(x / 3, z / 3, seed + 107, 2) * 1.2);
-      e = Math.max(e, Math.min(.97, .27 + t * .27 + crest));
+      let m = Math.min(.97, .27 + t * .27 + crest);
+      if (painted) m = Math.max(m, .56 + Math.max(0, mf - .3) * .25 + fbm(x / 2.5, z / 2.5, seed + 110, 2) * .06);
+      e = Math.max(e, m);
     }
     w.elev[i] = e;
     if (e >= 0) land++;

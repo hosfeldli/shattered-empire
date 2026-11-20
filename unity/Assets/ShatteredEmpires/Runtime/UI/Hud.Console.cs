@@ -10,7 +10,7 @@ namespace SE.Runtime.UI
 {
     /// <summary>
     /// The minimap console and the bottom-centre dock (workstream F, docs/design/hud_mockup_2026-11-16.png).
-    /// Bottom-left, docked to the minimap: the Era hexagon badge, the slim Materials / Power / Units bars with
+    /// Bottom-left, docked to the minimap: the slim Materials / Power / Units bars with
     /// their net rates (their left edges follow the bezel), the idle-units button, an all-production button, the local-view (Z) toggle, and the attack
     /// banner ("CINDERHOLD UNDER ATTACK · Space to jump") raised with a minimap ping on every new attack.
     /// Bottom centre: the Build (B) and Terrain (T) buttons, which toggle workstream G's radial wheels
@@ -32,10 +32,9 @@ namespace SE.Runtime.UI
         public const float DockWidth = 172f, DockHeight = 80f;
 
         VisualElement console, dock, attackBanner, idleButton, productionButton, zoomButton;
-        Label eraNumeral, idleCount, attackText, attackHint;
+        Label idleCount, attackText, attackHint;
         Button dockBuild, dockTerrain;
-        HexBadge eraBadge;
-        int eraShown = int.MinValue, idleShown = int.MinValue, productionShown = int.MinValue;
+        int idleShown = int.MinValue, productionShown = int.MinValue;
         bool zoomShown, dockBuildShown, dockTerrainShown;
         float consoleAt, attackUntil, lastAttackAt = -99f;
         Vector2 lastAttackPoint = new Vector2(float.NaN, float.NaN);
@@ -55,13 +54,7 @@ namespace SE.Runtime.UI
             attackText.pickingMode = PickingMode.Ignore; attackHint.pickingMode = PickingMode.Ignore;
             attackBanner.RegisterCallback<ClickEvent>(e => JumpToAlert());
 
-            // the era badge over the circle's upper-left rim
-            eraBadge = new HexBadge();
-            eraBadge.AddToClassList("se-era-badge");
-            console.Add(eraBadge);
-            L("ERA", "se-era-label", eraBadge).pickingMode = PickingMode.Ignore;
-            eraNumeral = L("I", "se-era-numeral", eraBadge);
-            eraNumeral.pickingMode = PickingMode.Ignore;
+            // 2026-11-19: no era badge over the minimap rim any more (the era stays in the base wheel and the Field Guide)
 
             // the three resource bars beside the circle
             var bars = El("se-resbars", console);
@@ -95,6 +88,7 @@ namespace SE.Runtime.UI
             zoomButton.AddToClassList("se-zoom-button");
             zoomButton.Add(new Glyph("zoom", "se-zoom-glyph"));
             console.Add(zoomButton);
+            BuildDefenseRangeButton();   // the defensive ranges toggle (Hud.DefenseRanges.cs)
 
             if (Map != null) Map.UnderAttack = OnUnderAttack;
 
@@ -198,22 +192,13 @@ namespace SE.Runtime.UI
             var zoomKey = InputFacade.KeyFor("minimap_zoom");
             if (InputFacade.Pressed(zoomKey == KeyCode.None ? KeyCode.Z : zoomKey) && Map != null) Map.ToggleZoom();
             if (Map != null && Map.Zoomed != zoomShown) { zoomShown = Map.Zoomed; zoomButton.EnableInClassList("selected", zoomShown); }
+            UpdateDefenseRangeButton();
             if (attackUntil > 0 && time > attackUntil) { attackUntil = 0; UiKit.Hide(attackBanner); }
             bool b = DockBuildActive?.Invoke() ?? BuildWheelOpen, t = DockTerrainActive?.Invoke() ?? TerrainWheelOpen;
             if (b != dockBuildShown) { dockBuildShown = b; dockBuild.EnableInClassList("selected", b); }
             if (t != dockTerrainShown) { dockTerrainShown = t; dockTerrain.EnableInClassList("selected", t); }
             if (time < consoleAt) return;
             consoleAt = time + .25f;
-            // era
-            int age = Age;
-            if (age != eraShown)
-            {
-                eraShown = age;
-                eraNumeral.text = Roman(age + 1);
-                string name = ProtocolDecoder.Str((Defs?["AGES"] as JArray) is JArray ages && age >= 0 && age < ages.Count ? ages[age]?["name"] : null, null);
-                eraBadge.tooltip = $"Era {Roman(age + 1)}" + (string.IsNullOrEmpty(name) ? "" : " · " + name) +
-                    "\nEach era unlocks more base slots, units and one more upgrade level for your buildings.";
-            }
             // idle units and production
             bool player = !session.Spectator;
             CountIdle();

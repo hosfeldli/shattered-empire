@@ -144,6 +144,7 @@ namespace SE.Runtime.UI
         /// </summary>
         public void DrawBattleOverlay(Func<Vector3, Vector3> toScreen, Func<int, Vector3?> unitAt, float time, float zoom)
         {
+            DrawBuildingBars(toScreen, zoom, time);   // structure health bars (Hud.BuildingBars.cs)
             if (!session.ActionRts || MenuVisible || topbar.style.display == DisplayStyle.None)
             {
                 if (battleOverlay != null) battleOverlay.style.display = DisplayStyle.None;

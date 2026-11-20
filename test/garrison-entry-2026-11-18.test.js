@@ -40,8 +40,16 @@ function rightClick(g, selection, b) {
 function structures(g) {
   const civ = g.civs[0], hq = hqOf(g, 0);
   const list = [hq];
+  // the planned spot, or the nearest one around the HQ that infantry can reach from the base (mountains are walls
+  // since 2026-11-19, and seed 7 has a walled-off pocket at the guard post's old spot)
+  const inf = ACTION_UNITS.rifle_squad, home = g.nav.componentOf(tileAt(hq.x, hq.z + hq.radius + .6), inf);
   for (const [type, dx, dz] of [['bunker', 3, 2], ['guard_post', -3, 2]]) {
-    const p = { x: hq.x + dx, z: hq.z + dz, yaw: 0 };
+    let p = null;
+    for (let k = 0; k < 24 && !p; k++) {
+      const ang = Math.atan2(dx, dz) + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * Math.PI / 12, r = Math.hypot(dx, dz);
+      const q = { x: hq.x + Math.sin(ang) * r, z: hq.z + Math.cos(ang) * r, yaw: 0 };
+      if (g.nav.componentOf(tileAt(q.x, q.z), inf) === home) p = q;
+    }
     list.push(addFacility(g, civ, null, type, tileAt(p.x, p.z), { instant: true, point: p }));
   }
   const site = g.siteById.get(hq.site);
@@ -57,7 +65,15 @@ test('right-click garrison from far away: squads walk to real structures and end
       for (const dir of [0, 3, 5]) {
         clearArmy(g);
         const a = dir * Math.PI / 4;
-        const from = { x: hq.x + Math.sin(a) * 9, z: hq.z + Math.cos(a) * 9 };
+        // 9 out from the HQ in that direction; when that lands on ground infantry can't reach from the base (mountains
+        // are walls since 2026-11-19), turn a little further round until it is walkable and connected
+        const inf = ACTION_UNITS.rifle_squad, home = g.nav.componentOf(tileAt(hq.x, hq.z + hq.radius + .6), inf);
+        let from = null;
+        for (let k = 0; k < 16 && !from; k++) {
+          const ang = a + k * Math.PI / 16, p = g.nav.nearest({ x: hq.x + Math.sin(ang) * 9, z: hq.z + Math.cos(ang) * 9 }, inf, 1.5);
+          if (p && (home < 0 || g.nav.componentOf(tileAt(p.x, p.z), inf) === home)) from = p;
+        }
+        assert.ok(from, 'a walkable start 9 from the HQ');
         const squads = ['rifle_squad', 'rifle_squad', 'anti_armor', 'militia'].map((t) => g.spawn(civ, t, from, 1.2)).filter(Boolean);
         const tank = g.spawn(civ, 'tank', from, 1.5);
         assert.ok(squads.length >= 3, 'spawned squads');
@@ -65,7 +81,8 @@ test('right-click garrison from far away: squads walk to real structures and end
         const r = rightClick(g, [...squads, tank].filter(Boolean), b);
         assert.ok(!r.error, `${b.type}: ${r.error}`);
         assert.equal(r.moving + r.entered, want);
-        for (let t = 0; t < 900 && (b.garrison?.length || 0) < want; t++) g.tick();
+        // 2000 ticks: with mountains as walls (2026-11-19) some starts walk a long way round
+        for (let t = 0; t < 2000 && (b.garrison?.length || 0) < want; t++) g.tick();
         assert.equal(b.garrison.length, want, `seed ${seed} ${b.type} dir ${dir}: ${b.garrison.length}/${want} inside; out: ${squads.filter((u) => !u.inside).map((u) => distance(u, b).toFixed(2)).join(',')}`);
         // on the wire: the owner's units snapshot flags them inside, the econ lists them on the structure
         const rows = g.unitSnapshot(civ, { god: false }).units;

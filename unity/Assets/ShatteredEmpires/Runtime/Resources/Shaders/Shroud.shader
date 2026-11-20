@@ -40,6 +40,7 @@ Shader "SE/Shroud"
             float4x4 _SE_ShroudRayO;  // rows: world ray origin at the screen corners (bottom-left, bottom-right, top-left, top-right)
             float4x4 _SE_ShroudRayD;  // rows: world ray direction at the same corners (forward component 1)
             float4 _SE_ShroudCam;     // x = orthographic (0/1), y = near, z = far
+            float _SE_ShroudTone;     // brightness of the unexplored bank (Shroud.cs): a dark overcast, not a white cloud
 
             struct Attributes { float3 positionOS : POSITION; };
             struct Varyings
@@ -216,7 +217,7 @@ Shader "SE/Shroud"
                         float facing = saturate(.5 + .5 * dot(sun, normalize(float3(billow - .5, 1.2, .5 - billow))));
                         float detail = exp(-t / 22);
                         float3 col = lerp(_SE_ShroudShade.rgb, _SE_ShroudLit.rgb, saturate(.92 + ((1 - depth) * .35 + facing * .2 + (billow - .5) * .35 - .4) * detail));
-                        light += transmittance * a * col;
+                        light += transmittance * a * col * _SE_ShroudTone;
                         transmittance *= 1 - a;
                         if (transmittance < .015) break;
                     }
@@ -229,7 +230,7 @@ Shader "SE/Shroud"
                     if (a > 0)
                     {
                         entry = min(entry, sceneDist < 9e4 ? sceneDist : (.2 - eye.y) / dir.y);
-                        light += transmittance * a * lerp(_SE_ShroudShade.rgb, _SE_ShroudLit.rgb, .9);
+                        light += transmittance * a * lerp(_SE_ShroudShade.rgb, _SE_ShroudLit.rgb, .9) * _SE_ShroudTone;
                         transmittance *= 1 - a;
                     }
                 }

@@ -611,6 +611,10 @@ namespace SE.Runtime.UI
             Name = () => { var (used, open, _) = PadCounts(siteId); return $"Pads · {used}/{open} used"; },
             Caption = () => { var (_, _, free) = PadCounts(siteId); return free > 0 ? free + " free" : null; },
             Detail = () => "Click a pad on the base to build there, or pick one here",
+            // 2026-11-19 (user: "the option to see open pads in a base menu should be removed"): hidden from the root
+            // ring, since the open pads now stand out on the base itself; a pad clicked in the world still enters
+            // its facility ring through this item (SocketFromSelection → EnterItem("pads"), which ignores Visible)
+            Visible = () => false,
             Children = () => { baseSubRing = "pads"; return PadItems(siteId); },
         };
 

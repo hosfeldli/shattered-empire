@@ -1,5 +1,6 @@
 // Release notes: the schema validator (tools/release-notes.mjs) and the server routes in local mode
-// (/api/release-notes/latest, /<version>, /<version>/<image> read from a notes directory).
+// (/api/release-notes/index, /latest, /<version>, /<version>/<image> read from a notes directory), and the running
+// changelog gate (validate-all: every folder, drafts only in the newest unreleased one).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
@@ -7,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateNotes, listVersions, imagesOf, cmpVersion, RELEASES } from '../tools/release-notes.mjs';
+import { validateNotes, validateAll, publishList, listVersions, imagesOf, cmpVersion, RELEASES, CATEGORIES } from '../tools/release-notes.mjs';
 
 // a 2x1 PNG
 const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000002000000010806000000f478d4fa0000000d49444154789c63f8cfc0f01f0005fe02fe2d1f0bd60000000049454e44ae426082', 'hex');
@@ -16,7 +17,7 @@ function sample(version, extra = {}) {
   return {
     schema: 1, version, date: '2026-11-18', title: 'Test release', summary: 'Short summary.',
     since: { version: '0.4.3', commit: '4bd3f1d' },
-    sections: [{ heading: 'Faster', blocks: [
+    sections: [{ heading: 'Faster', category: 'performance', blocks: [
       { type: 'text', text: 'Late matches stay smooth.' },
       { type: 'bullets', items: ['One', 'Two'] },
       { type: 'chart', kind: 'bar', title: 'FPS', unit: 'FPS', labels: ['0-5', '5-10'], series: [{ name: 'Old', values: [188, 144] }, { name: 'New', values: [206, null] }], caption: 'Higher is better.', source: 'docs/performance/BENCHMARK_RESULTS.md', better: 'higher' },
@@ -63,6 +64,51 @@ test('validator accepts a complete notes file and checks images, drafts, since a
   assert.ok(cmpVersion('0.10.0', '0.9.9') > 0 && cmpVersion('1.0.0', '1.0.0-rc1') > 0 && cmpVersion('0.4.3', '0.5.0') < 0);
 });
 
+test('validator: section categories, "changed in" pointers and TODO placeholders (backward compatible)', () => {
+  const ok = (n, opts = {}) => validateNotes(n, { version: '0.5.0', ...opts }).errors;
+  const bad = (n, re, opts = {}) => assert.ok(ok(n, opts).some((e) => re.test(e)), re.source);
+  const plain = sample('0.5.0'); delete plain.sections[0].category;
+  plain.sections[0].blocks.pop();   // no image (no dir given)
+  assert.deepEqual(ok(plain), [], 'category is optional (older notes)');
+  const cat = sample('0.5.0'); cat.sections[0].category = 'weather';
+  bad(cat, /category must be one of/);
+  assert.ok(Object.keys(CATEGORIES).includes('fixes') && Object.keys(CATEGORIES)[0] === 'gameplay');
+  const later = sample('0.5.0'); later.sections[0].later = [{ version: '0.7.0', text: 'Nukes are much bigger now.' }];
+  assert.deepEqual(ok(later), []);
+  later.sections[0].later = [{ version: '0.5.0', text: 'Same version.' }];
+  bad(later, /must be newer than 0\.5\.0/);
+  later.sections[0].later = [{ version: '0.7.0', text: 'x', extra: 1 }];
+  bad(later, /unknown field "extra"/);
+  later.sections[0].later = [];
+  bad(later, /later must hold 1-6/);
+  const todo = sample('0.5.0'); todo.sections[0].blocks[0].text = 'TODO: fill in';
+  bad(todo, /TODO placeholder/);
+  todo.draft = true;
+  const dry = validateNotes(todo, { version: '0.5.0', allowDraft: true });
+  assert.deepEqual(dry.errors, []); assert.ok(dry.warnings.some((w) => /TODO/.test(w)));
+});
+
+test('validate-all: every folder is checked; a draft only in the newest, unreleased (or -DryRun) folder', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-notes-all-'));
+  const put = (v, since, extra) => {
+    fs.mkdirSync(path.join(dir, v), { recursive: true });
+    const n = sample(v, { since: { version: since, commit: '4bd3f1d' }, ...extra }); n.sections[0].blocks.pop();
+    fs.writeFileSync(path.join(dir, v, 'notes.json'), JSON.stringify(n));
+  };
+  const quiet = { log() {}, error() {} };
+  const run = (opts) => validateAll({ dir, checkGit: false, print: quiet, ...opts });
+  put('0.5.0', '0.4.3'); put('0.6.0', '0.5.0'); put('0.7.0', '0.6.0', { draft: true });
+  assert.equal(run({ release: '0.6.0' }), 0, 'the next version may be a draft while an older one is released');
+  assert.equal(run({ release: '0.7.0' }), 1, 'a draft cannot be released');
+  assert.equal(run({ release: '0.7.0', allowDraft: true }), 0, '-DryRun allows the draft');
+  assert.equal(run({}), 1, 'without -DryRun and nothing newer released, the draft fails');
+  assert.deepEqual([...new Set(publishList('0.6.0', dir).map((f) => f.version))], ['0.5.0', '0.6.0'], 'every released version is re-published, not the unreleased one');
+  put('0.5.0', '0.4.3', { draft: true });
+  assert.equal(run({ release: '0.6.0', allowDraft: true }), 1, 'an older version can never be a draft');
+  put('0.5.0', '0.4.3'); put('0.6.0', '0.4.3');
+  assert.equal(run({ release: '0.6.0', allowDraft: true }), 1, 'since must name the previous folder');
+});
+
 test('every notes file in docs/releases follows the schema (drafts allowed)', () => {
   for (const v of listVersions()) {
     const n = JSON.parse(fs.readFileSync(path.join(RELEASES, v, 'notes.json'), 'utf8'));
@@ -75,8 +121,13 @@ test('server serves release notes and their images from a local notes directory'
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-notes-'));
   for (const v of ['0.4.9', '0.5.0', '0.10.0']) {
     fs.mkdirSync(path.join(dir, v));
-    fs.writeFileSync(path.join(dir, v, 'notes.json'), JSON.stringify(sample(v)));
+    fs.writeFileSync(path.join(dir, v, 'notes.json'), JSON.stringify(sample(v, v === '0.10.0' ? { draft: true } : {})));
   }
+  fs.mkdirSync(path.join(dir, '0.4.8'));
+  const old = sample('0.4.8'); delete old.sections[0].category;   // notes from before categories
+  fs.writeFileSync(path.join(dir, '0.4.8', 'notes.json'), JSON.stringify(old));
+  fs.mkdirSync(path.join(dir, 'not-a-version'));
+  fs.writeFileSync(path.join(dir, 'not-a-version', 'notes.json'), '{}');
   fs.writeFileSync(path.join(dir, '0.5.0', 'shot.png'), PNG);
   fs.writeFileSync(path.join(dir, 'secret.txt'), 'no');
   const srv = fork(fileURLToPath(new URL('../server/index.js', import.meta.url)), [], { env: { ...process.env, PORT: '0', HOST: '127.0.0.1', RELEASE_NOTES_DIR: dir, DOWNLOAD_DIR: dir, SNAPSHOT_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'se-notes-s-')) }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
@@ -87,6 +138,19 @@ test('server serves release notes and their images from a local notes directory'
     assert.equal(latest.status, 200);
     assert.equal(latest.headers.get('access-control-allow-origin'), '*');
     assert.equal((await latest.json()).version, '0.10.0', 'latest is the highest version, not the last alphabetically');
+    const idx = await get('/api/release-notes/index');
+    assert.equal(idx.status, 200);
+    assert.equal(idx.headers.get('access-control-allow-origin'), '*');
+    const index = await idx.json();
+    assert.equal(index.schema, 1); assert.equal(index.latest, '0.10.0');
+    assert.deepEqual(index.versions.map((v) => v.version), ['0.10.0', '0.5.0', '0.4.9', '0.4.8'], 'newest first, versions only');
+    const e = index.versions[1];
+    assert.equal(e.title, 'Test release'); assert.equal(e.summary, 'Short summary.'); assert.equal(e.date, '2026-11-18'); assert.equal(e.since, '0.4.3');
+    assert.deepEqual(e.sections, [{ heading: 'Faster', category: 'performance' }]);
+    assert.equal(e.fixes, 1); assert.equal(e.draft, undefined);
+    assert.equal(index.versions[0].draft, true, 'local drafts are listed and flagged');
+    assert.deepEqual(index.versions[3].sections, [{ heading: 'Faster', category: 'other' }], 'no category reads as other');
+    assert.equal(index.versions[1].sections[0].blocks, undefined, 'the index carries no blocks');
     const one = await (await get('/api/release-notes/0.5.0')).json();
     assert.equal(one.version, '0.5.0'); assert.equal(one.sections[0].heading, 'Faster');
     const img = await get('/api/release-notes/0.5.0/shot.png');

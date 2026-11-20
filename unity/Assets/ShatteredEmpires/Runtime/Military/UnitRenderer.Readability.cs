@@ -51,6 +51,8 @@ namespace SE.Runtime.Military
                 if (rigs[r] != null && rigs[r].TeamMesh != null)
                     soldierTeam[r] = new InstanceBatch(rigs[r].TeamMesh, rigs[r].Material, 128)
                     { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Buffering = 3, Shadows = ShadowCastingMode.Off };
+            CreateStanceRings();   // UnitRenderer.Stance.cs
+            CreateBadges();        // UnitRenderer.Badges.cs
             glyphs = new InstanceBatch(MeshKit.Box, RenderResources.Instanced, 256)
             { Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f), Buffering = 3, Shadows = ShadowCastingMode.Off };
         }
@@ -66,16 +68,17 @@ namespace SE.Runtime.Military
             lastCivColor = civColor;
             foreach (var b in soldierTeam) b?.Clear();
             glyphs?.Clear();
+            ClearStanceRings(); ClearBadges();
             var cam = Camera.main;
             if (cam != null) { var q = cam.transform.rotation; cameraRotation = new quaternion(q.x, q.y, q.z, q.w); }
         }
 
-        void UploadReadability() { foreach (var b in soldierTeam) b?.Upload(); glyphs?.Upload(); }
-        void DrawReadability() { foreach (var b in soldierTeam) b?.Draw(); glyphs?.Draw(); }
-        void DisposeReadability() { foreach (var b in soldierTeam) b?.Dispose(); glyphs?.Dispose(); }
+        void UploadReadability() { foreach (var b in soldierTeam) b?.Upload(); glyphs?.Upload(); UploadStanceRings(); UploadBadges(); }
+        void DrawReadability() { foreach (var b in soldierTeam) b?.Draw(); glyphs?.Draw(); DrawStanceRings(); DrawBadges(); }
+        void DisposeReadability() { foreach (var b in soldierTeam) b?.Dispose(); glyphs?.Dispose(); DisposeStanceRings(); DisposeBadges(); }
         int ReadabilityInstances()
         {
-            int n = glyphs != null ? glyphs.Count : 0;
+            int n = (glyphs != null ? glyphs.Count : 0) + StanceRingInstances() + BadgeInstances();
             foreach (var b in soldierTeam) if (b != null) n += b.Count;
             return n;
         }
@@ -149,7 +152,7 @@ namespace SE.Runtime.Military
         /// The team outline circle under a ground unit. It keeps a minimum on-screen size as the camera pulls back,
         /// so troops are easy to find at any zoom; the selection ring replaces it when selected.
         /// </summary>
-        void GroundRing(float x, float ground, float z, int slot, float4 team, bool selected, float camDist)
+        void GroundRing(float x, float ground, float z, int slot, float4 team, bool selected, float camDist, int style = RingSolid)
         {
             // one fixed world size per unit footprint (RingSizeOf), centred on the unit's (interpolated) position: it
             // never follows the men's spread, casualties or formation. A squad's men are kept inside it (RingReach,
@@ -157,11 +160,15 @@ namespace SE.Runtime.Military
             float baseSize = ringSize[slot] > 0 ? ringSize[slot] : .30f;
             bool wide = baseSize >= .5f;
             float size = Mathf.Max(baseSize, camDist * (wide ? .0105f : .0095f)) * (HighContrast ? 1.15f : 1f);
-            float lift = .012f + camDist * .0004f;
+            float lift = .012f + camDist * .0009f;   // 2026-11-19: more clearance with distance (the coarse terrain LOD far out)
             var colour = selected ? new float4(.54f, .92f, .62f, .35f)
                 : new float4(TeamWear(team.xyz), HighContrast ? .9f : .3f);
             // a wide (squad) ring uses the thin band, the same line weight as a vehicle's ring
-            batches[(int)(wide ? Model.RingThin : Model.Ring)].Add(T(new float3(x, ground + lift, z), 0, new float3(selected && !wide ? size * 1.12f : size), colour));
+            // the stance shows in the outline's style (UnitRenderer.Stance.cs): solid, dashed, double or dotted
+            var batch = StanceRing(style, wide) ?? batches[(int)(wide ? Model.RingThin : Model.Ring)];
+            // a broken outline shows less colour: a touch more opaque so it reads as strongly as a solid ring
+            if (style == RingDashed || style == RingDotted) colour.w = Mathf.Min(1f, colour.w + (HighContrast ? 0f : .12f));
+            batch.Add(T(new float3(x, ground + lift, z), 0, new float3(selected && !wide ? size * 1.12f : size), colour));
         }
 
         // ------------------------------------------------------------------ role glyphs

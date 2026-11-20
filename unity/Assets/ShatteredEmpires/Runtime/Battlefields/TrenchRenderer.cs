@@ -6,6 +6,7 @@ using SE.Core.World;
 using SE.Runtime.Cities;
 using SE.Runtime.Rendering;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -26,10 +27,11 @@ namespace SE.Runtime.Battlefields
     /// corner, a free end and a lone pit are closed by sweeping the same profile round the node. A line that meets
     /// a road ends square at the verge behind a sandbag wall and a steel plate carries it over the road.
     ///
-    /// Budget: one mesh (one draw) per 16×16-hex terrain chunk holding trenches, plus three instanced detail
+    /// Budget: one mesh (one draw) per 8×8-hex group holding trenches, plus three instanced detail
     /// batches (sandbag courses, timber and tape, wire). Geometry is cached per node, keyed by everything it reads
     /// (its record, its linked neighbours and the terrain within three hexes), so the 1 Hz trench progress only
-    /// rebuilds the nodes being dug and the chunks holding them.
+    /// rebuilds the nodes being dug and the groups holding them. Changed nodes are queued and rebuilt within a per-frame
+    /// budget (Pump), so a burst of shelling along a line is spread over several frames instead of one long one.
     /// </summary>
     public sealed unsafe class TrenchRenderer : IDisposable
     {
@@ -77,9 +79,40 @@ namespace SE.Runtime.Battlefields
             public readonly List<int> Idx = new List<int>();
             public readonly List<InstanceData>[] Items = { new List<InstanceData>(), new List<InstanceData>(), new List<InstanceData>() };
             public void Clear() { Pos.Clear(); Nrm.Clear(); Col.Clear(); Kind.Clear(); Idx.Clear(); foreach (var l in Items) l.Clear(); }
+
+            // the finished node packed for joining (a memcpy per node instead of per-element list reads)
+            public Vtx[] Verts = Array.Empty<Vtx>();   // P in map space (the group origin is subtracted when joined)
+            public int[] Indices = Array.Empty<int>();
+            public readonly InstanceData[][] Details = { Array.Empty<InstanceData>(), Array.Empty<InstanceData>(), Array.Empty<InstanceData>() };
+
+            public void Bake()
+            {
+                int n = Pos.Count;
+                if (Verts.Length != n) Verts = new Vtx[n];
+                for (int i = 0; i < n; i++) Verts[i] = new Vtx { P = Pos[i], N = Nrm[i], C = Col[i], Uv0 = float2.zero, Uv1 = new float2(Kind[i], 0) };
+                if (Indices.Length != Idx.Count) Indices = new int[Idx.Count];
+                Idx.CopyTo(Indices);
+                for (int d = 0; d < Details.Length; d++)
+                {
+                    if (Details[d].Length != Items[d].Count) Details[d] = Items[d].Count == 0 ? Array.Empty<InstanceData>() : new InstanceData[Items[d].Count];
+                    Items[d].CopyTo(Details[d]);
+                }
+            }
         }
 
-        sealed class ChunkDraw { public Mesh Mesh; public InstanceBatch Batch; }
+        /// <summary>
+        /// Nodes are joined into one mesh per 8×8-hex group (a quarter of a terrain chunk): the join, re-done when a
+        /// node in the group changes, stays small enough for one frame.
+        /// </summary>
+        const int GroupSize = 8;
+        int GroupOf(int tile)
+        {
+            var g = world.Grid;
+            int q = tile % g.W, r = tile / g.W;
+            return (r / GroupSize) * ((g.W + GroupSize - 1) / GroupSize) + q / GroupSize;
+        }
+
+        sealed class ChunkDraw { public Mesh Mesh; public InstanceBatch Batch; }   // one per 8×8 group (see GroupOf)
 
         /// <summary>One cross-section: 17 rows (floor 0-2, left side 3-9, right side 10-16).</summary>
         sealed class Sec
@@ -119,6 +152,9 @@ namespace SE.Runtime.Battlefields
         readonly Dictionary<int, ChunkDraw> chunks = new Dictionary<int, ChunkDraw>();
         readonly HashSet<int> dirtyChunks = new HashSet<int>();
         readonly List<int> stale = new List<int>();
+        readonly Dictionary<int, ulong> pending = new Dictionary<int, ulong>();   // node tile -> the key it is being rebuilt to
+        readonly List<int> pumped = new List<int>();
+        bool detailsDirty;
         readonly Dictionary<long, float> vertexHeight = new Dictionary<long, float>();
         int stamp, epoch = -1;
 
@@ -134,6 +170,8 @@ namespace SE.Runtime.Battlefields
 
         /// <summary>Diagnostics: nodes rebuilt / replayed from cache, and the vertices of the trench meshes.</summary>
         public int NodesBuilt, NodesReplayed, Vertices;
+        /// <summary>Diagnostics: the last <see cref="Pump"/>: ms building nodes / joining chunk meshes / collecting details.</summary>
+        public readonly double[] LastPumpMs = new double[3];
 
         public TrenchRenderer(WorldModel w, Func<int, string> defenceAt, Func<int, int> buildingOwnerAt)
         {
@@ -283,7 +321,11 @@ namespace SE.Runtime.Battlefields
             return h;
         }
 
-        /// <summary>Rebuild the works whose inputs changed (see <see cref="NodeKey"/>) and re-place every node's details.</summary>
+        /// <summary>
+        /// Re-key every node against its inputs (see <see cref="NodeKey"/>): nodes whose key changed are queued for
+        /// <see cref="Pump"/> (which rebuilds them a few at a time, so a crater landing beside a long line never
+        /// rebuilds the whole line in one frame), nodes that left are dropped at once. Cheap when nothing changed.
+        /// </summary>
         public void Build(TrenchRecord[] trenches)
         {
             if (!world.Ready) return;
@@ -292,6 +334,7 @@ namespace SE.Runtime.Battlefields
             {
                 epoch = world.Epoch;
                 nodes.Clear();
+                pending.Clear();
                 foreach (var c in chunks.Values) DestroyChunk(c);
                 chunks.Clear();
             }
@@ -299,8 +342,6 @@ namespace SE.Runtime.Battlefields
             foreach (var t in trenches) if (t.Tile >= 0 && t.Tile < g.N) byTile[t.Tile] = t;
             int roads = world.LayoutRevision * 7919 + RoadCurve.LaneRevision;
             stamp++;
-            vertexHeight.Clear();
-            dirtyChunks.Clear();
             foreach (var kv in byTile)
             {
                 int tile = kv.Key;
@@ -309,32 +350,96 @@ namespace SE.Runtime.Battlefields
                 ulong key = NodeKey(tile, t, roads);
                 if (!nodes.TryGetValue(tile, out var geo)) nodes[tile] = geo = new NodeGeo { Key = ~key };
                 geo.Stamp = stamp;
-                int chunk = world.ChunkOf(tile);
-                if (geo.Key != key)
-                {
-                    geo.Key = key;
-                    BuildNode(geo, tile, t);
-                    dirtyChunks.Add(chunk);
-                    NodesBuilt++;
-                }
-                else NodesReplayed++;
-                if (geo.Chunk >= 0 && geo.Chunk != chunk) dirtyChunks.Add(geo.Chunk);
-                geo.Chunk = chunk;
+                if (geo.Key != key) pending[tile] = key;
+                else { pending.Remove(tile); NodesReplayed++; }
             }
             stale.Clear();
             foreach (var kv in nodes) if (kv.Value.Stamp != stamp) stale.Add(kv.Key);
-            foreach (int tile in stale) { dirtyChunks.Add(nodes[tile].Chunk); nodes.Remove(tile); }
-            foreach (int chunk in dirtyChunks) Assemble(chunk);
-            foreach (var b in details) b.Clear();
-            foreach (var geo in nodes.Values)
+            foreach (int tile in stale) { dirtyChunks.Add(nodes[tile].Chunk); nodes.Remove(tile); pending.Remove(tile); }
+            if (stale.Count > 0) detailsDirty = true;
+        }
+
+        /// <summary>Node rebuilds still queued by <see cref="Build"/>.</summary>
+        public int Pending => pending.Count;
+
+        /// <summary>
+        /// Rebuild queued nodes until <paramref name="budgetMs"/> is spent (always at least one), then, while the budget
+        /// lasts (at least one group a frame once no node is waiting), re-join the groups they changed, and re-collect
+        /// the details once everything is joined. Returns true when any drawn geometry changed.
+        /// </summary>
+        public bool Pump(double budgetMs)
+        {
+            if (pending.Count == 0 && dirtyChunks.Count == 0 && !detailsDirty) return false;
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            long limit = start + (long)(budgetMs * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+            if (pending.Count > 0)
+            {
+                vertexHeight.Clear();   // heights memoised for this slice only (the terrain may change between frames)
+                pumped.Clear();
+                foreach (var kv in pending)
+                {
+                    if (pumped.Count > 0 && System.Diagnostics.Stopwatch.GetTimestamp() > limit) break;
+                    pumped.Add(kv.Key);
+                    int tile = kv.Key;
+                    if (!nodes.TryGetValue(tile, out var geo) || !byTile.TryGetValue(tile, out var t)) continue;
+                    geo.Key = kv.Value;
+                    BuildNode(geo, tile, t);
+                    geo.Bake();
+                    int group = GroupOf(tile);
+                    dirtyChunks.Add(group);
+                    if (geo.Chunk >= 0 && geo.Chunk != group) dirtyChunks.Add(geo.Chunk);
+                    geo.Chunk = group;
+                    NodesBuilt++;
+                }
+                foreach (int tile in pumped) pending.Remove(tile);
+                detailsDirty = true;
+            }
+            long b1 = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (dirtyChunks.Count > 0)
+            {
+                pumped.Clear();
+                foreach (int group in dirtyChunks)
+                {
+                    bool due = pending.Count == 0 && pumped.Count == 0;
+                    if (!due && System.Diagnostics.Stopwatch.GetTimestamp() > limit) break;
+                    pumped.Add(group);
+                    Assemble(group);
+                }
+                foreach (int group in pumped) dirtyChunks.Remove(group);
+            }
+            long b2 = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (detailsDirty && pending.Count == 0 && dirtyChunks.Count == 0)
+            {
+                detailsDirty = false;
                 for (int i = 0; i < details.Length; i++)
                 {
-                    var items = geo.Items[i];
-                    for (int j = 0; j < items.Count; j++) details[i].Add(items[j]);
+                    int total = 0;
+                    foreach (var geo in nodes.Values) total += geo.Details[i].Length;
+                    var b = details[i];
+                    b.Clear();
+                    if (total > 0)
+                    {
+                        b.Grow(total);
+                        var dst = (InstanceData*)NativeArrayUnsafeUtility.GetUnsafePtr(b.Data);
+                        int at = 0;
+                        foreach (var geo in nodes.Values)
+                        {
+                            var src = geo.Details[i];
+                            if (src.Length == 0) continue;
+                            fixed (InstanceData* s = src) UnsafeUtility.MemCpy(dst + at, s, (long)src.Length * sizeof(InstanceData));
+                            at += src.Length;
+                        }
+                        b.Count = total;
+                    }
+                    b.MarkDirty();
                 }
-            foreach (var b in details) b.MarkDirty();
+            }
             Vertices = 0;
             foreach (var c in chunks.Values) Vertices += c.Mesh != null ? c.Mesh.vertexCount : 0;
+            double tick = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            long b3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            LastPumpMs[0] = (b1 - start) * tick; LastPumpMs[1] = (b2 - b1) * tick; LastPumpMs[2] = (b3 - b2) * tick;
+            return true;
         }
 
         void DestroyChunk(ChunkDraw c)
@@ -344,7 +449,7 @@ namespace SE.Runtime.Battlefields
             c.Batch = null; c.Mesh = null;
         }
 
-        /// <summary>Joins the cached geometry of every node in a terrain chunk into that chunk's one trench mesh.</summary>
+        /// <summary>Joins the baked geometry of every node in an 8×8 group into that group's one trench mesh.</summary>
         void Assemble(int chunk)
         {
             if (chunk < 0) return;
@@ -352,28 +457,36 @@ namespace SE.Runtime.Battlefields
             float3 origin = float3.zero; bool first = true;
             foreach (var geo in nodes.Values)
             {
-                if (geo.Chunk != chunk || geo.Pos.Count == 0) continue;
-                if (first) { origin = math.floor(geo.Pos[0]); first = false; }
-                vertexCount += geo.Pos.Count; indexCount += geo.Idx.Count;
+                if (geo.Chunk != chunk || geo.Verts.Length == 0) continue;
+                if (first) { origin = math.floor(geo.Verts[0].P); first = false; }
+                vertexCount += geo.Verts.Length; indexCount += geo.Indices.Length;
             }
             if (!chunks.TryGetValue(chunk, out var draw)) chunks[chunk] = draw = new ChunkDraw();
             DestroyChunk(draw);
             if (vertexCount == 0 || indexCount == 0) { chunks.Remove(chunk); return; }
             var vertices = new NativeArray<Vtx>(vertexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
             var indices = new NativeArray<int>(indexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+            var vp = (Vtx*)NativeArrayUnsafeUtility.GetUnsafePtr(vertices);
+            var ip = (int*)NativeArrayUnsafeUtility.GetUnsafePtr(indices);
             float3 min = new float3(1e9f), max = new float3(-1e9f);
             int vi = 0, ii = 0;
             foreach (var geo in nodes.Values)
             {
-                if (geo.Chunk != chunk || geo.Pos.Count == 0) continue;
+                if (geo.Chunk != chunk || geo.Verts.Length == 0) continue;
                 int baseVertex = vi;
-                for (int i = 0; i < geo.Pos.Count; i++)
+                fixed (Vtx* src = geo.Verts)
                 {
-                    var p = geo.Pos[i] - origin;
-                    min = math.min(min, p); max = math.max(max, p);
-                    vertices[vi++] = new Vtx { P = p, N = geo.Nrm[i], C = geo.Col[i], Uv0 = float2.zero, Uv1 = new float2(geo.Kind[i], 0) };
+                    UnsafeUtility.MemCpy(vp + vi, src, (long)geo.Verts.Length * sizeof(Vtx));
+                    for (int i = 0; i < geo.Verts.Length; i++)
+                    {
+                        var p = vp[vi].P - origin;
+                        vp[vi].P = p;
+                        min = math.min(min, p); max = math.max(max, p);
+                        vi++;
+                    }
                 }
-                for (int i = 0; i < geo.Idx.Count; i++) indices[ii++] = baseVertex + geo.Idx[i];
+                var idx = geo.Indices;
+                for (int i = 0; i < idx.Length; i++) ip[ii++] = baseVertex + idx[i];
             }
             var mesh = new Mesh { name = "SE trench works " + chunk };
             mesh.SetVertexBufferParams(vertexCount, Layout);

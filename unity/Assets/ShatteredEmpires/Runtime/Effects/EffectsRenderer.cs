@@ -319,7 +319,7 @@ namespace SE.Runtime.Effects
 
         public void ClearPersistent()
         {
-            craters.Clear(); wrecks.Clear(); ClearDecals(); missileBodies?.Clear(); missileBodies?.MarkDirty();
+            craters.Clear(); wrecks.Clear(); ClearDecals(); missileBodies?.Clear(); missileBodies?.MarkDirty(); BeginShells(); EndShells();
             ClearDestruction();
             count = flightCount = waveCount = waveVertexCount = 0;
             mushroomCount = distortionCount = 0;
@@ -404,6 +404,7 @@ namespace SE.Runtime.Effects
             DrawDistortions(images);
             DrawMushrooms(images);   // the mushroom cloud volumes (EffectsRenderer.Mushroom)
             missileBodies?.DrawImages(images);
+            DrawShells(images);   // mortar bombs and howitzer shells in flight (EffectsRenderer.Shells.cs)
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
             frameSlot = (frameSlot + 1) % 3;
             if (alphaCount > 0)
@@ -425,7 +426,7 @@ namespace SE.Runtime.Effects
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
             craters.Dispose(); if (craterMaterial != null) UnityEngine.Object.Destroy(craterMaterial); if (craterTexture != null) UnityEngine.Object.Destroy(craterTexture); if (craterQuad != null) UnityEngine.Object.Destroy(craterQuad); wrecks.Dispose(); rubble.Dispose(); DisposeDecals(); DisposeDistortions();
-            missileBodies?.Dispose(); DisposeTerrainShocks(); DisposeMushrooms();
+            missileBodies?.Dispose(); DisposeShells(); DisposeTerrainShocks(); DisposeMushrooms();
             if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
             if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);
             if (lightRoot != null) UnityEngine.Object.Destroy(lightRoot);

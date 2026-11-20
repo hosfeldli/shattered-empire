@@ -494,15 +494,8 @@ namespace SE.Runtime.Cities
                 if (built) SocketPad(center, lot.Yaw, w, d, building.Type, team, memory, alt);
                 else if (open) OpenSocket(center, lot.Yaw, w, d, team, glow, memory, alt);
                 else if (needs > 0) LockedSocket(center, lot.Yaw, w, d, needs, memory, alt);
-                if (built || open)
-                {
-                    DockingArm(origin, nodes[i], hubY, team, built && building.Done, glow, memory);
-                    // the identity glyph on the causeway, between the ring road and the threshold
-                    var front = Polar(lot.Yaw);
-                    var threshold = center + front * (d * .5f);
-                    var mark = threshold + math.normalizesafe(nodes[i] - threshold) * math.min(.12f, math.distance(nodes[i], threshold) * .33f);
-                    if (built) IdentityGlyph(mark, lot.Yaw + math.PI, building.Type, memory);
-                }
+                // (2026-11-19: the identity glyph moved off the causeway onto the building's roof, CityRenderer.FacilityIdentity.cs)
+                if (built || open) DockingArm(origin, nodes[i], hubY, team, built && building.Done, glow, memory);
                 if (tier >= 2) SocketWall(center, lot.Yaw, w, d, tier, team, memory, glow, i);
                 if (ComposeOverBudget) yield return false;
             }

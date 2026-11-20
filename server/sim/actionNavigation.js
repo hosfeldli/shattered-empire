@@ -18,20 +18,88 @@ const solidFootprintOf = (type) => SOLID[type] || null;
 
 /** True if a disc of radius r at (x, z) touches any recorded wall of building b. */
 export function insideFootprint(b, rects, x, z, r) {
-  const dx = dxBetween(b.x, x), dz = z - b.z, sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
+  const dx = dxBetween(b.x, x), dz = z - b.z;
+  // NAV_REDESIGN L0 (exact): the footprint's bounding reach (its farthest wall corner from the building's origin)
+  // rejects a probe that cannot touch any wall before the rotation and per-wall tests; the walls' sines and cosines are
+  // worked out once per footprint. Every probe that is tested gets the same arithmetic as before.
+  const pre = footprintPre(rects), reach = pre.reach + r;
+  if (dx * dx + dz * dz >= reach * reach) return false;
+  const sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
   const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+  const S = pre.sin, C = pre.cos;
   // Pass 3 (perf): indexed loops here and in obstacleAt (no iterator objects; ~0.5 GB of short-lived garbage per
   // 5 late-game minutes came from these two hot loops)
   for (let i = 0; i < rects.length; i++) {
-    const q = rects[i], rx = q[0], rz = q[1], hw = q[2], hd = q[3], yaw = q[4];
-    const s = Math.sin(yaw), c = Math.cos(yaw), ox = lx - rx, oz = lz - rz;
+    const q = rects[i], rx = q[0], rz = q[1], hw = q[2], hd = q[3];
+    const s = S[i], c = C[i], ox = lx - rx, oz = lz - rz;
     const u = Math.abs(ox * c - oz * s) - hw, v = Math.abs(ox * s + oz * c) - hd;
     if (Math.max(0, u) ** 2 + Math.max(0, v) ** 2 < r * r) return true;
   }
   return false;
 }
+// NAV_REDESIGN L0: per footprint (rect list): wall sines/cosines and the bounding reach, plus a hair of slack so
+// rounding never rejects a probe the exact test would accept
+const FOOT_PRE = new WeakMap();
+function footprintPre(rects) {
+  let p = FOOT_PRE.get(rects);
+  if (!p) {
+    const sin = new Float64Array(rects.length), cos = new Float64Array(rects.length);
+    let reach = 0;
+    for (let i = 0; i < rects.length; i++) {
+      const q = rects[i];
+      sin[i] = Math.sin(q[4]); cos[i] = Math.cos(q[4]);
+      reach = Math.max(reach, Math.hypot(q[0], q[1]) + Math.hypot(q[2], q[3]));
+    }
+    FOOT_PRE.set(rects, p = { sin, cos, reach: reach + 1e-6 });
+  }
+  return p;
+}
 
 const SQRT3 = Math.sqrt(3), PERIOD = W * SQRT3;
+// the hex's inscribed radius (centres sqrt 3 apart), less a margin for the Float32 tile centres
+const HEX_INNER = SQRT3 / 2 - 1e-3;
+// localRoute's eight steps (odd indices diagonal), in the order the grid search has always tried them
+const LOCAL_DX = Int8Array.of(1, 1, 0, -1, -1, -1, 0, 1), LOCAL_DZ = Int8Array.of(0, 1, 1, 1, 0, -1, -1, -1);
+
+/**
+ * NAV_REDESIGN: a binary min-heap of integer ids on typed arrays, ordered by (priority, id) so equal priorities pop in
+ * a fixed order whatever the push order (deterministic tie-breaking); grows by doubling, never allocates per push.
+ */
+export class IndexHeap {
+  constructor(capacity = 1024) { this.ids = new Int32Array(capacity); this.pri = new Float64Array(capacity); this.size = 0; }
+  clear() { this.size = 0; }
+  push(id, p) {
+    if (this.size === this.ids.length) {
+      const ids = new Int32Array(this.size * 2), pri = new Float64Array(this.size * 2);
+      ids.set(this.ids); pri.set(this.pri); this.ids = ids; this.pri = pri;
+    }
+    const ids = this.ids, pri = this.pri;
+    let i = this.size++;
+    while (i > 0) {
+      const up = (i - 1) >> 1, q = pri[up];
+      if (q < p || q === p && ids[up] < id) break;
+      ids[i] = ids[up]; pri[i] = q; i = up;
+    }
+    ids[i] = id; pri[i] = p;
+  }
+  pop() {
+    const ids = this.ids, pri = this.pri, top = ids[0], n = --this.size;
+    if (n > 0) {
+      const lid = ids[n], lp = pri[n];
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        if (l >= n) break;
+        const r = l + 1;
+        const m = r < n && (pri[r] < pri[l] || pri[r] === pri[l] && ids[r] < ids[l]) ? r : l;
+        if (pri[m] > lp || pri[m] === lp && ids[m] > lid) break;
+        ids[i] = ids[m]; pri[i] = pri[m]; i = m;
+      }
+      ids[i] = lid; pri[i] = lp;
+    }
+    return top;
+  }
+}
 const DIAG = Math.SQRT1_2;
 const DIRECTIONS = [[1, 0], [DIAG, DIAG], [0, 1], [-DIAG, DIAG], [-1, 0], [-DIAG, -DIAG], [0, -1], [DIAG, -DIAG]];
 const X = new Float32Array(N), Z = new Float32Array(N);
@@ -143,26 +211,43 @@ export class SpatialIndex {
   read(x, z, r, out, minX, maxX) {
     const s = this.size, left = Math.floor((x - r) / s), right = Math.floor((x + r) / s);
     const top = Math.floor((z - r) / s), bottom = Math.floor((z + r) / s);
+    // NAV_REDESIGN L0 (exact): indexed loop, r * r hoisted, same order and same test
+    const rr = r * r, cells = this.cells;
     for (let ix = left; ix <= right; ix++) for (let iz = top; iz <= bottom; iz++) {
-      const list = this.cells.get(ix * 2048 + iz);
-      if (list) for (const item of list) {
-        if (item.x >= minX && item.x < maxX && (item.x - x) ** 2 + (item.z - z) ** 2 <= r * r) out.push(item);
+      const list = cells.get(ix * 2048 + iz);
+      if (list) for (let i = 0; i < list.length; i++) {
+        const item = list[i], ix2 = item.x, dx = ix2 - x, dz = item.z - z;
+        if (ix2 >= minX && ix2 < maxX && dx * dx + dz * dz <= rr) out.push(item);
       }
     }
   }
 }
 
+// HILLS_MOUNTAINS (2026-11-19, user: "mountains shouldn't be passable, hills are but slower by infantry"): mountain and
+// peak hexes are walls for every ground class (cost() refuses them before roads or slopes are considered); hills cost
+// infantry 1.43 (= 1 / HILL_PACE.infantry, so routes weigh the time a climb takes and go round when that is faster).
 const TERRAIN_COST = {
-  infantry: [Infinity, Infinity, 1, 1, 1.13, 1.16, 1.12, 1.60, 1.23, 1.93, Infinity, Infinity, 1.14],
+  infantry: [Infinity, Infinity, 1, 1, 1.13, 1.16, 1.12, 1.60, 1.43, Infinity, Infinity, Infinity, 1.14],
   wheeled: [Infinity, Infinity, 1.14, 1.07, 1.73, 1.39, 1.26, Infinity, 1.63, Infinity, Infinity, Infinity, 1.20],
   tracked: [Infinity, Infinity, 1, 1, 1.40, 1.15, 1.21, 1.89, 1.38, Infinity, Infinity, Infinity, 1.11],
 };
 // Steepest climbable gradient (rise over run, in world units) per movement class. Infantry can scramble
-// up a ~33° hillside; tracks ~24°; wheels ~17°. Steeper ground is a wall: troops route around ridges and
+// up a ~26.6° hillside; tracks ~24°; wheels ~17°. Steeper ground is a wall: troops route around ridges and
 // through passes instead of walking up mountain faces.
-const MAX_GRADIENT = { infantry: .65, tracked: .45, wheeled: .31 };
+// 2026-11-19 (user: "Decrease the angle that infantry can climb"): infantry .65 (33.0°) -> .50 (26.6°), the angle
+// down by a fifth and the gradient by 23%. A full 25% cut of the angle (24.8°, .46) would leave infantry level with
+// tracks (.45); .50 keeps the order infantry > tracked > wheeled, so a squad still takes the slopes armour cannot.
+// exported for the client definitions payload (actionDefinitions RULESET.mobility: hover-card terrain limits)
+export const MAX_GRADIENT = { infantry: .50, tracked: .45, wheeled: .31 };
+/** The same limits as slope angles in degrees (one decimal), per movement class: the unit definitions' maxSlope. */
+export const MAX_SLOPE_DEG = Object.fromEntries(Object.entries(MAX_GRADIENT).map(([k, g]) => [k, Math.round(Math.atan(g) * 1800 / Math.PI) / 10]));
 // Each class's cost on its best open ground (grass or plains): pace is measured relative to it, so a unit
 // type's normal cruising speed is its definition speed and only rough ground or roads change it.
+/** HILLS_MOUNTAINS: the pace on hills off a road, per movement class (actionOrders caps the terrain pace with it).
+ *  Vehicles keep their terrain-cost pace (hills cost them 1.63 / 1.38: the 0.8 floor of TERRAIN_PACE). */
+export const HILL_PACE = Object.freeze({ infantry: .7 });
+/** HILLS_MOUNTAINS: mountains and peaks are impassable to every ground unit (aircraft fly over). */
+export const isMountain = (terrain) => terrain === T.MOUNTAIN || terrain === T.PEAK;
 export const OPEN_COST = Object.fromEntries(Object.entries(TERRAIN_COST).map(([k, v]) => [k, Math.min(v[T.GRASS], v[T.PLAINS])]));
 const HEX_SPACING = Math.sqrt(3);
 // The client's visual terrain height for a tile (WorldModel.TileHeightFromGeo, land only), so the
@@ -183,6 +268,19 @@ const DEFENSE_ROAD_PENALTY = 4;
 const ROUTE_LOCAL_BUDGET = 3200;
 // route(): a failed request is remembered this many ticks (Pass 5), keyed on start and goal cells FAIL_CELL wide
 const FAIL_MEMO_TICKS = 30, FAIL_CELL = .25;
+// Pass 6 (localized invalidation): the cheapest coarse step weight (a road hex .66 x the .94 road-edge factor, so the
+// A* estimate dist x .59 never overestimates), and how many hexes off its corridor a failed route's fine stage looked
+const LOWER_STEP = .59, FAIL_MARGIN = 3;
+// Pass 6: how long a corridor step the fine stage could not thread is taken as closed for the same class (route())
+const BAD_STEP_TICKS = 50;
+// Pass 6 (routing budget, mayRoute): work: standing tests (canStand calls; a settled coarse hex counts 3) all route()
+// calls of a tick may use before deferrable requests wait; admit: queued units let through per tick whatever the budget;
+// expire: ticks an admitted unit may take to ask again before it leaves the queue (its need has passed; the slowest
+// deferrable caller, manTrenches, asks every 20 ticks).
+export const ROUTE_BUDGET = Object.freeze({ work: 12000, admit: 6, expire: 25 });
+// NAV_REDESIGN fallback(): how far (hexes) around an unreachable goal to look for the unit's own region, and how many
+// candidate spots to route to before giving up
+const NEAREST_RINGS = 24, NEAREST_TRIES = 3;
 // line(): sample spacing on road-only hexes (bridge lanes)
 const LANE_STRIDE = .06;
 // A wreck blocks movement with the hull the client draws (NAV_BRIDGES.md, "rusted cars", 2026-11-18): the scale of
@@ -249,6 +347,9 @@ export class ActionNavigation {
     this.flows = new Map(); this.activeFlows = new Map();
     this.crossings = new Map(); this.crossingVersion = -1;
     this.terrainVersion = 0;
+    this.groundVersion = 0;      // Pass 6: bumped only when the ground (terrain, roads, forest) changed (bridge crossings)
+    this.work = 0;               // Pass 6: standing tests and coarse nodes so far (routing budget)
+    this.budgetWork = null;      // Pass 6: overrides ROUTE_BUDGET.work (tests and benches only)
     this.localLeft = Infinity;   // fine local-grid nodes left to the route() in progress (ROUTE_LOCAL_BUDGET)
   }
   /**
@@ -263,33 +364,60 @@ export class ActionNavigation {
   endBatch() { const b = this.batch; this.batch = null; return b ? b.hits : 0; }
   snapAt(B, key, x, z, def, max) {
     const k = key + ':' + def.move + ':' + def.radius + (this.softWrecks ? ':s' : '');
-    if (B.snap.has(k)) { B.hits++; return B.snap.get(k); }
-    const p = this.nearest({ x, z }, def, max);
+    // Pass 6: every memo hit is charged the standing tests it saved, so the routing budget (which counts them) sees the
+    // same work batched or not and batching stays invisible to the simulation
+    const hit = B.snap.get(k);
+    if (hit) { B.hits++; this.work += hit.w; return hit.p; }
+    const w0 = this.work, p = this.nearest({ x, z }, def, max);
     if (p) B.ids.set(p, B.next++);
-    B.snap.set(k, p);
+    B.snap.set(k, { p, w: this.work - w0 });
     return p;
   }
   lineB(a, b, def) {
     const B = this.batch, ia = B && B.ids.get(a), ib = ia && B.ids.get(b);
     if (!ib) return this.line(a, b, def);
     const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + (this.softWrecks ? ':s' : '');
-    let v = B.line.get(k);
-    if (v === undefined) B.line.set(k, v = this.line(a, b, def)); else B.hits++;
+    const hit = B.line.get(k);
+    if (hit) { B.hits++; this.work += hit.w; return hit.v; }
+    const w0 = this.work, v = this.line(a, b, def);
+    B.line.set(k, { v, w: this.work - w0 });
     return v;
   }
   localRouteB(a, b, def, budget, grid, step) {
     const B = this.batch, ia = B && B.ids.get(a), ib = ia && B.ids.get(b);
     if (!ib) return this.localRoute(a, b, def, budget, grid, step);
     const k = ia + ':' + ib + ':' + def.move + ':' + def.radius + ':' + budget + (this.softWrecks ? ':s' : '');
-    if (B.local.has(k)) { B.hits++; return B.local.get(k); }
+    // Pass 6: a remembered detour is charged the fine nodes it took (ROUTE_LOCAL_BUDGET), and reused only while that
+    // many are left, so a batched route spends and finds exactly what an unbatched one would (a route's own retries
+    // share a batch now)
+    const hit = B.local.get(k);
+    if (hit && hit.used <= this.localLeft) { B.hits++; this.localLeft -= hit.used; this.work += hit.w; return hit.r; }
+    const left = this.localLeft, w0 = this.work;
     const r = this.localRoute(a, b, def, budget, grid, step);
-    if (r || !this.localCut) B.local.set(k, r);   // a search cut short by the route budget is not a verdict
+    if (r || !this.localCut) B.local.set(k, { r, used: left - this.localLeft, w: this.work - w0 });   // a search cut short is not a verdict
     return r;
   }
-  invalidate() {
+  /**
+   * The world changed: drop what the change can affect. `tiles` (Pass 6) names the hexes of buildings or wrecks that
+   * were placed or removed (the ground itself unchanged); without it, or when the ground changed too, every route cache
+   * is dropped as before.
+   */
+  invalidate(tiles = null, added = null) {
     if (this.batch) this.beginBatch();
-    this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.terrainVersion++; this.crowdCache = null;
-    this.failed?.clear();
+    this.terrainVersion++;
+    const stats = this.game.navStats ??= {};
+    // Pass 6 (localized invalidation): late in a big match a building was placed or lost every 2-3 game seconds, and
+    // each one wiped every corridor, flow field and remembered failure on the map, so chases, replans and AI orders kept
+    // paying full searches again. A building or wreck changes only the obstacle lists of its hex and the six around it
+    // (game.registerBuilding, wrecksNear); invalidateNear keeps every cached result that change cannot alter.
+    if (tiles && this.groundPrint && sameGround(this, this.groundPrint)) {
+      stats.localInvalidate = (stats.localInvalidate || 0) + 1;
+      this.invalidateNear(tiles, added === 'added');
+      return;
+    }
+    stats.fullInvalidate = (stats.fullInvalidate || 0) + 1;
+    this.corridors.clear(); this.flows.clear(); this.activeFlows.clear(); this.crowdCache = null;
+    this.failed?.clear(); this.badSteps?.clear();
     // Pass 3 (perf, late game): most invalidations are a building placed or removed, which leaves the ground itself as
     // it was. The ground-only caches (regions, centre costs, road-only and lane tiles, gradient) are kept when every
     // input they read is unchanged since the last invalidate. Those inputs only change one way between two invalidates
@@ -298,8 +426,188 @@ export class ActionNavigation {
     // alone cost 80-140 ms per movement class after every building change late in a match.
     if (this.groundPrint && sameGround(this, this.groundPrint)) return;
     this.groundPrint = groundPrint(this);
+    this.groundVersion++;
     this.gradient = null; this.roadOnlyCache = null; this.laneCache = null; this.centreCache = null; this.components = null;
   }
+
+  /**
+   * Pass 6: the caches a building or wreck placed or removed on `tiles` can affect, and only those, are dropped.
+   * The obstacle lists that changed are those of each tile and its six neighbours (the marked hexes); crowding() and
+   * canStand() read nothing else of buildings and wrecks. The ground is unchanged (invalidate() checked it), so the
+   * ground-only caches and the bridge crossings stay as well.
+   *  - A corridor (a coarse A* result) is kept when no marked hex lies on it and none could offer a cheaper way: a way
+   *    through hex x costs at least LOWER_STEP x (dist(a, x) + dist(x, b)) (the search's own admissible estimate), so a
+   *    marked hex whose bound is not below the corridor's cost cannot change the result. Failed searches are dropped.
+   *  - A flow field is kept when no marked hex was reached by it or borders a hex it reached (Dijkstra: a hex the field
+   *    never reached cannot change the weights or the order of the hexes it settled).
+   *  - A remembered failure: region cut-offs depend on the ground only and are kept; an unstandable goal is dropped when
+   *    a marked hex is the goal's or beside it; a failed corridor is dropped when a marked hex lies within the bound of
+   *    its coarse cost plus FAIL_MARGIN hexes (the fine stage's local detours reach that far off the corridor).
+   * crowding()'s cache checks its own signature on every read and is kept.
+   */
+  /** Pass 6: routing work left in this tick's budget (ROUTE_BUDGET.work); negative once overspent. */
+  budgetLeft() { return (this.budgetWork ?? ROUTE_BUDGET.work) - this.budgetTick().spent; }
+
+  /** Pass 6: charge routing work to this tick's budget. */
+  spend(work) {
+    const B = this.budgetTick();
+    B.spent += work;
+  }
+
+  /** Pass 6: this tick's routing budget, reset (and the front of the wait queue admitted) on the first use in a tick. */
+  budgetTick() {
+    const g = this.game, tick = g.tickN ?? 0;
+    let B = this.budget;
+    if (!B || B.tick !== tick) {
+      B = this.budget = { tick, spent: 0 };
+      this.admitFront(tick);
+    }
+    return B;
+  }
+
+  /**
+   * Pass 6 (routing budget): may unit u run a deferrable route now (a chase, a cover or trench move, a collision re-route,
+   * a stuck-ladder replan, the way back after a chase)? Every route() is charged to the tick's budget (ROUTE_BUDGET.work,
+   * in standing tests, so deterministic); orders and group routes always run but use it up too. Once it is spent a
+   * deferrable request is refused and the unit queued, oldest first (ties by id); the ROUTE_BUDGET.admit units at the
+   * front of the queue are let through on their next request whatever the budget, so no unit waits for ever. A refused
+   * unit keeps what it was doing (its current path) and its caller asks again later. Queue state lives on the units
+   * (u.routeWait: tick queued; u.routeFront: tick it reached the front), so it is saved with them.
+   */
+  mayRoute(u) {
+    const B = this.budgetTick(), stats = this.game.navStats ??= {};
+    if (B.spent < (this.budgetWork ?? ROUTE_BUDGET.work)) { if (u.routeWait != null) this.served(u, stats); return true; }
+    if (u.routeWait != null && u.routeFront != null) { this.served(u, stats); stats.routeAdmitted = (stats.routeAdmitted || 0) + 1; return true; }
+    if (u.routeWait == null) { this.enqueue(u); stats.routeDeferred = (stats.routeDeferred || 0) + 1; }
+    stats.routeRefused = (stats.routeRefused || 0) + 1;
+    return false;
+  }
+
+  /** The wait queue (unit ids by u.routeWait, then id), rebuilt from the units after a restore. */
+  waitQueue() {
+    if (!this.queue) {
+      const q = [];
+      for (const u of this.game.units.values()) if (u.routeWait != null) q.push(u);
+      q.sort((a, b) => a.routeWait - b.routeWait || a.id - b.id);
+      this.queue = q.map((u) => u.id);
+    }
+    return this.queue;
+  }
+
+  enqueue(u) {
+    const q = this.waitQueue(), tick = this.game.tickN ?? 0;
+    u.routeWait = tick; u.routeFront = null;
+    let i = q.length;
+    while (i > 0) {
+      const v = this.game.units.get(q[i - 1]);
+      if (v && v.routeWait === tick && v.id > u.id) i--; else break;
+    }
+    q.splice(i, 0, u.id);
+  }
+
+  served(u, stats) {
+    const wait = (this.game.tickN ?? 0) - u.routeWait;
+    stats.routeWaitTicks = (stats.routeWaitTicks || 0) + wait;
+    if (wait > (stats.routeWaitMax || 0)) stats.routeWaitMax = wait;
+    this.unqueue(u);
+  }
+
+  unqueue(u) {
+    u.routeWait = null; u.routeFront = null;
+    const q = this.waitQueue(), i = q.indexOf(u.id);
+    if (i >= 0) q.splice(i, 1);
+  }
+
+  /**
+   * Once a tick: admits the next ROUTE_BUDGET.admit queued units (oldest first), drops dead units and those no longer
+   * waiting, and lets go of admitted units that have not asked again within ROUTE_BUDGET.expire ticks (their need has
+   * passed: the target died, a new order came). Admitted units stay at the front until served or let go.
+   */
+  admitFront(tick) {
+    const q = this.waitQueue(), units = this.game.units;
+    let i = 0, fresh = 0;
+    while (i < q.length && fresh < ROUTE_BUDGET.admit) {
+      const u = units.get(q[i]);
+      if (!u || u.hp <= 0 || u.routeWait == null) { q.splice(i, 1); if (u) u.routeFront = null; continue; }
+      if (u.routeFront == null) { u.routeFront = tick; fresh++; }
+      else if (tick - u.routeFront > ROUTE_BUDGET.expire) { q.splice(i, 1); u.routeWait = null; u.routeFront = null; continue; }
+      i++;
+    }
+  }
+
+  invalidateNear(tiles, added) {
+    const mark = this.mark ??= new Uint8Array(N), list = [];
+    for (const c of tiles) for (let d = -1; d < 6; d++) {
+      const t = d < 0 ? c : c >= 0 ? NB[c * 6 + d] : -1;
+      if (t >= 0 && !mark[t]) { mark[t] = 1; list.push(t); }
+    }
+    const stats = this.game.navStats;
+    // a cheaper way through a freed hex: only when its lower bound is under the cached cost (removals only)
+    const cheaper = (a, b, cost) => {
+      if (!(cost < Infinity)) return true;
+      for (let i = 0; i < list.length; i++) if (LOWER_STEP * (dist(a, list[i]) + dist(list[i], b)) < cost) return true;
+      return false;
+    };
+    // the hexes within FAIL_MARGIN of a changed one (a failed corridor's fine stage looked that far to either side)
+    let wide = null;
+    const widen = () => {
+      if (!wide) {
+        wide = this.markWide ??= new Uint8Array(N); wide.list = [];
+        for (const c of list) for (const t of disk(c, FAIL_MARGIN)) if (!wide[t]) { wide[t] = 1; wide.list.push(t); }
+      }
+      return wide;
+    };
+    const nearFail = (path) => {
+      widen();
+      for (let i = 0; i < path.length; i++) if (wide[path[i]]) return true;
+      return false;
+    };
+    try {
+      let kept = 0, dropped = 0;
+      for (const [key, path] of this.corridors) {
+        let hit = !path || !added && cheaper(path[0], path[path.length - 1], path.cost);
+        for (let i = 0; !hit && i < path.length; i++) if (mark[path[i]]) hit = true;
+        if (hit) { this.corridors.delete(key); dropped++; } else kept++;
+      }
+      stats.corridorKept = (stats.corridorKept || 0) + kept; stats.corridorDropped = (stats.corridorDropped || 0) + dropped;
+      for (const [key, flow] of this.flows) {
+        let hit = false;
+        for (let i = 0; !hit && i < list.length; i++) {
+          const t = list[i];
+          if (t === flow.goal || flow.next[t] >= 0) { hit = true; break; }
+          for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && (n === flow.goal || flow.next[n] >= 0)) { hit = true; break; } }
+        }
+        if (!hit) continue;
+        this.flows.delete(key);
+        for (const [move, f] of this.activeFlows) if (f === flow) this.activeFlows.delete(move);
+      }
+      if (this.failed?.size) {
+        kept = 0; dropped = 0;
+        for (const [key, f] of this.failed) {
+          let hit;
+          if (f.why === 'cut') hit = false;
+          else if (f.why === 'goal') {
+            // more structure never makes an unstandable goal standable
+            hit = !added && (f.b < 0 || !!mark[f.b]);
+            for (let d = 0; !added && !hit && d < 6; d++) { const n = NB[f.b * 6 + d]; if (n >= 0 && mark[n]) hit = true; }
+          } else if (!f.path || f.a < 0 || f.b < 0) hit = true;
+          else hit = nearFail(f.path) || !added && cheaper(f.a, f.b, f.cost + 2 * FAIL_MARGIN * LOWER_STEP);
+          if (hit) { this.failed.delete(key); dropped++; } else kept++;
+        }
+        stats.memoKept = (stats.memoKept || 0) + kept; stats.memoDropped = (stats.memoDropped || 0) + dropped;
+      }
+      // an unthreadable corridor step stays so while structure is only added (more never opens a lane); a removal near it
+      // (or near its approach) lets it be tried again
+      if (!added && this.badSteps?.size) {
+        widen();
+        for (const steps of this.badSteps.values()) for (const k of steps.keys()) if (wide[Math.floor(k / N)] || wide[k % N]) steps.delete(k);
+      }
+    } finally {
+      for (const t of list) mark[t] = 0;
+      if (wide) { for (const t of wide.list) wide[t] = 0; wide.list = null; }
+    }
+  }
+
 
   /**
    * True when tile t is only passable for this movement class along a road (a bridge over water, a lake,
@@ -582,8 +890,8 @@ export class ActionNavigation {
   }
 
   beginTraffic(units) {
-    if (this.crossingVersion !== this.terrainVersion) {
-      this.crossings.clear(); this.crossingVersion = this.terrainVersion;
+    if (this.crossingVersion !== this.groundVersion) {
+      this.crossings.clear(); this.crossingVersion = this.groundVersion;
       const span = new Set();
       for (const e of this.roads.edges.values()) if (e.cond > 0) for (const t of [e.a, e.b])
         if (this.world.river[t] || isWater(this.world.terr[t])) span.add(t);
@@ -622,20 +930,30 @@ export class ActionNavigation {
   }
 
   roadAt(t, x, z, def, bridgeOnly) {
-    if (!bridgeOnly) for (const edge of this.game.ringRoads?.get(t) || [])
-      if (segmentDistanceSq(x, z, edge.a.x, edge.a.z, edge.b.x, edge.b.z) < .15 ** 2) return 2;
+    if (!bridgeOnly) {
+      const ring = this.game.ringRoads?.get(t);
+      if (ring) for (let i = 0; i < ring.length; i++) {
+        const edge = ring[i];
+        if (segmentDistanceSq(x, z, edge.a.x, edge.a.z, edge.b.x, edge.b.z) < .15 ** 2) return 2;
+      }
+    }
     if (!this.world.road[t]) return 0;
     const ax = x + dxBetween(x, X[t]), az = Z[t];
     let best = 0;
+    // NAV_REDESIGN L0 (exact): the point's distance to each half-edge is measured first and the road edge looked up only
+    // when the point lies within the widest lane any edge could have (.38 on a bridge, .31 otherwise); same verdicts
+    const reach = bridgeOnly ? .38 * .38 : .31 * .31;
     for (let d = 0; d < 6; d++) {
       const next = NB[t * 6 + d];
       if (next < 0) continue;
+      const bx = ax + dxBetween(X[t], X[next]) * .5, bz = (az + Z[next]) * .5;
+      const sq = segmentDistanceSq(x, z, ax, az, bx, bz);
+      if (sq > reach) continue;
       const edge = this.roads.usable(t, next);
       // Any road over a river or water is a bridge every vehicle may use (tracked included, 2026-11-16).
       if (!edge || edge.type === 4) continue;
-      const bx = ax + dxBetween(X[t], X[next]) * .5, bz = (az + Z[next]) * .5;
       const r = bridgeOnly ? .38 : edge.type >= 2 ? .31 : .24;
-      if (segmentDistanceSq(x, z, ax, az, bx, bz) <= r * r) best = Math.max(best, edge.cond < 50 ? 1 : edge.type);
+      if (sq <= r * r) best = Math.max(best, edge.cond < 50 ? 1 : edge.type);
     }
     return best;
   }
@@ -658,6 +976,7 @@ export class ActionNavigation {
     if (def.air) return 1;
     const w = this.world, terrain = w.terr[t];
     if (isWater(terrain) || w.lake[t]) return this.roadAt(t, x, z, def, true) ? 1.15 : Infinity;
+    if (isMountain(terrain)) return Infinity;   // HILLS_MOUNTAINS: a wall for every ground class, road or not
     let base = TERRAIN_COST[def.move][terrain];
     // NAV_BRIDGES (2026-11-18): a wide river (flow >= 94) is road-only for vehicles over the WHOLE hex, as the coarse
     // graph (roadOnly) has it. Before, only the drawn channel was impassable: a vehicle nudged onto the dry part of a
@@ -711,11 +1030,16 @@ export class ActionNavigation {
   }
 
   canStand(x, z, def, ignore = 0) {
+    this.work++;   // Pass 6: the routing budget counts standing tests (ROUTE_BUDGET)
     x = wrapX(x);
     const t = tileAt(x, z);
     if (t < 0 || !Number.isFinite(this.cost(t, x, z, def))) return false;
     if (def.air) return true;
     if (this.obstacleAt(t, x, z, def.radius, ignore)) return false;
+    // NAV_REDESIGN L0 (exact): a body wholly inside the hex's inscribed circle has all four rim probes on hex t, which
+    // the loop below skips anyway; most standing tests stop here instead of locating four probe hexes
+    const ox = dxBetween(X[t], x), oz = z - Z[t], inner = HEX_INNER - def.radius;
+    if (inner > 0 && ox * ox + oz * oz < inner * inner) return true;
     for (let d = 0; d < 4; d++) {
       const xx = wrapX(x + (d < 2 ? (d === 0 ? 1 : -1) * def.radius : 0));
       const zz = z + (d >= 2 ? (d === 2 ? 1 : -1) * def.radius : 0);
@@ -767,17 +1091,47 @@ export class ActionNavigation {
     // to slide into a building's footprint (that trapped vehicles inside base compounds).
     if (this.canStand(from.x, from.z, def)) return false;
     // New wrecks may overlap nearby troops. Permit a continuous step out, never farther in.
+    // NAV_REDESIGN L0 (exact): the same test over the same obstacles (the hexes of both points and their neighbours;
+    // the verdict does not depend on the order or on a hex being seen twice) without building Sets, spread arrays and
+    // copied wreck records on every call
     let escaping = false;
-    const tiles = new Set([tileAt(from.x, from.z), tileAt(x, z)]);
-    for (const t of [...tiles]) if (t >= 0) for (let d = 0; d < 6; d++) if (NB[t * 6 + d] >= 0) tiles.add(NB[t * 6 + d]);
-    for (const t of tiles) {
-      const obstacles = this.softWrecks ? this.game.obstaclesAtTile(t) : [...this.game.obstaclesAtTile(t), ...(this.game.wrecks.get(t) || []).filter((w) => !w.air && w.x != null).map((w) => ({ ...w, radius: wreckHull(w.type).r }))];
-      for (const o of obstacles) {
-        const radius = (o.radius + def.radius) ** 2;
-        const before = dxBetween(from.x, o.x) ** 2 + (from.z - o.z) ** 2, after = dxBetween(x, o.x) ** 2 + (z - o.z) ** 2;
+    const ta = tileAt(from.x, from.z), tb = tileAt(x, z);
+    for (let s = 0; s < 2; s++) {
+      const c = s ? tb : ta;
+      if (s && tb === ta) break;
+      for (let d = -1; d < 6; d++) {
+        const t = d < 0 ? c : c >= 0 ? NB[c * 6 + d] : -1;
+        if (d >= 0 && t < 0) continue;
+        const v = this.escapeTile(t, from, x, z, def);
+        if (v < 0) return false;
+        if (v > 0) escaping = true;
+      }
+    }
+    return escaping;
+  }
+
+  /** canMove's escape rule on one hex's obstacles: -1 the step goes into or deeper into one, 1 it leaves an overlap, 0 clear. */
+  escapeTile(t, from, x, z, def) {
+    let escaping = 0;
+    const near = this.game.obstaclesAtTile(t);
+    for (let i = 0; i < near.length + 1; i++) {
+      let list, n;
+      if (i < near.length) { list = null; n = 1; } else {
+        if (this.softWrecks) break;
+        list = this.game.wrecks.get(t); n = list ? list.length : 0;
+      }
+      for (let k = 0; k < n; k++) {
+        let ox, oz, or;
+        if (!list) { const o = near[i]; ox = o.x; oz = o.z; or = o.radius; } else {
+          const w = list[k];
+          if (w.air || w.x == null) continue;
+          ox = w.x; oz = w.z; or = wreckHull(w.type).r;
+        }
+        const radius = (or + def.radius) ** 2;
+        const before = dxBetween(from.x, ox) ** 2 + (from.z - oz) ** 2, after = dxBetween(x, ox) ** 2 + (z - oz) ** 2;
         if (after >= radius) continue;
-        if (before >= radius || after <= before + 1e-7) return false;
-        escaping = true;
+        if (before >= radius || after <= before + 1e-7) return -1;
+        escaping = 1;
       }
     }
     return escaping;
@@ -828,6 +1182,7 @@ export class ActionNavigation {
         result = [t];
         for (let p = parent[t]; p >= 0; p = parent[p]) result.push(p);
         result.reverse();
+        result.cost = best[t];   // Pass 6: what invalidateNear weighs a changed hex against
         break;
       }
       shut[t] = gen; closedCount++;
@@ -860,6 +1215,7 @@ export class ActionNavigation {
         heap.push(n, cost + dist(n, to) * .59);
       }
     }
+    this.work += closedCount * 3;   // Pass 6: a settled hex weighs about three standing tests (ROUTE_BUDGET)
     if (!buildingRoads && !avoid) {
       if (this.corridors.size >= 384) this.corridors.delete(this.corridors.keys().next().value);
       this.corridors.set(key, result);
@@ -876,6 +1232,15 @@ export class ActionNavigation {
    */
   route(from, to, def) {
     if (def.air) return this.routeOnce(from, to, def);
+    // Pass 6: the work is charged to the tick's routing budget (mayRoute), whoever asked. One route's coarse re-plans
+    // and its soft-wreck retry share a batch (beginBatch), so the corridor steps they have in common (portals, hubs,
+    // straight lines, detours) are worked out once.
+    const w0 = this.work, own = !this.batch && !this.batchOff;
+    if (own) this.beginBatch();
+    try { return this.routeMemo(from, to, def); } finally { if (own) this.endBatch(); this.spend(this.work - w0); }
+  }
+
+  routeMemo(from, to, def) {
     // Pass 5 (failed-route memo): the same failed request (a group slot in a pocket no corridor can thread, a chase spot,
     // a ladder replan, an AI order repeated every plan) cost a full budgeted search each time: late in a match 400-850
     // failed routes a game minute, 60-85% of all route time. A failure is remembered for FAIL_MEMO_TICKS, keyed on the
@@ -886,7 +1251,11 @@ export class ActionNavigation {
       + Math.floor(wrapX(to.x) / FAIL_CELL) + ',' + Math.floor(to.z / FAIL_CELL);
     const memo = this.failed ??= new Map(), seen = memo.get(key);
     if (seen !== undefined) {
-      if (tick - seen < FAIL_MEMO_TICKS && tick >= seen) { this.lastFail = 'memo'; const st = g.navStats ??= {}; st.routeMemo = (st.routeMemo || 0) + 1; return null; }
+      if (tick - seen.tick < FAIL_MEMO_TICKS && tick >= seen.tick) {
+        this.lastFail = 'memo'; this.memoWhy = seen.why;
+        const st = g.navStats ??= {}; st.routeMemo = (st.routeMemo || 0) + 1;
+        return null;
+      }
       memo.delete(key);
     }
     let path = this.routeOnce(from, to, def);
@@ -904,9 +1273,19 @@ export class ActionNavigation {
     }
     if (!path) {
       if (memo.size >= 4096) memo.delete(memo.keys().next().value);
-      memo.set(key, tick);
+      // Pass 6: what the failure depended on, so a building placed or lost elsewhere keeps it (invalidateNear)
+      memo.set(key, { tick, why: this.lastFail, a: tileAt(from.x, from.z), b: tileAt(to.x, to.z), path: this.lastCoarse, cost: this.coarseCost(this.lastCoarse, def) });
     }
     return path;
+  }
+
+  /** Pass 6: a coarse tile route's weight (its search's own, or summed for one taken from a flow field); Infinity for none. */
+  coarseCost(coarse, def) {
+    if (!coarse) return Infinity;
+    if (coarse.cost !== undefined) return coarse.cost;
+    let c = 0;
+    for (let i = 1; i < coarse.length; i++) c += this.stepCost(coarse[i - 1], coarse[i], def);
+    return c;
   }
 
   /** The failed route() could have been closed by a wreck: one stands near the goal or near a corridor step no detour threaded. */
@@ -918,7 +1297,7 @@ export class ActionNavigation {
 
   routeOnce(from, to, def) {
     this.localLeft = ROUTE_LOCAL_BUDGET;
-    this.lastFail = null; this.failTiles = [];
+    this.lastFail = null; this.failTiles = []; this.lastCoarse = null;
     try { return this.routeBudgeted(from, to, def); } finally { this.localLeft = Infinity; }
   }
 
@@ -943,17 +1322,55 @@ export class ActionNavigation {
     // interactive bound, which used to fail it and leave the unit with no path. Bounded at half the map.
     let coarse = this.strategic(a, b, def, false, false, ca >= 0 && ca === cb ? Math.max(STRATEGIC_LIMIT, N >> 1) : STRATEGIC_LIMIT), avoid = null;
     if (!coarse) { this.lastFail = 'coarse'; return this.line(from, to, def) ? [to] : null; }
+    this.lastCoarse = coarse;
+    const stats = this.game.navStats ??= {};
     for (let attempt = 0; ; attempt++) {
-      const r = this.fineRoute(from, to, def, coarse);
+      // Pass 6: a corridor step this class could not thread a moment ago (badSteps) fails at once, without the fine stage
+      const known = this.knownBad(coarse, def);
+      if (known >= 0) stats.routeBadStep = (stats.routeBadStep || 0) + 1;
+      const r = known >= 0 ? { fail: coarse[known], from: coarse[known - 1] } : this.fineRoute(from, to, def, coarse);
       if (r.path) return r.path;
       if (r.fail >= 0) this.failTiles.push(r.fail, r.from ?? r.fail);
-      if (attempt >= ROUTE_RETRIES || r.fail < 0 || r.fail === a || r.fail === b) { this.lastFail = 'fine'; return null; }
+      if (attempt >= ROUTE_RETRIES || r.fail < 0 || r.fail === a || r.fail === b) return this.fineFailed(def);
       (avoid ??= new Set()).add(r.fail);
-      const stats = this.game.navStats ??= {};
       stats.routeRetry = (stats.routeRetry || 0) + 1;
       coarse = this.strategic(a, b, def, false, true, STRATEGIC_LIMIT, avoid);
-      if (!coarse) { this.lastFail = 'fine'; return null; }
+      if (!coarse) return this.fineFailed(def);
+      // Pass 6: the corridor still runs through the hex no detour could thread although it now costs AVOID_PENALTY
+      // times as much: there is no reasonable way round it, and the fine stage would fail there again (late in a match
+      // most failed routes paid all three attempts at one blocked lane: barricades across a bridge deck)
+      if (coarse.includes(r.fail)) { stats.routeRetryStop = (stats.routeRetryStop || 0) + 1; return this.fineFailed(def); }
     }
+  }
+
+  /** Pass 6: a fine-stage failure: its unthreadable corridor steps are remembered (badSteps) for BAD_STEP_TICKS. */
+  fineFailed(def) {
+    this.lastFail = 'fine';
+    const tick = this.game.tickN ?? 0, all = this.badSteps ??= new Map(), v = this.stepVariant(def);
+    let steps = all.get(v);
+    if (!steps) all.set(v, steps = new Map());
+    for (let i = 0; i < this.failTiles.length; i += 2) {
+      const k = this.failTiles[i + 1] * N + this.failTiles[i];
+      steps.delete(k); steps.set(k, tick);
+    }
+    while (steps.size > 512) steps.delete(steps.keys().next().value);
+    return null;
+  }
+
+  stepVariant(def) { return def.move + ':' + def.radius + (this.strict ? 's' : '') + (this.softWrecks ? 'w' : ''); }
+
+  /** Pass 6: the index in `coarse` of the first step this class failed to thread within BAD_STEP_TICKS, or -1. */
+  knownBad(coarse, def) {
+    const steps = this.badSteps?.get(this.stepVariant(def));
+    if (!steps?.size) return -1;
+    const tick = this.game.tickN ?? 0;
+    for (let i = 1; i < coarse.length; i++) {
+      // the failed step: hub or portal of coarse[i - 1] to those of coarse[i], or within coarse[i] itself
+      let at = steps.get(coarse[i - 1] * N + coarse[i]);
+      if (at === undefined) at = steps.get(coarse[i] * N + coarse[i]);
+      if (at !== undefined && tick - at < BAD_STEP_TICKS && tick >= at) return i;
+    }
+    return -1;
   }
 
   /**
@@ -975,6 +1392,58 @@ export class ActionNavigation {
     if (!goal) return points.length ? points : null;
     points.push(goal);
     return points;
+  }
+
+  /**
+   * NAV_REDESIGN (no silent failure): route() and, when it fails, the best way that does exist, with the reason.
+   * Returns { path, reason, goal }: reason 'ok' (the goal itself), 'goal' (the goal point is not standable for this
+   * body: the nearest spot that is), 'fine' (the goal is in the unit's region but no fine corridor threads to it now:
+   * the coarse corridor's hex-centre waypoints, ending at the goal, for local avoidance and the stuck ladder to work
+   * along), 'cut' (the goal lies in another region for this class: the nearest reachable ground to it), or path null
+   * with the router's own reason when even that does not exist (a unit standing nowhere a route can start). Bounded:
+   * at most NEAREST_TRIES further routes and a ring scan of NEAREST_RINGS hexes of O(1) region lookups.
+   */
+  routeOrNearest(from, to, def) {
+    const path = this.route(from, to, def);
+    if (path) return { path, reason: 'ok', goal: to };
+    return this.fallback(from, to, def);
+  }
+
+  /** routeOrNearest() after route(from, to, def) has just failed (reads its lastFail). */
+  fallback(from, to, def) {
+    const why = this.lastFail === 'memo' ? this.memoWhy : this.lastFail;
+    const none = { path: null, reason: why || 'none', goal: null };
+    if (def.air) return none;
+    const a = tileAt(from.x, from.z), b = tileAt(to.x, to.z), stats = this.game.navStats ??= {};
+    if (why === 'goal') {
+      const g = this.nearest(to, def, 1.25);
+      const p = g && this.route(from, g, def);
+      if (p) { stats.fallbackGoal = (stats.fallbackGoal || 0) + 1; return { path: p, reason: 'goal', goal: g }; }
+    }
+    const ca = this.componentOf(a, def);
+    if (ca < 0 || b < 0) return none;
+    if (this.componentOf(b, def) === ca) {
+      const cp = this.coarsePath(from, to, def);
+      if (cp?.length) { stats.fallbackFine = (stats.fallbackFine || 0) + 1; return { path: cp, reason: 'fine', goal: cp[cp.length - 1] }; }
+      return none;
+    }
+    // another region: the hexes of the unit's region nearest the goal, ring by ring (nearest centre first, ties by index)
+    let tries = 0;
+    for (let r = 1; r <= NEAREST_RINGS && tries < NEAREST_TRIES; r++) {
+      const ring = disk(b, r).filter((t) => dist(b, t) === r && this.componentOf(t, def) === ca);
+      if (!ring.length) continue;
+      const d2 = (t) => dxBetween(X[t], to.x) ** 2 + (Z[t] - to.z) ** 2;
+      ring.sort((p, q) => d2(p) - d2(q) || p - q);
+      for (const t of ring) {
+        if (tries >= NEAREST_TRIES) break;
+        const g = this.nearest(centerOf(t), def, .89);
+        if (!g) continue;
+        tries++;
+        const p = this.route(from, g, def) || this.coarsePath(from, g, def);
+        if (p?.length) { stats.fallbackCut = (stats.fallbackCut || 0) + 1; return { path: p, reason: 'cut', goal: g }; }
+      }
+    }
+    return none;
   }
 
   /** The fine stage of route(): { path } or { fail: the coarse tile of the step no detour could thread }. */
@@ -1016,38 +1485,112 @@ export class ActionNavigation {
     return { path };
   }
 
+  /**
+   * NAV_REDESIGN (fine stage, local detour): an 8-connected A* on a small grid of `grid` x `grid` cells `step` apart
+   * centred on a, toward b. Rewritten on reused typed arrays (generation-stamped, no per-search Maps or point objects),
+   * with a closed set (the heuristic, straight distance / step, is consistent with the 1 / 1.414 step costs, so a
+   * settled cell is final and a stale heap entry is skipped instead of being expanded again and charged to the budget),
+   * a deterministic heap (ties broken by cell index), and a per-search memo of each cell's standing test: a cell
+   * whose centre a body cannot stand on is found once, not once from every neighbour trying to step into it (in a
+   * cluttered court or a failing search most edge tests were repeats against the same blocked cells). An edge is
+   * accepted exactly when line(p, q, def, .14) would accept it (same samples, lane sub-samples and escape rule), with
+   * the end sample taken as the cell centre itself.
+   */
   localRoute(a, b, def, budget = 220, grid = 25, step = .24) {
-    const mid = grid >> 1;
-    const x0 = a.x, z0 = a.z, key = (x, z) => z * grid + x;
-    const heap = new MinHeap(), start = key(mid, mid), weights = new Map([[start, 0]]), from = new Map();
-    const point = (k) => ({ x: wrapX(x0 + (k % grid - mid) * step), z: z0 + (((k / grid) | 0) - mid) * step });
-    const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
-    heap.push(start, 0);
+    const mid = grid >> 1, cells = grid * grid;
+    const L = this.localState(cells);
+    if (++L.gen === 0x7fffffff) { L.seen.fill(0); L.shut.fill(0); L.memoGen.fill(0); L.gen = 1; }
+    const gen = L.gen, g = L.g, parent = L.parent, seen = L.seen, shut = L.shut, stand = L.stand, memoGen = L.memoGen;
+    const x0 = a.x, z0 = a.z, start = mid * grid + mid, heap = L.heap;
+    heap.clear();
+    const px = (k) => wrapX(x0 + (k % grid - mid) * step), pz = (k) => z0 + (((k / grid) | 0) - mid) * step;
+    const bx = b.x, bz = b.z;
+    const hOf = (k) => Math.hypot(dxBetween(px(k), bx), bz - pz(k)) / step;
+    g[start] = 0; parent[start] = -1; seen[start] = gen;
+    // the start is the unit's own point (it may stand where it could not step: canMove's escape rule applies)
+    memoGen[start] = gen; stand[start] = this.canStand(x0, z0, def) ? 1 : 2;
+    heap.push(start, hOf(start));
     let visited = 0;
     const cap = Math.min(budget, this.localLeft ?? Infinity);
     this.localCut = false;
     try {
-    while (heap.size && visited++ < cap) {
-      const t = heap.pop(), p = point(t);
-      if (distance(p, b) < .65 && this.line(p, b, def, .15)) {
-        const result = [b];
-        for (let n = t; n !== start; n = from.get(n)) result.push(point(n));
-        return result.reverse();
+      while (heap.size) {
+        const t = heap.pop();
+        if (shut[t] === gen) continue;
+        if (visited++ >= cap) break;
+        shut[t] = gen;
+        const tx = t % grid, tz = (t / grid) | 0, x = px(t), z = pz(t);
+        const p = { x, z };
+        if ((dxBetween(x, bx) ** 2 + (bz - z) ** 2) < .65 * .65 && this.line(p, b, def, .15)) {
+          const result = [b];
+          for (let n = t; n !== start; n = parent[n]) result.push({ x: px(n), z: pz(n) });
+          return result.reverse();
+        }
+        const gt = g[t], tStands = stand[t] === 1;
+        for (let d = 0; d < 8; d++) {
+          const nx = tx + LOCAL_DX[d], nz = tz + LOCAL_DZ[d];
+          if (nx < 0 || nx >= grid || nz < 0 || nz >= grid) continue;
+          const n = nz * grid + nx;
+          if (shut[n] === gen) continue;
+          const w = gt + (d & 1 ? 1.414 : 1);
+          if (seen[n] === gen && w >= g[n]) continue;
+          if (!this.localEdge(L, gen, p, tStands, n, px(n), pz(n), def)) continue;
+          g[n] = w; parent[n] = t; seen[n] = gen;
+          heap.push(n, w + hOf(n));
+        }
       }
-      const tx = t % grid, tz = (t / grid) | 0;
-      for (const [dx, dz] of dirs) {
-        const x = tx + dx, z = tz + dz;
-        if (x < 0 || x >= grid || z < 0 || z >= grid) continue;
-        const n = key(x, z), q = point(n), w = weights.get(t) + (dx && dz ? 1.414 : 1);
-        if (w >= (weights.get(n) ?? Infinity) || !this.line(p, q, def, .14)) continue;
-        weights.set(n, w);
-        from.set(n, t);
-        heap.push(n, w + distance(q, b) / step);
-      }
-    }
-    this.localCut = cap < budget && visited > cap && heap.size > 0;
-    return null;
+      this.localCut = cap < budget && visited > cap && heap.size > 0;
+      return null;
     } finally { if (this.localLeft !== undefined) this.localLeft -= Math.min(visited, cap); }
+  }
+
+  /** NAV_REDESIGN: reused search state for localRoute (grown on demand, never shrunk). */
+  localState(cells) {
+    let L = this.local;
+    if (!L || L.size < cells) {
+      const size = Math.max(cells, 2048);
+      L = this.local = { size, gen: 0, g: new Float64Array(size), parent: new Int32Array(size), seen: new Int32Array(size), shut: new Int32Array(size),
+        stand: new Uint8Array(size), memoGen: new Int32Array(size), heap: new IndexHeap() };
+    }
+    return L;
+  }
+
+  /**
+   * NAV_REDESIGN: line(p, q, def, .14) for a local-grid edge into cell n at (qx, qz), with the end sample's standing test
+   * memoised per cell for this search (1 stands, 2 does not). pStands: p is known to stand (so the escape rule, which
+   * only frees a unit already overlapping something, cannot apply to a step out of it).
+   */
+  localEdge(L, gen, p, pStands, n, qx, qz, def) {
+    const stand = L.stand, memoGen = L.memoGen;
+    if (memoGen[n] !== gen) { memoGen[n] = gen; stand[n] = this.canStand(qx, qz, def) ? 1 : 2; }
+    // a blocked end cell: the step fails unless the body may escape out of an overlap (canMove), never when p stands
+    if (stand[n] === 2 && (pStands || def.air)) return false;
+    const stride = .14, dx = dxBetween(p.x, qx), dz = qz - p.z, len = Math.hypot(dx, dz);
+    const steps = Math.max(1, Math.ceil(len / stride));
+    const fine = !def.air ? Math.ceil(len / steps / LANE_STRIDE) : 1;
+    const half = len / steps / 2;
+    let last = p, lastNarrow = fine > 1 ? this.tight(tileAt(p.x, p.z), def) : 0;
+    for (let i = 1; i <= steps; i++) {
+      const end = i === steps;
+      const nx = end ? qx : wrapX(p.x + dx * i / steps), nz = end ? qz : p.z + dz * i / steps;
+      const narrow = fine > 1 ? this.tight(tileAt(nx, nz), def) : 0;
+      let sub = false;
+      if (narrow || lastNarrow) {
+        const mx = wrapX(p.x + dx * (i - .5) / steps), mz = p.z + dz * (i - .5) / steps;
+        sub = narrow === 2 || lastNarrow === 2 || this.obstacleAt(tileAt(mx, mz), mx, mz, def.radius + half + .02);
+      }
+      if (sub) {
+        for (let k = 1; k < fine; k++) {
+          const f = (i - 1 + k / fine) / steps, x = wrapX(p.x + dx * f), z = p.z + dz * f;
+          if (!this.canMove(last, x, z, def)) return false;
+          last = { x, z };
+        }
+      }
+      if (end && stand[n] === 1) return true;
+      if (!this.canMove(last, nx, nz, def)) return false;
+      last = { x: nx, z: nz }; lastNarrow = narrow;
+    }
+    return true;
   }
 
   clearShot(a, b) {

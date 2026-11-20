@@ -1,7 +1,7 @@
 # Releasing (one command)
 
 - **Type:** How-to
-- **Updated:** 2026-11-18
+- **Updated:** 2026-11-19
 - **Scope:** `tools/release.ps1` (Cloud Run server and Windows Unity ZIP), release notes and the in-app updater
 - **Related:** [Release and distribution](RELEASE.md)
 
@@ -54,9 +54,13 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Version 0.5.0       
 Every step is skipped when it's already done, so you can re-run the script after a failure.
 
 0. **Release notes gate** (client releases, not `-PackageOnly`; before any gcloud call). Stops unless
-   `-Version` is given and `node tools/release-notes.mjs validate <Version>` passes. Under `-DryRun` it runs
-   with `--allow-draft`: a `draft: true` file, and its missing screenshots, only warn, but every other error
-   still stops the rehearsal. The notes folder must also match HEAD, like the shipped files.
+   `-Version` is given, `docs/releases/<Version>/notes.json` exists, and
+   `node tools/release-notes.mjs validate-all --release <Version>` passes for **every** folder in
+   `docs/releases`. Under `-DryRun` it runs with `--allow-draft`. A `draft: true` file, its missing screenshots
+   and `TODO` placeholders only warn, and only in the newest folder. That folder is either the version being
+   rehearsed, or a newer, unreleased "next" version. A newer draft is also allowed in a real release, for example a
+   hotfix while the next version's notes are being written, because it isn't uploaded. Every other error still stops
+   the rehearsal. The notes folders that get uploaded must also match HEAD, like the shipped files.
 1. **Sanity.** Checks the key files, then checks that HEAD holds the shipped files: `server/`,
    `package*.json` and `Dockerfile` for the server, and `unity/Assets|Packages|ProjectSettings`
    for the client. `.mcp.json`, `unity/Assets/Plugins*`, `unity/Assets/Screenshots*` and
@@ -86,9 +90,10 @@ Every step is skipped when it's already done, so you can re-run the script after
    - **Upload.** Uploads to
      `gs://stem-471602-se-snapshots/downloads/unity-preview-<sha>/ShatteredEmpires-Windows-<sha>.zip`,
      then checks the object's size.
-   - **Release notes.** Uploads `notes.json` and the images it references (`release-notes.mjs files`) to
-     `gs://stem-471602-se-snapshots/downloads/release-notes/<Version>/` (`--cache-control=no-cache`) on every run,
-     then lists the folder. The ZIP's manifest entry gets `notes: { version, url }`, with url
+   - **Release notes.** For every version up to `-Version` (`release-notes.mjs publish-list --release <Version>`),
+     uploads `notes.json` and the images it references to
+     `gs://stem-471602-se-snapshots/downloads/release-notes/<version>/` (`--cache-control=no-cache`) on every run,
+     then lists each folder. Corrections to older notes go out with the next release. The ZIP's manifest entry gets `notes: { version, url }`, with url
      `https://game.liamhosfeld.com/api/release-notes/<Version>`.
    - **Manifest.** Merges the new entry into `downloads/manifest.json`:
      - The new entry goes first, and every other entry is kept.
@@ -104,8 +109,25 @@ Every step is skipped when it's already done, so you can re-run the script after
 
 ## Release notes
 
-Every client release has notes. Players see them in a *What's new in &lt;version&gt;* window the first time the
-new version starts after an update. The main menu footer's *What's new* link reopens them.
+Every client release has notes. Together they form a **running changelog**. Players see it in the *What's new*
+window the first time a new version starts after an update. The main menu footer's *What's new* link reopens it.
+The window lists every version, and lets players search and filter all of them.
+
+### Running changelog
+
+The notes are a running list of every change. They aren't written at the last minute.
+
+- **As a change lands, add it** to the next version's draft (`docs/releases/<next>/notes.json`, `draft: true`). Put it
+  under the right category. Start the draft with `node tools/release-notes.mjs draft <next>` right after a release.
+  `TODO` placeholders are fine in a draft, for example for work still in progress, but they fail a real release.
+- **Each time, revisit the earlier versions.** Fix anything that is wrong, and add a missing `category`. Keep each
+  version historically accurate: it describes what *that* version shipped. When a later version changes something,
+  don't rewrite the old text. Add a `later` pointer to the old section instead, such as
+  `{ "version": "0.7.0", "text": "Nukes are far bigger now..." }`, which the client shows as *Changed in 0.7.0*
+  with a link to that version.
+- **Validate everything** with `node tools/release-notes.mjs validate-all --allow-draft`. The test
+  `test/release-notes.test.js` checks every folder too. Every release re-uploads all of the folders, so corrections
+  reach players.
 
 ### Workflow
 
@@ -134,8 +156,10 @@ Unknown fields are errors. Keep it compact.
 | `date` | `YYYY-MM-DD` |
 | `title` (≤ 80), `summary` (≤ 500) | Plain sentences. |
 | `since` | `{ version, commit }`: the previous released version and its commit. `version` must be older, and it must equal the newest older folder in `docs/releases` when there is one. `commit` must exist and be an ancestor of HEAD. |
-| `draft` | Optional. `true` fails a real release, and only warns under `-DryRun`. |
-| `sections[]` | 1–14 sections. Each is `{ heading (≤ 60), blocks[] }` with 1–12 blocks. |
+| `draft` | Optional. `true` fails a real release, and only warns under `-DryRun` (see the gate above for the unreleased next version). Text containing `TODO` is treated the same way. |
+| `sections[]` | 1–14 sections. Each is `{ heading (≤ 60), category?, later?, blocks[] }` with 1–12 blocks. |
+| `sections[].category` | Optional, but always set it in new notes. One of `gameplay` (Gameplay), `units` (Units & balance), `ai` (AI), `performance`, `visuals` (Visuals & audio), `interface`, `fixes` or `other`. The client groups sections by category in that order, and filters by it. A section without one reads as *Other*. |
+| `sections[].later` | Optional. 1–6 `{ version, text (≤ 260) }` *Changed in* pointers, each to a **newer** version. Old clients ignore them. |
 | `fixes[]` | Optional. Up to 60 short strings (≤ 220 each). The client shows them in a collapsed *Smaller fixes* list. |
 
 The blocks (`type` decides the shape):
@@ -154,7 +178,12 @@ not uploaded.
 
 ### Serving and the client
 
-- **Server.** `server/releaseNotes.js` serves three routes:
+- **Server.** `server/releaseNotes.js` serves four routes:
+  - `GET /api/release-notes/index`: every version, newest first, as
+    `{ schema: 1, latest, versions: [{ version, date, title, summary, since, sections: [{ heading, category }], fixes, draft? }] }`.
+    In production, it is built from the bucket listing of `downloads/release-notes/`. That excludes versions newer than
+    `latest`, and drafts. It is cached for 5 minutes, and the last good copy is kept if the listing fails. Locally,
+    it lists every folder, drafts included and flagged.
   - `GET /api/release-notes/latest`
   - `GET /api/release-notes/<version>`
   - `GET /api/release-notes/<version>/<image>`
@@ -163,13 +192,22 @@ not uploaded.
   - **Locally** (no bucket, `DOWNLOAD_DIR`, or `RELEASE_NOTES_DIR`) it reads `docs/releases/`. `latest` is the
     highest version folder.
   - Only image file names are served from a version folder. Test: `test/release-notes.test.js`.
-- **Client.** `Runtime/UI/ReleaseNotes.cs` shows the window.
+- **Client.** `Runtime/UI/ReleaseNotes.cs` shows the window. It is a changelog browser:
+  - **Versions** are listed on the left, newest first. *yours* marks the running version. *new* marks versions newer
+    than the last notes the player saw (PlayerPrefs `se.notes.seen`). Click a version, or use Up/Down or [ ], to switch.
+  - **Each version** shows its summary, then a *Jump to* list of its sections, coloured by category, with
+    *Collapse / expand all*. Below that come the sections, grouped under category headings, each one collapsible. Then
+    the collapsed *Smaller fixes* list. *Changed in* pointers open the later version.
+  - **Search** (Ctrl+F or /) and the **category chips** filter every version at once. Matches are highlighted, and
+    each version header opens that version. The notes of all versions load in the background the first time.
   - **When it opens on its own.** On the first start of a version, which it reads from the version in
     `build_id.txt`, that `release.ps1` writes from `-Version`. It compares that with PlayerPrefs `se.notes.seen`.
     It opens only after an in-app update (the updater's `last-update.txt` said ok) or when an earlier version
     was seen. A fresh install shows nothing.
   - **Not blocking.** It is a window beside the menu. Close or Escape dismisses it.
-  - **Offline.** It shows the copy cached in `persistentDataPath/ReleaseNotes/<version>/`, or a short note.
+  - **Offline.** It uses the index cached in `persistentDataPath/ReleaseNotes/index.json`, or builds one from the cached
+    notes. It shows the notes cached in `persistentDataPath/ReleaseNotes/<version>/`, or a short note. An old server
+    without the index route works the same way.
     Images load asynchronously and are cached there too. A failed image shows *Image unavailable offline*.
   - **Testing.** `-whats-new` opens it at start in any build. `-notes-site http://127.0.0.1:8137` reads a
     local server.

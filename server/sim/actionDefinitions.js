@@ -1,5 +1,6 @@
 import { BUILDINGS, UNITS } from './constants.js';
 import { BUILDING_WEAPON, UNIT_WEAPON } from './weapons.js';
+import { HILL_PACE, MAX_GRADIENT, MAX_SLOPE_DEG } from './actionNavigation.js';   // the climb limits, for the client's hover card (RULESET.mobility)
 
 const cost = (materials, energy = 0) => energy ? { materials, energy } : { materials };
 const building = (key, name, tier, materials, energy, time, extra = {}) => ({
@@ -15,7 +16,7 @@ export const ACTION_BUILDINGS = {
   motor_works: building('motor_works', 'Vehicle Works', 2, 300, 110, 30, { radius: .57, desc: 'Produces armored cars, infantry carriers, infantry fighting vehicles and main battle tanks.' }),
   heavy_weapons: building('heavy_assembly', 'Heavy Weapons Facility', 2, 310, 180, 32, { radius: .55, desc: 'Produces artillery, missile vehicles and mobile air defense.' }),
   airfield: building('airfield', 'Airfield', 2, 360, 220, 38, { radius: .45, vision: 7, desc: 'Produces and services aircraft.' }),
-  armory: building('armory', 'Armory', 1, 240, 90, 24, { desc: 'Faction-wide military and economic upgrades.' }),
+  armory: building('armory', 'Armory', 1, 240, 90, 24, { desc: 'Faction-wide command upgrades: Improved Logistics and Networked Command.' }),
   advanced_lab: building('advanced_lab', 'Advanced Systems Lab', 3, 450, 300, 42, { desc: 'Produces autonomous systems and advanced specialist units.' }),
   missile_silo: building('missile_silo', 'Strategic Missile Facility', 3, 750, 500, 60, { hp: 1250, radius: .5, needs: 'advanced_lab', desc: 'Produces limited strategic missiles in a headquarters ring site.' }),
   barricade: building('bunker', 'Sandbag Barricade', 1, 20, 0, 4, { field: true, radius: .26, width: .50, depth: .34, lowCover: true, hp: 240, cover: .25, desc: 'Rotatable sandbags, wire and tank obstacles. Infantry can shelter and fire over the low wall. Q / E rotates before placement.' }),
@@ -179,6 +180,23 @@ for (const [key, fuel] of Object.entries(AIR_FUEL)) ACTION_UNITS[key].fuel = fue
 ACTION_UNITS.mortar_team.setup = 2.5;
 ACTION_UNITS.field_gun.setup = 1.5;
 ACTION_UNITS.field_gun.setupHold = 3.2;
+// 2026-11-19 (user: "make it so that missile trucks need to setup"): the missile battery halts, lowers its stabilisers
+// and raises the launch rails before its first salvo; moving off packs it up again.
+ACTION_UNITS.missile_battery.setup = 5;
+// 2026-11-19 (user: "decrease indirect fire units damage and fire rate"): mortar team, self-propelled artillery and
+// missile battery hit 15 % softer and fire 20 % slower (sustained damage x0.71). Per-unit fireCooldown overrides the
+// weapon's cooldown (actionCombat.fire); the artillery emplacement building keeps the howitzer profile.
+for (const [key, base] of [['mortar_team', 4.5], ['sp_artillery', 3.5], ['missile_battery', 4.0]]) {
+  const d = ACTION_UNITS[key];
+  d.atk = Math.round(d.atk * .85);
+  d.fireCooldown = +(base * 1.2).toFixed(2);
+}
+// 2026-11-19 (user: "make it so that missile trucks cannot attack close in troops"): a minimum range (hexes) inside
+// which nothing is engaged, by auto-fire, attack orders (the battery backs off: actionOrders.chase) or Area
+// Bombardment. 3.5 = ~36% of its 9.8 reach: everything that closes to direct-fire distance (tank 2.8, IFV missile
+// 3.6, AT squads 3.25) is inside the dead zone, so the battery needs an escort, while its own sight (~5.7) still
+// leaves it a band to defend itself in.
+ACTION_UNITS.missile_battery.minRange = 3.5;
 for (const [key, def] of Object.entries(ACTION_UNITS)) {
   if (def.auto) continue;
   const factory = ACTION_BUILDINGS[def.facility];
@@ -212,28 +230,27 @@ export const TIERS = [
   { name: 'Advanced Warfare', label: 'III', desc: 'Global advanced technology and the final two local ring sites.', cost: cost(1000, 600), time: 65 },
 ];
 
+// Faction-wide command upgrades, researched at the Armory (actionBases.startUpgrade). Functional: each changes
+// behaviour rather than adding a flat percentage.
+// 2026-11-19 (user: "Remove the upgrade system for troops"): the troop upgrades, one per unit class (infantry kit at
+// the barracks, Infantry Training, Heavy Armor, Field Engineering, Aircraft Systems; UPGRADES.md), are gone. Their
+// research is refused (code 'upgrade_removed'); an older save refunds each one owned or in progress
+// (persist.js, REMOVED_UPGRADES). The two command upgrades below stay.
 export const ACTION_UPGRADES = {
-  infantry_training: { name: 'Infantry Training', desc: 'Fieldcraft: infantry that halt go prone and scrape firing positions, taking cover wherever they stop (less damage from direct fire and some from shellfire).', tier: 1, time: 25, cost: cost(170, 42) },
-  // Functional upgrades: each changes behaviour rather than adding a flat percentage (see actionUpgrades.js).
   improved_logistics: { name: 'Improved Logistics', desc: 'Reinforcements leaving a base move 35% faster until they reach their rally point (up to 45 s).', tier: 2, time: 30, cost: cost(240, 130) },
-  field_engineering: { name: 'Field Engineering', desc: 'Engineers keep building and repairing under fire, and damaged vehicles patch themselves up in the field (1.2 HP/s, up to 70%).', tier: 2, time: 36, cost: cost(255, 90) },
-  heavy_armor: { name: 'Heavy Armor', desc: 'Tracked vehicles ignore small-arms fire (rifles, machine guns, pistols); wheeled vehicles take half damage from it.', tier: 2, time: 40, cost: cost(285, 120) },
-  aircraft_systems: { name: 'Aircraft Systems', desc: 'Drop tanks and quick-turnaround crews: aircraft fly 50% longer before returning to refuel (and patrol 50% further from base), and refuel twice as fast.', tier: 2, time: 38, cost: cost(225, 135) },
   networked_command: { name: 'Networked Command', desc: 'Units share a vision net: every unit and structure sees 1.5 hexes further and spots hidden units within 2.5 hexes.', tier: 3, time: 52, cost: cost(340, 180) },
-  // Barracks upgrades: kit the infantry carry, each shown on the soldiers (equipment bits 32, 64, 128, 256)
-  grenades: { name: 'Hand Grenades', at: 'barracks', desc: 'Infantry close to enemy troops in cover, or to a structure, throw a grenade every 9 s: an area burst that reaches troops in trenches and cover.', tier: 1, time: 22, cost: cost(60, 110) },
-  rocket_teams: { name: 'Rocket Teams', at: 'barracks', desc: 'One man in each rifle squad, militia or special forces team fires a light anti-tank rocket at vehicles or structures in rifle range every 24 s.', tier: 1, time: 30, cost: cost(80, 150) },
-  body_armor: { name: 'Body Armour', at: 'barracks', desc: 'Plate carriers and helmets: once per soldier, a hit that would kill men spares one of them.', tier: 2, time: 34, cost: cost(110, 190) },
-  marksmen: { name: 'Designated Marksmen', at: 'barracks', desc: 'A scoped marksman per squad picks off crews and squad leaders: every 12 s a long-range precision shot (1.45x range) at enemy crews and squads.', tier: 2, time: 32, cost: cost(100, 160) },
 };
-
-// One upgrade per unit class (user decision 2026-11-18, docs/gameplay-overhaul/UPGRADES.md): each player may research
-// at most one upgrade of each `line` per match (researched or in progress). Upgrades without a line (economy and
-// command: improved_logistics, networked_command) are unrestricted. Older saves that already hold several upgrades of
-// one line keep them. Enforced by actionBases.startUpgrade (refusal code 'upgrade_line_taken').
-export const UPGRADE_LINES = { infantry: 'infantry', vehicle: 'vehicles', air: 'aircraft' };
-for (const [key, line] of Object.entries({ infantry_training: 'infantry', grenades: 'infantry', rocket_teams: 'infantry', body_armor: 'infantry',
-  marksmen: 'infantry', heavy_armor: 'vehicle', field_engineering: 'vehicle', aircraft_systems: 'air' })) ACTION_UPGRADES[key].line = line;
+// The removed troop upgrades and what each cost (refunded to an older save that owned it or had it in progress).
+export const REMOVED_UPGRADES = {
+  infantry_training: { name: 'Infantry Training', cost: cost(170, 42) },
+  field_engineering: { name: 'Field Engineering', cost: cost(255, 90) },
+  heavy_armor: { name: 'Heavy Armor', cost: cost(285, 120) },
+  aircraft_systems: { name: 'Aircraft Systems', cost: cost(225, 135) },
+  grenades: { name: 'Hand Grenades', cost: cost(60, 110) },
+  rocket_teams: { name: 'Rocket Teams', cost: cost(80, 150) },
+  body_armor: { name: 'Body Armour', cost: cost(110, 190) },
+  marksmen: { name: 'Designated Marksmen', cost: cost(100, 160) },
+};
 
 export const ABILITIES = {
   cover: { name: 'Take Cover', cooldown: 23, duration: 8, desc: 'Reduce incoming ground fire while holding position.' },
@@ -300,13 +317,21 @@ export const TERRAIN_WORKS = { ops: ['raise', 'lower', 'flatten', 'smooth'], cos
 export const DOMINANCE = { after: 1080, hqShare: .65, armyRatio: 2.5, hold: 90 };
 
 export function actionDefinitions(base) {
+  // per unit type, the steepest slope it climbs in degrees (actionNavigation MAX_SLOPE_DEG by movement class; null for
+  // aircraft), for the client's hover card. Set here, at call time: actionNavigation imports this module.
+  for (const d of Object.values(ACTION_UNITS)) d.maxSlope = d.air ? null : MAX_SLOPE_DEG[d.move] ?? null;
   return {
     W: base.W, H: base.H, TERRAIN: base.TERRAIN, ROAD_TYPES: base.ROAD_TYPES, DIFFICULTY: base.DIFFICULTY,
     CIV_COLORS: base.CIV_COLORS, STANCES: base.STANCES, FORMATIONS: base.FORMATIONS, WEAPON_KEYS: base.WEAPON_KEYS,
     AGES: TIERS, TECHS: ACTION_UPGRADES, CITY_DEFENSES, GOODS: ACTION_RESOURCES, GOOD_NAMES: { materials: 'Materials', energy: 'Energy' },
-    RULESET: { id: 'action-v2', ringVersion: 1, cancelConstruction: true, upgradeLines: true, cancelResearch: true, placementSnap: 2, slots: [3, 5, 7], commandCapacity: [80, 120, 160], fieldConstruction: 'engineers', engineerRequired: false,
+    RULESET: { id: 'action-v2', ringVersion: 1, cancelConstruction: true, upgradeLines: false, cancelResearch: true, placementSnap: 2, slots: [3, 5, 7], commandCapacity: [80, 120, 160], fieldConstruction: 'engineers', engineerRequired: false,
       autoEngineers: [2, 3, 4], territoryBuild: true, newBase: { type: 'base_site', cost: ACTION_BUILDINGS.base_site.cost, minGap: NEW_BASE_GAP },
-      terrain: TERRAIN_WORKS, dominance: DOMINANCE, influence: DEFENSE_INFLUENCE, capture: CAPTURE, garrison: GARRISON },
+      terrain: TERRAIN_WORKS, dominance: DOMINANCE, influence: DEFENSE_INFLUENCE, capture: CAPTURE, garrison: GARRISON,
+      // 2026-11-19 (client hover card: "slopes needed for pathfinding"): steepest climbable gradient (rise over run) per
+      // movement class, wide-river flow, and who wades; read live from the navigation so the card never goes stale
+      mobility: { maxGradient: { ...MAX_GRADIENT }, wadeInfantry: true, wideRiverNeedsBridge: ['wheeled', 'tracked'],
+        // HILLS_MOUNTAINS (2026-11-19): mountains and peaks are walls for every ground class; infantry climb hills slower
+        impassableTerrain: ['mountain', 'peak'], hillPace: { ...HILL_PACE } } },
     BUILDINGS: ACTION_BUILDINGS, UNITS: ACTION_UNITS, ABILITIES, RUIN_TYPES, OUTPOST_TYPES, MISSILE: MISSILE_PROJECT,
   };
 }

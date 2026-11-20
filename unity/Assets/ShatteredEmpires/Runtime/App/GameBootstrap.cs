@@ -804,7 +804,7 @@ namespace SE.Runtime.App
         void Present(float dt)
         {
             var world = session.World;
-            session.Units.AdvanceClock(dt, session.PlayRate, session.Paused);
+            session.Units.AdvanceClock(dt, session.ClockRate, session.Paused);
             // queued geometry (craters, trenches, heights) goes in once the terrain jobs reading it are done;
             // meanwhile no new jobs start, so the queue drains within a few frames without a blocking wait
             session.FlushGeometry(false);
@@ -831,6 +831,7 @@ namespace SE.Runtime.App
             if (phase == Phase.Playing && !reviewCapturing) commander.Update(time, overUi);
             long tq = Stopwatch.GetTimestamp();
             PhaseMarkers[0].Begin();
+            PresentHorde(dt);   // BLIGHT survival mode (GameBootstrap.Horde.cs); reads this frame's events first
             PresentEvents();
             Mark(0, ref tq);
             fog.Update(world);
@@ -873,6 +874,11 @@ namespace SE.Runtime.App
                 return rts.ToScreen(new Vector3(x, world.GroundHeight(x, s.Z) + .55f, s.Z));
             }, rts.Distance);
             hud?.DrawPickupRewards(p => rts.ToScreen(p), time);
+            hud?.DrawPickupProgress(p =>
+            {
+                float x = world.Grid.NearX(p.X, rts.Focus.x);
+                return rts.ToScreen(new Vector3(x, world.GroundHeight(x, p.Z) + .36f, p.Z));
+            });
             hud?.DrawBattleOverlay(p => rts.ToScreen(new Vector3(world.Grid.NearX(p.x, rts.Focus.x), p.y, p.z)), id =>
             {
                 if (!units.TryGetPosition(session.Units, id, out var up)) return null;
@@ -892,6 +898,7 @@ namespace SE.Runtime.App
             {
                 weatherMinimapRev = weather.MinimapRevision;
                 hud.Map.Weather = weather.MinimapTexture;
+                hud.Map.Storms = weather.Systems;
                 hud.Map.WeatherChanged();
             }
             atmosphere.Update(world, session.Weather, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z), rts.Distance, fx, time, dt);
@@ -915,6 +922,7 @@ namespace SE.Runtime.App
             warzone.Draw(images);
             DrawMark(2, ref td);
             units.Draw();
+            DrawHorde();
             DrawMark(3, ref td);
             fx.Draw(images);
             wildlife?.Draw(images);
@@ -1027,10 +1035,19 @@ namespace SE.Runtime.App
                 switch (e.Kind)
                 {
                     case "pickup":
+                        // gradual collection (2026-11-19): one event per 5 supplies; the burst and sound only as the cache empties
                         var pickupPoint = EventPoint(e, true, .11f);
-                        fx.Capture(pickupPoint, new float3(.73f, .62f, .40f));
-                        audioDirector?.Play("pickup", pickupPoint, .45f, 4, 0, rts.Distance);
-                        if (e.Owner == session.CivId) hud?.ShowPickupReward(pickupPoint, e.Amount, time);
+                        bool pickupEnergy = e.Resource == "energy";
+                        if (e.Outcome == "empty" || e.Outcome == null && e.Amount > 5)
+                        {
+                            fx.Capture(pickupPoint, pickupEnergy ? new float3(.35f, .78f, .92f) : new float3(.73f, .62f, .40f));
+                            audioDirector?.Play("pickup", pickupPoint, .45f, 4, 0, rts.Distance);
+                        }
+                        if (e.Owner == session.CivId) hud?.ShowPickupReward(pickupPoint, e.Amount, time, pickupEnergy ? "energy" : "materials");
+                        break;
+                    case "emerge":
+                        // a unit just produced slides out of its facility's door (UnitStore.Emerge)
+                        if (e.HasOrigin) session.Units.Emerge(e.Shooter, e.Origin.X, e.Origin.Z);
                         break;
                     case "capture":
                         var capturePoint = EventPoint(e, false, 0);
@@ -1092,7 +1109,10 @@ namespace SE.Runtime.App
                         // a guided missile leaves its rail with a motor flare and exhaust (fx.MissileLaunch, called by
                         // Projectile), never a gun's muzzle flash (2026-11-18: missile trucks read as shooting)
                         if (!e.Grenade && weapon != "missile") fx.Muzzle(p, true, target-p);
-                        fx.Projectile(e.Grenade ? p + new float3(0, .02f, 0) : p, target, weapon, e.Flight);
+                        // a structure's gun (the Artillery Emplacement's howitzer): a heavy shell and a bigger blast (2026-11-19)
+                        bool emplacement = !session.Units.TryGet(e.Shooter, out _);
+                        if (emplacement && weapon == "howitzer") fx.ArtilleryBlast(p, target - p);
+                        fx.Projectile(e.Grenade ? p + new float3(0, .02f, 0) : p, target, weapon, e.Flight, emplacement);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(weapon == "cannon" || weapon == "howitzer" || weapon == "atgun" || weapon == "fortgun" ? "cannon" : "launch", p, 0.9f, 5f, 2, rts.Distance);
                         break;
@@ -1146,6 +1166,7 @@ namespace SE.Runtime.App
                     }
                     case "kill":
                     {
+                        if (HordeKill(e)) break;   // a Blight creature: ichor, not a soldier's fall (GameBootstrap.Horde.cs)
                         var p = EventPoint(e, false, 0);
                         p.y = world.GroundHeight(p.x, p.z);
                         var t = e.UnitType ?? "";
@@ -1277,7 +1298,7 @@ namespace SE.Runtime.App
         void OnDestroy()
         {
             terrain?.Dispose(); city?.Dispose(); warzone?.Dispose(); units?.Dispose(); fx?.Dispose(); wildlife?.Dispose(); fog?.Dispose(); shroud?.Dispose(); ground?.Dispose();
-            atmosphere?.Dispose(); weather?.Dispose(); audioDirector?.Dispose(); commander?.Dispose();
+            atmosphere?.Dispose(); weather?.Dispose(); audioDirector?.Dispose(); commander?.Dispose(); DisposeHorde();
             net?.Dispose();
             session?.World.Dispose();
         }

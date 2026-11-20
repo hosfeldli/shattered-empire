@@ -1,8 +1,9 @@
-import { DT } from './constants.js';
+import { DT, T } from './constants.js';
 import { ACTION_UNITS } from './actionDefinitions.js';
-import { distance, dxBetween, OPEN_COST, SpatialIndex, tileAt, wrapX, trenchPosition } from './actionNavigation.js';
+import { distance, dxBetween, HILL_PACE, OPEN_COST, SpatialIndex, tileAt, wrapX, trenchPosition } from './actionNavigation.js';
 import { addWear } from './battlefield.js';
 import { flyAircraft } from './actionFlight.js';
+import { dist } from './hex.js';
 
 const SIDESTEPS = [.34, -.34, .66, -.66, 1.04, -1.04, 1.48, -1.48];
 // unitMotion: the longest step over a sliver of unstandable ground on a lane (matches actionNavigation LANE_STRIDE)
@@ -73,7 +74,11 @@ function startOrder(game, u, order) {
     return;
   }
   u.goal = order.goal;
-  u.path = order.path || game.nav.route(u, order.goal, ACTION_UNITS[u.type]) || [];
+  u.path = order.path || game.nav.route(u, order.goal, ACTION_UNITS[u.type]);
+  // NAV_REDESIGN (no silent failure): a goal with no route is not a reason to stand still. The best way that exists
+  // (nav.fallback: the nearest standable spot, the coarse corridor, or the nearest reachable ground in the unit's own
+  // region) is taken instead; the reason is counted in game.navStats (fallbackGoal / fallbackFine / fallbackCut).
+  if (!u.path) u.path = game.nav.fallback(u, order.goal, ACTION_UNITS[u.type]).path || [];
   u.mode = order.mode;
   u.destinationFacing = order.facing;
   u.blocked = 0;
@@ -81,10 +86,32 @@ function startOrder(game, u, order) {
   // stuck recovery (stallCheck): a fresh order starts a fresh ladder
   u.stall = 0; u.stallAx = u.x; u.stallAz = u.z; u.stallWx = u.stallWz = null; u.stallBest = Infinity;
   u.stuckReplans = 0; u.blockedReplans = 0; u.stuckEpisodes = 0; u.navVer = game.nav.terrainVersion; u.goalBest = Infinity; u.goalStall = 0;
+  settleRoute(game, u);   // Pass 6: a deferred route of the old order is not wanted any more
+}
+
+// Pass 6 (routing budget): deferrable routes ask nav.mayRoute first. DEFERRED is what budgetRoute returns when the tick's
+// budget is spent: the caller keeps the unit doing what it was doing and asks again later (actionNavigation.ROUTE_BUDGET).
+export const DEFERRED = false;
+// a goal this close in a straight, clear line is walked to without a search, budget or not (route() would return the same)
+const DIRECT = 2.5;
+
+/** A deferrable route for unit u: a path, null (no way there) or DEFERRED. */
+export function budgetRoute(game, u, from, to, def, strict = false) {
+  const nav = game.nav;
+  if (def.air || nav.mayRoute(u)) return strict ? strictRoute(game, from, to, def) : nav.route(from, to, def);
+  if (distance(from, to) < DIRECT && nav.canStand(to.x, to.z, def) && nav.line(from, to, def)) return [to];
+  return DEFERRED;
+}
+
+/** Forget a unit's pending deferred route (a new order, a halt). */
+function settleRoute(game, u) {
+  if (u.replanWant) u.replanWant = 0;
+  if (u.routeWait != null) game.nav.unqueue(u);
 }
 
 export function stopUnit(game, u, advance = false) {
   u.goal = null;
+  settleRoute(game, u);
   u.convoy = 0;
   u.path = [];
   u.vx = u.vz = u.speed = 0;
@@ -98,7 +125,12 @@ export function stopUnit(game, u, advance = false) {
   if (advance && u.tacticalResume) {
     const resume = u.tacticalResume;
     u.tacticalResume = null; u.tacticalUntil = 0;
-    if (resume.goal) { u.goal = resume.goal; u.path = game.nav.route(u, resume.goal, ACTION_UNITS[u.type]) || []; }
+    if (resume.goal) {
+      u.goal = resume.goal;
+      const path = budgetRoute(game, u, u, resume.goal, ACTION_UNITS[u.type]);
+      // Pass 6: deferred, the unit heads straight for its goal until the route comes (stallCheck, u.replanWant)
+      if (path === DEFERRED) { u.path = [resume.goal]; u.replanWant = 1; } else u.path = path || [];
+    }
     return;
   }
   if (advance && u.orders.length) {
@@ -114,6 +146,7 @@ export function stopUnit(game, u, advance = false) {
 // regions the coarse search cannot succeed, so route() would only fall back to a straight line; that line
 // test is all that is run. The result is identical to route()'s, without the search.
 function groupRoute(game, from, to, d, ctx) {
+  if (ctx) ctx.far = false;
   if (ctx && !d.air && (ctx.failed || game.nav.components?.[d.move])) {
     const ca = game.nav.componentOf(tileAt(from.x, from.z), d), cb = game.nav.componentOf(tileAt(to.x, to.z), d);
     if (ca >= 0 && cb >= 0 && ca !== cb) {
@@ -125,12 +158,24 @@ function groupRoute(game, from, to, d, ctx) {
   // Pass 5: within one group order, a slot hex no corridor could thread from a start hex (the fine stage failed: a
   // pocket, a crowded court) is not searched again for the other members starting in the same hex. Late in a match
   // these repeated slot failures were all of the remaining failed routes (~190 a game minute, ~1 s of route time).
-  const pair = ctx && !d.air ? tileAt(from.x, from.z) * 4194304 + tileAt(to.x, to.z) * 4 + (d.move === 'infantry' ? 0 : d.move === 'wheeled' ? 1 : 2) : -1;
+  const cls = d.move === 'infantry' ? 0 : d.move === 'wheeled' ? 1 : 2;
+  const pair = ctx && !d.air ? tileAt(from.x, from.z) * 4194304 + tileAt(to.x, to.z) * 4 + cls : -1;
   if (pair >= 0 && ctx.fine?.has(pair)) { const stats = game.navStats ??= {}; stats.slotMemo = (stats.slotMemo || 0) + 1; return null; }
+  // Pass 6: this class already failed from this start hex on the way (not at its slot), in this order: so would any slot
+  const start = ctx && !d.air ? tileAt(from.x, from.z) * 4 + cls : -1;
+  if (start >= 0 && ctx.away?.has(start)) { const stats = game.navStats ??= {}; stats.awayMemo = (stats.awayMemo || 0) + 1; ctx.far = true; return null; }
   const path = game.nav.route(from, to, d);
   if (!path && ctx && !d.air) {
     ctx.failed = true;
-    if (game.nav.lastFail === 'fine') (ctx.fine ??= new Set()).add(pair);
+    if (game.nav.lastFail === 'fine') {
+      (ctx.fine ??= new Set()).add(pair);
+      // Pass 6: where the fine stage failed: more than SLOT_NEAR hexes from the slot (a lane on the way, a blocked
+      // bridge deck), another slot nearby fails at the same step. Late in a match each such member cost six failed
+      // routes (three slots, then three more in the wider ring), the largest share of all route time.
+      const slot = tileAt(to.x, to.z), ft = game.nav.failTiles || [];
+      ctx.far = ft.length > 0 && ft.every((t) => dist(t, slot) > SLOT_NEAR);
+      if (ctx.far) (ctx.away ??= new Set()).add(start);
+    }
   }
   return path;
 }
@@ -150,15 +195,19 @@ function candidate(game, u, point, reserved, max, start = u, preview = false, ct
     });
     if (!slot) return null;
     const path = groupRoute(game, start, slot, d, ctx);
-    if (!path) { failed.push(slot); continue; }
+    if (!path) { failed.push(slot); if (ctx?.far) break; continue; }   // Pass 6: failed on the way: no other slot helps
     if (!d.air && !preview) reserved.add({ ...slot, radius: d.radius });
     return { slot, path };
   }
   return null;
 }
 
-const routeSlot = (game, u, p, reserved, opts, routing) =>
-  candidate(game, u, p, reserved, opts.exact ? .45 : 1.55, u, false, routing) || (!opts.exact && candidate(game, u, p, reserved, 3.1, u, false, routing));
+function routeSlot(game, u, p, reserved, opts, routing) {
+  if (routing) routing.far = false;
+  return candidate(game, u, p, reserved, opts.exact ? .45 : 1.55, u, false, routing) || (!opts.exact && !routing?.far && candidate(game, u, p, reserved, 3.1, u, false, routing));
+}
+// Pass 6: a group route that failed farther than this (hexes) from its slot failed on the way there (groupRoute)
+const SLOT_NEAR = 2;
 
 // Pass 3 (perf, late game): an AI final assault or a large player selection used to route every member in the tick the
 // order was given (40-80 fine routes: 400-900 ms ticks). The first `now` members are routed at once; the rest follow
@@ -166,14 +215,17 @@ const routeSlot = (game, u, p, reserved, opts, routing) =>
 // at a fixed point of the tick (the start of unitMotion).
 // `aiTick`: an AI plan that has already routed this many members in the tick (several group orders in one plan: an
 // expansion sends many small groups) queues the members of its further orders whole, placed or not.
-export const GROUP_ROUTE = Object.freeze({ now: 24, perTick: 16, aiTick: 48 });
+// Pass 6: `min`: queued members routed each tick even when the tick's routing budget (actionNavigation.ROUTE_BUDGET) is
+// spent; past that they wait for a tick with budget left.
+export const GROUP_ROUTE = Object.freeze({ now: 24, perTick: 16, aiTick: 48, min: 4 });
 
 /** Routes queued members of earlier group orders, at most GROUP_ROUTE.perTick a tick. */
 export function groupRouteStep(game) {
   const jobs = game.groupJobs;
   if (!jobs?.length) return;
-  let budget = GROUP_ROUTE.perTick;
+  let budget = GROUP_ROUTE.perTick, routed = 0;
   while (budget > 0 && jobs.length) {
+    if (routed >= GROUP_ROUTE.min && game.nav.budgetLeft() <= 0) break;   // Pass 6
     const job = jobs[0];
     // members still waiting for this job (alive, not given another order since); a member given a new move/deploy
     // order (assign) or a field order (ActionGame.command) has its groupJob cleared
@@ -191,6 +243,9 @@ export function groupRouteStep(game) {
       game.nav.primeGroup([...members, ...job.rest.map(([id]) => game.units.get(id)).filter(Boolean)], job);
       const routing = { failed: job.failed };
       for (let i = 0; i < take.length; i++) {
+        // Pass 6: the tick's routing budget is spent: the rest of this chunk goes back to the front of the job
+        if (routed >= GROUP_ROUTE.min && game.nav.budgetLeft() <= 0) { job.rest = take.slice(i).concat(job.rest); budget = 0; break; }
+        routed++;
         const u = members[i]; u.groupJob = 0;
         const pick = routeSlot(game, u, { x: take[i][1], z: take[i][2] }, reserved, job.opts, routing);
         if (!pick) continue;
@@ -250,7 +305,8 @@ function moveGroupBatched(game, group, point, opts) {
     const u = ground[i], row = Math.floor(i / cols), width = Math.min(cols, ground.length - row * cols);
     const side = (i % cols - (width - 1) * .5) * spacing, forward = ((rows - 1) * .5 - row) * spacing;
     const p = { x: point.x + sideX * side + fx * forward, z: point.z + sideZ * side + fz * forward };
-    if (defer && (placed && i >= GROUP_ROUTE.now || ai && spent.n >= GROUP_ROUTE.aiTick)) { defer.push([u.id, p.x, p.z]); continue; }
+    // Pass 6: an AI's order also queues its further members once the tick's routing budget is spent (one placed first)
+    if (defer && (placed && i >= GROUP_ROUTE.now || ai && spent.n >= GROUP_ROUTE.aiTick || ai && placed && game.nav.budgetLeft() <= 0)) { defer.push([u.id, p.x, p.z]); continue; }
     spent.n++;
     // a crowded destination (a base court, a bridgehead) widens the slot search instead of leaving the unit behind
     const pick = routeSlot(game, u, p, reserved, opts, routing);
@@ -374,7 +430,8 @@ function deployLineBatched(game, group, points, opts) {
 const CHASE_BACKOFF = 40;
 export function chase(game, u, target, range) {
   const d = ACTION_UNITS[u.type], len = distance(u, target);
-  if (len <= range * .90 && game.nav.clearShot(u, target)) return;
+  // inside a minimum range (def.minRange) the unit backs off: the stand-off spots below lie at range * .72 from the target
+  if (len <= range * .90 && len >= (d.minRange || 0) && game.nav.clearShot(u, target)) return;
   const f = u.chaseFail;
   if (f && game.tickN - f.tick < CHASE_BACKOFF && (f.x - target.x) ** 2 + (f.z - target.z) ** 2 < 1 && (f.ux - u.x) ** 2 + (f.uz - u.z) ** 2 < 1) return;
   u.chaseFail = null;
@@ -384,7 +441,8 @@ export function chase(game, u, target, range) {
     const p = { x: wrapX(target.x + Math.sin(a + delta) * range * .72), z: target.z + Math.cos(a + delta) * range * .72 };
     const spot = game.nav.nearest(p, d, .50);
     if (!spot || !d.air && !game.nav.clearShot(spot, target)) continue;
-    const path = game.nav.route(u, spot, d);
+    const path = budgetRoute(game, u, u, spot, d);
+    if (path === DEFERRED) return DEFERRED;   // Pass 6: asked again on the unit's next chase turn
     if (!path) continue;
     startOrder(game, u, { goal: spot, mode: 'assault', path });
     return;
@@ -451,7 +509,9 @@ export function unitMotion(game) {
       } else if (u.avoidUntil > game.time) desired += .40*u.avoidSide*(u.avoidUntil-game.time)/.60;
     }
     const c = game.nav.cost(u.tile, u.x, u.z, def);
-    const terrainPace = def.air ? 1 : TERRAIN_PACE(c / (OPEN_COST[def.move] || 1));
+    // HILLS_MOUNTAINS (2026-11-19): infantry climb hills at HILL_PACE off a road (a road keeps its own, faster pace)
+    const hillPace = !def.air && HILL_PACE[def.move] && game.world.terr[u.tile] === T.HILLS && c >= (OPEN_COST[def.move] || 1) ? HILL_PACE[def.move] : Infinity;
+    const terrainPace = def.air ? 1 : Math.min(hillPace, TERRAIN_PACE(c / (OPEN_COST[def.move] || 1)));
     let pace = def.air ? def.speed : def.speed * GROUND_PACE * terrainPace;   // aircraft_systems is drop tanks now (actionAir)
     if (u.convoy && u.convoySpeed && !def.air) {
       // Convoy pace: the group's leader (the member nearest its slot) holds the slowest member's speed;
@@ -580,8 +640,9 @@ export function unitMotion(game) {
         else {
           // Pass 5: a failed collision re-route no longer halts the unit (it did once blocked 6 s, often only behind a
           // wreck or another unit); the push-through above and the stuck ladder (stallCheck) handle it
-          const route = strictRoute(game, u, u.goal, def);
-          if (route) { u.path = route; u.navVer = game.nav.terrainVersion; }
+          const route = budgetRoute(game, u, u, u.goal, def, true);
+          if (route === DEFERRED) u.blockedReplans--;   // Pass 6: not counted; asked again 13 ticks on
+          else if (route) { u.path = route; u.navVer = game.nav.terrainVersion; }
         }
       }
     }
@@ -632,7 +693,11 @@ function relocate(game, u, spot) {
   u.x = spot.x; u.z = spot.z; u.tile = tileAt(u.x, u.z); game.movers.moved(u, ox, oz);
 }
 
-function replan(game, u, def, S) {
+function replan(game, u, def, S, gate = true) {
+  // Pass 6: with the tick's routing budget spent the replan waits (u.replanWant, asked again each tick by stallCheck);
+  // the unit keeps its current path meanwhile
+  if (gate && !game.nav.mayRoute(u)) { u.replanWant = 2; return true; }
+  if (u.replanWant) u.replanWant = 0;
   u.stuckReplans = (u.stuckReplans || 0) + 1;
   S.replan++;
   const route = strictRoute(game, u, u.goal, def);
@@ -695,6 +760,15 @@ function pinned(game, u, def) {
 }
 
 function stallCheck(game, u, def) {
+  // Pass 6: a route deferred by the routing budget (1: the way back after a chase, 2: a stuck-ladder replan)
+  if (u.replanWant && game.nav.mayRoute(u)) {
+    if (u.replanWant === 2) replan(game, u, def, stuckStats(game), false);
+    else {
+      u.replanWant = 0;
+      u.path = game.nav.route(u, u.goal, def) || []; u.navVer = game.nav.terrainVersion;
+      if (!u.path.length) return;   // no way back: unitMotion halts it next tick, as an empty resume route always did
+    }
+  }
   const wp = u.path[0] || u.goal, d = distance(u, wp);
   // Close to the goal but circling it (a crowded court, the slot taken, paths that keep wandering): moving resets
   // the displacement watchdog, so net progress toward the goal itself is tracked as well. Within STUCK.closeRadius
@@ -734,8 +808,8 @@ function stallCheck(game, u, def) {
     const p = escapePoint(game, u, def);
     if (p) {
       S.escape++;
-      const onward = strictRoute(game, p, u.goal, def);
-      u.path = onward ? [p, ...onward] : [p, ...u.path];
+      const onward = budgetRoute(game, u, p, u.goal, def, true);
+      u.path = onward ? [p, ...onward] : [p, ...u.path];   // deferred (Pass 6): on along the old path
       u.ghostUntil = u.wreckPassUntil = game.time + 3;
     }
     return;
