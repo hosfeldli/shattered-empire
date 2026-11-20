@@ -298,7 +298,11 @@ namespace SE.Runtime.Cities
                     ulong key = HexStreetKey(t, sites);
                     if (streetCache.TryGetValue(t, out var rec) && rec.Key == key && !PerfFlags.LegacyStreets)
                     {
-                        foreach (var (part, data) in rec.Instances) current.Batches[part].Add(data);
+                        foreach (var (part, data) in rec.Instances)
+                        {
+                            if (part >= current.Batches.Length) EnsureModelBatches(current);
+                            current.Batches[part].Add(data);
+                        }
                         streetGeometry.Replay(rec.Quads);
                         streetQuads += rec.QuadCount;
                         if (rec.Min.x <= rec.Max.x) { bmin = math.min(bmin, rec.Min); bmax = math.max(bmax, rec.Max); }

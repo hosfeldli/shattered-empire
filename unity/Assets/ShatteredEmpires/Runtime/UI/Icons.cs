@@ -450,10 +450,6 @@ namespace SE.Runtime.UI
                     Poly(dark, Xf(0.5f, 0f, 0f, 0.08f, 0.58f, 0.06f, 0.22f, 0.56f, 0.46f, 0.56f, 0.38f, 0.94f, 0.78f, 0.40f, 0.54f, 0.40f, 0.66f, 0.06f));
                     break;
                 case "barracks": ArcFill(c, 0.5f, 0.58f, 0.34f, 180f, 360f); Box(c, 0.1f, 0.56f, 0.9f, 0.64f); break;
-                case "armory":
-                    Poly(c, 0.5f, 0.1f, 0.86f, 0.24f, 0.8f, 0.62f, 0.5f, 0.9f, 0.2f, 0.62f, 0.14f, 0.24f);
-                    Line(dark, 0.08f, 0.32f, 0.58f, 0.5f, 0.4f, 0.68f, 0.58f);
-                    break;
                 case "vehicle_works":
                     for (int k = 0; k < 8; k++)
                     {
@@ -620,7 +616,6 @@ namespace SE.Runtime.UI
                 case "depot": return "processor";
                 case "power_plant": return "generator";
                 case "barracks": return "barracks";
-                case "armory": return "armory";
                 case "motor_works": return "vehicle_works";
                 case "heavy_weapons": return "heavy_weapons";
                 case "airfield": return "airfield";

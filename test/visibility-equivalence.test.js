@@ -43,11 +43,9 @@ function legacyVisibility() {
     if (g.weather.fogAt(source.tile) > .55) vision -= .9;
     const scan = d.ability === 'scan' && source.abilityUntil > g.time;
     if (scan) vision += 3.5;
-    const net = own.techs.has('networked_command');
-    if (net) vision += 1.5;
     for (const civ of g.civs) if (civ.alive && civ.team === own.team) {
       legacyReveal(source, vision, out[civ.id].visible);
-      legacyReveal(source, scan ? vision : net ? 2.5 : 1.52, out[civ.id].detect);
+      legacyReveal(source, scan ? vision : 1.52, out[civ.id].detect);
     }
   }
   for (const s of g.sites) if (s.owner >= 0) {

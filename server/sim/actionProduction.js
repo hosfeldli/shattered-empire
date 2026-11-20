@@ -14,7 +14,6 @@
 //     a finished item waiting for its exit keeps its reservation and is never charged twice.
 //   - Cancelling, clearing or losing the building never refunds what was consumed; nothing else was charged.
 import { ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, PRODUCTION } from './actionDefinitions.js';
-import { HASTE } from './actionUpgrades.js';
 
 const EPS = 1e-9;
 /** Queue states, as sent on the wire (qs[i][4]). 'waiting': eligible, but a higher priority used the whole budget. */
@@ -257,7 +256,6 @@ function deliver(game, civ, b, q) {
   q.state = q.count > 0 ? 'waiting' : 'idle';
   game.reinforce(b, u);
   game.emerge(b, u);
-  if (civ.techs.has('improved_logistics') && u.goal) u.hasteUntil = game.time + HASTE.seconds;
   return true;
 }
 

@@ -28,3 +28,4 @@ unity/Assets/_Recovery.meta
 
 # agent worktrees
 .claude/worktrees/
+__pycache__/

@@ -525,7 +525,6 @@ export function unitMotion(game) {
       if (!(remaining > cv.lead + 1.3)) pace = Math.min(pace, u.convoySpeed * terrainPace);
       if (phase % 200 === 0) for (const [id, other] of convoys) if (phase - other.tick > 50) convoys.delete(id);
     }
-    if (u.hasteUntil > game.time) pace *= 1.35;   // B: Improved Logistics, fresh reinforcements heading to their rally point
     const turnRate = def.air ? 3 : !vehicle ? 7 : def.move === 'wheeled' ? 1.65 : 1.25;
     const headingError = Math.abs(angleDelta(u.yaw, desired));
     const corner = vehicle ? Math.max(0, Math.cos(headingError)) ** 2 : 1;

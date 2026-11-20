@@ -362,7 +362,24 @@ namespace SE.Runtime.UI
 
         // statics survive between play sessions when domain reload is off
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetStatics() => cache.Clear();
+        static void ResetStatics() { cache.Clear(); cacheOrder.Clear(); }
+
+        // memory pass 8: every seat layout, team split and edited sketch made a new texture that was never freed. The
+        // cache now keeps the newest CacheCap previews; the oldest go (a page asks again whenever it redraws).
+        const int CacheCap = 128;
+        static readonly Queue<string> cacheOrder = new Queue<string>();
+        static void Store(string key, Texture2D tex)
+        {
+            if (!cache.ContainsKey(key)) cacheOrder.Enqueue(key);
+            Store(key, tex);
+            while (cache.Count > CacheCap && cacheOrder.Count > 0)
+            {
+                string old = cacheOrder.Dequeue();
+                if (old == key || !cache.TryGetValue(old, out var gone)) continue;
+                cache.Remove(old);
+                if (gone != null) UnityEngine.Object.Destroy(gone);
+            }
+        }
 
         /// <summary>The preview texture of a map (cached per map and grid), or null without a preview.</summary>
         public static Texture2D Texture(MapCatalogEntry map)
@@ -372,7 +389,7 @@ namespace SE.Runtime.UI
             string key = map.Id + ":" + p.W + "x" + p.H + ":" + p.Starts.Count + ":" + p.Colors.Length + ":" + Hash(p);
             if (cache.TryGetValue(key, out var tex) && tex != null) return tex;
             tex = Render(p);
-            cache[key] = tex;
+            Store(key, tex);
             return tex;
         }
 
@@ -417,7 +434,7 @@ namespace SE.Runtime.UI
             for (int i = 0; i < P; i++) seated[i] = -2;   // spare (all of them when the preview has no seating metrics)
             if (civStart != null) for (int c = 0; c < civStart.Length; c++) if (civStart[c] >= 0) seated[civStart[c]] = colourTeam[c];
             tex = Render(p, seated);
-            cache[key] = tex;
+            Store(key, tex);
             return tex;
         }
 
@@ -566,7 +583,7 @@ namespace SE.Runtime.UI
             var tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { name = "MapPreviewRandom", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
             tex.SetPixels32(px);
             tex.Apply(false, false);
-            cache[key] = tex;
+            Store(key, tex);
             return tex;
         }
 

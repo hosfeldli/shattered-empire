@@ -880,8 +880,8 @@ function siloStep(game, civ, p, n, bases, labOnly) {
   // no ring site free: demolish one redundant facility (a type the AI holds two of), as a player would
   const all = bases.flatMap((s) => facilitiesAt(game, s)).filter((b) => b.done);
   const count = (type) => all.filter((b) => b.type === type).length;
-  const spare = facilitiesAt(game, host).filter((b) => b.done && !b.project && ['barracks', 'heavy_weapons', 'airfield', 'motor_works', 'armory'].includes(b.type) && count(b.type) >= 2)
-    .sort((a, b) => ['barracks', 'heavy_weapons', 'airfield', 'motor_works', 'armory'].indexOf(a.type) - ['barracks', 'heavy_weapons', 'airfield', 'motor_works', 'armory'].indexOf(b.type) || a.id - b.id)[0];
+  const spare = facilitiesAt(game, host).filter((b) => b.done && !b.project && ['barracks', 'heavy_weapons', 'airfield', 'motor_works'].includes(b.type) && count(b.type) >= 2)
+    .sort((a, b) => ['barracks', 'heavy_weapons', 'airfield', 'motor_works'].indexOf(a.type) - ['barracks', 'heavy_weapons', 'airfield', 'motor_works'].indexOf(b.type) || a.id - b.id)[0];
   if (spare && !demolish(game, civ, spare.id).error) note(game, p, `Cleared a ring site at ${host.name} for the strategic programme.`);
   return labCost;
 }

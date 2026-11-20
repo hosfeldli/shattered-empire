@@ -70,7 +70,7 @@ namespace SE.Runtime.App
             { Id = id, City = 1, Slot = p.Id, Type = type, Tile = p.Tile, Owner = 0, Hp = 100, Done = true, Active = true,
                 Progress = 100, Tier = 2, Era = 1, Level = 1, HasPosition = true, HasYaw = true, X = p.X, Z = p.Z, Yaw = p.Yaw };
             buildings.Add(Record("town", parcels[0], 1000));
-            string[] types = { "depot", "motor_works", "barracks", null, "power_plant", "airfield", "armory", null };
+            string[] types = { "depot", "motor_works", "barracks", null, "power_plant", "airfield", "heavy_weapons", null };
             for (int i = 0; i < 8; i++)
             {
                 float angle = .44f + i * math.PI / 4, radius = 1.92f + math.sin(i * 2.1f) * .09f;

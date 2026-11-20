@@ -59,7 +59,7 @@ namespace SE.Runtime.Cities
                 case "power_plant": case "fusion_plant": case "nuclear_plant": case "electronics_plant": case "advanced_lab":
                 case "shield_generator": case "comms_tower":
                     return DecorTheme.Utility;
-                case "barracks": case "camp": case "armory": case "defense_works": case "academy":
+                case "barracks": case "camp": case "defense_works": case "academy":
                     return DecorTheme.Camp;
                 default:
                     return DecorTheme.None;

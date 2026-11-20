@@ -56,7 +56,21 @@ namespace SE.Runtime.Rendering
 
         public readonly Mesh Mesh;
         public readonly Material Material;
-        public NativeArray<InstanceData> Data;
+        /// <summary>
+        /// The instance array, allocated on first use (memory pass 8): a composed city cell keeps one batch per part, two
+        /// cells per chunk (shown + back buffer), and most parts of most cells stay empty, so allocating up front held
+        /// ~100 KB of native memory per empty cell. Callers that write through the pointer get it allocated here.
+        /// </summary>
+        public ref NativeArray<InstanceData> Data
+        {
+            get
+            {
+                if (!data.IsCreated) data = new NativeArray<InstanceData>(initialCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+                return ref data;
+            }
+        }
+        NativeArray<InstanceData> data;
+        readonly int initialCapacity;
         public int Count;
         public Bounds Bounds;
         /// <summary>
@@ -77,32 +91,35 @@ namespace SE.Runtime.Rendering
         GraphicsBuffer[] buffers;
         int currentBuffer;
         GraphicsBuffer buffer;
-        readonly MaterialPropertyBlock[] blocks = { new MaterialPropertyBlock(), new MaterialPropertyBlock(), new MaterialPropertyBlock() };
+        // created with the first upload (memory pass 8: three native blocks per batch, ~130 per empty city cell)
+        MaterialPropertyBlock[] blocks;
         bool dirty;
 
         public InstanceBatch(Mesh mesh, Material material, int capacity)
         {
             Mesh = mesh;
             Material = material;
-            Data = new NativeArray<InstanceData>(Math.Max(16, capacity), Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            initialCapacity = Math.Max(16, capacity);
         }
 
         public void Clear() { Count = 0; dirty = true; }
 
         public void Add(in InstanceData d)
         {
-            if (Count >= Data.Length) Grow(Data.Length * 2);
-            Data[Count++] = d;
+            if (!data.IsCreated) data = new NativeArray<InstanceData>(initialCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            if (Count >= data.Length) Grow(data.Length * 2);
+            data[Count++] = d;
             dirty = true;
         }
 
         public void Grow(int capacity)
         {
-            if (capacity <= Data.Length) return;
+            if (!data.IsCreated) { data = new NativeArray<InstanceData>(Math.Max(capacity, initialCapacity), Allocator.Persistent, NativeArrayOptions.UninitializedMemory); return; }
+            if (capacity <= data.Length) return;
             var next = new NativeArray<InstanceData>(capacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            NativeArray<InstanceData>.Copy(Data, next, Count);
-            Data.Dispose();
-            Data = next;
+            NativeArray<InstanceData>.Copy(data, next, Count);
+            data.Dispose();
+            data = next;
         }
 
         public void MarkDirty() => dirty = true;
@@ -122,10 +139,11 @@ namespace SE.Runtime.Rendering
             if (target == null || target.count < Count)
             {
                 target?.Release();
-                target = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Math.Max(Count, Data.Length), InstanceData.Stride);
+                target = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Math.Max(Count, data.Length), InstanceData.Stride);
             }
-            target.SetData(Data, 0, 0, Count);
+            target.SetData(data, 0, 0, Count);
             buffer = target;
+            blocks ??= new[] { new MaterialPropertyBlock(), new MaterialPropertyBlock(), new MaterialPropertyBlock() };
             foreach (var b in blocks) b.SetBuffer(InstancesId, buffer);
         }
 
@@ -151,13 +169,16 @@ namespace SE.Runtime.Rendering
         }
 
         /// <summary>Draw at every world-wrap image of this batch that intersects the frustum.</summary>
-        public void DrawImages(WrapImages images)
+        public void DrawImages(WrapImages images) => DrawImages(images, null);
+
+        /// <summary>Draw at every visible world-wrap image with another mesh for the same instances (a level of detail).</summary>
+        public void DrawImages(WrapImages images, Mesh meshOverride)
         {
             if (Count == 0) return;
             int n = images.For(CullBounds, out float a, out float b, out float c);
-            if (n > 0) Draw(a, 0);
-            if (n > 1) Draw(b, 1);
-            if (n > 2) Draw(c, 2);
+            if (n > 0) Draw(a, 0, 0, meshOverride);
+            if (n > 1) Draw(b, 1, 0, meshOverride);
+            if (n > 2) Draw(c, 2, 0, meshOverride);
         }
 
         public void Dispose()
@@ -165,7 +186,11 @@ namespace SE.Runtime.Rendering
             if (buffers != null) foreach (var b in buffers) b?.Release();
             buffers = null;
             buffer = null;
-            if (Data.IsCreated) Data.Dispose();
+            // the blocks themselves are freed by their finaliser (GC rarely runs here); drop what they hold now so a
+            // disposed batch does not pin its released buffer binding and properties until then (memory pass 8)
+            if (blocks != null) foreach (var b in blocks) b.Clear();
+            if (data.IsCreated) data.Dispose();
+            data = default;
         }
     }
 

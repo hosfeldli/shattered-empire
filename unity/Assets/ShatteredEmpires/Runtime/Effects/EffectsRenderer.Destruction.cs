@@ -70,6 +70,37 @@ namespace SE.Runtime.Effects
         }
 
         /// <summary>
+        /// A building's model dropping to a worse destruction stage (CityRenderer.StageDust): a burst of masonry dust rolling
+        /// out from its base and up its walls, a few chunks thrown and a small rubble spill, covering the mesh swap.
+        /// r: the building's drawn radius (map units).
+        /// </summary>
+        public void StageDust(float3 point, float r)
+        {
+            r = math.clamp(r, .15f, .7f);
+            float floor = GroundOr(point);
+            var g = new float3(point.x, floor, point.z);
+            int ring = 6 + (int)(r * 10);
+            for (int k = 0; k < ring; k++)
+            {
+                float a = k / (float)ring * 6.283f + R() * .5f;
+                float shade = .44f + R() * .12f;
+                Emit(g + new float3(math.cos(a) * r * .55f, .03f + R() * .05f, math.sin(a) * r * .55f), new float3(math.cos(a), .12f + R() * .2f, math.sin(a)) * (.25f + R() * .25f),
+                    (.08f + R() * .05f) * (.6f + r), .2f * (.6f + r), 2.2f + R() * 1.4f, new float3(shade, shade * .95f, shade * .87f), new float3(.6f, .58f, .54f), .55f, false, 0, 1.6f, .03f);
+            }
+            for (int k = 0; k < 4; k++)   // a column of dust from the breach
+                Emit(g + new float3((R() - .5f) * r * .6f, .12f + R() * .12f, (R() - .5f) * r * .6f), new float3((R() - .5f) * .1f, .18f + R() * .12f, (R() - .5f) * .1f),
+                    .1f + R() * .05f, .22f, 2.6f + R() * 1.2f, new float3(.5f, .48f, .44f), new float3(.62f, .6f, .56f), .5f, false, 0, 1.2f, .05f);
+            for (int i = 0; i < 5; i++)
+            {
+                float a = R() * 6.283f;
+                EmitDebris(g + new float3(0, .15f, 0), new float3(math.cos(a) * (.3f + R() * .4f), .8f + R() * .8f, math.sin(a) * (.3f + R() * .4f)),
+                    .008f + R() * .012f, 1.8f + R(), new float3(.42f, .4f, .37f), floor);
+            }
+            SpillRubble(g, r * .9f, 5 + (int)(r * 10), false);
+            Shake = Mathf.Max(Shake, .04f + r * .06f);
+        }
+
+        /// <summary>
         /// A vehicle destroyed at a map point: a catastrophic blast, hull pieces (and the turret) thrown on arcs,
         /// a scorched patch with scattered fragments, and a wreck that burns and cooks off a few secondary explosions.
         /// scale: the vehicle's size class (about .2 for a tank, .12 a light vehicle).

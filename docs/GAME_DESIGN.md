@@ -70,7 +70,7 @@ Exactly two sites unlock when each local HQ upgrade completes. Time held never u
 Global Technology Tier records the highest achieved faction tier and unlocks units/technology
 faction-wide; each secondary city retains its own local tier until upgraded.
 
-Nine facilities compete for ring sites: Materials Processor, Energy Generator, Barracks, Armory,
+Eight facilities compete for ring sites: Materials Processor, Energy Generator, Barracks,
 Vehicle Works, Heavy Weapons Facility, Airfield, Advanced Systems Lab and Strategic Missile
 Facility. Field defenses occupy no ring sites. Civilian buildings are accessories, not hidden
 economic facilities. An airfield needs credible operations within a suitable ring-edge footprint.
@@ -190,7 +190,7 @@ are 3D geometry. VFX must preserve tactical readability.
 ## Interface and camera
 
 Keep interaction contextual and anchored to the world. Select HQ for local tier/perimeter
-upgrades, a facility for production/repair/upgrades, an Armory for military research, and an empty
+upgrades, a facility for production/repair/upgrades, and an empty
 world parcel for construction choices.
 
 Remove Army and Objectives tabs, the global upgrade menu and permanent bottom building/defense

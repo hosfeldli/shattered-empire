@@ -27,7 +27,9 @@
             "Hives spread corrupted ground that heals the creatures and speeds them up. Burn a hive for a big supply payout; a new one grows back later.",
             "Short breathers between waves (shorter every wave) with a supply drop for everyone left standing.",
             "A wave counter, countdown, creatures left and score at the top of the screen; edge arrows and minimap pings show where they mass. The light turns sick as a wave closes in, a horn sounds when it starts and the tension music rises.",
-            "When the last of you falls, the defeat screen shows the wave you reached, your score, kills by creature, hives burned and your best runs on that map."
+            "When the last of you falls, the defeat screen shows the wave you reached, your score, kills by creature, hives burned and your best runs on that map.",
+            "The Blight's creatures are sculpted models with lumpy, tumorous flesh and glowing sacs; legs really step, clubs rise and slam, sacs swell before they spit, and their animation runs on the graphics card.",
+            "The creatures are coloured like an infection, not a toy: bruised greys and near-blacks, wet dark reds and a sickly yellow-green glow. Watching a Blight match, the wave counter now sits below the Observing label."
           ]
         }
       ]
@@ -132,7 +134,7 @@
             "Supply caches take time to collect: each unit gathers 5 a second and must stay at the cache. Leave and the rest stays on the map.",
             "Energy caches now appear over time on neutral ground away from bases (the first after a minute, then every 70–90 seconds).",
             "New units roll or march out of the door of the building that produced them.",
-            "Troop upgrades have been removed; every unit fights with its standard equipment. Anything you owned or were researching is refunded. The Armory keeps its two army-wide upgrades."
+            "Troop upgrades have been removed; every unit fights with its standard equipment. The Armory and its two upgrades, Improved Logistics and Networked Command, are gone too. Saved games are refunded in full for any Armory and every upgrade owned or in progress."
           ]
         },
         {
@@ -372,7 +374,8 @@
           "items": [
             "Spectators were sent the full economy and battlefield picture in every update instead of once a second. Fixing it cuts what the server builds and sends to a spectator by about a fifth in a big match.",
             "Combat target finding, engineer job planning and the fog of war do about a third less work on the server in a big battle.",
-            "Better diagnostics (when Share diagnostics is on): where each frame spends its time on your computer, and where the server spends it, so the next slowdowns can be found and fixed."
+            "Better diagnostics (when Share diagnostics is on): where each frame spends its time on your computer, and where the server spends it, so the next slowdowns can be found and fixed.",
+            "Long sessions no longer get slower and hungrier the longer the game stays open: diagnostics started a new performance counter every frame and never released it. Old map markers, building effects, map previews and the map builder canvas are now freed too."
           ]
         },
         {
@@ -424,10 +427,12 @@
         {
           "type": "bullets",
           "items": [
-            "Every base building has its own colour, roof emblem and landmark: a flag on the barracks, cooling towers on the generator, silos on the processor, a crane on heavy weapons, a runway and parked jet on the airfield, a radome on the lab, a missile on the silo.",
-            "Damaged buildings and defenses show a health bar and visibly darken and char as they take damage.",
+            "Every building has a new model: gabled barracks with a water tower, a sawtooth vehicle works, a crane-topped heavy weapons hall, hangars and a runway at the airfield, cooling towers, silos and conveyors, a radome lab and a missile on its erector.",
+            "Buildings and defenses break apart as they take damage: holes and blown-out windows below 60%, collapsed sections below 35%, a burst of dust at each stage, and a rubble ruin when destroyed.",
+            "The headquarters grows with its base: radome turrets and a dish at tier 2, bastion towers and a crowned spire at tier 3.",
+            "Damage shows on the building itself rather than a health bar: scorch marks, smoke and fire join the breaking models, and a damaged building keeps its colours, team markings and type emblem so you can still tell what it is.",
             "Empty build pads have thick, bright outlines, a build cross and corner lamps.",
-            "Building type emblems sit on the roof instead of the ground in front."
+            "Each facility’s type emblem is built onto its own roof, turns with the building and stays on through damage."
           ]
         }
       ]

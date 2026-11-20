@@ -58,18 +58,18 @@ test('every trainable unit queues with an empty stockpile and starts once funds 
   }
 });
 
-test('command upgrades: research at the Armory, cancelling gives no refund (troop upgrades removed 2026-11-19)', () => {
-  const g = create(), civ = g.civs[0], site = g.sites[0], slots = openSlots(g, site);
+test('upgrades: every one is refused (troop upgrades removed 2026-11-19, the Armory ones 2026-11-20)', () => {
+  const g = create(), civ = g.civs[0];
   civ.age = 2; civ.res = { materials: 1e5, energy: 1e5 };
-  addFacility(g, civ, site, 'armory', slots[0], { instant: true });
-  const removed = g.command(0, { c: 'research', tech: 'grenades' });
-  assert.equal(removed.code, 'upgrade_removed');
-  assert.equal(commandAck(removed, 2).reason, 'upgrade_removed');
-  assert.ok(!g.command(0, { c: 'research', tech: 'improved_logistics' }).error);
+  assert.deepEqual(ACTION_UPGRADES, {});
+  for (const tech of ['grenades', 'improved_logistics', 'networked_command']) {
+    const removed = g.command(0, { c: 'research', tech });
+    assert.equal(removed.code, 'upgrade_removed', tech);
+    assert.equal(commandAck(removed, 2).reason, 'upgrade_removed');
+  }
   const res = { ...civ.res };
-  const cancel = g.command(0, { c: 'cancelResearch', tech: 'improved_logistics' });
-  assert.deepEqual(cancel.reply.cancelled.lost, ACTION_UPGRADES.improved_logistics.cost);
-  assert.deepEqual(civ.res, res, 'no refund');
+  assert.equal(g.command(0, { c: 'cancelResearch', tech: 'improved_logistics' }).code, 'not_researching');
+  assert.deepEqual(civ.res, res, 'nothing paid, nothing refunded');
   assert.equal(upgradeLineHolder(g, civ, 'improved_logistics'), null);
   assert.equal(g.defs.RULESET.upgradeLines, false);
 });

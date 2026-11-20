@@ -8,7 +8,7 @@ using UnityEngine;
 namespace SE.Runtime.Cities
 {
     /// <summary>
-    /// Damage is shown on the building itself (the HUD adds a health bar over damaged structures, Hud.BuildingBars.cs),
+    /// Damage is shown on the building itself (no health bar: the staged models break apart, CityRenderer.StagedModels.cs),
     /// with the whole body darkened by band (ComposeBuilding) and charred patches on the roof, in three stages
     /// (StructureStore bands):
     ///
@@ -27,9 +27,10 @@ namespace SE.Runtime.Cities
         /// <summary>Smoke and fire sources of damaged buildings (map space), by building id.</summary>
         public readonly Dictionary<int, List<DamageEmitter>> DamageEmitters = new Dictionary<int, List<DamageEmitter>>();
 
-        static readonly float3 Soot = new float3(.25f, .235f, .22f);
-        static readonly float3 Crack = new float3(.17f, .16f, .15f);
-        static readonly float3 Charred = new float3(.20f, .185f, .17f);
+        // greys and browns rather than near-black (2026-11-20, user: "they get too dark")
+        static readonly float3 Soot = new float3(.40f, .38f, .35f);
+        static readonly float3 Crack = new float3(.30f, .28f, .26f);
+        static readonly float3 Charred = new float3(.34f, .31f, .28f);
         static readonly float3 Rubble = new float3(.55f, .52f, .47f);
 
         /// <summary>A roof colour lifted to a readable floor (no near-black roofs at any zoom).</summary>
@@ -79,6 +80,11 @@ namespace SE.Runtime.Cities
                 return new float3(x, Ground(x, z) + lift, z);
             }
             float height = WallHeight(b.Type);
+            // staged Blender models show their own holes, collapse and rubble (CityRenderer.StagedModels.cs): the cavity and
+            // collapse modules below are left out for them; soot, cracks, roof char, smoke and fire stay
+            int tier = b.City > 0 ? SiteTier(b.City) : 1;
+            bool staged = b.HasPosition && StagedKey(b.Type, tier) != null;
+            int meshStage = MeshStage(band);
 
             // the building's solid walls; the two largest carry the marks
             FootRect main = new FootRect { HalfW = .26f, HalfD = .22f }, second = main;
@@ -137,19 +143,20 @@ namespace SE.Runtime.Cities
             }
             // charred patches on the roof (2026-11-19): the face the RTS camera actually sees. Base facilities know their
             // roof (the authored mesh, or the recipe roof: CityRenderer.FacilityIdentity.cs); 2 / 4 / 7 patches by band
-            if (b.HasPosition && b.City > 0)
+            // (staged models are scorched in the mesh itself: no flat patches over their pitched and arched roofs)
+            if (b.HasPosition && b.City > 0 && !staged)
             {
                 float datum = BuildingDatum(cx, cz, yaw);
-                int patches = band == 1 ? 2 : band == 2 ? 4 : 7;
+                int patches = band == 1 ? 1 : band == 2 ? 2 : 4;
                 for (int i = 0; i < patches * 2 && patches > 0; i++)
                 {
                     float lx = main.X + (Hash(seed, 600 + i) * 2 - 1) * main.HalfW * .8f;
                     float lz = main.Z + (Hash(seed, 620 + i) * 2 - 1) * main.HalfD * .8f;
-                    if (!RoofTopAt(b.Type, lx, lz, out float top)) continue;
+                    if (!RoofTopAt(b.Type, lx, lz, out float top, staged ? meshStage : -1, tier)) continue;
                     patches--;
                     float x = cx + lx * cs + lz * sn, z = cz - lx * sn + lz * cs;
                     float size = (.07f + Hash(seed, 640 + i) * .07f) * (.8f + band * .2f);
-                    var scorch = Hash(seed, 660 + i) < .5f ? new float3(.07f, .065f, .06f) : new float3(.12f, .10f, .085f);
+                    var scorch = Hash(seed, 660 + i) < .5f ? new float3(.30f, .28f, .25f) : new float3(.36f, .33f, .29f);
                     Put(Part.Box, new float3(x, datum + top - .002f, z), Hash(seed, 680 + i) * 3f, new float3(size, .008f, size * .75f), scorch);
                     Put(Part.Box, new float3(x, datum + top - .001f, z), Hash(seed, 700 + i) * 3f, new float3(size * .55f, .008f, size * 1.1f), scorch * .8f);
                 }
@@ -163,9 +170,12 @@ namespace SE.Runtime.Cities
                 float u = su * (main.HalfW - .05f), v = sv * (main.HalfD - .05f);
                 float lx = main.X + u * rc + v * rs, lz = main.Z - u * rs + v * rc;
                 float bite = math.min(.13f, math.min(main.HalfW, main.HalfD) * .9f);
-                Module(c, Part.Box, lx, lz, new float3(bite, height * .45f, bite), Charred, main.Yaw, height * .6f);
-                Module(c, Part.Broken, lx + su * .04f, lz + sv * .04f, new float3(bite * 1.2f, height * .55f, bite), Rubble * .95f, main.Yaw + .4f);
-                Module(c, Part.Collapse, lx + su * .1f, lz + sv * .1f, new float3(bite * 1.8f, .07f + band * .02f, bite * 1.5f), Rubble);
+                if (!staged)
+                {
+                    Module(c, Part.Box, lx, lz, new float3(bite, height * .45f, bite), Charred, main.Yaw, height * .6f);
+                    Module(c, Part.Broken, lx + su * .04f, lz + sv * .04f, new float3(bite * 1.2f, height * .55f, bite), Rubble * .95f, main.Yaw + .4f);
+                    Module(c, Part.Collapse, lx + su * .1f, lz + sv * .1f, new float3(bite * 1.8f, .07f + band * .02f, bite * 1.5f), Rubble);
+                }
                 var top = World(lx, lz, height * .9f);
                 AddEmitter(b.Id, top, false, band == 2 ? .32f : .45f);
                 if (band >= 3) AddEmitter(b.Id, top + new float3(0, -.05f, 0), true, .26f);
@@ -175,8 +185,8 @@ namespace SE.Runtime.Cities
             // 3. a collapsed section and broken beams on the second wall, a second fire
             {
                 Face(second, 1, Hash(seed, 560) * 2 - 1, out float lx, out float lz, out float faceYaw, out float span);
-                Module(c, Part.Collapse, lx, lz, new float3(math.min(span, .34f), .12f, .22f), Rubble * .92f, faceYaw);
-                for (int i = 0; i < 3; i++)
+                if (!staged) Module(c, Part.Collapse, lx, lz, new float3(math.min(span, .34f), .12f, .22f), Rubble * .92f, faceYaw);
+                for (int i = 0; i < 3 && !staged; i++)
                     ModuleRot(c, Part.Box, lx + (i - 1) * .05f, lz, new float3(.014f, height * .8f, .014f), Charred * 1.2f,
                         .5f + Hash(seed, 570 + i) * .5f, (Hash(seed, 580 + i) - .5f) * .6f, faceYaw, .02f);
                 AddEmitter(b.Id, World(lx, lz, .08f), true, .22f);

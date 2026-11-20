@@ -1,17 +1,15 @@
 // Functional upgrades and building levels (workstream B, 2026-11-16).
 //
-// The two command upgrades (Armory) change behaviour rather than adding a flat percentage:
-//   improved_logistics new units move 35% faster to their rally point (u.hasteUntil)
-//   networked_command +1.5 vision and 2.5-hex detection for every unit and structure (actionGame.js)
 // 2026-11-19 (user: "Remove the upgrade system for troops"): the troop upgrades and their hooks are gone: barracks kit
 // (grenades, rocket teams, marksmen, body armour), Infantry Training, Heavy Armor, Field Engineering and Aircraft
 // Systems (actionDefinitions REMOVED_UPGRADES).
+// 2026-11-20 (user: "Remove the armory from the game"): the Armory's two command upgrades went with it: Improved
+// Logistics (reinforcement haste, u.hasteUntil) and Networked Command (the vision net in actionGame.revealSource).
 import { WEAPONS } from './weapons.js';
 import { ACTION_UNITS } from './actionDefinitions.js';
 import { distance } from './actionNavigation.js';
 
 export const SMALL_ARMS = new Set(['carbine', 'rifle', 'smg_team', 'mg', 'mg_light', 'pistol']);
-export const HASTE = { factor: 1.35, seconds: 45 };
 
 // ---- Squad simulation (W3, 2026-11-17; user decision R3: a squad stays ONE entity, O(1) per squad) ----
 // A squad's hp is a pool of `men` soldiers of maxHp / men each. The living men are the full-health men plus the

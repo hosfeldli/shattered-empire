@@ -44,6 +44,7 @@ namespace SE.Runtime.Cities
             instanceTap = null;
             current = ghost;
             foreach (var b in ghost.Batches) b.Clear();
+            ghost.Flags.Clear();   // memory pass 8: grew by the ghost's flags on every recompose
             BeginStreetMesh();
             bmin = new float3(1e9f); bmax = new float3(-1e9f);
             ComposeBuilding(new SE.Core.Protocol.BuildingRecord { Id = -1, Owner = owner, Type = type, Tile = tile, Hp = 100, Done = true, Progress = 100, Level = 1, Era = Age, State = "ok",
@@ -79,7 +80,7 @@ namespace SE.Runtime.Cities
         void DrawGhost(Rendering.WrapImages images)
         {
             if (ghost == null || !ghost.Any || ghostKey == null) return;
-            foreach (var b in ghost.Batches) b.DrawImages(images);
+            DrawCellBatches(ghost, images);   // staged models get their meshes at draw time (StagedModels.HiMesh)
             ghost.StreetBatch?.DrawImages(images);
         }
 

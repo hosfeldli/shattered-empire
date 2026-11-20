@@ -370,6 +370,9 @@ namespace SE.Runtime.UI
 
         public MapSketch Sketch => sketch;
 
+        /// <summary>Destroys the canvas texture (the view is being replaced by a new one).</summary>
+        public void ReleaseTexture() { if (tex != null) UnityEngine.Object.Destroy(tex); }
+
         public MapBuilderView(MapSketch start, Action<MapSketch> use, string useLabel, VisualElement footer)
         {
             sketch = start?.Clone() ?? MapSketch.Default();

@@ -91,7 +91,12 @@ namespace SE.Runtime.Cities
                         Module(c, Part.Siding, .15f, -.06f, new float3(.15f, .012f, .59f), SteelGrey, 0, .29f);
                         Module(c, Part.Shell, -.16f, .32f, new float3(.27f, .16f, .21f), new float3(.86f));
                         break;
-                    case "defense": Defence(c, "bunker"); break;
+                    case "defense":
+                    {
+                        var ruin = c; ruin.GroundY = Ground(c.X, c.Z) - .01f;   // the bunker's destroyed stage where it is staged
+                        if (!StagedRuin(ruin, "bunker")) Defence(c, "bunker");
+                        break;
+                    }
                     default:
                         Module(c, Part.Broken, .11f, -.12f, new float3(.22f, .19f, .20f), concrete);
                         Module(c, Part.Siding, -.15f, .06f, new float3(.17f, .071f, .09f), rust, .2f);
@@ -160,7 +165,7 @@ namespace SE.Runtime.Cities
                     Module(c, Part.Cylinder, -.51f + k * .08f, .30f, new float3(.048f, .015f, .048f), new float3(.57f, .41f, .31f), 0, .18f);
                 }
             }
-            else if (type == "barracks" || type == "armory" || type == "defense_works")
+            else if (type == "barracks" || type == "defense_works")
             {
                 Module(c, Part.Concrete, -.38f, -.32f, new float3(.18f, .20f, .21f), concrete * .78f);
                 Module(c, Part.Siding, -.38f, -.32f, new float3(.19f, .032f, .22f), steel, 0, .20f);

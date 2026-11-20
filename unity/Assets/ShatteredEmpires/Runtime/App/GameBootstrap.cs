@@ -1208,6 +1208,16 @@ namespace SE.Runtime.App
             }
             session.Events.Clear();
             UpdateGunRuns(Time.deltaTime);   // bursts in progress walk their impacts (GameBootstrap.GunRun.cs)
+            // a building model dropping to a worse destruction stage: a dust burst over the swap (CityRenderer.StagedModels.cs)
+            if (city.StageDust.Count > 0)
+            {
+                foreach (var d in city.StageDust)
+                {
+                    var dustAt = new float3(world.Grid.NearX(d.x, rts.Focus.x), d.y, d.z);
+                    if (Near(dustAt, reach)) fx.StageDust(dustAt, d.w);
+                }
+                city.StageDust.Clear();
+            }
             // burning buildings and burning wrecks
             fireAt -= Time.unscaledDeltaTime;
             if (fireAt <= 0)

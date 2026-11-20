@@ -289,14 +289,6 @@ function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null)
   }
 }
 
-// Improved Logistics haste ends once a reinforcement has reached its rally point. (The Field Engineering self-repair
-// of vehicles went with the troop upgrades, 2026-11-19.)
-function fieldUpkeep(game, dt) {
-  for (const u of game.units.values()) {
-    if (u.hasteUntil && (!u.goal || u.hasteUntil <= game.time)) u.hasteUntil = 0;
-  }
-}
-
 /** Automatic engineers: staffing every ~1 s, jobs every call (fieldEconomyStep, every 2 ticks). */
 export function engineerStep(game, dt) {
   if (game.tickN % 10 < 2) maintainEngineers(game);
@@ -319,7 +311,6 @@ export function engineerStep(game, dt) {
     for (const s of game.sites) if (s.slots && s.owner === owner && staffed.has(s.id)) { const hq = headquarters(game, s); if (hq?.done) homes.push(hq); }
     for (const u of list) runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes);
   }
-  fieldUpkeep(game, dt);
 }
 
 // ---- new bases -------------------------------------------------------------------------------

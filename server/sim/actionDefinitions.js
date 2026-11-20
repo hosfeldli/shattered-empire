@@ -16,7 +16,6 @@ export const ACTION_BUILDINGS = {
   motor_works: building('motor_works', 'Vehicle Works', 2, 300, 110, 30, { radius: .57, desc: 'Produces armored cars, infantry carriers, infantry fighting vehicles and main battle tanks.' }),
   heavy_weapons: building('heavy_assembly', 'Heavy Weapons Facility', 2, 310, 180, 32, { radius: .55, desc: 'Produces artillery, missile vehicles and mobile air defense.' }),
   airfield: building('airfield', 'Airfield', 2, 360, 220, 38, { radius: .45, vision: 7, desc: 'Produces and services aircraft.' }),
-  armory: building('armory', 'Armory', 1, 240, 90, 24, { desc: 'Faction-wide command upgrades: Improved Logistics and Networked Command.' }),
   advanced_lab: building('advanced_lab', 'Advanced Systems Lab', 3, 450, 300, 42, { desc: 'Produces autonomous systems and advanced specialist units.' }),
   missile_silo: building('missile_silo', 'Strategic Missile Facility', 3, 750, 500, 60, { hp: 1250, radius: .5, needs: 'advanced_lab', desc: 'Produces limited strategic missiles in a headquarters ring site.' }),
   barricade: building('bunker', 'Sandbag Barricade', 1, 20, 0, 4, { field: true, radius: .26, width: .50, depth: .34, lowCover: true, hp: 240, cover: .25, desc: 'Rotatable sandbags, wire and tank obstacles. Infantry can shelter and fire over the low wall. Q / E rotates before placement.' }),
@@ -230,18 +229,19 @@ export const TIERS = [
   { name: 'Advanced Warfare', label: 'III', desc: 'Global advanced technology and the final two local ring sites.', cost: cost(1000, 600), time: 65 },
 ];
 
-// Faction-wide command upgrades, researched at the Armory (actionBases.startUpgrade). Functional: each changes
-// behaviour rather than adding a flat percentage.
+// Upgrades (actionBases.startUpgrade): none remain. Kept as an (empty) table for importers and the client's TECHS.
 // 2026-11-19 (user: "Remove the upgrade system for troops"): the troop upgrades, one per unit class (infantry kit at
-// the barracks, Infantry Training, Heavy Armor, Field Engineering, Aircraft Systems; UPGRADES.md), are gone. Their
-// research is refused (code 'upgrade_removed'); an older save refunds each one owned or in progress
-// (persist.js, REMOVED_UPGRADES). The two command upgrades below stay.
-export const ACTION_UPGRADES = {
-  improved_logistics: { name: 'Improved Logistics', desc: 'Reinforcements leaving a base move 35% faster until they reach their rally point (up to 45 s).', tier: 2, time: 30, cost: cost(240, 130) },
-  networked_command: { name: 'Networked Command', desc: 'Units share a vision net: every unit and structure sees 1.5 hexes further and spots hidden units within 2.5 hexes.', tier: 3, time: 52, cost: cost(340, 180) },
-};
-// The removed troop upgrades and what each cost (refunded to an older save that owned it or had it in progress).
+// the barracks, Infantry Training, Heavy Armor, Field Engineering, Aircraft Systems; UPGRADES.md), are gone.
+// 2026-11-20 (user: "Remove the armory from the game"): the Armory went, and with it its two command upgrades,
+// Improved Logistics (reinforcement haste) and Networked Command (+1.5 vision, 2.5-hex detection for every unit and
+// structure). Nothing depended on them: hidden units are still found by Recon Scan, radar posts and outposts.
+// Research of any removed upgrade is refused (code 'upgrade_removed'); an older save refunds each one owned or in
+// progress (persist.js, REMOVED_UPGRADES), and removes an Armory it holds with its full cost refunded (REMOVED_BUILDINGS).
+export const ACTION_UPGRADES = {};
+// The removed upgrades and what each cost (refunded to an older save that owned it or had it in progress).
 export const REMOVED_UPGRADES = {
+  improved_logistics: { name: 'Improved Logistics', cost: cost(240, 130) },
+  networked_command: { name: 'Networked Command', cost: cost(340, 180) },
   infantry_training: { name: 'Infantry Training', cost: cost(170, 42) },
   field_engineering: { name: 'Field Engineering', cost: cost(255, 90) },
   heavy_armor: { name: 'Heavy Armor', cost: cost(285, 120) },
@@ -250,6 +250,11 @@ export const REMOVED_UPGRADES = {
   rocket_teams: { name: 'Rocket Teams', cost: cost(80, 150) },
   body_armor: { name: 'Body Armour', cost: cost(110, 190) },
   marksmen: { name: 'Designated Marksmen', cost: cost(100, 160) },
+};
+// Buildings that have left the game and what each cost. An older save's are removed on load and their full cost
+// refunded to the owner (persist.js); construction is paid when ordered, so an unfinished one is refunded in full too.
+export const REMOVED_BUILDINGS = {
+  armory: { name: 'Armory', cost: cost(240, 90) },   // 2026-11-20
 };
 
 export const ABILITIES = {

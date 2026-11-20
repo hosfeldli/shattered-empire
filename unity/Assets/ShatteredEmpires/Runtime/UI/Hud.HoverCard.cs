@@ -254,7 +254,6 @@ namespace SE.Runtime.UI
                 case "airfield": return "Builds and services aircraft";
                 case "depot": return "Generates materials";
                 case "power_plant": return "Generates energy";
-                case "armory": return "Faction-wide upgrades";
                 case "advanced_lab": return "Autonomous systems and specialist units";
                 case "missile_silo": return "Strategic missiles";
                 case "barricade": case "sandbags": return "Low cover · infantry fire over it";

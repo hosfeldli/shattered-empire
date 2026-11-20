@@ -25,7 +25,10 @@ namespace SE.Runtime.Cities
 
         sealed class Cell
         {
-            public readonly InstanceBatch[] Batches = new InstanceBatch[(int)Part.Count];
+            /// <summary>One batch per Part, then (once the cell holds a staged building model) one per model and stage
+            /// (CityRenderer.StagedModels.cs, EnsureModelBatches).</summary>
+            public InstanceBatch[] Batches = new InstanceBatch[(int)Part.Count];
+            public bool Preview;
             public Bounds Bounds;
             public bool Any;
             public Mesh Streets;
@@ -103,6 +106,8 @@ namespace SE.Runtime.Cities
                 cells.Clear();
                 DisposeBackCells();
                 Stacks.Clear();
+                // memory pass 8: per-building state of the old world (ids are reused by the next match)
+                DamageEmitters.Clear(); mounts.Clear(); embrasures.Clear();
                 hasBuilding = new bool[world.Grid.N];
                 streetParcels = new bool[world.Grid.N];
                 RoadCurve.Occupied = streetParcels;
@@ -228,8 +233,8 @@ namespace SE.Runtime.Cities
         static Cell CreateCell(bool preview)
         {
             if (satelliteDish == null) satelliteDish = WorldMeshes.SatelliteDish();
-            var cell = new Cell();
-            Mesh[] meshes = { MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo,
+            var cell = new Cell { Preview = preview };
+            Mesh[] meshes ={ MeshKit.Box, MeshKit.Roof, MeshKit.Cylinder, MeshKit.Cone, MeshKit.Skyscraper, MeshKit.Silo,
                 MeshKit.Chimney, MeshKit.Crane, MeshKit.ShipHull, MeshKit.BrokenTower, MeshKit.Dome, MeshKit.Car, MilitaryMeshes.CargoTruck,
                 MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Box, MeshKit.Roof, MeshKit.RuinShell, MeshKit.CollapsedBlock, MeshKit.Deciduous, satelliteDish, MeshKit.Coil, MeshKit.TankObstacle, MeshKit.StrategicHatch, MeshKit.Sandbag,
                 AuthoredMesh(Part.BaseTown, MeshKit.Box), AuthoredMesh(Part.BaseBarracks, MeshKit.Box), AuthoredMesh(Part.BaseDepot, MeshKit.Box),
@@ -605,7 +610,8 @@ namespace SE.Runtime.Cities
             // damage darkens the whole body by band (2026-11-19, user: "make damage to these buildings very obvious");
             // the damage stages themselves are drawn on it (DamageOverlay)
             int band = StructureStore.DamageBand(b.Hp);
-            float dmg = band == 0 ? 1f : band == 1 ? 0.86f : band == 2 ? 0.72f : 0.56f;
+            // 2026-11-20 (user: "they get too dark"): a gentle darkening; the staged models carry the damage in their geometry
+            float dmg = band == 0 ? 1f : band == 1 ? 0.95f : band == 2 ? 0.90f : 0.84f;
             if (b.Id >= 0) DamageEmitters.Remove(b.Id);
             float memory = b.Memory ? 0.6f : 1f;
             float3 tint = new float3(dmg * memory);
@@ -629,7 +635,11 @@ namespace SE.Runtime.Cities
             BeginFootprint(b, cx, cz, yaw);
             // Authored Blender facilities replace the module recipe for positioned base buildings.
             int siteTier = b.City > 0 ? SiteTier(b.City) : Math.Max(1, ctx.Tier);
-            bool authored = b.HasPosition && AuthoredBase(ctx, b.Type, b.Type == "town" ? 1f + .10f * (siteTier - 1) : 1f);
+            // destruction stage of the staged Blender models (CityRenderer.StagedModels.cs), and a dust burst when it worsens
+            ctx.Stage = MeshStage(band);
+            string stagedKey = b.HasPosition ? StagedKey(b.Type, siteTier) : null;
+            if (stagedKey != null) NoteStage(b, stagedKey, ctx.Stage, cx, cz, ctx.GroundY);
+            bool authored = b.HasPosition && AuthoredBase(ctx, b.Type, b.Type == "town" ? 1f + .10f * (siteTier - 1) : 1f, siteTier);
             // Authored field defenses (CityRenderer.Defenses.cs): own body, level dressing and tracking head.
             if (!authored && b.HasPosition && AuthoredDefense(ctx, b))
             {
@@ -678,7 +688,6 @@ namespace SE.Runtime.Cities
                 case "barricade": FieldBarricades(ctx); break;
                 case "sensor_post": SensorPost(ctx); break;
                 case "artillery_post": ArtilleryPosition(ctx); break;
-                case "armory": if (b.HasPosition) Arsenal(ctx); else SupportFacility(ctx, 0); break;
                 case "defense_works": if (b.HasPosition) FortificationWorks(ctx); else SupportFacility(ctx, 1); break;
                 case "advanced_lab": if (b.HasPosition) SystemsCampus(ctx); else SupportFacility(ctx, 2); break;
                 case "turret": SupportFacility(ctx, 3); break;
@@ -693,13 +702,13 @@ namespace SE.Runtime.Cities
             // Base facility identity (CityRenderer.FacilityIdentity.cs): accent, roof emblem and landmark silhouette.
             if (b.HasPosition && b.City > 0) FacilityIdentity(ctx, b.Type, b.Memory);
             // The authored HQ model gains its tier silhouette here (the recipe HQ grows by itself).
-            if (authored && b.Type == "town") HeadquartersTierDressing(ctx, siteTier);
+            if (authored && b.Type == "town" && stagedKey == null) HeadquartersTierDressing(ctx, siteTier);
             // Positioned structures outside a base stand on their own pad with a team ring.
             if (b.HasPosition && b.City <= 0 && ActionRts && !Showcase && b.Id >= 0) FieldStructurePad(b, cx, cz);
             // Modern skyline blocks provide their own roof plant and damaged shell.
             // Legacy factory annexes and damage piles do not belong to these parcels.
             if (b.Type == "modern_block" || b.Type == "modern_office" || b.Type.StartsWith("cinematic_", StringComparison.Ordinal)) return;
-            if (b.HasPosition && ctx.Tier >= 2) MilitaryTierEquipment(ctx, b.Type);
+            if (b.HasPosition && ctx.Tier >= 2 && stagedKey == null) MilitaryTierEquipment(ctx, b.Type);
             if (ctx.Level >= 2 && b.Type != "house" && b.Type != "town" && b.Type != "wonder") UpgradeExtras(ctx, b.Type);
             if (!Showcase) ParcelExtras(ctx, b.Type);
             DamageOverlay(b, cx, cz, yaw, seed);
@@ -709,6 +718,8 @@ namespace SE.Runtime.Cities
         {
             public float X, Z, Yaw;
             public int Seed, Era, Level, Tier;
+            /// <summary>Destruction stage of a staged model: 0 intact, 1 damaged, 2 heavily damaged (MeshStage).</summary>
+            public int Stage;
             public float3 Tint, Civ;
             /// <summary>Parcel scale (0 means 1): footprints shrink to fit the room the streets leave.</summary>
             public float Scale;
@@ -1891,7 +1902,7 @@ namespace SE.Runtime.Cities
                 var cull = cell.Bounds;
                 cull.Expand(InstanceBatch.CullMargin * 2f + cull.size.y * .1f);
                 if (images.For(cull, out _, out _, out _) == 0) continue;
-                foreach (var b in cell.Batches) if (b.Count > 0) b.DrawImages(images);
+                DrawCellBatches(cell, images);
                 cell.StreetBatch?.DrawImages(images);
             }
             DrawGhost(images);

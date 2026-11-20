@@ -133,7 +133,7 @@ namespace SE.Core.Units
         {
             if (!SlotOf.TryGetValue(id, out int slot)) return;
             SlotOf.Remove(id);
-            WorldPaths.Remove(id);
+            WorldPaths.Remove(id); Paths.Remove(id);   // memory pass 8: Paths kept dead units' routes
             emerging.Remove(id);
             Records[slot] = default;
             free.Push(slot);

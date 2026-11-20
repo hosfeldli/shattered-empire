@@ -207,7 +207,7 @@ export function terrainStrips(sim, g) {
 export function developBase(sim, g) {
   const civ = g.civs[0], site = g.sites.find((s) => s.owner === 0 && s.hq);
   site.tier = 3;
-  const pending = ['motor_works', 'power_plant', 'barracks', 'depot', 'armory', 'heavy_weapons', 'airfield', 'advanced_lab'];
+  const pending = ['motor_works', 'power_plant', 'barracks', 'depot', 'heavy_weapons', 'airfield', 'advanced_lab'];
   for (const tile of sim.bases.openSlots(g, site)) {
     const type = pending.shift(); if (!type) break;
     sim.bases.addFacility(g, civ, site, type, tile, { instant: true });

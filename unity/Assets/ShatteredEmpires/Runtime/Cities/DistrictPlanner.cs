@@ -58,7 +58,7 @@ namespace SE.Runtime.Cities
                 case "mine": case "quarry": case "lumber": case "oil_well": return DistrictKind.Extraction;
                 case "farm": return DistrictKind.Agricultural;
                 case "barracks": case "fort": case "camp": case "guard_post": case "bunker": case "aa_battery": case "missile_silo":
-                case "armory": case "defense_works": case "turret": case "repair_point": return DistrictKind.Military;
+                case "defense_works": case "turret": case "repair_point": return DistrictKind.Military;
                 case "airfield": return DistrictKind.Air;
                 case "port": return DistrictKind.Port;
                 default: return DistrictKind.Industrial;

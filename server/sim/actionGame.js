@@ -557,10 +557,9 @@ export class ActionGame extends Game {
     if (this.weather.fogAt(source.tile) > .55) vision -= .9;
     const scan = d.ability === 'scan' && source.abilityUntil > this.time;
     if (scan) vision += 3.5;
-    const net = own.techs.has('networked_command');   // B: shared vision net
-    if (net) vision += 1.5;
+    // (the Networked Command vision net, +1.5 vision and 2.5-hex detection, went with the Armory, 2026-11-20)
     this.reveal(source, vision, lead.visible);
-    this.reveal(source, scan ? vision : net ? 2.5 : 1.52, lead.detect);
+    this.reveal(source, scan ? vision : 1.52, lead.detect);
   }
 
   tick() {
@@ -877,9 +876,8 @@ export class ActionGame extends Game {
       const civ = this.civs[0], home = this.sites.find((s) => s.owner === civ.id && s.hq) || this.sites.find((s) => s.slots);
       const sites = this.sites.filter((s) => s.slots && (s.owner === civ.id || s.owner < 0))
         .sort((a, b) => distance(a, home) - distance(b, home)).slice(0, 3);
-      const pending = ['motor_works', 'power_plant', 'airfield', 'armory', 'heavy_weapons', 'advanced_lab', 'missile_silo', 'barracks', 'depot'];
+      const pending = ['motor_works', 'power_plant', 'airfield', 'heavy_weapons', 'advanced_lab', 'missile_silo', 'barracks', 'depot'];
       civ.age = 2; civ.res = { materials: 4500, energy: 1800 };
-      civ.techs.add('networked_command');
       for (const site of sites) {
         site.owner = civ.id; site.tier = 3;
         if (!site.hq) addFacility(this, civ, site, 'town', site.tile, { instant: true });
@@ -925,8 +923,8 @@ export class ActionGame extends Game {
 
   unitSnapshot(civ, view) {
     const units = [], wp = {};
-    // civ-wide equipment bits (extra[7]); only networked_command (16) remains since the troop upgrades were removed
-    const equipment = this.civs.map((c) => c.techs.has('networked_command') ? 16 : 0);
+    // extra[7] carried civ-wide equipment bits; none remain (troop upgrades removed 2026-11-19, Networked Command
+    // 2026-11-20), so it is always 0 (kept so the record layout does not shift)
     for (const u of this.units.values()) {
       if (!view.god && !this.sees(civ, u)) continue;
       const own = u.owner === civ.id || view.god;
@@ -934,11 +932,11 @@ export class ActionGame extends Game {
       const target = this.units.get(u.target) || this.buildings.get(u.target);
       units.push([u.id, u.owner, u.type, u.tile, -1, 0, Math.round(u.hp / u.maxHp * 100), 100,
         (this.time - u.lastCombat < 1.5 ? 1 : 0) | (u.blocked > 9 ? 16 : 0) | (d.cat === 'artillery' && !u.goal ? 64 : 0) | (u.waitingCrossing ? 128 : 0) | (u.assisting ? 256 : 0) |
-          (u.deployed ? 512 : 0) | (u.setupUntil ? 1024 : 0) | (u.braced && !u.goal ? 2048 : 0) | (u.auto ? 4096 : 0) | (u.hasteUntil > this.time ? 8192 : 0) | (u.inside ? 16384 : 0),
+          (u.deployed ? 512 : 0) | (u.setupUntil ? 1024 : 0) | (u.braced && !u.goal ? 2048 : 0) | (u.auto ? 4096 : 0) | (u.inside ? 16384 : 0),
         own ? u.mode : null, STANCES.indexOf(stanceOf(u)), own && target && (view.god || this.sees(civ, target)) ? u.target : 0, 0, 100, Math.min(3, Math.floor(u.kills / 4)), 0, 0, 0,
         d.air ? airWire(u, own, this) : null, -1,
         [round(u.x, 1000), round(u.z, 1000), round(u.yaw, 1000), round(u.vx), round(u.vz), own ? round(Math.max(0, u.abilityReady - this.time), 2) : 0,
-          round(u.altitude || 0, 1000), equipment[u.owner], menOf(u)]]);
+          round(u.altitude || 0, 1000), 0, menOf(u)]]);
       if (own && u.path.length) wp[u.id] = u.path.slice(0, 18).map((p) => [round(p.x, 100), round(p.z, 100)]);
     }
     return { units, paths: {}, wp };

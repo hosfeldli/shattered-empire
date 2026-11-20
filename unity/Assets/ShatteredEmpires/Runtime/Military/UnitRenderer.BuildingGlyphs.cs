@@ -9,7 +9,7 @@ namespace SE.Runtime.Military
 {
     /// <summary>
     /// Building-type glyphs (overhaul §37, workstream C-D): a small square card over each functional building, in its
-    /// owner's frame, with a white sign of what it makes (X barracks, track oval vehicle works, shells armoury, gantry
+    /// owner's frame, with a white sign of what it makes (X barracks, track oval vehicle works, gantry
     /// dot heavy weapons, aircraft airfield, crate depot, bolt generator, diamond lab, arrow silo, battlements defense
     /// works). Square cards with a stem, so they never read as the oblong unit role glyphs.
     /// <para>
@@ -34,7 +34,7 @@ namespace SE.Runtime.Military
         readonly HashSet<long> glyphCells = new HashSet<long>();
 
         const byte BgNone = 0, BgBarracks = 1, BgVehicles = 2, BgHeavy = 3, BgAirfield = 4, BgDepot = 5, BgPower = 6,
-            BgArmory = 7, BgLab = 8, BgSilo = 9, BgWorks = 10;
+            BgLab = 8, BgSilo = 9, BgWorks = 10;
         // Field defenses (workstream B, 2026-11-18): a diamond card (a square turned 45°), so a defense never reads as
         // a production facility's square card, with a sign of what it fights: MG dot-and-bar, AT long barrel, AA twin
         // barrels skyward, howitzer raised tube, bunker mound, watchtower T, outpost battlements, radar arc, repair cross.
@@ -44,7 +44,7 @@ namespace SE.Runtime.Military
         static byte BuildingGlyphOf(string type) => type switch
         {
             "barracks" => BgBarracks, "motor_works" => BgVehicles, "heavy_weapons" => BgHeavy, "airfield" => BgAirfield,
-            "depot" => BgDepot, "power_plant" => BgPower, "armory" => BgArmory, "advanced_lab" => BgLab,
+            "depot" => BgDepot, "power_plant" => BgPower, "advanced_lab" => BgLab,
             "missile_silo" => BgSilo, "defense_works" => BgWorks,
             "city_turret" => BgMg, "turret" or "at_emplacement" => BgAntiTank, "aa_battery" => BgAntiAir, "artillery_post" => BgHowitzer,
             "bunker" => BgBunker, "guard_post" or "watchtower" => BgTower, "fort" or "outpost" => BgOutpost, "sensor_post" => BgRadar,
@@ -170,13 +170,6 @@ namespace SE.Runtime.Military
                 case BgPower:
                     CardBar(centre, s, .07f, .15f, -.5f, w, .32f, L, ink); CardBar(centre, s, 0, 0, 1.2f, w, .26f, L, ink);
                     CardBar(centre, s, -.07f, -.15f, -.5f, w, .32f, L, ink); break;
-                case BgArmory:
-                    for (int k = -1; k <= 1; k++)
-                    {
-                        CardBar(centre, s, k * .18f, -.04f, 0, w, .38f, L, ink);
-                        CardBar(centre, s, k * .18f, .2f, diag, .07f, .07f, L, ink);
-                    }
-                    break;
                 case BgLab:
                     CardBar(centre, s, .13f, .13f, diag, w, .38f, L, ink); CardBar(centre, s, -.13f, -.13f, diag, w, .38f, L, ink);
                     CardBar(centre, s, -.13f, .13f, -diag, w, .38f, L, ink); CardBar(centre, s, .13f, -.13f, -diag, w, .38f, L, ink); break;

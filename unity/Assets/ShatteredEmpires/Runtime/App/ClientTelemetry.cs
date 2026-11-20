@@ -86,6 +86,11 @@ namespace SE.Runtime.App
         readonly List<JObject> queued = new List<JObject>();
         int errorRowsThisMinute;
         ProfilerRecorder gcAlloc;
+        // Pass 8 (memory growth): each recorder is started once per enable and always disposed. A counter missing from a
+        // release player (e.g. "GC Allocated In Frame", the object counts) gives a recorder whose Valid stays false; it
+        // used to be started again every frame without disposing the last one, leaking a native recorder per frame that
+        // the profiler also kept sampling (memory and CPU frame time rising with session age).
+        bool recordersStarted, gcAllocStarted;
         readonly FrameTiming[] timing = new FrameTiming[1];
         // v3 (Pass 7): where the frame goes outside GameBootstrap.Update (main / render thread, present wait, player-loop
         // phases), render counters, live object counts and time on a finished match's screen
@@ -116,10 +121,10 @@ namespace SE.Runtime.App
         public void Frame(double now, double frameMs, double mainMs, bool inMatch, string[] names, double[] phaseMs, float camDistance, int visibleUnits, float interpDelayS, bool live = true)
         {
             inMatchFlag = inMatch && live; enabledFlag = Enabled;
-            if (!Enabled) { if (gcAlloc.Valid) gcAlloc.Dispose(); StopRecorders(); minuteStart = -1; any = false; return; }
+            if (!Enabled) { if (gcAllocStarted) { gcAlloc.Dispose(); gcAllocStarted = false; } StopRecorders(); minuteStart = -1; any = false; return; }
             if (!FrameLoopTimer.Installed) FrameLoopTimer.Install();
             StartRecorders();
-            if (!allocByThread && !gcAlloc.Valid) gcAlloc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame");
+            if (!allocByThread && !gcAllocStarted) { gcAllocStarted = true; try { gcAlloc = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame"); } catch { } }
             if (minuteStart < 0) Begin(now, names);
             long allocBytes = SampleAlloc();
             if (!inMatch) return;
@@ -180,18 +185,23 @@ namespace SE.Runtime.App
             else if (phaseSum != null) { Array.Clear(phaseSum, 0, phaseSum.Length); Array.Clear(phaseMax, 0, phaseMax.Length); }
             gcStart = GC.CollectionCount(0);
             errorRowsThisMinute = 0;
-            try { cpuStart = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime; } catch { cpuStart = TimeSpan.Zero; }
+            try { using (var proc = System.Diagnostics.Process.GetCurrentProcess()) cpuStart = proc.TotalProcessorTime; } catch { cpuStart = TimeSpan.Zero; }
         }
 
         void StartRecorders()
         {
-            for (int k = 0; k < render.Length; k++) if (!render[k].Valid) { try { render[k] = ProfilerRecorder.StartNew(ProfilerCategory.Render, RenderCounters[k]); } catch { } }
-            for (int k = 0; k < memory.Length; k++) if (!memory[k].Valid) { try { memory[k] = ProfilerRecorder.StartNew(ProfilerCategory.Memory, MemoryCounters[k]); } catch { } }
+            if (recordersStarted) return;
+            recordersStarted = true;
+            for (int k = 0; k < render.Length; k++) { try { render[k] = ProfilerRecorder.StartNew(ProfilerCategory.Render, RenderCounters[k]); } catch { } }
+            for (int k = 0; k < memory.Length; k++) { try { memory[k] = ProfilerRecorder.StartNew(ProfilerCategory.Memory, MemoryCounters[k]); } catch { } }
         }
         void StopRecorders()
         {
-            for (int k = 0; k < render.Length; k++) if (render[k].Valid) render[k].Dispose();
-            for (int k = 0; k < memory.Length; k++) if (memory[k].Valid) memory[k].Dispose();
+            if (!recordersStarted) return;
+            recordersStarted = false;
+            // Dispose, not "if Valid": a recorder for a counter the player lacks is allocated but never Valid
+            for (int k = 0; k < render.Length; k++) render[k].Dispose();
+            for (int k = 0; k < memory.Length; k++) memory[k].Dispose();
         }
 
         /// <summary>v3: live object counts (profiler memory counters; UI Toolkit elements every fifth minute).</summary>
@@ -253,7 +263,7 @@ namespace SE.Runtime.App
             }
             catch { /* fall through */ }
 #endif
-            try { long ws = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64; if (ws > 0) return ws / 1048576.0; } catch { }
+            try { using (var proc = System.Diagnostics.Process.GetCurrentProcess()) { long ws = proc.WorkingSet64; if (ws > 0) return ws / 1048576.0; } } catch { }
             return null;
         }
 
@@ -324,8 +334,8 @@ namespace SE.Runtime.App
             double cpuPct = 0;
             try
             {
-                var p = System.Diagnostics.Process.GetCurrentProcess();
-                cpuPct = (p.TotalProcessorTime - cpuStart).TotalSeconds / Math.Max(1, seconds) * 100.0;
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                    cpuPct = (p.TotalProcessorTime - cpuStart).TotalSeconds / Math.Max(1, seconds) * 100.0;
             }
             catch { /* not available on this platform */ }
             double? memMb = WorkingSetMb();

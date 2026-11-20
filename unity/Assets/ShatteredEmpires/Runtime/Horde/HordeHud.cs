@@ -19,7 +19,7 @@ namespace SE.Runtime.Horde
         readonly VisualElement root, banner, arrows;
         readonly Label waveLabel, statusLabel, scoreLabel, announce, announceSub;
         readonly List<Label> arrowPool = new List<Label>();
-        VisualElement defeat;
+        VisualElement defeat, statusPill;
         float announceAt = -100f;
         public bool Visible { get; private set; }
 
@@ -81,6 +81,12 @@ namespace SE.Runtime.Horde
         {
             if (!s.Active) { SetVisible(false); return; }
             if (!Visible) SetVisible(true);
+            // the HUD's centred status pill ("Observing: …", objective timers) sits where the banner starts: step below it
+            if (statusPill == null) statusPill = root.parent?.Q(className: "se-status-pill");
+            bool pillShown = statusPill != null && statusPill.resolvedStyle.display == DisplayStyle.Flex && statusPill.resolvedStyle.visibility == Visibility.Visible
+                && !string.IsNullOrEmpty((statusPill as TextElement)?.text);
+            float bannerTop = pillShown ? Mathf.Max(52f, statusPill.worldBound.yMax - root.worldBound.yMin + 6f) : 52f;
+            if (Mathf.Abs(banner.style.top.value.value - bannerTop) > .5f) banner.style.top = bannerTop;
             waveLabel.text = s.WaveNo == 0 ? "THE BLIGHT STIRS" : $"WAVE {s.WaveNo}";
             switch (s.Phase)
             {

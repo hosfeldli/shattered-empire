@@ -97,11 +97,44 @@ spit, slam, infect, rise, burrow, tremor, spawn, roar, burst, hive, burn.
 
 ## Client (Unity)
 
-* `Runtime/Horde/HordeMeshes.cs`: procedural original creature models (MeshBuilder ellipsoids and beams), separate
-  swinging arms for maulers and the colossus, pustules and roots.
-* `HordeRenderer.cs`: instanced drawing with twitchy animation (heading jitter and sudden jerks, scuttling bob, lunges
-  on strikes, arm smashes, pulsing sacs, rising out of the ground), elites bigger and darker, creatures scaled up with
-  zoom; corrupted ground as terrain-tilted decals per hex. `UnitRenderer` skips `blight_` types.
+* Models: `tools/blender/build_horde.py` sculpts every creature in Blender (headless:
+  `blender -b --factory-startup --python-exit-code 1 --python tools/blender/build_horde.py -- unity/Assets/ShatteredEmpires/Runtime/Resources/Models [Kind...]`)
+  into `Resources/Models/Horde_<Kind><lod>.bytes` (SEM1, read by `ModelLibrary`; list in `HORDE_MANIFEST.txt`). Each
+  design is laid out as organic parts (ellipsoid blobs, tapered tube chains). LOD0: the parts voxel-remeshed into one
+  fused surface, relaxed, sculpted procedurally along the normal (lumpy flesh, Voronoi tumour clusters, wrinkle
+  creases), decimated to budget. LOD1: LOD0 decimated to about a third. LOD2: the bare low-poly parts with small
+  details dropped (silhouette). Vertex colour = palette blended softly between parts × mottling, wet veins, pale
+  tumour tops, open sores, bruising × ray-traced AO × ground grime. Channels for the GPU animation: uv0.x = region +
+  phase (turns), uv0.y = weight (0 where a limb meets the body, 1 at its tip), colour alpha = 1 − glow. Regions: 0 body,
+  1 leg, 2 arm, 3 sac, 4 head, 5 spine/stalk/tendril, 6 jaw (opens toward its phase direction).
+
+  | Kind | LOD0 tris | LOD1 tris | LOD2 tris | Look |
+  |---|---|---|---|---|
+  | Crawler | 3598 | 1000 | 402 | six high-kneed legs, bead-eye cluster, mandibles, dorsal spines, dragging entrails |
+  | Husk | 3200 | 950 | 474 | hunched raised soldier, chest burst by a glowing growth, curled ribs, lolled head, long claw arm, glowing spore stalks |
+  | Spitter | 3598 | 1000 | 300 | four legs, long neck, three-petal mouth, veined glowing bile sac with clots |
+  | Mauler | 4500 | 1300 | 642 | plated slab torso, tusked sunken head, knuckle-bone clubs |
+  | Broodsac | 3600 | 1000 | 336 | membrane bladder with the curled brood pressing through, vent, slime strands |
+  | Colossus | 9000 | 2600 | 696 | fused masses with half-sunk skulls, stunted twitching limbs, glowing toothed maw, spine crown, great clubs |
+  | Hive | 9999 | 2800 | 606 | rot lobes webbed with veins, ten glowing pustules, gum crown and orifice, swaying spines, roots |
+
+  `HordeMeshes.cs` loads the 21 models and keeps a code-built, equally tagged fallback per kind (used for every LOD
+  when a model is missing).
+* `HordeRenderer.cs` + `HordeBatch.cs` + `Resources/Shaders/HordeLit.shader`: GPU-animated instancing. The CPU keeps
+  per creature only the smoothed heading, gait phase and speed (pooled, no per-frame allocation), tests a bounding
+  sphere against the camera's real frustum planes (`GeometryUtility.CalculateFrustumPlanes`, the ground height cached
+  from the last visible frame so culled creatures cost no height lookup), picks the LOD from the on-screen height
+  (`Lod0Pixels` 56, `Lod1Pixels` 16; LOD2 casts no shadow) and writes one 64-byte `HordeInstance` (position, yaw,
+  scale, phase, moving, seed, strike time, rise time, elite, health, engaged) into the batch of its kind × LOD
+  (21 batches, persistent `NativeArray` + three rotating `GraphicsBuffer`s that only grow; draw bounds = union of the
+  visible spheres). SE/HordeLit builds the pose: heading twitch + hashed sudden jerks, bob, pitch and roll with the gait,
+  legs stepping and lifting by phase (idle scrabble), arms swinging about the kind's shoulder pivot, raised overhead in
+  the strike's rear-back and clubbed down in the slam, lunge forward, sacs throbbing and swelling before a spit, heads
+  trembling with the odd violent snap, stalks/spines/entrails swaying and trailing (more for elites), jaws gnashing and
+  gaping, creatures clawing up out of the ground, breathing; glowing parts throb; elites darker, redder, smouldering;
+  the wounded paler; wet specular and a sickly translucent rim. Per-kind amplitudes live in one material per kind.
+  Hive roots (terrain-tilted tendrils) stay on SE/InstancedLit; corrupted ground as terrain-tilted decals per hex.
+  `BuildMs`, `Drawn`, `Culled`, `LodCounts` expose the cost. `UnitRenderer` skips `blight_` types.
 * `HordeAudio.cs`: synthesized screeches, growls, wet impacts, acid, roar, tremor, rising, hive burning, slam; the wave
   horn and a tension bed (drone, heartbeat, chittering) that follows the pressure.
 * `EffectsRenderer.Blight.cs`: ichor gore and stains, acid arcs, spores, ground eruptions, slam rings, hive fires.

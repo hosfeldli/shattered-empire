@@ -177,27 +177,31 @@ namespace SE.Runtime.Cities
             c.FixedGround = true;
             c.GroundY = DefenseDatum(c.X, c.Z, kind.Ring > 0 ? kind.Ring * .55f : .2f);
             int level = Mathf.Clamp(b.Level, 1, 3);
-            Put(kind.Body, new float3(c.X, c.GroundY, c.Z), c.Yaw, new float3(1), c.Tint);
+            // the staged Blender body (intact / damaged / heavily damaged, CityRenderer.StagedModels.cs), else the single model
+            string staged = StagedKey(b.Type, 1);
+            if (staged != null) PutStaged(staged, c.Stage, new float3(c.X, c.GroundY, c.Z), c.Yaw, new float3(1), c.Tint);
+            else Put(kind.Body, new float3(c.X, c.GroundY, c.Z), c.Yaw, new float3(1), c.Tint);
             math.sincos(c.Yaw, out float sn, out float cs);
             float3 Map(float3 at) => new float3(c.X + at.x * cs + at.z * sn, c.GroundY + at.y, c.Z - at.x * sn + at.z * cs);
             var team = c.Civ * c.Tint;
             if (layout != null)
             {
-                foreach (var (at, size) in layout.Marks)
-                    Put(Part.Box, Map(at) - new float3(0, size.y * .5f, 0), c.Yaw, size, team, .3f);
-                foreach (var f in layout.Flags) Flag(c, f.x, f.y, f.z);
+                for (int i = 0; i < layout.Marks.Count; i++)
+                    if (layout.MarkMax[i] >= c.Stage) Put(Part.Box, Map(layout.Marks[i].at) - new float3(0, layout.Marks[i].size.y * .5f, 0), c.Yaw, layout.Marks[i].size, team, .3f);
+                foreach (var f in layout.Flags) if (f.w >= c.Stage) Flag(c, f.x, f.y, f.z);
                 // rank bars on the front plate: one per upgrade level
-                foreach (var plate in layout.Plates)
-                    for (int k = 0; k < level; k++)
+                for (int i = 0; i < layout.Plates.Count; i++)
+                    for (int k = 0, plateMax = layout.PlateMax[i]; k < level && plateMax >= c.Stage; k++)
                     {
-                        var at = plate + new float3((k - (level - 1) * .5f) * .024f, -.016f, .006f);
+                        var at = layout.Plates[i] + new float3((k - (level - 1) * .5f) * .024f, -.016f, .006f);
                         Put(Part.Box, Map(at), c.Yaw, new float3(.014f, .032f, .006f), team, .55f);
                     }
                 if (recording != null) foreach (var w in layout.Walls) if (!recording.Contains(w)) recording.Add(w);
             }
             if (kind.Ring > 0 && level >= 2) BlastRing(c, kind.Ring, level, team);
             if (b.Type == "bunker" && b.Id >= 0) embrasures[b.Id] = new float3(c.X, c.GroundY + EmbrasureHeight, c.Z);
-            DefenseSignature(c, b, level);   // per-type silhouette features and team rim (CityRenderer.Facilities.cs, workstream B)
+            // per-type silhouette features and team rim (CityRenderer.Facilities.cs, workstream B); a wrecked emplacement keeps only its rim
+            if (staged != null && c.Stage >= 2) DefenseRim(c, b, level); else DefenseSignature(c, b, level);
             // the tracking head (drawn per frame by AnimateTurrets)
             if (kind.Head != null && b.Id >= 0)
             {
@@ -320,7 +324,20 @@ namespace SE.Runtime.Cities
                 batch.Add(InstanceData.TRS(MapSpace.W(pivot), MapSpace.Yaw(m.Aim), new float3(1), new float4(m.Color, 0)));
             }
             foreach (int id in staleMounts) mounts.Remove(id);
+            // memory pass 8: smoke/fire emitters and embrasures of buildings that are gone (only recomposed buildings
+            // replaced theirs), every two seconds
+            if (time >= gonePruneAt || time < gonePruneAt - 10f)
+            {
+                gonePruneAt = time + 2f;
+                staleMounts.Clear();
+                foreach (int id in DamageEmitters.Keys) if (!structures.Buildings.ContainsKey(id)) staleMounts.Add(id);
+                foreach (int id in staleMounts) DamageEmitters.Remove(id);
+                staleMounts.Clear();
+                foreach (int id in embrasures.Keys) if (!structures.Buildings.ContainsKey(id)) staleMounts.Add(id);
+                foreach (int id in staleMounts) embrasures.Remove(id);
+            }
         }
+        float gonePruneAt;
 
         /// <summary>Turret-head run-back (world units) at `age` seconds after a shot: sharp kick, slower return; guns more than MGs.</summary>
         static float HeadRecoil(TurretKind kind, float age)

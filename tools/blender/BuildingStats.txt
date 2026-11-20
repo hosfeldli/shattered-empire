@@ -1,0 +1,22 @@
+triangles per stage: full/LOD (s0 intact, s1 damaged, s2 heavily damaged, s3 destroyed)
+Bld_town                   s0 3848/1564     s1 5038/2412     s2 7502/3346     s3 3104/936    
+Bld_town_t2                s0 5040/2336     s1 6756/3442     s2 10906/4862    s3 3054/936    
+Bld_town_t3                s0 5860/2728     s1 7132/3728     s2 11370/5102    s3 2732/1112   
+Bld_barracks               s0 3472/2032     s1 4030/3118     s2 4850/3458     s3 2728/1544   
+Bld_motor_works            s0 2528/-        s1 5664/3468     s2 8864/5030     s3 2026/-      
+Bld_heavy_weapons          s0 1768/-        s1 3198/2326     s2 6112/3496     s3 1708/-      
+Bld_airfield               s0 1540/-        s1 2968/2332     s2 3882/2810     s3 2486/-      
+Bld_power_plant            s0 2736/1688     s1 3944/2568     s2 6636/3450     s3 1860/-      
+Bld_depot                  s0 1988/-        s1 4046/2746     s2 8050/4224     s3 3350/1726   
+Bld_advanced_lab           s0 2480/-        s1 4980/2918     s2 6626/3488     s3 2342/-      
+Bld_missile_silo           s0 1860/-        s1 3296/2612     s2 4622/3356     s3 2796/1064   
+Bld_barricade              s0 1680/-        s1 1222/-        s2 2368/-        s3 376/-       
+Bld_guard_post             s0 1832/-        s1 1290/-        s2 1862/-        s3 342/-       
+Bld_bunker                 s0 1152/-        s1 1852/-        s2 2114/-        s3 774/-       
+Bld_turret                 s0 3476/952      s1 1316/-        s2 1292/-        s3 1350/-      
+Bld_aa_battery             s0 2108/-        s1 1146/-        s2 1488/-        s3 1024/-      
+Bld_city_turret            s0 1696/-        s1 708/-         s2 866/-         s3 690/-       
+Bld_fort                   s0 1932/-        s1 2078/-        s2 3384/1840     s3 3812/1958   
+Bld_sensor_post            s0 1232/-        s1 920/-         s2 1420/-        s3 1018/-      
+Bld_artillery_post         s0 4424/1232     s1 1746/-        s2 1966/-        s3 2870/1736   
+Bld_repair_point           s0 608/-         s1 606/-         s2 1010/-        s3 176/-       

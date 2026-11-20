@@ -36,6 +36,7 @@ namespace SE.Runtime.UI
             var p = SubPage("Map builder");
             // continue the sketch on the bench; else the one in use here; else the last one used; else a fresh one
             var start = builderView?.Sketch ?? (builderFor == "lobby" ? lobbySketch : skirmishSketch) ?? MapSketch.Load(-1) ?? MapSketch.Default();
+            builderView?.ReleaseTexture();   // memory pass 8: one sketch texture leaked per opening of the builder
             builderView = new MapBuilderView(start, UseSketch, builderFor == "lobby" ? "Use in lobby" : builderFor == "watch" ? "Use in Watch AI Match" : "Use in New Skirmish", p.Footer);
             p.Content.Add(builderView);
             return p.Root;

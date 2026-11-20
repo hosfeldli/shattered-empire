@@ -16,9 +16,9 @@ namespace SE.Runtime.UI
     /// <list type="bullet">
     /// <item>Base wheel: the top segment is the HQ tier upgrade, the base's sites (3 / 5 / 7 by tier, the
     /// rest shown locked) point toward their parcels, the perimeter sits near the bottom (build, rebuild,
-    /// upgrade); an empty site opens a sub-ring of the nine facilities. Outer arc: rally, this base's
+    /// upgrade); an empty site opens a sub-ring of the eight facilities. Outer arc: rally, this base's
     /// production, all production, HQ repair.</item>
-    /// <item>Building wheel: the top segment is building upgrades (era level, Armory/Barracks techs), then
+    /// <item>Building wheel: the top segment is building upgrades (era level, any techs the server offers), then
     /// training (green progress ring and queued count per unit), missiles. Outer arc: rally, reinforce,
     /// repair, demolish. Several buildings (or bases) selected share one roster and batch-queue across them.</item>
     /// <item>Build wheel (B / dock button): trench, road, sandbags, watchtower, bunker, AT, AA, outpost, new base;
@@ -1284,7 +1284,7 @@ namespace SE.Runtime.UI
             int[] all = own.Select(b => b.Id).ToArray();
             var trainers = own.Where(IsTrainer).Select(b => b.Id).ToArray();
             var hostTypes = new HashSet<string>(own.Where(b => b.Done).Select(b => b.Type));
-            // 1. the top segment: building upgrades (era level, Armory / Barracks techs)
+            // 1. the top segment: building upgrades (era level, any techs the server offers; none since 2026-11-20)
             items.Add(UpgradesItem(all, hostTypes));
             // 2. training, one wedge per unit type across the selection (batch-queued across every host)
             var types = new List<string>();
@@ -1398,18 +1398,18 @@ namespace SE.Runtime.UI
             project != null && project != "upgrade" && project != "repair" && project != "missile" && project != "tier" && !PerimeterProject(project);
 
         /// <summary>
-        /// The top segment of a building wheel. With techs (Armory, Barracks) it is an "Upgrades" sub-ring holding
+        /// The top segment of a building wheel. With techs (the server offers none since the Armory's removal, 2026-11-20) it is an "Upgrades" sub-ring holding
         /// the era level upgrade and the techs; with only a level upgrade it is that upgrade; otherwise disabled.
         /// </summary>
         RadialItem UpgradesItem(int[] ids, HashSet<string> hostTypes)
         {
             var level = LevelUpgradeItem(ids);
-            bool techs = Defs?["TECHS"] is JObject options && options.Properties().Any(p => hostTypes.Contains(ProtocolDecoder.Str(p.Value["at"], "armory")));
+            bool techs = Defs?["TECHS"] is JObject options && options.Properties().Any(p => hostTypes.Contains(ProtocolDecoder.Str(p.Value["at"], "")));
             if (techs)
                 return new RadialItem
                 {
                     Id = "upgrades", Icon = "upgrade", Title = "Upgrades",
-                    Detail = () => (hostTypes.Contains("barracks") && !hostTypes.Contains("armory") ? "Infantry equipment" : "Faction-wide military upgrades") + (level != null ? " and the building's era level" : "")
+                    Detail = () => (hostTypes.Contains("barracks") ? "Infantry equipment" : "Faction-wide military upgrades") + (level != null ? " and the building's era level" : "")
                         + (ProtocolDecoder.Bool(Defs?["RULESET"]?["upgradeLines"]) ? " · one upgrade per unit class (infantry, vehicle, air) per match" : ""),
                     Children = () =>
                     {
@@ -1812,7 +1812,7 @@ namespace SE.Runtime.UI
             foreach (var option in options.Properties())
             {
                 var d = option.Value;
-                string key = option.Name, at = ProtocolDecoder.Str(d["at"], "armory");
+                string key = option.Name, at = ProtocolDecoder.Str(d["at"], "");
                 if (!hostTypes.Contains(at)) continue;
                 int tier = ProtocolDecoder.Int(d["tier"], 1);
                 BuildingRecord Host()

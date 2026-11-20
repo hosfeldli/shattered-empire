@@ -169,27 +169,25 @@ test('every start and base stays reachable on foot across map styles with the lo
 
 test('troop upgrades are removed: refused, gone from the definitions, refunded from an older save', () => {
   for (const key of Object.keys(REMOVED_UPGRADES)) assert.equal(ACTION_UPGRADES[key], undefined, key);
-  assert.deepEqual(Object.keys(ACTION_UPGRADES).sort(), ['improved_logistics', 'networked_command']);
+  assert.deepEqual(Object.keys(ACTION_UPGRADES), [], 'the Armory command upgrades went too (2026-11-20)');
   const g = create(), civ = g.civs[0], site = g.sites[0];
   civ.res = { materials: 5000, energy: 5000 }; civ.age = 2;
   const slots = openSlots(g, site);
-  addFacility(g, civ, site, 'barracks', slots[0], { instant: true });
-  const armory = addFacility(g, civ, site, 'armory', slots[1], { instant: true });
+  const barracks = addFacility(g, civ, site, 'barracks', slots[0], { instant: true });
   for (const key of ['grenades', 'body_armor', 'heavy_armor', 'infantry_training', 'aircraft_systems']) {
     const r = g.command(0, { c: 'research', tech: key });
     assert.equal(r.code, 'upgrade_removed', key);
     assert.match(r.error, /removed/);
   }
-  assert.ok(!g.command(0, { c: 'research', tech: 'improved_logistics' }).error, 'the command upgrades stay');
   assert.ok(Object.keys(g.defs.TECHS).every((k) => !REMOVED_UPGRADES[k]), 'the client is offered none');
   // an older save: one removed upgrade owned, another in progress -> both refunded, techs dropped
-  armory.project = { kind: 'upgrade', key: 'heavy_armor', left: 10, total: 40 };
+  barracks.project = { kind: 'upgrade', key: 'heavy_armor', left: 10, total: 40 };
   civ.techs.add('grenades');
   const res = { ...civ.res };
   const copy = deserializeGame(JSON.parse(JSON.stringify(serializeGame(g))));
   const c0 = copy.civs[0];
   assert.ok(!c0.techs.has('grenades'));
-  assert.equal(copy.buildings.get(armory.id).project, null);
+  assert.equal(copy.buildings.get(barracks.id).project, null);
   assert.equal(c0.res.materials, res.materials + REMOVED_UPGRADES.grenades.cost.materials + REMOVED_UPGRADES.heavy_armor.cost.materials);
   assert.equal(c0.res.energy, res.energy + REMOVED_UPGRADES.grenades.cost.energy + REMOVED_UPGRADES.heavy_armor.cost.energy);
 });

@@ -456,23 +456,13 @@ export function fortifyBase(game, civ, site) {
  *  upgrades with a line, one per unit class) were removed on 2026-11-19; kept for existing importers (actionAI). */
 export function upgradeLineHolder() { return null; }
 
-export const UPGRADE_REMOVED = 'Troop upgrades have been removed: every unit now fights with its standard equipment.';
+export const UPGRADE_REMOVED = 'Upgrades have been removed: every unit now fights with its standard equipment.';
 
-export function startUpgrade(game, civ, key, buildingId = 0) {
+/** Command research { tech }. Every upgrade has been removed (the troop upgrades 2026-11-19; the Armory and its
+ *  command upgrades 2026-11-20), so this only refuses: 'upgrade_removed' for a former upgrade. */
+export function startUpgrade(game, civ, key) {
   if (Object.hasOwn(REMOVED_UPGRADES, key)) return { error: UPGRADE_REMOVED, code: 'upgrade_removed' };
-  const def = Object.hasOwn(ACTION_UPGRADES, key) ? ACTION_UPGRADES[key] : null;
-  if (!def || civ.techs.has(key)) return { error: 'That upgrade is unavailable.' };
-  const facility = 'armory';
-  const armories = [...game.buildings.values()].filter((b) => b.type === facility && b.done && b.owner === civ.id);
-  if (armories.some((b) => b.project?.key === key)) return { error: 'This upgrade is already in progress.' };
-  const b = civ.age + 1 >= def.tier ? armories.find((b) => !b.project && (!buildingId || b.id === buildingId)) : null;
-  if (!b) return { error: `An idle Tier ${TIERS[def.tier - 1].label} Armory is required.` };
-  const error = affordable(civ, def.cost);
-  if (error) return error;
-  const duration = def.time * (game.siteById.get(b.site).kind === 'research' ? .88 : 1);
-  b.project = { kind: 'upgrade', key, left: duration, total: duration };
-  pay(civ, def.cost);
-  return {};
+  return { error: 'That upgrade is unavailable.' };
 }
 
 /** Command cancelResearch { tech }: abandons an upgrade in progress. Its cost was paid up front and is not refunded (R2). */

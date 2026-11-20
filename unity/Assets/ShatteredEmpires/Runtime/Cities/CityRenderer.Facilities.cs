@@ -134,8 +134,6 @@ namespace SE.Runtime.Cities
             for (int k = 0; k < 2; k++) TeamRoofBand(c, -.31f + k * .39f, -.29f, .38f, .295f);
         }
 
-        void Arsenal(in Ctx c) => Arsenal(c, false);
-
         /// <summary>The armoury hall; <paramref name="heavy"/>: the heavy weapons facility builds on it (its yard holds a gantry, not the magazines).</summary>
         void Arsenal(in Ctx c, bool heavy)
         {
@@ -252,7 +250,7 @@ namespace SE.Runtime.Cities
         static readonly HashSet<string> GameplayFacilities = new HashSet<string>
         {
             "town", "barracks", "camp", "depot", "power_plant", "motor_works", "heavy_weapons", "heavy_assembly", "airfield",
-            "armory", "defense_works", "advanced_lab", "missile_silo", "base_site",
+            "defense_works", "advanced_lab", "missile_silo", "base_site",
         };
 
         /// <summary>

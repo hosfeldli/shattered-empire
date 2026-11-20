@@ -224,6 +224,13 @@ namespace SE.Runtime.Effects
             baseGone.Clear();
             foreach (var id in baseState.Keys) if (!baseSeen.Contains(id)) baseGone.Add(id);
             foreach (var id in baseGone) baseState.Remove(id);
+            // notices older than the 90 s hold no longer matter (memory pass 8: never pruned before)
+            if (approachNoted.Count > 0)
+            {
+                baseGone.Clear();
+                foreach (var pair in approachNoted) if (time - pair.Value >= 90f || pair.Value > time) baseGone.Add(pair.Key);
+                foreach (var id in baseGone) approachNoted.Remove(id);
+            }
         }
 
         public void Dispose()

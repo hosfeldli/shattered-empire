@@ -12,7 +12,7 @@ namespace SE.Runtime.Cities
     /// Every base facility gets three things on top of its model, all static and composed with the building:
     /// <list type="bullet">
     /// <item>a per-type accent colour (<see cref="FacilityAccent"/>): green barracks, blue vehicle works, red heavy
-    /// weapons, sky airfield, yellow generator, orange materials processor, violet armory, teal lab, magenta silo. It
+    /// weapons, sky airfield, yellow generator, orange materials processor, teal lab, magenta silo. It
     /// rims the building's pad (SocketPad) and fills the roof emblem, so a base reads by colour even at operational zoom;</item>
     /// <item>a roof emblem: an accent plate with a dark rim and the type's white sign, laid flat on the highest broad
     /// part of the roof (found by sampling the authored mesh, or from the recipe's known roof) and turned so it reads
@@ -20,7 +20,7 @@ namespace SE.Runtime.Cities
     /// <item>a landmark silhouette (<see cref="FacilityLandmark"/>): a tall flag at the barracks, cooling towers at the
     /// generator, silos and a conveyor at the processor, accent door frames and a vehicle pad at the vehicle works, a
     /// tower crane at the heavy weapons facility, a parked jet and runway thresholds at the airfield, a radome at the lab,
-    /// a missile on its erector at the silo, a shell rack at the armory.</item>
+    /// a missile on its erector at the silo.</item>
     /// </list>
     /// Composed after the footprint is recorded (ComposeBuilding), so none of it changes the collision footprints.
     /// </summary>
@@ -37,7 +37,6 @@ namespace SE.Runtime.Cities
                 case "airfield": color = new float3(.62f, .90f, 1f); return true;
                 case "power_plant": color = new float3(1f, .86f, .14f); return true;
                 case "depot": color = new float3(1f, .55f, .10f); return true;
-                case "armory": color = new float3(.68f, .44f, 1f); return true;
                 case "advanced_lab": color = new float3(.18f, .95f, .80f); return true;
                 case "missile_silo": color = new float3(1f, .30f, .74f); return true;
                 case "defense_works": color = new float3(.86f, .74f, .48f); return true;
@@ -54,7 +53,6 @@ namespace SE.Runtime.Cities
         static readonly Dictionary<string, RoofSpot> RecipeRoofs = new Dictionary<string, RoofSpot>
         {
             ["airfield"] = new RoofSpot { X = -.31f, Z = -.29f, Y = .307f, Size = .25f },          // the first hangar
-            ["armory"] = new RoofSpot { X = -.12f, Z = -.18f, Y = .432f, Size = .28f },            // the hall ridge
             ["heavy_weapons"] = new RoofSpot { X = -.12f, Z = -.18f, Y = .432f, Size = .28f },
             ["defense_works"] = new RoofSpot { X = -.22f, Z = -.24f, Y = .292f, Size = .27f },
             ["advanced_lab"] = new RoofSpot { X = -.22f, Z = -.10f, Y = .518f, Size = .24f },      // the institute, in front of its dish mast
@@ -74,8 +72,18 @@ namespace SE.Runtime.Cities
         static (Vector3[] v, int[] t) MeshTopData(Part part)
         {
             if (meshTops.TryGetValue(part, out var data)) return data;
+            data = BaseModelNames.TryGetValue(part, out var name) ? MeshTopData(name) : (null, null);
+            meshTops[part] = data;
+            return data;
+        }
+
+        static readonly Dictionary<string, (Vector3[] v, int[] t)> meshTopsByName = new Dictionary<string, (Vector3[], int[])>();
+
+        /// <summary>A model's positions and triangles by name (base models and the staged Bld_* stages), cached.</summary>
+        static (Vector3[] v, int[] t) MeshTopData(string name)
+        {
+            if (meshTopsByName.TryGetValue(name, out var data)) return data;
             data = (null, null);
-            if (BaseModelNames.TryGetValue(part, out var name))
             {
                 var asset = Resources.Load<TextAsset>("Models/" + name);
                 if (asset != null)
@@ -98,7 +106,7 @@ namespace SE.Runtime.Cities
                     Resources.UnloadAsset(asset);
                 }
             }
-            meshTops[part] = data;
+            meshTopsByName[name] = data;
             return data;
         }
 
@@ -164,9 +172,19 @@ namespace SE.Runtime.Cities
         }
 
         /// <summary>The roof top at (lx, lz) of a base facility (recipe frame), for damage marks; false when unknown.</summary>
-        static bool RoofTopAt(string type, float lx, float lz, out float y)
+        static bool RoofTopAt(string type, float lx, float lz, out float y, int stage = -1, int tier = 1)
         {
             y = 0;
+            if (stage >= 0 && StagedKey(type, tier) is string key)
+            {
+                // the staged model's actual roof at this stage: char lands on what is left of it
+                string stageName = "Bld_" + key + "_s" + Mathf.Clamp(stage, 0, 2);
+                var (sv, st) = MeshTopData(stageName + "_lo");      // the LOD where there is one: same roofs, fewer triangles to scan
+                if (sv == null) (sv, st) = MeshTopData(stageName);
+                if (sv == null) return false;
+                y = MeshTop(sv, st, lx, lz);
+                return y > .1f;
+            }
             if (BaseParts.TryGetValue(type, out var part))
             {
                 var (v, t) = MeshTopData(part);
@@ -185,6 +203,9 @@ namespace SE.Runtime.Cities
         {
             if (!FacilityAccent(type, out var accent)) return;
             float glow = memory ? 0f : 1f;
+            // a staged model carries its landmark (cooling towers, silos, gantry, radome...) and its roof emblem, modelled on
+            // its own roof, turned with the building and kept through the damage stages (tools/blender/build_buildings.py)
+            if (StagedKey(type, 1) != null) return;
             FacilityLandmark(c, type, accent, glow);
             if (RoofSpotOf(type, out var spot)) RoofEmblem(c, spot, type, accent, glow);
         }
@@ -228,9 +249,6 @@ namespace SE.Runtime.Cities
                 case "depot":                                        // a crate
                     Bar(0, .25f, Across, T, .62f); Bar(0, -.25f, Across, T, .62f);
                     Bar(-.25f, 0, 0, T, .62f); Bar(.25f, 0, 0, T, .62f); Bar(0, 0, Diag, T * .8f, .66f); break;
-                case "armory":                                       // three shells
-                    for (int k = -1; k <= 1; k++) { Bar(k * .22f, -.06f, 0, T, .44f); Bar(k * .22f, .22f, Diag, .1f, .1f); }
-                    break;
                 case "advanced_lab":                                 // an orbit (octagon) round a core
                     for (int k = 0; k < 8; k++)
                     {
@@ -350,15 +368,6 @@ namespace SE.Runtime.Cities
                         Sig(c, Part.Box, x, z, .03f, new float3(.012f, .07f, .11f), accent * .85f, k * math.PI * .25f);
                     break;
                 }
-                case "armory":
-                    // a rack of three upright shells by the front annex, accent tips
-                    for (int k = 0; k < 3; k++)
-                    {
-                        float x = .30f + k * .07f, z = .17f;
-                        Sig(c, Part.Cylinder, x, z, 0, new float3(.05f, .16f, .05f), new float3(.62f, .55f, .34f));
-                        Sig(c, Part.Cone, x, z, .16f, new float3(.05f, .07f, .05f), accent, 0, .4f * glow);
-                    }
-                    break;
             }
         }
     }

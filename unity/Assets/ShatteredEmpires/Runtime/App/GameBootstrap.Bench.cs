@@ -201,6 +201,14 @@ namespace SE.Runtime.App
                 ["particleSystems"] = Object.FindObjectsByType<ParticleSystem>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
                 ["meshes"] = Resources.FindObjectsOfTypeAll<Mesh>().Length, ["materials"] = Resources.FindObjectsOfTypeAll<Material>().Length,
                 ["textures"] = Resources.FindObjectsOfTypeAll<Texture>().Length,
+                // memory pass 8: the session-growth signals (native allocator, Mono heap, per-type objects, UI elements)
+                ["allocatedMb"] = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() >> 20,
+                ["reservedMb"] = UnityEngine.Profiling.Profiler.GetTotalReservedMemoryLong() >> 20,
+                ["monoUsedMb"] = UnityEngine.Profiling.Profiler.GetMonoUsedSizeLong() >> 20,
+                ["gcTotal"] = System.GC.CollectionCount(0),
+                ["texture2d"] = Resources.FindObjectsOfTypeAll<Texture2D>().Length, ["renderTextures"] = Resources.FindObjectsOfTypeAll<RenderTexture>().Length,
+                ["audioClips"] = Resources.FindObjectsOfTypeAll<AudioClip>().Length,
+                ["uiElements"] = uiDocument != null && uiDocument.rootVisualElement != null ? CountUi(uiDocument.rootVisualElement) : -1,
             };
             var parts = new JObject(); string[] pn = { "geo", "units", "trenches", "impacts", "buildings" };
             for (int k = 0; k < 5; k++) parts[pn[k]] = new JArray(R(session.PartMs[k] - w.Part0[k]), R(session.PartMax[k]));
@@ -241,6 +249,7 @@ namespace SE.Runtime.App
         }
 
         static double R(double v) => System.Math.Round(v, 2);
+        static int CountUi(UnityEngine.UIElements.VisualElement e) { int n = 1; for (int i = 0; i < e.hierarchy.childCount; i++) n += CountUi(e.hierarchy[i]); return n; }
 
         static List<float> ParseZooms(string list)
         {

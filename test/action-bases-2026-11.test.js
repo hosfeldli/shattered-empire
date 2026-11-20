@@ -192,17 +192,6 @@ test('men and squad firepower; small arms still hurt tracked armour (no Heavy Ar
   assert.equal(row[row.length - 1][8], menOf(squad), 'men count in the unit record extra[8]');
 });
 
-test('networked command widens vision', () => {
-  const g = create(), s = g.sites.find((v) => v.slots && v.owner < 0); g.units.clear(); reindex(g);
-  g.civs[0].visible.fill(1); g.civs[0].detect.fill(1);
-  const squad = g.spawn(g.civs[0], 'rifle_squad', s, .2);
-  assert.ok(squad);
-  ticks(g, 10);
-  const before = g.civs[0].visible.reduce((n, v) => n + v, 0);
-  g.civs[0].techs.add('networked_command'); g.refreshVisibility();
-  assert.ok(g.civs[0].visible.reduce((n, v) => n + v, 0) > before);
-});
-
 test('terrain works: engineers raise the ground around a point in own territory', () => {
   const g = create(); rich(g);
   const civ = g.civs[0];

@@ -1,7 +1,7 @@
 import { T } from './constants.js';
 import { NB, disk } from './hex.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, MISSILE_PROJECT, TIERS } from './actionDefinitions.js';
-import { advanceBase, armyCapacity, canPay, construct, constructDefense, demolish, establish, facilitiesAt, fieldCost, fortifyBase, headquarters, openSlots, repairFacility, startUpgrade, train, upgradeLineHolder,
+import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, TIERS } from './actionDefinitions.js';
+import { advanceBase, armyCapacity, canPay, construct, constructDefense, demolish, establish, facilitiesAt, fieldCost, fortifyBase, headquarters, openSlots, repairFacility, train,
   upgradeBuilding, upgradeDefenses, settlementCost } from './actionBases.js';
 import { productionCommitment, queuedCount } from './actionProduction.js';
 import { CITY_DEFENSES, NEW_BASE_GAP } from './actionDefinitions.js';
@@ -126,10 +126,10 @@ function buildArmy(game, civ, bases, own, observed, p) {
     if (hq.hp < hq.maxHp * .70 && !hq.project) repairFacility(game, civ, hq.id);
     const exists = (type) => facilities.some((b) => b.type === type);
     const main = s === bases[0];
-    // a second Materials Processor before the Armory: materials, not energy, limit how many troops an AI can field
+    // a second Materials Processor early: materials, not energy, limit how many troops an AI can field
     // W2: enemy air seen in the last couple of minutes (p.enemyAir) brings the Heavy Weapons Works (AA vehicles) forward
-    let build = main ? ['depot', 'barracks', 'power_plant', 'motor_works', 'depot', 'armory', ...(Math.max(enemyAir, p.enemyAir || 0) >= 1 ? ['heavy_weapons', 'airfield'] : ['airfield', 'heavy_weapons']), 'advanced_lab'] :
-      s.kind === 'research' ? ['power_plant', 'armory', 'advanced_lab', 'depot', 'missile_silo', 'airfield'] :
+    let build = main ? ['depot', 'barracks', 'power_plant', 'motor_works', 'depot', ...(Math.max(enemyAir, p.enemyAir || 0) >= 1 ? ['heavy_weapons', 'airfield'] : ['airfield', 'heavy_weapons']), 'advanced_lab'] :
+      s.kind === 'research' ? ['power_plant', 'advanced_lab', 'depot', 'missile_silo', 'airfield'] :
       // W2: the second base puts up the airfield (or, against enemy air, the AA-producing Heavy Weapons Facility) fourth,
       // so the AI fields an air arm at all (Wave 1: airfields only appeared at the seventh slot of a tier-3 base)
       bases.indexOf(s) === 1 ? ['depot', 'power_plant', s.kind === 'military' ? 'barracks' : 'motor_works',
@@ -222,19 +222,7 @@ function buildArmy(game, civ, bases, own, observed, p) {
       stock.materials -= ACTION_UNITS[type].cost.materials || 0; stock.energy -= ACTION_UNITS[type].cost.energy || 0;
     }
   }
-  // Upgrades: barracks kit first (cheap, immediate), then the armory's; affordable once the army floor is met,
-  // without waiting to bank a fortune (energy usually piles up, materials are what is scarce).
-  if (own.length >= Math.max(8, armyFloor(game) * .7) && game.time > (p.upgradeAt || 0) && !nukeReserve) {
-    p.upgradeAt = game.time + 6;
-    // one upgrade per unit class: a line already taken (researched or in progress) is skipped
-    const order = Object.keys(ACTION_UPGRADES).filter((key) => !civ.techs.has(key) && ACTION_UPGRADES[key].tier <= highest && !upgradeLineHolder(game, civ, key))
-      .sort((a, b) => Number(!!ACTION_UPGRADES[b].at) - Number(!!ACTION_UPGRADES[a].at));
-    for (const key of order) {
-      const c = ACTION_UPGRADES[key].cost;
-      if (stock.materials < c.materials + 60 || stock.energy < (c.energy || 0)) continue;   // W1: after queued commitments
-      if (!startUpgrade(game, civ, key).error) break;
-    }
-  }
+  // (no upgrades to research: the troop upgrades went 2026-11-19, the Armory and its command upgrades 2026-11-20)
 }
 
 function frontier(game, civ, start, p) {

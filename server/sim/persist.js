@@ -5,7 +5,7 @@ import { Game } from './game.js';
 import { ActionGame } from './actionGame.js';
 import { migrateProduction } from './actionProduction.js';
 import { markDenseForest } from './actionMap.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, REMOVED_UPGRADES } from './actionDefinitions.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, REMOVED_BUILDINGS, REMOVED_UPGRADES } from './actionDefinitions.js';
 import { WRAP } from './hex.js';
 import { BUILDINGS, TECHS, POLICIES } from './constants.js';
 import { AI } from './ai.js';
@@ -100,7 +100,9 @@ export function restoreGame(data) {
   setNextArmyId(Math.max(getNextArmyId(), data.nextArmyId || 1));
   g.roads.load(data.roads); g.roads.traffic = new Map(data.roads.traffic || []);
   g.units = new Map(data.units.map((u) => [u.id, u]));
-  // buildings whose type has since left the game (seismic stations, stabilizers) are dropped
+  // buildings whose type has since left the game (seismic stations, stabilizers) are dropped; an action-mode one listed
+  // in REMOVED_BUILDINGS (the Armory, 2026-11-20) is refunded below, once the civs are restored
+  const retired = action ? data.buildings.filter((b) => Object.hasOwn(REMOVED_BUILDINGS, b.type)) : [];
   g.buildings = new Map(data.buildings.filter((b) => (action ? ACTION_BUILDINGS : BUILDINGS)[b.type]).map((b) => [b.id, b]));
   g.cities = new Map(data.cities.map((c) => [c.id, { ...c, freight: c.capital ? Infinity : c.freight ?? 0 }]));
   // players' cities run themselves by default now: an older save's untouched advisor becomes autonomous
@@ -123,8 +125,8 @@ export function restoreGame(data) {
     for (const k of CIV_ARRAYS) c[k] = fromB64(o.$arrays[k], c[k].constructor);
     // saves from before difficulty profile v2 keep the multipliers they were started with
     if (o.diffProfile === undefined && c.isAI && !c.isRebel) { c.diffProfile = 'legacy'; c.fairPlay = false; }
-    // technologies and policies that have since left the game are forgotten; a removed troop upgrade (2026-11-19)
-    // the save owned is refunded at its full cost
+    // technologies and policies that have since left the game are forgotten; a removed upgrade the save owned (the
+    // troop upgrades 2026-11-19, the Armory's Improved Logistics and Networked Command 2026-11-20) is refunded in full
     if (action && c.techs instanceof Set) for (const t of c.techs) if (Object.hasOwn(REMOVED_UPGRADES, t)) refundUpgrade(c, t);
     if (c.techs instanceof Set) for (const t of [...c.techs]) if (!(action ? ACTION_UPGRADES : TECHS)[t]) c.techs.delete(t);
     if (c.policies instanceof Set) for (const t of [...c.policies]) if (!POLICIES[t]) c.policies.delete(t);
@@ -154,6 +156,7 @@ export function restoreGame(data) {
         if (g.civs[b.owner]) refundUpgrade(g.civs[b.owner], b.project.key);
         b.project = null;
       }
+    retireBuildings(g, retired);
     g.materialCaches = new Map(data.action.materialCaches || []);
     // energy caches (2026-11-19): the spawn schedule; a save from before them starts it at its first step
     if (data.action.energyCacheAt != null) g.energyCacheAt = data.action.energyCacheAt;
@@ -198,7 +201,29 @@ export function restoreGame(data) {
   return g;
 }
 
-/** Gives a civ back what a removed troop upgrade cost (actionDefinitions REMOVED_UPGRADES). */
+/**
+ * 2026-11-20: a building whose type has left the game (actionDefinitions REMOVED_BUILDINGS: the Armory) was dropped
+ * from the save above; its owner gets its full cost back (construction is paid when ordered, so a site still under
+ * construction too), plus any removed upgrade it was researching. Ruins, lot history and fog-of-war memory of the
+ * type are forgotten so no client is sent a building type it no longer knows. Deterministic: save order.
+ */
+function retireBuildings(g, retired) {
+  for (const b of retired) {
+    const civ = g.civs[b.owner];
+    if (!civ?.res) continue;
+    for (const [k, v] of Object.entries(REMOVED_BUILDINGS[b.type].cost)) civ.res[k] = (civ.res[k] || 0) + v;
+    if (b.project?.kind === 'upgrade' && Object.hasOwn(REMOVED_UPGRADES, b.project.key)) refundUpgrade(civ, b.project.key);
+  }
+  const gone = (type) => Object.hasOwn(REMOVED_BUILDINGS, type);
+  for (const [tile, r] of [...g.ruins]) if (gone(r.type)) g.ruins.delete(tile);
+  for (const s of g.sites) if (s.history) for (const [slot, h] of Object.entries(s.history)) if (gone(h?.type)) delete s.history[slot];
+  for (const civ of g.civs) {
+    if (civ.ruinIntel instanceof Map) for (const [tile, type] of [...civ.ruinIntel]) if (gone(type)) civ.ruinIntel.delete(tile);
+    if (civ.siteIntel instanceof Map) for (const wire of civ.siteIntel.values()) for (const v of wire?.parcels || []) if (gone(v[8])) v[8] = null;
+  }
+}
+
+/** Gives a civ back what a removed upgrade cost (actionDefinitions REMOVED_UPGRADES). */
 function refundUpgrade(civ, key) {
   if (!civ.res) return;
   for (const [k, v] of Object.entries(REMOVED_UPGRADES[key].cost)) civ.res[k] = (civ.res[k] || 0) + v;

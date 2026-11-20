@@ -16,7 +16,7 @@ namespace SE.Runtime.UI
     public sealed partial class Hud
     {
         static readonly string[] TierLabels = { "I", "II", "III" };
-        static readonly string[] Facilities = { "depot", "power_plant", "barracks", "armory", "motor_works", "heavy_weapons", "airfield", "advanced_lab", "missile_silo" };
+        static readonly string[] Facilities = { "depot", "power_plant", "barracks", "motor_works", "heavy_weapons", "airfield", "advanced_lab", "missile_silo" };
         static readonly string[] Defenses = { "barricade", "guard_post", "bunker", "turret", "aa_battery", "sensor_post", "repair_point", "artillery_post", "fort" };
 
         static string Tier(int tier) => TierLabels[Mathf.Clamp(tier - 1, 0, 2)];
@@ -1006,7 +1006,18 @@ namespace SE.Runtime.UI
         {
             foreach (var marker in objectiveMarkers.Values)
                 if (marker.Shown && marker.SeenFrame != frame) { marker.Shown = false; marker.Root.style.display = DisplayStyle.None; }
+            // memory pass 8: markers of sites that no longer exist (destroyed, or an earlier match's) are removed, not
+            // kept hidden for the rest of the session
+            if (objectiveMarkers.Count > session.Objectives.Count && frame >= markerPruneFrame)
+            {
+                markerPruneFrame = frame + 120;
+                markerGone.Clear();
+                foreach (var pair in objectiveMarkers) if (!session.Objectives.ContainsKey(pair.Key)) markerGone.Add(pair.Key);
+                foreach (int id in markerGone) { objectiveMarkers[id].Root.RemoveFromHierarchy(); objectiveMarkers.Remove(id); }
+            }
         }
+        readonly List<int> markerGone = new List<int>();
+        int markerPruneFrame;
 
         // ------------------------------------------------------------------ tutorial and result
         void ActionTutorial(float time)

@@ -58,6 +58,8 @@ namespace SE.Runtime.Cities
         bool HistoricalFacility(in Ctx c, string type)
         {
             if (string.IsNullOrEmpty(type)) return false;
+            // a staged Blender model's destroyed stage (s3, CityRenderer.StagedModels.cs) is the ruin where there is one
+            if (StagedRuin(c, type)) return true;
             var concrete = new float3(.83f, .83f, .77f);
             var charred = new float3(.39f, .41f, .37f);
             switch (type)
@@ -83,7 +85,7 @@ namespace SE.Runtime.Cities
                     for (int k = 0; k < 3; k++) Module(c, Part.Asphalt, -.30f + k * .31f, .20f, new float3(.27f, .004f, .22f), charred, (k - 1) * .025f);
                     Module(c, Part.Broken, .42f, -.30f, new float3(.15f, .30f, .17f), concrete * .88f);
                     break;
-                case "advanced_lab": case "armory": case "missile_silo":
+                case "advanced_lab": case "missile_silo":
                     Module(c, Part.Broken, -.22f, -.21f, new float3(.35f, type == "advanced_lab" ? .50f : .31f, .38f), concrete);
                     Module(c, Part.Shell, .27f, -.18f, new float3(.35f, .22f, .42f), concrete * .91f);
                     Module(c, Part.Collapse, .06f, .27f, new float3(.54f, .15f, .28f), concrete * .82f);

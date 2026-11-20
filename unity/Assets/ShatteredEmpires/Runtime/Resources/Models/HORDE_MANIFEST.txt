@@ -1,0 +1,22 @@
+Built by tools/blender/build_horde.py (name vertices triangles)
+Horde_Crawler0 1807 3598
+Horde_Crawler1 508 1000
+Horde_Crawler2 306 402
+Horde_Husk0 1602 3200
+Horde_Husk1 477 950
+Horde_Husk2 314 474
+Horde_Spitter0 1801 3598
+Horde_Spitter1 502 1000
+Horde_Spitter2 220 300
+Horde_Mauler0 2252 4500
+Horde_Mauler1 652 1300
+Horde_Mauler2 402 642
+Horde_Broodsac0 1802 3600
+Horde_Broodsac1 502 1000
+Horde_Broodsac2 208 336
+Horde_Colossus0 4504 9000
+Horde_Colossus1 1304 2600
+Horde_Colossus2 424 696
+Horde_Hive0 5230 9999
+Horde_Hive1 1522 2800
+Horde_Hive2 433 606

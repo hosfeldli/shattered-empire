@@ -88,7 +88,11 @@ namespace SE.Runtime.Cities
         bool ReplayBase(int siteId, ulong key)
         {
             if (!baseCache.TryGetValue(siteId, out var rec) || rec.Key != key) return false;
-            foreach (var (part, data) in rec.Instances) current.Batches[part].Add(data);
+            foreach (var (part, data) in rec.Instances)
+            {
+                if (part >= current.Batches.Length) EnsureModelBatches(current);   // staged models (CityRenderer.StagedModels.cs)
+                current.Batches[part].Add(data);
+            }
             streetGeometry.Replay(rec.Quads);
             streetQuads += rec.Quads.Count;
             current.Flags.AddRange(rec.Flags);

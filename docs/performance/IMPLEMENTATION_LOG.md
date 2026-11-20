@@ -1042,3 +1042,70 @@ are the per-system reductions and the thread-CPU drop. Navigation (40 %) and AI 
   share unit records between viewers of the same side (pvp teams), build the econ block's battlefield once per round for
   all god views, send paths only for selected units (protocol change), or move encoding to a second worker thread.
 * Run `node tools/telemetry-setup.mjs` (additive) before deploying a server with schema v3.
+
+# Pass 8: memory growth (2026-11-20, client, TELEMETRY_ANALYSIS_2026-11-19 B4)
+
+Symptom (production, builds up to 9700bb8): Unity allocated memory 402 → 457 MB over ~80 min on a static post-match
+screen (≈0.7 MB/min, ~0 GC collections, no network traffic) and 323 → 451 / 378 → 694 MB over a 64-minute match; CPU
+frame time 17 → 34 ms (7950X) and 37 → 65 ms (i5) while the timed `GameBootstrap.Update` phases stayed flat.
+
+## Audit
+
+Static audit of all of `Runtime/` (154 files) plus `Core/` and `Net/`: every `new Mesh/Material/Texture2D/RenderTexture/
+GraphicsBuffer/InstanceBatch/AudioClip/GameObject`, every `Allocator.Persistent`, `ProfilerRecorder`, every dictionary or
+list keyed by an entity id, every VisualElement created outside a one-time build, every `+=` on a long-lived event.
+Renderers, the HUD and the session are long-lived and reset on a new world (`world.Epoch`), and nearly all of it is
+correct: textures are destroyed before re-creation, effect pools are fixed rings, audio sources and clips are made
+once, UI notices/rewards/bars are capped and removed, event handlers are swapped with the connection.
+
+**Leaks found and fixed**
+
+| # | Where | What grew | Why | Fix |
+|---|---|---|---|---|
+| M8-1 | `App/ClientTelemetry.cs` `Frame` / `StartRecorders` (0.6.0: `Frame`, `gcAlloc`) | native memory and per-frame profiler work, every frame, in every phase (menu, match, post-match) while Share diagnostics is on | `if (!rec.Valid) rec = ProfilerRecorder.StartNew(...)` every frame. `StartNew` always creates a native recorder (`Create(GetByName(...))`, UnityCsReference ProfilerRecorder.bindings.cs) and `Valid` is `handle != 0 && GetValid(handle)`: for a counter the player does not publish ("GC Allocated In Frame" is development-only, the code's own comment says so; Pass 7 added 10 more, some of them, e.g. the object counts, likely development-only too) `Valid` stays false, so a new recorder was made each frame and the previous one was never disposed. At ~60 fps, ≈200 bytes a frame is the observed 0.7 MB/min, and every live recorder is attached to the counter, so frame cost rises with session age outside the timed phases. The editor (where earlier soaks ran) publishes these counters, so it never showed up there. | each recorder is started once per enable and always `Dispose`d (not only when `Valid`) when diagnostics are switched off; `Process` handles disposed |
+| M8-2 | `UI/Hud.Action.cs` `objectiveMarkers` | VisualElements (marker root, badge, icon, label) | keyed by site id, only hidden, never removed: destroyed sites and every earlier match's sites stayed in the UI tree | markers of sites no longer in `session.Objectives` are removed (checked every 120 frames when there are more markers than sites) |
+| M8-3 | `Rendering/InstanceBatch.cs` | native memory per batch | the 4–64-instance Persistent array and three MaterialPropertyBlocks were allocated in the constructor. A city cell has 44 part batches and a chunk can hold two cells (shown + back buffer, `CityRenderer.Slicing.cs`), most parts empty: ~100 KB + 132 native property blocks per empty cell, growing as chunks get composed through a match. Disposed blocks were left to the finaliser | array allocated on first `Add`/`Grow`/`Data` access (`Data` is now a `ref` property, callers unchanged), blocks on first upload; `Dispose` clears the blocks |
+| M8-4 | `Cities/CityRenderer.Catalog.cs` `SetGhost` | ghost cell's `Flags` list | cleared batches but not flags on each recompose (every cursor/parcel move while placing) | `ghost.Flags.Clear()` |
+| M8-5 | `Cities/CityRenderer.cs` epoch reset, `CityRenderer.Defenses.cs` `AnimateTurrets` | `DamageEmitters`, `embrasures`, `mounts` | per-building state never reset on a new world; emitters and embrasures of destroyed buildings never removed (ids are reused, so a new match's building could smoke with an old one's fire) | cleared on a new world; gone buildings pruned every 2 s |
+| M8-6 | `Core/Units/UnitStore.cs` `Remove` | `Paths` | a removed unit's path stayed until the server listed it in `PathsGone` or a full resync | removed with the unit |
+| M8-7 | `UI/MapPreview.cs` `cache` | Texture2D | every seat layout / team split / edited sketch made a new preview texture, never destroyed | capped at the newest 128 (oldest destroyed) |
+| M8-8 | `UI/MapBuilder.cs`, `MainMenu.Builder.cs` | Texture2D | one sketch canvas texture per opening of the map builder | the replaced view's texture is destroyed |
+| M8-9 | `UI/Hud.Overlay.cs` `orderMarks` (static), `underFire` | dictionary entries | pruned only while the battle overlay draws | cleared while it is hidden (entries live 1.5 / 3.5 s) |
+| M8-10 | `Effects/WeatherPresenter.cs` `approachNoted` | dictionary entries | one per airfield/HQ that ever had a storm notice | entries past the 90 s hold pruned |
+
+**Checked, bounded, left as is:** `UnitRenderer.lastShot/shotCounts/incoming` (cleared at 4,096), city back-cell buffers
+(bounded by the map, freed per match; reuse is deliberate), `InstanceBatch.Grow` never shrinking (bounded by the session
+peak), `UiKit` fader `ConditionalWeakTable` (managed, weak), `WebSocketLink` cancellation sources (managed),
+`HordeRenderer.Rising` (Blight agent's file; ids that never become units stay until the next match's welcome).
+
+**Soak harness:** the `-perf-soak` window rows now also log `allocatedMb` (`Profiler.GetTotalAllocatedMemoryLong`),
+`reservedMb`, `monoUsedMb`, `gcTotal`, Texture2D / RenderTexture / AudioClip counts and the UI element count.
+
+## Measurements
+
+**M8-1 confirmed in the editor** (edit mode, `execute_code`): `ProfilerRecorder.StartNew` on a counter that does not exist
+returns `Valid == false` and still grows Unity's allocated memory by **345 bytes per recorder** (20,001 recorders); a
+counter the editor publishes ("GC Allocated In Frame") is `Valid`. 345 B × the post-match frame rate of 36–52 fps is
+0.75–1.1 MB/min, which matches production's 0.7 MB/min on the static screen with ~0 GC (the recorder is a struct, so
+no managed garbage). The frame-time side (each live recorder attached to the counter and serviced every frame) is
+inferred, not measured. In a 0.6.0 release player one recorder leaked per frame; the Pass 7 tree (not yet released)
+could leak up to 11 per frame.
+
+**Not measured:** the long soak (minutes of a match, several match restarts and returns to the menu, per-type object
+counts every minute). The editor was not running for most of this pass; when it came up it was another session's,
+importing, and an editor soak would not show M8-1 anyway (the editor publishes the development-only counters). To
+confirm in a release player: `-perf-soak 60 -perf-window 60` against a local server (the window rows now carry
+`allocatedMb`, `monoUsedMb`, per-type counts and `uiElements`), or simply compare the next release's `client_minute`
+rows on the post-match screen (`objects[]`, `untracked` ms) with B4's table. Expected: `allocatedMb` flat on a static
+screen, CPU frame time no longer rising with session age; in matches, lower city native memory (M8-3) and no
+growth across matches from markers/emitters (M8-2, M8-5).
+
+Compile: `D:/Projects/se_scratch/p7/cscheck.ps1` (Unity's Roslyn against the project's assemblies) clean; the one-line
+`Core/Units/UnitStore.cs` change is outside that check (SE.Core is referenced as a built DLL).
+
+**Residual risks:** M8-3 allocates a batch's array and property blocks lazily on the main thread at the first add/upload
+(the same work as before, later); `InstanceBatch.Data` is now a `ref` property that allocates on access. M8-7 can
+destroy a preview texture still shown on a menu page once more than 128 distinct previews were made in one session
+(the page shows it again when it redraws). M8-2 removes markers of sites the session no longer lists; a site that
+briefly leaves `Objectives` gets a new marker when it returns. The frame-time creep is attributed to M8-1 by inference;
+if `untracked` ms still rises in the next release, look at UI Toolkit repaint and render-thread submission next.

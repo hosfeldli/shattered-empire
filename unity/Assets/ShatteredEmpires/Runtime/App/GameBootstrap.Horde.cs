@@ -65,7 +65,7 @@ namespace SE.Runtime.App
             HordeWaveCues();
             HordeEvents(world);
             float camX = SE.Runtime.Rendering.ViewLod.EyeOr(rts.Cam).x;
-            hordeRenderer.Update(session.Units, world, hordeState, camX, rts.Focus, rts.Distance, time, dt);
+            hordeRenderer.Update(session.Units, world, hordeState, rts.Cam, camX, rts.Distance, time, dt);
             hordeHud?.Update(hordeState, time, p => rts.ToScreen(p), world.GroundHeight, new Vector2(rts.Focus.x, rts.Focus.z), rts.Distance);
             float pressure = hordeState.Pressure;
             hordeAudio?.Update(pressure, audioDirector != null ? audioDirector.Master * Mathf.Max(.35f, audioDirector.MusicVolume * 1.5f) : 0, dt);

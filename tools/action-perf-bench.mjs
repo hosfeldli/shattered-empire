@@ -114,10 +114,9 @@ async function runScenario(job) {
   // -------- scenario staging
   const center = g.sites.find((s) => s.kind === 'metro') || g.sites.find((s) => s.owner < 0) || g.sites[0];
   if (job.kind === 'developed') {
-    const pending = ['barracks', 'motor_works', 'power_plant', 'depot', 'airfield', 'armory', 'heavy_weapons', 'advanced_lab'];
+    const pending = ['barracks', 'motor_works', 'power_plant', 'depot', 'airfield', 'heavy_weapons', 'advanced_lab'];
     for (const civ of g.civs) {
       civ.age = 2; civ.res = { materials: 9000, energy: 5000 };
-      civ.techs.add('improved_logistics');   // (the troop upgrades were removed 2026-11-19)
       const home = g.sites.find((s) => s.owner === civ.id && s.slots);
       const extra = g.sites.filter((s) => s.slots && s.owner < 0).sort((a, b) => distance(a, home) - distance(b, home)).slice(0, 1);
       for (const site of [home, ...extra]) {
