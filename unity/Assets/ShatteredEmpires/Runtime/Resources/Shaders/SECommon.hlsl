@@ -71,6 +71,71 @@ half4 SE_WeatherAt(float2 xzWS)
     return lerp(a, b, (half)_SE_WxParams.x);
 }
 
+// ---- storm systems (StormSystems.cs; server weather.js systemProfile): up to four, two vectors each, Unity world
+// [2i]   xy centre (world x, z), z radius, w intensity (0..1, already eased between snapshots)
+// [2i+1] x kind (0 squall line, 1 hurricane), y spin (+1 counter-clockwise from above), z heading (radians, Unity xz), w seed
+float4 _SE_WxSys[8];
+float4 _SE_WxSysN;      // x count, y wrap (0/1), z period, w unused
+TEXTURE2D(_SE_CloudNoiseTex); SAMPLER(sampler_SE_CloudNoiseTex);   // tileable cloud noise (StormSky.cs)
+#define SE_SKY_Y 20.0   // the storm cloud deck (StormSky)
+
+float2 SE_SysRel(float2 xzWS, float4 a)
+{
+    float2 rel = xzWS - a.xy;
+    if (_SE_WxSysN.y > 0.5) rel.x -= _SE_WxSysN.z * round(rel.x / _SE_WxSysN.z);
+    return rel;
+}
+
+// One system's (cloud, storm, rain) at an offset from its centre, Unity world: the server's profile (axisymmetric
+// hurricane, bowed squall line) plus, for hurricanes, the rotating spiral bands (arms 0..1, also returned).
+half3 SE_SysProfile(float2 rel, float4 a, float4 b, float time, out half arms)
+{
+    arms = 0;
+    float R = a.z, s = a.w;
+    if (s <= 0.001 || R <= 0) return 0;
+    if (b.x > 0.5)
+    {
+        float r = length(rel), k = r / R;
+        if (k > 1.1) return 0;
+        float rm = 0.2 * R;
+        float eye = smoothstep(0.3 * rm, 0.55 * rm, r);
+        float wall = exp(-((r - rm) / (0.42 * rm)) * ((r - rm) / (0.42 * rm)));
+        float bands = smoothstep(0.9 * rm, 1.6 * rm, r) * (1 - smoothstep(0.55, 1.0, k));
+        float shield = 1 - smoothstep(0.35, 1.05, k);
+        float th = atan2(rel.y, rel.x);
+        float spiral = 0.5 + 0.5 * cos(2 * b.y * th + 5.0 * log(max(r, 1e-3) / rm) - time * 0.06 + b.w);
+        arms = (half)(spiral * spiral * bands);
+        float grow = saturate(0.35 + s);
+        return half3(eye * saturate(max(wall, 0.32 * bands + 0.62 * shield)) * grow,
+            eye * saturate(wall + 0.22 * bands) * s,
+            eye * saturate(wall * 0.95 + 0.3 * bands + 0.2 * shield) * saturate(s * 1.2));
+    }
+    // squall line: map heading h (z south) is Unity heading -h; along the line (u), along the motion (v)
+    float2 f = float2(cos(b.z), sin(b.z));
+    float u = dot(rel, float2(-f.y, f.x)) / R, v = dot(rel, f);
+    if (abs(u) > 1.05 || v > 0.3 * R || v < -0.95 * R) return 0;
+    float lat = 1 - smoothstep(0.62, 1.0, abs(u));
+    float e = v - (0.2 * R * (1 - u * u) - 0.08 * R);
+    float conv = exp(-((e + 0.07 * R) / (0.075 * R)) * ((e + 0.07 * R) / (0.075 * R)));
+    float shelf = exp(-((e - 0.01 * R) / (0.035 * R)) * ((e - 0.01 * R) / (0.035 * R)));
+    float trail = e < 0 ? exp(e / (0.45 * R)) * smoothstep(0.02 * R, -0.04 * R, e) : 0;
+    return half3(lat * saturate(conv + shelf * 0.7 + trail * 0.72) * saturate(0.35 + s), lat * conv * s, lat * saturate(conv * 0.95 + trail * 0.75) * s);
+}
+
+// All live systems at a point (strongest of each): x cloud, y storm, z rain, w spiral bands.
+half4 SE_SystemsAt(float2 xzWS)
+{
+    half4 o = 0;
+    int n = (int)_SE_WxSysN.x;
+    [loop] for (int i = 0; i < n && i < 4; i++)
+    {
+        half arms;
+        half3 p = SE_SysProfile(SE_SysRel(xzWS, _SE_WxSys[2 * i]), _SE_WxSys[2 * i], _SE_WxSys[2 * i + 1], _SE_WxParams.w, arms);
+        o = max(o, half4(p, arms));
+    }
+    return o;
+}
+
 // How much heavy cloud and storm overhead darken this point (0..1): the weather is read where the sun ray
 // through this point meets the cloud base, so the shade sits under the storm clouds as drawn.
 half SE_StormShade(float3 positionWS)
@@ -81,6 +146,18 @@ half SE_StormShade(float3 positionWS)
     float2 p = positionWS.xz + L.xz * lift;
     half4 w = SE_WeatherAt(p);
     half cover = smoothstep(0.42h, 0.95h, w.r) * 0.42h + w.b * 0.62h + w.g * 0.12h;
+    // storm systems: the shadow of their cloud deck (spiral bands included), broken up like the clouds
+    if (_SE_WxSysN.x > 0.5)
+    {
+        float2 ps = positionWS.xz + L.xz * (max(SE_SKY_Y - positionWS.y, 0.0) / max(L.y, 0.35));
+        half4 sys = SE_SystemsAt(ps);
+        if (sys.x > 0.004h)
+        {
+            half n2 = SAMPLE_TEXTURE2D_LOD(_SE_CloudNoiseTex, sampler_SE_CloudNoiseTex, ps * 0.011, 1).r;
+            half body = saturate(max(sys.x, sys.w * 0.9h) * (0.7h + 0.6h * n2));
+            cover = max(cover, body * 0.62h + sys.y * 0.38h);
+        }
+    }
     if (cover <= 0.004h) return 0;
     float n = SE_CloudNoise(p * 0.05 - _SE_Clouds.yz * 1.1);
     return saturate(cover * (0.72h + 0.56h * (half)n)) * (half)_SE_WxParams.y;

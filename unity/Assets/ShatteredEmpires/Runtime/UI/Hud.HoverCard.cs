@@ -140,7 +140,10 @@ namespace SE.Runtime.UI
 
         /// <summary>The storm value the server's air rules read at a hex (0..1, grounded at .5; WeatherPresenter), or null.</summary>
         public static Func<int, float> StormAt;
+        /// <summary>The storm system over a hex ({name, kind, effect, track}; WeatherPresenter.SystemInfo), or null.</summary>
+        public static Func<int, string[]> StormInfo;
         int stormHoverTile = -1; float stormHoverPickAt, stormHoverSince; bool stormHoverFilled;
+        string[] stormHoverInfo;
 
         /// <summary>Over open ground under a storm: what the storm does to aircraft there (picked ten times a second).</summary>
         bool StormHoverCard(float time)
@@ -150,20 +153,23 @@ namespace SE.Runtime.UI
             {
                 stormHoverPickAt = time + .1f;
                 int t = commander.HoverTile();
-                if (t >= 0 && StormAt(t) < .5f) t = -1;
+                var info = t >= 0 && StormInfo != null ? StormInfo(t) : null;
+                if (t >= 0 && info == null && StormAt(t) < .5f) t = -1;
                 if (t != stormHoverTile) { stormHoverTile = t; stormHoverSince = time; }
+                if (!SameInfo(info, stormHoverInfo)) { stormHoverInfo = info; stormHoverFilled = false; }
             }
             if (stormHoverTile < 0 || time - stormHoverSince < .35f) return false;
             if (!stormHoverFilled || hoverFilledFor != -1 || hoverBuildingFilled != -1)   // a unit or building card was shown since
             {
                 stormHoverFilled = true;
                 hoverFilledFor = -1; hoverBuildingFilled = -1;
-                hoverName.text = "Storm";
-                hoverOwner.text = "Weather";
+                var info = stormHoverInfo;
+                hoverName.text = info != null ? info[0] : "Storm";
+                hoverOwner.text = info != null ? info[1] : "Weather";
                 hoverOwner.style.color = new Color(.70f, .66f, .95f);
                 hoverDot.style.backgroundColor = new Color(.42f, .33f, .78f);
-                hoverRole.text = "Aircraft cannot take off or land at bases under it";
-                hoverStatus.text = "Aircraft inside fly slower and burn fuel faster";
+                hoverRole.text = info != null ? info[2] : "Aircraft cannot take off or land at bases under it";
+                hoverStatus.text = info != null ? info[3] : "Aircraft inside fly slower and burn fuel faster";
             }
             if (!hoverShown) { hoverShown = true; hoverCard.BringToFront(); UiKit.Show(hoverCard); }
             var mouse = InputFacade.MousePosition;
@@ -174,6 +180,14 @@ namespace SE.Runtime.UI
             if (pos.x + 330 > w - 8) pos.x = p.x - 24 - 330;
             pos.y = Mathf.Clamp(pos.y, 48, h - 120);
             if (!((pos - hoverAt).sqrMagnitude <= .0025f)) { hoverAt = pos; hoverCard.style.translate = new Translate(pos.x, pos.y); }
+            return true;
+        }
+
+        static bool SameInfo(string[] a, string[] b)
+        {
+            if (a == b) return true;
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
             return true;
         }
 

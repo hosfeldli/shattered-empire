@@ -240,26 +240,33 @@ namespace SE.Runtime.Effects
         /// <summary>
         /// A strategic warhead (scale 1) or a reactor (scale 0.5): blinding flash, fireball, a mushroom
         /// cloud that climbs and spreads, and shockwave rings racing across the ground.
+        /// blastRadius (world units, the impact event's r; 0 = unknown) sizes the fireball, cloud and ground ring
+        /// to the server's blast (MISSILE_PROJECT.radius, 7.5 since 2026-11-19); the terrain shock keeps `scale`
+        /// because it mirrors the server's forest knock-down (shockwave.js, scale 1 per warhead).
         /// </summary>
-        public void Strategic(float3 p, float scale)
+        public void Strategic(float3 p, float scale, float blastRadius = 0f)
         {
+            float size = scale * (blastRadius > 0f ? blastRadius / CloudRadiusPerScale : 1f);
             Blast?.Invoke(p, scale * 6f);
             Flash = Mathf.Max(Flash, scale);
             Shake = Mathf.Max(Shake, 1.2f * scale);
-            Emit(p + new float3(0, 0.5f * scale, 0), float3.zero, 3f * scale, 9f * scale, 0.5f, new float3(1f, 0.97f, 0.9f), new float3(1f, 0.7f, 0.4f), 1f, true, 4f);
+            Emit(p + new float3(0, 0.5f * size, 0), float3.zero, 3f * size, 9f * size, 0.5f, new float3(1f, 0.97f, 0.9f), new float3(1f, 0.7f, 0.4f), 1f, true, 4f);
             for (int k = 0; k < 18; k++)
             {
-                var v = new float3(R() - 0.5f, 0.6f + R() * 0.5f, R() - 0.5f) * 1.6f * scale;
-                Emit(p + new float3(0, 0.3f, 0), v, 0.9f * scale, 1.4f * scale, 1.6f + R(), new float3(1f, 0.7f, 0.3f), new float3(0.6f, 0.15f, 0.05f), 0.95f, true, 2.5f, 1.5f, 0.6f);
+                var v = new float3(R() - 0.5f, 0.6f + R() * 0.5f, R() - 0.5f) * 1.6f * size;
+                Emit(p + new float3(0, 0.3f, 0), v, 0.9f * size, 1.4f * size, 1.6f + R(), new float3(1f, 0.7f, 0.3f), new float3(0.6f, 0.15f, 0.05f), 0.95f, true, 2.5f, 1.5f, 0.6f);
             }
-            // The stem, cap and roll are simulated over half a minute (EffectsRenderer.Mushroom).
-            MushroomCloud(p, scale);
+            // The stem, cap, roll and base surge are simulated over most of a minute (EffectsRenderer.Mushroom).
+            MushroomCloud(p, size);
             // effects pass (2026-11-18): the blast front follows the ground (EffectsRenderer.TerrainShock): it runs down
             // valleys, dies on mountain sides and weakens behind ridges, instead of a flat ring and a uniform dust spray.
             // A short flat ring stays for the first instant around ground zero.
             TerrainShock(p, scale);
-            GroundShock(p, 5 * scale, .9f);
+            GroundShock(p, CloudRadiusPerScale * size, .9f);
         }
+
+        /// <summary>The blast radius a cloud of scale 1 matches (its base surge settles about this far out).</summary>
+        const float CloudRadiusPerScale = 4.6f;
 
         /// <summary>
         /// Working industry: a chimney's soot (dark, thin, drifting downwind) or a cooling tower's
@@ -395,6 +402,7 @@ namespace SE.Runtime.Effects
             DrawGroundWaves(images);
             DrawTerrainShocks(images);
             DrawDistortions(images);
+            DrawMushrooms(images);   // the mushroom cloud volumes (EffectsRenderer.Mushroom)
             missileBodies?.DrawImages(images);
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
             frameSlot = (frameSlot + 1) % 3;
@@ -417,7 +425,7 @@ namespace SE.Runtime.Effects
             if (addData.IsCreated) addData.Dispose();
             if (alphaData.IsCreated) alphaData.Dispose();
             craters.Dispose(); if (craterMaterial != null) UnityEngine.Object.Destroy(craterMaterial); if (craterTexture != null) UnityEngine.Object.Destroy(craterTexture); if (craterQuad != null) UnityEngine.Object.Destroy(craterQuad); wrecks.Dispose(); rubble.Dispose(); DisposeDecals(); DisposeDistortions();
-            missileBodies?.Dispose(); DisposeTerrainShocks();
+            missileBodies?.Dispose(); DisposeTerrainShocks(); DisposeMushrooms();
             if (waveMesh != null) UnityEngine.Object.Destroy(waveMesh);
             if (waveMaterial != null) UnityEngine.Object.Destroy(waveMaterial);
             if (lightRoot != null) UnityEngine.Object.Destroy(lightRoot);

@@ -267,7 +267,22 @@ export const OUTPOST_TYPES = {
 export const ACTION_RESOURCES = ['materials', 'energy'];
 // 2026-11-18 (user): strategic missiles cost 3x (was 480 / 380). No separate missile-defense building; interception
 // stays with aa_battery / air_defense (actionCombat MISSILE_DEFENSE). The missile_battery vehicle is unchanged.
-export const MISSILE_PROJECT = { cost: cost(1440, 1140), time: 52, range: 58, radius: 2.7 };
+// 2026-11-19 (user: "nukes barely do any damage considering how expensive they are"): a strategic warhead is now
+// devastating (docs/gameplay-overhaul/NUKES.md). Was one flat 480 damage within 2.7, falling to a third at the rim
+// (a headquarters lost a third of its HP). Now everything within `core` takes the full blast, which then falls off
+// smoothly (nukeFalloff) to `edge` of it at `radius`, nothing beyond. Units take `damage` x falloff; structures lose a
+// share of their own max HP: `structure` x falloff (ring facilities and defenses in the core are destroyed), a
+// headquarters `hq` x falloff (a direct hit leaves the command centre on a tenth of its HP with the city around it
+// gone). `radius` is the outer ring: the AI's own-forces safety check and the client's targeting circle use it.
+export const MISSILE_PROJECT = { cost: cost(1440, 1140), time: 52, range: 58, radius: 7.5, core: 3.2, damage: 1500,
+  structure: 1.05, hq: .9, edge: .1, falloff: 1.6 };
+/** Share of the full strategic blast `d` world units from ground zero: 1 in the core, `edge` at the rim, 0 beyond. */
+export function nukeFalloff(d, m = MISSILE_PROJECT) {
+  if (d <= m.core) return 1;
+  if (d > m.radius) return 0;
+  const t = (d - m.core) / (m.radius - m.core);
+  return m.edge + (1 - m.edge) * (1 - t) ** m.falloff;
+}
 // A new base keeps this distance (world units) from every other base site, and 3.5 from outposts.
 export const NEW_BASE_GAP = 5;
 // Terrain works (command `terrain`): engineers reshape ground in your own territory or on neutral ground (W2,

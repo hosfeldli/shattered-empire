@@ -1,4 +1,4 @@
-// Regional cloud masses, rain curtains and lightning bolts (StormClouds.cs), drawn straight from the weather
+// Rain curtains and lightning bolts (StormClouds.cs; the cloud masses are the StormSky deck now; mode 0 puffs are unused), drawn straight from the weather
 // texture (SECommon SE_WeatherAt): no per-instance buffers. A world-anchored lattice of slots around the camera
 // focus (one instance each, the slot index comes from SV_InstanceID) drifts with the wind; each slot reads the
 // weather where it is and becomes a soft, lit cloud puff (or a rain curtain) only where the cloud is thick
@@ -144,7 +144,10 @@ Shader "SE/StormClouds"
                 {
                     // rain curtains hang from the cloud base where it pours
                     if (h.z > .5) return Collapse();
-                    alpha = saturate((rain - .32) * 2.2) * saturate(cloud * 1.5) * .5 * fade;
+                    // inside a storm system its exact field decides (the eye stays dry, the spiral bands pour)
+                    half4 sw = SE_SystemsAt(xz);
+                    if (sw.x > .01) rain = lerp(rain, max(sw.z, sw.w * .75), saturate(sw.x * 3));
+                    alpha = saturate((rain - .32) * 2.2) * saturate(cloud * 1.5) * .34 * fade;
                     if (alpha <= .004) return Collapse();
                     float width = _L1.x * _L3.w * (1.1 + h.w * .7);
                     float top = SE_CLOUD_BASE + 1, bottom = -1.5;
@@ -168,7 +171,7 @@ Shader "SE/StormClouds"
                     float path = (Noise(float2(y * 4.0, seed)) - .5) * .42 + (Noise(float2(y * 15.0, seed + 3.1)) - .5) * .16 + (Noise(float2(y * 46.0, seed + 7.7)) - .5) * .05;
                     float dx = abs(i.uv.x - .5 - path);
                     float sharp = _L5.w;
-                    float core = exp(-dx * sharp), glow = exp(-dx * sharp * .16) * .22;
+                    float core = exp(-dx * sharp), glow = exp(-dx * sharp * .16) * .22 * pow(saturate(sin(i.uv.x * 3.14159)), 2);   // no quad edges
                     float restrike = step(.32, frac(age * 9.0 + seed * .1));
                     float lit = (core * 5.5 + glow) * i.data.x * exp(-age * 4.5) * restrike;
                     lit *= smoothstep(1.0, .9, y);   // fades into the cloud base
@@ -182,7 +185,7 @@ Shader "SE/StormClouds"
                     // curtain: falling streaks, soft at the sides, melting into the ground and the cloud
                     float streak = Noise(float2(i.uv.x * 26 + i.seed.x * 13, i.uv.y * 1.6 + time * 2.4));
                     streak = smoothstep(.35, .9, streak);
-                    float edge = pow(saturate(sin(i.uv.x * 3.14159)), 1.6) * smoothstep(0, .25, i.uv.y) * smoothstep(1, .75, i.uv.y);
+                    float edge = pow(saturate(sin(i.uv.x * 3.14159)), 2.6) * smoothstep(0, .3, i.uv.y) * smoothstep(1, .55, i.uv.y);
                     half a = (half)(edge * (.35 + .65 * streak)) * alphaV;
                     half3 c = lerp(half3(.55h, .59h, .66h), half3(.30h, .32h, .38h), storm) * (_SE_AmbientSky.rgb + sunCol * .35h) * 1.4h;
                     c += half3(.7h, .75h, .9h) * flash;

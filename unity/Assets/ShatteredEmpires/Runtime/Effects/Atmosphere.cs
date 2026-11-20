@@ -125,6 +125,8 @@ namespace SE.Runtime.Effects
         public bool RegionalWeather;
         /// <summary>How strongly recent regional lightning lights the view (StormClouds.ViewFlash).</summary>
         public float StrikeFlash;
+        /// <summary>Wind added at the camera focus by a storm system (map x/z; WeatherPresenter.SystemWind).</summary>
+        public float3 ExtraWind;
 
         public Atmosphere(Camera camera, Light sunLight)
         {
@@ -167,7 +169,7 @@ namespace SE.Runtime.Effects
                     tf = wx.Sample(wx.Fog, tile, w); tw = wx.Sample(wx.Wet, tile, w);
                 }
                 float a = wx.WindAngle;
-                WindMap = new float3(math.cos(a), 0, math.sin(a)) * math.max(0.15f, wx.WindSpeed);
+                WindMap = new float3(math.cos(a), 0, math.sin(a)) * math.max(0.15f, wx.WindSpeed) + ExtraWind;   // plus a storm system's own wind at the focus
             }
             float k = 1f - Mathf.Exp(-dt * 0.8f);
             Cloud = Mathf.Lerp(Cloud, tc, k); Rain = Mathf.Lerp(Rain, tr, k); Storm = Mathf.Lerp(Storm, ts, k);

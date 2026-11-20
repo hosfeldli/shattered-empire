@@ -71,6 +71,7 @@ namespace SE.Runtime.Cities
         float sx, sz;
         long signature = long.MinValue;
         bool tileMode;
+        int tileModeEpoch = int.MinValue;   // world epoch in which the server sent territory (stays authoritative after)
         readonly List<(float x, float z, int owner, float r, bool hq)> claims = new List<(float, float, int, float, bool)>();
 
         public void Update(WorldModel world, IEnumerable<ObjectiveSite> sites, StructureStore structures, TeamPalette teams, bool actionRts)
@@ -103,6 +104,10 @@ namespace SE.Runtime.Cities
             tileMode = false;
             var own = world.Owner;
             for (int i = 0; i < own.Length && i < g.N; i++) if (own[i] >= 0) { Mix(i); Mix(own[i]); tileMode = true; }
+            // TERRITORY_BORDERS.md: once the server has sent territory for this world, an empty owner map means "no
+            // territory", never "fall back to the site/structure claims" (that fallback drew stale rings round
+            // structures the server had released, e.g. after the last owned hex was lost).
+            if (tileMode) tileModeEpoch = world.Epoch; else tileMode = tileModeEpoch == world.Epoch;
             Mix(tileMode ? 1 : 0);
             // (perf 2026-11-17) the rebuild walks every texel (~300k) and cost 60-130 ms on the main thread at each
             // ownership change: it now runs on a worker thread from a snapshot of its inputs, and the finished

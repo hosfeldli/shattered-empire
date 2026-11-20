@@ -31,6 +31,8 @@ namespace SE.Runtime.Effects
         public float Interval => interval;
         public bool Active => next != null && next.CellsW > 0 && next.CellsH > 0;
         public WeatherState Latest => next;
+        /// <summary>The snapshot before the latest (the blend starts from it).</summary>
+        public WeatherState Previous => prev;
         public int CellsW => next?.CellsW ?? 0;
         public int CellsH => next?.CellsH ?? 0;
         int mapW, mapH;

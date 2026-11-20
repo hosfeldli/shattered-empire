@@ -134,10 +134,10 @@ These started 4 minutes earlier in the first version. With the programme banking
 - **Targets:**
   - Known enemy headquarters: worth 700 + 250 × tier, +1200 when it is the stalled operation's objective, +500 per failed assault.
   - Massed armies in view: clusters of 6+ ground units, valued at their cost.
-  - Plus the enemy units and structures inside the 2.7 blast.
+  - Plus the enemy units and structures inside the blast (`MISSILE_PROJECT.radius`: 7.5 since 2026-11-19, was 2.7; see NUKES.md).
   - The threshold is 1400 in a stalemate and 2400 otherwise.
   - The point must be explored and in range.
-- **Never into own troops.** A point with any own or allied unit or building within 3.7 (blast + 1) is rejected, with one exception: the operation's own troops at its own objective. They are pulled back to their rallies first (`p.nuke.aim` holds the assault), and the launch waits until the area is clear.
+- **Never into own troops.** A point with any own or allied unit or building within the blast radius + 1 (8.5 since 2026-11-19, was 3.7) is rejected, with one exception: the operation's own troops at its own objective. They fall back first (`p.nuke.aim` holds the assault), and the launch waits until the area is clear. Since the blast now reaches past the rally points (5.5–8.5 out), the troops within radius + 2.5 fall back along their axis to a hold point radius + 3.1 out, and forces whose rally lies inside that zone wait where they are.
 - **Follow-up.** After a launch at the objective, the forces re-muster and step off so that they arrive just after impact (`goAt = impact − 0.6 × ETA`).
 
 ### Cost and determinism

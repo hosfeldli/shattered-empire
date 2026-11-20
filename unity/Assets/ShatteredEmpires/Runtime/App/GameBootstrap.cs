@@ -191,7 +191,7 @@ namespace SE.Runtime.App
             weather = new WeatherPresenter();
             atmosphere.RegionalWeather = true;
             weather.Notice += (text, level, tile) => session.LocalNote(text, level, tile);
-            Hud.StormAt = weather.StormAtTile;
+            Hud.StormAt = weather.StormAtTile; Hud.StormInfo = weather.SystemInfo;
             rts = new RtsCamera(cam);
             rts.Bind(session.World);
             commander = new Commander(session, rts, units);
@@ -886,7 +886,7 @@ namespace SE.Runtime.App
             weather.Update(world, phase == Phase.Playing || phase == Phase.Stress ? session.Weather : null, session.WeatherRevision, new float3(rts.Focus.x, rts.Focus.y, rts.Focus.z),
                 rts.Cam.transform.position, rts.Distance, time, dt, weatherRate, GameSettings.WeatherIntensity);
             if (phase == Phase.Playing) weather.WatchBases(session.Structures, session.Units, session.CivId, time);
-            atmosphere.StrikeFlash = weather.ViewFlash * (GameSettings.ReducedMotion ? .3f : 1f);
+            atmosphere.StrikeFlash = weather.ViewFlash * (GameSettings.ReducedMotion ? .3f : 1f); atmosphere.ExtraWind = weather.SystemWind;
             if (audioDirector != null) audioDirector.StormNear = weather.StormNear;
             if (hud != null && weather.MinimapRevision != weatherMinimapRev)
             {
@@ -1177,7 +1177,7 @@ namespace SE.Runtime.App
                     {
                         // a strategic warhead or (half strength) a destroyed reactor: seen and heard from afar
                         var p = EventPoint(e, false, 0);
-                        fx.Strategic(p, e.Half ? 0.5f : 1f);
+                        fx.Strategic(p, e.Half ? 0.5f : 1f, e.Half ? 0f : e.Radius);   // sized to the blast radius (r, NUKES.md)
                         KnockTrees(fx.LastShock);   // GameBootstrap.Shock.cs (effects pass)
                         audioDirector?.Play("strategic", p, 1f, 60f, 5, rts.Distance);
                         break;

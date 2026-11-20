@@ -145,6 +145,8 @@ namespace SE.Core.Protocol
         public int Version, CellsW, CellsH, Cell = 8;
         public float WindAngle, WindSpeed;
         public byte[] Cloud, Rain, Fog, Wet, Storm;
+        /// <summary>Live storm systems (server weather.js snapshot 'sys'); empty most of the match.</summary>
+        public StormSystemRecord[] Systems = Array.Empty<StormSystemRecord>();
 
         /// <summary>
         /// The field at a hex, blended bilinearly between the centres of the coarse weather cells. (Reading the
@@ -168,6 +170,18 @@ namespace SE.Core.Protocol
             int i = cy * CellsW + cx;
             return i < field.Length ? field[i] / 255f : 0f;
         }
+    }
+
+    /// <summary>
+    /// One storm system (server weather.js): a squall line (Kind 0) or a hurricane (Kind 1). Positions are map
+    /// world units (x east, z south); the motion is parametric (constant speed, constant turn rate), so the client
+    /// can forecast the track exactly (server systemTrackAt) and rebuild the field (server systemProfile).
+    /// </summary>
+    public struct StormSystemRecord
+    {
+        public int Id, Kind, Spin;
+        public float X, Z, Heading, Speed, Turn, Radius, Intensity, Age, Life;
+        public string Name;
     }
 
     public static class WorldRecordDecoder
@@ -288,6 +302,21 @@ namespace SE.Core.Protocol
                 Cloud = B("cloud"), Rain = B("rain"), Fog = B("fog"), Wet = B("wet"), Storm = B("storm"),
             };
             if (wx["wind"] is JArray wind && wind.Count >= 2) { w.WindAngle = ProtocolDecoder.Float(wind[0]); w.WindSpeed = ProtocolDecoder.Float(wind[1]); }
+            if (wx["sys"] is JArray sys && sys.Count > 0)
+            {
+                var list = new List<StormSystemRecord>(sys.Count);
+                foreach (var t in sys)
+                {
+                    if (!(t is JObject o)) continue;
+                    float F(string k) => ProtocolDecoder.Float(o[k]);
+                    list.Add(new StormSystemRecord
+                    {
+                        Id = I(o["id"]), Kind = I(o["k"]), Spin = I(o["sp"]), X = F("x"), Z = F("z"), Heading = F("h"), Speed = F("v"), Turn = F("t"),
+                        Radius = F("r"), Intensity = F("s"), Age = F("a"), Life = F("l"), Name = ProtocolDecoder.Str(o["n"]) ?? "",
+                    });
+                }
+                w.Systems = list.ToArray();
+            }
             return w;
         }
     }

@@ -385,6 +385,13 @@ namespace SE.Core.Stress
                         wet[y * cw + x] = (byte)(Math.Min(1f, c * 1.2f) * 255);
                     }
                 msg.WeatherState = new WeatherState { Version = (int)(weatherPhase * 100), CellsW = cw, CellsH = ch, Cell = 8, WindAngle = 0.4f, WindSpeed = 0.6f, Cloud = cloud, Rain = rain, Wet = wet };
+                // storm systems (WEATHER_VISUALS.md): a hurricane drifting past the city and a squall line further off
+                float sq3 = 1.7320508f, cityX = (CityTile % g.W) * sq3, cityZ = (CityTile / g.W) * 1.5f, span = Math.Min(g.W * sq3, g.H * 1.5f);
+                msg.WeatherState.Systems = new[]
+                {
+                    new StormSystemRecord { Id = 1, Kind = 1, Spin = 1, X = cityX - 20f + 30f * (float)Math.Sin(weatherPhase * .4f), Z = cityZ + span * .32f, Heading = 0f, Speed = 0f, Turn = 0f, Radius = span * .21f, Intensity = .9f, Age = 120, Life = 480, Name = "Ada" },
+                    new StormSystemRecord { Id = 2, Kind = 0, X = cityX + span * .62f, Z = cityZ - span * .3f, Heading = -0.2f, Speed = 1f, Radius = span * .3f, Intensity = .85f, Age = 100, Life = 300, Name = "Squall line" },
+                };
             }
             econAt -= 0.2f;
             if (econAt <= 0 || full)

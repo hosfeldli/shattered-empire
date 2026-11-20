@@ -78,7 +78,51 @@ const projectPoint = (game, p) => {
   return game.lerpPoint(centerOf(e.a), centerOf(e.b), .5);
 };
 
+// 2026-11-19 (user: "the engineers keep trying to go build old stuff in enemy territory and die"): build, repair, trench,
+// road and terrain jobs on ground a hostile civ now holds are not offered, and a job within reach of a visible hostile
+// armed unit or finished defense is marked dangerous and not taken (repairs at the engineer's own base excepted, see
+// pickJob). Nothing is cancelled: the work is picked up again once the ground is retaken or the threat has gone.
+const DANGER_PAD = 1.6;
+function threatsFor(game, civ) {
+  const out = [], seen = civ.visible;
+  for (const v of game.units.values()) {
+    if (v.hp <= 0 || !game.hostile(v.owner, civ.id)) continue;
+    const d = ACTION_UNITS[v.type];
+    if (!d?.atk || d.air || v.type === 'engineer') continue;
+    if (seen && !seen[tileAt(v.x, v.z)]) continue;
+    out.push(v.x, v.z, Math.min(4.2, Math.max(2.2, d.range || 0)) + DANGER_PAD);   // long-range guns: only their near reach counts
+  }
+  for (const b of game.buildings.values()) {
+    if (b.hp <= 0 || !b.done || !game.hostile(b.owner, civ.id)) continue;
+    const d = ACTION_BUILDINGS[b.type];
+    if (!d?.attack || b.type === 'aa_battery') continue;
+    if (seen && !seen[tileAt(b.x, b.z)]) continue;
+    out.push(b.x, b.z, Math.min(4.2, d.range || 2) + DANGER_PAD);
+  }
+  return out;
+}
+const hostileGround = (game, civ, x, z) => { const o = game.world.owner[tileAt(x, z)]; return o >= 0 && game.hostile(o, civ.id); };
+function underThreat(game, threats, x, z) {
+  for (let i = 0; i < threats.length; i += 3) {
+    const r = threats[i + 2];
+    if (Math.abs(game.dx(threats[i], x)) > r || Math.abs(threats[i + 1] - z) > r) continue;
+    if (distance({ x: threats[i], z: threats[i + 1] }, { x, z }) <= r) return true;
+  }
+  return false;
+}
+const dangerous = (j, hq) => j.danger && !(hq && (j.kind === 'repair' || j.kind === 'fix') && distance(hq, j) <= hq.radius + 3);
+
 function jobsFor(game, civ) {
+  const jobs = [], threats = threatsFor(game, civ);
+  for (const j of rawJobsFor(game, civ)) {
+    if (j.kind !== 'fix' && hostileGround(game, civ, j.x, j.z)) continue;
+    if (threats.length && underThreat(game, threats, j.x, j.z)) j.danger = true;
+    jobs.push(j);
+  }
+  return jobs;
+}
+
+function rawJobsFor(game, civ) {
   const jobs = [];
   for (const b of game.buildings.values()) {
     if (b.owner !== civ.id || b.hp <= 0) continue;
@@ -113,6 +157,7 @@ function pickJob(game, u, hq, jobs, load, homes = null) {
   let best = null, score = Infinity;
   for (const j of jobs) {
     if (u.skip === j.key && u.skipUntil > game.time) continue;
+    if (dangerous(j, hq)) continue;
     const n = load.get(j.key) || 0;
     if (n >= (j.kind === 'fix' || j.kind === 'trench' ? 1 : 3)) continue;
     const fromHome = hq ? distance(hq, j) : 0;
@@ -174,7 +219,8 @@ function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null)
   const home = homeOf(game, u), hq = home ? headquarters(game, home) : null;
   const hardened = civ.techs.has('field_engineering');
   if (!hardened && game.time - (u.hitAt ?? -99) < 2.5) {
-    if (u.job) load.set(u.job, Math.max(0, (load.get(u.job) || 1) - 1));
+    // the job that got it shot is avoided for a minute instead of being walked straight back into
+    if (u.job) { load.set(u.job, Math.max(0, (load.get(u.job) || 1) - 1)); u.skip = u.job; u.skipUntil = game.time + 60; }
     u.job = null; u.retreatUntil = game.time + 6;
   }
   if (u.retreatUntil > game.time) {
@@ -182,6 +228,10 @@ function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null)
     return;
   }
   let job = u.job ? byKey.get(u.job) : null;
+  if (job && dangerous(job, hq)) {             // the way or the site turned dangerous: drop it and pick something safe
+    load.set(job.key, Math.max(0, (load.get(job.key) || 1) - 1));
+    job = null; if (u.goal) stopUnit(game, u);
+  }
   if (!job) {
     u.job = null;
     job = pickJob(game, u, hq, jobs, load, homes);

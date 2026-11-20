@@ -597,9 +597,15 @@ export function runOperation(game, civ, p, owned, enemy, home, target) {
     if (!units.length) continue;
     if (strike) {
       // a strategic strike is coming: hold at the rally and keep clear of the blast
-      const close = units.filter((u) => distance(u, target) < MISSILE_PROJECT.radius + 2.5);
-      if (close.length && game.time - (f.clearAt ?? -99) > 6) { moveGroup(game, close, f.rally, { mode: 'move' }); f.clearAt = game.time; }
-      march(game, f, units.filter((u) => !close.includes(u)), target);
+      // 2026-11-19 (NUKES.md): the blast now reaches 7.5, past the rally points (5.5-8.5 out), so the force falls
+      // back along its own axis to a hold point outside the blast and waits there instead of at the rally
+      const danger = MISSILE_PROJECT.radius + 2.5;
+      const close = units.filter((u) => distance(u, target) < danger);
+      if (close.length && game.time - (f.clearAt ?? -99) > 6) {
+        const hold = game.nav.nearest(toward(target, bearing(game, target, f.rally), danger + .6), INFANTRY, 2.2) || f.rally;
+        moveGroup(game, close, hold, { mode: 'move' }); f.clearAt = game.time;
+      }
+      if (distance(f.rally, target) >= danger) march(game, f, units.filter((u) => !close.includes(u)), target);
       p.progressAt = game.time;
       continue;
     }

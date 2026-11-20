@@ -560,6 +560,24 @@ namespace SE.Runtime.Session
                     Ring(c.x, c.z, .22f, Amber);
                 }
             }
+            // 2026-11-19 (NUKES.md): aiming a strategic missile shows its blast from the server's definition (MISSILE
+            // core / radius): the red inner circle is total destruction, the amber outer one where the falloff ends
+            if (Current == Mode.Target && ProtocolDecoder.Str(TargetCommand?["c"]) == "missileLaunch" && cam.TryGround(InputFacade.MousePosition, out var aim))
+            {
+                var missile = session.Defs?["MISSILE"];
+                float outer = ProtocolDecoder.Float(missile?["radius"], 7.5f), core = ProtocolDecoder.Float(missile?["core"], 0f);
+                for (int ring = 0; ring < 2; ring++)
+                {
+                    float r = ring == 0 ? outer : core;
+                    if (r <= 0f) continue;
+                    var color = ring == 0 ? new float4(1f, .62f, .2f, .8f) : new float4(1f, .24f, .14f, .95f);
+                    for (int segment = 0; segment < 96; segment++)
+                    {
+                        float a = segment * math.PI * 2 / 96, b = (segment + 1) * math.PI * 2 / 96;
+                        Line(At(aim.x + math.sin(a) * r, aim.z + math.cos(a) * r), At(aim.x + math.sin(b) * r, aim.z + math.cos(b) * r), color, ring == 0 ? .03f : .04f);
+                    }
+                }
+            }
             DrawSelectedBuildingRings();   // footprint-fitted building / turret rings (Commander.Selection.cs, C-D §36)
             foreach (var s in session.Objectives.Values)
             {

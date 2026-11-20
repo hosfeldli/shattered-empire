@@ -1,6 +1,7 @@
 import { N, T } from './constants.js';
 import { WEAPON_KEYS, WEAPONS, weaponVs as baseVs } from './weapons.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, OUTPOST_TYPES } from './actionDefinitions.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, nukeFalloff, OUTPOST_TYPES } from './actionDefinitions.js';
+import { disk } from './hex.js';
 import { addCrater, addIntensity, addSmoke, addWreck, scarCover } from './battlefield.js';
 import { blastForest, blastTrees } from './shockwave.js';
 import { emit } from './combat.js';
@@ -223,11 +224,59 @@ export function launchStrategic(game, b, point) {
   const flight = 5 + distance(b, point) * .09;
   const t = tileAt(point.x, point.z);
   game.projectiles.set(id, { id, owner: b.owner, shooter: b.id, from: b.tile, ax: b.x, az: b.z, to: t, ...point,
-    strategic: true, weapon: 'warhead', damage: 480, radius: MISSILE_PROJECT.radius, arrive: game.time + flight, target: 0 });
+    strategic: true, weapon: 'warhead', damage: MISSILE_PROJECT.damage, radius: MISSILE_PROJECT.radius, arrive: game.time + flight, target: 0 });
   emit(game, { k: 'launch', a: b.tile, b: t, s: b.id, ax: b.x, az: b.z, bx: point.x, bz: point.z, f: flight, w: VID.warhead });
   for (const civ of game.civs) if (civ.visible[t] || civ.id === b.owner)
     game.notify(civ.id, 'Strategic missile inbound.', { kind: 'warning', tile: t, level: 'critical' });
   armIntercept(game, game.projectiles.get(id), game.time);
+}
+
+// ---- Strategic blast (2026-11-19, docs/gameplay-overhaul/NUKES.md) ----
+// Every hostile ground unit and structure within MISSILE_PROJECT.radius of ground zero (distance to its edge, as for
+// any blast) takes nukeFalloff(d) of the full blast: units MISSILE_PROJECT.damage (then armour, cover, squads man by
+// man with no kill cap), structures a share of their own max HP (structure / hq, so tiers and upgrades never make a
+// city nuke-proof). Structures are hit before units and headquarters last, so a city whose headquarters falls
+// leaves ruins of the facilities the blast already levelled. Aircraft in flight are spared (as before). The order is
+// the spatial query's (deterministic); no rng.
+const isHeadquarters = (b) => b.type === 'town' || !!ACTION_BUILDINGS[b.type]?.newBase;
+function strategicBlast(game, aim, source, near) {
+  const M = MISSILE_PROJECT;
+  const hit = [];
+  for (const v of game.targets.query(aim.x, aim.z, M.radius + .6, near)) {
+    if (unitOf(v)?.air || !alive(v)) continue;
+    const f = nukeFalloff(Math.max(0, distance(aim, v) - (v.radius || 0)));
+    if (f > 0) hit.push({ v, f, order: v.isUnit ? 2 : isHeadquarters(v) ? 1 : 0 });
+  }
+  hit.sort((a, b) => a.order - b.order || a.v.id - b.v.id);
+  const struck = new Set();
+  for (const { v, f } of hit) {
+    if (!alive(v) || (v.isUnit ? !game.units.has(v.id) : !game.buildings.has(v.id))) continue;   // gone with its headquarters
+    if (v.isUnit) { damageActionTarget(game, v, source, M.damage * f, 'warhead', true, M.radius); continue; }
+    const share = isHeadquarters(v) ? M.hq : M.structure;
+    damageActionTarget(game, v, source, (v.maxHp || v.hp) * share * f, 'warhead', true, M.radius);
+    const site = game.siteById?.get(v.site);
+    if (site && isHeadquarters(v) && game.civs[v.owner] && !struck.has(site.id)) {
+      struck.add(site.id);
+      game.notify(v.owner, `${site.name} was struck by a strategic missile.`, { kind: 'loss', tile: site.tile, level: 'critical' });
+    }
+  }
+}
+
+// Ground effects of a strategic burst beyond the crater, smoke and forest: roads are torn up across the core (the
+// centre hex hardest) and trenches lose falloff x 100 HP across the whole blast (was the centre hex only).
+function strategicGround(game, t, aim) {
+  const M = MISSILE_PROJECT;
+  for (const x of disk(t, Math.ceil(M.radius / 1.5))) {
+    const c = centerOf(x), d = Math.hypot(dxBetween(aim.x, c.x), c.z - aim.z);
+    if (d <= M.core) game.roads.damageTile(x, x === t ? 110 : 80, game.rng, .7);
+    const trench = game.fieldworks.get(x), f = nukeFalloff(d);
+    if (trench && f > 0) {
+      trench.hp = Math.max(0, trench.hp - 100 * f);
+      if (!trench.hp) game.fieldworks.delete(x);
+      game.fwVer++;
+    }
+  }
+  game.nav.invalidate();
 }
 
 function resolveProjectiles(game, near) {
@@ -250,7 +299,8 @@ function resolveProjectiles(game, near) {
       const v = interceptMissile(game, p);
       if (v) { p.mint = { by: v.id, x: aim.x, z: aim.z, vx: v.x, vz: v.z }; resolveIntercept(game, p); continue; }
     }
-    if (p.radius > 0) {
+    if (p.strategic) strategicBlast(game, aim, source, near);
+    else if (p.radius > 0) {
       for (const v of game.targets.query(aim.x, aim.z, p.radius + .57, near)) {
         if (unitOf(v)?.air || !alive(v)) continue;
         const range = Math.max(0, distance(aim, v) - v.radius);
@@ -260,7 +310,7 @@ function resolveProjectiles(game, near) {
     } else if (alive(target) && distance(aim, target) <= target.radius + .32)
       damageActionTarget(game, target, source, p.damage, p.weapon, !!w.arc);
     emit(game, { k: p.strategic ? 'mimpact' : 'impact', a: p.from, b: t, ax: p.ax, az: p.az, bx: aim.x, bz: aim.z,
-      t: target?.id, w: VID[p.weapon], r: p.radius, ab: p.air ? 1 : undefined });
+      t: target?.id, w: VID[p.weapon], r: p.strategic ? MISSILE_PROJECT.radius : p.radius, ab: p.air ? 1 : undefined });
     if (w.airburst) flakBurst(game, source, target, aim, p.weapon, aim === target);
     if (p.air || p.small) continue;
     const ctr = centerOf(t);
@@ -272,8 +322,9 @@ function resolveProjectiles(game, near) {
     // shock front (shockwave.js); a heavy conventional blast may fell the forest on the hex it hits
     if (p.strategic) blastForest(game, aim.x, aim.z);
     else if (p.radius > 0) blastTrees(game, t, p.radius, aim.x, aim.z);
-    if (p.strategic || p.radius >= 1.0) {
-      game.roads.damageTile(t, p.strategic ? 110 : 16, game.rng, .7);
+    if (p.strategic) { strategicGround(game, t, aim); continue; }
+    if (p.radius >= 1.0) {
+      game.roads.damageTile(t, 16, game.rng, .7);
       game.nav.invalidate();
     }
     const trench = game.fieldworks.get(t);

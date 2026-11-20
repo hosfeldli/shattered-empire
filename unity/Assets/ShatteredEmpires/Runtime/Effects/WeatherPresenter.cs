@@ -13,11 +13,17 @@ namespace SE.Runtime.Effects
     /// over each weather cell (<see cref="StormClouds"/>), a storm layer for the minimap, the storm ambience and
     /// directional thunder (through <see cref="Strike"/>), and notices when a storm nears or covers one of our air
     /// bases (aircraft cannot take off or land there: server actionAir.js AIR_WEATHER). Purely presentation.
+    /// Storm systems (rare squall lines and hurricanes, server weather.js) are drawn by the cloud deck
+    /// (<see cref="StormSky"/>) from their parameters (<see cref="StormSystems"/>); this class also marks them and
+    /// their forecast track on the minimap, describes them on the hover card, adds their wind to the effects, and
+    /// lets them be heard coming (rising storm wind, distant thunder).
     /// </summary>
     public sealed class WeatherPresenter : IDisposable
     {
         public readonly WeatherField Field = new WeatherField();
         public readonly StormClouds Clouds = new StormClouds();
+        public readonly StormSystems Systems = new StormSystems();
+        public readonly StormSky Sky = new StormSky();
 
         /// <summary>A lightning strike: map position, thunder delay (s), loudness 0..1.</summary>
         public event Action<float3, float, float> Strike { add => Clouds.Strike += value; remove => Clouds.Strike -= value; }
@@ -33,38 +39,117 @@ namespace SE.Runtime.Effects
         float minimapAt, watchAt;
         int mapW;
 
-        public float StormNear => Clouds.StormNear;
+        /// <summary>Strongest storm within earshot (0..1): the storm cells near the focus, or a storm system closing in.</summary>
+        public float StormNear => Mathf.Max(Clouds.StormNear, approach);
+        /// <summary>The storm systems' wind at the camera focus (map x/z, world units per second): add to the effects' wind.</summary>
+        public float3 SystemWind { get; private set; }
+        float approach, rumbleAt;
+        readonly System.Random rumbleRng = new System.Random(4021);
+        WorldModel world;
         public float ViewFlash => Clouds.ViewFlash;
 
         public void Update(WorldModel world, WeatherState wx, int wxRevision, float3 focusMap, Vector3 eye, float camDistance, float time, float dt, float simRate, float intensity)
         {
-            if (world == null || !world.Ready) { Field.Update(null, wxRevision, 1, 1, 1, 1, time, intensity); Clouds.Update(null, focusMap, eye, camDistance, false, time, dt, simRate, intensity, null); return; }
+            this.world = world;
+            if (world == null || !world.Ready)
+            {
+                Field.Update(null, wxRevision, 1, 1, 1, 1, time, intensity); Systems.Update(Field, false, intensity);
+                Clouds.Update(null, focusMap, eye, camDistance, false, time, dt, simRate, intensity, null); Sky.Update(null, Systems, focusMap, eye, camDistance, false, intensity);
+                approach = 0; SystemWind = float3.zero; return;
+            }
             var g = world.Grid;
             mapW = g.W;
             Field.Update(wx, wxRevision, g.W, g.H, g.Period, g.Depth, time, intensity);
+            Systems.Update(Field, g.Wrap, intensity);
             Clouds.Update(Field, focusMap, eye, camDistance, g.Wrap, time, dt, simRate, intensity, world.GroundHeight);
+            Sky.Update(Field, Systems, focusMap, eye, camDistance, g.Wrap, intensity);
+            Hear(focusMap, camDistance, time, simRate);
+            var w = Systems.Wind(focusMap.x, focusMap.z);
+            SystemWind = new float3(w.x, 0, w.y) * .5f;
             if (time >= minimapAt) { minimapAt = time + .5f; Minimap(); }
         }
 
-        public void Draw() => Clouds.Draw();
+        public void Draw() { Clouds.Draw(); Sky.Draw(); }
+
+        // ------------------------------------------------------------------ hearing a system coming
+        void Hear(float3 focus, float camDistance, float time, float simRate)
+        {
+            approach = 0;
+            float hear = Mathf.Max(90f, camDistance * 1.5f);
+            int loudest = -1; float best = 0, bestD = 0;
+            for (int i = 0; i < Systems.Count; i++)
+            {
+                var s = Systems[i];
+                float d = Systems.EdgeDistance(i, focus.x, focus.z);
+                // its wind rises as the edge nears and fills in underneath it
+                float a = s.Intensity * Mathf.Clamp01(1f - d / hear) * (d < 0 ? 1f : .7f);
+                if (a > approach) approach = a;
+                float far = s.Intensity * (1 - d / (hear * 2.2f));
+                if (d > 0 && d < hear * 2.2f && far > best) { best = far; loudest = i; bestD = d; }
+            }
+            // distant thunder from a system still beyond the strike range: low and late, every few seconds
+            if (loudest < 0 || simRate <= 0 || time < rumbleAt) return;
+            rumbleAt = time + 3.5f + (float)rumbleRng.NextDouble() * 7f / Mathf.Max(.3f, best);
+            var sy = Systems[loudest];
+            float dx = Field.Period > 0 ? Mathf.Repeat(sy.X - focus.x + Field.Period * .5f, Field.Period) - Field.Period * .5f : sy.X - focus.x;
+            float dz = sy.Z - focus.z, len = Mathf.Max(1e-3f, Mathf.Sqrt(dx * dx + dz * dz));
+            float along = Mathf.Min(len, Mathf.Max(0, bestD) + 20f);
+            var at = new float3(focus.x + dx / len * along, focus.y + 8f, focus.z + dz / len * along);
+            if (sy.Intensity > .35f) Clouds.Rumble(at, Mathf.Clamp(bestD / 30f, 1.5f, 7f), Mathf.Clamp01(best * .55f));
+        }
+
+        // ------------------------------------------------------------------ hover
+        /// <summary>
+        /// The storm system over a hex, for the hover card: {name, kind line, effects, track} or null. Within the
+        /// system's cloud (not only where aircraft are grounded), so it can be inspected as it approaches.
+        /// </summary>
+        public string[] SystemInfo(int tile)
+        {
+            if (tile < 0 || world == null || !world.Ready || Systems.Count == 0) return null;
+            var g = world.Grid;
+            float x = g.CenterX(tile), z = g.CenterZ(tile);
+            int i = Systems.Over(x, z, .25f);
+            if (i < 0) return null;
+            var s = Systems[i];
+            float storm = StormAtTile(tile);
+            var here = Systems.Sample(x, z);
+            float hexPerMin = s.Speed / 1.7320508f * 60f;
+            string name = s.Hurricane ? $"Hurricane {s.Name}" : "Squall line";
+            string kind = s.Hurricane ? $"Weather · category {StormSystems.Category(s.Intensity)}" : s.Intensity > .6f ? "Weather · severe" : "Weather";
+            string effect = storm >= .5f ? "Aircraft cannot take off or land here; troops see one hex less"
+                : s.Hurricane && here.y < .05f && here.x < .1f ? "The eye: calm for now, the eyewall follows"
+                : "Rain slows off-road movement; the core grounds aircraft";
+            float left = Systems.Remaining(i);
+            string track = $"Moving {StormSystems.Compass(s.Heading)} at {hexPerMin:0} hexes a minute · {(left > 150 ? "holding strength" : "weakening")}";
+            return new[] { name, kind, effect, track };
+        }
 
         // ------------------------------------------------------------------ minimap
+        // the storm layer at three texels per weather cell: sharp enough for a system's outline and its track
+        const int MiniRes = 3;
+
         void Minimap()
         {
             if (!Field.Active) return;
-            int cw = Field.CellsW, ch = Field.CellsH, n = cw * ch;
+            int cw = Field.CellsW * MiniRes, ch = Field.CellsH * MiniRes, n = cw * ch;
             if (minimapTex == null || minimapTex.width != cw || minimapTex.height != ch)
             {
                 if (minimapTex != null) UnityEngine.Object.Destroy(minimapTex);
                 minimapTex = new Texture2D(cw, ch, TextureFormat.RGBA32, false) { name = "SE minimap weather", filterMode = FilterMode.Bilinear, wrapModeU = TextureWrapMode.Repeat, wrapModeV = TextureWrapMode.Clamp };
                 minimapPx = new Color32[n];
             }
+            float cellX = Field.CellWorldX, cellZ = Field.CellWorldZ;
             for (int cy = 0; cy < ch; cy++)
                 for (int cx = 0; cx < cw; cx++)
                 {
-                    float gx = cx + .5f, gy = cy + .5f;
+                    float gx = (cx + .5f) / MiniRes, gy = (cy + .5f) / MiniRes;
                     float cloud = Field.SampleCells(WeatherField.Channel.Cloud, gx, gy), rain = Field.SampleCells(WeatherField.Channel.Rain, gx, gy),
                         storm = Field.SampleCells(WeatherField.Channel.Storm, gx, gy);
+                    if (Systems.Count > 0)
+                    {
+                        var sys = Systems.Sample(gx * cellX, gy * cellZ);
+                        cloud = Mathf.Max(cloud, sys.x); storm = Mathf.Max(storm, sys.y); rain = Mathf.Max(rain, sys.z);
+                    }
                     // thick cloud a pale veil, rain blue, storms a dark violet that reads over any terrain
                     float c = Mathf.Clamp01((cloud - .5f) * 1.6f) * .28f, r = Mathf.Clamp01((rain - .3f) * 1.6f) * .42f, s = Mathf.Clamp01((storm - .2f) * 1.5f) * .82f;
                     var col = Color.Lerp(new Color(.86f, .88f, .92f), new Color(.34f, .52f, .86f), r / Mathf.Max(.001f, c + r));
@@ -72,9 +157,43 @@ namespace SE.Runtime.Effects
                     col.a = Mathf.Clamp01(Mathf.Max(Mathf.Max(c, r), s));
                     minimapPx[(ch - 1 - cy) * cw + cx] = col;
                 }
+            // each system's forecast track: dots every 20 seconds for the next four minutes, fading with time
+            for (int i = 0; i < Systems.Count; i++)
+            {
+                var s = Systems[i];
+                if (s.Intensity < .05f) continue;
+                for (int k = 1; k <= 12; k++)
+                {
+                    if (k * 20f > Systems.Remaining(i)) break;
+                    var at = Systems.Track(i, k * 20f);
+                    Dot(at.x / cellX * MiniRes, at.y / cellZ * MiniRes, cw, ch, k % 3 == 0 ? 1.3f : .8f, new Color(1f, .86f, .45f, .95f - k * .045f));
+                }
+                // the centre: the eye of a hurricane, the middle of a squall line
+                Dot(s.X / cellX * MiniRes, s.Z / cellZ * MiniRes, cw, ch, 1.6f, new Color(1f, .95f, .8f, s.Hurricane ? .95f : .7f));
+            }
             minimapTex.SetPixels32(minimapPx);
             minimapTex.Apply(false, false);
             MinimapRevision++;
+        }
+
+        // a soft dot on the minimap layer (texel coordinates, y south-down as the cells; wraps in x)
+        void Dot(float px, float py, int cw, int ch, float radius, Color col)
+        {
+            int r = Mathf.CeilToInt(radius);
+            int x0 = Mathf.FloorToInt(px), y0 = Mathf.FloorToInt(py);
+            for (int dy = -r; dy <= r; dy++)
+                for (int dx = -r; dx <= r; dx++)
+                {
+                    int y = y0 + dy;
+                    if (y < 0 || y >= ch) continue;
+                    float ox = x0 + dx + .5f - px, oy = y + .5f - py;
+                    float a = Mathf.Clamp01(radius + .5f - Mathf.Sqrt(ox * ox + oy * oy)) * col.a;
+                    if (a <= 0) continue;
+                    int x = (((x0 + dx) % cw) + cw) % cw;
+                    int idx = (ch - 1 - y) * cw + x;
+                    Color c0 = minimapPx[idx];
+                    minimapPx[idx] = new Color(Mathf.Lerp(c0.r, col.r, a), Mathf.Lerp(c0.g, col.g, a), Mathf.Lerp(c0.b, col.b, a), Mathf.Max(c0.a, a));
+                }
         }
 
         // ------------------------------------------------------------------ hover
@@ -142,7 +261,7 @@ namespace SE.Runtime.Effects
 
         public void Dispose()
         {
-            Field.Dispose(); Clouds.Dispose();
+            Field.Dispose(); Clouds.Dispose(); Sky.Dispose();
             if (minimapTex != null) UnityEngine.Object.Destroy(minimapTex);
         }
     }

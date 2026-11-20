@@ -49,8 +49,9 @@ for (const type of ['sensor_post', 'repair_point']) test(`${type} builds on neut
   g.refreshTerritory();
   assert.deepEqual(g.world.owner, before, 'a finished support post claims nothing');
   assert.equal(g.world.owner[tileAt(p.x, p.z)], -1);
-  // sanity: a watchtower (claims: 1) on the same kind of ground does claim
-  const q = spot(g, 'guard_post', (t) => neutralNear(g)(t) && distance(centerOf(t), p) > 3);
+  // sanity: a watchtower (claims: 1) on the same kind of ground does claim. TERRITORY_BORDERS.md: only when its
+  // claim touches your territory (2 hexes out), since a pocket not connected to a site you hold is released.
+  const q = spot(g, 'guard_post', (t) => neutralNear(g)(t) && influenceRing(g, g.civs[0])[t] === 2 && distance(centerOf(t), p) > 3);
   finish(g, g.command(0, { c: 'fieldBuild', type: 'guard_post', point: q }).building);
   g.refreshTerritory();
   assert.equal(g.world.owner[tileAt(q.x, q.z)], 0);

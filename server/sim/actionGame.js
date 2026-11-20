@@ -34,6 +34,9 @@ const MAX_TEAMS = 12;
 const VEHICLE_SPAWN_GAP = .035;
 const NO_OBSTACLES = Object.freeze([]);
 
+// refreshTerritory scratch (N is fixed per process; the result is copied into world.owner)
+const TERRITORY_NEXT = new Int8Array(N), TERRITORY_PRUNED = new Uint8Array(N), TERRITORY_REACHED = new Uint8Array(N), TERRITORY_QUEUE = new Int32Array(N);
+
 export class ActionGame extends Game {
   constructor(options) {
     super({ ...options, ruleset: ACTION_RULESET, restore: true });
@@ -345,25 +348,58 @@ export class ActionGame extends Game {
   // W2 (R7, 2026-11-17): capture rules live in actionCapture.js (20 s / 12 s, gradual decay, rival claims drain first).
   captureStep(dt) { captureStep(this, dt); }
 
+  // TERRITORY_BORDERS.md (2026-11-19): territory is recomputed from its sources (sites, claiming defenses, dug
+  // trenches), then every hex that is not connected through its owner's own contiguous territory to a site that
+  // owner holds (a city, base or captured outpost) is released to neutral. A defense or trench left behind when its
+  // base falls, or built far beyond the border, therefore claims nothing and draws no border. Freed hexes may then
+  // be claimed by another civ's structures that do connect to that civ's territory.
   refreshTerritory() {
-    const next = new Int8Array(N).fill(-1);
+    const next = TERRITORY_NEXT; next.fill(-1);
     for (const s of this.sites) if (s.owner >= 0) {
       // Territory: an operational headquarters claims 3 hexes (4 from Tier II), a secured ruin 2, an outpost 1.
       const rad = s.slots ? headquarters(this, s)?.done ? (s.tier >= 2 ? 4 : 3) : 2 : 1;
       for (const t of disk(s.tile, rad)) if (next[t] < 0 || t === s.tile) next[t] = s.owner;
     }
-    // B: finished defenses (watchtowers, bunkers, emplacements: 1 hex; outposts: 2) and dug trench sections
-    // (1 hex) claim nearby unclaimed hexes; they never take land another base or outpost holds.
-    for (const b of this.buildings.values()) {
-      const r = b.done && this.civs[b.owner]?.alive ? ACTION_BUILDINGS[b.type].claims : 0;
-      if (r) for (const t of disk(b.tile, r)) if (next[t] < 0) next[t] = b.owner;
-    }
-    for (const f of this.fieldworks?.values() || []) if (f.progress >= 1 && this.civs[f.owner]?.alive)
-      for (const t of disk(f.tile, 1)) if (next[t] < 0) next[t] = f.owner;
+    this.claimStructures(next, null);
+    const pruned = TERRITORY_PRUNED; pruned.fill(0);
+    if (this.pruneTerritory(next, pruned)) { this.claimStructures(next, pruned); this.pruneTerritory(next, null); }
     for (let t = 0; t < N; t++) if (this.world.owner[t] !== next[t]) {
       this.world.owner[t] = next[t];
       this.world.touch(t);
     }
+  }
+
+  // B: finished defenses (watchtowers, bunkers, emplacements: 1 hex; outposts: 2) and dug trench sections
+  // (1 hex) claim nearby unclaimed hexes; they never take land another base or outpost holds. `skip` (second
+  // pass) marks hexes just released from a civ, which that civ's structures may not take back.
+  claimStructures(next, skip) {
+    const free = (t, o) => next[t] < 0 && (!skip || skip[t] !== o + 1);
+    for (const b of this.buildings.values()) {
+      const r = b.done && this.civs[b.owner]?.alive ? ACTION_BUILDINGS[b.type].claims : 0;
+      if (r) for (const t of disk(b.tile, r)) if (free(t, b.owner)) next[t] = b.owner;
+    }
+    for (const f of this.fieldworks?.values() || []) if (f.progress >= 1 && this.civs[f.owner]?.alive)
+      for (const t of disk(f.tile, 1)) if (free(t, f.owner)) next[t] = f.owner;
+  }
+
+  // Release every owned hex not reachable from a site its owner holds through that owner's hexes (6-neighbour
+  // flood from the site hexes). Records released hexes in `pruned` (owner + 1); returns how many were released.
+  pruneTerritory(next, pruned) {
+    const reached = TERRITORY_REACHED, queue = TERRITORY_QUEUE;
+    reached.fill(0);
+    let tail = 0;
+    for (const s of this.sites) if (s.owner >= 0 && next[s.tile] === s.owner && !reached[s.tile]) { reached[s.tile] = 1; queue[tail++] = s.tile; }
+    for (let head = 0; head < tail; head++) {
+      const t = queue[head], o = next[t];
+      for (let k = t * 6; k < t * 6 + 6; k++) { const n = NB[k]; if (n >= 0 && !reached[n] && next[n] === o) { reached[n] = 1; queue[tail++] = n; } }
+    }
+    let released = 0;
+    for (let t = 0; t < N; t++) if (next[t] >= 0 && !reached[t]) {
+      if (pruned) pruned[t] = next[t] + 1;
+      next[t] = -1;
+      released++;
+    }
+    return released;
   }
 
   sees(civ, entity) {

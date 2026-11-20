@@ -8,7 +8,72 @@ The server is unchanged. It already sends the full regional grid (`server/sim/we
 cells of cloud, rain, fog, wet and storm, plus wind and cyclones, every 5 simulated seconds when the version
 changes). The client now draws that grid in the world.
 
-## Design
+## Storm systems (2026-11-19)
+
+Player request: "use a weather simulation and cloud simulation for moving hurricanes and large storms, it shouldn't
+look cheesy, and they should only come every once in a while." The background weather is now fair to lightly
+overcast; real storms are rare, scheduled, travelling systems.
+
+### Simulation (server, `server/sim/weather.js`, deterministic)
+- **Schedule.** At most one large system alive at a time. The first arrives 6–12 minutes in
+  (`STORM_SCHEDULE.first/firstSpan`, in 5 s weather steps); each later one 9–18 minutes after the previous one has
+  died. A system lives 4.5–9 minutes. Measured over 24 seeds × 45-minute matches: about 2.1 systems a match (always
+  1–3), a system alive about 25–30% of the time, none in the opening (`test/weather-storms.test.js`).
+- **Kinds.** `hurricaneOdds = min(.75, seaShare × 1.6)`: watery maps mostly get hurricanes, dry maps squall lines.
+  - *Squall line*: half-length 0.3–0.38 × the map's shorter side. Born just beyond the upwind edge (heading = the
+    prevailing wind ± 20°), crosses the map in 4.5–6 minutes. A bowed convective line (storm) just behind the
+    leading edge, a shelf cloud on the edge, trailing stratiform rain behind.
+  - *Hurricane*: radius 0.19–0.24 × the shorter side. Born over the sea-richest of 16 candidate points, heading for
+    the land mass ± 35°, crossing in 7–9 minutes on a constant-curvature track (turn ±0.0008–0.0024 rad/s). Eye
+    (clear, calm), eyewall at 0.2 R (the strongest storm), spiral bands, central dense overcast. Counter-clockwise
+    from above in the north half, clockwise in the south. `fuel`: +0.02 per step over sea, −0.035 over land
+    (min 0.3), so it fills after landfall.
+- **State** per system: `{id, kind, x, z, h, v, turn, r, s, peak, fuel, spin, age, life, name}` in world units (x
+  east, z south). Motion is parametric (`x += cos h · v · 5; z += sin h · v · 5; h += turn · 5` per step, no
+  random draws after birth), intensity `s = peak · grow(age) · decay(age) · fuel` (`systemIntensity`). The track
+  wraps in x on wrapping maps; the system dies at the end of its life or when it leaves the map in z (or in x on
+  non-wrapping maps).
+- **Field.** `systemProfile(sy, dx, dz) → [cloud, storm, rain]`, axisymmetric for hurricanes. Each step it is
+  stamped into the regional grid: cloud and rain averaged over five sub-samples per cell, storm the maximum (so a
+  narrow squall line still grounds the bases it crosses). The background field relaxes back afterwards, leaving
+  a short trail of cloud and wet ground. The systems also add to the advecting wind (hurricane swirl and inflow,
+  squall gust front), so the background cloud wraps around them.
+- **Gameplay** (unchanged mechanics, now driven by the systems): `stormAt ≥ .5` grounds aircraft at bases and slows
+  and drains aircraft inside (eyewall, squall line); rain `> .45` slows off-road movement (≤ +15%); `fogAt` is now
+  `max(fog, storm × .75)`, so the driving rain in a storm core costs one hex of vision like dense fog. The random
+  "stormy fronts" and the cyclones that used to make storms every few minutes no longer form (legacy cyclones in old
+  saves finish their life). Sea humidity was lowered so open water is lightly overcast rather than raining.
+- **Saves.** `serialize()` adds `systems`, `nextSys`, `sysAt`. A save from before has none alive and schedules the
+  first one 6–12 minutes after the restore (deterministically from `ver`, no rng draw).
+- **Snapshot.** `wx.sys = [{id, k, x, z, h, v, t, r, s, sp, a, l, n}]` (a few hundred bytes, only while a system lives).
+
+### Client
+| Piece | File | What it does |
+|---|---|---|
+| Records | `Core/Protocol/WorldRecords.cs` | `StormSystemRecord`, `WeatherState.Systems` (decoded from `wx.sys`). |
+| Systems | `Runtime/Effects/StormSystems.cs` | The systems eased between the previous and latest snapshot with the same blend as the weather texture (`WeatherField.Blend`), so clouds, rain and ground shade stay together. A newborn system slides in fading up; a vanished one carries on along its track fading out (no popping). Publishes `_SE_WxSys[8]` / `_SE_WxSysN`. CPU mirror of `systemProfile` (minimap, hover), wind, exact forecast track (`systemTrackAt`). |
+| Cloud deck | `Runtime/Effects/StormSky.cs`, `Resources/Shaders/StormSky.shader` | One quad at y = 20 (`SE_SKY_Y`) around the focus, one draw call. Per pixel: the background cloud from the weather texture and the dominant system's field, shaped by domain-warped fbm from a 256² tileable noise texture built at start-up (RGBA: fbm 4/8/16 and cellular billows). Hurricanes are sampled in near-conformal log-polar coordinates turning with the flow (faster at the eyewall; two phases cross-faded every 22 s so the shear never winds up), with a ragged eye, solid eyewall and central dense overcast, noise-frayed spiral bands and a faint outflow veil turning the other way. Squall lines are sampled in line coordinates: bubbling convective cells along the line, a striated shelf cloud on the leading edge, a ragged trailing deck. Lit from the sun by the density gradient (grey-blue lee sides, bright crowns), darker and flatter in storm cores, flickering with lightning and lit by strikes. Pixels without cloud leave after one texture read and the analytic test. Replaces the billboard cloud puffs (StormClouds mode 0 is no longer drawn). |
+| Ground shade | `SECommon.hlsl` (`SE_SysProfile`, `SE_SystemsAt`, `SE_StormShade`) | Every world shader darkens and desaturates under a system's deck (spiral bands included, read where the sun ray meets the deck, broken up by one noise sample), on top of the regional storm shade. |
+| Rain shafts | `StormClouds.cs` / `StormClouds.shader` | Curtains follow the system's exact field inside it (the eye stays dry), are softer, and fade out at strategic zoom where the deck covers them. |
+| Audio | `WeatherPresenter.Hear` | `StormNear` also rises as a system's edge approaches (storm wind bed); distant thunder rumbles from a system up to ~2× earshot away every few seconds (3D voice in its direction, delay by distance) before any strike is in range. |
+| Wind | `WeatherPresenter.SystemWind` → `Atmosphere.ExtraWind` | The system's wind at the focus is added to the effects wind (smoke, rain slant, `_SE_Wind`). |
+| Minimap | `WeatherPresenter.Minimap` | The storm layer is now 3 texels per weather cell and includes the system's field, its centre (eye) and a dotted forecast track for the next four minutes (amber, fading). |
+| Hover | `WeatherPresenter.SystemInfo`, `Hud.StormInfo` | Hovering open ground anywhere under a system's cloud: "Hurricane Ada · Weather · category 3", what it does there (grounded / the eye / rain), and "Moving north-east at 6 hexes a minute · holding strength / weakening". |
+| Stress scenario | `Core/Stress/StressScenario.cs` | Carries a hurricane south of the city and a squall line north-east, for profiling and screenshots. |
+
+**Zoom:** the deck is absent below camDistance 28, fades in to a translucent layer (≈55%) at mid zoom with a hole
+where the camera looks at the battle (closing by 180), and is near-solid for storm systems at strategic zoom.
+Fair-weather cloud stays a thinner veil (55–85%). Weather intensity 0 hides the deck and the shade.
+
+**Performance:** one extra draw call. Clear pixels: one weather texture read plus a loop over (usually zero or one)
+systems. Cloud pixels: 4 noise reads per fbm, 2 fbm for background, 4 for a hurricane (two phases × sun offset), 2
+for a squall. `SE_ApplyFog` gains the analytic system test and one noise read only under a system. Server: the
+stamping costs about 0.2 ms per 5 s step at 256² maps.
+
+**Editor note:** after re-importing `StormSky.shader` in play mode, the material created at start-up draws nothing
+until play mode restarts (create a new material, or restart).
+
+## Design (regional weather, 2026-11-17)
 
 | Piece | File | What it does |
 |---|---|---|
@@ -44,6 +109,19 @@ changes). The client now draws that grid in the world.
 - Cloud base y = 17 assumes terrain and aircraft stay below it.
 
 ## In-game checklist (eyes-on)
+Storm systems:
+- A. A normal match: the first 6 minutes are clear or lightly overcast; open sea is not permanently raining.
+- B. When a system arrives (or in the stress scenario), at strategic zoom: a hurricane reads as a rotating cloud
+  mass with a clear eye, a solid core and spiral bands with gaps; a squall line as a bowed line with a bright shelf
+  edge and a ragged trailing deck. No straight cell edges, no repeating tiles, no popping every 5 s.
+- C. Ground, units and buildings under the deck are darker and greyer, sunny ground stays bright, the shade sits
+  under the cloud (offset with the sun).
+- D. Zoom in through mid zoom: the deck thins and opens around the focus; below 28 only shade, rain and lightning.
+- E. Pan toward an approaching system: storm wind rises and distant thunder rumbles from its side before strikes start.
+- F. Minimap: the system, an amber dotted track ahead of it, the eye dot; the track should match where it goes.
+- G. Hover open ground under it: the named system card with its heading, speed and strength.
+- H. Profiler at strategic zoom with a hurricane on screen: GPU time for SE/StormSky, no GC.
+
 1. Start a match and zoom to strategic. Dark cloud masses should sit over storm cells and pale broken cloud over cloudy cells. Over 30 s they should glide with the wind without popping when 5 s updates arrive.
 2. The ground, water, units and buildings under a storm should be visibly darker and cooler, and sunny areas should stay bright. The shade should sit under the clouds (offset with the sun).
 3. Zoom in toward a storm. Clouds should thin around the focus and be gone by zoom 26. Commanded units should never be hidden.

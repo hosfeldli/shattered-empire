@@ -7,12 +7,13 @@ using SE.Runtime.Rendering;
 namespace SE.Runtime.Effects
 {
     /// <summary>
-    /// Where the weather is, drawn in the sky: cloud masses and rain curtains over every weather cell (SE/StormClouds
+    /// Where the weather is, drawn in the sky: rain curtains under every pouring weather cell (SE/StormClouds
     /// reads the weather texture itself; this class only places a lattice window around the camera focus and sets a
     /// handful of vectors), and lightning: strikes are scheduled here from the storm cells near the camera, lit on
     /// the ground and in the cloud by every world shader (SECommon SE_StrikeLight), drawn as bolts, and handed to the
     /// audio as thunder from the strike's direction, delayed by its distance.
-    /// Per frame: at most four instanced draws, no buffers, no allocations; the strike scan runs four times a second.
+    /// The cloud masses themselves are the cloud deck (<see cref="StormSky"/>); the old billboard puffs are gone.
+    /// Per frame: at most two instanced draws, no buffers, no allocations; the strike scan runs four times a second.
     /// </summary>
     public sealed class StormClouds : IDisposable
     {
@@ -22,9 +23,8 @@ namespace SE.Runtime.Effects
         const float CloudBase = 17f;   // SECommon SE_CLOUD_BASE
 
         readonly Material blend, additive;
-        readonly MaterialPropertyBlock fineBlock = new MaterialPropertyBlock(), coarseBlock = new MaterialPropertyBlock(),
-            curtainBlock = new MaterialPropertyBlock(), boltBlock = new MaterialPropertyBlock();
-        int fineCount, coarseCount, curtainCount;
+        readonly MaterialPropertyBlock curtainBlock = new MaterialPropertyBlock(), boltBlock = new MaterialPropertyBlock();
+        int curtainCount;
         bool drawBolts;
 
         // strikes: a ring of four (xyz Unity world, w start time) and their strengths
@@ -60,7 +60,7 @@ namespace SE.Runtime.Effects
         public void Update(WeatherField field, float3 focusMap, Vector3 eye, float camDistance, bool wrap, float time, float dt, float simRate,
             float intensity, Func<float, float, float> groundAt)
         {
-            fineCount = coarseCount = curtainCount = 0; drawBolts = false; ViewFlash = 0;
+            curtainCount = 0; drawBolts = false; ViewFlash = 0;
             if (blend == null || field == null || !field.Active) { strikeAmp = Vector4.zero; lastStormNear = 0; Shader.SetGlobalVector(StrikeAmpId, strikeAmp); return; }
             float period = field.Period, depth = field.Depth;
             float cellX = field.CellWorldX, cellZ = field.CellWorldZ;
@@ -83,13 +83,9 @@ namespace SE.Runtime.Effects
                 var hole = new Vector2(fw.x + (eye.x - fw.x) * t, fw.z + (eye.z - fw.z) * t);
                 float holeStrength = 1f - Mathf.SmoothStep(0, 1, Mathf.InverseLerp(80f, 175f, camDistance));
                 float holeR = camDistance * .5f + 10f;
-                float coarseW = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(105f, 175f, camDistance));
                 int mx = Mathf.Max(1, Mathf.RoundToInt(period / sx)), mz = 1024;
-                if (coarseW < .999f)
-                    fineCount = Window(fineBlock, 1, Mathf.Min(camDistance * 2.2f + 40f, 420f), sx, sz, mx, mz, fw, fade * (1 - coarseW), holeStrength, hole, holeR, 0, wrap, period, depth);
-                if (coarseW > .001f)
-                    coarseCount = Window(coarseBlock, 2, Mathf.Min(camDistance * 2.4f + 60f, 900f), sx, sz, mx, mz, fw, fade * coarseW, holeStrength, hole, holeR, 0, wrap, period, depth);
-                float curtainFade = fade * Mathf.SmoothStep(0, 1, Mathf.InverseLerp(40f, 80f, camDistance));
+                // rain shafts read from the side: strongest at mid zoom, gone at strategic zoom where the cloud deck covers them
+                float curtainFade = fade * Mathf.SmoothStep(0, 1, Mathf.InverseLerp(40f, 80f, camDistance)) * (1f - Mathf.SmoothStep(0, 1, Mathf.InverseLerp(120f, 190f, camDistance)));
                 if (curtainFade > .004f)
                     curtainCount = Window(curtainBlock, camDistance > 140f ? 2 : 1, Mathf.Min(camDistance * 2f + 40f, 700f), sx, sz, mx, mz, fw, curtainFade, holeStrength, hole, holeR, 1, wrap, period, depth);
             }
@@ -176,6 +172,9 @@ namespace SE.Runtime.Effects
         }
         float lastStormNear;
 
+        /// <summary>Distant thunder from a storm system beyond the strike range (no bolt): position, delay, loudness.</summary>
+        public void Rumble(float3 mapPos, float delay, float loudness) => Strike?.Invoke(mapPos, delay, loudness);
+
         static float DxWrap(float from, float to, float period)
         {
             float d = to - from;
@@ -187,8 +186,6 @@ namespace SE.Runtime.Effects
         {
             if (blend == null) return;
             var bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f);
-            if (fineCount > 0) Graphics.RenderMeshPrimitives(Params(blend, fineBlock, bounds), MeshKit.Quad, 0, fineCount);
-            if (coarseCount > 0) Graphics.RenderMeshPrimitives(Params(blend, coarseBlock, bounds), MeshKit.Quad, 0, coarseCount);
             if (curtainCount > 0) Graphics.RenderMeshPrimitives(Params(blend, curtainBlock, bounds), MeshKit.Quad, 0, curtainCount);
             if (drawBolts) Graphics.RenderMeshPrimitives(Params(additive, boltBlock, bounds), MeshKit.Quad, 0, 4);
         }

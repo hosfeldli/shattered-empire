@@ -25,3 +25,6 @@ unity/Assets/ShatteredEmpires/Runtime/Resources/Workshop.meta
 # Unity scene-recovery autosaves
 unity/Assets/_Recovery/
 unity/Assets/_Recovery.meta
+
+# agent worktrees
+.claude/worktrees/
