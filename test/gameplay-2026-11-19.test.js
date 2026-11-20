@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 
 globalThis.SE_MAP_SIZE = 64;
 globalThis.SE_WRAP = false;
-const { ActionGame } = await import('../server/sim/actionGame.js');
+const { ActionGame, FACILITY_DOORS } = await import('../server/sim/actionGame.js');
 const { ACTION_UNITS, ACTION_UPGRADES, REMOVED_UPGRADES } = await import('../server/sim/actionDefinitions.js');
 const { distance, LIGHT_GROUND, MAX_GRADIENT, MAX_SLOPE_DEG, tileAt } = await import('../server/sim/actionNavigation.js');
 const { addFacility, openSlots } = await import('../server/sim/actionBases.js');
@@ -123,11 +123,14 @@ test('trained units come out of the producing facility door and walk to an assem
   assert.ok(u, 'a squad was produced');
   assert.ok(emerged && emerged.s === u.id, 'an emerge event for the client');
   const fx = Math.sin(barracks.yaw), fz = Math.cos(barracks.yaw);
-  // it appeared against the facility's front face (towards the hub), not on a ring around it
+  // it appeared against the facility's front face (towards the hub), not on a ring around it: since 2026-11-20 right
+  // outside the modelled door of the Blender barracks (FACILITY_DOORS), clear of its walls
   const dx = u.x - barracks.x, dz = u.z - barracks.z;
   const along = dx * fx + dz * fz;
-  assert.ok(along > barracks.radius - .05, `in front of the facility (along ${along.toFixed(2)})`);
-  assert.ok(distance(u, barracks) < barracks.radius + .8, 'right at the door');
+  const door = g.buildingPoint(barracks, ...FACILITY_DOORS.barracks[0]);
+  assert.ok(along > FACILITY_DOORS.barracks[0][1], `in front of the facility (along ${along.toFixed(2)})`);
+  // (a starting scout buggy stands just outside this door: the squad steps out beside it)
+  assert.ok(distance(u, door) < .6, `right at the door (${distance(u, door).toFixed(2)})`);
   assert.ok(u.goal, 'it walks out to the assembly point');
   const goal = u.goal;
   assert.ok((goal.x - barracks.x) * fx + (goal.z - barracks.z) * fz > along, 'the assembly point is further out in front');

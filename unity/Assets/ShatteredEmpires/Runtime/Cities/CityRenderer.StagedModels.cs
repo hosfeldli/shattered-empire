@@ -178,7 +178,9 @@ namespace SE.Runtime.Cities
         void StagedBuilding(in Ctx c, string type, string key)
         {
             PutStaged(key, c.Stage, new float3(c.X, c.GroundY, c.Z), c.Yaw, new float3(1), c.Tint);
-            if (!Layouts().TryGetValue(key, out var l)) return;
+            bool hasLayout = Layouts().TryGetValue(key, out var l);
+            LevelDressing(c, type, key, hasLayout ? l : null);   // one visible prop set per upgrade level (CityRenderer.LevelDressing.cs)
+            if (!hasLayout) return;
             var cc = c;
             math.sincos(cc.Yaw, out float sn, out float cs);
             float3 Map(float3 at) => new float3(cc.X + at.x * cs + at.z * sn, cc.GroundY + at.y, cc.Z - at.x * sn + at.z * cs);
@@ -212,6 +214,7 @@ namespace SE.Runtime.Cities
         /// <summary>City AA on the headquarters roof (perimeter level 2+), as the old tier dressing placed it, on the model's mount.</summary>
         void HeadquartersAaMount(in Ctx c, float3 roof, int stage)
         {
+            if (CentreTurret(c, roof)) return;   // the centre-turret upgrade takes the roof mount (CityRenderer.UpgradeKit.cs)
             foreach (var st in objectiveByTile.Values)
             {
                 if (!st.IsBase || math.abs(st.X - c.X) > .6f || math.abs(st.Z - c.Z) > .6f) continue;

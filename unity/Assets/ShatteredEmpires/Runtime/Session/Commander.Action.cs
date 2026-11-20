@@ -299,6 +299,7 @@ namespace SE.Runtime.Session
             var order = new Order { MapPoint = point, Time = time, Kind = kind };
             Orders.Add(order);
             NoteIssued(kind, point);
+            if (enemy > 0 && kind == "attack") NoteAttackOrder(enemy);   // the red target reticle (Commander.AttackTarget.cs)
             UI.Hud.NoteOrder(units.Selected, point, kind == "attackMove" ? "attack" : (string)cmd["c"], time);
             order.Rid = session.Net?.Command(cmd, r =>
             {
@@ -618,7 +619,11 @@ namespace SE.Runtime.Session
                 }
             }
             else if (units.Selected.Count <= 64)
+            {
                 DrawOrderRoutes();   // 2026-11-19: the current route and the whole Shift-queued chain (Commander.Waypoints.cs)
+                DrawQueuePreview();  // Shift held: the chain end → cursor connector (Commander.AttackTarget.cs)
+            }
+            DrawAttackTargets();     // red reticles on ordered attack targets (Commander.AttackTarget.cs)
             routeLines.DrawImages(images);
         }
 

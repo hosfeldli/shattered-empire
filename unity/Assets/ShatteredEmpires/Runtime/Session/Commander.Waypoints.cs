@@ -66,7 +66,7 @@ namespace SE.Runtime.Session
             foreach (int id in units.Selected)
             {
                 if (!legs.TryGetValue(id, out var list)) legs[id] = list = new List<Leg>(4);
-                if (!queue) list.Clear();
+                if (!queue) { list.Clear(); ClearAttackOrder(id); }   // Commander.AttackTarget.cs
                 else list.RemoveAll(l => l.DoneAt > 0);
                 if (list.Count < MaxLegs) list.Add(new Leg { X = point.x, Z = point.z, Kind = k });
                 legIdleSince.Remove(id);
@@ -80,7 +80,8 @@ namespace SE.Runtime.Session
             var g = w.Grid;
             float now = Time.unscaledTime;
             UpdateLegs(now);
-            float width = Mathf.Max(.014f, cam.Distance * .0011f);
+            // 2026-11-20 (Ticket 2: the links between Shift waypoints were too thin to see): about twice the old width
+            float width = Mathf.Max(.03f, cam.Distance * .0022f);
             var camT = Camera.main != null ? Camera.main.transform : null;
             // the screen's up and right on the ground, in map space (map z is Unity -z)
             float2 up = camT != null ? math.normalizesafe(new float2(camT.forward.x, -camT.forward.z), new float2(0, 1)) : new float2(0, 1);
@@ -117,13 +118,18 @@ namespace SE.Runtime.Session
                     if (fade <= 0f) continue;
                     var to = new float2(leg.X, leg.Z);
                     var col = LegColor(leg.Kind);
+                    // an attack on a unit or building: the leg runs to the target itself, which wears the red reticle
+                    // (Commander.AttackTarget.cs), instead of to the spot that was clicked
+                    bool onTarget = false;
+                    if (i == head && leg.Kind == LegAttack && leg.DoneAt <= 0 && attackOrders.TryGetValue(id, out var attack)
+                        && AttackTargetAt(attack.Target, out var targetAt, out _)) { to = targetAt; onTarget = true; }
                     if (leg.DoneAt > 0) { WaypointMarker(to, 0, col, fade, true, up, right); continue; }   // reached: its ring shrinks away
                     // the route already leads to the head waypoint: connect only if it stops short (still planning)
                     float gap = math.length(new float2(g.DxWrap(from.x, to.x), to.y - from.y));
                     long key = SegmentKey(from, to);
-                    if (gap > .3f && (first || legDrawn.Add(key))) RouteSegment(from, to, col, width * .85f * fade, .26f);
+                    if (gap > .3f && (first || legDrawn.Add(key))) RouteSegment(from, to, col, width * .85f * fade, .3f);
                     first = false;
-                    if (legDrawn.Add(SegmentKey(to, to))) WaypointMarker(to, i - Mathf.Max(0, head) + 1, col, fade, leg.DoneAt > 0, up, right);
+                    if (!onTarget && legDrawn.Add(SegmentKey(to, to))) WaypointMarker(to, i - Mathf.Max(0, head) + 1, col, fade, leg.DoneAt > 0, up, right);
                     from = to;
                 }
             }
@@ -229,7 +235,7 @@ namespace SE.Runtime.Session
         {
             var w = session.World;
             float zoom = Mathf.Clamp(cam.Distance * .011f, .14f, 1.2f);
-            float size = Mathf.Max(.3f, zoom * 1.6f) * (done ? fade : 1f);
+            float size = Mathf.Max(.42f, zoom * 2f) * (done ? fade : 1f);
             if (size < .02f) return;
             float y = w.GroundHeight(p.x, p.y) + .04f;
             rings.Add(InstanceData.TRS(MapSpace.W(new float3(p.x, y, p.y)), 0, new float3(size), color));

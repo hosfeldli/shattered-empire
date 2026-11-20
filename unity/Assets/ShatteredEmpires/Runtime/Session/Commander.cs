@@ -822,7 +822,7 @@ namespace SE.Runtime.Session
                 case Mode.Trench: return "Drag the trench line · blocked hexes are skipped · release to dig";
                 case Mode.Growth: return "Click where the city should grow";
                 case Mode.Rally: return "Click the rally point";
-                case Mode.Target: return TerrainBrushActive ? $"Drag to paint · {InputFacade.KeyLabel("brush_smaller")} {InputFacade.KeyLabel("brush_larger")} or Ctrl + wheel: brush size · release to order · Shift keeps the tool · Esc cancels" : PlacingDefense(out int inf) ? $"Click to place · past your ring of influence border ({inf} hexes beyond your territory) defenses cost ×{ProtocolDecoder.Float(session.Defs?["RULESET"]?["influence"]?["factor"], 3):0.#}" : "Click the target on the map";
+                case Mode.Target: return TerrainBrushActive ? $"Drag to paint · {InputFacade.KeyLabel("brush_smaller")} {InputFacade.KeyLabel("brush_larger")} or Ctrl + wheel: brush size · PgUp PgDn or Alt + wheel: raise / lower height · release to order · Shift keeps the tool · Esc cancels" : PlacingDefense(out int inf) ? $"Click to place · past your ring of influence border ({inf} hexes beyond your territory) defenses cost ×{ProtocolDecoder.Float(session.Defs?["RULESET"]?["influence"]?["factor"], 3):0.#}" : "Click the target on the map";
                 default: return "";
             }
         }

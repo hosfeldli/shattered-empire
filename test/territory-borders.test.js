@@ -103,16 +103,18 @@ test('released ground can be claimed by a rival structure that connects; recompu
   assert.equal(stateHash(g), hash);
 });
 
-test('losing a headquarters leaves no stale rings round the defenses and trenches it anchored', () => {
+test('losing a headquarters leaves no stale rings round the defenses it anchored', () => {
   const g = create(), home = g.sites[0];
   g.refreshTerritory();
   const ring = influenceRing(g, g.civs[0]);
   const edge = [...g.world.owner.keys()].find((t) => ring[t] === 2 && clear(g, t));
   tower(g, 0, edge);
-  const trench = [...g.world.owner.keys()].find((t) => ring[t] === 1 && dist(t, edge) > 3 && clear(g, t));
+  const trench = [...g.world.owner.keys()].find((t) => ring[t] === 1 && dist(t, edge) > 3 && clear(g, t, 0));
+  assert.ok(trench >= 0, 'a trench site beside the border');
   g.fieldworks.set(trench, { tile: trench, ...centerOf(trench), owner: 0, progress: 1, facing: 0, hp: 100 });
   g.refreshTerritory();
-  assert.ok(owned(g, disk(edge, 1), 0) && owned(g, disk(trench, 1), 0), 'both extend the base territory');
+  // 2026-11-20: trenches claim nothing any more (only the tower extends the territory)
+  assert.ok(owned(g, disk(edge, 1), 0) && g.world.owner[trench] !== 0, 'the tower extends the base territory, the trench does not');
   const hq = [...g.buildings.values()].find((b) => b.site === home.id && b.type === 'town');
   g.loseBuilding(hq);
   assert.equal(home.owner, -1);

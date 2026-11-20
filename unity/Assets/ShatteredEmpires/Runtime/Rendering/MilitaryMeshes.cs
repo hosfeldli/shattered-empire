@@ -6,6 +6,10 @@ namespace SE.Runtime.Rendering
     public static class MilitaryMeshes
     {
         public static Mesh Tank, Autonomous, Howitzer, Turret, RemoteTurret, HowitzerTurret, GunBarrel, HowitzerBarrel;
+        /// <summary>Stylized tanks (2026-11-20, tools/blender/build_tanks.py): team-colour trim drawn over each tank's hull
+        /// and turret (TankTrim / TurretTrim; the autonomous tank's emissive AutoTrim / RemoteTrim) and the autonomous
+        /// tank's own gun (AutoBarrel). The code-built fallbacks are an empty speck (no trim) and the shared barrel.</summary>
+        public static Mesh TankTrim, TurretTrim, AutoTrim, RemoteTrim, AutoBarrel;
         /// <summary>Gun truck: ArmoredCar is the hull (wheels drawn apart), ArmoredCarLo the whole vehicle for the
         /// operational zoom, ArmoredCarMount the roof-ring weapon station (origin on the ring, gun along +z).</summary>
         public static Mesh ArmoredCarLo, ArmoredCarMount;
@@ -92,6 +96,10 @@ namespace SE.Runtime.Rendering
             Turret = ModelLibrary.Or("Turret", Turret); RemoteTurret = ModelLibrary.Or("RemoteTurret", RemoteTurret);
             HowitzerTurret = ModelLibrary.Or("HowitzerTurret", HowitzerTurret);
             GunBarrel = ModelLibrary.Or("GunBarrel", GunBarrel); HowitzerBarrel = ModelLibrary.Or("HowitzerBarrel", HowitzerBarrel);
+            var speck = new MeshBuilder().Surface(SurfaceKind.Armor).Box(P(0, 0, 0), P(.0001f, .0001f, .0001f), Dark).Build("No tank trim");
+            TankTrim = ModelLibrary.Or("TankTrim", speck); TurretTrim = ModelLibrary.Or("TurretTrim", speck);
+            AutoTrim = ModelLibrary.Or("AutoTrim", speck); RemoteTrim = ModelLibrary.Or("RemoteTrim", speck);
+            AutoBarrel = ModelLibrary.Or("AutoBarrel", GunBarrel);
             RoadWheel = ModelLibrary.Or("RoadWheel", RoadWheel); Wheel = ModelLibrary.Or("Wheel", Wheel);
             Carrier = ModelLibrary.Or("Carrier", Carrier); ArmoredCar = ModelLibrary.Or("ArmoredCar", ArmoredCar);
             ArmoredCarLo = ModelLibrary.Or("ArmoredCarLo", ArmoredCarLo); ArmoredCarMount = ModelLibrary.Or("ArmoredCarMount", ArmoredCarMount);

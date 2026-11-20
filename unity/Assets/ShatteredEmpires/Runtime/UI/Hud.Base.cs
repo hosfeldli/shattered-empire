@@ -452,8 +452,6 @@ namespace SE.Runtime.UI
                     {
                         wheelStructure = structure;
                         wheel.ReplaceRoot(BaseItems(site), BaseOuterArc(site));
-                        // the pads sub-ring (depth 1) follows the base too: a pad filled, freed or unlocked
-                        if (wheel.Depth >= 1 && baseSubRing == "pads") wheel.ReplaceLevel(1, PadItems(site.Id));
                     }
                 }
                 AssignSocketAngles(site);
@@ -463,11 +461,11 @@ namespace SE.Runtime.UI
                 if (fromWorld != highlightSlot || depth != highlightDepth)
                 {
                     highlightSlot = fromWorld; highlightDepth = depth;
-                    highlightId = fromWorld == 0 ? null : depth == 0 ? "pads" : "socket:" + fromWorld;
+                    highlightId = null;   // (the pads view is gone, 2026-11-20)
                 }
                 wheel.HighlightId = highlightId;
-                // left an empty pad's facility ring (depth 2): drop its world preview and the pad selection
-                if (wheelEnteredSlot != 0 && wheel.Depth < 2)
+                // left an empty pad's facility ring (depth 1): drop its world preview and the pad selection
+                if (wheelEnteredSlot != 0 && wheel.Depth < 1)
                 {
                     wheelEnteredSlot = 0;
                     commander.ClearRingPreview();
@@ -506,6 +504,7 @@ namespace SE.Runtime.UI
                     }
                 }
             }
+            else if (wheelKind == "perimeter") RefreshPerimeterWheel();
             else if (wheelKind == "ruin")
             {
                 if (!session.Objectives.TryGetValue(wheelSite, out var ruin) || ruin.Headquarters != 0) CloseWheel();
@@ -545,6 +544,7 @@ namespace SE.Runtime.UI
         string BaseStructure(ObjectiveSite site)
         {
             var sb = new System.Text.StringBuilder();
+            sb.Append(UpgradeKey(HqOf(site.Id))).Append(site.EngineerLevel).Append('|');
             sb.Append(site.Tier).Append('|').Append(site.DefenseCount).Append('|').Append(PerimeterLevel(site.Id)).Append('|').Append(Age).Append('|')
                 .Append(site.Headquarters).Append('|').Append(site.RingVersion).Append('|');
             if (site.Slots != null) foreach (int s in site.Slots) sb.Append(s).Append(',');
@@ -568,10 +568,8 @@ namespace SE.Runtime.UI
             wheel.HubPips = () => session.Objectives.TryGetValue(siteId, out var s) ? Mathf.Clamp(s.Tier, 1, 3) : 0;
             wheel.SubjectDetail = () =>
             {
-                if (!session.Objectives.TryGetValue(siteId, out var s)) return "";
-                int used = Mathf.Max(0, s.Capacity - (s.Slots?.Length ?? 0));
-                var hq = HqOf(siteId);
-                return $"Tier {Tier(s.Tier)} base · {used}/{s.Capacity} pads used" + (hq.Id != 0 ? $" · HQ {hq.Hp}%" : "");
+                // 2026-11-20: materials and power under the base name (health has its own bar, the tier is the hub's pips)
+                return session.Objectives.ContainsKey(siteId) ? BaseIncomeLine(siteId) : "";
             };
             AssignSocketAngles(site);
             SocketFromSelection();
@@ -590,11 +588,9 @@ namespace SE.Runtime.UI
         /// </summary>
         List<RadialItem> BaseItems(ObjectiveSite site)
         {
-            int siteId = site.Id;
-            var list = new List<RadialItem> { BaseUpgrade(site), PadsItem(siteId), EconomyItem(siteId), ProductionItem(siteId), PerimeterItem(site), StatusItem(siteId), AllProductionItem() };
-            var garrison = GarrisonItem(siteId);
-            if (garrison != null) list.Add(garrison);
-            return list;
+            // 2026-11-20 (Ticket 3, BASE_MENU_REWORK.md §1): Hud.BaseMenu.cs. Gone: pads, economy, garrison, headquarters /
+            // repair and the perimeter upgrade; production moved to the outer arc
+            return BaseMenuItems(site);
         }
 
         /// <summary>Pads used / open on a base (open = the tier's pads; free = still empty).</summary>
@@ -656,33 +652,6 @@ namespace SE.Runtime.UI
             Detail = () => "Every production building at every base: units queue across all of them",
             Visible = TrainersAtSeveralBases,
             Click = _ => SelectEveryProduction(),
-        };
-
-        /// <summary>Headquarters status (condition, tier, pads); a damaged headquarters is repaired from here.</summary>
-        RadialItem StatusItem(int siteId) => new RadialItem
-        {
-            Id = "status", Icon = "hq", Angle = StatusAngle,
-            Name = () => HqOf(siteId).RepairCost > 0 ? "Repair headquarters" : "Headquarters",
-            Caption = () => { var h = HqOf(siteId); return h.Id != 0 ? h.Hp + "%" : null; },
-            Detail = () =>
-            {
-                var h = HqOf(siteId);
-                var (used, open, free) = PadCounts(siteId);
-                int tier = session.Objectives.TryGetValue(siteId, out var s) ? s.Tier : 1;
-                return $"Condition {h.Hp}% · Tier {Tier(tier)} · pads {used}/{open} used, {free} free";
-            },
-            Progress = () => HqOf(siteId).WorksKind == "repair" ? HqOf(siteId).WorksPct / 100f : -1f,
-            Reason = () =>
-            {
-                var h = HqOf(siteId);
-                if (h.RepairCost <= 0) return null;
-                return h.Project != null ? "The headquarters is busy" : $"Click to repair · {h.RepairCost} Materials";
-            },
-            Click = _ =>
-            {
-                var h = HqOf(siteId);
-                if (h.Id != 0 && h.RepairCost > 0 && h.Project == null) Send(new JObject { ["c"] = "repair", ["id"] = h.Id }, "Repairs started");
-            },
         };
 
         /// <summary>The headquarters garrison (W4, R4) on the base wheel; null when the server has no garrisons.</summary>
@@ -1018,7 +987,8 @@ namespace SE.Runtime.UI
             int SlotsAt(int tier) => slots != null && slots.Count >= tier && tier >= 1 ? ProtocolDecoder.Int(slots[tier - 1]) : 1 + 2 * tier;
             return new RadialItem
             {
-                Id = "upgrade:tier", Icon = "upgrade", Hotkey = InputFacade.KeyLabel("upgrade_base"), Angle = 0f,
+                // the era glyph (the hub's tier pips) of the tier it leads to
+                Id = "upgrade:tier", Icon = site.Tier >= 2 ? "era_up3" : "era_up2", Hotkey = InputFacade.KeyLabel("upgrade_base"), Angle = 0f,
                 Name = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 ? $"Upgrade to Tier {TierLabels[Mathf.Clamp(s.Tier, 0, 2)]}" : "Tier III headquarters",
                 Cost = next?["cost"], Seconds = ProtocolDecoder.Int(next?["time"]),
                 Enabled = () => session.Objectives.TryGetValue(siteId, out var s) && s.Tier < 3 && HqOf(siteId).Project == null,
@@ -1135,6 +1105,8 @@ namespace SE.Runtime.UI
             int siteId = site.Id;
             return new List<RadialItem>
             {
+                // circle buttons at the bottom (Ticket 3): this base's production, the rally point, every base's production
+                ProductionItem(siteId),
                 new RadialItem
                 {
                     Id = "arc:rally", Icon = "rally", Title = "Rally point",
@@ -1142,6 +1114,7 @@ namespace SE.Runtime.UI
                     Visible = () => HasTrainersAt(siteId),
                     Click = _ => commander.Begin(Commander.Mode.Rally),
                 },
+                AllProductionItem(),
             };
         }
 
@@ -1170,11 +1143,11 @@ namespace SE.Runtime.UI
         void SocketFromSelection()
         {
             int slot = commander.SelectedRingSlot;
-            if (slot == 0 || wheelKind != "base" || slot == wheelEnteredSlot && wheel.Depth > 1) return;
+            if (slot == 0 || wheelKind != "base" || slot == wheelEnteredSlot && wheel.Depth > 0) return;
             if (!session.Objectives.TryGetValue(wheelSite, out var site) || site.Slots == null || Array.IndexOf(site.Slots, slot) < 0) return;
             while (wheel.Depth > 0) wheel.Back();
             wheelEnteredSlot = slot;   // set first: the item's Children re-selects the same slot
-            if (!wheel.EnterItem("pads") || !wheel.EnterItem("socket:" + slot)) wheelEnteredSlot = 0;
+            if (!wheel.EnterItem("pads")) wheelEnteredSlot = 0;   // straight into the pad's facility ring
         }
 
         /// <summary>The nine facilities for an empty site: name, description and cost in the centre; hover previews it in the world.</summary>
@@ -1206,7 +1179,7 @@ namespace SE.Runtime.UI
                     Click = _ =>
                     {
                         commander.BuildRingFacility(siteId, slot, facility);
-                        wheel.Back();
+                        CloseWheel();   // the menu closes once a facility is chosen (user ticket)
                     },
                 });
             }
@@ -1226,7 +1199,9 @@ namespace SE.Runtime.UI
             var sb = new System.Text.StringBuilder();
             sb.Append(Age).Append('|').Append((Econ?["techs"] as JArray)?.Count ?? 0).Append('|').Append((Econ?["groups"] as JArray)?.Count ?? 0).Append('|');
             foreach (var b in OwnBuildings(ids))
-                sb.Append(b.Id).Append(b.Done ? 'd' : 'u').Append(b.Missiles > 0 ? 'm' : '-').Append(b.Project != null ? 'p' : '-').Append(b.RepairCost > 0 ? 'r' : '-').Append(b.Level).Append(',');
+                sb.Append(b.Id).Append(b.Done ? 'd' : 'u').Append(b.Missiles > 0 ? 'm' : '-').Append(b.Project != null ? 'p' : '-').Append(b.Level).Append(UpgradeKey(b)).Append(',');
+            // an outpost's plots
+            foreach (var b in session.Structures.Buildings.Values) if (b.OutpostId != 0 && Array.IndexOf(ids, b.OutpostId) >= 0) sb.Append('p').Append(b.Id).Append(b.Done ? 'd' : 'u');
             return sb.ToString();
         }
 
@@ -1234,6 +1209,8 @@ namespace SE.Runtime.UI
         {
             var own = OwnBuildings(ids);
             if (own.Length == 0) return;
+            // 2026-11-20: a perimeter position opens the perimeter wheel (turret paths, the centre turret)
+            if (own.Length == 1 && own[0].PerimeterSlot > 0 && own[0].City >= 0) { OpenPerimeterWheel(own[0].City, own[0].Id); return; }
             wheelKind = "building"; wheelBuildings = ids; wheelSite = own[0].City;
             wheelStructure = BuildingStructure(ids);
             wheelStructureSnap = session.Snapshots;
@@ -1282,6 +1259,9 @@ namespace SE.Runtime.UI
             var own = OwnBuildings(ids);
             if (own.Length == 0) return items;
             int[] all = own.Select(b => b.Id).ToArray();
+            // 2026-11-20 (BASE_MENU_REWORK.md): an outpost is a tiny base; a production building has four units, four upgrades, one building upgrade
+            if (own.Length == 1 && own[0].Type == "fort" && own[0].Done) return OutpostItems(own[0]);
+            if (PairedProduction(own, out var paired)) return PairedProductionItems(own, paired);
             var trainers = own.Where(IsTrainer).Select(b => b.Id).ToArray();
             var hostTypes = new HashSet<string>(own.Where(b => b.Done).Select(b => b.Type));
             // 1. the top segment: building upgrades (era level, any techs the server offers; none since 2026-11-20)
@@ -1349,19 +1329,7 @@ namespace SE.Runtime.UI
                     Visible = () => AnyQueued(HostsFor(trainers, null)),
                     Click = _ => QueueClear(HostsFor(trainers, null)),
                 });
-            items.Add(new RadialItem
-            {
-                Id = "repair", Icon = "repair", Title = "Repair",
-                Visible = () => OwnBuildings(all).Any(b => b.Done && b.RepairCost > 0),
-                Cost = new JObject { ["materials"] = own.Where(b => b.Done && b.Project == null).Sum(b => b.RepairCost) },
-                Enabled = () => OwnBuildings(all).Any(b => b.Done && b.RepairCost > 0 && b.Project == null),
-                Reason = () => "The facility is busy",
-                Click = _ =>
-                {
-                    foreach (var b in OwnBuildings(all)) if (b.Done && b.RepairCost > 0 && b.Project == null)
-                        Send(new JObject { ["c"] = "repair", ["id"] = b.Id }, "Repairs started");
-                },
-            });
+            // (no repair button since 2026-11-20: the base engineers repair automatically)
             if (own.Any(b => b.Type != "town"))
             {
                 int refund = own.Where(b => b.Type != "town").Sum(b => Mathf.FloorToInt(ProtocolDecoder.Float(Defs?["BUILDINGS"]?[b.Type]?["cost"]?["materials"]) * .35f));
@@ -1485,7 +1453,8 @@ namespace SE.Runtime.UI
             int tier = ProtocolDecoder.Int(d?["tier"], 1);
             string facility = ProtocolDecoder.Str(d?["facility"]);
             var cost = d?["cost"];
-            BuildingRecord[] Hosts() => HostsFor(trainers, facility);
+            // the buildings that train this type (the headquarters and outposts share militia and scout buggies)
+            BuildingRecord[] Hosts() => HostsFor(trainers, "unit:" + type);
             return new RadialItem
             {
                 Id = "train:" + type, Icon = type, Title = NameOf("UNITS", type), Cost = cost, Seconds = ProtocolDecoder.Int(d?["time"]),
@@ -1566,7 +1535,7 @@ namespace SE.Runtime.UI
             var defs = Defs?["BUILDINGS"];
             foreach (int id in ids)
                 if (session.Structures.Buildings.TryGetValue(id, out var b) && b.Owner == session.CivId && b.Done
-                    && (facility == null ? defs?[b.Type]?["trains"] is JArray : b.Type == facility)) list.Add(b);
+                    && (facility == null ? defs?[b.Type]?["trains"] is JArray : facility.StartsWith("unit:") ? TrainsHere(b, facility.Substring(5)) : b.Type == facility)) list.Add(b);
             var hosts = list.ToArray();
             hostCache[key] = hosts;
             return hosts;
@@ -1894,9 +1863,10 @@ namespace SE.Runtime.UI
 
         // ------------------------------------------------------------------ Build wheel (B)
         /// <summary>The nine segments, in order clockwise from the top (plan §2.G).</summary>
-        static readonly string[] BuildWheelOrder = { "trench", "road", "barricade", "guard_post", "bunker", "turret", "aa_battery", "fort", "@newbase" };
+        // 2026-11-20 (Ticket 3): the New Base option is gone (outposts are the tiny bases); the artillery emplacement takes its segment
+        static readonly string[] BuildWheelOrder = { "trench", "road", "barricade", "guard_post", "bunker", "turret", "aa_battery", "fort", "artillery_post" };
         /// <summary>Support emplacements on the outer arc (any other field building the server adds joins them).</summary>
-        static readonly string[] BuildWheelExtras = { "artillery_post", "sensor_post", "repair_point" };
+        static readonly string[] BuildWheelExtras = { "sensor_post", "repair_point" };
 
         string NewBaseType => ProtocolDecoder.Str(Defs?["RULESET"]?["newBase"]?["type"], "base_site");
 
@@ -2034,7 +2004,8 @@ namespace SE.Runtime.UI
                     Detail = () => "Fall back to the nearest friendly headquarters",
                     Click = _ => commander.UnitCommand("withdraw", null, "Retreat ordered") },
             };
-            foreach (string ability in types.Select(t => ProtocolDecoder.Str(Defs?["UNITS"]?[t]?["ability"])).Where(a => !string.IsNullOrEmpty(a)).Distinct())
+            // passive abilities (the support truck's automatic field repair, 2026-11-20) have no button
+            foreach (string ability in types.Where(t => !ProtocolDecoder.Bool(Defs?["UNITS"]?[t]?["passive"])).Select(t => ProtocolDecoder.Str(Defs?["UNITS"]?[t]?["ability"])).Where(a => !string.IsNullOrEmpty(a)).Distinct())
             {
                 var d = Defs?["ABILITIES"]?[ability];
                 if (d == null) continue;

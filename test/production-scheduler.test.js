@@ -32,9 +32,9 @@ test('Test A: queues share one capacity budget; more queues never mean more thro
   const cap = productionCapacity(g, b);
   assert.ok(cap > 0);
   assert.ok(!g.command(0, { c: 'train', ids: [b.id], type: 'rifle_squad', count: 5 }).error);
-  assert.ok(!g.command(0, { c: 'train', ids: [b.id], type: 'militia', count: 5 }).error);
-  assert.ok(!g.command(0, { c: 'train', ids: [b.id], type: 'scout_buggy', count: 5 }).error);
-  const start = { rifle_squad: 5, militia: 5, scout_buggy: 5 };
+  assert.ok(!g.command(0, { c: 'train', ids: [b.id], type: 'mortar_team', count: 5 }).error);
+  assert.ok(!g.command(0, { c: 'train', ids: [b.id], type: 'anti_armor', count: 5 }).error);
+  const start = { rifle_squad: 5, mortar_team: 5, anti_armor: 5 };
   let last = 0;
   for (let i = 0; i < 400; i++) {
     const spent = step(g, b, .3), now = workOf(b, start);
@@ -53,29 +53,30 @@ test('Test A: queues share one capacity budget; more queues never mean more thro
   close(workOf(one.b, { rifle_squad: 20 }), last, 1e-6);
 });
 
-test('Test A: priority tiers first, fair equal shares within a tier, blocked queues release their share', () => {
+test('Test A: priority tiers first, then the order queued; blocked queues release the budget', () => {
   const { g, b } = setup(), cap = productionCapacity(g, b), dt = .3;
   g.command(0, { c: 'train', ids: [b.id], type: 'rifle_squad', count: 2, priority: 2 });
-  g.command(0, { c: 'train', ids: [b.id], type: 'militia', count: 2, priority: 0 });
+  g.command(0, { c: 'train', ids: [b.id], type: 'mortar_team', count: 2, priority: 0 });
   step(g, b, dt);
   close(q(b, 'rifle_squad').work, cap * dt);
-  assert.equal(q(b, 'militia').work, 0);
-  assert.equal(q(b, 'militia').state, 'waiting');
+  assert.equal(q(b, 'mortar_team').work, 0);
+  assert.equal(q(b, 'mortar_team').state, 'waiting');
   assert.equal(q(b, 'rifle_squad').state, 'producing');
-  // equal priority: equal shares
-  assert.ok(!g.command(0, { c: 'setPriority', id: b.id, type: 'militia', priority: 2 }).error);
+  // equal priority (2026-11-20, BASE_MENU_REWORK.md §2): the item queued first takes the whole budget, the next waits its turn
+  assert.ok(!g.command(0, { c: 'setPriority', id: b.id, type: 'mortar_team', priority: 2 }).error);
   const r0 = q(b, 'rifle_squad').work;
   step(g, b, dt);
-  close(q(b, 'rifle_squad').work - r0, cap * dt / 2);
-  close(q(b, 'militia').work, cap * dt / 2);
+  close(q(b, 'rifle_squad').work - r0, cap * dt);
+  assert.equal(q(b, 'mortar_team').work, 0);
+  assert.equal(q(b, 'mortar_team').state, 'waiting');
   // a paused queue gives its whole share to the other
-  assert.ok(!g.command(0, { c: 'pauseTrain', id: b.id, type: 'militia', on: true }).error);
-  const r1 = q(b, 'rifle_squad').work, m1 = q(b, 'militia').work;
+  assert.ok(!g.command(0, { c: 'pauseTrain', id: b.id, type: 'mortar_team', on: true }).error);
+  const r1 = q(b, 'rifle_squad').work, m1 = q(b, 'mortar_team').work;
   step(g, b, dt);
   close(q(b, 'rifle_squad').work - r1, cap * dt);
-  assert.equal(q(b, 'militia').work, m1);
-  assert.equal(q(b, 'militia').state, 'paused');
-  g.command(0, { c: 'pauseTrain', id: b.id, type: 'militia', on: false });
+  assert.equal(q(b, 'mortar_team').work, m1);
+  assert.equal(q(b, 'mortar_team').state, 'paused');
+  g.command(0, { c: 'pauseTrain', id: b.id, type: 'mortar_team', on: false });
   // a queue short of resources (anti-armor needs energy) gives its share to one that can pay
   g.civs[0].res.energy = 0;
   g.command(0, { c: 'clearQueue', id: b.id });
@@ -188,19 +189,19 @@ test('a finished item waiting for its exit keeps its reservation and is never ch
 
 test('repeat keeps a queue going; legacy cancelTrain by index still works; the queue cap holds', () => {
   const { g, b } = setup();
-  assert.ok(!g.command(0, { c: 'repeat', id: b.id, unit: 'militia' }).error);
-  assert.equal(q(b, 'militia').count, 1);
+  assert.ok(!g.command(0, { c: 'repeat', id: b.id, unit: 'mortar_team' }).error);
+  assert.equal(q(b, 'mortar_team').count, 1);
   const units = g.units.size;
-  for (let i = 0; i < 200; i++) step(g, b, .3);
+  for (let i = 0; i < 300; i++) step(g, b, .3);
   assert.ok(g.units.size >= units + 3, 'repeat production continues');
-  assert.equal(q(b, 'militia').count, 1);
+  assert.equal(q(b, 'mortar_team').count, 1);
   g.command(0, { c: 'repeat', id: b.id, unit: null });
   g.command(0, { c: 'train', ids: [b.id], type: 'rifle_squad', count: 2 });
   const legacy = productionWire(g, b).q;
   const idx = legacy.map((x) => x[0]).lastIndexOf('rifle_squad');
   assert.ok(!g.command(0, { c: 'cancelTrain', id: b.id, index: idx }).error);
   assert.equal(q(b, 'rifle_squad').count, 1);
-  const r = g.command(0, { c: 'train', ids: [b.id], type: 'scout_buggy', count: 40 });
+  const r = g.command(0, { c: 'train', ids: [b.id], type: 'anti_armor', count: 40 });
   assert.equal(r.reply.training.reason, 'Production queue full.');
   assert.equal(b.queues.reduce((n, x) => n + x.count, 0), 20);
 });
@@ -210,10 +211,10 @@ test('old saves migrate: the started item is paid in full, prepaid unstarted ite
   const data = JSON.parse(JSON.stringify(serializeGame(g)));
   const old = data.buildings.find((x) => x.id === b.id);
   delete old.queues;
-  old.queue = [{ unit: 'rifle_squad', left: 6, total: 12 }, { unit: 'militia', left: 10, total: 10 }, { unit: 'rifle_squad', left: 12, total: 12 }];
+  old.queue = [{ unit: 'rifle_squad', left: 6, total: 12 }, { unit: 'mortar_team', left: 10, total: 10 }, { unit: 'rifle_squad', left: 12, total: 12 }];
   const restored = restoreGame(data), rb = restored.buildings.get(b.id), rc = restored.civs[0];
   assert.equal(rb.queue, undefined);
-  assert.deepEqual(rb.queues.map((x) => [x.unit, x.count]), [['rifle_squad', 2], ['militia', 1]]);
+  assert.deepEqual(rb.queues.map((x) => [x.unit, x.count]), [['rifle_squad', 2], ['mortar_team', 1]]);
   close(rb.queues[0].work / T('rifle_squad'), .5);
   assert.equal(rb.queues[0].paid.materials, ACTION_UNITS.rifle_squad.cost.materials);
   close(rc.res.materials, civ.res.materials + ACTION_UNITS.rifle_squad.cost.materials);
@@ -221,7 +222,7 @@ test('old saves migrate: the started item is paid in full, prepaid unstarted ite
   const before = rc.res.materials;
   beginProduction(); runProduction(restored, rc, rb, .3);
   assert.ok(rb.queues[0].work > .5 * T('rifle_squad'));
-  // every migrated first-of-type item (the militia too: the old FIFO had already charged it) is paid in full
-  assert.equal(rb.queues[1].paid.materials, ACTION_UNITS.militia.cost.materials);
+  // every migrated first-of-type item (the mortar_team too: the old FIFO had already charged it) is paid in full
+  assert.equal(rb.queues[1].paid.materials, ACTION_UNITS.mortar_team.cost.materials);
   close(before - rc.res.materials, 0);
 });

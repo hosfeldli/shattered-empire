@@ -215,7 +215,7 @@ namespace SE.Runtime.CameraControl
                     Focus += new Vector3(dx * k, 0, dz * k);
                     if (jumping && dx * dx + dz * dz < 0.01f) jumping = false;
                 }
-                float scroll = PointerOverUi || (BrushScroll && InputFacade.Ctrl) ? 0 : InputFacade.Scroll;
+                float scroll = PointerOverUi || (BrushScroll && (InputFacade.Ctrl || InputFacade.Alt)) ? 0 : InputFacade.Scroll;
                 if (Mathf.Abs(scroll) > 0.01f)
                 {
                     // zoom toward the point under the cursor

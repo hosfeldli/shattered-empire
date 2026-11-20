@@ -13,7 +13,14 @@
 //   - An item starts only when its command capacity can be reserved (q.reserved, counted by armyCapacity);
 //     a finished item waiting for its exit keeps its reservation and is never charged twice.
 //   - Cancelling, clearing or losing the building never refunds what was consumed; nothing else was charged.
-import { ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, PRODUCTION } from './actionDefinitions.js';
+import { ACTION_BUILDINGS, ACTION_RESOURCES, ACTION_UNITS, PRODUCTION, trainsAt } from './actionDefinitions.js';
+import { stampUnit } from './actionUnitUpgrades.js';
+//
+// 2026-11-20 (Ticket 1 "still missing" / Ticket 3, BASE_MENU_REWORK.md §2): items are produced in the order they were
+// queued. b.order lists every queued item's unit type in queue order (the per-type queues keep their counts, payment
+// and progress); the scheduler gives the whole budget to the first eligible queue by priority (high, normal, low), then
+// by the position of its next item in b.order, and passes what it cannot use to the next. One item at a time: a second
+// unit type waits its turn instead of sharing the capacity.
 
 const EPS = 1e-9;
 /** Queue states, as sent on the wire (qs[i][4]). 'waiting': eligible, but a higher priority used the whole budget. */
@@ -61,7 +68,28 @@ export function productionQueues(b, game) {
     if (b.repeat) for (const q of b.queues) q.repeat = q.unit === b.repeat;
   }
   delete b.queue;
+  orderOf(b);
   return b.queues;
+}
+
+/** The building's production order (unit types, one per queued item), rebuilt from the queues when missing or stale. */
+export function orderOf(b) {
+  const qs = b.queues || [];
+  let total = 0;
+  for (const q of qs) total += Math.max(0, q.count);
+  if (Array.isArray(b.order) && b.order.length === total) return b.order;
+  const order = [];
+  for (const q of qs) for (let i = 0; i < q.count; i++) order.push(q.unit);
+  b.order = order;
+  return order;
+}
+function dropFromOrder(b, unit, n, fromEnd) {
+  const order = orderOf(b);
+  for (let k = 0; k < n; k++) {
+    const i = fromEnd ? order.lastIndexOf(unit) : order.indexOf(unit);
+    if (i < 0) break;
+    order.splice(i, 1);
+  }
 }
 
 /** Migrates every building of a restored save (persist.restoreGame). Idempotent. */
@@ -107,7 +135,7 @@ export function train(game, civ, ids, type, count, perBuilding = false, priority
   if (!def || def.auto || !Array.isArray(ids) || !Number.isInteger(count) || count < 1 || count > 40) return { error: 'Choose a unit and training quantity.' };
   if (priority != null && !validPriority(priority)) return { error: 'Choose a priority: 0 low, 1 normal or 2 high.' };
   const buildings = [...new Set(ids.slice(0, 40))].map((id) => game.buildings.get(id)).filter((b) =>
-    b?.owner === civ.id && b.done && b.type === def.facility && civ.age + 1 >= def.tier);
+    b?.owner === civ.id && b.done && trainsAt(b, type) && civ.age + 1 >= def.tier);
   if (!buildings.length) return { error: 'Select an operational facility at the required tier.' };
   const max = PRODUCTION.maxQueued, ready = new Map(buildings.map((b) => [b.id, backlog(game, b)]));
   let queued = 0, reason = '';
@@ -115,11 +143,12 @@ export function train(game, civ, ids, type, count, perBuilding = false, priority
     const b = perBuilding ? buildings[i % buildings.length] :
       buildings.filter((b) => queuedCount(b) < max).sort((a, b) => ready.get(a.id) - ready.get(b.id) || a.id - b.id)[0];
     if (!b || queuedCount(b) >= max) { reason = 'Production queue full.'; if (perBuilding) continue; break; }
-    const qs = productionQueues(b, game);
+    const qs = productionQueues(b, game), order = orderOf(b);
     let q = qs.find((x) => x.unit === type);
     if (!q) qs.push(q = newQueue(type, priority ?? 1));
     else if (priority != null) q.priority = priority;
     q.count++;
+    order.push(type);
     if (q.state === 'idle') q.state = 'waiting';
     ready.set(b.id, ready.get(b.id) + def.time / Math.max(EPS, productionCapacity(game, b)));
     queued++;
@@ -143,6 +172,8 @@ function removeEmpty(b) {
   let n = 0;
   for (const q of qs) if (q.count > 0) qs[n++] = q; else if (b.repeat === q.unit) b.repeat = null;
   qs.length = n;
+  if (b.order) b.order = b.order.filter((u) => qs.some((q) => q.unit === u));
+  orderOf(b);
 }
 
 /**
@@ -157,8 +188,9 @@ export function cancelProduction(game, civ, id, type, count = 1) {
   if (!Number.isInteger(n) || n < 1) return { error: 'Choose how many to cancel.' };
   n = Math.min(n, q.count);
   const lost = zero(), idle = q.count - (started(q) ? 1 : 0), take = Math.min(n, idle);
+  dropFromOrder(b, type, take, true);   // the latest queued go first (before the count changes: orderOf checks it)
   q.count -= take;
-  if (n > take) { abandon(q, lost); q.count--; }
+  if (n > take) { abandon(q, lost); dropFromOrder(b, type, 1, false); q.count--; }
   if (q.count <= 0) removeEmpty(b);
   return { reply: { t: 'ack', cancelled: { count: n, lost } } };
 }
@@ -179,6 +211,7 @@ export function dropProduction(b) {
   const lost = zero();
   for (const q of b.queues || []) abandon(q, lost);
   if (b.queues) b.queues.length = 0;
+  b.order = [];
   b.repeat = null;
   return lost;
 }
@@ -216,7 +249,7 @@ export function pauseProduction(game, civ, id, type, on) {
 /** Command repeat { id, unit|null }: that type's queue keeps one item queued forever (created when missing). */
 export function setRepeat(game, civ, id, unit) {
   const b = game.buildings.get(id), def = unit != null ? ACTION_UNITS[unit] : null;
-  if (b?.owner !== civ.id || !b.done || unit != null && (!def || def.auto || def.facility !== b.type))
+  if (b?.owner !== civ.id || !b.done || unit != null && (!def || def.auto || !trainsAt(b, unit)))
     return { error: 'Select a valid production facility and unit.' };
   const qs = productionQueues(b, game);
   b.repeat = unit || null;
@@ -224,6 +257,7 @@ export function setRepeat(game, civ, id, unit) {
   if (b.repeat && !qs.some((q) => q.unit === b.repeat)) {
     if (queuedCount(b) >= PRODUCTION.maxQueued) return { error: 'Production queue full.' };
     const q = newQueue(b.repeat); q.count = 1; q.repeat = true; q.state = 'waiting'; qs.push(q);
+    orderOf(b).push(b.repeat);
   }
   return {};
 }
@@ -252,7 +286,10 @@ function deliver(game, civ, b, q) {
   b.state = 'operational';
   q.ready = false; q.work = 0; q.reserved = 0;
   for (const k of ACTION_RESOURCES) q.paid[k] = 0;
+  dropFromOrder(b, q.unit, 1, false);
   if (!(q.repeat && q.count === 1)) q.count--;
+  else orderOf(b).push(q.unit);   // repeat: the item queues again at the back
+  stampUnit(game, u, b);   // its building's upgrades and veterancy (BASE_MENU_REWORK.md)
   q.state = q.count > 0 ? 'waiting' : 'idle';
   game.reinforce(b, u);
   game.emerge(b, u);
@@ -263,7 +300,7 @@ function deliver(game, civ, b, q) {
 function eligible(civ, b, q) {
   const def = ACTION_UNITS[q.unit];
   let blocked = q.count <= 0 ? 'idle' : q.ready ? 'exit' : q.paused ? 'paused' :
-    !def || def.facility !== b.type || civ.age + 1 < def.tier ? 'prerequisites' : null;
+    !def || !trainsAt(b, q.unit) || civ.age + 1 < def.tier ? 'prerequisites' : null;
   if (!blocked) { q.state = 'waiting'; return true; }
   if (blocked !== 'exit' && q.work === 0) q.reserved = 0;   // an unstarted item holds no capacity while blocked
   q.state = blocked;
@@ -308,24 +345,27 @@ export function runProduction(game, civ, b, dt) {
   if (!qs.length) return 0;
   for (const q of qs) if (q.ready && q.count > 0) deliver(game, civ, b, q);
   let budget = productionCapacity(game, b) * dt, spent = 0;
-  for (let tier = 2; tier >= 0; tier--) {
-    active.length = 0;
-    for (const q of qs) if (q.priority === tier && eligible(civ, b, q)) active.push(q);
-    // rounds: a queue that took less than its share (blocked, short of resources) drops out and the rest re-share
-    // the remainder; one that finished an item stays in and starts its next item with what is left
-    for (let round = 0; round < 64 && budget > EPS && active.length; round++) {
-      const share = budget / active.length;
-      let kept = 0;
-      for (let i = 0; i < active.length; i++) {
-        const q = active[i];
-        delivered = false;
-        const w = advance(game, civ, b, q, share);
-        budget -= w; spent += w;
-        if ((w >= share - EPS || delivered) && !q.ready && q.count > 0) active[kept++] = q;
-      }
-      active.length = kept;
+  // 2026-11-20: in the order queued. The eligible queues, by priority (high first), then by where their next item stands
+  // in b.order; the head takes the whole budget, and a queue that cannot use it (short of resources or capacity, an
+  // exit blocked) drops out and the next one in order gets the rest. One that finished an item is placed again by its
+  // next item's position (another unit type queued in between now goes first).
+  const order = orderOf(b);
+  active.length = 0;
+  for (const q of qs) if (eligible(civ, b, q)) active.push(q);
+  for (let round = 0; round < 64 && budget > EPS && active.length; round++) {
+    let best = -1, bestKey = Infinity;
+    for (let i = 0; i < active.length; i++) {
+      const q = active[i], at = order.indexOf(q.unit), key = (2 - q.priority) * 1e6 + (at < 0 ? 9e5 : at);
+      if (key < bestKey) { bestKey = key; best = i; }
     }
+    const q = active[best];
+    delivered = false;
+    const w = advance(game, civ, b, q, budget);
+    budget -= w; spent += w;
+    if (!((w >= budget + w - EPS || delivered) && !q.ready && q.count > 0)) active.splice(best, 1);
+    else if (!delivered) break;   // it used the whole budget
   }
+  // queues still waiting their turn read 'waiting' (eligible set it); the head reads its own state
   active.length = 0;
   if (qs.some((q) => q.count <= 0)) removeEmpty(b);
   return spent;

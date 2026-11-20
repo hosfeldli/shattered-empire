@@ -52,6 +52,18 @@ namespace SE.Runtime.Landscape
         /// <summary>Tree LOD bands (distance from the camera to the chunk): authored mesh, Blender low LOD, distant silhouette, single-crown speck.</summary>
         public float TreeLoDistance = 18f, TreeFarDistance = 55f, TreeSpeckDistance = 150f;
         public float TreeDensity = 1f;
+        /// <summary>Ticket 4: a custom map's tree season (0 summer, 1 autumn, 2 winter, 3 spring) and tree height (server defs.MAP_STYLE).
+        /// Set through <see cref="SetMapStyle"/>, which rebuilds the chunks when either changes.</summary>
+        public int Season { get; private set; }
+        public float TreeHeight { get; private set; } = 1f;
+
+        public void SetMapStyle(int season, float treeHeight)
+        {
+            treeHeight = Mathf.Clamp(treeHeight <= 0 ? 1f : treeHeight, .5f, 2f);
+            if (season == Season && Mathf.Approximately(treeHeight, TreeHeight)) return;
+            Season = season; TreeHeight = treeHeight;
+            MarkAllDirty();
+        }
         public int ChunksBuilt { get; private set; }
         public int DrawnChunks { get; private set; }
         public int DirtyCount { get; private set; }
@@ -253,9 +265,9 @@ namespace SE.Runtime.Landscape
             {
                 Height = v.Height, Water = v.Water, Known = v.Known, GeoFlags = v.GeoFlags, Biome = v.Biome, Nb = v.Nb, Geo = world.GeoPtr, Dense = world.DensePtr,
                 Impacts = v.Impacts, ImpactCounts = v.ImpactCounts,
-                Trenches = v.Trenches,
+                Trenches = v.Trenches, Pads = v.Pads,
                 W = world.Grid.W, H = world.Grid.H, WrapFlag = world.Grid.Wrap ? 1 : 0, Period = world.Grid.Period,
-                Cx = cx, Cy = cy, Cs = cs, Seed = seed, OriginX = ch.OriginX, TreeDensity = TreeDensity,
+                Cx = cx, Cy = cy, Cs = cs, Seed = seed, OriginX = ch.OriginX, TreeDensity = TreeDensity, Season = Season, TreeHeight = TreeHeight,
                 Meshes = p.Meshes, Layout = layout, Blocked = p.Blocked, TreeScars = p.TreeScars, GrassScars = p.GrassScars, StickyScars = PerfFlags.LegacyTrees ? 0 : 1, TreesA = p.TreesA, TreesB = p.TreesB, Grass = p.Grass, Understory = p.Understory, Counts = p.Counts, BoundsOut = p.Bounds,
             };
             p.Handle = job.Schedule();

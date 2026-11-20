@@ -313,6 +313,16 @@ namespace SE.Core.Protocol
             s.WeatherState = WorldRecordDecoder.Weather(s.Weather);
             s.Observer = o["obs"] as JObject;
             s.Pace = Float(o["pace"], -1f);
+            if (o["perf"] is JObject perf)   // scale pass 2026-11-20: server performance, econ snapshots only
+            {
+                var pm = perf["ms"] as JObject;
+                s.Perf = new ServerPerf
+                {
+                    Tps = Float(perf["tps"], -1f), Target = Float(perf["target"], -1f),
+                    TickMs = Float(pm?["tick"], -1f), PathMs = Float(pm?["path"], -1f), SimMs = Float(pm?["sim"], -1f), CombatMs = Float(pm?["combat"], -1f),
+                    VisMs = Float(pm?["vis"], -1f), AiMs = Float(pm?["ai"], -1f), EconMs = Float(pm?["econ"], -1f), NetMs = Float(pm?["net"], -1f),
+                };
+            }
             s.ActionPlan = o["actionPlan"] as JObject;
             s.Res = o["res"];
             if (o["econ"] is JObject econ)
@@ -385,6 +395,7 @@ namespace SE.Core.Protocol
                     {
                         Id = Int(st["id"]), Tile = Int(st["tile"], -1), Owner = Int(st["owner"], -1), Capturing = Int(st["by"], -1),
                         Headquarters = Int(st["hq"]), Tier = Int(st["tier"], 1), Capacity = Int(st["capacity"]), DefenseCount = Int(st["defenseCount"]), DefenseLevel = Int(st["defenseLevel"]),
+                        Engineers = Int(st["engineers"]), EngineerQuota = Int(st["engQuota"]), EngineerLevel = Int(st["engLevel"]), EngineerNext = Float(st["engNext"], -1),
                         X = Float(st["x"]), Z = Float(st["z"]), Radius = Float(st["radius"]), Capture = Float(st["capture"]), Build = Float(st["build"]),
                         IsBase = Bool(st["base"]), Contested = Bool(st["contested"]), Decaying = Bool(st["decaying"]), Operational = Bool(st["operational"]),
                         Memory = Bool(st["memory"]), Starting = Bool(st["starting"]), Name = Str(st["name"], ""), Kind = Str(st["kind"], ""),
@@ -436,6 +447,22 @@ namespace SE.Core.Protocol
                 if (b["gar"] is JArray gar && gar.Count > 0) list[k].Garrison = IntArray(gar);
                 if (b["ge"] is JArray ge && ge.Count >= 2) { list[k].HasGarrisonExit = true; list[k].GarrisonExitX = Float(ge[0]); list[k].GarrisonExitZ = Float(ge[1]); }
                 if (b["ra"] is JArray ra && ra.Count >= 2) { list[k].HasRally = true; list[k].RallyX = Float(ra[0]); list[k].RallyZ = Float(ra[1]); list[k].RallyAttackMove = ra.Count < 3 || Int(ra[2], 1) != 0; }
+                // base menu rework (2026-11-20): perimeter paths, centre turret, outpost plots, per-building unit upgrades, research, queue order
+                list[k].Path = Str(b["pa"]); list[k].Gun = Int(b["gn"]); list[k].PerimeterSlot = Int(b["ps"]);
+                list[k].OutpostId = Int(b["ol"]); list[k].Plot = Int(b["pi"]);
+                if (b["ug"] is JObject ug && ug.Count > 0)
+                {
+                    var tiers = new System.Collections.Generic.Dictionary<string, int>();
+                    foreach (var prop in ug.Properties()) tiers[prop.Name] = Int(prop.Value);
+                    list[k].UnitUpgrades = tiers;
+                }
+                if (b["rs"] is JArray rs && rs.Count >= 4) { list[k].ResearchKind = Str(rs[0]); list[k].ResearchKey = Str(rs[1]); list[k].ResearchLevel = Int(rs[2]); list[k].ResearchPct = Int(rs[3]); }
+                if (b["qo"] is JArray qo && qo.Count > 0)
+                {
+                    var order = new string[qo.Count];
+                    for (int qi = 0; qi < qo.Count; qi++) order[qi] = Str(qo[qi], "");
+                    list[k].Order = order;
+                }
                 if (b["wk"] is JArray wk && wk.Count >= 2) { list[k].WorksKind = Str(wk[0]) == "r" ? "repair" : "upgrade"; list[k].WorksPct = Int(wk[1]); }
             }
             return list;

@@ -461,7 +461,6 @@ export function cityHasAA(game, b) {
   if (b.type !== 'town' || !b.done) return false;
   if (b.cityAA) return true;
   const site = game.siteById?.get(b.site);
-  if (site?.cityAA === true || cityAA(site)) return true;   // B: perimeter upgraded to defenseLevel >= 2
-  for (const o of game.buildings.values()) if (o.site === b.site && o.owner === b.owner && o.perimeterSlot && o.done && (o.level || 1) >= 2) return true;
-  return false;
+  // 2026-11-20 (BASE_MENU_REWORK.md §6): an anti-air perimeter turret at level 2+, or the centre turret's airburst fuze
+  return site?.cityAA === true || cityAA(site, game);
 }

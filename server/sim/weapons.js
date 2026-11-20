@@ -55,6 +55,9 @@ WEAPONS.pistol = { name: 'Defensive pistol', mode: 'hitscan', cooldown: 1.4, bur
 // it fires during strafing runs (actionFlight.js): a one-second burst whose impacts walk along the
 // aircraft's ground track; the legacy ruleset resolves it as a heavy hitscan burst.
 WEAPONS.gau8 = { name: '30 mm rotary cannon', mode: 'hitscan', cooldown: 2.4, burst: 10, supp: 30, vsArmor: 1.3, he: 0.4, tracer: 'heavy', targets: ['ground'] };
+// 2026-11-20: a tank's coaxial machine gun (def.coax, actionCombat.coaxStep): a secondary that fires on its own cooldown at
+// infantry near the tank. Unit cooldown and damage come from def.coax; this profile sets the burst and kill cap.
+WEAPONS.coax = { name: 'Coaxial machine gun', mode: 'hitscan', cooldown: 1.2, burst: 5, supp: 14, vsArmor: 0.2, tracer: 'heavy', targets: ['ground'] };
 export const WEAPON_KEYS = Object.keys(WEAPONS);
 export const weaponOf = (unitType) => WEAPONS[UNIT_WEAPON[unitType]] || null;
 

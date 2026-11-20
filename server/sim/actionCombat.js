@@ -12,6 +12,8 @@ import { attackRuns } from './actionFlight.js';
 import { SMALL_ARMS, squadFirepower, squadHit, structureDamage, structureRange, suppress } from './actionUpgrades.js';
 import { firingSlot, garrisonRange, shelterBlast, sightFrom } from './actionGarrison.js';
 import { GARRISON } from './actionDefinitions.js';
+// 2026-11-20 per-building upgrades (BASE_MENU_REWORK.md): the mechanics' combat hooks
+import { afterFire, afterHit, blastRadius, fireMul, incoming, rofMul, salvoExtra, structureDef, suppressMul } from './actionUnitUpgrades.js';
 
 const VID = Object.fromEntries(WEAPON_KEYS.map((key, index) => [key, index]));
 const unitOf = (obj) => obj?.isUnit ? ACTION_UNITS[obj.type] : null;
@@ -36,8 +38,10 @@ function hitChance(game, shooter, profile, target, range) {
   if (len > range) return false;
   // 2026-11-19 minimum range (def.minRange, the missile battery): nothing inside the dead zone is engaged
   if (len < (unitOf(shooter)?.minRange || 0)) return false;
-  return WEAPONS[profile].arc || unitOf(shooter)?.air || d?.air || game.nav.clearShot(sightFrom(game, shooter), target);
+  return WEAPONS[profile].arc || unitOf(shooter)?.air || d?.air || game.nav.clearShot(sightFrom(game, shooter), target, towerOf(shooter));
 }
+// 2026-11-20: a raised gun tower (def.tower: its eye height) sees over low rises and over its own side's structures
+const towerOf = (s) => { const rise = !s.isUnit && ACTION_BUILDINGS[s.type]?.tower; return rise ? { rise, owner: s.owner } : null; };
 
 function cover(game, target, source, indirect) {
   const d = unitOf(target);
@@ -95,8 +99,9 @@ export function damageActionTarget(game, target, source, amount, weapon, indirec
   // W4: a blast on a garrisoned structure reaches its occupants, reduced by GARRISON.protection (actionGarrison.js)
   if (!d && blast > 0 && target.garrison?.length) shelterBlast(game, target, source, amount, weapon, blast, damageActionTarget);
   // suppression (W3): every round that reaches a squad pins it a little, whether or not it hurts
-  if (d?.move === 'infantry' && d.men > 1 && profile?.supp) suppress(target, game.time, profile.supp * (blast > 0 ? 1.5 : 1));
+  if (d?.move === 'infantry' && d.men > 1 && profile?.supp) suppress(target, game.time, profile.supp * (blast > 0 ? 1.5 : 1) * suppressMul(game, target, source));
   let mult = profile ? weaponVs(weapon, d || { air: false }) : 1;
+  if (mult && target.mods) mult *= incoming(game, target, source, weapon);   // body armour, reactive armour, flares
   if (!mult) return;
   // the low, slow Warthog (def.aaVulnerable) takes extra damage from anti-aircraft weapons
   if (d?.aaVulnerable && profile && (profile.targets.includes('air') || profile.targets.includes('lowair'))) mult *= d.aaVulnerable;
@@ -116,6 +121,7 @@ export function damageActionTarget(game, target, source, amount, weapon, indirec
   target.hp = Math.max(0, target.hp - damage);
   target.lastCombat = game.time;
   target.hitAt = game.time; // W2: structures too (repairs slow down under fire)
+  if (target.mods) afterHit(game, target);   // smoke launchers
   const tile = target.tile;
   game.recordEngagement(source, target, weapon, damage);
   if (d) {
@@ -209,7 +215,8 @@ function resolveIntercept(game, p) {
 export function bombard(game, shooter, point, bonus = 1) {
   const def = ACTION_UNITS[shooter.type];
   const radius = shooter.type === 'bomber' ? 1.28 : shooter.type === 'oneway_drone' ? .85 : .97;
-  projectile(game, shooter, point, def.weapon, def.atk * 1.75 * bonus, radius);
+  projectile(game, shooter, point, def.weapon, def.atk * 1.75 * bonus, blastRadius(shooter, def.weapon, radius));
+  for (let k = salvoExtra(shooter); k > 0; k--) projectile(game, shooter, { x: point.x + (k % 2 ? .3 : -.3), z: point.z + (k > 1 ? .3 : -.2) }, def.weapon, def.atk * 1.75 * bonus, blastRadius(shooter, def.weapon, radius));
   shooter.lastCombat = game.time;
 }
 
@@ -309,7 +316,7 @@ function resolveProjectiles(game, near) {
     if (p.air || p.small) continue;
     const ctr = centerOf(t);
     if (p.radius > 0 || ['cannon', 'atgun', 'fortgun', 'rockets'].includes(p.weapon))
-      addCrater(game, t, p.strategic ? 2.6 : p.radius > 0 ? .63 : .26, p.strategic ? 'strategic' : p.weapon === 'mortar' ? 'mortar' : p.weapon === 'bombs' ? 'bomb' : p.weapon === 'missile' ? 'missile' : 'shell',
+      addCrater(game, t, p.strategic ? 2.6 : p.radius > .6 ? .63 : p.radius > 0 ? .4 : .26, p.strategic ? 'strategic' : p.weapon === 'mortar' ? 'mortar' : p.weapon === 'bombs' ? 'bomb' : p.weapon === 'missile' ? 'missile' : 'shell',
         { x: dxBetween(ctr.x, aim.x), z: aim.z - ctr.z });
     if (p.radius > 0) addSmoke(game, t, p.strategic ? .89 : .36, p.strategic ? 50 : 13);
     // effects pass (2026-11-18): a warhead flattens the forest in its core and fells more along its height-aware
@@ -341,7 +348,8 @@ function fire(game, actor, def, target) {
   damage *= (actor.isUnit ? squadFirepower(actor, game, def, target) : structureDamage(actor));
   if (actor.kills) damage *= 1 + Math.min(3, Math.floor(actor.kills / 4)) * .04;
   if (actor.inside) damage *= GARRISON.fireBonus;   // W4: firing from a garrisoned structure (steadier aim)
-  actor.readyAt = game.time + (def.fireCooldown ?? w.cooldown);   // per-unit override (mortar team, 2026-11-17)
+  damage *= fireMul(game, actor, target);   // upgrades: an ambush from camouflage, the heavy centre gun, sabot
+  actor.readyAt = game.time + (def.fireCooldown ?? w.cooldown) * rofMul(actor);   // per-unit override (mortar team, 2026-11-17)
   // Sustained bursts (2026-11-18, the bunker: def.burst): `shots` rounds `gap` s apart on one target, each `share` of a
   // volley, then `rest` s. The building loop polls a structure mid-burst every 3 ticks (BURST_GATE) instead of 6.
   // Event flag bu: the round's place in the burst (1..shots), so the client can draw one continuous stream.
@@ -355,7 +363,12 @@ function fire(game, actor, def, target) {
   }
   actor.lastCombat = game.time;
   if (def.ability === 'infiltrate') actor.abilityUntil = 0;
-  if (w.mode === 'projectile') projectile(game, actor, target, def.weapon, damage);
+  // 2026-11-20 tank pass: def.blast turns a unit's direct-fire round into an area blast of that radius (both tanks)
+  if (w.mode === 'projectile') {
+    const radius = blastRadius(actor, def.weapon, actor.isUnit ? def.blast ?? null : null);
+    projectile(game, actor, target, def.weapon, damage, radius);
+    for (let k = salvoExtra(actor); k > 0; k--) projectile(game, actor, target, def.weapon, damage, radius);   // extra salvo / munitions
+  }
   else {
     emit(game, { k: 'fire', a: actor.tile, b: target.tile, ax: actor.x, az: actor.z, bx: target.x, bz: target.z,
       s: actor.id, t: target.id, w: VID[def.weapon], bu: round });
@@ -363,6 +376,37 @@ function fire(game, actor, def, target) {
     if (def.weapon === 'flak' && unitOf(target)?.air) flakBurst(game, actor, target, target, 'flak', true);
   }
   if (def.atgm && actor.isUnit) fireAtgm(game, actor, def, target);
+  if (actor.mods || !actor.isUnit) afterFire(game, actor, def, target);   // grenades, squad rockets, turret secondaries
+}
+
+// ---- Coaxial machine gun (2026-11-20 tank pass: def.coax = { atk, range, cooldown }, weapon 'coax') ----
+// A secondary that fires on its own cooldown, independently of the main gun: one burst at the hostile infantry squad
+// within coax.range it can see and has a line of fire to, the main gun's target when that is such a squad, otherwise
+// the nearest (one spatial query, only while the gun is ready). Hold fire silences it unless the unit is attacking
+// infantry by order. Event: an ordinary 'fire' (hitscan) with w = the coax weapon index.
+const COAX = VID.coax;
+function coaxStep(game, u, def) {
+  const spec = def.coax;
+  if ((u.coaxReady || 0) > game.time || (game.tickN + u.id) % 3 !== 1) return;
+  const civ = game.civs[u.owner];
+  const usable = (v) => alive(v) && !v.inside && unitOf(v)?.move === 'infantry' && game.hostile(u.owner, v.owner) &&
+    distance(u, v) <= spec.range && game.sees(civ, v) && game.nav.clearShot(u, v);
+  const main = game.units.get(u.target);
+  let pick = main && usable(main) ? main : null;
+  if (!pick && stanceOf(u) === 'holdFire' && !(u.goal && u.mode === 'assault')) return;
+  if (!pick) {
+    let best = Infinity;
+    for (const v of game.targets.query(u.x, u.z, spec.range + .2, [])) {
+      if (!v.isUnit || !usable(v)) continue;
+      const d = distance(u, v);
+      if (d < best) { best = d; pick = v; }
+    }
+  }
+  if (!pick) return;
+  u.coaxReady = game.time + spec.cooldown;
+  u.lastCombat = game.time;
+  emit(game, { k: 'fire', a: u.tile, b: pick.tile, ax: u.x, az: u.z, bx: pick.x, bz: pick.z, s: u.id, t: pick.id, w: COAX });
+  damageActionTarget(game, pick, u, spec.atk * 1.65, 'coax');
 }
 
 // ---- IFV anti-tank missile (2026-11-18, exo_infantry as an Infantry Fighting Vehicle: def.atgm) ----
@@ -616,6 +660,7 @@ export function actionCombat(game) {
     else if (def.setup && u.setupUntil && game.time >= u.setupUntil && !u.goal) { u.deployed = true; u.setupUntil = 0; }
     if (u.bombardAt) pendingBombard(game, u, def);
     if (!def.weapon || u.mode === 'move' || u.grounded || !alive(u) || def.air && u.fuel <= 0) continue;
+    if (def.coax) coaxStep(game, u, def);
     const civ = game.civs[u.owner];
     const explicit = u.attack ? game.units.get(u.attack) || game.buildings.get(u.attack) : null;
     const seen = alive(explicit) && game.sees(civ, explicit);
@@ -645,7 +690,7 @@ export function actionCombat(game) {
     }
   }
   for (const b of game.buildings.values()) {
-    const def = ACTION_BUILDINGS[b.type];
+    const def = structureDef(b);   // a perimeter turret on a path fights with its path's weapon (BASE_MENU_REWORK.md)
     if (b.type === 'town' && b.done && (game.tickN + b.id) % 6 === 3) cityAntiAir(game, b, near);
     // a structure mid-burst (def.burst, the bunker) is polled every 3 ticks and keeps its target while it stays valid
     const bursting = def.burst && b.burstLeft > 0;

@@ -1,10 +1,10 @@
 import { T } from './constants.js';
 import { NB, disk } from './hex.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, TIERS } from './actionDefinitions.js';
-import { advanceBase, armyCapacity, canPay, construct, constructDefense, demolish, establish, facilitiesAt, fieldCost, fortifyBase, headquarters, openSlots, repairFacility, train,
-  upgradeBuilding, upgradeDefenses, settlementCost } from './actionBases.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, MISSILE_PROJECT, TIERS, trainsAt } from './actionDefinitions.js';
+import { aiOutpost, aiUpgrades } from './actionAIUpgrades.js';   // 2026-11-20 per-building upgrades and outposts (BASE_MENU_REWORK.md §8)
+import { advanceBase, armyCapacity, canPay, construct, demolish, establish, facilitiesAt, fieldCost, fortifyBase, headquarters, openSlots, train,
+  upgradeBuilding, settlementCost } from './actionBases.js';
 import { productionCommitment, queuedCount } from './actionProduction.js';
-import { CITY_DEFENSES, NEW_BASE_GAP } from './actionDefinitions.js';
 import { centerOf, distance, tileAt } from './actionNavigation.js';
 import { GROUP_ROUTE } from './actionOrders.js';
 import { aiOrders, bridgeToward, canReach, cutOff, enemyGrid, moveGroup, knownDefences, leavePicket, managePickets, nearAny, needsOrder, picketIds, runOperation, secureSite,
@@ -98,7 +98,7 @@ export function compositionPick(own, count, highest, personality) {
     const picks = [];
     for (const r of ROLES) {
       const gap = share(r) * size - roleCount(r.role);
-      const types = r.types.filter(([t, , tier]) => (tier || ACTION_UNITS[t].tier) <= highest && ACTION_UNITS[t].facility === facility);
+      const types = r.types.filter(([t, , tier]) => (tier || ACTION_UNITS[t].tier) <= highest && !!ACTION_BUILDINGS[facility]?.trains?.includes(t));
       if (!types.length || gap <= 0 && !allowOver) continue;
       const total = types.reduce((n, [, w]) => n + w, 0), have = types.reduce((n, [t]) => n + count(t), 0) + 1;
       const order = types.map(([t, w]) => ({ t, g: w / total * have - count(t) })).sort((a, b) => b.g - a.g).map((x) => x.t);
@@ -123,7 +123,7 @@ function buildArmy(game, civ, bases, own, observed, p) {
     const facilities = facilitiesAt(game, s);
     if (defensive && game.time > 150 && civ.res.materials > 460 && civ.res.energy > 135 && !hq.project)
       fortifyBase(game, civ, s);
-    if (hq.hp < hq.maxHp * .70 && !hq.project) repairFacility(game, civ, hq.id);
+    // (no repairs to order: the base engineers repair automatically, 2026-11-20)
     const exists = (type) => facilities.some((b) => b.type === type);
     const main = s === bases[0];
     // a second Materials Processor early: materials, not energy, limit how many troops an AI can field
@@ -176,6 +176,8 @@ function buildArmy(game, civ, bases, own, observed, p) {
   const preferred = [];
   if (count('rifle_squad') + count('militia') < 4 || own.length < 6) preferred.push('rifle_squad');
   if (count('scout_buggy') === 0) preferred.push('scout_buggy');
+  // 2026-11-20: a small militia screen from the headquarters and outposts (their only infantry), never a militia army
+  if (game.time > 480 && count('militia') < 1 + bases.length && civ.res.materials > 400) preferred.push('militia');
   // W2: air defence answers the enemy air seen recently (p.enemyAir decays over ~2 min): one AA vehicle per two
   // enemy aircraft (up to 6); upgraded city perimeters add AA in developBases (Warthogs cannot intercept).
   const airSeen = Math.max(enemyAir, p.enemyAir || 0);
@@ -189,8 +191,12 @@ function buildArmy(game, civ, bases, own, observed, p) {
   const owed = productionCommitment(game, civ), stock = { materials: civ.res.materials - owed.materials, energy: civ.res.energy - owed.energy };
   const fillSurplus = civ.difficulty === 'brutal' || !!nukeReserve;   // every AI keeps producing while it banks
   const urgent = new Set(preferred.filter((key) => key === 'air_defense' || key === 'anti_armor' || key === 'tank'));
-  const facilities = bases.flatMap((s) => facilitiesAt(game, s)).filter((b) => b.done && queuedCount(b) < 2)
-    .sort((a, b) => Number(a.type === 'barracks') - Number(b.type === 'barracks') || a.id - b.id);
+  // 2026-11-20: the headquarters (militia, scout buggies) and outposts train too (BASE_MENU_REWORK.md §2)
+  const hqs = bases.map((s) => headquarters(game, s)).filter(Boolean);
+  const forts = [...game.buildings.values()].filter((b) => b.owner === civ.id && b.type === 'fort');
+  const light = (b) => b.type === 'barracks' || b.type === 'town' || b.type === 'fort';
+  const facilities = [...bases.flatMap((s) => facilitiesAt(game, s)), ...hqs, ...forts].filter((b) => b.done && ACTION_BUILDINGS[b.type].trains && queuedCount(b) < 2)
+    .sort((a, b) => Number(light(a)) - Number(light(b)) || a.id - b.id);
   const operation = game.siteById.get(p.target), staging = operation && bases[0] ? game.lerpPoint(bases[0], operation,
     p.state === 'Attacking' || p.state === 'Final Assault' ? .38 : .10) : null;
   for (const b of facilities) {
@@ -198,7 +204,7 @@ function buildArmy(game, civ, bases, own, observed, p) {
     const s = game.siteById.get(b.site);
     const affordable = (key) => {
       const d = ACTION_UNITS[key];
-      if (!d || d.facility !== b.type || d.tier > highest) return false;
+      if (!d || !trainsAt(b, key) || d.tier > highest) return false;
       if (needsArmor && b.type === 'barracks' && own.length > 8 && stock.materials < 215 + d.cost.materials) return false;
       const energyReserve = nukeReserve ? nukeReserve.energy || 0 : reserveForBase ? 120 : reserveForTier && own.length >= 7 ? TIERS[1].cost.energy : 0;
       // balance pass 2026-11-18: the strategic bank holds energy only against units that cost energy, so troops that
@@ -210,7 +216,7 @@ function buildArmy(game, civ, bases, own, observed, p) {
     if (!type && b.type === 'airfield' && airPick && affordable(airPick)) type = airPick;
     // the most under-represented role this facility can train; a facility whose roles are all at or over their
     // share waits (saving materials for the vehicle works), except barracks while no vehicle facility exists yet
-    if (!type) type = comp(b.type, highest < 2 || !facilities.some((f) => f.type !== 'barracks' && f.type !== 'airfield')).find(affordable);
+    if (!type) type = comp(b.type, highest < 2 || !facilities.some((f) => !light(f) && f.type !== 'airfield')).find(affordable);
     // balance pass 2026-11-18: brutal never lets a facility idle on a surplus beyond its reserves. It trains its most
     // under-represented role even over that role's share and, when energy runs short (energy, not materials, limits an
     // AI's late game), a barracks turns the materials into rifle squads.
@@ -353,7 +359,8 @@ function tacticalSupport(game, civ, own, observed) {
     }
     if (u.abilityReady > game.time) continue;
     let use = false, point;
-    if (d.ability === 'repair') use = own.some((v) => v.hp < v.maxHp * .70 && distance(u, v) < 3.2) || game.roads.edgesOf(u.tile).some((e) => e.cond < 70);
+    if (d.ability === 'repair' && d.passive) use = false;   // automatic (the support truck, 2026-11-20)
+    else if (d.ability === 'repair') use = own.some((v) => v.hp < v.maxHp * .70 && distance(u, v) < 3.2) || game.roads.edgesOf(u.tile).some((e) => e.cond < 70);
     else if (d.ability === 'cover') use = !u.goal && game.time - u.lastCombat < 3;
     else if (d.ability === 'scan') use = !!u.goal && grid.any(u, d.vision + 2);
     else if (d.ability === 'focused_fire' || d.ability === 'intercept') use = !!u.target && observed.some((v) => v.id === u.target);
@@ -410,30 +417,14 @@ function developBases(game, civ, bases, own, p) {
   if (own.length < armyFloor(game) * .7) return;
   if (civ.age >= 1) {
     if (!eager) upgradeEconomy();
-    const walled = bases.find((s) => (s.defenseLevel || 1) < 2 && !headquarters(game, s)?.project && mine.some((b) => b.site === s.id && b.perimeterSlot));
-    const wall = CITY_DEFENSES.upgrade.cost[0];
-    // W2: enemy air makes city AA (perimeter level 2) urgent rather than a luxury
-    const reserve = (p.enemyAir || 0) >= 2 ? 120 : 500;
-    if (!saving && walled && civ.res.materials > wall.materials + reserve && civ.res.energy > wall.energy + 60) upgradeDefenses(game, civ, walled);
   }
+  // 2026-11-20 (BASE_MENU_REWORK.md §8): engineers, perimeter paths (anti-air answers enemy air), unit lines, the centre
+  // turret, outposts and building levels, one purchase per pass
+  if (!saving) aiUpgrades(game, civ, bases, own, p.observed || [], p);
   if (saving || game.time < 420 || bases.length >= 5 || civ.res.materials < 1350 || p.state === 'Expanding' || game.time < (p.newBaseAt || 0)) return;
-  if (mine.some((b) => b.type === 'base_site') || [...game.buildings.values()].some((b) => b.owner === civ.id && b.type === 'base_site')) return;
+  // the New Base left the game (2026-11-20): an outpost toward the enemy instead (actionAIUpgrades.aiOutpost)
   p.newBaseAt = game.time + 30;
-  const home = bases[0];
-  if (!home) return;
-  const w = game.world, candidates = [];
-  for (let t = 0; t < w.owner.length; t++) {
-    if (w.owner[t] !== civ.id || !civ.visible[t]) continue;
-    const c = centerOf(t);
-    if (game.sites.some((s) => distance(s, c) < (s.slots ? NEW_BASE_GAP + .3 : 3.6))) continue;
-    if (!w.road[t] && ![0, 1, 2, 3, 4, 5].some((d) => NB[t * 6 + d] >= 0 && w.road[NB[t * 6 + d]])) continue;
-    candidates.push({ t, c, score: distance(home, c) });
-  }
-  candidates.sort((a, b) => a.score - b.score || a.t - b.t);
-  for (const { c } of candidates.slice(0, 24)) {
-    if (constructDefense(game, civ, 'base_site', c, true).error) continue;
-    if (!constructDefense(game, civ, 'base_site', c).error) { note(game, p, 'Founding a new base.'); break; }
-  }
+  if (aiOutpost(game, civ, bases, p)) note(game, p, 'Founding an outpost.');
 }
 
 // Perf (2026-11-19, TELEMETRY_ANALYSIS_2026-11-19 B1): a plan call is bounded.
@@ -477,6 +468,7 @@ function plan(game, civ) {
   // W2: short strategic memory. Enemy air seen recently (decays to half in ~2.3 min) drives AA and fighter
   // production; the strongest enemy force seen recently (half-life ~3.5 min) is what field superiority is judged against.
   p.enemyAir = Math.max(enemy.filter((u) => ACTION_UNITS[u.type].air).length, (p.enemyAir || 0) * .985);
+  Object.defineProperty(p, 'observed', { value: enemy, writable: true, configurable: true, enumerable: false });   // not saved
   p.enemyPeak = Math.max(sumForce(enemy), (p.enemyPeak || 0) * .99);
   p.checked ??= {};
   for (const s of game.sites) if (s.slots && civ.visible[s.tile]) p.checked[s.id] = game.time;
@@ -493,9 +485,7 @@ function plan(game, civ) {
   // Retreats commit for a bounded period. The operation cannot flip back into attack
   // on the next planning tick, and threat estimates use observed forces only.
   if (p.recoverUntil > game.time) {
-    const engineers = owned.filter((u) => u.type === 'engineer' || u.type === 'supply_truck');
-    for (const u of engineers) if ((u.abilityReady || 0) <= game.time && distance(u, home) < 5)
-      game.command(civ.id, { c: 'ability', units: [u.id], ability: 'repair' });
+    // (repairs at home are automatic: base engineers and the support trucks' passive field repair)
     scout(game, civ, owned, home, p, enemy);
     return;
   }

@@ -61,6 +61,9 @@ namespace SE.Core.Protocol
         public int Id, Tile, Owner, Capturing, Headquarters, Tier, Capacity, RingVersion, VisualTier, DefenseCount;
         /// <summary>Action RTS own bases: perimeter upgrade level (1..3, server `defenseLevel`); 0 when not sent.</summary>
         public int DefenseLevel;
+        /// <summary>Own bases (2026-11-20): engineers alive, the tier's quota, the engineer upgrade level (0..3) and seconds until the next replacement (-1: none due).</summary>
+        public int Engineers, EngineerQuota, EngineerLevel;
+        public float EngineerNext;
         public float X, Z, Radius, Capture, Build, DevelopedAt, Tenure, Maturity;
         /// <summary>
         /// Keyed deltas (Pass 4, capability econ-delta-v1): the server sends the claim time ('ta') instead of a tenure that
@@ -133,6 +136,21 @@ namespace SE.Core.Protocol
         /// <summary>W4 garrison exit rally point (econ <c>ge:[x, z]</c>).</summary>
         public bool HasGarrisonExit;
         public float GarrisonExitX, GarrisonExitZ;
+        /// <summary>
+        /// Base menu rework (2026-11-20, BASE_MENU_REWORK.md). Perimeter turret path (econ <c>pa</c>: "aa", "ai", "av"; null
+        /// before one is chosen), the headquarters centre-turret level (<c>gn</c>, 0..3), the perimeter position (<c>ps</c>,
+        /// 1..6; 0 for anything else), and for a facility on an outpost plot the outpost's id and plot index (<c>ol</c>, <c>pi</c>).
+        /// </summary>
+        public string Path;
+        public int Gun, PerimeterSlot, OutpostId, Plot;
+        /// <summary>Own buildings: the per-building unit upgrade tiers (econ <c>ug</c>: unit type to 1..3); null when none.</summary>
+        public System.Collections.Generic.Dictionary<string, int> UnitUpgrades;
+        /// <summary>Own buildings: the upgrade being researched (econ <c>rs:[kind, key, level, pct]</c>: kind unit / engineer / gun / path).</summary>
+        public string ResearchKind, ResearchKey;
+        public int ResearchLevel, ResearchPct;
+        /// <summary>Own production: the items in the order they were queued (econ <c>qo</c>); production follows this order.</summary>
+        public string[] Order;
+        public int UnitUpgrade(string unit) => UnitUpgrades != null && unit != null && UnitUpgrades.TryGetValue(unit, out int t) ? t : 0;
     }
 
     /// <summary>One unit-type queue of a producing building (server actionProduction.js productionWire <c>qs[i]</c>).</summary>
@@ -184,6 +202,18 @@ namespace SE.Core.Protocol
         public WorldPoint Origin, Destination;
     }
 
+    /// <summary>
+    /// Server performance on econ snapshots (scale pass 2026-11-20, 'perf'): ticks per wall second achieved against the
+    /// target (10 x speed) and mean ms per tick by system group over the last second (-1: not sent). Synthetic marks the
+    /// offline stress scene's invented figures.
+    /// </summary>
+    public sealed class ServerPerf
+    {
+        public float Tps = -1, Target = -1;
+        public float TickMs = -1, PathMs = -1, SimMs = -1, CombatMs = -1, VisMs = -1, AiMs = -1, EconMs = -1, NetMs = -1;
+        public bool Synthetic;
+    }
+
     public sealed class SnapshotMessage
     {
         public float Time;
@@ -215,6 +245,8 @@ namespace SE.Core.Protocol
         public JObject Observer;
         /// <summary>B7 (2026-11-19): the server's measured pace on econ snapshots (simulated s per real s); -1 when absent.</summary>
         public float Pace = -1;
+        /// <summary>Scale pass (2026-11-20): the server's per-second performance block on econ snapshots ('perf'); null when absent.</summary>
+        public ServerPerf Perf;
         public JObject ActionPlan;
         // typed presentation records (decoded off the main thread)
         public TrenchRecord[] Trenches;

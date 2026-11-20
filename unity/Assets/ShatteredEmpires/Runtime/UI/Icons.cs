@@ -532,6 +532,15 @@ namespace SE.Runtime.UI
                     Line(c, 0.06f, 0.42f, 0.5f, 0.47f, 0.5f); Line(c, 0.06f, 0.53f, 0.5f, 0.58f, 0.5f);
                     break;
                 case "upgrade": Line(c, 0.1f, 0.2f, 0.56f, 0.5f, 0.26f, 0.8f, 0.56f); Line(c, 0.1f, 0.2f, 0.84f, 0.5f, 0.54f, 0.8f, 0.84f); break;
+                // 2026-11-20 (Ticket 3): the base tier upgrade, drawn as the era's tier pips (the wheel hub's) under the up-chevron
+                case "era_up2": case "era_up3":
+                {
+                    int pips = kind == "era_up3" ? 3 : 2;
+                    Line(c, 0.1f, 0.24f, 0.46f, 0.5f, 0.18f, 0.76f, 0.46f);
+                    float w = 0.16f, gap = 0.06f, x0 = 0.5f - (pips * w + (pips - 1) * gap) * 0.5f;
+                    for (int k = 0; k < pips; k++) Box(c, x0 + k * (w + gap), 0.62f, x0 + k * (w + gap) + w, 0.82f);
+                    break;
+                }
                 case "demolish": Box(c, 0.2f, 0.16f, 0.62f, 0.36f); Line(c, 0.09f, 0.42f, 0.36f, 0.74f, 0.88f); break;
                 // Build / Terrain wheels (workstream G, 2026-11-16)
                 case "new_base":

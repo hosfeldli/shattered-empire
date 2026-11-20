@@ -285,3 +285,17 @@
 .se-builder-slot { align-items: center; min-height: 34px; }
 .se-builder-slot-name { flex-grow: 1; flex-shrink: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
 .se-builder-slot-btn { min-width: 60px; margin-left: 4px; }
+
+/* Ticket 4 (2026-11-20): map builder points of interest (MapBuilder.cs) and the custom-rules editor (MainMenu.Rules.cs) */
+.se-builder-poi {
+    position: absolute; width: 15px; height: 15px; margin-left: -7px; margin-top: -7px; border-radius: 3px;
+    border-width: 1px; border-color: rgb(20, 20, 18); font-size: 10px; -unity-font-style: bold; color: rgb(20, 20, 18);
+    -unity-text-align: middle-center; padding: 0; background-color: rgb(226, 182, 96);
+}
+.se-builder-poi--city { background-color: rgb(232, 226, 210); width: 17px; height: 17px; margin-left: -8px; margin-top: -8px; }
+.se-builder-poi--cache { background-color: rgb(196, 160, 110); border-radius: 8px; }
+.se-builder-poi--power { background-color: rgb(120, 200, 240); border-radius: 8px; }
+.se-menu-rules-custom { margin-top: 6px; }
+.se-menu-rules-custom .se-setting-row { min-height: 34px; }
+.se-menu-rules-amount { width: 76px; min-width: 76px; margin-right: 8px; }
+.se-cycle--income { min-width: 92px; }

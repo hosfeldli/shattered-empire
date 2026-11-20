@@ -16,14 +16,15 @@ export class Scheduler {
     this.tasks = tasks.map((t) => ({ every: 1, phase: 0, budget: 5, deferrable: false, ...t }));
     this.tickBudget = tickBudget; this.adaptive = adaptive;
     this.stats = new Map();
-    for (const t of this.tasks) this.stats.set(t.name, { ring: new Float32Array(RING), n: 0, over: 0, max: 0, deferred: 0 });
-    this.stats.set('tick', { ring: new Float32Array(RING), n: 0, over: 0, max: 0, deferred: 0 });
+    for (const t of this.tasks) this.stats.set(t.name, { ring: new Float32Array(RING), n: 0, over: 0, max: 0, deferred: 0, total: 0 });
+    this.stats.set('tick', { ring: new Float32Array(RING), n: 0, over: 0, max: 0, deferred: 0, total: 0 });
     this.carry = new Set();      // deferrable tasks pushed to the next tick
   }
 
   record(name, ms, budget) {
     const s = this.stats.get(name); if (!s) return;
     s.ring[s.n % RING] = ms; s.n++;
+    s.total += ms;   // cumulative wall ms (server/perfStats.js reads per-second differences)
     if (ms > s.max) s.max = ms;
     if (budget && ms > budget) s.over++;
   }

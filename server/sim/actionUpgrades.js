@@ -8,8 +8,9 @@
 import { WEAPONS } from './weapons.js';
 import { ACTION_UNITS } from './actionDefinitions.js';
 import { distance } from './actionNavigation.js';
+import { structureReach } from './actionUnitUpgrades.js';   // 2026-11-20: searchlight, heavy centre gun (BASE_MENU_REWORK.md)
 
-export const SMALL_ARMS = new Set(['carbine', 'rifle', 'smg_team', 'mg', 'mg_light', 'pistol']);
+export const SMALL_ARMS = new Set(['carbine', 'rifle', 'smg_team', 'mg', 'mg_light', 'pistol', 'coax']);
 
 // ---- Squad simulation (W3, 2026-11-17; user decision R3: a squad stays ONE entity, O(1) per squad) ----
 // A squad's hp is a pool of `men` soldiers of maxHp / men each. The living men are the full-health men plus the
@@ -65,7 +66,9 @@ export function killCap(u, weapon, blast, alive, heavy = false) {
   if (blast > 0) {
     const spread = u.goal ? SQUAD.spreadMoving : SQUAD.spreadHalted;
     const share = Math.min(1, (blast * SQUAD.lethalShare / spread) ** 2);
-    return Math.max(1, Math.min(alive, Math.ceil(alive * share - 1e-9)));
+    const cap = Math.max(1, Math.min(alive, Math.ceil(alive * share - 1e-9)));
+    // 2026-11-20 tank pass: a tank's HE blast (def.blast with def.vsInfantry) kills at least 3 x its HE share (cannon: 6)
+    return heavy ? Math.min(alive, Math.max(cap, Math.max(1, Math.round((WEAPONS[weapon]?.he || 0) * 5)) * 3)) : cap;
   }
   const w = WEAPONS[weapon];
   if (!w) return alive;
@@ -119,4 +122,4 @@ export function squadFirepower(u, game = null, def = null, target = null) {
 
 /** Era level of a structure (1-3): defenses gain +25% firepower and +0.35 range per level. */
 export const structureDamage = (b) => b && !b.isUnit && b.level > 1 && b.type !== 'town' ? 1 + .25 * (b.level - 1) : 1;
-export const structureRange = (b) => b && !b.isUnit && b.level > 1 && b.type !== 'town' ? .35 * (b.level - 1) : 0;
+export const structureRange = (b) => (b && !b.isUnit && b.level > 1 && b.type !== 'town' ? .35 * (b.level - 1) : 0) + (b && !b.isUnit ? structureReach(b) : 0);

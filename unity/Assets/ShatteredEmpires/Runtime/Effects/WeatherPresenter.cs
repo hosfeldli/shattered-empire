@@ -69,7 +69,8 @@ namespace SE.Runtime.Effects
             if (time >= minimapAt) { minimapAt = time + .5f; Minimap(); }
         }
 
-        public void Draw() { Clouds.Draw(); Sky.Draw(); }
+        // Settings > Graphics > Cloud deck: the high cloud masses can be turned off (shade, rain and lightning stay)
+        public void Draw() { Clouds.Draw(); if (App.GameSettings.CloudDeck) Sky.Draw(); }
 
         // ------------------------------------------------------------------ hearing a system coming
         void Hear(float3 focus, float camDistance, float time, float simRate)

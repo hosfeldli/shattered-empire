@@ -256,8 +256,9 @@ export class World {
     const changed = [];
     for (let i = 0; i < N; i++) {
       const land = this.elev[i] >= 0;
-      const lake = land && filled[i] - this.elev[i] > 0.045 && flow[i] > 8 ? 1 : 0;
-      const riv = land && !lake && flow[i] > RIVER_FLOW ? 1 : 0;
+      // Ticket 4: a map-builder sketch may turn lakes or rivers off (sketchMaps.js gen)
+      const lake = land && !this.noLakes && filled[i] - this.elev[i] > 0.045 && flow[i] > 8 ? 1 : 0;
+      const riv = land && !lake && !this.noRivers && flow[i] > RIVER_FLOW ? 1 : 0;
       if (riv !== this.river[i] || lake !== this.lake[i]) {
         this.river[i] = riv; this.lake[i] = lake;
         if (!initial) changed.push(i);
@@ -281,7 +282,7 @@ export class World {
       if (tp < 0.24) t = T.TUNDRA;
       else if (m < 0.27 && tp > 0.5) t = T.DESERT;
       else if (m > 0.7 && e < 0.08) t = T.MARSH;
-      else if (m > 0.53) t = T.FOREST;
+      else if (m > (this.forestLevel ?? 0.53)) t = T.FOREST;   // Ticket 4: a sketch's forest coverage (sketchMaps forestLevelOf)
       else if (m > 0.38) t = T.GRASS;
       else t = T.PLAINS;
     }

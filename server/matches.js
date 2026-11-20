@@ -12,6 +12,7 @@ import { negotiate, PROTOCOL_VERSION, CAPABILITIES } from './protocol.js';
 import { cores as effectiveCores } from './cpuCores.js';
 import { MAPS_BY_ID, mapList, mapMode } from './sim/mapCatalog.js';
 import { baseOwnersProblem, parseSketch, sketchForTeams } from './sim/sketchMaps.js';
+import { parseIncome, parseRules } from './sim/matchRules.js';   // Ticket 4: game creation settings
 
 const PARKED_TTL_MS = +(process.env.PARKED_TTL_HOURS || 168) * 3600 * 1000;
 const MAX_MATCHES = +(process.env.MAX_MATCHES || Math.max(4, Math.round(effectiveCores()) * 4));
@@ -80,6 +81,10 @@ export class MatchManager {
     const mapId = action && !sandbox && opts.map && opts.map !== 'random' ? String(opts.map) : 'random';
     // 'custom': the host's map-builder sketch, validated here (a bad one refuses the match)
     const sketch = mapId === 'custom' ? parseSketch(opts.sketch) : null;
+    // Ticket 4: custom match rules (matchRules.js; the action RTS only) and per-seat resource multipliers (rules.income)
+    const rules = action ? parseRules(opts.rules) : {};
+    const incomes = action && Array.isArray(opts.rules?.income) ? opts.rules.income.map((v) => (v == null ? 1 : parseIncome(v))) : [];
+    if (action && opts.rules?.income != null && !Array.isArray(opts.rules.income)) throw new Error('rules.income must be a list (one multiplier per seat)');
     const authored = mapId === 'custom' ? sketchDef(sketch) : mapId !== 'random' ? (Object.hasOwn(MAPS_BY_ID, mapId) ? MAPS_BY_ID[mapId] : null) : null;
     if (mapId !== 'random' && !authored) throw new Error(`Unknown map "${mapId}"`);
     // Watch AI Match (action RTS): the New Skirmish setup with every seat an AI. Impossible combinations
@@ -121,6 +126,8 @@ export class MatchManager {
       ruleset, wrap: !action, style: ['continents', 'pangaea', 'archipelago', 'inlandSea'].includes(opts.style) ? opts.style : action ? 'pangaea' : null,
       teamSize, map: mapId, tutorial: action && !pvp && !authored && opts.tutorial === true, objective: ['control', 'operation', 'horde'].includes(opts.objective) ? opts.objective : 'domination',
       startRes: START_RESOURCES.includes(opts.startRes) ? opts.startRes : 'standard' };
+    if (Object.keys(rules).length) m.rules = rules;
+    incomes.forEach((v, i) => { if (slots[i] && v !== 1) slots[i].income = v; });
     // closed seats (uneven teams: 2 v 1, three humans against two AIs), on a random world or a catalog map
     // (whose unused starts stay neutral). Seat indices other than the creator's; dropped when the match starts.
     // An AI match may leave any seat empty (there is no creator's seat); there a seat that does not exist, or
@@ -223,8 +230,8 @@ export class MatchManager {
 
   meta(m) { return { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, name: m.name, mode: m.mode, created: m.created, lastActive: m.lastActive, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, wrap: m.wrap !== false, style: m.style,
     teamSize: m.teamSize, map: m.map || 'random', sketch: m.map === 'custom' ? m.sketch : undefined, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes, teamOf: m.teamOf,
-    speed: m.speed, observerFog: m.observerFog || undefined,
-    slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
+    speed: m.speed, observerFog: m.observerFog || undefined, rules: m.rules || undefined,
+    slots: m.slots.map((s) => ({ human: s.human, name: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, token: s.token, civId: s.civId, income: s.income })), watchers: (m.watchers || []).map((w) => ({ token: w.token, name: w.name })) }; }
 
   start(m, restoreBuf = null) {
     if (m.status === 'running' && m.worker) return;
@@ -244,8 +251,9 @@ export class MatchManager {
     const worker = new Worker(new URL('./worker.js', import.meta.url), {
       workerData: { ruleset: m.ruleset || LEGACY_RULESET, id: m.id, seed: m.seed, mapSize: m.mapSize, rebels: m.rebels, restore: restoreBuf, observe: m.mode === 'observe', wrap: m.wrap !== false, style: m.style, sandbox: m.mode === 'sandbox',
         teamSize: m.teamSize, map: m.map || 'random', sketch: startSketch || null, tutorial: m.tutorial, objective: m.objective, startRes: m.startRes || 'standard', teamOf: m.teamOf,
+        rules: m.rules || null,
         speed: m.mode === 'observe' ? m.speed || 1 : undefined, observerFog: m.mode === 'observe' && !!m.observerFog, telemetry: this.telemetry?.workerOptions() || null,
-        slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay })) },
+        slots: m.slots.map((s) => ({ human: s.human, name: undefined, leader: s.name, personality: s.personality, difficulty: s.difficulty, fairPlay: s.fairPlay, income: s.income })) },
       resourceLimits: { maxOldGenerationSizeMb: m.mapSize >= 256 ? 1024 : 512 },
     });
     m.worker = worker; m.ready = false; m.pending = [];
@@ -381,14 +389,15 @@ export class MatchManager {
   roomUpdate(m) {
     const host = this.hostOf(m), ts = Math.max(1, m.teamSize || 1);
     const slots = m.slots.map((x, i) => ({ seat: i, team: Math.floor(i / ts), name: x.name, human: x.human, closed: x.closed || undefined, taken: !!x.token, connected: !!x.ws, ready: x.human ? !!x.ready : undefined, host: x === host || undefined,
-      difficulty: x.human || x.closed ? undefined : x.difficulty, personality: x.human || x.closed ? undefined : x.personality, fairPlay: x.human || x.closed ? undefined : x.fairPlay !== false }));
+      difficulty: x.human || x.closed ? undefined : x.difficulty, personality: x.human || x.closed ? undefined : x.personality, fairPlay: x.human || x.closed ? undefined : x.fairPlay !== false,
+      income: x.closed ? undefined : x.income ?? 1 }));
     const open = m.slots.filter((x) => x.human && !x.token).length;
     const teams = this.teamsOf(m);
     const spectators = (m.watchers || []).map((w) => ({ name: w.name, connected: !!w.ws }));
     const room = { t: 'room', match: m.id, code: m.id, name: m.name, status: m.status, mode: m.mode, ruleset: m.ruleset, mapSize: m.mapSize, teamSize: m.teamSize, map: m.map || 'random', mapName: mapDefOf(m)?.name || 'Random',
       mapPlayers: mapDefOf(m)?.players || 0, mapFormat: mapDefOf(m) ? mapMode(mapDefOf(m)) : null, sketch: m.map === 'custom' ? m.sketch : undefined,
       teams, format: formatName(ts, teams), players: m.slots.filter((x) => !x.closed).length, waitForReady: !!m.waitForReady, host: host?.name, open, slots, spectators,
-      objective: m.objective || 'domination', startRes: m.startRes || 'standard', style: m.style, size: m.sizeKey || null, public: !!m.public };
+      objective: m.objective || 'domination', startRes: m.startRes || 'standard', style: m.style, size: m.sizeKey || null, public: !!m.public, rules: m.rules || {} };
     m.slots.forEach((s, i) => {
       if (s.ws) this.send(s.ws, { ...room, you: i, isHost: s === host, canStart: s === host && m.status === 'lobby' });
     });
@@ -539,7 +548,7 @@ export class MatchManager {
         if (msg.rid != null) this.send(ws, { t: 'ack', rid: msg.rid });
         return;
       }
-      case 'seat': case 'team': case 'addAi': case 'removeAi': case 'aiDifficulty': case 'mode': case 'map': case 'options': case 'closeSeat': {
+      case 'seat': case 'team': case 'addAi': case 'removeAi': case 'aiDifficulty': case 'mode': case 'map': case 'options': case 'closeSeat': case 'income': {
         const m = this.lobbyOf(ctx);
         this.editLobby(m, ctx.slot, msg);
         m.lastActive = Date.now();
@@ -684,8 +693,10 @@ export class MatchManager {
         return;
       }
       case 'options': {
-        // { objective?, startRes?, style?, size?, public? }: the match rules; style and size shape a random world
+        // { objective?, startRes?, style?, size?, public?, rules? }: the match rules; style and size shape a random world.
+        // Ticket 4: rules (matchRules.js) merge into the current ones (a null value restores that rule's standard)
         needHost('change the match options');
+        const rules = msg.rules != null ? parseRules(msg.rules, m.rules || {}) : null;
         if (msg.objective != null && !OBJECTIVES.includes(msg.objective)) throw new Error('Unknown victory condition');
         if (msg.startRes != null && !START_RESOURCES.includes(msg.startRes)) throw new Error('Unknown starting resources');
         if (msg.style != null && !STYLES.includes(msg.style)) throw new Error('Unknown world style');
@@ -695,6 +706,16 @@ export class MatchManager {
         if (msg.style != null) m.style = msg.style;
         if (msg.size != null) { m.sizeKey = msg.size === 'auto' ? null : msg.size; this.resize(m); }   // auto: follows the seat count
         if (msg.public != null) m.public = msg.public === true;
+        if (rules) { if (Object.keys(rules).length) m.rules = rules; else delete m.rules; }
+        return;
+      }
+      case 'income': {
+        // Ticket 4: { seat, income }: a seat's resource multiplier (0.25-4; 1 standard); it moves with the player
+        needHost('change resource multipliers');
+        const s = m.slots[seatOf(msg.seat)];
+        if (s.closed) throw new Error('That seat is closed');
+        const v = parseIncome(msg.income);
+        if (v === 1) delete s.income; else s.income = v;
         return;
       }
       case 'closeSeat': {

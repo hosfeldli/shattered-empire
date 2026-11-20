@@ -21,6 +21,8 @@ namespace SE.Runtime.Social
         public bool IsHost;
         /// <summary>The host left this seat empty: it leaves the match when it starts (uneven sides).</summary>
         public bool Closed;
+        /// <summary>Ticket 4: this seat's resource multiplier (server seat income; 1 standard).</summary>
+        public float Income = 1f;
     }
 
     /// <summary>
@@ -46,6 +48,8 @@ namespace SE.Runtime.Social
         public string Map = "random", MapName = "";
         /// <summary>With Map "custom": the host's map-builder sketch (server sketchMaps.js, canonical), for the preview.</summary>
         public JObject Sketch;
+        /// <summary>Ticket 4: the lobby's custom match rules (server matchRules.js; empty: the standard game).</summary>
+        public JObject Rules;
         /// <summary>The match starts by itself only when every seat is taken and everyone is ready.</summary>
         public bool WaitForReady;
         /// <summary>Your seat index in <see cref="Seats"/>.</summary>
@@ -90,6 +94,7 @@ namespace SE.Runtime.Social
                 Public = Bool(raw["public"]),
                 Spectator = Bool(raw["spectator"]),
                 Sketch = raw["sketch"] as JObject,
+                Rules = raw["rules"] as JObject,
             };
             if (raw["spectators"] is JArray watchers)
                 foreach (var w in watchers) if (w is JObject wo) r.Spectators.Add(Str(wo["name"], "Spectator"));
@@ -112,6 +117,7 @@ namespace SE.Runtime.Social
                         Difficulty = Str(s["difficulty"]),
                         Personality = Str(s["personality"]),
                         Closed = Bool(s["closed"]),
+                        Income = s["income"] != null && (s["income"].Type == JTokenType.Float || s["income"].Type == JTokenType.Integer) ? (float)(double)s["income"] : 1f,
                     });
                 }
             if (r.Open == 0 && raw["open"] == null)
@@ -185,6 +191,10 @@ namespace SE.Runtime.Social
         public static JObject CustomMap(JObject sketch) => new JObject { ["t"] = "map", ["map"] = "custom", ["sketch"] = sketch };
         /// <summary>Host: one match rule: "objective", "startRes", "style", "size" (string values) or "public" (bool).</summary>
         public static JObject Option(string key, JToken value) => new JObject { ["t"] = "options", [key] = value };
+        /// <summary>Ticket 4: host: custom match rules (MatchRulesOptions.ToJson(true): null values restore the standard).</summary>
+        public static JObject Rules(JObject rules) => new JObject { ["t"] = "options", ["rules"] = rules };
+        /// <summary>Ticket 4: host: a seat's resource multiplier (0.25-4).</summary>
+        public static JObject Income(int seat, float income) => new JObject { ["t"] = "income", ["seat"] = seat, ["income"] = Math.Round(income, 2) };
         /// <summary>Host: leave an empty seat out of the match (uneven sides, random worlds) or open it again.</summary>
         public static JObject CloseSeat(int seat, bool closed) => new JObject { ["t"] = "closeSeat", ["seat"] = seat, ["closed"] = closed };
         /// <summary>A seated player (not the host) moves to the lobby's spectator seats.</summary>

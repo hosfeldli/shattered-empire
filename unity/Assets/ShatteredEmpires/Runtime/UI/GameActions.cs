@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace SE.Runtime.UI
 {
@@ -29,12 +30,81 @@ namespace SE.Runtime.UI
         public bool Observe;
         public int Speed = 1;
         public bool ObserverFog;
+        /// <summary>Ticket 4: custom match rules (server matchRules.js): starting stockpile, unit speed / range / health.</summary>
+        public MatchRulesOptions Rules = new MatchRulesOptions();
+        /// <summary>Ticket 4: your seat's resource multiplier (server rules.income[0]); the AI seats carry their own.</summary>
+        public float PlayerIncome = 1f;
+    }
+
+    /// <summary>
+    /// Game creation settings (Ticket 4, server/sim/matchRules.js): starting Materials and Energy (-1: the
+    /// starting-resources preset), and multipliers on every unit's speed, weapon range and health. The server validates
+    /// the same ranges (RULE_LIMITS) and refuses anything outside them.
+    /// </summary>
+    public sealed class MatchRulesOptions
+    {
+        public const int MaxMaterials = 50000, MaxEnergy = 20000;
+        public const float MinSpeed = .5f, MaxSpeed = 2f, MinRange = .5f, MaxRange = 2f, MinHealth = .25f, MaxHealth = 4f, MinIncome = .25f, MaxIncome = 4f;
+        public int StartMaterials = -1, StartEnergy = -1;
+        public float UnitSpeed = 1f, UnitRange = 1f, UnitHealth = 1f;
+
+        /// <summary>Per-seat resource multipliers offered by the setup screens.</summary>
+        public static readonly float[] IncomeSteps = { .25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f };
+
+        public bool CustomStart => StartMaterials >= 0 || StartEnergy >= 0;
+        public bool Standard => !CustomStart && Mathf.Approximately(UnitSpeed, 1f) && Mathf.Approximately(UnitRange, 1f) && Mathf.Approximately(UnitHealth, 1f);
+
+        public MatchRulesOptions Clone() => (MatchRulesOptions)MemberwiseClone();
+
+        static float Round2(float v) => Mathf.Round(v * 100f) / 100f;
+
+        /// <summary>The server's rules object (only the non-standard values; null values clear a lobby rule when <paramref name="explicitNulls"/>).</summary>
+        public Newtonsoft.Json.Linq.JObject ToJson(bool explicitNulls = false)
+        {
+            var o = new Newtonsoft.Json.Linq.JObject();
+            void Put(string k, bool on, Newtonsoft.Json.Linq.JToken v) { if (on) o[k] = v; else if (explicitNulls) o[k] = Newtonsoft.Json.Linq.JValue.CreateNull(); }
+            Put("startMaterials", StartMaterials >= 0, Mathf.Clamp(StartMaterials, 0, MaxMaterials));
+            Put("startEnergy", StartEnergy >= 0, Mathf.Clamp(StartEnergy, 0, MaxEnergy));
+            Put("unitSpeed", !Mathf.Approximately(UnitSpeed, 1f), Round2(Mathf.Clamp(UnitSpeed, MinSpeed, MaxSpeed)));
+            Put("unitRange", !Mathf.Approximately(UnitRange, 1f), Round2(Mathf.Clamp(UnitRange, MinRange, MaxRange)));
+            Put("unitHealth", !Mathf.Approximately(UnitHealth, 1f), Round2(Mathf.Clamp(UnitHealth, MinHealth, MaxHealth)));
+            return o;
+        }
+
+        /// <summary>Rules from the server (the lobby room's 'rules', the welcome's defs.MATCH_RULES); standard when absent.</summary>
+        public static MatchRulesOptions FromJson(Newtonsoft.Json.Linq.JToken t)
+        {
+            var r = new MatchRulesOptions();
+            if (!(t is Newtonsoft.Json.Linq.JObject o)) return r;
+            int I(string k, int d) => o[k] != null && (o[k].Type == Newtonsoft.Json.Linq.JTokenType.Integer || o[k].Type == Newtonsoft.Json.Linq.JTokenType.Float) ? (int)(double)o[k] : d;
+            float F(string k) => o[k] != null && (o[k].Type == Newtonsoft.Json.Linq.JTokenType.Integer || o[k].Type == Newtonsoft.Json.Linq.JTokenType.Float) ? (float)(double)o[k] : 1f;
+            r.StartMaterials = I("startMaterials", -1); r.StartEnergy = I("startEnergy", -1);
+            r.UnitSpeed = F("unitSpeed"); r.UnitRange = F("unitRange"); r.UnitHealth = F("unitHealth");
+            return r;
+        }
+
+        public static string Mult(float v) => (Mathf.Round(v * 100f) / 100f).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "×";
+
+        /// <summary>"Start 2,000 Materials · Units: speed 1.5×, health 2×" (empty for the standard game).</summary>
+        public string Summary()
+        {
+            var parts = new List<string>();
+            if (CustomStart) parts.Add($"Start {(StartMaterials >= 0 ? StartMaterials.ToString("N0") : "preset")} Materials, {(StartEnergy >= 0 ? StartEnergy.ToString("N0") : "preset")} Energy");
+            var units = new List<string>();
+            if (!Mathf.Approximately(UnitSpeed, 1f)) units.Add("speed " + Mult(UnitSpeed));
+            if (!Mathf.Approximately(UnitRange, 1f)) units.Add("range " + Mult(UnitRange));
+            if (!Mathf.Approximately(UnitHealth, 1f)) units.Add("health " + Mult(UnitHealth));
+            if (units.Count > 0) parts.Add("Units: " + string.Join(", ", units));
+            return string.Join(" · ", parts);
+        }
     }
 
     /// <summary>One AI of a New Skirmish (server 'rivals' entry).</summary>
     public sealed class AiSeatOption
     {
         public string Difficulty = "normal", Personality = "random";
+        /// <summary>Ticket 4: this seat's resource multiplier (server rules.income).</summary>
+        public float Income = 1f;
         /// <summary>The seat is left empty (uneven sides on a random world; server create 'closed').</summary>
         public bool Closed;
     }

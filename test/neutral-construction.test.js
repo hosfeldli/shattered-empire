@@ -33,7 +33,7 @@ test('radar and repair posts are neutral infrastructure; defenses and New Base k
     assert.ok(ACTION_BUILDINGS[key].neutral, key);
     assert.ok(!ACTION_BUILDINGS[key].defense && !ACTION_BUILDINGS[key].claims, `${key} claims no territory`);
   }
-  for (const key of ['base_site', 'guard_post', 'bunker', 'depot']) assert.ok(!ACTION_BUILDINGS[key].neutral, key);
+  for (const key of ['guard_post', 'bunker', 'depot']) assert.ok(!ACTION_BUILDINGS[key].neutral, key);
 });
 
 for (const type of ['sensor_post', 'repair_point']) test(`${type} builds on neutral ground without claiming territory`, () => {
@@ -72,9 +72,9 @@ test('neutral infrastructure: enemy territory refused, fogged neutral ground ref
   const near = spot(g, 'sensor_post', neutralNear(g));
   g.civs[0].visible[tileAt(near.x, near.z)] = 0;
   assert.equal(preview(g, 'sensor_post', near).code, 'hidden');
-  // a New Base stays territory-only
+  // the New Base left the game (2026-11-20, BASE_MENU_REWORK.md): it is refused everywhere
   const n = spot(g, 'guard_post', neutralNear(g));
-  assert.equal(preview(g, 'base_site', n).code, 'territory');
+  assert.equal(preview(g, 'base_site', n).code, 'invalid');
 });
 
 test('placement refusals carry precise codes', () => {

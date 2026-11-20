@@ -18,8 +18,15 @@ import { roadBuild } from './actionEconomy.js';
 import { addFacility, canPay, connectSiteRoads, headquarters } from './actionBases.js';
 import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
+import { ENGINEERS_BY_TIER, OUTPOST } from './baseMenuDefs.js';
+import { stampEngineer } from './actionUnitUpgrades.js';
+//
+// 2026-11-20 base menu rework (BASE_MENU_REWORK.md §5): 3 / 5 / 8 engineers by base tier, a lost one requeued every
+// RESPAWN s (engineerWire: the countdown for the panel), three upgrades per base (site.engLevel: vests, utility car,
+// power tools; actionUnitUpgrades.stampEngineer), one engineer at a tier-3 outpost (u.outpost = its id, u.home = -1),
+// and repair jobs ranked by jobScore (distance, damage, danger, the others on it, construction first).
 
-export const ENGINEERS_BY_TIER = [2, 3, 4];
+export { ENGINEERS_BY_TIER };
 const RESPAWN = 25;
 const BUILD_KINDS = new Set(['build', 'trench', 'road', 'terrain']);
 const BASE_NAMES = ['Fort Haven', 'New Foundry', 'Bastion Rock', 'Far Crossing', 'Red Landing', 'High Ridge', 'Kestrel Field',
@@ -31,7 +38,28 @@ function spawnEngineer(game, site, hq) {
   const u = game.spawn(game.civs[site.owner], 'engineer', hq, hq.radius + .38);
   if (!u) return null;
   u.auto = true; u.home = site.id; u.job = null; u.mode = 'guard';
+  stampEngineer(game, u, site);
   return u;
+}
+
+/** Engineers alive, the quota, the upgrade level and the seconds until the next replacement, for the base's panel. */
+export function engineerWire(game, s) {
+  const have = game.siteCount ? game.siteCount('eng', s.id, s.owner) : 0, quota = engineerQuota(s);
+  return { engQuota: quota, engLevel: s.engLevel || 0, engNext: have < quota && s.engineerAt != null ? Math.max(0, Math.round((s.engineerAt - game.time) * 10) / 10) : -1 };
+}
+
+// A tier-3 outpost keeps one engineer of its own (OUTPOST.engineerLevel); replaced like a base's
+function maintainOutposts(game, counts) {
+  for (const b of game.buildings.values()) {
+    if (b.type !== 'fort' || !b.done || (b.level || 1) < OUTPOST.engineerLevel || !game.civs[b.owner]?.alive) continue;
+    if ((counts.get('o' + b.id) || 0) >= 1) { b.engineerAt = null; continue; }
+    if (b.engineerAt == null) { b.engineerAt = b.staffed ? game.time + RESPAWN : game.time; b.staffed = true; }
+    if (game.time < b.engineerAt) continue;
+    const u = game.spawn(game.civs[b.owner], 'engineer', b, b.radius + .38);
+    if (!u) continue;
+    u.auto = true; u.home = -1; u.outpost = b.id; u.job = null; u.mode = 'guard';
+    b.engineerAt = null;
+  }
 }
 
 /** Fills a base's engineer team at once (a new or re-established headquarters). */
@@ -46,7 +74,8 @@ export function staffBase(game, site) {
 
 function maintainEngineers(game) {
   const counts = new Map();
-  for (const u of game.units.values()) if (u.auto && u.hp > 0) counts.set(u.home, (counts.get(u.home) || 0) + 1);
+  for (const u of game.units.values()) if (u.auto && u.hp > 0) { const k = u.outpost ? 'o' + u.outpost : u.home; counts.set(k, (counts.get(k) || 0) + 1); }
+  maintainOutposts(game, counts);
   for (const s of game.sites) {
     if (!s.slots || s.owner < 0) continue;
     const hq = headquarters(game, s);
@@ -63,6 +92,11 @@ function maintainEngineers(game) {
 
 // The base an engineer serves: its own, or (after its base fell) the nearest operational one.
 function homeOf(game, u) {
+  if (u.outpost) {
+    const fort = game.buildings.get(u.outpost);
+    if (fort && fort.owner === u.owner && fort.done && fort.hp > 0) return { outpost: fort };
+    u.outpost = 0;   // its outpost fell: it serves the nearest base from now on
+  }
   let s = game.siteById.get(u.home);
   if (s && s.owner === u.owner && headquarters(game, s)?.done) return s;
   s = null;
@@ -130,13 +164,14 @@ function sortThreats(flat) {
   return out;
 }
 const hostileGround = (game, civ, x, z) => { const o = game.world.owner[tileAt(x, z)]; return o >= 0 && game.hostile(o, civ.id); };
-function underThreat(game, threats, x, z) {
+function underThreat(game, threats, x, z, pad = 0) {
   // first threat with z >= z - THREAT_R (binary search), stop past z + THREAT_R
+  const band = THREAT_R + pad;
   let lo = 0, hi = threats.length / 3;
-  while (lo < hi) { const m = (lo + hi) >> 1; if (threats[m * 3 + 1] < z - THREAT_R) lo = m + 1; else hi = m; }
+  while (lo < hi) { const m = (lo + hi) >> 1; if (threats[m * 3 + 1] < z - band) lo = m + 1; else hi = m; }
   for (let i = lo * 3; i < threats.length; i += 3) {
-    if (threats[i + 1] > z + THREAT_R) break;
-    const r = threats[i + 2];
+    if (threats[i + 1] > z + band) break;
+    const r = threats[i + 2] + pad;
     if (Math.abs(game.dx(threats[i], x)) > r || Math.abs(threats[i + 1] - z) > r) continue;
     if (distance({ x: threats[i], z: threats[i + 1] }, { x, z }) <= r) return true;
   }
@@ -149,6 +184,7 @@ function jobsFor(game, civ, armed) {
   for (const j of rawJobsFor(game, civ, armed?.owned.get(civ.id))) {
     if (j.kind !== 'fix' && hostileGround(game, civ, j.x, j.z)) continue;
     if (threats.length && underThreat(game, threats, j.x, j.z)) j.danger = true;
+    else if (threats.length && underThreat(game, threats, j.x, j.z, 2)) j.near = true;   // close to it: ranked lower
     jobs.push(j);
   }
   return jobs;
@@ -186,6 +222,20 @@ function rawJobsFor(game, civ, mine = null) {
 // pickJob had no distance bound for build jobs: an engineer was seen walking ~170 units across the map, a long route
 // request and a long exposed march, while the job's own base had engineers to spare.
 const FAR_JOB_SLACK = 8;
+/**
+ * How an engineer ranks a job (lower is better): the walk to it, its distance from home, how damaged a structure is (a
+ * badly damaged one, the headquarters above all, first), danger (a job close to the reach of a visible enemy weapon is
+ * penalised; one inside it is not taken at all, see dangerous), the engineers already on it, and construction before
+ * repairs (an order the player placed waits for nobody). Exported for the tests.
+ */
+export function jobScore(u, j, fromHome, load) {
+  let s = distance(u, j) + fromHome * .5 + load * 4 - (BUILD_KINDS.has(j.kind) ? 1.5 : 0);
+  if (j.kind === 'repair' && j.target?.maxHp) s -= (1 - j.target.hp / j.target.maxHp) * (j.target.type === 'town' ? 14 : 8);
+  if (j.kind === 'fix' && j.target?.maxHp) s -= (1 - j.target.hp / j.target.maxHp) * 3;
+  if (j.near) s += 6;
+  return s;
+}
+
 function pickJob(game, u, hq, jobs, load, homes = null) {
   let best = null, score = Infinity;
   for (const j of jobs) {
@@ -199,7 +249,7 @@ function pickJob(game, u, hq, jobs, load, homes = null) {
       if (j.nearHome === undefined) { let m = Infinity; for (const h of homes) m = Math.min(m, distance(h, j)); j.nearHome = m; }
       if (fromHome > j.nearHome + FAR_JOB_SLACK) continue;
     }
-    const s = distance(u, j) + fromHome * .5 + n * 4 - (BUILD_KINDS.has(j.kind) ? 1.5 : 0);
+    const s = jobScore(u, j, fromHome, n);
     if (s < score) { score = s; best = j; }
   }
   return best;
@@ -217,6 +267,7 @@ export function completeField(game, b) {
   b.done = true; b.progress = 1; b.state = 'operational';
   game.ruins.delete(b.tile);
   game.world.touch(b.tile);
+  game.clearFootprint(b);   // units standing on the finished structure step out
   if (def.claims) game.territoryDirty = true;
   if (def.newBase) foundBase(game, b);
 }
@@ -224,15 +275,15 @@ export function completeField(game, b) {
 function work(game, civ, u, job, working, dt) {
   const n = working.get(job.key) || 0;
   working.set(job.key, n + 1);
-  const rate = n ? .6 : 1, t = job.target;
+  const rate = (n ? .6 : 1) * (u.mods?.build || 1), t = job.target;   // power tools (engineer upgrade 3)
   if (job.kind === 'build') {
     if (t.done) return;
     const add = Math.min(1 - t.progress, dt * rate / t.buildTime);
     t.progress += add;
     t.hp = Math.min(t.maxHp, t.hp + t.maxHp * .66 * add);
     if (t.progress >= .999999) completeField(game, t);
-  } else if (job.kind === 'repair') t.hp = Math.min(t.maxHp, t.hp + dt * 13 * (game.time - (t.hitAt ?? -99) < 5 ? .4 : 1)); // W2: slower under fire
-  else if (job.kind === 'fix') t.hp = Math.min(t.maxHp, t.hp + dt * 4.5);
+  } else if (job.kind === 'repair') t.hp = Math.min(t.maxHp, t.hp + dt * 13 * rate * (game.time - (t.hitAt ?? -99) < 5 ? .4 : 1)); // W2: slower under fire
+  else if (job.kind === 'fix') t.hp = Math.min(t.maxHp, t.hp + dt * 4.5 * rate);
   else if (job.kind === 'trench') {
     // a dug section takes ~4 s; an engineer digs every unfinished section within reach of the spade
     for (const tile of disk(tileAt(u.x, u.z), 1)) {
@@ -249,8 +300,9 @@ function work(game, civ, u, job, working, dt) {
 
 function runEngineer(game, civ, u, jobs, byKey, load, working, dt, homes = null) {
   u.assisting = false;
-  const home = homeOf(game, u), hq = home ? headquarters(game, home) : null;
-  if (game.time - (u.hitAt ?? -99) < 2.5) {
+  const home = homeOf(game, u), hq = home?.outpost || (home ? headquarters(game, home) : null);
+  // armoured vests (engineer upgrade 1): they stay on the job under fire until below half health
+  if (game.time - (u.hitAt ?? -99) < 2.5 && !(u.mods?.steady && u.hp > u.maxHp * .5)) {
     // the job that got it shot is avoided for a minute instead of being walked straight back into
     if (u.job) { load.set(u.job, Math.max(0, (load.get(u.job) || 1) - 1)); u.skip = u.job; u.skipUntil = game.time + 60; }
     u.job = null; u.retreatUntil = game.time + 6;
@@ -415,8 +467,12 @@ export function terrainStroke(points, radius, maxHexes = TERRAIN_WORKS.maxHexes)
  * Legacy single point: `point` only; reshapes the 7 hexes around it for the flat cost, refused as a whole when the
  * centre cannot be reshaped or overlaps works under way.
  */
-export function terrainOrder(game, civ, op, point, preview = false, stroke = null, radius = 1) {
+export function terrainOrder(game, civ, op, point, preview = false, stroke = null, radius = 1, amount = 1) {
   const W = TERRAIN_WORKS;
+  // 2026-11-20: how many height steps a raise / lower moves the ground (1..maxAmount); flatten and smooth have none
+  if (amount != null && !Number.isFinite(amount)) amount = 1;
+  if (amount != null && (amount < 1 || amount > (W.maxAmount ?? 4) || Math.round(amount) !== amount)) return { error: `Choose a height of 1 to ${W.maxAmount ?? 4} steps.`, code: 'amount' };
+  const steps0 = op === 'raise' || op === 'lower' ? amount ?? 1 : 1;
   const legacy = !Array.isArray(stroke) || !stroke.length;
   const points = legacy ? (point ? [point] : []) : stroke;
   if (!W.ops.includes(op) || !points.length) return { error: 'Choose raise, lower, flatten or smooth, and a location.' };
@@ -445,9 +501,10 @@ export function terrainOrder(game, civ, op, point, preview = false, stroke = nul
     return { error: TERRAIN_REASONS[code], code };
   }
   if (game.roadProjects.filter((p) => p.kind === 'terrain' && p.owner === civ.id).length >= 6) return { error: 'Finish an existing terrain project first.' };
-  const cost = legacy ? W.cost : { materials: Math.max(W.minCost ?? 10, Math.round(tiles.length * W.cost.materials / 7)) };
-  const seconds = legacy ? W.time : Math.round(W.time * Math.max(1, tiles.length / 7) * 10) / 10;
-  const plan = { op, tile: first, tiles, refused, cost, seconds, radius: r, truncated: truncated || undefined };
+  const base = legacy ? W.cost.materials : Math.max(W.minCost ?? 10, Math.round(tiles.length * W.cost.materials / 7));
+  const cost = { materials: base * steps0 };
+  const seconds = Math.round((legacy ? W.time : W.time * Math.max(1, tiles.length / 7)) * steps0 * 10) / 10;
+  const plan = { op, tile: first, tiles, refused, cost, seconds, radius: r, amount: steps0, truncated: truncated || undefined };
   if (preview) return { reply: { t: 'ack', terrain: { ...plan, afford: canPay(civ, cost) } } };
   if (!canPay(civ, cost)) return { error: `Terrain works require ${cost.materials} Materials.` };
   civ.res.materials -= cost.materials;
@@ -460,7 +517,7 @@ export function terrainOrder(game, civ, op, point, preview = false, stroke = nul
   }
   // full step on the stroke itself, easing to half a step at the brush edge (a single point: centre 1, ring .5)
   const weights = tiles.map((t) => { let d = r; for (const c of centres) d = Math.min(d, hexDist(t, c)); return 1 - .5 * d / Math.max(1, r); });
-  game.roadProjects.push({ id: game.id_(), owner: civ.id, kind: 'terrain', op, tile: first, tiles, weights, steps, applied: 0,
+  game.roadProjects.push({ id: game.id_(), owner: civ.id, kind: 'terrain', op, tile: first, tiles, weights, steps, applied: 0, ...(steps0 > 1 && { amount: steps0 }),
     level: game.world.elev[first], point: centerOf(steps[0]?.t ?? first), edges: [], left: seconds, total: seconds,
     label: 'Terrain works complete.' });
   return { hexes: tiles.length, skipped: refused.length, cost };
@@ -501,8 +558,8 @@ function reshape(game, p, list) {
   for (const t of tiles) {
     const e0 = before.get(t), k = weight.get(t) ?? .5;
     let e = e0;
-    if (p.op === 'raise') e += W.step * k;
-    else if (p.op === 'lower') e -= W.step * k;
+    if (p.op === 'raise') e += W.step * k * (p.amount || 1);
+    else if (p.op === 'lower') e -= W.step * k * (p.amount || 1);
     else if (p.op === 'flatten') e = level;
     else {
       const around = disk(t, 1).filter((n) => n !== t && !isWater(w.terr[n]) && !w.lake[n]);

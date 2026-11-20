@@ -8,6 +8,7 @@ import { moveGroup, stopUnit } from './actionOrders.js';
 import { emit } from './combat.js';
 import { newBaseRing } from './actionEngineers.js';
 import { beginProduction, productionQueues as queuesOf, runProduction } from './actionProduction.js';
+import { baseAirCover, promoteUnits, researchStep, upgradeStep } from './actionUnitUpgrades.js';   // 2026-11-20 (BASE_MENU_REWORK.md)
 
 const ERA = [0, 1, 2, 4];
 export const canPay = (civ, cost) => ACTION_RESOURCES.every((key) => civ.res[key] >= (cost[key] || 0));
@@ -26,8 +27,9 @@ export const facilitiesAt = (game, site) => [...game.buildings.values()].filter(
 export const hasFacility = (game, site, type) => facilitiesAt(game, site).some((b) => b.type === type && b.done);
 
 export function addFacility(game, civ, site, type, tile, { instant = false, point, duration } = {}) {
-  const def = ACTION_BUILDINGS[type], parcel = def.field ? null : site.parcels.find((p) => type === 'town' ? p.id === 0 : p.id === tile);
-  const pos = point || parcel || centerOf(tile), slot = type !== 'town' && !def.field ? parcel.id : 0;
+  // no site: a facility on an outpost plot (actionOutposts.outpostBuild) stands at `point` without a ring parcel
+  const def = ACTION_BUILDINGS[type], parcel = def.field || !site ? null : site.parcels.find((p) => type === 'town' ? p.id === 0 : p.id === tile);
+  const pos = point || parcel || centerOf(tile), slot = type !== 'town' && !def.field && parcel ? parcel.id : 0;
   tile = parcel?.tile ?? tile;
   const hp = def.hp * (type === 'town' && site.kind === 'metro' ? 1.15 : 1);
   const b = { id: game.id_(), owner: civ.id, site: site?.id || 0, slot, type, tile, x: pos.x, z: pos.z, radius: def.radius,
@@ -352,7 +354,7 @@ function placeNewBase(game, civ, type, tile, preview) {
 }
 
 // Era level of a structure: defenses gain health here (+30% per level); firepower and range in combat.
-function setLevel(b, level) {
+export function setLevel(b, level) {
   const def = ACTION_BUILDINGS[b.type];
   if (def.levels?.effect === 'defense') {
     const scale = (1 + .3 * (level - 1)) / (1 + .3 * ((b.level || 1) - 1));
@@ -365,7 +367,7 @@ function setLevel(b, level) {
 export function upgradeBuilding(game, civ, id) {
   const b = game.buildings.get(id), def = b && ACTION_BUILDINGS[b.type];
   if (b?.owner !== civ.id || !b.done || !def.levels) return { error: 'Select a structure that can be upgraded.' };
-  if (b.perimeterSlot) return { error: 'Upgrade perimeter positions together from the headquarters.' };
+  if (b.perimeterSlot) return { error: b.type === 'city_turret' ? 'Open the perimeter turret to choose and deepen its path.' : 'Sandbag positions have no upgrades.', code: 'perimeter' };
   const next = (b.level || 1) + 1;
   if (next > def.levels.max) return { error: 'This structure is fully upgraded.' };
   if (civ.age + 1 < next) return { error: `Level ${next} requires Era ${TIERS[next - 1].label}.`, code: 'era' };
@@ -377,24 +379,14 @@ export function upgradeBuilding(game, civ, id) {
   return {};
 }
 
-/** Command upgradeDefenses: harden a base perimeter (level 2 adds built-in city anti-aircraft fire). */
-export function upgradeDefenses(game, civ, site) {
-  const hq = headquarters(game, site), spec = CITY_DEFENSES.upgrade;
-  if (!site?.slots || site.owner !== civ.id || !hq?.done) return { error: 'Select an operational headquarters.' };
-  if (![...game.buildings.values()].some((b) => b.site === site.id && b.owner === civ.id && b.perimeterSlot)) return { error: 'Build the perimeter defenses first.' };
-  const next = (site.defenseLevel || 1) + 1;
-  if (next > spec.max) return { error: 'The perimeter is fully upgraded.' };
-  if (civ.age + 1 < next) return { error: `Perimeter level ${next} requires Era ${TIERS[next - 1].label}.`, code: 'era' };
-  if (hq.project) return { error: 'Finish the current headquarters project first.' };
-  const cost = spec.cost[next - 2], error = affordable(civ, cost);
-  if (error) return error;
-  pay(civ, cost);
-  hq.project = { kind: 'defenses', level: next, left: spec.time[next - 2], total: spec.time[next - 2] };
-  return {};
+/** Command upgradeDefenses: retired 2026-11-20 (each perimeter turret chooses a path: command perimeterUpgrade). */
+export function upgradeDefenses() {
+  return { error: 'Perimeter upgrades are per turret now: click a perimeter turret to choose its path.', code: 'perimeter_paths' };
 }
 
-/** True when a city's upgraded perimeter gives it built-in anti-aircraft fire (D fires it). */
-export const cityAA = (site) => (site?.defenseLevel || 1) >= CITY_DEFENSES.upgrade.aaLevel;
+/** True when a base has built-in anti-aircraft fire (D fires it): an anti-air perimeter turret at level 2+, or the centre
+ *  turret's airburst fuze (BASE_MENU_REWORK.md §6). Without the game (legacy callers) false. */
+export const cityAA = (site, game = null) => !!game && baseAirCover(game, site);
 
 /** Income accrues every tick (10 Hz) at the rates productionStep last computed. */
 export function incomeStep(game, dt) {
@@ -446,7 +438,6 @@ export function fortifyBase(game, civ, site) {
   for (const plan of plans) {
     const b = addFacility(game, civ, site, plan.type, tileAt(plan.point.x, plan.point.z), { point: plan.point, duration: CITY_DEFENSES.time });
     b.perimeterSlot = plan.slot;
-    if (site.defenseLevel > 1) setLevel(b, site.defenseLevel);
   }
   hq.project = { kind: 'perimeter', total: CITY_DEFENSES.time, left: CITY_DEFENSES.time };
   return { placed: plans.length, skipped: missing.length - plans.length };
@@ -479,15 +470,10 @@ export function cancelUpgrade(game, civ, key) {
 export { armyCapacity, cancelProduction, cancelTraining, clearQueue, pauseProduction, productionCapacity, productionQueues, productionWire,
   queuedCount, setPriority, setRepeat, train } from './actionProduction.js';
 
-export function repairFacility(game, civ, id) {
-  const b = game.buildings.get(id);
-  if (b?.owner !== civ.id || !b.done || b.hp >= b.maxHp) return { error: 'Select a damaged operational facility.' };
-  if (b.project) return { error: 'This facility already has a project underway.' };
-  const cost = { materials: Math.ceil(20 + (1 - b.hp / b.maxHp) * 70) };
-  if (!canPay(civ, cost)) return { error: 'Insufficient materials.' };
-  pay(civ, cost);
-  b.project = { kind: 'repair', left: 17, total: 17 };
-  return {};
+/** Command repair: retired 2026-11-20 (user: "Delete every repair button in the game"): the base engineers repair
+ *  automatically (actionEngineers jobScore). A repair already under way in an older save still finishes. */
+export function repairFacility() {
+  return { error: 'Repairs are automatic: the base engineers repair damaged structures.', code: 'repair_removed' };
 }
 
 export function missileCommand(game, civ, id, point) {
@@ -627,6 +613,7 @@ function completeProject(game, civ, b, p) {
     game.notify(civ.id, `${site.name} advanced to Tier ${TIERS[p.tier - 1].label}.`, { kind: 'age', tile: site.tile });
   } else if (p.kind === 'level') {
     setLevel(b, p.level);
+    promoteUnits(game, b);   // a production building's veterancy reaches the units it made
     game.notify(civ.id, `${ACTION_BUILDINGS[b.type].name} upgraded to level ${p.level}.`, { kind: 'building', tile: b.tile });
   } else if (p.kind === 'defenses') {
     site.defenseLevel = p.level;
@@ -664,6 +651,7 @@ export function productionStep(game, dt) {
         b.state = 'operational';
         game.ruins.delete(b.tile);
         game.world.touch(b.tile);
+        game.clearFootprint(b);   // its finished walls can reach past the construction site: no unit stays inside
         if (site) growBase(game, site);
         if (b.type === 'town') {
           if (site.maturityElapsed != null) site.developedAt = game.time - site.maturityElapsed;
@@ -691,9 +679,11 @@ export function productionStep(game, dt) {
       if (p.kind === 'repair') b.hp = Math.min(b.maxHp, b.hp + b.maxHp * dt * buildRate / p.total * .83 * (game.time - (b.hitAt ?? -99) < 5 ? .3 : 1));
       if (p.left <= .0001) { completeProject(game, civ, b, p); b.project = null; }
     }
+    if (b.upg) researchStep(game, civ, b, dt);   // per-building upgrades (actionUnitUpgrades)
     // W1: shared-capacity production scheduler (actionProduction.runProduction); repeat lives on the queue
     if (def.trains) runProduction(game, civ, b, dt);
   }
+  upgradeStep(game, dt);   // the passive mechanics of upgraded units
   for (const site of game.sites) {
     if (site.owner < 0 || site.slots) continue;
     const def = OUTPOST_TYPES[site.kind];
@@ -702,7 +692,11 @@ export function productionStep(game, dt) {
     if (def.repair) game.repairAround(game.civs[site.owner], site, 2.3, def.repair * dt);
   }
   // income itself accrues every tick in incomeStep; trenches are dug by the engineers
-  for (const civ of game.civs) if (civ.alive) civ.rates = rates[civ.id];
+  for (const civ of game.civs) if (civ.alive) {
+    civ.rates = rates[civ.id];
+    // Ticket 4: the player's resource multiplier (matchRules.js; lobby seat income)
+    if (civ.income != null && civ.income !== 1) { civ.rates.materials *= civ.income; civ.rates.energy *= civ.income; }
+  }
   // defenses and trenches claim territory: refresh when one is finished or lost, and every ~5 s
   if (game.territoryDirty || game.tickN % 50 < 3) { game.territoryDirty = false; game.refreshTerritory(); }
 }
@@ -925,7 +919,7 @@ export function demolish(game, civ, id) {
   if (!b || b.owner !== civ.id) return { error: 'Select one of your structures to demolish.' };
   if (b.type === 'town') return { error: 'Headquarters cannot be demolished.' };
   if (!b.done) return { error: 'Only completed structures can be demolished.' };
-  if (queuesOf(b, game).length || b.project) return { error: 'Cancel production or projects in this structure first.' };
+  if (queuesOf(b, game).length || b.project || b.upg) return { error: 'Cancel production or projects in this structure first.' };
   const refund = Math.floor((ACTION_BUILDINGS[b.type].cost.materials || 0) * DEMOLISH_REFUND);
   civ.res.materials += refund;
   const site = game.siteById.get(b.site);

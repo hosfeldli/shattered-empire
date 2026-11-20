@@ -26,7 +26,8 @@ namespace SE.Runtime.Military
             Tank, Autonomous, Howitzer, Turret, RemoteTurret, HowitzerTurret, Barrel, HowitzerBarrel,
             Carrier, Scout, ArmoredCar, ArmoredCarMount, Truck, RocketTruck, AirDefense, FieldGun, Mortar, ReconDrone, StrikeDrone,
             Fighter, Bomber, Helicopter, Rotor, Wheel, RoadWheel, Rifle, Engineer, Militia, Special, Exo, AntiArmor, MortarCrew,
-            Thigh, Shin, UpperArm, Forearm, RifleWeapon, LauncherWeapon, PistolWeapon, Ifv, IfvTurret, RocketPod, Count
+            Thigh, Shin, UpperArm, Forearm, RifleWeapon, LauncherWeapon, PistolWeapon, Ifv, IfvTurret, RocketPod,
+            TankTrim, TurretTrim, AutoTrim, RemoteTrim, AutoBarrel, Count   // stylized tanks (2026-11-20): team trim and the autonomous gun
         }
 
         enum Kind { Infantry, Exo, Tank, AutoTank, Apc, ArmoredCar, Buggy, Truck, FieldGun, SpGun, Launcher, AirDefense, Heli, Fighter, Bomber, Drone, Swarm, Mortar, Ifv }   // Ifv: exo_infantry since 2026-11-18
@@ -136,13 +137,14 @@ namespace SE.Runtime.Military
                 MilitaryMeshes.Torsos[3], MilitaryMeshes.Torsos[4], MilitaryMeshes.Torsos[5], MilitaryMeshes.Torsos[6],
                 MilitaryMeshes.Thigh, MilitaryMeshes.Shin, MilitaryMeshes.UpperArm, MilitaryMeshes.Forearm, MilitaryMeshes.Rifle, MilitaryMeshes.InfantryLauncher,
                 MilitaryMeshes.Pistol, MilitaryMeshes.Ifv, MilitaryMeshes.IfvTurret, MilitaryMeshes.RocketPod,
+                MilitaryMeshes.TankTrim, MilitaryMeshes.TurretTrim, MilitaryMeshes.AutoTrim, MilitaryMeshes.RemoteTrim, MilitaryMeshes.AutoBarrel,
             };
             for (int i = 0; i < detailed.Length; i++)
                 details[i] = new InstanceBatch(detailed[i], RenderResources.Instanced, 64)
                 {
                     Bounds = new Bounds(Vector3.zero, Vector3.one * 1e5f),
                     Buffering = 3,
-                    Shadows = i >= (int)Detail.Wheel && i < (int)Detail.Ifv ? ShadowCastingMode.Off : ShadowCastingMode.On
+                    Shadows = i >= (int)Detail.Wheel && i < (int)Detail.Ifv || i >= (int)Detail.TankTrim && i <= (int)Detail.RemoteTrim ? ShadowCastingMode.Off : ShadowCastingMode.On
                 };
             for (int r = 0; r < rigs.Length; r++)
             {
@@ -482,7 +484,9 @@ namespace SE.Runtime.Military
                     Badges.Add(new Badge { MapPos = bp, Count = 1, Category = cat, Owner = u.Owner });
                     continue;
                 }
-                float sc = vehicleScale;
+                // 2026-11-20 tank pass: both tanks are drawn 25% larger (the server hitbox is unchanged)
+                float sc = vehicleScale * (kind == Kind.Tank || kind == Kind.AutoTank ? TankVisualScale : 1f);
+                if (KitBegin(s, kind, p, sc, body, team, u.Motion.Equipment)) continue;   // upgrade kit; the engineer's utility car (UnitRenderer.UpgradeKit.cs)
                 if (kind == Kind.Launcher) LauncherStep(s, u.Flags, moving);   // pod and stabilisers (UnitRenderer.Launcher.cs)
                 if (close && kind != Kind.Infantry && kind != Kind.Mortar && kind != Kind.Exo && !IsAir(kind))
                 {
@@ -563,6 +567,7 @@ namespace SE.Runtime.Military
                         AddAircraft(kind, s, u.Id, p, level, close, time, body, u.Motion.Present ? Mathf.Max(0f, airAlt[s]) : -1f);
                         break;
                 }
+                OperationalKit(kind, s, p, sc, u.Motion.Equipment, level);   // UnitRenderer.UpgradeKit.cs
             }
             BuildingGlyphs(structures, world, civColor, camX, focus, camDist, time);   // §37 building-type cards (UnitRenderer.BuildingGlyphs.cs)
             DrawCasualties(time, world, focus, camDist);
@@ -805,7 +810,10 @@ namespace SE.Runtime.Military
                 }
                 else
                     // too small for helmets and shoulders to read: the simple figure carries the team colour itself
+                {
                     AddSimpleFigure(model, foot, figureFacing + j * 0.1f, scale, new float4(math.lerp(body.xyz, figureTeam, .45f), 0), gait);
+                    SimpleKit(foot, figureFacing + j * 0.1f, scale, equipment, torsoOf[slot]);   // UnitRenderer.UpgradeKit.cs
+                }
             }
             if (mortar && level == 2 && setup > .15f)
             {
@@ -924,6 +932,7 @@ namespace SE.Runtime.Military
             var figure = InstanceData.TRS(at, rot, new float3(scale * build, scale * height, scale * build), new float4(color.xyz, 2 + frame));
             soldiers[role].Add(figure);
             AddTeamGear(role, figure, frame);   // helmet and shoulders in the team colour
+            if ((equipment & (KitArmour | KitCamo)) != 0) RiggedKit(role, at, rot, scale * height, build, kitDrop, kitForward, kitLean, equipment, seed);   // UnitRenderer.UpgradeKit.cs
             if ((equipment & (32 | 64 | 128 | 256)) == 0) return;
             // barracks kit, worn on the torso (offsets in model units, ~1.02 tall)
             float s = scale * height;
@@ -961,6 +970,19 @@ namespace SE.Runtime.Military
             float3 local = math.rotate(math.inverse(facing), direction);
             var q = Quaternion.FromToRotation(Vector3.down, new Vector3(local.x, local.y, local.z));
             return math.mul(facing, new quaternion(q.x, q.y, q.z, q.w));
+        }
+
+        /// <summary>Both tanks are drawn this much larger than true scale (2026-11-20 tank pass; the server hitbox is unchanged).</summary>
+        const float TankVisualScale = 1.25f;
+
+        /// <summary>
+        /// Colour of a tank's trim meshes: the team colour, lifted so it reads on the hull; the autonomous tank's trim
+        /// is a brighter, emissive (alpha) light strip in the team colour, its sensor lenses cyan (tint-exempt).
+        /// </summary>
+        static float4 TankTrimColor(Kind kind, float4 team)
+        {
+            float3 c = math.saturate(team.xyz * 1.15f + .04f);
+            return kind == Kind.AutoTank ? new float4(math.saturate(team.xyz * .9f + .18f), .9f) : new float4(c, 0f);
         }
 
         void AddVehicle(Kind kind, int slot, float3 p, float scale, float4 body, float4 team, float shotAge,
@@ -1015,7 +1037,14 @@ namespace SE.Runtime.Military
             // True proportions: the tracked hull models are drawn 64% as wide and 12% longer than built, so a
             // main battle tank is ~4 m wide, ~7.7 m long and ~2.4 m tall beside 1.75 m soldiers.
             float3 prop = tracked ? new float3(.64f, 1f, 1.12f) : new float3(1f);
+            // stylized tanks (2026-11-20): a near-neutral hull with only a hint of the team under bold team-colour trim;
+            // the autonomous tank in dark gunmetal with glowing trim
+            bool tank = kind == Kind.Tank || kind == Kind.AutoTank;
+            var trim = tank ? TankTrimColor(kind, team) : default;
+            if (tank) paint = new float4(math.lerp(paint.xyz, kind == Kind.AutoTank ? new float3(.30f, .32f, .35f) : new float3(.42f, .43f, .36f), kind == Kind.AutoTank ? .7f : .6f), 0);
             details[(int)model].Add(InstanceData.TRS(at, rot, prop * scale, paint));
+            VehicleKit(kind, slot, at, rot, scale, equipment, true);   // upgrade kit (UnitRenderer.UpgradeKit.cs)
+            if (tank) details[(int)(kind == Kind.AutoTank ? Detail.AutoTrim : Detail.TankTrim)].Add(InstanceData.TRS(at, rot, prop * scale, trim));
             if (kind == Kind.FieldGun) return;
             if (kind == Kind.Launcher) AddLauncherRig(slot, at, rot, scale, paint, false);
             if (tracked)
@@ -1075,14 +1104,16 @@ namespace SE.Runtime.Military
                 const float k = 1f;
                 var ring = at;
                 details[(int)(kind == Kind.AutoTank ? Detail.RemoteTurret : kind == Kind.SpGun ? Detail.HowitzerTurret : Detail.Turret)].Add(InstanceData.TRS(ring, swivel, new float3(.8f, 1f, 1f) * (scale * k), paint));
+                if (tank) details[(int)(kind == Kind.AutoTank ? Detail.RemoteTrim : Detail.TurretTrim)].Add(InstanceData.TRS(ring, swivel, new float3(.8f, 1f, 1f) * (scale * k), trim));
                 // barrel recoil: a sharp run-back, then a slower return to battery
                 float recoil = BarrelRecoil(kind, shotAge);   // UnitRenderer.Recoil.cs (effects pass): longer stroke, artillery more
                 var pivot = ring + math.rotate(swivel, new float3(0, y, .17f - recoil) * (scale * k));
-                DetailPart(kind == Kind.SpGun ? Detail.HowitzerBarrel : Detail.Barrel, pivot,
+                DetailPart(kind == Kind.SpGun ? Detail.HowitzerBarrel : kind == Kind.AutoTank ? Detail.AutoBarrel : Detail.Barrel, pivot,
                     math.mul(swivel, quaternion.RotateX(kind == Kind.SpGun ? -.25f : -.02f)), scale * k, paint);
             }
             // team markings: a pair of bold squares on the glacis, readable from the RTS camera
             var wear = new float4(TeamWear(team.xyz), .12f);
+            if (tank) return;   // the tanks carry their colours in their trim
             for (int side = -1; side <= 1; side += 2)
             {
                 var marking = at + math.rotate(rot, gunTruck ? new float3(side * .17f, .296f, .33f) * scale   // on the gun truck's hood
@@ -1295,6 +1326,7 @@ namespace SE.Runtime.Military
                         .Add(Q(pos, rot, new float3(0.12f * s), body));
                     break;
             }
+            AirKit(kind, slot, pos, rot, s, close, a);   // upgrade kit (UnitRenderer.UpgradeKit.cs)
         }
 
         /// <summary>An instance from map position and map heading (converted once, here).</summary>

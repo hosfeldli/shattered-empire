@@ -44,8 +44,8 @@ test('tracked armour takes half the small-arms rate; tanks fire HE at infantry',
   // 60 x .35 (vsArmor) = 21; tank: x .5 = 10.5 - def 18 x .2 = 6.9 -> 7; car: 21 - 9 x .2 = 19
   assert.equal(hit(tank), 7);
   assert.equal(hit(car), 19);
-  assert.equal(ACTION_UNITS.tank.hp, 330);
-  assert.equal(ACTION_UNITS.autonomous_tank.hp, 480);
+  assert.equal(ACTION_UNITS.tank.hp, 495);   // 2026-11-20 tank pass: 330 -> 495
+  assert.equal(ACTION_UNITS.autonomous_tank.hp, 760);   // 2026-11-20 tank pass: 480 -> 760
   assert.ok(ACTION_UNITS.tank.vsInfantry > 1 && ACTION_UNITS.autonomous_tank.vsInfantry > 1);
 });
 

@@ -21,13 +21,13 @@ namespace SE.Runtime.Military
         /// <summary>Barrel run-back in model units (close detail tracked hulls).</summary>
         static float BarrelRecoil(Kind kind, float shotAge) => kind == Kind.SpGun
             ? RecoilCurve(shotAge, 150f, 4.2f, 1.3f) * .30f      // howitzer: a long recoil stroke, slow counter-recoil
-            : RecoilCurve(shotAge, 140f, 6.5f, .85f) * .21f;     // tank gun
+            : RecoilCurve(shotAge, 140f, 6.5f, .85f) * .25f;     // tank gun (2026-11-20: .21 -> .25, the heavier round)
 
         /// <summary>How hard a shot rocks the hull on its suspension (pitch/roll rate impulse).</summary>
         static float HullKick(Kind kind, bool tracked) => kind switch
         {
             Kind.SpGun => 2.4f,
-            Kind.Tank or Kind.AutoTank => 1.5f,
+            Kind.Tank or Kind.AutoTank => 2.0f,   // 2026-11-20: the heavier, slower main gun (was 1.5)
             Kind.Launcher => .9f,
             Kind.ArmoredCar => .12f,    // the gun truck's MG barely rocks it
             Kind.FieldGun => 1.2f,

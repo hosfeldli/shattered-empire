@@ -174,7 +174,7 @@ namespace SE.Runtime.UI
                 SetDockLabel(dockTerrain, "Terrain · " + HudKey("terrain", "T"));
                 dockBuild.tooltip = "Build\nDefenses, roads, trenches, outposts and new bases. Defenses, sandbags, roads and trenches can also go on neutral ground.";
                 dockTerrain.tooltip = "Terrain (" + HudKey("terrain", "T") + ")\nPick raise, lower, flatten or smooth, then drag across your own territory like a brush (" + HudKey("brush_smaller", "[") + " " + HudKey("brush_larger", "]") + " or Ctrl + wheel: size). The cost grows with the hexes painted.";
-                zoomButton.tooltip = "Local view (" + HudKey("minimap_zoom", "Z") + ")\nSwitch the minimap between the whole map and the area around the camera.";
+                zoomButton.tooltip = "Local view (" + HudKey("minimap_zoom", "Z") + ")\nCycle the minimap: whole map, the area around the camera, then a closer view.";
             }
         }
 
@@ -188,7 +188,7 @@ namespace SE.Runtime.UI
         void UpdateConsole(float time)
         {
             if (console == null || !UiKit.IsShown(console)) return;
-            // Z: whole map ⇄ local view (the minimap_zoom action; Z when it isn't bound)
+            // Z: whole map → local view → close view (the minimap_zoom action; Z when it isn't bound)
             var zoomKey = InputFacade.KeyFor("minimap_zoom");
             if (InputFacade.Pressed(zoomKey == KeyCode.None ? KeyCode.Z : zoomKey) && Map != null) Map.ToggleZoom();
             if (Map != null && Map.Zoomed != zoomShown) { zoomShown = Map.Zoomed; zoomButton.EnableInClassList("selected", zoomShown); }

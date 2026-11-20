@@ -99,6 +99,7 @@ test('the IFV autocannon chews through infantry; its missile goes for armour on 
   const squad = g.spawn(g.civs[1], 'rifle_squad', { x: ifv.x + 1.8, z: ifv.z + .3 }, .05);
   assert.ok(ifv && tank && squad);
   tank.maxHp = tank.hp = 1e6; squad.maxHp = squad.hp = 1e6;   // keep both alive: count shots
+  g.command(1, { c: 'stance', units: [tank.id], stance: 'holdFire' });   // 2026-11-20: the tank (reach 3.49) would kill the IFV
   const launches = [], bursts = [];
   for (let i = 0; i < 260; i++) {
     const seen = g.events.length;

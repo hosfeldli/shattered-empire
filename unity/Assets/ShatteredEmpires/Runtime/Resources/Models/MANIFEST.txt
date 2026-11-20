@@ -1,11 +1,11 @@
 Built by tools/blender/build_military.py
-Tank 7219 4156
-Autonomous 7208 4152
+Tank 3579 2296
+Autonomous 2655 1700
 Howitzer 7515 4316
-Turret 4664 2952
-RemoteTurret 4022 2364
+Turret 3668 2340
+RemoteTurret 1964 1184
 HowitzerTurret 1180 808
-GunBarrel 1085 1154
+GunBarrel 721 694
 HowitzerBarrel 905 1014
 RoadWheel 900 840
 Wheel 1675 1322
@@ -22,3 +22,8 @@ Bomber 761 420
 Helicopter 3775 2748
 Rotor 396 312
 Rifle 1532 752
+TankTrim 384 180
+TurretTrim 96 48
+AutoTrim 288 144
+RemoteTrim 372 200
+AutoBarrel 793 714

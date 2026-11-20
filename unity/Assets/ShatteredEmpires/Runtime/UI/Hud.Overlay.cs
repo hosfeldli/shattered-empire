@@ -183,6 +183,16 @@ namespace SE.Runtime.UI
                 battleOverlay.Bars.Add((ToPanel(sp), u.Hp / 100f, new Color(c.x, c.y, c.z).gamma, selected, barWidth));
                 bars++;
             }
+            // 2026-11-20 (Ticket 3, BASE_MENU_REWORK.md §1): the headquarters is the only building with a health bar (its
+            // health left the base menu); a wide bar over every seen operational headquarters, at any zoom
+            foreach (var b in session.Structures.Buildings.Values)
+            {
+                if (b.Type != "town" || !b.Done || !b.HasPosition || b.Memory) continue;
+                var sp = toScreen(new Vector3(b.X, session.World.GroundHeight(b.X, b.Z) + .95f, b.Z));
+                if (sp.z <= 0 || sp.x < 0 || sp.y < 0 || sp.x > Screen.width || sp.y > Screen.height) continue;
+                var c = session.CivColor(b.Owner);
+                battleOverlay.Bars.Add((ToPanel(sp), Mathf.Clamp01(b.Hp / 100f), new Color(c.x, c.y, c.z).gamma, commander.SelectedObjective == b.City && b.Owner == session.CivId, Mathf.Clamp(barWidth * 2.4f, 44f, 96f)));
+            }
             // order lines for the current selection
             overlayScratch.Clear();
             foreach (var pair in orderMarks)

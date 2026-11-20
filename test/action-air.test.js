@@ -131,7 +131,7 @@ test('AA fire bursts in the sky: flak events carry the burst centre at altitude 
   // upgraded city defenses: the headquarters fires AA airbursts too
   const before = flak.filter((e) => e.s === enemy.id).length;
   assert.equal(before, 0, 'no city AA before the defense upgrade');
-  g.siteById.get(enemy.site).defenseLevel = 2;   // B's perimeter upgrade to the AA level (actionBases.cityAA)
+  enemy.gun = 2;   // 2026-11-20: the centre turret's Airburst Fuze gives the base its AA umbrella (BASE_MENU_REWORK.md §6)
   heli.hp = heli.maxHp;
   g.command(0, { c: 'patrol', units: [heli.id], points: [{ x: enemy.x, z: enemy.z }] });
   run(g, 400, () => { for (const e of g.events.splice(0)) if (e.k === 'flak') flak.push(e); });

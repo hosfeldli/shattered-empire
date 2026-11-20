@@ -362,6 +362,7 @@ namespace SE.Runtime.Military
                 var radio = torsoOrigin + math.rotate(chest, new float3(-.14f, .75f, -.07f) * scale);
                 batches[(int)Model.Plate].Add(InstanceData.TRS(radio, chest, new float3(.013f, .21f, .014f) * scale, new float4(.17f, .19f, .18f, 0)));
             }
+            if ((equipment & (KitArmour | KitCamo)) != 0) ProceduralKit(torso, torsoOrigin, chest, scale, equipment, q.Life);   // UnitRenderer.UpgradeKit.cs
             float3 forward = math.rotate(turn, new float3(0, 0, 1));
             for (int side = -1; side <= 1; side += 2)
             {

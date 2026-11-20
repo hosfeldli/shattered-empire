@@ -44,8 +44,8 @@ export function ownedUnits(game, civ, ids) {
 
 function assign(game, u, goal, opts, path) {
   if (u.groupJob) u.groupJob = 0;   // Pass 3: a new order replaces a queued group route (groupRouteStep)
-  const order = { goal, mode: opts.mode, facing: opts.facing ?? null, path, convoy: opts.convoy || 0, convoySpeed: opts.convoySpeed || 0 };
-  if (opts.queue && (u.goal || u.airOrder || u.attack)) {
+  const order = { goal, mode: opts.mode, facing: opts.facing ?? null, path, convoy: opts.convoy || 0, convoySpeed: opts.convoySpeed || 0, ...(opts.capture && { capture: opts.capture }) };
+  if (opts.queue && (u.goal || u.airOrder || u.attack || u.captureWait != null)) {
     if (u.orders.length >= 8) return false;
     u.orders.push(order); return true;
   }
@@ -66,6 +66,8 @@ function assign(game, u, goal, opts, path) {
 }
 
 function startOrder(game, u, order) {
+  // 2026-11-20: a capture order (order.capture: the site id) holds the queue at the site until the capture is decided
+  u.captureSite = order.capture || 0; u.captureWait = null;
   if (order.kind === 'attack') {
     const target = game.units.get(order.target) || game.buildings.get(order.target);
     u.goal = null; u.path = []; u.target = 0;
@@ -133,6 +135,9 @@ export function stopUnit(game, u, advance = false) {
     }
     return;
   }
+  // 2026-11-20 (queued capture): arrived at a site it was sent to capture, with more orders queued: it stays until the
+  // capture is decided (captureWaitStep), then goes on
+  if (advance && u.captureSite && u.orders.length && capturePending(game, u, game.time)) { u.captureWait = game.time; return; }
   if (advance && u.orders.length) {
     const next = u.orders.shift();
     next.path = null;
@@ -248,6 +253,7 @@ export function groupRouteStep(game) {
         routed++;
         const u = members[i]; u.groupJob = 0;
         const pick = routeSlot(game, u, { x: take[i][1], z: take[i][2] }, reserved, job.opts, routing);
+        if (!pick && job.opts.unknown) { unknownGoal(game, u, { x: job.x, z: job.z }, job.opts); continue; }   // VISION
         if (!pick) continue;
         if (!ACTION_UNITS[u.type].air) job.slots.push([pick.slot.x, pick.slot.z, ACTION_UNITS[u.type].radius]);
         assign(game, u, pick.slot, job.opts, pick.path);
@@ -257,6 +263,35 @@ export function groupRouteStep(game) {
     } finally { game.nav.endBatch(); }
     if (!job.rest.length) jobs.shift();
   }
+}
+
+/** VISION: a member of an order into undiscovered ground with no route there: the nearest reachable ground toward it. */
+function unknownGoal(game, u, point, opts) {
+  const r = game.nav.routeOrNearest(u, point, ACTION_UNITS[u.type]);
+  return assign(game, u, r.goal || { x: point.x, z: point.z }, opts, r.path || []);
+}
+
+/**
+ * True while unit u should stay at the site of its capture order (u.captureSite) before its next queued order: the site
+ * exists, has no headquarters, is not yet held by u's side, u can capture (def.capture) and stands in the zone, and it
+ * has waited less than twice the capture time plus 30 s (a zone contested for ever does not hold the queue for ever).
+ */
+export function capturePending(game, u, since) {
+  const site = game.siteById?.get(u.captureSite), def = ACTION_UNITS[u.type];
+  if (!site || site.hq || !def.capture) return false;
+  if (site.owner >= 0 && (site.owner === u.owner || game.allied(site.owner, u.owner))) return false;
+  if (distance(u, site) > site.radius) return false;
+  return game.time - since <= (site.captureTime || 20) * 2 + 30;
+}
+
+/** A unit waiting at a site it was capturing: once the capture is decided (taken, lost, left), its next order starts. */
+function captureWaitStep(game, u) {
+  if (u.orders.length && capturePending(game, u, u.captureWait)) return;
+  u.captureWait = null; u.captureSite = 0;
+  if (!u.orders.length) return;
+  const next = u.orders.shift();
+  next.path = null;
+  startOrder(game, u, next);
 }
 
 export function moveGroup(game, group, point, opts = {}) {
@@ -326,6 +361,13 @@ function moveGroupBatched(game, group, point, opts) {
     if (assign(game, u, goal, opts, [goal])) placed++;
   }
   game.nav.activeFlows.clear();
+  // VISION (2026-11-20): an order into ground the player has never discovered must not reveal whether that ground can
+  // be reached (water, cliffs, a cut-off island). Members with no route there head for the best way that exists
+  // (nav.routeOrNearest: the nearest reachable ground toward it) and the order is answered as placed, with no note.
+  if (opts.unknown) {
+    for (const u of left) if (unknownGoal(game, u, point, orderOpts)) placed++;
+    return { placed, blocked: group.length - placed };
+  }
   // NAV_BRIDGES (2026-11-18): say why vehicles stayed behind when only a road (a bridge) would let them through
   let crossing = 0;
   if (left.length) {
@@ -412,6 +454,12 @@ function deployLineBatched(game, group, points, opts) {
       const p = frontPoint(line, at, row === 0 ? 0 : row === 1 ? .64 : 1.3, opts.reverse);
       const start = opts.queue && u.goal ? u.goal : u;
       const pick = candidate(game, u, p, reserved, .52, start, false, routing);
+      // VISION (2026-11-20): a line slot on undiscovered ground is shown as placed (its reachability is unseen terrain)
+      if (!pick && opts.unknown?.(p)) {
+        placements.push([u.id, p.x, p.z, p.facing, 1]); placed++;
+        if (!opts.preview) unknownGoal(game, u, p, { ...opts, facing: p.facing, unknown: undefined });
+        continue;
+      }
       if (!pick) { placements.push([u.id, p.x, p.z, p.facing, 0]); unreachable++; continue; }
       placements.push([u.id, pick.slot.x, pick.slot.z, p.facing, distance(p, pick.slot) > .15 ? 2 : 1]);
       placed++;
@@ -465,6 +513,7 @@ export function unitMotion(game) {
     // aircraft fly their own flight model: banked turns and attack runs, smooth rotor flight (actionFlight.js)
     if (def.air) { flyAircraft(game, u, def, stopUnit); continue; }
     if (!u.goal) {
+      if (u.captureWait != null) captureWaitStep(game, u);
       if (u.alignFacing != null) { u.yaw = turn(u.yaw, u.alignFacing, DT * 1.25); if (Math.abs(angleDelta(u.yaw,u.alignFacing)) < .015) u.alignFacing = null; }
       u.vx = u.vz = u.speed = 0; continue;
     }
@@ -512,7 +561,9 @@ export function unitMotion(game) {
     // HILLS_MOUNTAINS (2026-11-19): infantry climb hills at HILL_PACE off a road (a road keeps its own, faster pace)
     const hillPace = !def.air && HILL_PACE[def.move] && game.world.terr[u.tile] === T.HILLS && c >= (OPEN_COST[def.move] || 1) ? HILL_PACE[def.move] : Infinity;
     const terrainPace = def.air ? 1 : Math.min(hillPace, TERRAIN_PACE(c / (OPEN_COST[def.move] || 1)));
-    let pace = def.air ? def.speed : def.speed * GROUND_PACE * terrainPace;   // aircraft_systems is drop tanks now (actionAir)
+    let pace = def.air ? def.speed : def.speed * GROUND_PACE * terrainPace;
+    // 2026-11-20 upgrades (actionUnitUpgrades.speedMul): the engineers' utility car, the infantry carrier's sprint
+    if (u.mods) pace *= u.mods.speed || (u.mods.mech === 'sprint' && u.sprintUntil > game.time ? u.mods.mult : 1);   // aircraft_systems is drop tanks now (actionAir)
     if (u.convoy && u.convoySpeed && !def.air) {
       // Convoy pace: the group's leader (the member nearest its slot) holds the slowest member's speed;
       // members lagging well behind drive at their own speed until they close up.
@@ -838,7 +889,8 @@ function stallCheck(game, u, def) {
     log.push({ t: Math.round(game.time), id: u.id, type: u.type, tile: u.tile, goal: tileAt(u.goal.x, u.goal.z), replans: u.stuckReplans || 0 });
     if (log.length > 32) log.shift();
     const civ = game.civs[u.owner];
-    if (civ?.human && game.time - (civ.stuckNoteAt ?? -Infinity) >= 10) {
+    // VISION: no note about a destination on undiscovered ground
+    if (civ?.human && civ.explored?.[tileAt(u.goal.x, u.goal.z)] && game.time - (civ.stuckNoteAt ?? -Infinity) >= 10) {
       civ.stuckNoteAt = game.time;
       game.notify(u.owner, `${ACTION_UNITS[u.type].name} could not reach its destination and halted.`, { kind: 'unit', quiet: true, tile: u.tile, unit: u.id });
     }

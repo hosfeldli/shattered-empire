@@ -22,8 +22,7 @@
 import { T, W, H, isWater } from './constants.js';
 import { NB, disk, dist as hexDist, idx } from './hex.js';
 import { ACTION_BUILDINGS, ACTION_UNITS, CITY_DEFENSES, TIERS } from './actionDefinitions.js';
-import { armyCapacity, constructDefense, fieldCost, fortifyBase, headquarters, openSlots, settlementCost, trenchLine, upgradeBuilding,
-  upgradeDefenses } from './actionBases.js';
+import { armyCapacity, constructDefense, fieldCost, fortifyBase, headquarters, openSlots, settlementCost, trenchLine, upgradeBuilding } from './actionBases.js';
 import { productionCommitment } from './actionProduction.js';
 import { centerOf, distance, dxBetween, tileAt, wrapX } from './actionNavigation.js';
 import { enemyGrid, UnitGrid } from './actionAIOps.js';
@@ -462,11 +461,7 @@ function upgrade(game, civ, w, b, bases) {
       if (affordable(b, w, cost) && !fortifyBase(game, civ, s).error) { spend(b, w, cost); return; }
       continue;
     }
-    const next = (s.defenseLevel || 1) + 1;
-    if (pieces && next <= CITY_DEFENSES.upgrade.max && civ.age + 1 >= next && b.level >= 1) {
-      const cost = CITY_DEFENSES.upgrade.cost[next - 2];
-      if (affordable(b, w, cost) && !upgradeDefenses(game, civ, s).error) { spend(b, w, cost); return; }
-    }
+    // (perimeter turrets choose and deepen their paths in actionAIUpgrades, 2026-11-20)
   }
 }
 

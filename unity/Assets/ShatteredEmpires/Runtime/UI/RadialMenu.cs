@@ -471,6 +471,23 @@ namespace SE.Runtime.UI
             return false;
         }
 
+        /// <summary>Runs the first item of the current ring (or outer arc) whose bound key was pressed this frame. True when one ran.</summary>
+        bool PressBound()
+        {
+            var fired = SE.Runtime.Input.ButtonHotkeys.Fired();
+            if (fired.Count == 0) return false;
+            for (int f = 0; f < fired.Count; f++)
+            {
+                string id = fired[f];
+                if (!id.StartsWith("wheel:")) continue;
+                for (int i = 0; i < Segments; i++)
+                    if (!slots[i].Empty && !slots[i].More && SE.Runtime.Input.ButtonHotkeys.WheelId(slots[i].Item?.Id) == id) { Execute(i, false, false, false); return true; }
+                for (int k = 0; k < arc.Count; k++)
+                    if (SE.Runtime.Input.ButtonHotkeys.WheelId(arc[k].item?.Id) == id) { Execute(ArcHit + k, false, false, false); return true; }
+            }
+            return false;
+        }
+
         /// <summary>Activate the hub item (when one was given to <see cref="Open"/>).</summary>
         public void PressHub() { if (IsOpen) Execute(HubHit, false, false, false); }
 
@@ -491,6 +508,8 @@ namespace SE.Runtime.UI
                 layoutAt = time + SampleSeconds;
                 relaid = Layout();
             }
+            // a key bound to one of this ring's commands (Settings › Controls › Buttons) runs it like a click
+            if (PressBound()) return;
             bool appearing = !shown;
             zoom = appearing ? Mathf.Max(.5f, Scale) : Mathf.Lerp(zoom, Mathf.Max(.5f, Scale), 1f - Mathf.Exp(-dt * 12f));
             float s = zoom;
@@ -644,6 +663,9 @@ namespace SE.Runtime.UI
                 same = ReferenceEquals(scratch[i], lastItems[i]) && lastAngles[i] == AngleKey(scratch[i]);
             for (int i = 0; same && i < arcScratch.Count; i++) same = ReferenceEquals(arcScratch[i], lastArc[i]);
             if (same) return false;
+            // every command on the ring can be given its own key (Settings › Controls › Buttons; Input/ButtonHotkeys.cs)
+            foreach (var item in scratch) SE.Runtime.Input.ButtonHotkeys.RegisterWheel(item.Id, item.TitleText, null);
+            foreach (var item in arcScratch) SE.Runtime.Input.ButtonHotkeys.RegisterWheel(item.Id, item.TitleText, null);
             layoutValid = true;
             lastLevels = levels.Count; lastPage = level.Page;
             lastItems.Clear(); lastAngles.Clear(); lastArc.Clear();

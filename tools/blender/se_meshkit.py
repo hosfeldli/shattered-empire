@@ -43,6 +43,10 @@ PAL = {
     'boot':   ((.17, .15, .13), RUBBER),
     'glove':  ((.24, .23, .21), FABRIC),
     'hardhat':((.86, .70, .36), PLAIN),
+    # tanks (build_tanks.py, 2026-11-20): 'trim' parts live in the team-colour trim meshes (white x the team colour);
+    # 'glow' is exempt from the instance tint (SKIN surface), so lenses stay cyan and glow where the instance emits
+    'trim':   ((.96, .96, .94), ARMOR),
+    'glow':   ((.55, .95, 1.0), SKIN),
 }
 
 

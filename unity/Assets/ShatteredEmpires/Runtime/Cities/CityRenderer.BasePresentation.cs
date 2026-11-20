@@ -326,7 +326,9 @@ namespace SE.Runtime.Cities
             // team bands round the lower drum (between its 16 pilasters, above the windows) and the upper drum
             Band(.507f, .186f, .026f, 16, .03f, .3f);
             Band(.377f, .238f, .018f, 20, 0f, .3f);
-            // city AA (perimeter level 2+): a tracking AA mount on the drum roof, behind the command tower
+            // city AA (perimeter level 2+): a tracking AA mount on the drum roof, behind the command tower; the
+            // centre-turret upgrade (Gun 1..3) takes the mount when bought (CityRenderer.UpgradeKit.cs)
+            if (!CentreTurret(c, new float3(c.X - .265f * sn, c.GroundY + .352f * hs, c.Z - .265f * cs)))
             foreach (var st in objectiveByTile.Values)
             {
                 if (!st.IsBase || math.abs(st.X - c.X) > .6f || math.abs(st.Z - c.Z) > .6f) continue;

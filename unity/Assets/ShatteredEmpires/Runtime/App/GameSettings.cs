@@ -60,8 +60,64 @@ namespace SE.Runtime.App
         /// <summary>Restore the Camera tab defaults.</summary>
         public static void ResetCamera()
         {
-            EdgePan = true; CameraSpeed = 1f; ScreenShake = true; ReducedMotion = false; WeatherIntensity = 1f;
+            EdgePan = true; CameraSpeed = 1f; ScreenShake = true; ReducedMotion = false;
         }
+
+        // ------------------------------------------------------------------ graphics (Settings > Graphics)
+        // A preset ("low", "medium", "high", "ultra") fills every knob below; changing one knob makes the preset "custom".
+        // GameBootstrap.ApplyQuality applies the knobs to the URP asset, the camera and the renderers.
+        static string S(string k, string d) => PlayerPrefs.GetString(k, d);
+
+        /// <summary>The graphics preset: "low", "medium", "high", "ultra" or "custom" (PlayerPrefs "se.quality", as before).</summary>
+        public static string GraphicsPreset { get => S("se.quality", "high"); set { PlayerPrefs.SetString("se.quality", value); PlayerPrefs.Save(); } }
+        /// <summary>Sun shadows: 0 off, 1 low (1024 shadow map), 2 medium (2048), 3 high (4096).</summary>
+        public static int ShadowQuality { get => Mathf.RoundToInt(F("gfx.shadows", 2)); set => SetF("gfx.shadows", Mathf.Clamp(value, 0, 3)); }
+        /// <summary>How far shadows are drawn (world units, 20–250).</summary>
+        public static float ShadowDistance { get => F("gfx.shadowDist", 130); set => SetF("gfx.shadowDist", Mathf.Clamp(value, 20, 250)); }
+        /// <summary>Terrain detail: the distance the detailed ground mesh is used to (30–120; TerrainRenderer.LodDistance).</summary>
+        public static float TerrainDetail { get => F("gfx.terrainLod", 70); set => SetF("gfx.terrainLod", Mathf.Clamp(value, 30, 120)); }
+        /// <summary>Trees and groundcover per hex (0.25–1.5; TerrainRenderer.TreeDensity).</summary>
+        public static float VegetationDensity { get => F("gfx.treeDensity", 1); set => SetF("gfx.treeDensity", Mathf.Clamp(value, .25f, 1.5f)); }
+        /// <summary>How far trees are drawn in full (250–450; TerrainRenderer.TreeDistance).</summary>
+        public static float VegetationDistance { get => F("gfx.treeDist", 380); set => SetF("gfx.treeDist", Mathf.Clamp(value, 250, 450)); }
+        /// <summary>Explosions, smoke, debris and particles (0.25–1.25; EffectsRenderer.Intensity).</summary>
+        public static float EffectsQuality { get => F("gfx.fx", 1); set => SetF("gfx.fx", Mathf.Clamp(value, .25f, 1.25f)); }
+        /// <summary>Draw the high cloud deck of the weather systems (WeatherPresenter).</summary>
+        public static bool CloudDeck { get => B("gfx.clouds", true); set => SetB("gfx.clouds", value); }
+        /// <summary>Internal render resolution (0.5–1.25 of the screen; URP renderScale).</summary>
+        public static float RenderScale { get => F("gfx.renderScale", 1); set => SetF("gfx.renderScale", Mathf.Clamp(value, .5f, 1.25f)); }
+        /// <summary>Anti-aliasing: "off", "fxaa", "smaa", "msaa2", "msaa4" (the MSAA modes keep SMAA on top, as before).</summary>
+        public static string AntiAliasing { get => S("se.set.gfx.aa", "msaa4"); set { PlayerPrefs.SetString("se.set.gfx.aa", value); PlayerPrefs.Save(); } }
+        /// <summary>Post-processing (tone mapping, bloom, colour grading, vignette).</summary>
+        public static bool PostProcessing { get => B("gfx.post", true); set => SetB("gfx.post", value); }
+        /// <summary>Distance up to which units are drawn as detailed models (8–40; UnitRenderer.OperationalDistance).</summary>
+        public static float UnitDetail { get => F("gfx.unitLod", 24); set => SetF("gfx.unitLod", Mathf.Clamp(value, 8, 40)); }
+        /// <summary>Wait for the display's refresh (vertical sync).</summary>
+        public static bool VSync { get => B("gfx.vsync", true); set => SetB("gfx.vsync", value); }
+        /// <summary>Frame rate limit without vsync (0: unlimited).</summary>
+        public static int FrameCap { get => Mathf.RoundToInt(F("gfx.frameCap", 0)); set => SetF("gfx.frameCap", Mathf.Max(0, value)); }
+
+        /// <summary>Fill every graphics knob from a preset (unknown: "high"); vsync and the frame cap are left as they are.</summary>
+        public static void ApplyGraphicsPreset(string preset)
+        {
+            switch (preset)
+            {
+                case "low": SetGraphics(1, 45, 45, .5f, 310, .5f, false, .85f, "smaa", true, 12); break;
+                case "medium": SetGraphics(2, 80, 60, .75f, 340, .75f, true, 1f, "msaa2", true, 18); break;
+                case "ultra": SetGraphics(3, 200, 100, 1.25f, 420, 1.2f, true, 1f, "msaa4", true, 31); break;
+                default: preset = "high"; SetGraphics(2, 130, 70, 1f, 380, 1f, true, 1f, "msaa4", true, 24); break;
+            }
+            GraphicsPreset = preset;
+        }
+
+        static void SetGraphics(int shadows, float shadowDist, float terrainLod, float trees, float treeDist, float fx, bool clouds, float scale, string aa, bool post, float unitLod)
+        {
+            ShadowQuality = shadows; ShadowDistance = shadowDist; TerrainDetail = terrainLod; VegetationDensity = trees; VegetationDistance = treeDist;
+            EffectsQuality = fx; CloudDeck = clouds; RenderScale = scale; AntiAliasing = aa; PostProcessing = post; UnitDetail = unitLod;
+        }
+
+        /// <summary>False until a knob was saved (players from before the knobs only have a preset: it is filled in on first use).</summary>
+        public static bool HasGraphicsKnobs => PlayerPrefs.HasKey("se.set.gfx.aa");
 
         public static float ShakeScale => ReducedMotion || !ScreenShake ? 0f : 1f;
         public static float FlashScale => ReducedMotion ? 0.15f : 1f;

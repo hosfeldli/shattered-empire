@@ -1,5 +1,7 @@
 # Upgrades: one per unit class (2026-11-18)
 
+> **Replaced 2026-11-20** (Ticket 3): a new per-building upgrade design (BASE_MENU_REWORK.md): each unit has one three-tier upgrade line bought at the building that trains it, production buildings have a building upgrade, engineers and perimeter turrets have their own. Everything below is history.
+
 > **Superseded 2026-11-19** (user: "Remove the upgrade system for troops"): the troop upgrades below (every upgrade with a `line`: barracks kit, Infantry Training, Heavy Armor, Field Engineering, Aircraft Systems) are removed. `research` of one is refused with code `upgrade_removed`; an older save refunds each one owned or in progress at full cost (`persist.js`, `REMOVED_UPGRADES` in `actionDefinitions.js`). Only the Armory command upgrades remain (Improved Logistics, Networked Command), without lines (`RULESET.upgradeLines: false`). No unit stats were changed to compensate. Building era levels, base tiers and the global tiers are unaffected.
 
 > **Superseded again 2026-11-20** (user: "Remove the armory from the game"): the Armory and its two command upgrades (Improved Logistics, Networked Command) are removed too; `ACTION_UPGRADES` is empty and every `research` is refused (`upgrade_removed` for a former upgrade). An older save removes any Armory (finished or under construction) and refunds its full cost, plus each removed upgrade owned or in progress (`persist.js` `retireBuildings`, `REMOVED_BUILDINGS` / `REMOVED_UPGRADES` in `actionDefinitions.js`). Tests: `test/armory-removed-2026-11-20.test.js`.

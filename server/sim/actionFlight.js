@@ -62,7 +62,7 @@ function settle(game, u, stopUnit) {
 // ------------------------------------------------------------------ motion
 
 export function flyAircraft(game, u, def, stopUnit) {
-  const pace = def.speed;
+  const pace = def.speed * (u.mods?.speed || 1);
   if (isFixedWing(u.type)) fixedWing(game, u, pace, FLIGHT[u.type], stopUnit);
   else rotary(game, u, pace, stopUnit);
 }

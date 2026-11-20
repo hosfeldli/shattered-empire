@@ -142,6 +142,14 @@ namespace SE.Runtime.Cities
                     Module(c, Part.Shell, -.58f, -.28f, new float3(.36f, .29f, .28f), new float3(.93f));
                     Module(c, Part.Dome, .56f, -.35f, new float3(.24f, .14f, .24f), gray, .1f, .10f);
                     break;
+                case "farm":
+                    // Ticket 4 (map-builder farm ruins): a grain silo, a broken barn and a fenced yard
+                    Module(c, Part.Silo, .60f, -.36f, new float3(.20f, .42f, .20f), new float3(.62f, .58f, .50f));
+                    Module(c, Part.Shell, -.56f, -.24f, new float3(.40f, .24f, .30f), new float3(.62f, .36f, .28f));
+                    Module(c, Part.Collapse, -.42f, -.02f, new float3(.22f, .10f, .18f), new float3(.55f, .42f, .30f));
+                    for (int k = 0; k < 3; k++)
+                        Module(c, Part.Siding, .38f - k * .16f, .02f, new float3(.12f, .035f, .02f), new float3(.48f, .40f, .30f), .3f * k);
+                    break;
                 default:
                     Module(c, Part.Shell, -.48f, -.18f, new float3(.27f, .21f, .28f), new float3(.89f));
                     Module(c, Part.Shell, .48f, -.24f, new float3(.27f, .20f, .28f), new float3(.94f));

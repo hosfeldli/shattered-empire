@@ -78,6 +78,8 @@ namespace SE.Runtime.Cities
         public readonly TerritoryField Territory = new TerritoryField();
         public int Recomposed { get; private set; }
         public int CellCount => cells.Count;
+        /// <summary>Scale pass diagnostics: cells waiting to be (re)composed.</summary>
+        public int DirtyCount => dirty.Count;
         public int MaxCellsPerFrame = 6;
         /// <summary>How long city composition may take per frame (ms) before the rest waits for the next frame.</summary>
         public double ComposeBudgetMs = 5.0;
@@ -1892,8 +1894,12 @@ namespace SE.Runtime.Cities
 
         // DamageOverlay (visible damage stages) lives in CityRenderer.Damage.cs.
 
+        /// <summary>Scale pass diagnostics: cells with content drawn / skipped by the frustum test in the last Draw.</summary>
+        public int CellsDrawn, CellsCulled;
+
         public void Draw(WrapImages images)
         {
+            CellsDrawn = CellsCulled = 0;
             foreach (var cell in cells.Values)
             {
                 if (!cell.Any) continue;
@@ -1901,7 +1907,8 @@ namespace SE.Runtime.Cities
                 // before the per-batch tests; most cells are off screen while panning.
                 var cull = cell.Bounds;
                 cull.Expand(InstanceBatch.CullMargin * 2f + cull.size.y * .1f);
-                if (images.For(cull, out _, out _, out _) == 0) continue;
+                if (images.For(cull, out _, out _, out _) == 0) { CellsCulled++; continue; }
+                CellsDrawn++;
                 DrawCellBatches(cell, images);
                 cell.StreetBatch?.DrawImages(images);
             }

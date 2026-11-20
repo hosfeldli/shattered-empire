@@ -30,6 +30,16 @@ namespace SE.Core.World
         public float* Impacts;    // six persistent [local x, local z, radius, depth] records per cell
         public byte* ImpactCounts;
         public float* Trenches;   // per cell: local x, local z, facing (+ link mask, see EncodeTrenchFacing), depth
+        /// <summary>
+        /// Building pads (2026-11-20, "a building placed on a slope should flatten the ground under it"): per cell
+        /// <see cref="PadSlots"/> records [local x, local z, radius, height] (radius 0: none), written by
+        /// WorldModel.ApplyPads into every cell a pad reaches. Inside the radius the ground is the pad's level, easing back
+        /// to the natural ground over <see cref="PadBlend"/>, so a building on a slope stands on a level terrace and the
+        /// hillside never covers part of it. Presentation only (the server's heights are untouched). Null: no pads.
+        /// </summary>
+        public float* Pads;
+        public const int PadSlots = 3;
+        public const float PadBlend = .32f;
 
         public const float NoWater = -1e9f;
         public const float LakeDepth = 0.14f;
@@ -288,7 +298,28 @@ namespace SE.Core.World
                 float scale = cells / Period;
                 ground += (PeriodicNoise(x * scale + 19.3f, z * scale + 7.1f, cells) - .5f) * .052f * band * band * shoreWeight;
             }
-            return ground + DamageHeight(t, x, z);
+            return PadGround(t, dx, dz, ground) + DamageHeight(t, x, z);
+        }
+
+        /// <summary>True when cell t carries a building pad (its mesh is then refined so the terrace reads).</summary>
+        public bool HasPad(int t) => Pads != null && t >= 0 && Pads[t * PadSlots * 4 + 2] > 0;
+
+        /// <summary>The ground of cell t at (dx, dz) from its centre with its building pads applied (see <see cref="Pads"/>).</summary>
+        public float PadGround(int t, float dx, float dz, float ground)
+        {
+            if (Pads == null) return ground;
+            for (int s = 0; s < PadSlots; s++)
+            {
+                int o = (t * PadSlots + s) * 4;
+                float r = Pads[o + 2];
+                if (r <= 0) break;
+                float ox = dx - Pads[o], oz = dz - Pads[o + 1], d = (float)Math.Sqrt(ox * ox + oz * oz);
+                if (d >= r + PadBlend) continue;
+                float w = d <= r ? 1f : 1f - (d - r) / PadBlend;
+                w = w * w * (3f - 2f * w);
+                ground += (Pads[o + 3] - ground) * w;
+            }
+            return ground;
         }
 
         float BaseAt(float x, float z, float fallback)

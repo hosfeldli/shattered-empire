@@ -32,9 +32,9 @@ test('action matches start with secured bases, compact objectives and a genuinel
   assert.ok(g.sites.filter((s) => s.slots).every((s) => s.slots.length === 8 && s.parcels.length === 9));
   assert.ok(g.sites.slice(0, 2).every((s) => openSlots(g, s).length === 3 && s.parcels.every((p) =>
     !g.world.lake[p.tile] && !g.world.river[p.tile])), 'every starting ring has three active sites and eight dry planned parcels');
-  // four starting troops plus the base's two automatic engineers
-  assert.equal([...g.units.values()].filter((u) => u.owner === 0).length, 6);
-  assert.equal([...g.units.values()].filter((u) => u.owner === 0 && u.auto && u.type === 'engineer').length, 2);
+  // four starting troops plus the base's three automatic engineers (3 / 5 / 8 by tier since 2026-11-20)
+  assert.equal([...g.units.values()].filter((u) => u.owner === 0).length, 7);
+  assert.equal([...g.units.values()].filter((u) => u.owner === 0 && u.auto && u.type === 'engineer').length, 3);
   assert.ok(armyCapacity(g, g.civs[0]).limit >= 5);
   const before = g.civs[0].res.materials;
   productionStep(g, .3); incomeStep(g, .3);

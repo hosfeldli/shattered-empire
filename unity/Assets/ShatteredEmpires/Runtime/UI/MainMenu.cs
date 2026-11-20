@@ -497,6 +497,9 @@ namespace SE.Runtime.UI
             UiKit.Segmented(Options(StartResOptions), string.IsNullOrEmpty(skirmish.StartRes) ? "standard" : skirmish.StartRes,
                 v => { skirmish.StartRes = v; if (resHelp != null) resHelp.text = HelpFor(StartResHelp, v); }, left, 99);
             resHelp = Line(HelpFor(StartResHelp, string.IsNullOrEmpty(skirmish.StartRes) ? "standard" : skirmish.StartRes), "se-menu-help-line", left);
+            // Ticket 4: custom stockpile and unit multipliers (MainMenu.Rules.cs); the per-seat income is on each seat row
+            skirmish.Rules ??= new MatchRulesOptions();
+            RulesEditor(skirmish.Rules, r => skirmish.Rules = r, left);
             if (watching) WatchRules(left);
 
             // ---- battlefield: a catalog map with a start for every seat, or a random world (style, size, seed)
@@ -719,6 +722,7 @@ namespace SE.Runtime.UI
                 Box("se-team-dot", you).style.backgroundColor = (Color)MapPreview.TeamColor(0);
                 Line(ffa ? "You" : "You · Team 1", "se-ai-row-name", you);
                 Line(string.IsNullOrEmpty(game.PlayerName) ? "Commander" : game.PlayerName, "se-ai-row-tag", you);
+                IncomeControl(you, skirmish.PlayerIncome, true, v => skirmish.PlayerIncome = v);   // Ticket 4
             }
 
             for (int i = 0; i < skirmish.Ais.Count; i++)
@@ -743,6 +747,7 @@ namespace SE.Runtime.UI
                 Line(who, "se-ai-row-name", row);
                 Cycle(DifficultyIds, DifficultyNames, ai.Difficulty, v => ai.Difficulty = v, row, "Difficulty");
                 Cycle(PersonalityIds, PersonalityNames, ai.Personality, v => ai.Personality = v, row, "Personality: Warlord attacks early, Merchant builds an economy, Builder fortifies");
+                IncomeControl(row, ai.Income, true, v => ai.Income = v);   // Ticket 4
                 var remove = UiKit.IconButton("close", () =>
                 {
                     if (!SidesPlayable(index)) { SetStatus(watching ? "At least two sides need an AI nation" : "Both sides need at least one player"); return; }
@@ -1156,6 +1161,8 @@ namespace SE.Runtime.UI
             lobbyVictorySeg = UiKit.Segmented(Options(VictoryOptions), "domination", v => game.SendLobby(LobbyMessages.Option("objective", v)), lobbyRulesHost, 99);   // four victory options (Blight added) in the formats row width
             Line("Starting resources", "se-menu-label", lobbyRulesHost);
             lobbyResSeg = UiKit.Segmented(Options(StartResOptions), "standard", v => game.SendLobby(LobbyMessages.Option("startRes", v)), lobbyRulesHost, 99);
+            lobbyRulesEditorHost = Box("se-lobby-rules-custom", lobbyRulesHost);   // Ticket 4 (MainMenu.Rules.cs)
+            lobbyRulesKey = null;
             lobbyRules = Line("", "se-lobby-rules-text", right);
 
             lobbyMap = Line("", "se-lobby-map", p.Content);
@@ -1332,8 +1339,11 @@ namespace SE.Runtime.UI
                 lobbyStyleSeg.Value = string.IsNullOrEmpty(r.Style) ? "pangaea" : r.Style;
                 lobbySizeSeg.Value = string.IsNullOrEmpty(r.SizeKey) ? "auto" : r.SizeKey;
             }
+            string customRules = r == null ? "" : MatchRulesOptions.FromJson(r.Rules).Summary();   // Ticket 4
             lobbyRules.text = r == null ? "" : $"Victory: {OptionLabel(VictoryOptions, r.Objective)} · Start: {OptionLabel(StartResOptions, r.StartRes)}" +
-                (random ? $" · World: {OptionLabel(StyleOptions, string.IsNullOrEmpty(r.Style) ? "pangaea" : r.Style)}" : "");
+                (random ? $" · World: {OptionLabel(StyleOptions, string.IsNullOrEmpty(r.Style) ? "pangaea" : r.Style)}" : "") +
+                (customRules.Length > 0 ? " · " + customRules : "");
+            if (isHost) SyncLobbyRulesEditor(r);
             lobbyRules.tooltip = r == null ? null : HelpFor(VictoryHelp, r.Objective) + " " + HelpFor(StartResHelp, r.StartRes);
 
             lobbyMap.text = r == null ? "" : (!string.IsNullOrEmpty(lobbyMapName) ? lobbyMapName + " · " : "Random world · ") + (r.MapSize > 0 ? $"{r.MapSize}×{r.MapSize} · " : "") +
@@ -1399,6 +1409,7 @@ namespace SE.Runtime.UI
             string tags = (s.IsHost && s.Human ? "host" : "") + (you ? (s.IsHost ? " · you" : "you") : "");
             if (s.Human && s.Taken && !s.Connected) tags += (tags.Length > 0 ? " · " : "") + "offline";
             if (tags.Length > 0) Line(tags, "se-lobby-seat-tags", row);
+            IncomeControl(row, s.Income, host, v => game.SendLobby(LobbyMessages.Income(seat, v)));   // Ticket 4
             if (!s.Human)
             {
                 if (host)

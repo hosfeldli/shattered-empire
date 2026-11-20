@@ -665,6 +665,12 @@ namespace SE.Runtime.UI
             if (res == "materials") PopRow("Pickups (60 s)", Rate(pickups), "small");
             float total = ProtocolDecoder.Float(Econ?["rates"]?[res]) + pickups;
             PopRow("Total", $"{Rate(total)} · {total * 60f:0}/min", "small good");
+            // Ticket 4: the match's custom rules and this player's resource multiplier (welcome defs.MATCH_RULES)
+            var matchRules = Defs?["MATCH_RULES"];
+            float incomeMult = matchRules?["income"] is Newtonsoft.Json.Linq.JArray incomes && session.CivId >= 0 && session.CivId < incomes.Count ? ProtocolDecoder.Float(incomes[session.CivId], 1f) : 1f;
+            if (!Mathf.Approximately(incomeMult, 1f)) PopRow("Your resource multiplier (in the total)", MatchRulesOptions.Mult(incomeMult), "small");
+            string rulesText = MatchRulesOptions.FromJson(matchRules).Summary();
+            if (rulesText.Length > 0) PopRow("Match rules", rulesText, "small muted");
             if (resChips.TryGetValue(res, out var rc))
             {
                 PopRow("Income, 10 s average", Rate(Mathf.Max(0, rc.Shown)), "small muted");

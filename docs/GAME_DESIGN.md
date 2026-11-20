@@ -141,6 +141,22 @@ Idle engineers automatically repair allied vehicles, buildings and defenses and 
 outside combat. Explicit player orders take precedence. Their pistols serve self-defense, without
 offensive pursuit or structure attacks.
 
+### Base menu and per-building upgrades (2026-11-20, BASE_MENU_REWORK.md)
+
+The headquarters trains militia and scout buggies; every production building trains exactly four units
+(Barracks: rifle, anti-armor, mortar, special forces; Vehicle Works: armored car, infantry carrier, IFV,
+tank; Heavy Weapons: field gun, SP artillery, mobile air defense, support truck; Airfield: helicopter,
+Warthog, recon drone, bomber; Advanced Systems Lab: one-way drone, autonomous tank, strike swarm, missile
+battery). Each unit has one upgrade line of three tiers, bought per building and applying only to what that
+building trains: every tier changes how the unit plays (grenades, rockets, camouflage, smoke, reactive
+armour, flares, detection, self-repair, sprint, larger blasts, extra salvos) and is visible on its model.
+A production building's own upgrade (its level) is expensive and gives its units veterancy. Units are
+produced one at a time in the order queued (priority first). Engineers: 3 / 5 / 8 by base tier, replaced
+automatically, repair automatically (no repair buttons), upgraded at the headquarters (armoured vests,
+utility car, power tools). Each perimeter turret chooses an anti-air, anti-infantry or anti-vehicle path;
+the headquarters' centre turret has its own provisional upgrades. The New Base is gone: outposts are tiny
+bases with one build plot per tier, militia (buggies from tier 2) and an engineer at tier 3.
+
 ## Armies and combat
 
 Position, facing, footprints, collision, navigation, ranges, line of sight, area damage, capture
@@ -189,9 +205,10 @@ are 3D geometry. VFX must preserve tactical readability.
 
 ## Interface and camera
 
-Keep interaction contextual and anchored to the world. Select HQ for local tier/perimeter
-upgrades, a facility for production/repair/upgrades, and an empty
-world parcel for construction choices.
+Keep interaction contextual and anchored to the world. Select HQ for its tier, militia, scout buggies,
+engineers and production (the HQ alone shows a health bar); click a perimeter position for turret paths and
+the centre turret; select a facility for its four units, their upgrades and its building upgrade; and click
+an empty world parcel for construction choices (the menu closes once one is chosen).
 
 Remove Army and Objectives tabs, the global upgrade menu and permanent bottom building/defense
 shortcut bars. Keep tools discoverable without displaying all options continually. Provide

@@ -257,6 +257,7 @@ namespace SE.Runtime.Session
         {
             var w = session.World;
             if (!session.ActionRts || tile < 0 || !w.IsDense(tile) || time - denseHintAt < 2f) return;
+            if (tile >= w.Known.Length || w.Known[tile] == 0) return;   // VISION (2026-11-20): no hint about undiscovered ground
             if (w.Road != null && tile < w.Road.Length && (w.Road[tile] & 0xFFFFFF) != 0) return;   // a road through it stays open
             int infantry = 0, total = 0;
             foreach (int id in units.Selected)

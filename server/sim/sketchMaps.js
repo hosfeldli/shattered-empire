@@ -13,6 +13,13 @@
 //   cells: run-length rows of the grid, row-major from the north-west corner: a class letter
 //          (o ocean, l land, m mountain, h hills) followed by its run length, e.g. "o130l60m4h3o2..." (sum = w * h).
 //          'h' (HILLS_MOUNTAINS, 2026-11-19) is new; older sketches use only o / l / m and load unchanged.
+//   gen (optional, Ticket 4 2026-11-20): generation options, only the values that differ from SKETCH_GEN (see there):
+//          forest coverage, dense forest, season and tree height, hill height and gradient, the style of the neutral ruins,
+//          and the standard generation steps turned on or off (rivers, lakes, neutral cities, outposts, supply caches,
+//          base streets, power supplies). Absent: the standard generator (older sketches load unchanged).
+//   pois (optional, Ticket 4): up to SKETCH_LIMITS.maxPois hand-placed points of interest [u, v, kind]: a neutral city
+//          ('city'), an outpost (OUTPOST_TYPES: 'supply', 'energy', 'radar', 'repair', 'defense'), a supply cache ('cache')
+//          or a power supply ('power', an energy cache); on land or hills (a city or outpost not on a mountain either).
 //   bases: 2..8 normalised [u, v] points (u west → east, v north → south), on land, hills or (older sketches) a
 //          mountain: painted mountain within BASE_CLEAR cells of a base is generated as hills, so no start is walled in.
 // Painted mountains become MOUNTAIN / PEAK hexes (impassable to every ground unit: actionNavigation.isMountain); painted
@@ -24,7 +31,27 @@ import { fbm } from './rng.js';
 import { pointUV } from './authoredMaps.js';
 
 export const SKETCH_SIZES = { small: 104, medium: 152, large: 208, huge: 232 };   // = matches.js ACTION_SIZES
-export const SKETCH_LIMITS = { minGrid: 16, maxGrid: 128, minBases: 2, maxBases: 8, maxCells: 40000, name: 32 };
+export const SKETCH_LIMITS = { minGrid: 16, maxGrid: 128, minBases: 2, maxBases: 8, maxCells: 40000, name: 32, maxPois: 24 };
+/**
+ * Ticket 4: the generation options of a sketch (`gen`) and their standard values. Numbers are validated to their range,
+ * choices to their list. What each one does:
+ *   forest      0..2   forest coverage (0 none, 1 standard: world.classify's moisture threshold, forestLevelOf)
+ *   dense       off | normal | thick   §30 dense forest cores (actionMap.markDenseForest; thick: wider lanes, larger groves)
+ *   season      summer | autumn | winter | spring   tree colours (client only: defs.MAP_STYLE)
+ *   treeHeight  0.6..1.6   tree size (client only: defs.MAP_STYLE)
+ *   hillHeight  0..1   how high painted hills rise (always below mountain height: HILLS ground stays passable)
+ *   hillGradient 0..1  how steeply they rise (0 a long gentle climb, 1 a short steep one)
+ *   ruins       mixed | city | residential | farm   the kind of the generated neutral city ruins
+ *   rivers, lakes, cities, outposts, caches, streets   booleans: rivers and lakes (hydrology), generated neutral
+ *               cities, generated outposts, the supply caches beside the cities, the starting bases' compound streets
+ *   power       0..3   power supplies (energy caches appearing over time, actionEconomy ENERGY_CACHES): 0 none, 1 standard
+ */
+export const SKETCH_GEN = Object.freeze({ forest: 1, dense: 'normal', season: 'summer', treeHeight: 1, hillHeight: .5, hillGradient: .5,
+  ruins: 'mixed', rivers: true, lakes: true, cities: true, outposts: true, caches: true, streets: true, power: 1 });
+const GEN_RANGE = { forest: [0, 2], treeHeight: [.6, 1.6], hillHeight: [0, 1], hillGradient: [0, 1], power: [0, 3] };
+const GEN_CHOICES = { dense: ['off', 'normal', 'thick'], season: ['summer', 'autumn', 'winter', 'spring'], ruins: ['mixed', 'city', 'residential', 'farm'] };
+/** Ticket 4: the kinds of hand-placed points of interest. */
+export const POI_KINDS = Object.freeze(['city', 'supply', 'energy', 'radar', 'repair', 'defense', 'cache', 'power']);
 const CLASS = 'olmh';   // 0 ocean, 1 land, 2 mountain, 3 hills
 export const SKETCH_CLASS = Object.freeze({ ocean: 0, land: 1, mountain: 2, hills: 3 });
 // HILLS_MOUNTAINS: painted mountain within this many cells of a base is generated as hills (older sketches allowed bases
@@ -93,6 +120,25 @@ export function parseSketch(raw) {
     if (grid[cellOf(sk, p[0], p[1])] === 0) fail('a base stands in the sea');
     sk.bases.push(p);
   }
+  // Ticket 4: generation options and hand-placed points of interest (both optional)
+  const gen = parseGen(raw.gen);
+  if (gen) sk.gen = gen;
+  if (raw.pois != null) {
+    if (!Array.isArray(raw.pois)) fail('pois must be a list of points');
+    if (raw.pois.length > SKETCH_LIMITS.maxPois) fail(`place at most ${SKETCH_LIMITS.maxPois} points of interest`);
+    const pois = [];
+    for (const p of raw.pois) {
+      const u = Array.isArray(p) ? p[0] : p?.u, v = Array.isArray(p) ? p[1] : p?.v, kind = Array.isArray(p) ? p[2] : p?.kind;
+      if (!POI_KINDS.includes(kind)) fail(`unknown point of interest "${String(kind).slice(0, 20)}"`);
+      if (typeof u !== 'number' || typeof v !== 'number' || !Number.isFinite(u) || !Number.isFinite(v) || u < 0 || u > 1 || v < 0 || v > 1) fail('a point of interest is off the map');
+      const q = [+Math.min(.98, Math.max(.02, u)).toFixed(4), +Math.min(.98, Math.max(.02, v)).toFixed(4), kind];
+      const c = grid[cellOf(sk, q[0], q[1])];
+      if (c === 0) fail('a point of interest stands in the sea');
+      if (c === 2 && kind !== 'cache' && kind !== 'power') fail('a city or outpost stands on a mountain');
+      pois.push(q);
+    }
+    if (pois.length) sk.pois = pois;
+  }
   const name = typeof raw.name === 'string' ? raw.name.replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, nameMax).trim() : '';
   sk.name = name || 'Custom map';
   // 2026-11-18 (MAP_BUILDER_TEAMS.md): optional team ownership of the bases, one entry per base: a team index
@@ -104,6 +150,38 @@ export function parseSketch(raw) {
   }
   return sk;
 }
+
+/** Ticket 4: validate a sketch's `gen`; returns only the values that differ from SKETCH_GEN (null: all standard). */
+export function parseGen(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) fail('gen must be an object');
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!Object.hasOwn(SKETCH_GEN, k)) fail(`unknown generation option "${k.slice(0, 20)}"`);
+    if (GEN_RANGE[k]) {
+      const [lo, hi] = GEN_RANGE[k];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) fail(`${k} must be a number from ${lo} to ${hi}`);
+      const r = Math.round(v * 100) / 100;
+      if (r !== SKETCH_GEN[k]) out[k] = r;
+    } else if (GEN_CHOICES[k]) {
+      if (!GEN_CHOICES[k].includes(v)) fail(`${k} must be one of ${GEN_CHOICES[k].join(', ')}`);
+      if (v !== SKETCH_GEN[k]) out[k] = v;
+    } else {
+      if (typeof v !== 'boolean') fail(`${k} must be true or false`);
+      if (v !== SKETCH_GEN[k]) out[k] = v;
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Ticket 4: a sketch's full generation options (SKETCH_GEN with its own values) plus its points of interest. */
+export const sketchGen = (sk) => ({ ...SKETCH_GEN, ...(sk?.gen || {}), pois: sk?.pois ? sk.pois.map((p) => p.slice()) : [] });
+
+/** Ticket 4: world.classify's forest moisture threshold for a forest coverage (standard .53; none: never forest). */
+export const forestLevelOf = (gen) => ((gen?.forest ?? 1) <= 0 ? 9 : .53 + (1 - (gen?.forest ?? 1)) * .14);
+
+/** Ticket 4: the map's look for the client (defs.MAP_STYLE): tree season and height. */
+export const mapStyleOf = (gen) => ({ season: gen?.season || 'summer', treeHeight: gen?.treeHeight ?? 1 });
 
 /** Team n (0-based) as the lobby names it. */
 const teamName = (t, ts, ffa) => (ffa ? `Player ${t + 1}` : `Team ${t + 1}`);
@@ -252,7 +330,9 @@ const SQ3 = Math.sqrt(3);
 
 /** Paint the sketch's relief into world `w` (World.generate then runs finishTerrain). */
 export function paintSketchWorld(w, raw) {
-  const sk = parseSketch(raw), grid = sketchGrid(sk), seed = w.seed | 0;
+  const sk = parseSketch(raw), grid = sketchGrid(sk), seed = w.seed | 0, gen = sketchGen(sk);
+  // Ticket 4: painted hills' height (top elevation .35-.47 before noise, always HILLS ground) and gradient (ramp width)
+  const hillBase = .41 + (gen.hillHeight - .5) * .12, hillRamp = .42 * (1.6 - 1.2 * gen.hillGradient);
   const relief = clearBases(sk, grid);
   const landF = blurred(grid, sk, (c) => c > 0), mountF = blurred(relief, sk, (c) => c === 2), hillF = blurred(relief, sk, (c) => c === 3);
   // hexes per sketch cell: noise scales follow it, so a coarse sketch on a huge map stays as natural
@@ -280,8 +360,8 @@ export function paintSketchWorld(w, raw) {
     // a gentle climb (well under every class's slope limit) with swells and saddles, never into mountain heights
     const hf = sample(hillF, sk, gx, gy) + (fbm(x / 4, z / 4, seed + 108, 3) - .5) * .24;
     if (hf > .2 && coast > -.08) {
-      const k = smooth(Math.min(1, (hf - .2) / .42));
-      const top = Math.min(.49, Math.max(.36, .41 + (fbm(x / 6, z / 6, seed + 109, 3) - .5) * .22));
+      const k = smooth(Math.min(1, (hf - .2) / hillRamp));
+      const top = Math.min(.49, Math.max(.36, hillBase + (fbm(x / 6, z / 6, seed + 109, 3) - .5) * .22));
       e = Math.max(e, e + (top - e) * k);
     }
     // mountains: foothills climb from about a cell outside the paint; the heart of a range turns to peaks
@@ -302,6 +382,8 @@ export function paintSketchWorld(w, raw) {
     w.stab[i] = 1; w.rate[i] = 0; w.plate[i] = 0;
   }
   w.sketch = sk;
+  // Ticket 4: rivers, lakes and forest coverage (world.recomputeHydrology / classify)
+  w.noRivers = !gen.rivers; w.noLakes = !gen.lakes; w.forestLevel = forestLevelOf(gen);
   // the natural river threshold drains a compact battlefield; a broad painted landmass would be a maze of rivers
   w.flowScale = 1 / Math.min(5, Math.max(1, land / 2500));
   w.style = 'continents';

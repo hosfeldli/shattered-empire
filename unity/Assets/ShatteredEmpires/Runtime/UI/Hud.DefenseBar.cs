@@ -191,9 +191,9 @@ namespace SE.Runtime.UI
             else if (!fieldBuild) toolChipQuote = QuoteUnset;
             // terrain brush: the previewed stroke's cost, hexes and the brush size keys (rebuilt only when they change)
             bool terrainBrush = tool && commander.TerrainBrushActive;
-            if (terrainBrush && (!ReferenceEquals(commander.TerrainPreview, terrainChipPlan) || commander.TerrainBrushRadius != terrainChipRadius))
+            if (terrainBrush && (!ReferenceEquals(commander.TerrainPreview, terrainChipPlan) || commander.TerrainBrushRadius * 16 + commander.TerrainBrushHeight != terrainChipRadius))
             {
-                terrainChipPlan = commander.TerrainPreview; terrainChipRadius = commander.TerrainBrushRadius;
+                terrainChipPlan = commander.TerrainPreview; terrainChipRadius = commander.TerrainBrushRadius * 16 + commander.TerrainBrushHeight;
                 string text = commander.TerrainBrushChipText();
                 if (toolChipCost.text != text) toolChipCost.text = text;
                 toolChipCost.style.display = DisplayStyle.Flex;

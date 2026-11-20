@@ -68,7 +68,7 @@ namespace SE.Runtime.Input
             new ActionDef { Id = "terrain", Label = "Terrain wheel", Default = KeyCode.T },
             new ActionDef { Id = "brush_smaller", Label = "Terrain brush: smaller (while painting terrain)", Default = KeyCode.LeftBracket },
             new ActionDef { Id = "brush_larger", Label = "Terrain brush: larger (while painting terrain)", Default = KeyCode.RightBracket },
-            new ActionDef { Id = "minimap_zoom", Label = "Minimap: local zoom", Default = KeyCode.Z },
+            new ActionDef { Id = "minimap_zoom", Label = "Minimap: zoom", Default = KeyCode.Z },
             new ActionDef { Id = "research", Label = "Open Research (legacy)", Default = KeyCode.R },
             new ActionDef { Id = "overview", Label = "Open Overview (legacy)", Default = KeyCode.O },
             new ActionDef { Id = "pause", Label = "Pause (when allowed)", Default = KeyCode.P },

@@ -25,6 +25,7 @@ namespace SE.Runtime.App
             rts.FollowTarget = null;
             rts.UserControl = false;
             reviewCapturing = true;
+            if (phase == Phase.Playing) yield return TankReview(directory);   // -battle tanks only (GameBootstrap.TankReview.cs)
             var frames = new List<(string name, Vector3 focus, float distance)>();
             if (phase == Phase.Menu) frames.Add(("menu", rts.Focus, rts.Distance));
             else

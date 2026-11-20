@@ -110,7 +110,7 @@
     },
     {
       "category": "gameplay",
-      "heading": "Hills and mountains",
+      "heading": "Hills, mountains and the map builder",
       "blocks": [
         {
           "type": "bullets",
@@ -121,32 +121,53 @@
             "Map builder: paint Hills and Mountains. A painted range is an unbroken wall with snowy peaks. Older maps still load; a base painted on a mountain gets hills around it so every start stays reachable.",
             "Serpentine's saddle is now a hill pass open to every unit."
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Map builder Generation tab: forest coverage, dense forest (off, standard or thick), season (summer, autumn, winter, spring), tree height, hill height and gradient, and the style of the neutral ruins: city, residential or farm.",
+            "Turn any part of the generator on or off for your map: rivers, lakes, neutral cities, outposts, supply caches, base streets and power supplies (none to plenty).",
+            "Place your own points of interest: neutral cities, every kind of outpost, supply caches and power supplies that restock. Remove now clears bases and points of interest alike.",
+            "Farm ruins are a new neutral city kind, the Farmstead: its supply cache restocks. Maps saved before this version load unchanged."
+          ]
         }
       ]
     },
     {
       "category": "gameplay",
-      "heading": "Supplies, production and borders",
+      "heading": "Supplies, production, orders and borders",
       "blocks": [
         {
           "type": "bullets",
           "items": [
             "Supply caches take time to collect: each unit gathers 5 a second and must stay at the cache. Leave and the rest stays on the map.",
             "Energy caches now appear over time on neutral ground away from bases (the first after a minute, then every 70–90 seconds).",
-            "New units roll or march out of the door of the building that produced them.",
-            "Troop upgrades have been removed; every unit fights with its standard equipment. The Armory and its two upgrades, Improved Logistics and Networked Command, are gone too. Saved games are refunded in full for any Armory and every upgrade owned or in progress."
+            "New units roll or march straight out of the doorway or vehicle bay of the building that produced them.",
+            "New upgrades, bought per building: every unit has one line of three tiers at the building that trains it, and each tier changes how it fights (grenades, rockets, camouflage, smoke, reactive armour, flares, sensors, self-repair) and shows on the model.",
+            "The old troop upgrades and the Armory are gone and refunded in saved games. A production building's own upgrade is now expensive and sends its units out as veterans.",
+            "Every production building trains four units. Militia and scout buggies moved to the headquarters, the support truck to Heavy Weapons and the missile battery to the Advanced Systems Lab.",
+            "Engineers: 3, 5 and 8 per base by tier, replaced automatically, with three upgrades (armoured vests, a utility car, power tools). They repair on their own, worst damage and safest jobs first; every repair button is gone.",
+            "Shift-queue a capture and then another order: the squad finishes taking the point before it moves on (it goes on early if the point is lost, it is driven off, or the fight drags on).",
+            "Units standing where a building or defense is finished step out of it instead of being trapped inside its walls.",
+            "Terrain works: Page Up / Page Down (or Alt + mouse wheel) set how far Raise and Lower move the ground, 1 to 4 steps; the price and time grow with it.",
+            "Buildings placed on a slope stand on a level terrace instead of being half buried in the hillside.",
+            "Perimeter turrets reach 3.4 (was 2.6), see farther and fire over their own base, so they outrange infantry and light vehicles; tanks and artillery still outrange them. Their upgrade paths keep their lead.",
+            "Custom match rules in New Skirmish, Watch AI Match and lobbies: your own starting Materials and Energy, and unit speed, range and health from half to double (health a quarter to 4×). The AI plays by them too, and saves keep them.",
+            "Each seat has its own resource multiplier (0.25× to 4×) on income and cache pickups: give a new player or a weaker AI a head start. The lobby shows every seat's multiplier and the rules; in a match, the Materials and Power breakdowns show them."
           ]
         },
         {
           "type": "text",
-          "text": "Territory now has to connect, through your own ground, to a city, base or captured outpost you hold. Old borders no longer linger as scattered islands after a headquarters falls. Towers, bunkers and trenches left on cut-off ground stay standing and keep fighting, but no longer claim land; reconnect them and their ground comes back."
+          "text": "Territory now has to connect, through your own ground, to a city, base or captured outpost you hold. Old borders no longer linger as scattered islands after a headquarters falls. Towers and bunkers left on cut-off ground stay standing and keep fighting, but no longer claim land; reconnect them and their ground comes back."
         },
         {
           "type": "bullets",
           "items": [
             "A watchtower or bunker extends your border when it stands up to 2 hexes outside it, an Outpost up to 3. Farther out, it is a lone strongpoint and claims nothing.",
             "Chains of defenses still work, but destroying a link releases everything beyond it.",
-            "Losing a headquarters or outpost clears all the territory it held, and a rival can claim the freed ground with its own connected defenses."
+            "Losing a headquarters or outpost clears all the territory it held, and a rival can claim the freed ground with its own connected defenses.",
+            "Your influence shrinks as soon as the defenses that extended it are destroyed. Every building in the lost ground stays yours and keeps working; only the claim goes. Trenches and roads never extend your territory.",
+            "Base perimeter: click a turret to choose its path, anti-air, anti-infantry or anti-vehicle, three levels deep. The headquarters gets an upgradable centre turret. The New Base is gone: outposts are tiny bases with build plots, militia, buggies and an engineer."
           ]
         }
       ]
@@ -207,13 +228,13 @@
         },
         {
           "type": "text",
-          "text": "No aircraft fights other aircraft any more: air defense vehicles, anti-aircraft batteries and upgraded city defenses are the answer to enemy planes. An air defense vehicle downs a Warthog in about three volleys, an anti-aircraft battery in two. The bomber also attacks in runs now, dropping its bombs as it passes over."
+          "text": "No aircraft fights other aircraft any more: air defense vehicles, anti-aircraft batteries and anti-air perimeter turrets are the answer to enemy planes. An air defense vehicle downs a Warthog in about three volleys, an anti-aircraft battery in two. The bomber also attacks in runs now, dropping its bombs as it passes over."
         }
       ]
     },
     {
       "category": "units",
-      "heading": "Artillery and missile trucks rebalanced",
+      "heading": "Bigger, deadlier tanks; artillery rebalanced",
       "blocks": [
         {
           "type": "text",
@@ -270,6 +291,67 @@
           ],
           "caption": "Together, about 29% less damage over time from each of these units. The artillery emplacement building is unchanged.",
           "source": "server/sim/actionDefinitions.js"
+        },
+        {
+          "type": "text",
+          "text": "Tanks are bigger and hit much harder. Both tanks are drawn 25% larger with new, bolder models: chunky hulls and turrets, a big gun and team-colour panels, and the Autonomous Tank is a sleek unmanned machine with glowing sensors and light strips. Their hitbox is unchanged, so they get stuck no more than before. The main gun fires more slowly, but every shell is a high-explosive blast that hurts everything around where it lands and tears through infantry. A new coaxial machine gun fires on its own at infantry close to the tank. The Autonomous Tank is now clearly the best ground unit for its price."
+        },
+        {
+          "type": "comparison",
+          "title": "Tanks: +50% health and firepower, +25% range and cost",
+          "columns": [
+            "0.6.0",
+            "0.7.0"
+          ],
+          "rows": [
+            {
+              "label": "Main Battle Tank cost",
+              "before": "235 materials, 80 energy",
+              "after": "295 materials, 100 energy"
+            },
+            {
+              "label": "Main Battle Tank health",
+              "before": "330",
+              "after": "495"
+            },
+            {
+              "label": "Main Battle Tank range",
+              "before": "2.8 hexes",
+              "after": "3.5 hexes"
+            },
+            {
+              "label": "Main Battle Tank shell",
+              "before": "46 damage every 2.2 s",
+              "after": "111 damage every 3.5 s, area blast"
+            },
+            {
+              "label": "Autonomous Tank cost",
+              "before": "340 materials, 150 energy",
+              "after": "425 materials, 190 energy"
+            },
+            {
+              "label": "Autonomous Tank health",
+              "before": "480",
+              "after": "760"
+            },
+            {
+              "label": "Autonomous Tank range",
+              "before": "4.0 hexes",
+              "after": "5.0 hexes"
+            },
+            {
+              "label": "Autonomous Tank shell",
+              "before": "66 damage every 2.2 s",
+              "after": "165 damage every 3.2 s, wider blast"
+            },
+            {
+              "label": "Coaxial machine gun",
+              "before": "none",
+              "after": "13 every 1.2 s (Autonomous: 20 every 1.0 s)"
+            }
+          ],
+          "caption": "Speed is unchanged. Against other armour the main gun does about 1.6x its old damage over time (the Autonomous Tank about 1.8x).",
+          "source": "server/sim/actionDefinitions.js"
         }
       ]
     },
@@ -289,7 +371,8 @@
             "An all-out assault is only launched with good odds and stays concentrated on at most two fronts; otherwise the AI picks off outposts.",
             "Barricade spam is gone (88 instead of 485 over five matches), and late in a match an unthreatened AI spends less on fortifications.",
             "Energy-starved AIs build generators instead of more materials processors.",
-            "The AI never builds on mountains, bridge roads or road cuttings."
+            "The AI never builds on mountains, bridge roads or road cuttings.",
+            "The AI buys the new upgrades (engineers first, then the lines of the units it fields most), picks turret paths against what it sees, and builds and grows outposts."
           ]
         }
       ]
@@ -432,14 +515,16 @@
             "The headquarters grows with its base: radome turrets and a dish at tier 2, bastion towers and a crowned spire at tier 3.",
             "Damage shows on the building itself rather than a health bar: scorch marks, smoke and fire join the breaking models, and a damaged building keeps its colours, team markings and type emblem so you can still tell what it is.",
             "Empty build pads have thick, bright outlines, a build cross and corner lamps.",
-            "Each facility’s type emblem is built onto its own roof, turns with the building and stays on through damage."
+            "Each facility’s type emblem is built onto its own roof, turns with the building and stays on through damage.",
+            "Every facility upgrade level shows on the building: one glowing rank bar per level on its apron, armour plating and a beacon mast from level 2, and a dish mast, floodlights and a team banner from level 3.",
+            "Upgraded units are easy to spot: grenade pouches, rocket tubes, ghillie suits, smoke dischargers, reactive tiles, radar masts, flare pods and more. Perimeter turrets change heads with their path, and engineers drive utility cars."
           ]
         }
       ]
     },
     {
       "category": "interface",
-      "heading": "Honest game speed and clearer storms",
+      "heading": "Honest game speed, clearer storms and your own settings",
       "blocks": [
         {
           "type": "bullets",
@@ -449,7 +534,10 @@
             "The minimap shows each storm system in its real shape, with a hurricane symbol at the eye or a front line on a squall, and an amber track showing where it will go over the next four minutes.",
             "Hovering ground under a storm names it and says what it does there, which way it is moving, how fast, and whether it is weakening.",
             "While aiming a strategic missile, the cursor shows the full-damage core in red and the full blast in amber.",
-            "A missile truck ordered to bombard a point too close to it explains why it cannot fire."
+            "A missile truck ordered to bombard a point too close to it explains why it cannot fire.",
+            "Graphics settings in detail: shadows and their distance, terrain detail, vegetation density and distance, effects, unit detail, cloud deck, render scale, anti-aliasing, post-processing, vertical sync and a frame cap. Presets still set them all.",
+            "Every button can now have a hotkey: interface buttons and every command on the unit, base and build wheels are listed in Settings › Controls › Buttons, with Ctrl, Shift and Alt combinations, a search box, conflict warnings and reset to defaults.",
+            "Weather intensity has moved from the Camera tab to Graphics › Weather effects."
           ]
         }
       ]
@@ -461,15 +549,20 @@
         {
           "type": "bullets",
           "items": [
-            "Ground you cannot currently see is much darker, with a crisp edge where your vision ends; unexplored land sits under a dark overcast.",
+            "Ground you have explored but cannot currently see is far darker, with a crisp edge where your vision ends, so line of sight reads at a glance; unexplored land sits under a dark overcast as before.",
+            "Orders into ground you have never discovered no longer reveal whether it can be reached: units head as far toward it as they can, and the crossed-out cursor appears only over ground you have discovered.",
+            "The minimap has a third, closer zoom: Z (or the zoom button) now cycles whole map, local view and close view.",
             "Click a defense to see its range; a new button by the minimap shows every defense's range at once.",
+            "Right-click an enemy to attack it and a red target reticle locks onto it, with red lines from your selected attackers, until it falls or they get other orders.",
             "Hover a unit to see the steepest slope it can climb and how it handles hills, mountains, marsh and rivers.",
-            "Shift-queued orders show the whole path: the route to the current waypoint, dashed links to later ones, and numbered markers coloured by order type.",
+            "Shift-queued orders show the whole path: the route to the current waypoint, dashed links to later ones, and numbered markers coloured by order type. While Shift is held, a dashed line from the last waypoint to the cursor previews the next one.",
             "A unit's ring shows its stance: solid defensive, dashed aggressive, double for holding position, dotted for hold fire.",
             "Context cursors are crisp at any resolution.",
             "Unit markers at strategic zoom no longer sink into hills.",
             "The Pads entry is gone from the base menu (click an empty pad to build), and the era badge is gone from the minimap.",
-            "What's new is now a running changelog of every version, with a version list, categories, a jump list and search."
+            "What's new is now a running changelog of every version, with a version list, categories, a jump list and search.",
+            "The base menu is tidier: production and rally sit at the bottom, materials and power under the base name, and only the headquarters shows a health bar.",
+            "Units are produced in the order you queue them, each type keeping its own count and cancel, and the pad menu closes once you pick a building."
           ]
         }
       ]

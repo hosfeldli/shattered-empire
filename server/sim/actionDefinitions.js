@@ -1,6 +1,9 @@
 import { BUILDINGS, UNITS } from './constants.js';
 import { BUILDING_WEAPON, UNIT_WEAPON } from './weapons.js';
-import { HILL_PACE, MAX_GRADIENT, MAX_SLOPE_DEG } from './actionNavigation.js';   // the climb limits, for the client's hover card (RULESET.mobility)
+import { HILL_PACE, MAX_GRADIENT, MAX_SLOPE_DEG } from './actionNavigation.js';
+import { BUILDING_LEVEL, CENTRE_TURRET, ENGINEER_UPGRADES, ENGINEERS_BY_TIER, KIT, OUTPOST, PERIMETER_COST, PERIMETER_PATHS, PERIMETER_TIME, UNIT_UPGRADE_LINES, UPGRADE_TIME,
+  unitUpgradeCost } from './baseMenuDefs.js';
+export { BUILDING_LEVEL, CENTRE_TURRET, ENGINEER_UPGRADES, ENGINEERS_BY_TIER, KIT, OUTPOST, PERIMETER_COST, PERIMETER_PATHS, PERIMETER_TIME, UNIT_UPGRADE_LINES } from './baseMenuDefs.js';   // the climb limits, for the client's hover card (RULESET.mobility)
 
 const cost = (materials, energy = 0) => energy ? { materials, energy } : { materials };
 const building = (key, name, tier, materials, energy, time, extra = {}) => ({
@@ -9,17 +12,22 @@ const building = (key, name, tier, materials, energy, time, extra = {}) => ({
 });
 
 export const ACTION_BUILDINGS = {
-  town: building('town', 'Headquarters', 1, 400, 120, 30, { hp: 1450, radius: .51, materials: 140 / 60, energy: 12 / 60, vision: 8, attack: 8, range: 2.6, desc: 'The city command center. Local upgrades unlock 3, 5, then 7 ring sites. Each base keeps its own automatic engineers (2 / 3 / 4 by tier).' }),
+  town: building('town', 'Headquarters', 1, 400, 120, 30, { hp: 1450, radius: .51, materials: 140 / 60, energy: 12 / 60, vision: 8, attack: 8, range: 2.6, desc: 'The city command center. Trains militia and scout buggies. Local upgrades unlock 3, 5, then 7 ring sites. Each base keeps its own automatic engineers (3 / 5 / 8 by tier).' }),
   depot: building('depot', 'Materials Processor', 1, 150, 0, 15, { materials: 170 / 60, desc: 'Generates Materials. Competes for a headquarters ring site.' }),
   power_plant: building('power_plant', 'Energy Generator', 1, 160, 30, 18, { energy: 65 / 60, desc: 'Generates Energy for technology and advanced forces.' }),
-  barracks: building('barracks', 'Barracks', 1, 170, 0, 17, { desc: 'Trains infantry and scout buggies.' }),
+  barracks: building('barracks', 'Barracks', 1, 170, 0, 17, { desc: 'Trains rifle squads, anti-armor squads, mortar teams and special forces.' }),
   motor_works: building('motor_works', 'Vehicle Works', 2, 300, 110, 30, { radius: .57, desc: 'Produces armored cars, infantry carriers, infantry fighting vehicles and main battle tanks.' }),
-  heavy_weapons: building('heavy_assembly', 'Heavy Weapons Facility', 2, 310, 180, 32, { radius: .55, desc: 'Produces artillery, missile vehicles and mobile air defense.' }),
+  heavy_weapons: building('heavy_assembly', 'Heavy Weapons Facility', 2, 310, 180, 32, { radius: .55, desc: 'Produces field guns, self-propelled artillery, mobile air defense and support trucks.' }),
   airfield: building('airfield', 'Airfield', 2, 360, 220, 38, { radius: .45, vision: 7, desc: 'Produces and services aircraft.' }),
-  advanced_lab: building('advanced_lab', 'Advanced Systems Lab', 3, 450, 300, 42, { desc: 'Produces autonomous systems and advanced specialist units.' }),
+  advanced_lab: building('advanced_lab', 'Advanced Systems Lab', 3, 450, 300, 42, { desc: 'Produces one-way drones, autonomous tanks, strike swarms and missile batteries.' }),
   missile_silo: building('missile_silo', 'Strategic Missile Facility', 3, 750, 500, 60, { hp: 1250, radius: .5, needs: 'advanced_lab', desc: 'Produces limited strategic missiles in a headquarters ring site.' }),
   barricade: building('bunker', 'Sandbag Barricade', 1, 20, 0, 4, { field: true, radius: .26, width: .50, depth: .34, lowCover: true, hp: 240, cover: .25, desc: 'Rotatable sandbags, wire and tank obstacles. Infantry can shelter and fire over the low wall. Q / E rotates before placement.' }),
-  city_turret: building('guard_post', 'Perimeter Turret', 1, 85, 20, 20, { field: true, radius: .14, hp: 360, vision: 6, attack: 13, range: 2.6, weapon: 'mg', desc: 'A short-range machine-gun turret. Effective against exposed infantry; vulnerable to armor and artillery.' }),
+  // 2026-11-20 (user: "perimeter turrets need more range and line of sight"): range 2.6 -> 3.4 and vision 6 -> 7. At
+  // 2.6 every rifle squad (2.79), armored car (2.79) and AT squad (3.25) outranged the base's own guns and shot them
+  // from outside their reach; 3.4 outranges infantry and light vehicles, tanks (3.49) and artillery still outrange it
+  // ("vulnerable to armor and artillery"). `tower`: a raised gun tower (eye .14 above its hex) that overlooks its own
+  // base's facilities and defenses (actionCombat hitChance / nav.clearShot), so the ring covers the ground around it.
+  city_turret: building('guard_post', 'Perimeter Turret', 1, 85, 20, 20, { field: true, radius: .14, hp: 360, vision: 7, attack: 13, range: 3.4, tower: .14, weapon: 'mg', desc: 'A machine-gun tower on the base perimeter. It sees over its own base and outranges infantry; vulnerable to armor and artillery.' }),
   guard_post: building('guard_post', 'Watchtower', 1, 100, 15, 16, { field: true, radius: .18, vision: 6, attack: 10, range: 2.3, claims: 1,
     desc: 'A compact machine-gun watchtower. Claims the hexes around it as territory.' }),
   // 2026-11-18 (user: "longer bursts"): the bunker MG fires sustained bursts (actionCombat.fire, `burst`): `shots` rounds
@@ -32,11 +40,9 @@ export const ACTION_BUILDINGS = {
   repair_point: building('depot', 'Forward Repair Station', 2, 165, 70, 28, { field: true, radius: .25, repair: 3.5 }),
   artillery_post: building('fort', 'Artillery Emplacement', 2, 340, 220, 52, { field: true, radius: .38, attack: 29, range: 7.5, weapon: 'howitzer', claims: 1 }),
   fort: building('fort', 'Outpost', 2, 300, 90, 45, { field: true, radius: .45, vision: 8, attack: 26, range: 3.6, claims: 2,
-    desc: 'A fortified outpost. Claims the hexes within two of it as territory, extending where you can build.' }),
-  // Placed from the build wheel anywhere in your own territory on or beside a road. When the engineers
-  // finish it, it becomes a real base site: the placeholder is replaced by a headquarters with its own ring.
-  base_site: building('town', 'New Base', 1, 1000, 0, 60, { field: true, radius: .5, hp: 900, newBase: true,
-    desc: 'Founds a new base in your territory, on or beside a road and clear of other bases. Engineers build it; it becomes a headquarters with its own ring sites.' }),
+    desc: 'A tiny base: claims the hexes within two of it, trains militia (scout buggies from tier 2), one build plot per tier, and an engineer at tier 3.' }),
+  // (2026-11-20, BASE_MENU_REWORK.md: "remove the build a new base option": the New Base `base_site` left the build wheel;
+  // an older save's is refunded, REMOVED_BUILDINGS. Outposts are the tiny bases now.)
 };
 
 for (const [key, def] of Object.entries(ACTION_BUILDINGS)) if (!def.weapon) def.weapon = BUILDING_WEAPON[key];
@@ -87,11 +93,10 @@ for (const [key, garrison, firingSlots] of [['town', 4, 2], ['fort', 4, 3], ['bu
 export const BASE_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => key !== 'town' && !ACTION_BUILDINGS[key].field);
 export const FIELD_FACILITIES = Object.keys(ACTION_BUILDINGS).filter((key) => ACTION_BUILDINGS[key].field);
 export const CITY_DEFENSES = { name: 'City perimeter', cost: cost(240, 60), time: 25, pieces: 6,
-  desc: 'Constructs four sandbag positions and two machine-gun turrets outside the building ring. Uses no development sites. Missing positions can be rebuilt at proportional cost.',
-  // Perimeter upgrades (command `upgradeDefenses`): level 2 and 3, each needing the matching era. From
-  // level 2 the city has built-in anti-aircraft fire (site.defenseLevel >= CITY_DEFENSES.aaLevel).
-  upgrade: { max: 3, aaLevel: 2, cost: [cost(260, 140), cost(420, 240)], time: [25, 35],
-    desc: 'Hardens every perimeter position (+30% health, +25% firepower per level). Level 2 adds built-in city anti-aircraft fire.' } };
+  desc: 'Constructs four sandbag positions and two machine-gun turrets outside the building ring. Uses no development sites. Missing positions can be rebuilt at proportional cost. Click a perimeter position for its upgrades: each turret chooses an anti-air, anti-infantry or anti-vehicle path.' };
+// 2026-11-20 (BASE_MENU_REWORK.md §6): the old perimeter upgrade (command `upgradeDefenses`, site.defenseLevel 2-3, every
+// piece hardened) is replaced by per-turret paths (PERIMETER_PATHS). What its levels cost, refunded to an older save.
+export const REMOVED_PERIMETER_LEVELS = [cost(260, 140), cost(420, 240)];
 
 // Era upgrades bought on an individual building (command `upgradeBuilding`). A building starts at level 1;
 // each global era unlocks one more level (era II: level 2, era III: level 3). cost[i] / time[i] buy level i + 2.
@@ -105,7 +110,13 @@ for (const [key, def] of Object.entries(ACTION_BUILDINGS)) {
   const effect = ['depot', 'power_plant'].includes(key) ? 'output' : ['barracks', 'motor_works', 'heavy_weapons', 'airfield', 'advanced_lab'].includes(key) ? 'production'
     : def.field && def.attack ? 'defense' : key === 'barricade' ? 'defense' : null;
   if (effect) def.levels = { max: 3, effect, desc: LEVELS[effect].desc, cost: effect === 'output' ? [levelCost(def, 1), levelCost(def, 1.6)] : [levelCost(def, .5), levelCost(def, .8)], time: [20, 30] };
+  // 2026-11-20 (BASE_MENU_REWORK.md §4): a production building's level is its building upgrade, an expensive one: units
+  // trained there leave with veterancy (rank 1 / 2) on top of the faster training
+  if (effect === 'production') Object.assign(def.levels, { desc: BUILDING_LEVEL.desc, cost: BUILDING_LEVEL.price.map((f) => levelCost(def, f)), time: [...BUILDING_LEVEL.time] });
 }
+// the outpost is a tiny base: its levels are its tiers (one more build plot each; buggies at 2, an engineer at 3)
+Object.assign(ACTION_BUILDINGS.fort.levels, { cost: OUTPOST.levelCost.map((c) => ({ ...c })), time: [...OUTPOST.levelTime],
+  desc: 'Outpost tier: +1 build plot, +30% health and +25% firepower per tier. Tier 2 trains scout buggies; tier 3 gets an engineer and a radar (detects hidden units).' });
 
 function unit(key, facility, tier, materials, energy, capacity, extra = {}) {
   const old = UNITS[key] || UNITS.rifle_squad;
@@ -124,7 +135,7 @@ export const ACTION_UNITS = {
   rifle_squad: unit('rifle_squad', 'barracks', 1, 65, 0, 2, { ability: 'cover', time: 7, atk: 9 }),
   // W3: 10 men (was 6): 54 -> 60 materials, atk 6 -> 9, 10 -> 8 s (the cheapest, fastest way to hold ground)
   // 2026-11-18: 60 -> 40 materials, atk 9 -> 6, 8 -> 5 s, 13 -> 8 HP per man (130 -> 80)
-  militia: unit('militia', 'barracks', 1, 40, 0, 2, { ability: 'cover', time: 5, atk: 6 }),
+  militia: unit('militia', 'town', 1, 40, 0, 2, { ability: 'cover', time: 5, atk: 6 }),
   // Not trainable: every base fields its own automatic engineers (actionEngineers.js), free and uncommandable.
   engineer: unit('engineer', 'barracks', 1, 100, 25, 2, { ability: 'repair', radius: .122, atk: 4, range: 1.2, weapon: 'pistol', defensiveOnly: true, time: 15, auto: true }),
   // W3: 5 men (was 3): 100/25 -> 110/30, atk 15 -> 18, 18 -> 16 s
@@ -144,15 +155,19 @@ export const ACTION_UNITS = {
   exo_infantry: unit('exo_infantry', 'motor_works', 2, 235, 85, 5, { name: 'Infantry Fighting Vehicle', glyph: 'IF', move: 'tracked', cat: 'tracked',
     ability: 'focused_fire', time: 27, hp: 240, def: 15, atk: 15, weapon: 'autocannon', range: 3.0, speed: 1.0, radius: .235, antiBuilding: 1, capture: false,
     atgm: { damage: 62, cooldown: 10, range: 3.6 } }),
-  scout_buggy: unit('scout_buggy', 'barracks', 1, 85, 10, 3, { ability: 'scan', vision: 8.8, time: 17 }),
+  scout_buggy: unit('scout_buggy', 'town', 1, 85, 10, 3, { ability: 'scan', vision: 8.8, time: 17 }),
   armored_car: unit('armored_car', 'motor_works', 2, 125, 30, 4, { ability: 'scan', time: 21 }),
-  supply_truck: unit('supply_truck', 'motor_works', 2, 140, 35, 3, { name: 'Support Truck', ability: 'repair', time: 21 }),
+  // 2026-11-20 (BASE_MENU_REWORK.md): Heavy Weapons (was the Vehicle Works); its Field Repair is automatic (no button)
+  supply_truck: unit('supply_truck', 'heavy_weapons', 2, 140, 35, 3, { name: 'Support Truck', ability: 'repair', passive: true, time: 21 }),
   field_gun: unit('field_gun', 'heavy_weapons', 2, 170, 60, 4, { ability: 'focused_fire', time: 24, hp: 130, atk: 27 }), // W2: hp 90 -> 130; 2026-11-17: atk 24 -> 27 (tanks gained HP)
   mech_infantry: unit('mech_infantry', 'motor_works', 2, 195, 65, 5, { ability: 'focused_fire', time: 26 }),
-  tank: unit('tank', 'motor_works', 2, 235, 80, 6, { ability: 'focused_fire', radius: .25, time: 29, hp: 330, vsInfantry: 1.25 }), // 2026-11-17: hp 280 -> 330, HE vs infantry
+  // 2026-11-17: hp 280 -> 330, HE vs infantry. 2026-11-20 tank pass (TANK PASS below the table): 235/80 -> 295/100,
+  // hp 330 -> 495, atk 28 -> 67 per (slower, area-blast) round, range 2.79 -> 3.49, coaxial machine gun
+  tank: unit('tank', 'motor_works', 2, 295, 100, 6, { ability: 'focused_fire', radius: .25, time: 29, hp: 495, atk: 67, range: 3.49, vsInfantry: 1.25,
+    fireCooldown: 3.5, blast: .46, coax: { atk: 8, range: 2.3, cooldown: 1.2 } }),
   sp_artillery: unit('sp_artillery', 'heavy_weapons', 2, 250, 115, 6, { ability: 'bombard', time: 32 }),
   air_defense: unit('air_defense', 'heavy_weapons', 2, 180, 95, 4, { ability: 'intercept', time: 25 }),
-  missile_battery: unit('missile_battery', 'heavy_weapons', 3, 310, 185, 7, { ability: 'bombard', time: 38 }),
+  missile_battery: unit('missile_battery', 'advanced_lab', 3, 310, 185, 7, { ability: 'bombard', time: 38 }),
   helicopter: unit('helicopter', 'airfield', 2, 280, 130, 6, { ability: 'strike', time: 32 }),
   // 'fighter' is the Warthog (id kept for saves and the protocol): strafing runs with a 30 mm cannon
   // (actionFlight.js), ground targets only, slow for a jet and fragile under anti-aircraft fire
@@ -161,7 +176,10 @@ export const ACTION_UNITS = {
   recon_drone: unit('recon_drone', 'airfield', 2, 115, 65, 2, { ability: 'scan', vision: 10.5, time: 19 }),
   bomber: unit('bomber', 'airfield', 3, 470, 250, 9, { ability: 'strike', time: 46 }),
   oneway_drone: unit('oneway_drone', 'advanced_lab', 3, 125, 80, 2, { ability: 'strike', time: 18 }),
-  autonomous_tank: unit('autonomous_tank', 'advanced_lab', 3, 340, 150, 8, { ability: 'focused_fire', radius: .255, time: 42, hp: 480, vsInfantry: 1.2 }), // 2026-11-17: hp 420 -> 480, HE vs infantry
+  // 2026-11-17: hp 420 -> 480, HE vs infantry. 2026-11-20 tank pass: 340/150 -> 425/190, hp 480 -> 760, def 26 -> 32,
+  // atk 40 -> 100 per round (autoloader 3.2 s), range 3.96 -> 4.95, wider blast, twin coaxial machine guns
+  autonomous_tank: unit('autonomous_tank', 'advanced_lab', 3, 425, 190, 8, { ability: 'focused_fire', radius: .255, time: 42, hp: 760, def: 32, atk: 100, range: 4.95, vsInfantry: 1.2,
+    fireCooldown: 3.2, blast: .52, coax: { atk: 12, range: 2.6, cooldown: 1.0 } }),
   strike_swarm: unit('strike_swarm', 'advanced_lab', 3, 335, 210, 7, { ability: 'strike', time: 40 }),
 };
 // Aircraft cross the (larger) battlefield noticeably faster than any ground force, scaled by role:
@@ -196,10 +214,44 @@ for (const [key, base] of [['mortar_team', 4.5], ['sp_artillery', 3.5], ['missil
 // 3.6, AT squads 3.25) is inside the dead zone, so the battery needs an escort, while its own sight (~5.7) still
 // leaves it a band to defend itself in.
 ACTION_UNITS.missile_battery.minRange = 3.5;
+// 2026-11-20 TANK PASS (user: "Tanks are too weak and too small"). Both tanks: health x1.5, range x1.25, cost x1.25,
+// speed and hitbox (radius) unchanged (the client draws them 25% larger). The main gun fires slower (2.2 s -> fireCooldown
+// 3.5 s; the autonomous tank's autoloader 3.2 s) but each round is a high-explosive area blast (`blast`: projectile radius,
+// damage falling to 34% at the rim, actionCombat.resolveProjectiles), so atk rises past x1.5 to hold the sustained rate:
+//   tank        atk 28 -> 67: 46 -> 111 per round; vs armour (def 18) 52 -> 129 per round, 23.5 -> 36.9 DPS (x1.57)
+//   autonomous  atk 40 -> 100: 66 -> 165 per round; vs armour 76 -> 194, 34.4 -> 60.8 DPS (x1.77)
+// Against infantry a round kills the men inside its lethal core (actionUpgrades.killCap by blast radius) and splashes
+// any squad beside them. `coax` is a coaxial machine gun (weapon 'coax', actionCombat.coaxStep) firing on its own
+// cooldown at hostile infantry within its short range, whatever the main gun is doing: tank 13 per burst every 1.2 s out
+// to 2.3, the autonomous tank's twin guns 20 every 1.0 s out to 2.6. The autonomous tank (no crew, pop 0) is the best
+// ground unit by a margin: 1.56x the tank's cost for 1.54x its health, 1.63x its gun DPS, 1.42x its reach (4.95: outside
+// AT squads 3.25, the IFV missile 3.6 and the missile battery's dead zone) and the stronger coax.
 for (const [key, def] of Object.entries(ACTION_UNITS)) {
   if (def.auto) continue;
   const factory = ACTION_BUILDINGS[def.facility];
   (factory.trains ??= []).push(key);
+}
+// 2026-11-20 (BASE_MENU_REWORK.md §2): four units per production building, in wheel order; militia and scout buggies
+// at the headquarters and at outposts (tier-gated there by OUTPOST.trainsAt)
+Object.assign(ACTION_BUILDINGS.barracks, { trains: ['rifle_squad', 'anti_armor', 'mortar_team', 'special_forces'] });
+Object.assign(ACTION_BUILDINGS.motor_works, { trains: ['armored_car', 'mech_infantry', 'exo_infantry', 'tank'] });
+Object.assign(ACTION_BUILDINGS.heavy_weapons, { trains: ['field_gun', 'sp_artillery', 'air_defense', 'supply_truck'] });
+Object.assign(ACTION_BUILDINGS.airfield, { trains: ['helicopter', 'fighter', 'recon_drone', 'bomber'] });
+Object.assign(ACTION_BUILDINGS.advanced_lab, { trains: ['oneway_drone', 'autonomous_tank', 'strike_swarm', 'missile_battery'] });
+Object.assign(ACTION_BUILDINGS.town, { trains: ['militia', 'scout_buggy'] });
+Object.assign(ACTION_BUILDINGS.fort, { trains: ['militia', 'scout_buggy'], trainsAt: { ...OUTPOST.trainsAt }, plots: [...OUTPOST.plots] });
+/** True when building `b` (its type and, for an outpost, its tier) trains unit `type` (BASE_MENU_REWORK.md §2). */
+export function trainsAt(b, type) {
+  const def = ACTION_BUILDINGS[b?.type];
+  if (!def?.trains?.includes(type)) return false;
+  return !def.trainsAt?.[type] || (b.level || 1) >= def.trainsAt[type];
+}
+// Unit upgrade lines (§3): one per unit, three tiers, bought per building; priced from the unit's cost
+for (const [key, line] of Object.entries(UNIT_UPGRADE_LINES)) {
+  const d = ACTION_UNITS[key];
+  if (!d) continue;
+  d.upgrade = { name: line.name, desc: line.desc, mech: line.mech, kit: line.kit,
+    tiers: line.t.map((params, i) => ({ tier: i + 1, cost: unitUpgradeCost(d.cost, i + 1), time: UPGRADE_TIME[i], ...params })) };
 }
 // Production scheduler (W1, actionProduction.js): each producing building has one capacity budget of
 // `production` work units per simulation second (scaled by site bonus and era level) shared by its per-unit-type
@@ -255,6 +307,7 @@ export const REMOVED_UPGRADES = {
 // refunded to the owner (persist.js); construction is paid when ordered, so an unfinished one is refunded in full too.
 export const REMOVED_BUILDINGS = {
   armory: { name: 'Armory', cost: cost(240, 90) },   // 2026-11-20
+  base_site: { name: 'New Base', cost: cost(1000) },   // 2026-11-20 (BASE_MENU_REWORK.md: outposts replace it)
 };
 
 export const ABILITIES = {
@@ -277,6 +330,9 @@ export const RUIN_TYPES = [
   { key: 'military', name: 'Military Installation', ruin: 'fort', slots: 4, expansion: 4, bonus: 'Infantry training is 12% faster' },
   { key: 'coastal', name: 'Coastal City', ruin: 'port', slots: 4, expansion: 4, bonus: 'Aircraft production is 12% faster' },
   { key: 'research', name: 'Research Complex', ruin: 'academy', slots: 4, expansion: 4, bonus: 'Military upgrades finish 12% faster' },
+  // Ticket 4 (2026-11-20): farm ruins, generated only on map-builder maps with the "farm" ruins setting (sketchMaps gen.ruins);
+  // its supply cache restocks (actionEconomy.seedMaterialCaches). Appended: the indices above are used by actionMap.
+  { key: 'farm', name: 'Farmstead', ruin: 'farmstead', slots: 4, expansion: 4, bonus: 'Its supply cache restocks' },
 ];
 export const OUTPOST_TYPES = {
   supply: { name: 'Materials Relay', benefit: '+90 Materials/min', materials: 1.5, ruin: 'depot' },
@@ -313,6 +369,8 @@ export const NEW_BASE_GAP = 5;
 // every hex within `radius` of the stroke (at most maxHexes) and costs `cost` / `time` per 7 hexes (minimum minCost).
 export const TERRAIN_WORKS = { ops: ['raise', 'lower', 'flatten', 'smooth'], cost: cost(60), time: 6, step: .06, min: .02, max: .5,
   maxRadius: 2, maxHexes: 60, minCost: 10, neutral: true,
+  // 2026-11-20 (terrain tool height): raise / lower by 1..maxAmount steps in one order; price and time scale with it
+  maxAmount: 4,
   desc: 'Engineers raise, lower, flatten or smooth the ground in your territory or on neutral ground: drag a brush stroke across visible open ground (never water, never into mountains). The cost grows with the hexes painted.' };
 
 // W2 (2026-11-16): decisive domination (default 'domination' scenario). From minute 18, a team that holds at least
@@ -330,7 +388,12 @@ export function actionDefinitions(base) {
     CIV_COLORS: base.CIV_COLORS, STANCES: base.STANCES, FORMATIONS: base.FORMATIONS, WEAPON_KEYS: base.WEAPON_KEYS,
     AGES: TIERS, TECHS: ACTION_UPGRADES, CITY_DEFENSES, GOODS: ACTION_RESOURCES, GOOD_NAMES: { materials: 'Materials', energy: 'Energy' },
     RULESET: { id: 'action-v2', ringVersion: 1, cancelConstruction: true, upgradeLines: false, cancelResearch: true, placementSnap: 2, slots: [3, 5, 7], commandCapacity: [80, 120, 160], fieldConstruction: 'engineers', engineerRequired: false,
-      autoEngineers: [2, 3, 4], territoryBuild: true, newBase: { type: 'base_site', cost: ACTION_BUILDINGS.base_site.cost, minGap: NEW_BASE_GAP },
+      autoEngineers: [...ENGINEERS_BY_TIER], territoryBuild: true,
+      // 2026-11-20 base menu rework (BASE_MENU_REWORK.md): per-building unit upgrades, building levels with veterancy,
+      // engineer upgrades, perimeter turret paths, the centre turret, outpost plots; repairs are automatic (no repair
+      // command); production runs in the order queued
+      baseMenu: 2, repairButtons: false, productionOrder: 'queued', engineerUpgrades: ENGINEER_UPGRADES, perimeterPaths: PERIMETER_PATHS,
+      perimeterCost: PERIMETER_COST, perimeterTime: PERIMETER_TIME, centreTurret: CENTRE_TURRET, outpost: OUTPOST, kit: KIT,
       terrain: TERRAIN_WORKS, dominance: DOMINANCE, influence: DEFENSE_INFLUENCE, capture: CAPTURE, garrison: GARRISON,
       // 2026-11-19 (client hover card: "slopes needed for pathfinding"): steepest climbable gradient (rise over run) per
       // movement class, wide-river flow, and who wades; read live from the navigation so the card never goes stale

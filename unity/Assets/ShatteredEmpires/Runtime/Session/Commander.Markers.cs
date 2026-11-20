@@ -108,6 +108,9 @@ namespace SE.Runtime.Session
             if (!session.ActionRts || session.Net == null || !session.World.Ready) return false;
             int tile = session.World.Grid.TileAt(mapPoint.x, mapPoint.z);
             if (tile < 0) return false;
+            // VISION (2026-11-20): undiscovered ground is never crossed out: whether it can be reached is unseen terrain
+            var seen = session.World.Known;
+            if (tile >= seen.Length || seen[tile] == 0) return false;
             int sel = units.Selected.Count * 7919 + (Current == Mode.Rally ? 1 : 0);
             foreach (int id in units.Selected) sel = unchecked(sel * 31 + id);
             if (sel != reachSelection || reachCache.Count > 512) { reachSelection = sel; reachCache.Clear(); reachPendingTile = -1; }

@@ -85,6 +85,7 @@ test('a unit with no way forward gives up after the bounded ladder, with a quiet
   const g = S.makeGame(sim), area = S.paintArea(sim, g, 40, 40, 12, 16);
   S.reindex(sim, g);
   g.civs[0].human = true;
+  g.civs[0].explored.fill(1);   // VISION (2026-11-20): the halt notice names discovered destinations only
   const u = S.place(sim, g, 0, 'rifle_squad', area.point(6, 4)), to = area.point(6, 12);
   g.command(0, { c: 'move', units: [u.id], point: to });
   tick5: for (let i = 0; i < 5; i++) { g.tick(); g.outbox.length = 0; if (!u.goal) break tick5; }

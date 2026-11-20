@@ -32,7 +32,7 @@ const preview = (g, type, p) => g.command(0, { c: 'fieldPreview', type, point: p
 
 test('defensive structures are flagged and the ring is published to the client', () => {
   for (const key of ['barricade', 'guard_post', 'bunker', 'turret', 'aa_battery', 'artillery_post', 'fort']) assert.ok(ACTION_BUILDINGS[key].defense, key);
-  for (const key of ['sensor_post', 'repair_point', 'base_site', 'depot']) assert.ok(!ACTION_BUILDINGS[key].defense, key);
+  for (const key of ['sensor_post', 'repair_point', 'depot']) assert.ok(!ACTION_BUILDINGS[key].defense, key);
   assert.equal(actionDefinitions({}).RULESET.influence.reach, REACH);
 });
 

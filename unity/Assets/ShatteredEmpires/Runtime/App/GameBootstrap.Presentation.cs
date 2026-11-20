@@ -36,6 +36,10 @@ namespace SE.Runtime.App
             // missile battery (2026-11-19): from the muzzles of its raised launch pod (UnitRenderer.Launcher.cs), measured
             // from the unit's ground point (the launch event point carries a .08 lift)
             if (type == "missile_battery" && units != null && units.TryLauncherTip(session.Units, id, out var tip)) return source - new float3(0, .08f, 0) + tip;
+            // the tanks (2026-11-20, drawn 25% larger with longer guns): muzzle (trunnion .17 + barrel .80 / .92) x .235 x 1.25
+            // (x 1.12 more for the autonomous tank), at the gun's height
+            if (type == "tank") return source + dir * .285f + new float3(0, .05f, 0);
+            if (type == "autonomous_tank") return source + dir * .355f + new float3(0, .045f, 0);
             float length = infantry ? .035f : type.Contains("tank") || type == "sp_artillery" ? .30f : type == "exo_infantry" ? .2f : .12f;
             return source + dir * length + new float3(0, infantry ? .035f : .04f, 0);
         }

@@ -50,6 +50,9 @@ namespace SE.Runtime.Session
         public double ApplyMs;
         /// <summary>B7 (2026-11-19): the server's measured pace (simulated seconds per real second, the econ snapshots' 'pace'); -1 unknown.</summary>
         public float Pace = -1;
+        /// <summary>Scale pass (2026-11-20): the last server 'perf' block (null until one arrives) and the snapshot count it came with.</summary>
+        public ServerPerf ServerPerf;
+        public int ServerPerfSnapshot;
         /// <summary>The rate the playback clock runs at: the chosen speed, or the measured pace when the server falls clearly behind it.</summary>
         public float ClockRate => Pace > 0 && Pace < PlayRate * 0.9f ? Pace : PlayRate;
         /// <summary>The server announced the end of the match ('over'); cleared by a new match's welcome.</summary>
@@ -385,6 +388,7 @@ namespace SE.Runtime.Session
                 ObserverFog = ProtocolDecoder.Bool(s.Observer["fog"]);
             }
             if (s.Pace >= 0) Pace = s.Pace;
+            if (s.Perf != null) { ServerPerf = s.Perf; ServerPerfSnapshot = Snapshots; }
             if (s.Tiles != null) World.ApplyTiles(s.Tiles, null, DirtyCells);
             if (s.Visibility != null) World.ApplyVisibility(s.Visibility);
             if (s.Urban != null) World.ApplyUrban(s.Urban, DirtyCells);
@@ -445,11 +449,38 @@ namespace SE.Runtime.Session
                     if (buildingsVersion >= 0 && d.Version == buildingsVersion + 1) { Structures.ApplyBuildingChanges(d.Updated, d.Removed, World, DirtyCells); buildingsVersion = d.Version; }
                     else KeyedGap();
                 }
+                // building pads (2026-11-20): structures on a slope level the ground under them (WorldModel.ApplyPads)
+                if (Structures.Revision != padRevision) { padRevision = Structures.Revision; Geometry(ApplyBuildingPads); }
                 if (s.Cities != null) Structures.ApplyCities(s.Cities, World, DirtyCells);
                 PartEnd(4);
             }
             // between econ frames the stockpile still arrives every snapshot, so the bars fill smoothly
             else if (s.Res != null && Econ != null) Econ["res"] = s.Res.DeepClone();
+        }
+
+        // building pads (2026-11-20): the footprints last applied, so a frame whose buildings moved nowhere costs one pass
+        int padRevision = -1;
+        long padKey;
+        readonly List<WorldModel.PadSource> padSources = new List<WorldModel.PadSource>();
+
+        /// <summary>Level the ground under every placed structure on a slope (WorldModel.ApplyPads); runs as a geometry update.</summary>
+        void ApplyBuildingPads()
+        {
+            if (!World.Ready) return;
+            long key = World.Epoch;
+            padSources.Clear();
+            var defs = Defs?["BUILDINGS"];
+            foreach (var b in Structures.Buildings.Values)
+            {
+                if (!b.HasPosition || b.Type == null) continue;
+                var def = defs?[b.Type];
+                float radius = Mathf.Max(ProtocolDecoder.Float(def?["radius"], .3f), .5f * Mathf.Max(ProtocolDecoder.Float(def?["width"], 0), ProtocolDecoder.Float(def?["depth"], 0)));
+                padSources.Add(new WorldModel.PadSource { X = b.X, Z = b.Z, Radius = radius + .05f });
+                unchecked { key = key * 31 + b.Id; key = key * 31 + b.X.GetHashCode(); key = key * 31 + b.Z.GetHashCode(); key = key * 31 + (int)(radius * 1000); }
+            }
+            if (key == padKey) return;
+            padKey = key;
+            World.ApplyPads(padSources, BeforeGeometryChange, DirtyChunks, DirtyCells);
         }
     }
 }

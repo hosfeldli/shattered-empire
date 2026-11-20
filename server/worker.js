@@ -3,6 +3,7 @@
 import { deltaEncoder, KEYED_CAP } from './delta.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import zlib from 'node:zlib';
+import { createPerfStats } from './perfStats.js';
 
 globalThis.SE_MAP_SIZE = workerData.mapSize;
 globalThis.SE_WRAP = workerData.wrap !== false;   // bounded only for matches saved before wrapping existed
@@ -35,6 +36,8 @@ if (workerData.telemetry) {
   probe = createProbe(game, { post, units: defs.ACTION_UNITS, buildings: defs.ACTION_BUILDINGS, centerOf: navMod?.centerOf, minuteMs: workerData.telemetry.minuteMs || 60_000 });
   setInterval(() => { try { probe?.second(); } catch (e) { post({ t: 'error', error: 'telemetry: ' + String(e && e.stack || e) }); probe = null; } }, 1000).unref();
 }
+// SCALE Phase 1: per-second server cost for the client's perf readout (econ `perf`, server/perfStats.js)
+const perfStats = game.ruleset === ACTION_RULESET ? createPerfStats(game) : null;
 const out = [];
 const deltas = new Map();               // civId (or -2: the spectators' shared channel) -> snapshot delta encoder ('udelta')
 // Effective pace (B7, 2026-11-19): simulated seconds per wall second over the last few intervals. The loop caps the
@@ -53,6 +56,7 @@ function paceSample(wallMs) {
 const paceReset = () => { paceRing.length = 0; pace = null; };
 const sendSnap = (civId, msg) => {
   if (msg.econ && pace != null) msg.pace = pace;
+  if (msg.econ && perfStats) { const b = perfStats.block(game.speed); if (b) msg.perf = b; }
   const enc = deltas.get(civId);
   if (!probe) { send(civId, enc ? enc(msg) : msg); return; }
   // v3 telemetry (Pass 7): delta-encode and stringify timed apart, bytes tagged snap / econ
@@ -132,16 +136,18 @@ const timer = setInterval(() => {
     frames++;
     paceSample(performance.now());
     // 5 Hz snapshots, economy every second, regardless of how many ticks ran
-    const ts = probe ? performance.now() : 0;
+    const ts = probe || perfStats ? performance.now() : 0;
     if (frames % 2 === 0) {
       const list = game.snapshots(null, frames % 10 === 0, congested);
       if (probe) probe.span('snapshot.build', performance.now() - ts);
       for (const [civId, msg] of list) sendSnap(civId, msg);
       if (probe) { const tg = performance.now(); geoStep(); probe.span('snapshot.geo', performance.now() - tg); } else geoStep();
       probe?.snapshot(performance.now() - ts, congested.size);
+      perfStats?.net(performance.now() - ts);
     }
     flush();
     probe?.interval(performance.now() - t0, n, false);
+    perfStats?.interval(n, performance.now() - t0);
     // n is 0 once the match is over (nothing ticks): no per-tick figure then ("avg tick Infinityms" at match end)
     if (n > 0) { const dt = (performance.now() - t0) / n; tickMs = tickMs * 0.98 + dt * 0.02; maxMs = Math.max(maxMs, dt); ticks += n; }
     if (game.time >= nextSave) { nextSave = game.time + AUTOSAVE_S; const time = game.time; saveAsync((buf) => post({ t: 'autosave', buf, time })); }

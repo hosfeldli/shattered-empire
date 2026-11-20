@@ -27,7 +27,8 @@ test('a restored save evolves the same weather (climate recomputed after the act
 
 test('a captured base does not inherit the previous owner\'s perimeter level or city AA', () => {
   const g = create(), s = g.sites[1];
-  s.defenseLevel = 2;
+  s.defenseLevel = 2;   // an older save's level (refunded on load since 2026-11-20)
+  g.buildings.get(s.hq).gun = 2;   // the centre turret's airburst fuze: the base's AA umbrella
   assert.equal(g.siteWire(s, g.civs[1], true).aa, 1);
   g.loseBuilding(g.buildings.get(s.hq));
   assert.equal(s.defenseLevel, 1);

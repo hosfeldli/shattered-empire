@@ -26,6 +26,7 @@ export const ENERGY_CACHES = {
   cap: (players) => Math.min(6, players + 1),
   baseGap: 7, outpostGap: 3, cacheGap: 3,    // clearance from base sites, other sites and other caches (world units)
   tries: 24,
+  placed: 60,                                // a map-builder power supply (sketch poi 'power'), restocking
 };
 
 export function seedMaterialCaches(game) {
@@ -36,9 +37,18 @@ export function seedMaterialCaches(game) {
     const id = game.id_();
     game.materialCaches.set(id, { id, ...point, tile: tileAt(point.x, point.z), resource: 'materials', amount, max: amount, active: true, replenishes, respawnAt: 0, collectedBy: -1 });
   };
-  for (const site of game.sites.filter((s) => s.slots)) {
+  // Ticket 4: a custom map may turn the generated supply caches off (sketchMaps gen.caches) and place its own
+  if (game.mapGen?.caches !== false) for (const site of game.sites.filter((s) => s.slots)) {
     if (site.start !== undefined) { add(site, 0, 55, 3.2); add(site, 1, 55, 4.4); add(site, 2, 110, 6.1); }
-    else { add(site, 3, 110, 2.9); if (site.kind === 'industrial' || site.kind === 'military') add(site, 4, 55, 3.6, true); }
+    // a farmstead (a custom map's farm ruins) keeps a restocking cache like the industrial and military ruins
+    else { add(site, 3, 110, 2.9); if (site.kind === 'industrial' || site.kind === 'military' || site.kind === 'farm') add(site, 4, 55, 3.6, true); }
+  }
+  // the caches the map builder placed (sketch pois 'cache' / 'power'): fixed, restocking 3 minutes after they empty
+  for (const p of game.manualCaches || []) {
+    const point = game.nav.nearest(p, LIGHT_GROUND, 1.6);
+    if (!point || [...game.materialCaches.values()].some((c) => distance(c, point) < .8)) continue;
+    const id = game.id_(), energy = p.kind === 'power', amount = energy ? ENERGY_CACHES.placed : 110;
+    game.materialCaches.set(id, { id, ...point, tile: tileAt(point.x, point.z), resource: energy ? 'energy' : 'materials', amount, max: amount, active: true, replenishes: true, respawnAt: 0, collectedBy: -1 });
   }
   game.energyCacheAt = game.time + ENERGY_CACHES.first;
 }
@@ -98,7 +108,7 @@ function cacheStep(game, dt) {
         const take = Math.min(CACHE_COLLECT.chunk, c.amount);
         work[owner] -= take; c.amount -= take;
         const civ = game.civs[owner], res = resourceOf(c);
-        civ.res[res] = (civ.res[res] || 0) + take;
+        civ.res[res] = (civ.res[res] || 0) + take * (civ.income ?? 1);   // Ticket 4: the player's resource multiplier
         const unit = near.find((u) => u.owner === owner);
         emit(game, { k: 'pickup', a: c.tile, ax: c.x, az: c.z, ow: owner, s: unit.id, cache: c.id, amount: take, resource: res,
           ...(c.amount <= 0 && { o: 'empty' }) });
@@ -139,11 +149,15 @@ function energyCacheSpawn(game) {
   const E = ENERGY_CACHES;
   game.energyCacheAt ??= game.time + E.first;   // a save from before energy caches starts its schedule now
   if (game.time < game.energyCacheAt) return;
-  game.energyCacheAt = game.time + E.every + game.rng() * E.jitter;
+  // Ticket 4: a custom map's power supply setting (sketchMaps gen.power: 0 none, 0.5 few, 1 standard, 2 many) scales
+  // how often they appear and how many may lie on the map at once
+  const scale = game.mapGen?.power ?? 1;
+  if (!(scale > 0)) { game.energyCacheAt = game.time + E.every; return; }
+  game.energyCacheAt = game.time + (E.every + game.rng() * E.jitter) / scale;
   const players = game.civs.filter((civ) => civ.alive && !civ.isRebel).length;
   let active = 0;
   for (const c of game.materialCaches.values()) if (c.spawned && c.active) active++;
-  if (active >= E.cap(players)) return;
+  if (active >= Math.max(1, Math.round(E.cap(players) * scale))) return;
   const spot = energyCacheSpot(game);
   if (!spot) return;
   const amount = E.amounts[Math.floor(game.rng() * E.amounts.length)];

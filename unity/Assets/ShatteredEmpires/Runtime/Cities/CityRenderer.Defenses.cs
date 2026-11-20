@@ -58,6 +58,9 @@ namespace SE.Runtime.Cities
             public TurretKind Kind;
             public int Level;
             public bool Memory;
+            /// <summary>Head scale and the upgrade props drawn with it (CityRenderer.UpgradeKit.cs).</summary>
+            public float Scale = 1f;
+            public int Kit;
         }
 
         readonly Dictionary<int, TurretMount> mounts = new Dictionary<int, TurretMount>();
@@ -213,6 +216,7 @@ namespace SE.Runtime.Cities
                 mount.Pivot = Map(pivot); mount.Rest = c.Yaw; mount.Head = head; mount.Kind = kind.Kind; mount.Level = level;
                 mount.Memory = b.Memory;
                 mount.Color = math.lerp(new float3(.86f, .87f, .82f), c.Civ, .55f) * c.Tint;
+                UpgradeMount(b, mount, level);   // perimeter path heads, outpost radar (CityRenderer.UpgradeKit.cs)
             }
             return true;
         }
@@ -321,7 +325,8 @@ namespace SE.Runtime.Cities
                 // recoil (effects pass, 2026-11-18): the head runs back along its aim on each shot, then returns
                 float back = m.Memory ? 0 : HeadRecoil(m.Kind, time - m.ShotAt);
                 var pivot = m.Pivot - new float3(math.sin(m.Aim), 0, math.cos(m.Aim)) * back;
-                batch.Add(InstanceData.TRS(MapSpace.W(pivot), MapSpace.Yaw(m.Aim), new float3(1), new float4(m.Color, 0)));
+                batch.Add(InstanceData.TRS(MapSpace.W(pivot), MapSpace.Yaw(m.Aim), new float3(m.Scale), new float4(m.Color, 0)));
+                if (m.Kit != 0) MountKit(m, pivot, time, pair.Key);   // CityRenderer.UpgradeKit.cs
             }
             foreach (int id in staleMounts) mounts.Remove(id);
             // memory pass 8: smoke/fire emitters and embrasures of buildings that are gone (only recomposed buildings

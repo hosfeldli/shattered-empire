@@ -3,9 +3,10 @@ import { LEGACY_RULESET, actionRules, nativeRules, normalizeNativeCiv } from './
 // so live games survive deploys, restarts and crashes, and replays can be verified.
 import { Game } from './game.js';
 import { ActionGame } from './actionGame.js';
-import { migrateProduction } from './actionProduction.js';
+import { migrateProduction, orderOf } from './actionProduction.js';
+import { setLevel } from './actionBases.js';
 import { markDenseForest } from './actionMap.js';
-import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, REMOVED_BUILDINGS, REMOVED_UPGRADES } from './actionDefinitions.js';
+import { ACTION_BUILDINGS, ACTION_UNITS, ACTION_UPGRADES, REMOVED_BUILDINGS, REMOVED_PERIMETER_LEVELS, REMOVED_UPGRADES } from './actionDefinitions.js';
 import { WRAP } from './hex.js';
 import { BUILDINGS, TECHS, POLICIES } from './constants.js';
 import { AI } from './ai.js';
@@ -53,7 +54,9 @@ export function serializeGame(g) {
     v: actionRules(g) ? 5 : 3, ruleset: g.ruleset, id: g.id, seed: g.seed, size: w.elev.length, time: g.time, tickN: g.tickN, nextId: g.nextId, rng: g.rng.getState(), cityNameIdx: g.cityNameIdx,
     ...(actionRules(g) ? { action: { sites: g.sites, objective: g.scenario, teamSize: g.teamSize, map: g.mapId, tutorial: g.tutorial,
       tutorialSite: g.tutorialSite, teamHold: g.teamHold, engagements: mapOut(g.engagements), reports: g.reports,
-      materialCaches: mapOut(g.materialCaches), energyCacheAt: g.energyCacheAt ?? null, roadProjects: g.roadProjects, armyLimit: g.armyLimit,
+      materialCaches: mapOut(g.materialCaches), energyCacheAt: g.energyCacheAt ?? null,
+      // Ticket 4: the match rules and a custom map's generation options (matchRules.js, sketchMaps.js)
+      ...(g.rules && { rules: g.rules }), ...(g.mapGen && { mapGen: g.mapGen }), roadProjects: g.roadProjects, armyLimit: g.armyLimit,
       dominance: g.dominance || null, territoryDirty: !!g.territoryDirty, groupJobs: g.groupJobs || [], nextGroupJob: g.nextGroupJob || 0,
       // Pass 3: convoy pace (actionOrders.unitMotion) reads last tick's lead distance; unsaved, a restored match drove
       // its convoys at a different speed on the first tick and diverged from the uninterrupted one (Infinity -> null)
@@ -157,6 +160,7 @@ export function restoreGame(data) {
         b.project = null;
       }
     retireBuildings(g, retired);
+    migrateBaseMenu(g);   // 2026-11-20 base menu rework (BASE_MENU_REWORK.md §9)
     g.materialCaches = new Map(data.action.materialCaches || []);
     // energy caches (2026-11-19): the spawn schedule; a save from before them starts it at its first step
     if (data.action.energyCacheAt != null) g.energyCacheAt = data.action.energyCacheAt;
@@ -177,9 +181,12 @@ export function restoreGame(data) {
     // the vehicle's footprint, drops its squad-only state (suppression, armour plates) and leaves any garrison.
     for (const u of g.units.values()) {
       const d = ACTION_UNITS[u.type];
-      if (!d || d.air || !(u.maxHp > 0) || u.maxHp === d.hp) continue;
-      u.hp = u.hp > 0 ? Math.max(1, Math.round(u.hp / u.maxHp * d.hp * 1000) / 1000) : 0;
-      u.maxHp = d.hp;
+      // Ticket 4: the match's unit health multiplier is part of every unit's maximum (actionGame.spawn)
+      const health = g.rules?.unitHealth ?? 1, base = d ? (health === 1 ? d.hp : Math.max(1, Math.round(d.hp * health))) : 0;
+      const max = d ? base * (u.mods?.hp || 1) : 0;   // an upgraded unit's own maximum (actionUnitUpgrades.setMods)
+      if (!d || d.air || !(u.maxHp > 0) || Math.abs(u.maxHp - max) < 1e-6) continue;
+      u.hp = u.hp > 0 ? Math.max(1, Math.round(u.hp / u.maxHp * max * 1000) / 1000) : 0;
+      u.maxHp = max;
       if (!d.men) {
         u.radius = d.radius; delete u.supp; delete u.suppAt; delete u.plates;
         if (u.inside) {
@@ -220,6 +227,36 @@ function retireBuildings(g, retired) {
   for (const civ of g.civs) {
     if (civ.ruinIntel instanceof Map) for (const [tile, type] of [...civ.ruinIntel]) if (gone(type)) civ.ruinIntel.delete(tile);
     if (civ.siteIntel instanceof Map) for (const wire of civ.siteIntel.values()) for (const v of wire?.parcels || []) if (gone(v[8])) v[8] = null;
+  }
+}
+
+/**
+ * 2026-11-20 base menu rework (BASE_MENU_REWORK.md §9), for a save from before it:
+ *  - a queue of a unit its building no longer trains (militia and scout buggies left the Barracks, the Support Truck
+ *    the Vehicle Works, the Missile Battery Heavy Weapons) is dropped and what it had consumed refunded;
+ *  - the old perimeter levels (site.defenseLevel 2-3, and one under way) are refunded and the pieces return to level 1
+ *    (each perimeter turret now chooses a path);
+ *  - every producing building gets its production order (b.order) from its queues.
+ * The New Base under construction is refunded by retireBuildings (REMOVED_BUILDINGS). Deterministic: save order.
+ */
+function migrateBaseMenu(g) {
+  const give = (owner, cost) => { const civ = g.civs[owner]; if (civ?.res) for (const [k, v] of Object.entries(cost || {})) civ.res[k] = (civ.res[k] || 0) + v; };
+  for (const b of g.buildings.values()) {
+    const trains = ACTION_BUILDINGS[b.type]?.trains || [];
+    if (b.queues?.length) {
+      for (const q of b.queues) if (!trains.includes(q.unit)) { give(b.owner, q.paid); q.count = 0; if (b.repeat === q.unit) b.repeat = null; }
+      b.queues = b.queues.filter((q) => q.count > 0);
+      b.order = null;
+    }
+    if (b.queues?.length) orderOf(b);
+    if (b.project?.kind === 'defenses') { give(b.owner, REMOVED_PERIMETER_LEVELS[(b.project.level || 2) - 2]); b.project = null; }
+  }
+  for (const s of g.sites) {
+    const level = s.defenseLevel || 1;
+    if (level <= 1) continue;
+    for (let l = 2; l <= level; l++) give(s.owner, REMOVED_PERIMETER_LEVELS[l - 2]);
+    s.defenseLevel = 1;
+    for (const b of g.buildings.values()) if (b.site === s.id && b.perimeterSlot && (b.level || 1) > 1 && !b.path) setLevel(b, 1);
   }
 }
 

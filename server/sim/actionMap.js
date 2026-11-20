@@ -4,7 +4,7 @@ import { hash2 } from './rng.js';
 import { CAPTURE, OUTPOST_TYPES, RUIN_TYPES } from './actionDefinitions.js';
 import { centerOf, distance, dxBetween, HEAVY_GROUND, LIGHT_GROUND, tileAt } from './actionNavigation.js';
 import { MAP_SEED, mapPoint, mirrorTile, rotatePoint, rotateTile, siteTiles, symmetryOf, tileOf } from './authoredMaps.js';
-import { ownedStarts, sketchMetrics } from './sketchMaps.js';
+import { ownedStarts, sketchGen, sketchMetrics } from './sketchMaps.js';
 
 const NAMES = ['Ironford', 'Ashby Crossing', 'Gantry', 'Saltreach', 'Signal Point', 'Northlight', 'Hollowgate',
   'Cinderhold', 'Pylon Ridge', 'Dry Dock', 'Ember Station', 'Scrapton', 'Clearwater', 'Terminal', 'Quarry Nine',
@@ -103,8 +103,9 @@ function massifs(w) {
 //    reaches it: any pocket the cores would enclose has its surrounding cores opened (repeated until none remain).
 // Cleared or terrain-changed hexes stop being dense because the check also requires terr === FOREST.
 export const DENSE_FOREST = Object.freeze({ siteGap: 3, lane: 5, minCore: 3, rounds: 12 });
-export function markDenseForest(game) {
-  const w = game.world, nav = game.nav, dense = new Uint8Array(N), { siteGap, lane, minCore } = DENSE_FOREST;
+// Ticket 4: `opts` overrides the constants (a custom map's thick dense forest: wider lanes, so bigger groves)
+export function markDenseForest(game, opts = {}) {
+  const w = game.world, nav = game.nav, dense = new Uint8Array(N), { siteGap, lane, minCore } = { ...DENSE_FOREST, ...opts };
   const keep = new Uint8Array(N);
   for (const s of game.sites || []) for (const t of disk(s.tile, siteGap)) if (t >= 0) keep[t] = 1;
   const roadTile = (t) => { for (let d = 0; d < 6; d++) { const n = NB[t * 6 + d]; if (n >= 0 && game.roads.get(t, n)) return true; } return false; };
@@ -189,6 +190,9 @@ export function buildActionMap(game) {
   massifs(w);
   // a map-builder sketch (sketchMaps.js): every painted base is a start; fewer players leave spares neutral
   const sketch = w.sketch || null;
+  // Ticket 4: a sketch's generation options and hand-placed points of interest (sketchMaps.js SKETCH_GEN, pois)
+  const gen = sketch ? sketchGen(sketch) : null;
+  const pois = gen ? gen.pois : [];
   if (sketch && civs.length > sketch.bases.length) throw new Error(`This custom map has ${sketch.bases.length} bases (this match has ${civs.length} players).`);
   const starts = sketch ? sketch.bases.length : civs.length;
   // Bigger maps carry proportionally more cities and outposts, so larger armies have more to fight over.
@@ -239,7 +243,23 @@ export function buildActionMap(game) {
     // the bases' own landmasses (islands too) are where expansions, outposts and roads may go
     reach = Uint8Array.from(reach);
     for (const b of locations) { const r = reachable(game, b.tile, HEAVY_GROUND); for (let t = 0; t < N; t++) reach[t] |= r[t]; }
+    // Ticket 4: the neutral cities the builder placed take the nearest free city site (a little closer than the base gap)
+    for (const [u, v, kind] of pois) {
+      if (kind !== 'city') continue;
+      const at = mapPoint([u, v]);
+      let best = null, bd = Infinity;
+      for (const c of candidates) {
+        if (occupied.has(c.tile) || !locations.every((o) => distance(o, c) >= gap * .9)) continue;
+        const d = distance(at, c);
+        if (d < bd) { bd = d; best = c; }
+      }
+      if (!best || bd > gap * 1.5) continue;   // no room near that point: skipped rather than moved far away
+      locations.push({ ...best, manual: true });
+      occupied.add(best.tile);
+      const r = reachable(game, best.tile, HEAVY_GROUND); for (let t = 0; t < N; t++) reach[t] |= r[t];
+    }
   }
+  const autoCities = gen?.cities !== false;
   for (let i = 0; i < starts && !sketch; i++) {
     const a = angle + i * Math.PI * 2 / starts, tx = Math.cos(a), tz = Math.sin(a);
     const broad = candidates.filter((p) => disk(p.tile, 1).filter((n) => parcel(w, n)).length >= 6);
@@ -266,9 +286,9 @@ export function buildActionMap(game) {
     locations.push({ ...start, start: i });
     occupied.add(start.tile);
   }
-  if (!occupied.has(central.tile) && (!sketch || locations.every((o) => distance(o, central) >= gap * 1.5))) { locations.push(central); occupied.add(central.tile); }
+  if (autoCities && !occupied.has(central.tile) && (!sketch || locations.every((o) => distance(o, central) >= gap * 1.5))) { locations.push(central); occupied.add(central.tile); }
   // Give each start a nearby expansion with room to maneuver, then fill the contested region.
-  for (let i = 0; i < starts && locations.length < desired; i++) {
+  for (let i = 0; i < starts && autoCities && locations.length < desired; i++) {
     const start = locations[i];
     const preferred = { x: start.x + dxBetween(start.x, central.x) * .48, z: start.z + (central.z - start.z) * .48 };
     // the best-ranked candidate (score, then tile), found in one pass rather than by sorting them all
@@ -280,7 +300,7 @@ export function buildActionMap(game) {
     }
     if (p) { locations.push(p); occupied.add(p.tile); }
   }
-  while (locations.length < desired) {
+  while (autoCities && locations.length < desired) {
     let p = null, top = -Infinity;
     for (const c of candidates) {
       if (!reach[c.tile]) continue;
@@ -307,9 +327,15 @@ export function buildActionMap(game) {
       ...bases.filter((_, b) => !taken.has(b)).map((p) => ({ ...p, start: undefined })), ...rest);
   }
 
+  // Ticket 4: without generated cities the placed city nearest the centre is the metropolis (the Operation objective)
+  const metroTile = autoCities ? central.tile : locations.filter((p) => p.start === undefined && p.manual).sort((a, b) => distance(a, central) - distance(b, central) || a.tile - b.tile)[0]?.tile;
   const sites = locations.map((p, i) => {
-    const kind = p.start !== undefined ? RUIN_TYPES[1] : p.tile === central.tile ? RUIN_TYPES[2] :
-      p.coast >= 4 ? RUIN_TYPES[4] : p.river >= 2 ? RUIN_TYPES[1] : p.hill >= 5 ? RUIN_TYPES[3] : p.noise > .71 ? RUIN_TYPES[5] : RUIN_TYPES[0];
+    const natural = () => p.coast >= 4 ? RUIN_TYPES[4] : p.river >= 2 ? RUIN_TYPES[1] : p.hill >= 5 ? RUIN_TYPES[3] : p.noise > .71 ? RUIN_TYPES[5] : RUIN_TYPES[0];
+    // Ticket 4: a sketch's ruins setting picks the neutral cities' kind (city: metropolitan and industrial ruins,
+    // residential: provincial towns, farm: farmsteads; mixed: from the ground, as before)
+    const styled = () => gen?.ruins === 'city' ? (p.noise > .5 ? RUIN_TYPES[2] : RUIN_TYPES[1]) : gen?.ruins === 'residential' ? RUIN_TYPES[0]
+      : gen?.ruins === 'farm' ? RUIN_BY_KEY.farm : natural();
+    const kind = p.start !== undefined ? RUIN_TYPES[1] : p.tile === metroTile ? RUIN_TYPES[2] : styled();
     const ring = planRing(w, p.tile, seed, i + 1);
     if (!ring || ring.length !== 8) throw new Error('A city ruin must support its complete eight-site ring.');
     const slots = [...ring].sort((a, b) => a.tier - b.tier || a.index - b.index).map((p) => p.id);
@@ -323,7 +349,7 @@ export function buildActionMap(game) {
   gradeSites(w, sites);
   game.nav.invalidate();
   const outposts = ['energy', 'supply', 'radar', 'repair', 'defense'];
-  const count = Math.min(28, Math.round((starts * 2 + 3) * density));
+  const count = gen?.outposts === false ? 0 : Math.min(28, Math.round((starts * 2 + 3) * density));
   // Outposts keep their distance from the cities in proportion to the wider base spacing.
   const spread = gap / 6.2;
   for (let i = 0; i < count; i++) {
@@ -343,6 +369,25 @@ export function buildActionMap(game) {
     sites.push({ id: sites.length + 1, tile: p.tile, x: p.x, z: p.z, name: info.name, kind, ruin: info.ruin,
       radius: .91, captureTime: CAPTURE.outpost, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
   }
+
+  // Ticket 4: the outposts the builder placed, each on the nearest free buildable ground to its point
+  for (const [u, v, kind] of pois) {
+    if (!OUTPOST_TYPES[kind]) continue;
+    const at = mapPoint([u, v]);
+    let p = null, bd = Infinity;
+    for (const c of candidates) {
+      if (occupied.has(c.tile) || !sites.every((s) => distance(s, c) >= (s.slots ? 3.4 : 2.2))) continue;
+      const d = distance(at, c);
+      if (d < bd || d === bd && c.tile < p.tile) { bd = d; p = c; }
+    }
+    if (!p || bd > 6) continue;
+    const info = OUTPOST_TYPES[kind];
+    occupied.add(p.tile);
+    sites.push({ id: sites.length + 1, tile: p.tile, x: p.x, z: p.z, name: info.name, kind, ruin: info.ruin,
+      radius: .91, captureTime: CAPTURE.outpost, owner: -1, by: -1, progress: 0, last: 0, contested: false, claimedAt: -1 });
+  }
+  // ... and its supply caches and power supplies (laid by actionEconomy.seedMaterialCaches)
+  game.manualCaches = pois.filter(([, , kind]) => kind === 'cache' || kind === 'power').map(([u, v, kind]) => ({ ...mapPoint([u, v]), kind }));
 
   w.starts = sites.slice(0, civs.length).map((s) => s.tile);
   const main = sites.filter((s) => s.slots);

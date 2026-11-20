@@ -83,6 +83,7 @@ test('navigation: mountains and peaks are walls for every ground class, road or 
   assert.ok(sim.isMountain(T.MOUNTAIN) && sim.isMountain(T.PEAK) && !sim.isMountain(T.HILLS));
   // the order feedback calls a mountain point impassable
   const u = S.place(sim, g, 0, 'rifle_squad', area.point(2, 2));
+  g.civs[0].explored.fill(1);   // VISION (2026-11-20): only discovered ground is answered impassable
   const reach = g.command(0, { c: 'reach', units: [u.id], point: c }).reply.reach;
   assert.equal(reach.ok, false);
   assert.equal(reach.reason, 'impassable');

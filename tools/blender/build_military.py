@@ -612,9 +612,13 @@ def rifle(name):
     a.box((0, .115, .045), (.006, .01, .018), 'dark', bevel=0)                     # front sight
     save(a, ao_radius=.02, ao_rays=12)
 
-tank_hull('Tank'); tank_hull('Autonomous', autonomous=True); tank_hull('Howitzer', artillery=True)
-turret('Turret', 0); turret('RemoteTurret', 1); turret('HowitzerTurret', 2)
-barrel('GunBarrel'); barrel('HowitzerBarrel', artillery=True)
+# 2026-11-20: the two tanks (hulls, turrets, barrels and team trim) are the stylized models of build_tanks.py; the
+# realistic tank_hull / turret / barrel above still build the self-propelled gun.
+from build_tanks import build_all as build_tanks
+build_tanks(save)
+tank_hull('Howitzer', artillery=True)
+turret('HowitzerTurret', 2)
+barrel('HowitzerBarrel', artillery=True)
 road_wheel('RoadWheel'); truck_wheel('Wheel')
 carrier('Carrier'); armored_car('ArmoredCar'); armored_car_lo('ArmoredCarLo'); armored_car_mount('ArmoredCarMount')
 cargo_truck('CargoTruck', 'cargo'); cargo_truck('RocketTruck', 'rocket'); rocket_pod('RocketPod'); cargo_truck('AirDefense', 'radar')

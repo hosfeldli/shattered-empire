@@ -178,6 +178,7 @@ test('a fresh match lays no bridge; starting bases reach each other on foot; veh
   g.units.clear(); S.reindex(sim, g);
   const pa = bankPoint(g, pair[0], tank, .3), pb = bankPoint(g, pair[1], tank, .3);
   const t1 = S.place(sim, g, 0, 'tank', pa);
+  g.civs[0].explored.fill(1);   // VISION (2026-11-20): the reason is given for discovered ground only
   const refused = g.command(0, { c: 'move', units: [t1.id], point: pb });
   assert.equal(refused.code, 'bridge', JSON.stringify(refused));
   assert.match(refused.error, /bridge/);

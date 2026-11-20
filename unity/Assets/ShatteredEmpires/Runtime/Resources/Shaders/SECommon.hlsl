@@ -231,13 +231,18 @@ half3 SE_ApplyFog(half3 color, float3 positionWS, float fogCoord)
     float3 warped = positionWS + float3(warp.x, 0, warp.y) * .75;
     // 2026-11-19 (line of sight must be obvious): the bilinear per-hex visibility is tightened to a crisp but
     // soft rim (about half a hex wide) instead of a hex-wide gradient
-    half vis = smoothstep(0.28h, 0.72h, (half)SE_Visibility(warped));
-    // Explored-but-unseen land is strongly desaturated, cooled and much darker (about a third of its lit
-    // brightness at the default strength), never fully black so remembered ground and structures stay
-    // readable. It carries no cloud: the volumetric shroud (SE/Shroud) covers only never-explored ground and
-    // the boundary hexes beside it, which also hides the cut edge of known terrain.
+    float4 fogSample = _SE_FogParams.z < 0.5 ? float4(1, 1, 0, 1) : SAMPLE_TEXTURE2D_LOD(_SE_FogTex, sampler_SE_FogTex, SE_MapUV(warped), 0);
+    half vis = smoothstep(0.28h, 0.72h, (half)fogSample.r);
+    // Explored-but-unseen land is strongly desaturated, cooled and much darker, never fully black so remembered
+    // ground and structures stay readable. It carries no cloud: the volumetric shroud (SE/Shroud) covers only
+    // never-explored ground and the boundary hexes beside it, which also hides the cut edge of known terrain.
+    // 2026-11-20 (Ticket 2: "areas without line of sight should be much darker; undiscovered areas stay as they
+    // are"): ground this player has explored (fog G) drops to about a fifth of its lit brightness at the default
+    // strength; never-explored ground under the shroud keeps the older, lighter dim (about a third).
+    half explored = saturate((half)fogSample.g * 1.25h);
     half grey = dot(color, half3(0.3h, 0.59h, 0.11h));
-    half3 dimmed = lerp(color, grey.xxx * half3(0.78h, 0.85h, 1.0h), 0.62h) * (1.0h - _SE_FogParams.w * .7h);
+    half keep = 1.0h - _SE_FogParams.w * lerp(0.7h, 0.87h, explored);
+    half3 dimmed = lerp(color, grey.xxx * half3(0.76h, 0.84h, 1.0h), lerp(0.62h, 0.72h, explored)) * keep;
     // a faint dark seam just outside the edge of sight makes the line of sight read at a glance
     half seam = smoothstep(0.0h, 0.35h, vis) * (1.0h - smoothstep(0.35h, 0.8h, vis));
     color = lerp(dimmed, color, vis) * (1.0h - seam * 0.22h * (_SE_FogParams.z > 0.5 ? 1.0h : 0.0h));

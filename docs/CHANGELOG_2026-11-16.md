@@ -2451,3 +2451,33 @@ Play mode at 1280×720 against a local server on :8093. Mouse drags were injecte
 - The fogged-perimeter case is covered by a server test only. In play the base was in sight; the 2 lots skipped there were blocked lots.
 - Aircraft (helicopter, swarm, bomber) could not be judged in the mirror arena, which has no airfield, so they barely fight there. Their numbers are unchanged.
 - The cloud server needs a deploy for all of the above.
+
+## Tank pass (2026-11-20)
+
+User: "Tanks are too weak and too small." Server numbers in `server/sim/actionDefinitions.js` (TANK PASS block), the
+coaxial machine gun in `actionCombat.coaxStep`, tests in `test/tank-pass-2026-11-20.test.js`.
+
+- **Main gun:** fires slower (`fireCooldown`), but every round is a high-explosive area blast (`def.blast`, the
+  projectile radius; damage falls to 34% at the rim). A tank's HE blast kills at least 6 men of a squad
+  (`killCap`, 3 × the cannon's HE share) and splashes any squad beside its target.
+- **Coaxial machine gun (`def.coax`, weapon `coax`):** a secondary on its own cooldown, firing at hostile infantry within
+  its short range whatever the main gun is doing; silent on hold fire. Small arms (no use against armour).
+- **Hitbox unchanged** (tank .25, autonomous .255); the client draws both hulls 25% larger.
+
+| What | Tank before | Tank after | Autonomous before | Autonomous after |
+|---|---|---|---|---|
+| Cost (materials / energy) | 235 / 80 | 295 / 100 | 340 / 150 | 425 / 190 |
+| HP | 330 | 495 | 480 | 760 |
+| Armour (def) | 18 | 18 | 26 | 32 |
+| Range | 2.79 | 3.49 | 3.96 | 4.95 |
+| Speed | 1.10 | 1.10 | 1.27 | 1.27 |
+| Main gun atk / interval | 28 / 2.2 s | 67 / 3.5 s | 40 / 2.2 s | 100 / 3.2 s |
+| Damage per round (vs infantry ×1.25 / ×1.2) | 46 | 111 | 66 | 165 |
+| Sustained DPS vs a tank (def 18) | 23.6 | 36.9 (×1.57) | 34.4 | 60.8 (×1.77) |
+| Blast radius | none | 0.46 | none | 0.52 |
+| Coax MG (dmg / interval / range) | none | 13 / 1.2 s / 2.3 | none | 20 / 1.0 s / 2.6 (twin) |
+
+The autonomous tank is the best ground unit: 1.56× the tank's price for 1.54× its health, 1.63× its gun DPS, 1.42× its
+reach (outside AT squads 3.25, the IFV missile 3.6 and the missile battery's 3.5 dead zone) and the stronger coax.
+The AI's force estimate (`atk × health share`) rises with the per-round atk (tank ×2.4), in line with its real
+strength (health × DPS, ×2.25), so no AI table needed changing.

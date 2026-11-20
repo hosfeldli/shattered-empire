@@ -15,6 +15,9 @@ export const footprintOf = (type) => FOOTPRINTS[type] || null;
 const SOLID = {};
 for (const [type, rects] of Object.entries(FOOTPRINTS)) SOLID[type] = rects.filter((r) => Math.min(r[2], r[3]) >= .06).map(([x, z, hw, hd, yaw]) => [x, z, hw - .03, hd - .03, yaw]);
 const solidFootprintOf = (type) => SOLID[type] || null;
+const NO_OWNER = -99;   // obstacleAt's skipOwner when no side's structures are skipped (owners are >= -1)
+/** The farthest solid wall corner of a building type from its origin (0 without recorded walls). */
+export const footprintReach = (type) => SOLID[type]?.length ? footprintPre(SOLID[type]).reach : 0;
 
 /** True if a disc of radius r at (x, z) touches any recorded wall of building b. */
 export function insideFootprint(b, rects, x, z, r) {
@@ -1005,11 +1008,11 @@ export class ActionNavigation {
     return road ? Math.min(base, road === 1 ? .84 : .66) : base;
   }
 
-  obstacleAt(t, x, z, radius, ignore = 0, ignoreTarget = 0, sight = false) {
+  obstacleAt(t, x, z, radius, ignore = 0, ignoreTarget = 0, sight = false, skipOwner = NO_OWNER) {
     const near = this.game.obstaclesAtTile(t);
     for (let i = 0; i < near.length; i++) {
       const b = near[i];
-      if (b.id === ignore || b.id === ignoreTarget) continue;
+      if (b.id === ignore || b.id === ignoreTarget || b.owner === skipOwner) continue;
       const def = this.game.defs.BUILDINGS[b.type];
       if (sight && def?.lowCover) continue;
       const rects = b.done !== false && b.state !== 'ruin' ? solidFootprintOf(b.type) : null;
@@ -1593,14 +1596,19 @@ export class ActionNavigation {
     return true;
   }
 
-  clearShot(a, b) {
+  /**
+   * Line of sight from a to b over the terrain and structures. `tower` (2026-11-20, perimeter turrets): the shooter is
+   * a raised gun tower: its eye stands tower.rise above its hex and it overlooks the structures of its own side
+   * (tower.owner: its base's facilities and defenses do not block it).
+   */
+  clearShot(a, b, tower = null) {
     const dx = dxBetween(a.x, b.x), dz = b.z - a.z, steps = Math.ceil(Math.hypot(dx, dz) / .44);
     const start = tileAt(a.x, a.z), end = tileAt(b.x, b.z);
-    const elev = this.world.elev, lo = elev[start] ?? 0, hi = elev[end] ?? 0;
+    const elev = this.world.elev, lo = (elev[start] ?? 0) + (tower?.rise || 0), hi = elev[end] ?? 0, own = tower ? tower.owner : NO_OWNER;
     for (let i = 1; i < steps; i++) {
       const f = i / steps, x = wrapX(a.x + dx * f), z = a.z + dz * f, t = tileAt(x, z);
       if (t < 0) continue;
-      if (t !== start && t !== end && elev[t] > lo + (hi - lo) * f + .18 || this.obstacleAt(t, x, z, 0, a.id, b.id, true)) return false;
+      if (t !== start && t !== end && elev[t] > lo + (hi - lo) * f + .18 || this.obstacleAt(t, x, z, 0, a.id, b.id, true, own)) return false;
     }
     return true;
   }

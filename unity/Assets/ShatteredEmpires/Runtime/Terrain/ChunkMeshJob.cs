@@ -44,10 +44,14 @@ namespace SE.Runtime.Landscape
         [NativeDisableUnsafePtrRestriction] public float* Impacts;
         [NativeDisableUnsafePtrRestriction] public byte* ImpactCounts;
         [NativeDisableUnsafePtrRestriction] public float* Trenches;
+        [NativeDisableUnsafePtrRestriction] public float* Pads;   // building pads (TerrainView.Pads); null: none
         [NativeDisableUnsafePtrRestriction] public byte* Geo;
         [NativeDisableUnsafePtrRestriction] public byte* Dense;   // §30 dense forest (WorldModel.Dense), 1 per hex; null: none
         public int W, H, WrapFlag, Cx, Cy, Cs, Seed;
         public float Period, OriginX, TreeDensity;
+        /// <summary>Ticket 4: a custom map's look (server defs.MAP_STYLE): tree season (0 summer, 1 autumn, 2 winter, 3 spring) and tree height.</summary>
+        public int Season;
+        public float TreeHeight;
 
         public Mesh.MeshDataArray Meshes;                 // 0 detailed ground, 1 coarse ground, 2 water
         [ReadOnly] public NativeArray<VertexAttributeDescriptor> Layout;   // TerrainVertex layout (Burst needs a native array)
@@ -66,7 +70,7 @@ namespace SE.Runtime.Landscape
         TerrainView View => new TerrainView
         {
             W = W, H = H, Wrap = WrapFlag, Period = Period, Height = Height, Water = Water, Known = Known,
-            GeoFlags = GeoFlags, Biome = Biome, Nb = Nb, Impacts = Impacts, ImpactCounts = ImpactCounts, Trenches = Trenches,
+            GeoFlags = GeoFlags, Biome = Biome, Nb = Nb, Impacts = Impacts, ImpactCounts = ImpactCounts, Trenches = Trenches, Pads = Pads,
         };
 
         static float Hash(int a, int b)
@@ -418,7 +422,9 @@ namespace SE.Runtime.Landscape
                     int i = r * W + q;
                     if (Known[i] == 0) continue;
                     hexes++;
-                    if (v.HasDamage(i) || v.HasShore(i)) { damaged++; if (CraterHex(i)) cratered++; }
+                    // sized exactly as the refine test below (a building pad is refined too: without it the detailed
+                    // buffer overflowed in chunks with many pads; scale pass 2026-11-20)
+                    if (v.HasDamage(i) || v.HasShore(i) || v.HasPad(i)) { damaged++; if (CraterHex(i)) cratered++; }
                     if (WaterLevelFor(i) > TerrainView.NoWater * 0.5f) { water++; if (v.HasShore(i)) shoreWater++; }
                     if (IsChannel(i)) rivers++;
                 }
@@ -449,7 +455,7 @@ namespace SE.Runtime.Landscape
                     float cx = HexMath.CenterX(i, W), cz = HexMath.CenterZ(i, W);
                     bool seaFloor = v.IsSea(i);
                     float3 own = HexColor(i);
-                    bool refine = v.HasDamage(i) || v.HasShore(i);
+                    bool refine = v.HasDamage(i) || v.HasShore(i) || v.HasPad(i);   // a building pad's terrace needs the finer mesh
                     int div = refine && CraterHex(i) ? 4 : 3;
                     float step = 1f / div;
                     for (int k = 0; k < 6; k++)
@@ -552,11 +558,18 @@ namespace SE.Runtime.Landscape
                         bool conifer = b == 6 || b == 9 || b == 8 || (b == 4 && Hash(i, Seed + 9) < 0.3f) || y > 3f;
                         float g = Hash(i * 29 + t, Seed + 6);
                         int groveId = (int)math.floor(cx / 12f) + (int)math.floor(cz / 12f) * 4099;
-                        float autumn = Hash(groveId, Seed + 11) < .055f ? 1f : 0f;
+                        float groveHash = Hash(groveId, Seed + 11);
+                        float autumn = groveHash < (Season == 1 ? .8f : .055f) ? 1f : 0f;
                         var col = conifer ? new float4(.26f + g * .04f, .35f + g * .05f, .25f, 0)
                             : new float4(.36f + g * .07f + autumn * .14f, .44f + g * .06f - autumn * .04f, .29f + g * .025f, 0);
+                        // Ticket 4: the season of a custom map (summer as always; autumn turns most groves to rust and gold,
+                        // winter leaves broadleaves bare and frosts the conifers, spring brings fresh green and blossom)
+                        if (Season == 1 && !conifer) col.xyz = math.lerp(col.xyz, new float3(.62f + g * .14f, .38f + g * .16f, .16f), .55f * autumn);
+                        else if (Season == 2) col.xyz = conifer ? math.lerp(col.xyz, new float3(.74f, .78f, .80f), .32f) : new float3(.40f + g * .05f, .35f + g * .04f, .30f);
+                        else if (Season == 3 && !conifer) col.xyz = groveHash < .12f ? new float3(.86f, .74f + g * .1f, .80f) : col.xyz * new float3(1.08f, 1.18f, .92f);
                         if (dense) col.xyz *= .82f;   // dense forest reads darker at every zoom
-                        var inst = InstanceData.TRS(MapSpace.W(x, y - 0.01f, z), MapSpace.Yaw(Hash(i * 31 + t, Seed) * 6.283f), new float3(s, s * (0.9f + g * 0.4f), s), col);
+                        float th = TreeHeight > 0 ? TreeHeight : 1f, tw = 1f + (th - 1f) * .5f;   // Ticket 4: taller trees grow a little wider too
+                        var inst = InstanceData.TRS(MapSpace.W(x, y - 0.01f, z), MapSpace.Yaw(Hash(i * 31 + t, Seed) * 6.283f), new float3(s * tw, s * (0.9f + g * 0.4f) * th, s * tw), col);
                         if (conifer) { if (treeB < TreesB.Length) TreesB[treeB++] = inst; }
                         else if (treeA < TreesA.Length) TreesA[treeA++] = inst;
                     }
@@ -577,6 +590,8 @@ namespace SE.Runtime.Landscape
                         float y = v.GroundHeight(x, z), variation = Hash(i * 61 + t, Seed + 34);
                         float scale = .68f + variation * .47f;
                         var color = new float4(.47f + variation * .10f, .53f + variation * .07f, .31f + variation * .065f, 0);
+                        if (Season == 2) color.xyz = math.lerp(color.xyz, new float3(.66f, .62f, .50f), .55f);        // Ticket 4: winter straw
+                        else if (Season == 1) color.xyz = math.lerp(color.xyz, new float3(.62f, .52f, .30f), .35f);   // autumn grass
                         var plant = InstanceData.TRS(MapSpace.W(x, y - .0007f, z), MapSpace.Yaw(variation * 6.283f), new float3(scale), color);
                         if (grass < Grass.Length) Grass[grass++] = plant;
                         if (dense) color.xyz *= .78f;   // shaded forest floor

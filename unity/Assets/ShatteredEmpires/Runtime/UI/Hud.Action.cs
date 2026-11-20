@@ -519,8 +519,8 @@ namespace SE.Runtime.UI
             label.style.marginLeft = 0; label.style.flexShrink = 0;
             var bar = UiKit.El("se-cmd-bar", head);
             bar.style.flexGrow = 1; bar.style.height = 5; bar.style.flexDirection = FlexDirection.Row; bar.style.overflow = Overflow.Hidden;
-            bar.tooltip = "Production capacity: one budget per building, shared by its unit queues. High priority is served first, " +
-                "then equal shares; more queues never add speed. Coloured parts: the queues producing now; dark: unused.";
+            bar.tooltip = "Production capacity: one budget per building. Units are produced one at a time in the order they were queued " +
+                "(high priority first); a queue that is waiting for funds passes its turn to the next. Coloured parts: the queues producing now; dark: unused.";
             var segments = new VisualElement[ShareColors.Length];
             for (int k = 0; k < segments.Length; k++)
             {
@@ -557,6 +557,8 @@ namespace SE.Runtime.UI
                 {
                     cap += b.ProductionCapacity;
                     if (!string.IsNullOrEmpty(b.Repeat)) repeat = true;
+                    // 2026-11-20: one row per unit type, in the order its first item was queued (production follows it)
+                    if (b.Order != null) foreach (var unit in b.Order) if (!string.IsNullOrEmpty(unit) && !queueTypes.Contains(unit)) queueTypes.Add(unit);
                     if (b.Queues == null) continue;
                     foreach (var q in b.Queues) if (q.Count > 0 && !queueTypes.Contains(q.Unit)) queueTypes.Add(q.Unit);
                 }
@@ -584,7 +586,7 @@ namespace SE.Runtime.UI
                 {
                     shownCap = cap; shownProducing = producing;
                     string c = cap > 0 ? $"{cap:0.##} work/s · " : "";
-                    caption.text = c + (producing == 0 ? "idle" : producing == 1 ? "1 queue producing" : $"{producing} queues share it");
+                    caption.text = c + (producing == 0 ? "idle" : producing == 1 ? "in the order queued" : $"{producing} buildings producing");
                 }
                 if (repeat != shownRepeat) { shownRepeat = repeat; tag.style.display = repeat ? DisplayStyle.Flex : DisplayStyle.None; }
                 bool any = queueTypes.Count > 0;

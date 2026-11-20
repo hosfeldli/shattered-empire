@@ -16,8 +16,8 @@ namespace SE.Runtime.UI
     /// circle stays centred on the camera. Layers, bottom to top: terrain + territory + fog (a texture
     /// redrawn twice a second), buildings and units as relation-coloured dots (gathered eight times a
     /// second; one owner's units sharing a 4 px cell merge into a dot that grows with the count), bases shape-coded (friendly circle, enemy diamond, neutral hollow
-    /// ring), the camera footprint (a filled trapezoid) and alert pings. Z (minimap_zoom) switches to a local view
-    /// around the camera, 2.25 times closer. Left-click or drag moves the camera; right-click
+    /// ring), the camera footprint (a filled trapezoid) and alert pings. Z (minimap_zoom) cycles a local view around
+    /// the camera (2.25 times closer), a close view (4.5 times) and back to the whole map. Left-click or drag moves the camera; right-click
     /// orders the selection there (<see cref="OrderAt"/>). Nothing here allocates per frame, and the dot and
     /// mark meshes are regenerated only when their content changes.
     /// </summary>
@@ -40,16 +40,23 @@ namespace SE.Runtime.UI
 
         // projection (clip-local panel units): screen = (mapLeft + x * scale, mapTop + z * scale)
         float scale = 1f, mapW, mapH, mapLeft, mapTop, focusX, focusZ, baseScale = 1f;
-        // the local view (Z): the circle shows a smaller section around the camera, ZoomFactor times closer
-        // (relative to the filled whole-map view: about 3.2x the old diagonal fit)
-        const float ZoomFactor = 2.25f;
+        // the local views (Z cycles them): the circle shows a smaller section around the camera, ZoomFactor times
+        // closer (relative to the filled whole-map view: about 3.2x the old diagonal fit), then CloseFactor times
+        const float ZoomFactor = 2.25f, CloseFactor = 4.5f;
+        const int ZoomLevels = 3;   // 0 whole map · 1 local view · 2 close view
         // whole-map view: the camera footprint centre stays at least this far inside the rim (px)
         const float FollowMargin = 22f;
-        bool zoomed, zoomDirty;
-        // the Z switch eases: 0 whole map … 1 local view, smoothstepped over ZoomSeconds of unscaled (panel) time
+        int zoomLevel;
+        bool zoomDirty;
+        // the Z switch eases: 0 whole map … 1 local view … 2 close view, each step smoothstepped over ZoomSeconds
+        // of unscaled (panel) time
         const float ZoomSeconds = .3f;
         float zoomT, zoomTickAt = -1f;
-        float ZoomEase => zoomT * zoomT * (3f - 2f * zoomT);
+        static float Smooth(float t) { t = Mathf.Clamp01(t); return t * t * (3f - 2f * t); }
+        // whole map → camera-centred blend (0 … 1; stays 1 through the close view)
+        float ZoomEase => Smooth(zoomT);
+        // the eased magnification for the current zoomT
+        float ZoomScale => zoomT <= 1f ? Mathf.Lerp(1f, ZoomFactor, Smooth(zoomT)) : Mathf.Lerp(ZoomFactor, CloseFactor, Smooth(zoomT - 1f));
         readonly float[] terrainLeft = { float.NaN, float.NaN, float.NaN };
         float terrainTop = float.NaN;
         readonly Vector2[] foot = new Vector2[4];
@@ -132,11 +139,14 @@ namespace SE.Runtime.UI
         /// <summary>Repaint the storm layer after its texture changed.</summary>
         public void WeatherChanged() { foreach (var img in weatherLayer) img?.MarkDirtyRepaint(); }
 
-        /// <summary>True while the circle shows the local section around the camera instead of the whole map.</summary>
-        public bool Zoomed => zoomed;
+        /// <summary>True while the circle shows a local section around the camera instead of the whole map.</summary>
+        public bool Zoomed => zoomLevel > 0;
 
-        /// <summary>Z: switch between the whole map (default) and the local view around the camera.</summary>
-        public void ToggleZoom() { zoomed = !zoomed; zoomDirty = true; }
+        /// <summary>0 whole map, 1 local view, 2 close view.</summary>
+        public int ZoomLevel => zoomLevel;
+
+        /// <summary>Z: cycle whole map (default) → local view → close view → whole map.</summary>
+        public void ToggleZoom() { zoomLevel = (zoomLevel + 1) % ZoomLevels; zoomDirty = true; }
 
         /// <summary>The disc's outer diameter including the bezel (panel units; SE.Minimap.uss places it at 240).</summary>
         public const float Diameter = Outer;
@@ -343,10 +353,12 @@ namespace SE.Runtime.UI
             if (zoomDirty) { zoomDirty = false; gatherAt = 0; }
             float zdt = zoomTickAt < 0f ? 0f : Mathf.Clamp(time - zoomTickAt, 0f, .1f);
             zoomTickAt = time;
-            float zoomTarget = zoomed ? 1f : 0f;
+            float zoomTarget = zoomLevel;
             if (zoomT != zoomTarget)
             {
-                zoomT = App.GameSettings.ReduceUiMotion ? zoomTarget : Mathf.MoveTowards(zoomT, zoomTarget, zdt / ZoomSeconds);
+                // close → whole map spans two steps: twice the rate, so every switch takes ZoomSeconds
+                float rate = Mathf.Abs(zoomTarget - zoomT) > 1f ? 2f : 1f;
+                zoomT = App.GameSettings.ReduceUiMotion ? zoomTarget : Mathf.MoveTowards(zoomT, zoomTarget, rate * zdt / ZoomSeconds);
                 ApplyScale();   // terrain size and cells follow the eased scale (cells were sized once for the closest view)
                 rescaled = true;
             }
@@ -412,7 +424,7 @@ namespace SE.Runtime.UI
             focusX = g.Period * 0.5f;
             focusZ = depth * 0.5f;
             // aggregation cells sized once for the closest view, so toggling the local view never allocates
-            int maxCells = (Mathf.CeilToInt(g.Period * baseScale * ZoomFactor / CellPx) + 1) * (Mathf.CeilToInt(depth * baseScale * ZoomFactor / CellPx) + 1) * 8;
+            int maxCells = (Mathf.CeilToInt(g.Period * baseScale * CloseFactor / CellPx) + 1) * (Mathf.CeilToInt(depth * baseScale * CloseFactor / CellPx) + 1) * 8;
             if (stamp.Length < maxCells) { stamp = new int[maxCells]; cellDot = new int[maxCells]; }
             else Array.Clear(stamp, 0, stamp.Length);
             stampGen = 0;
@@ -449,7 +461,7 @@ namespace SE.Runtime.UI
         {
             var g = grid;
             if (g == null) return;
-            scale = baseScale * Mathf.Lerp(1f, ZoomFactor, ZoomEase);
+            scale = baseScale * ZoomScale;
             mapW = g.Period * scale;
             mapH = g.H * 1.5f * scale;
             cellsX = Mathf.CeilToInt(mapW / CellPx) + 1;

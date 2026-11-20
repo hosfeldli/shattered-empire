@@ -52,6 +52,9 @@ namespace SE.Core.World
         public float[] Impacts = Array.Empty<float>();
         public byte[] ImpactCounts = Array.Empty<byte>();
         public float[] TrenchGeometry = Array.Empty<float>();
+        /// <summary>Building pads, TerrainView.PadSlots x [local x, local z, radius, height] per hex (see TerrainView.Pads).</summary>
+        public float[] PadGeometry = Array.Empty<float>();
+        readonly HashSet<int> padTiles = new HashSet<int>();
         readonly HashSet<int> trenchTiles = new HashSet<int>();
         readonly HashSet<int> impactTiles = new HashSet<int>();
 
@@ -95,6 +98,7 @@ namespace SE.Core.World
                 waterBefore = new float[n]; heightBefore = new float[n];
                 Impacts = new float[n * 24]; ImpactCounts = new byte[n];
                 TrenchGeometry = new float[n * 4];
+                PadGeometry = new float[n * TerrainView.PadSlots * 4];
                 Terrain = new byte[n];
                 Owner = new int[n];
                 Road = new int[n];
@@ -115,8 +119,10 @@ namespace SE.Core.World
                 Array.Clear(Visible, 0, Visible.Length); Array.Clear(Urban, 0, Urban.Length);
                 Array.Clear(Impacts, 0, Impacts.Length); Array.Clear(ImpactCounts, 0, ImpactCounts.Length);
                 Array.Clear(TrenchGeometry, 0, TrenchGeometry.Length);
+                Array.Clear(PadGeometry, 0, PadGeometry.Length);
             }
             impactTiles.Clear();
+            padTiles.Clear();
             trenchTiles.Clear();
             for (int i = 0; i < Owner.Length; i++) Owner[i] = -1;
             for (int i = 0; i < Water.Length; i++) Water[i] = TerrainView.NoWater;
@@ -135,6 +141,7 @@ namespace SE.Core.World
                 Biome = (byte*)PinArray(Biome), Nb = (int*)PinArray(Grid.Nb),
                 Impacts = (float*)PinArray(Impacts), ImpactCounts = (byte*)PinArray(ImpactCounts),
                 Trenches = (float*)PinArray(TrenchGeometry),
+                Pads = (float*)PinArray(PadGeometry),
             };
             GeoPtr = (byte*)PinArray(Geo);
             DensePtr = (byte*)PinArray(Dense);
@@ -211,6 +218,68 @@ namespace SE.Core.World
                 for (int d = 0; d < 6; d++) { int n = Grid.Nb[tile * 6 + d]; if (n >= 0) { chunks.Add(ChunkOf(n)); cells.Add(ChunkOf(n)); } }
             }
             trenchTiles.Clear(); trenchTiles.UnionWith(next.Keys);
+            if (changed) GeometryRevision++;
+        }
+
+        /// <summary>A building's footprint for <see cref="ApplyPads"/>: centre and radius (map units).</summary>
+        public struct PadSource { public float X, Z, Radius; }
+
+        readonly Dictionary<int, List<float>> padNext = new Dictionary<int, List<float>>();
+        readonly HashSet<int> padCandidates = new HashSet<int>();
+        readonly float[] padValues = new float[TerrainView.PadSlots * 4];
+
+        /// <summary>
+        /// Building pads (2026-11-20): every building on sloping ground levels the terrain under its footprint to the
+        /// natural ground height at its centre (where it is drawn), easing back over TerrainView.PadBlend. Buildings on
+        /// level ground (within ~1 cm round the footprint) get none, so flat bases keep their coarse mesh. Rewritten from
+        /// the whole building list; the chunks and render cells of every hex whose pads changed are marked dirty.
+        /// </summary>
+        public void ApplyPads(List<PadSource> sources, Action beforeChange, HashSet<int> chunks, HashSet<int> cells)
+        {
+            if (!Ready || PadGeometry.Length == 0) return;
+            var bare = view; bare.Pads = null;   // the natural ground (pads never stack on themselves)
+            foreach (var l in padNext.Values) l.Clear();
+            var next = padNext;
+            const int Stride = TerrainView.PadSlots * 4;
+            foreach (var p in sources)
+            {
+                int tile = Grid.TileAt(p.X, p.Z);
+                if (tile < 0 || Known[tile] == 0 || p.Radius <= 0) continue;
+                float h = bare.GroundHeight(p.X, p.Z), dev = 0;
+                for (int k = 0; k < 8; k++)
+                {
+                    float a = k * (float)Math.PI / 4f;
+                    dev = Math.Max(dev, Math.Abs(bare.GroundHeight(p.X + (float)Math.Cos(a) * p.Radius, p.Z + (float)Math.Sin(a) * p.Radius) - h));
+                }
+                if (dev < .012f) continue;
+                float reach = p.Radius + TerrainView.PadBlend + 1f;
+                for (int c = -1; c < 6; c++)
+                {
+                    int n = c < 0 ? tile : Grid.Nb[tile * 6 + c];
+                    if (n < 0 || Known[n] == 0) continue;
+                    float lx = Grid.DxWrap(Grid.CenterX(n), p.X), lz = p.Z - Grid.CenterZ(n);
+                    if (lx * lx + lz * lz >= reach * reach) continue;
+                    if (!next.TryGetValue(n, out var list)) next[n] = list = new List<float>(Stride);
+                    if (list.Count >= Stride) continue;
+                    list.Add(lx); list.Add(lz); list.Add(p.Radius); list.Add(h);
+                }
+            }
+            bool changed = false;
+            var candidates = padCandidates; candidates.Clear(); candidates.UnionWith(padTiles);
+            foreach (var kv in next) if (kv.Value.Count > 0) candidates.Add(kv.Key);
+            padTiles.Clear();
+            foreach (int tile in candidates)
+            {
+                Array.Clear(padValues, 0, Stride);
+                if (next.TryGetValue(tile, out var list) && list.Count > 0) { list.CopyTo(padValues); padTiles.Add(tile); }
+                int offset = tile * Stride;
+                bool same = true;
+                for (int k = 0; k < Stride && same; k++) same = PadGeometry[offset + k] == padValues[k];
+                if (same) continue;
+                if (!changed) { beforeChange?.Invoke(); changed = true; }
+                Array.Copy(padValues, 0, PadGeometry, offset, Stride);
+                chunks.Add(ChunkOf(tile)); cells.Add(ChunkOf(tile));
+            }
             if (changed) GeometryRevision++;
         }
 

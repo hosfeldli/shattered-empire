@@ -6,7 +6,7 @@ import { Scheduler } from './scheduler.js';
 import { addCrater, addSmoke, battlefieldSnapshot, battlefieldStep, rememberBattlefield, smokeAt } from './battlefield.js';
 import { bridgesFor } from './bridges.js';
 import { actionDefinitions, ACTION_BUILDINGS, ACTION_UNITS, DOMINANCE, OUTPOST_TYPES } from './actionDefinitions.js';
-import { ActionNavigation, centerOf, distance, dxBetween, SpatialIndex, tileAt, TILE_X, TILE_Z, wrapX } from './actionNavigation.js';
+import { ActionNavigation, centerOf, distance, dxBetween, footprintReach, SpatialIndex, tileAt, TILE_X, TILE_Z, wrapX } from './actionNavigation.js';
 import { TargetIndex } from './targetIndex.js';
 import { baseStreets, buildActionMap, denseWire, markDenseForest } from './actionMap.js';
 import { deployLine, moveGroup, ownedUnits, reachQuery, STANCES, stanceOf, stopUnit, unitMotion } from './actionOrders.js';
@@ -22,11 +22,17 @@ import { planActionAI } from './actionAI.js';
 import { collectOrder, fieldEconomyStep, roadBuild, seedMaterialCaches, visibleCaches } from './actionEconomy.js';
 import { staffBase, terrainOrder } from './actionEngineers.js';
 import { menOf } from './actionUpgrades.js';
+// 2026-11-20 base menu rework (BASE_MENU_REWORK.md): per-building upgrades, their sight mechanics, outpost plots
+import { centreTurret, concealed, detectRadius, engineerUpgrade, kitBits, perimeterUpgrade, unitUpgrade, visionBonus } from './actionUnitUpgrades.js';
+import { engineerWire } from './actionEngineers.js';
+import { outpostBuild } from './actionOutposts.js';
 import { emit } from './combat.js';
 import { captureStep } from './actionCapture.js';
 import { ejectAll, garrisonCommand, garrisonRally, garrisonStep, garrisonWire, leaveBuilding, ungarrisonCommand } from './actionGarrison.js';
 import { voteWire } from './speedVote.js';
 import { HORDE_OBJECTIVE, hordeOutcome, hordeStep, hordeWire, setupHorde } from './horde.js';   // BLIGHT survival mode (HORDE_MODE.md)
+import { applyUnitRules, normalizeRules, startResources } from './matchRules.js';   // Ticket 4: game creation settings
+import { forestLevelOf, mapStyleOf, sketchGen } from './sketchMaps.js';
 
 const round = (n, f = 100) => Math.round(n * f) / f;
 const VALID_SCENARIOS = new Set(['domination', 'control', 'operation', HORDE_OBJECTIVE]);
@@ -38,6 +44,18 @@ const VEHICLE_SPAWN_GAP = .035;
 // A new unit's place along its facility's front (spawn / doorPoint): the door, then alternately right and left of it,
 // in steps of the unit's width.
 const DOOR_SIDES = [0, 1, -1, 2, -2, 3, -3];
+// 2026-11-20 ("units produced by a building should come directly out of it"): the doors and bays of the Blender
+// facility models (tools/blender/build_buildings.py), [x, z] in the building frame of actionFootprints.json (+z is the
+// front; x is mirrored from Blender's). A new unit appears on the ground just outside the door it comes out of
+// (the walls, or the obstacle circle of a type without recorded walls, decide how far out), main door first.
+export const FACILITY_DOORS = Object.freeze({
+  barracks: [[.17, .02]],
+  motor_works: [[.10, .10], [.36, .10], [-.16, .10]],
+  heavy_weapons: [[-.12, .05]],
+  airfield: [[-.31, -.12], [.08, -.12]],
+  advanced_lab: [[-.22, .01]],
+});
+const DOOR_STEP = .05;
 // Without a rally point a new unit walks this far out from the facility's edge (world units, ~1.5 hexes from the
 // centre of a barracks), spread up to `spread` either side so a queue does not stack on one spot.
 const ASSEMBLY = { distance: .95, spread: .55 };
@@ -50,6 +68,17 @@ export class ActionGame extends Game {
   constructor(options) {
     super({ ...options, ruleset: ACTION_RULESET, restore: true });
     this.defs = actionDefinitions(this.defs);
+    // Ticket 4 (2026-11-20): the host's match rules (matchRules.js: starting stockpile, unit speed / range / health)
+    // and a custom map's generation options (sketchMaps.js gen: forests, caches, outposts ...), both saved (persist.js)
+    this.rules = normalizeRules(options.rules);
+    applyUnitRules(this.rules);
+    this.mapGen = options.mapGen || (this.world.sketch ? sketchGen(this.world.sketch) : null);
+    if (this.mapGen) this.world.forestLevel = forestLevelOf(this.mapGen);
+    // the client's match info (welcome defs): the rules and every player's resource multiplier, read when sent
+    // (a getter: a restored save fills the civs' multipliers in after this constructor)
+    Object.defineProperty(this.defs, 'MATCH_RULES', { enumerable: true, configurable: true,
+      get: () => ({ ...this.rules, income: this.civs.map((c) => c.income ?? 1) }) });
+    this.defs.MAP_STYLE = mapStyleOf(this.mapGen);
     this.scenario = VALID_SCENARIOS.has(options.objective) ? options.objective : 'domination';
     this.tutorial = !!options.tutorial;
     this.tutorialSite = 0;
@@ -72,16 +101,17 @@ export class ActionGame extends Game {
     this.engagements = new Map();
     this.reports = [];
     this.groupJobs = [];   // Pass 3: members of large group orders still to be routed (actionOrders.groupRouteStep)
-    const startRes = START_RES[options.startRes] || START_RES.standard;
+    const startRes = startResources(START_RES[options.startRes] || START_RES.standard, this.rules);
     // explicit teams (a lobby with closed seats: uneven sides); otherwise team = seat / team size
     const teamOf = Array.isArray(options.teamOf) && options.teamOf.length === this.civs.length && options.teamOf.every((t) => Number.isInteger(t) && t >= 0 && t < MAX_TEAMS) ? options.teamOf : null;
     for (const civ of this.civs) this.initCiv(civ, startRes, teamOf);
     if (options.restore) return;
     this.setSites(buildActionMap(this));
     // 2026-11-18 (ROADS_AND_CLAIMS.md): the starting bases get their own compound streets; no road leaves them
-    for (const civ of this.civs) for (const e of baseStreets(this, this.sites[civ.id])) this.roads.set(e.a, e.b, 2);
+    // (Ticket 4: a custom map may turn them off, sketchMaps gen.streets)
+    if (this.mapGen?.streets !== false) for (const civ of this.civs) for (const e of baseStreets(this, this.sites[civ.id])) this.roads.set(e.a, e.b, 2);
     this.nav.invalidate();
-    markDenseForest(this);   // §30: infantry-proof forest cores, with an infantry connectivity guarantee (actionMap.js)
+    if (this.mapGen?.dense !== 'off') markDenseForest(this, this.mapGen?.dense === 'thick' ? { lane: 8 } : {});   // §30: infantry-proof forest cores, with an infantry connectivity guarantee (actionMap.js)
     // buildActionMap reshapes terrain after Game built the weather's static climate (sea, relief,
     // rivers per cell); recompute it so a live match and a restored save (which calls climate()
     // on the saved terrain) evolve identical weather. This was the save-determinism divergence.
@@ -107,6 +137,9 @@ export class ActionGame extends Game {
     // horde mode: every player on one side against The Blight (its own civ, added last by setupHorde)
     civ.team = this.scenario === HORDE_OBJECTIVE ? (civ.horde ? 11 : 0) : teamOf ? teamOf[civ.id] : Math.floor(civ.id / this.teamSize);
     civ.res = { ...startRes };
+    // Ticket 4: this player's resource multiplier (lobby seat income; 1 = standard), on income and cache pickups
+    const income = this.slotsDef?.[civ.id]?.income;
+    civ.income = typeof income === 'number' && Number.isFinite(income) && income > 0 ? income : 1;
     civ.rates = { materials: 0, energy: 0 };
     civ.siteIntel = new Map();
     civ.ruinIntel = new Map();
@@ -191,6 +224,7 @@ export class ActionGame extends Game {
   }
   removeBuilding(b) {
     this.buildings.delete(b.id);
+    if (b.done && ACTION_BUILDINGS[b.type]?.claims) this.territoryDirty = true;   // its claim goes at the next step
     for (const tile of [b.tile, ...Array.from({ length: 6 }, (_, d) => NB[b.tile * 6 + d])]) {
       this.obstacleLists?.delete(tile);
       const set = this.buildingCells.get(tile); if (!set) continue;
@@ -227,9 +261,11 @@ export class ActionGame extends Game {
       if (this.nav.canStand(x, z, d) && (d.air || !occupied(x, z))) { point = { x, z }; break; }
     }
     if (!point) return null;
+    // Ticket 4: the match's unit health multiplier scales each new unit (the definitions keep their armour classes)
+    const health = this.rules?.unitHealth ?? 1, hp = health === 1 ? d.hp : Math.max(1, Math.round(d.hp * health));
     const u = { id: this.id_(), owner: civ.id, type, isUnit: true, ...point, tile: tileAt(point.x, point.z),
       yaw: Math.atan2(dxBetween(from.x, point.x), point.z - from.z), vx: 0, vz: 0, speed: 0,
-      hp: d.hp, maxHp: d.hp, radius: d.radius, mode: 'guard', goal: null, path: [], orders: [], lastCombat: -999,
+      hp, maxHp: hp, radius: d.radius, mode: 'guard', goal: null, path: [], orders: [], lastCombat: -999,
       readyAt: 0, abilityReady: 0, abilityUntil: 0, blocked: 0, target: 0, kills: 0,
       altitude: d.air ? from.type === 'airfield' || from.type === 'advanced_lab' ? .06 : d.alt === 'high' ? 2 : .8 : 0,
       airBase: d.air && from.type ? from.id : 0, grounded: false, formation: 0 };
@@ -238,9 +274,28 @@ export class ActionGame extends Game {
     return u;
   }
 
-  /** A free standing point at a facility's door for a new unit of def d (see spawn), or null. */
+  /** World position of a point [x, z] in building b's frame (+z the front, (sin yaw, cos yaw)). */
+  buildingPoint(b, lx, lz) {
+    const sn = Math.sin(b.yaw || 0), cs = Math.cos(b.yaw || 0);
+    return { x: wrapX(b.x + lx * cs + lz * sn), z: b.z - lx * sn + lz * cs };
+  }
+
+  /**
+   * A free standing point at a facility's door for a new unit of def d (see spawn), or null. A modelled door
+   * (FACILITY_DOORS): straight out from it in DOOR_STEP steps until the body is clear of the walls, then beside it;
+   * otherwise (or when every door is blocked) the middle of the front face, then along it.
+   */
   doorPoint(b, d, occupied) {
     const fx = Math.sin(b.yaw || 0), fz = Math.cos(b.yaw || 0), step = 2 * d.radius + VEHICLE_SPAWN_GAP;
+    const reach = b.radius + d.radius + .40;
+    for (const [lx, lz] of FACILITY_DOORS[b.type] || []) {
+      for (let k = 0; lz + k * DOOR_STEP <= reach; k++) {
+        for (const side of [0, 1, -1]) {
+          const q = this.buildingPoint(b, lx + side * step, lz + d.radius + VEHICLE_SPAWN_GAP + k * DOOR_STEP);
+          if (this.nav.canStand(q.x, q.z, d) && (d.air || !occupied(q.x, q.z))) return q;
+        }
+      }
+    }
     for (let out = 0; out < 3; out++) {
       const r = b.radius + d.radius + .06 + out * .14;
       for (const side of DOOR_SIDES) {
@@ -258,11 +313,24 @@ export class ActionGame extends Game {
     return this.nav.nearest({ x: wrapX(b.x + fx * r + fz * side), z: b.z + fz * r - fx * side }, d, .6);
   }
 
+  /**
+   * Units standing where structure b now stands step out to the nearest free standable spot. Called when b is placed
+   * and again when it is finished (2026-11-20, "units stuck inside a base"): a finished building's solid walls
+   * (actionFootprints.json) reach past the circle of its construction site, so units that stood on the site inside
+   * those walls were trapped. A unit is moved when it overlaps b's circle or b's walls are what keep it from standing
+   * (canStand fails with b, succeeds without it). Units are taken in id order and the search widens up to 4 (hexes are
+   * ~1.7 across), so a large compound still frees everyone; deterministic.
+   */
   clearFootprint(b) {
-    for (const u of this.movers.query(b.x, b.z, b.radius + .30, []).filter((u) => u.hp > 0 && distance(u, b) < b.radius + u.radius)) {
+    const reach = Math.max(b.radius, footprintReach(b.type)) + .30;
+    const near = this.movers.query(b.x, b.z, reach + .30, []).filter((u) => u.hp > 0 && !u.inside && !ACTION_UNITS[u.type].air).sort((p, q) => p.id - q.id);
+    for (const u of near) {
       const d = ACTION_UNITS[u.type];
-      const spot = this.nav.nearest(u, d, 1.6, (x, z) => this.movers.query(x, z, .65, this.search).every((v) =>
-        v === u || v.hp <= 0 || distance(v, { x, z }) > d.radius + v.radius));
+      const under = distance(u, b) < b.radius + d.radius || !this.nav.canStand(u.x, u.z, d) && this.nav.canStand(u.x, u.z, d, b.id);
+      if (!under) continue;
+      const free = (x, z) => this.movers.query(x, z, .65, this.search).every((v) => v === u || v.hp <= 0 || distance(v, { x, z }) > d.radius + v.radius);
+      let spot = null;
+      for (const max of [1.6, 2.6, 4]) if ((spot = this.nav.nearest(u, d, max, free))) break;
       if (!spot) continue;
       const x = u.x, z = u.z;
       Object.assign(u, spot);
@@ -349,7 +417,13 @@ export class ActionGame extends Game {
    */
   emerge(b, u) {
     const fx = Math.sin(b.yaw || 0), fz = Math.cos(b.yaw || 0), inside = b.radius * .45;
-    emit(this, { k: 'emerge', a: b.tile, s: u.id, ow: u.owner, ax: wrapX(b.x + fx * inside), az: b.z + fz * inside, bx: u.x, bz: u.z });
+    // the client draws the unit rolling out from (ax, az) to its spawn point: the nearest modelled door, a step inside
+    let from = { x: wrapX(b.x + fx * inside), z: b.z + fz * inside }, best = Infinity;
+    for (const [lx, lz] of FACILITY_DOORS[b.type] || []) {
+      const q = this.buildingPoint(b, lx, lz - .08), dd = distance(q, u);
+      if (dd < best) { best = dd; from = q; }
+    }
+    emit(this, { k: 'emerge', a: b.tile, s: u.id, ow: u.owner, ax: from.x, az: from.z, bx: u.x, bz: u.z });
     if (u.goal || ACTION_UNITS[u.type].air) return;
     const point = this.assemblyPoint(b, u);
     if (point) moveGroup(this, [u], point, { mode: 'move' });
@@ -423,17 +497,18 @@ export class ActionGame extends Game {
     }
   }
 
-  // B: finished defenses (watchtowers, bunkers, emplacements: 1 hex; outposts: 2) and dug trench sections
-  // (1 hex) claim nearby unclaimed hexes; they never take land another base or outpost holds. `skip` (second
-  // pass) marks hexes just released from a civ, which that civ's structures may not take back.
+  // B: finished defenses (watchtowers, bunkers, emplacements: 1 hex; outposts: 2) claim nearby unclaimed hexes;
+  // they never take land another base or outpost holds. `skip` (second pass) marks hexes just released from a civ,
+  // which that civ's structures may not take back.
+  // 2026-11-20 (user: "trenches and roads should not expand influence"): dug trench sections no longer claim (roads
+  // never did). Territory is rebuilt from the standing claimants on every refresh, so it shrinks when the defenses that
+  // extended it are destroyed (removeBuilding marks it dirty); structures left outside keep their owner and keep working.
   claimStructures(next, skip) {
     const free = (t, o) => next[t] < 0 && (!skip || skip[t] !== o + 1);
     for (const b of this.buildings.values()) {
       const r = b.done && this.civs[b.owner]?.alive ? ACTION_BUILDINGS[b.type].claims : 0;
       if (r) for (const t of disk(b.tile, r)) if (free(t, b.owner)) next[t] = b.owner;
     }
-    for (const f of this.fieldworks?.values() || []) if (f.progress >= 1 && this.civs[f.owner]?.alive)
-      for (const t of disk(f.tile, 1)) if (free(t, f.owner)) next[t] = f.owner;
   }
 
   // Release every owned hex not reachable from a site its owner holds through that owner's hexes (6-neighbour
@@ -461,7 +536,7 @@ export class ActionGame extends Game {
     if (this.allied(civ.id, entity.owner) || this.sandboxReveal && civ.human) return true;
     if (entity.inside) return false;   // W4: squads inside a structure are hidden from rivals (the structure is the target)
     if (!civ.visible[entity.tile]) return false;
-    const stealth = entity.type === 'special_forces' && entity.abilityUntil > this.time;
+    const stealth = entity.type === 'special_forces' && entity.abilityUntil > this.time || !!entity.mods && concealed(this, entity);   // + camouflage upgrades
     return !entity.isUnit || (!stealth && smokeAt(this, entity.tile) < .55) || !!civ.detect[entity.tile];
   }
 
@@ -557,13 +632,15 @@ export class ActionGame extends Game {
     if (this.weather.fogAt(source.tile) > .55) vision -= .9;
     const scan = d.ability === 'scan' && source.abilityUntil > this.time;
     if (scan) vision += 3.5;
+    vision += visionBonus(source);   // detection upgrades (BASE_MENU_REWORK.md)
     // (the Networked Command vision net, +1.5 vision and 2.5-hex detection, went with the Armory, 2026-11-20)
     this.reveal(source, vision, lead.visible);
-    this.reveal(source, scan ? vision : 1.52, lead.detect);
+    this.reveal(source, scan ? vision : Math.max(1.52, detectRadius(source)), lead.detect);
   }
 
   tick() {
     if (this.over) return;
+    applyUnitRules(this.rules);   // Ticket 4: another game in this process may have scaled the shared unit table
     this.tickN++;
     this.time = this.tickN * DT;
     if (!this.sched) this.sched = new Scheduler([
@@ -700,6 +777,7 @@ export class ActionGame extends Game {
   }
 
   command(civId, cmd) {
+    applyUnitRules(this.rules);
     const civ = this.civs[civId];
     if (!civ?.alive || this.over) return { error: 'Your faction is no longer active.' };
     // base engineers (u.auto) are automatic: player and AI orders never move them
@@ -714,7 +792,10 @@ export class ActionGame extends Game {
     switch (cmd.c) {
       case 'move': {
         if (!p) return { error: 'Choose a destination.' };
-        const moved = moveGroup(this, group, p, { mode: cmd.attackMove ? 'assault' : 'move', queue: cmd.queue === true });
+        // VISION (2026-11-20): an order into undiscovered ground never says whether it can be reached (moveGroup opts.unknown)
+        const unknown = !civ.explored[tileAt(p.x, p.z)];
+        const moved = moveGroup(this, group, p, { mode: cmd.attackMove ? 'assault' : 'move', queue: cmd.queue === true, ...(unknown && { unknown: true }) });
+        if (unknown && moved.error) return group.length ? {} : moved;
         // NAV_BRIDGES.md: some vehicles of the group stayed behind for want of a bridge
         if (moved.note && civ.human) this.notify(civ.id, moved.note, { kind: 'unit', quiet: true, tile: tileAt(p.x, p.z) });
         return moved;
@@ -722,7 +803,7 @@ export class ActionGame extends Game {
       case 'collect': return collectOrder(this, civ, group, cmd.cache, cmd.queue === true);
       case 'capture': {
         if (!site || !civ.siteIntel.has(site.id) && !civ.visible[site.tile]) return { error: 'Scout that objective first.' };
-        return moveGroup(this, group, site, { mode: 'assault', exact: true, queue: cmd.queue === true });
+        return moveGroup(this, group, site, { mode: 'assault', exact: true, queue: cmd.queue === true, capture: site.id });
       }
       case 'attack': {
         const target = this.units.get(cmd.target) || this.buildings.get(cmd.target);
@@ -748,6 +829,7 @@ export class ActionGame extends Game {
         const points = (Array.isArray(cmd.points) ? cmd.points : []).slice(0, 96).map((v) => this.point(v)).filter(Boolean);
         if (points.length < 2) return { error: 'Draw a battle line.' };
         return deployLine(this, group, points, { mode: cmd.behavior === 'attackMove' ? 'assault' : 'guard', reverse: cmd.reverse === true,
+          unknown: (q) => !civ.explored[tileAt(q.x, q.z)],   // VISION: no reachability answer for undiscovered ground
           preview: cmd.preview === true, queue: cmd.queue === true });
       }
       case 'stance': {
@@ -757,7 +839,11 @@ export class ActionGame extends Game {
         for (const u of group) { u.stance = cmd.stance; u.pursuit = null; }
         return { stance: cmd.stance, units: group.length };
       }
-      case 'reach': return p ? reachQuery(this, group, p, cmd.move) : { error: 'Choose a destination.' };
+      case 'reach':
+        if (!p) return { error: 'Choose a destination.' };
+        // VISION (2026-11-20): reachability of undiscovered ground is unseen terrain: always answered "reachable"
+        if (!civ.explored[tileAt(p.x, p.z)]) return { reply: { t: 'ack', reach: { ok: true, all: true, reachable: group.length, units: group.length, reason: null, unknown: true } } };
+        return reachQuery(this, group, p, cmd.move);
       case 'hold':
       case 'fortify':
         for (const u of group) { u.orders.length = 0; u.attack = null; u.target = 0; u.airOrder = null; u.braced = true; u.pursuit = null; stopUnit(this, u); u.mode = 'guard'; }
@@ -854,11 +940,16 @@ export class ActionGame extends Game {
         return dispatched ? { dispatched } : { error: 'Selected aircraft cannot perform that mission.' };
       }
       case 'upgradeBuilding': return upgradeBuilding(this, civ, cmd.id);
+      case 'unitUpgrade': return unitUpgrade(this, civ, cmd.id ?? cmd.building, cmd.unit ?? cmd.type);
+      case 'engineerUpgrade': return engineerUpgrade(this, civ, site);
+      case 'centreTurret': return centreTurret(this, civ, site);
+      case 'perimeterUpgrade': return perimeterUpgrade(this, civ, cmd.id ?? cmd.building, cmd.path);
+      case 'outpostBuild': return outpostBuild(this, civ, cmd.id ?? cmd.building, cmd.type);
       case 'upgradeDefenses': return upgradeDefenses(this, civ, site);
       case 'terrain': {
         // brush stroke: {points:[{x,z}…], radius}; legacy: a single point / tile
         const stroke = Array.isArray(cmd.points) ? cmd.points.slice(0, 72).map((v) => this.point(v)).filter(Boolean) : null;
-        return terrainOrder(this, civ, cmd.op, p, cmd.preview === true, stroke, Number(cmd.radius));
+        return terrainOrder(this, civ, cmd.op, p, cmd.preview === true, stroke, Number(cmd.radius), cmd.amount == null ? 1 : Number(cmd.amount));
       }
       case 'missileBuild': return missileCommand(this, civ, cmd.id, null);
       case 'missileLaunch': return p ? missileCommand(this, civ, cmd.id, p) : { error: 'Choose a strategic target.' };
@@ -868,7 +959,7 @@ export class ActionGame extends Game {
   }
 
   stageScenario(key) {
-    const count = { rifles: 10, mixed: 20, armor: 18, artillery: 24, air: 24, strategic: 30, stronghold: 36, large: 30, massive: 500, stress: 1000 }[key];
+    const count = { rifles: 10, mixed: 20, armor: 18, artillery: 24, air: 24, strategic: 30, stronghold: 36, large: 30, massive: 500, stress: 1000, tanks: 30 }[key];
     if (!Number.isInteger(count)) return { error: 'Unknown combat scenario.' };
     if (key === 'stronghold') {
       // An explicit sandbox setup: developed bases and equipment can be inspected
@@ -895,11 +986,12 @@ export class ActionGame extends Game {
       rifles: ['rifle_squad'], armor: ['tank', 'mech_infantry', 'anti_armor'], artillery: ['mortar_team', 'rifle_squad', 'sp_artillery'],
       air: ['helicopter', 'fighter', 'air_defense', 'recon_drone', 'bomber'],
       mixed: ['rifle_squad', 'scout_buggy', 'engineer', 'tank', 'mortar_team'],
+      tanks: ['tank', 'rifle_squad', 'autonomous_tank', 'rifle_squad'],   // 2026-11-20 tank pass: main gun blasts and the coax MG
     };
     const types = rosters[key] || ['rifle_squad', 'rifle_squad', 'tank', 'armored_car', 'mortar_team', 'sp_artillery', 'helicopter', 'air_defense'];
     const ids = [[], []], cols = Math.ceil(Math.sqrt(count * 1.5));
     for (let side = 0; side < 2; side++) for (let i = 0; i < count; i++) {
-      const x = wrapX(center.x + (side ? 1 : -1) * (3.8 + Math.floor(i / cols) * .51)), z = center.z + (i % cols - cols * .5) * .54;
+      const x = wrapX(center.x + (side ? 1 : -1) * ((key === 'tanks' ? 2.3 : 3.8) + Math.floor(i / cols) * .51)), z = center.z + (i % cols - cols * .5) * .54;
       const type = types[(i + side) % types.length];
       const u = this.spawn(this.civs[side], type, { x, z }, .13) || this.spawn(this.civs[side], type, center, 2 + i * .017);
       if (!u) continue;
@@ -936,7 +1028,7 @@ export class ActionGame extends Game {
         own ? u.mode : null, STANCES.indexOf(stanceOf(u)), own && target && (view.god || this.sees(civ, target)) ? u.target : 0, 0, 100, Math.min(3, Math.floor(u.kills / 4)), 0, 0, 0,
         d.air ? airWire(u, own, this) : null, -1,
         [round(u.x, 1000), round(u.z, 1000), round(u.yaw, 1000), round(u.vx), round(u.vz), own ? round(Math.max(0, u.abilityReady - this.time), 2) : 0,
-          round(u.altitude || 0, 1000), 0, menOf(u)]]);
+          round(u.altitude || 0, 1000), kitBits(u), menOf(u)]]);   // extra[7]: the upgrade kit the client draws
       if (own && u.path.length) wp[u.id] = u.path.slice(0, 18).map((p) => [round(p.x, 100), round(p.z, 100)]);
     }
     return { units, paths: {}, wp };
@@ -965,8 +1057,9 @@ export class ActionGame extends Game {
       hq: hq?.id || 0, operational: !!hq?.done, build: hq ? round(hq.progress * 100, 1) : 0, tier: s.tier,
       defenseCount: own ? this.siteCount('def', s.id, civ.id) : undefined,
       slots: own && s.slots ? openSlots(this, s) : undefined, capacity: s.slots ? Math.min(7, 3 + (s.tier - 1) * 2) : undefined,
-      defenseLevel: s.slots ? s.defenseLevel || 1 : undefined, aa: s.slots && cityAA(s) ? 1 : undefined, founded: s.founded ? 1 : undefined,
+      defenseLevel: s.slots ? s.defenseLevel || 1 : undefined, aa: s.slots && cityAA(s, this) ? 1 : undefined, founded: s.founded ? 1 : undefined,
       engineers: own && s.slots ? this.siteCount('eng', s.id, s.owner) : undefined,
+      ...(own && s.slots ? engineerWire(this, s) : {}),   // engQuota, engLevel, engNext (BASE_MENU_REWORK.md §5)
       // road spokes leaving the hub: hex directions (0-5, the server's NB order) of usable road edges at the
       // centre tile, where the country roads meet the ring road (actionMap.hubRoute keeps roads on spokes)
       gates: s.slots ? [0, 1, 2, 3, 4, 5].filter((d) => NB[s.tile * 6 + d] >= 0 && this.roads.usable(s.tile, NB[s.tile * 6 + d])) : undefined,
@@ -1014,10 +1107,12 @@ export class ActionGame extends Game {
       const own = god || b.owner === civ.id, site = this.siteById.get(b.site), q = b.queues?.length, p = b.project;
       buildings.push({ id: b.id, o: b.owner, ty: b.type, t: b.tile, px: b.x, pz: b.z, yaw: b.yaw, hp: round(b.hp / b.maxHp * 100, 1),
         d: b.done ? 1 : 0, p: round(b.progress * 100, 1), st: b.state, lv: b.level, ea: b.era, ti: site?.tier || this.civs[b.owner].age + 1, slot: b.slot,
+        pa: b.path, gn: b.gun || undefined, ps: b.perimeterSlot || undefined, ol: b.outpost || undefined, pi: b.plot || undefined,   // base menu rework
         f: b.fire > 0 ? 1 : 0, a: b.done && (ACTION_BUILDINGS[b.type].materials || ACTION_BUILDINGS[b.type].energy || q) ? 1 : 0,
         ...(own ? { c: b.site, s: 1, ...(ACTION_BUILDINGS[b.type].trains ? productionWire(this, b) : { q: [], tr: 0 }),
           wk: p ? [p.kind === 'repair' ? 'r' : 'u', round((1 - p.left / p.total) * 100, 1)] : undefined, project: p?.kind,
-          mi: b.missiles, rp: b.repeat, rg: b.rallyGroup, ra: b.rally ? [round(b.rally.x), round(b.rally.z), b.rallyMode === 'move' ? 0 : 1] : undefined, rc: b.done && b.hp < b.maxHp ? Math.ceil(20 + (1 - b.hp / b.maxHp) * 70) : 0,
+          mi: b.missiles, rp: b.repeat, rg: b.rallyGroup, ra: b.rally ? [round(b.rally.x), round(b.rally.z), b.rallyMode === 'move' ? 0 : 1] : undefined, rc: 0,   // 2026-11-20: no repair buttons (engineers repair automatically)
+          ug: b.ug, rs: b.upg ? [b.upg.kind, b.upg.key, b.upg.level, round((1 - b.upg.left / b.upg.total) * 100, 1)] : undefined, qo: b.order?.length ? b.order.slice(0, 20) : undefined,
           // W4 garrison: occupant unit ids in entry order (the first def.firingSlots fire) and the exit rally point
           gar: garrisonWire(this, b), ge: b.exitRally ? [round(b.exitRally.x), round(b.exitRally.z)] : undefined } : {}) });
     }

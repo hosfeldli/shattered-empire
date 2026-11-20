@@ -83,3 +83,15 @@ deterministic and reproduces exactly after a save is restored.
   - Losing a headquarters leaves no stale rings round its defenses and trenches.
 - `test/neutral-construction.test.js`: the watchtower check now places the tower 2 hexes out, so that its claim
   connects.
+
+## 2026-11-20: trenches and roads never claim; influence shrinks with its claimants
+User request: *"The sphere of influence should shrink when the buildings that expanded it are destroyed. When influence
+shrinks, you always keep the buildings in that area. You only lose the influence. Buildings left outside your influence
+keep working. Trenches and roads should not expand influence."*
+- Source 3 above is gone: dug trench sections claim nothing (`claimStructures` reads finished `def.claims` buildings only).
+  Roads never claimed.
+- `removeBuilding` marks the territory dirty when a finished claimant leaves, so the border shrinks at the next base
+  economy step instead of the ~5 s periodic refresh.
+- Nothing is destroyed or disabled when ground is released: structures keep their owner and keep producing, firing and
+  being repaired (no system reads `world.owner` to switch a finished structure off).
+- Tests: `test/orders-vision-2026-11-20.test.js`, `test/territory-borders.test.js`, `test/action-bases-2026-11.test.js`.

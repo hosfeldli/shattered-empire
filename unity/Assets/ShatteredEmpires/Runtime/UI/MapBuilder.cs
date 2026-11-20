@@ -42,6 +42,45 @@ namespace SE.Runtime.UI
         /// </summary>
         public int[] Owners;
 
+        // ---- Ticket 4 (2026-11-20): generation options and hand-placed points of interest (server sketchMaps.js gen / pois)
+        /// <summary>The generator's options and their standard values (server SKETCH_GEN); <see cref="Gen"/> keeps only the differences.</summary>
+        public static readonly (string key, JToken standard)[] GenStandard =
+        {
+            ("forest", 1.0), ("dense", "normal"), ("season", "summer"), ("treeHeight", 1.0), ("hillHeight", .5), ("hillGradient", .5), ("ruins", "mixed"),
+            ("rivers", true), ("lakes", true), ("cities", true), ("outposts", true), ("caches", true), ("streets", true), ("power", 1.0),
+        };
+        /// <summary>Generation options that differ from the standard (null or empty: the standard generator).</summary>
+        public JObject Gen;
+        public const int MaxPois = 24;
+        /// <summary>Point-of-interest kinds (server POI_KINDS): a neutral city, the five outposts, a supply cache, a power supply.</summary>
+        public static readonly (string id, string label, string glyph, string tip)[] PoiKinds =
+        {
+            ("city", "City", "C", "A neutral city ruin to capture (a full base ring)"),
+            ("supply", "Relay", "M", "Materials Relay outpost: +90 Materials/min while held"),
+            ("energy", "Plant", "E", "Abandoned Energy Plant outpost: +30 Energy/min while held"),
+            ("radar", "Radar", "R", "Radar Station outpost: reveals the land and units around it"),
+            ("repair", "Repair", "+", "Repair Station outpost: repairs nearby units"),
+            ("defense", "Defense", "D", "Defensive Position outpost: ground forces gain cover in the zone"),
+            ("cache", "Supplies", "$", "A supply cache (110 Materials) that restocks 3 minutes after it is emptied"),
+            ("power", "Power", "P", "A power supply (60 Energy) that restocks 3 minutes after it is emptied"),
+        };
+        public struct Poi { public double U, V; public string Kind; }
+        public readonly List<Poi> Pois = new List<Poi>();
+
+        static JToken StandardOf(string key) { foreach (var g in GenStandard) if (g.key == key) return g.standard; return null; }
+        public double GenNum(string key) { var t = Gen?[key]; return t != null && (t.Type == JTokenType.Float || t.Type == JTokenType.Integer) ? (double)t : (double)StandardOf(key); }
+        public string GenStr(string key) => Gen?[key]?.Type == JTokenType.String ? (string)Gen[key] : (string)StandardOf(key);
+        public bool GenBool(string key) => Gen?[key]?.Type == JTokenType.Boolean ? (bool)Gen[key] : (bool)StandardOf(key);
+        /// <summary>Set a generation option; the standard value removes it (so standard sketches encode exactly as before).</summary>
+        public void SetGen(string key, JToken value)
+        {
+            var std = StandardOf(key);
+            if (std == null) return;
+            bool standard = value == null || (std.Type == JTokenType.Float ? value.Type != JTokenType.String && value.Type != JTokenType.Boolean && Math.Abs((double)value - (double)std) < 1e-6 : JToken.DeepEquals(value, std));
+            if (standard) { Gen?.Remove(key); if (Gen != null && Gen.Count == 0) Gen = null; return; }
+            (Gen ??= new JObject())[key] = value;
+        }
+
         /// <summary>True when the bases are assigned to teams (some entry names a team).</summary>
         public bool HasOwners
         {
@@ -119,8 +158,9 @@ namespace SE.Runtime.UI
 
         public MapSketch Clone()
         {
-            var c = new MapSketch { W = W, H = H, Cells = (byte[])Cells.Clone(), Size = Size, Name = Name, Owners = (int[])Owners?.Clone() };
+            var c = new MapSketch { W = W, H = H, Cells = (byte[])Cells.Clone(), Size = Size, Name = Name, Owners = (int[])Owners?.Clone(), Gen = (JObject)Gen?.DeepClone() };
             c.Bases.AddRange(Bases);
+            c.Pois.AddRange(Pois);
             return c;
         }
 
@@ -143,6 +183,12 @@ namespace SE.Runtime.UI
             if (Bases.Count > MaxBases) return $"At most {MaxBases} bases";
             if (LandShare < .08f) return "Paint more land (at least a tenth of the map)";
             foreach (var b in Bases) if (Cells[CellOf(b.U, b.V)] == Ocean) return "A base stands in the sea";
+            foreach (var p in Pois)
+            {
+                byte c = Cells[CellOf(p.U, p.V)];
+                if (c == Ocean) return "A point of interest stands in the sea";
+                if (c == Mountain && p.Kind != "cache" && p.Kind != "power") return "A city or outpost stands on a mountain";
+            }
             return null;
         }
 
@@ -185,6 +231,13 @@ namespace SE.Runtime.UI
             foreach (var b in Bases) bases.Add(new JArray(b.U, b.V));
             var o = new JObject { ["v"] = 1, ["name"] = Name ?? "", ["size"] = Size, ["w"] = W, ["h"] = H, ["cells"] = EncodeCells(Cells), ["bases"] = bases };
             if (HasOwners) o["owners"] = new JArray(Owners);
+            if (Gen != null && Gen.Count > 0) o["gen"] = Gen.DeepClone();
+            if (Pois.Count > 0)
+            {
+                var pois = new JArray();
+                foreach (var p in Pois) pois.Add(new JArray(p.U, p.V, p.Kind));
+                o["pois"] = pois;
+            }
             return o;
         }
 
@@ -208,6 +261,19 @@ namespace SE.Runtime.UI
                 for (int i = 0; i < owners.Count; i++) s.Owners[i] = Math.Max(-1, Math.Min(MaxBases - 1, MapPreview.Int(owners[i], -1)));
                 if (!s.HasOwners) s.Owners = null;
             }
+            // Ticket 4: generation options (known keys of the right type only) and points of interest
+            if (o["gen"] is JObject gen)
+                foreach (var g in GenStandard)
+                {
+                    var t = gen[g.key];
+                    if (t == null) continue;
+                    bool ok = g.standard.Type == JTokenType.Float ? t.Type == JTokenType.Float || t.Type == JTokenType.Integer : t.Type == g.standard.Type;
+                    if (ok) s.SetGen(g.key, g.standard.Type == JTokenType.Float ? (JToken)(double)t : t);
+                }
+            if (o["pois"] is JArray pa)
+                foreach (var t in pa)
+                    if (t is JArray p && p.Count >= 3 && s.Pois.Count < MaxPois && Array.Exists(PoiKinds, k => k.id == MapPreview.Str(p[2])))
+                        s.Pois.Add(new Poi { U = Round4(Num(p[0])), V = Round4(Num(p[1])), Kind = MapPreview.Str(p[2]) });
             return s;
         }
 
@@ -249,7 +315,7 @@ namespace SE.Runtime.UI
             var e = new MapCatalogEntry
             {
                 Id = "custom", Name = string.IsNullOrEmpty(Name) ? "Custom map" : Name, Players = Math.Max(2, Bases.Count), TeamSize = 1, Size = TilesOf(Size),
-                Description = $"Your map-builder sketch: {Bases.Count} bases. The painted sea, land, hills and mountains are kept (mountains are impassable; infantry climb hills slower); coasts, rivers, forests, resources and neutral cities are generated around them.",
+                Description = $"Your map-builder sketch: {Bases.Count} bases{(Pois.Count > 0 ? $", {Pois.Count} placed points of interest" : "")}. The painted sea, land, hills and mountains are kept (mountains are impassable; infantry climb hills slower); coasts, rivers, forests, resources and neutral cities are generated around them as the generation options say.",
             };
             var cls = new byte[W * H];
             for (int i = 0; i < cls.Length; i++)
@@ -283,6 +349,16 @@ namespace SE.Runtime.UI
                 ["classes"] = new JArray("deep", "shallow", "open", "forest", "marsh", "hills", "mountains", "peaks", "river", "ford", "road", "bridge"),
                 ["cells"] = Convert.ToBase64String(cls), ["starts"] = starts, ["startSteps"] = stepRows, ["startReach"] = new JArray(reach),
             };
+            // Ticket 4: the placed cities and outposts show in the preview (caches and power supplies are too small to)
+            var cities = new JArray();
+            var outposts = new JArray();
+            foreach (var p in Pois)
+            {
+                if (p.Kind == "city") cities.Add(new JObject { ["u"] = p.U, ["v"] = p.V, ["name"] = "City", ["kind"] = "town" });
+                else if (p.Kind != "cache" && p.Kind != "power") outposts.Add(new JObject { ["u"] = p.U, ["v"] = p.V, ["kind"] = p.Kind });
+            }
+            preview["bases"] = cities;
+            preview["outposts"] = outposts;
             if (HasOwners) preview["startOwners"] = new JArray(Owners);
             try { e.Preview = MapPreviewData.Parse(preview, e); }
             catch (Exception ex) { Debug.LogWarning("Map sketch preview: " + ex.Message); }
@@ -295,6 +371,8 @@ namespace SE.Runtime.UI
             var sb = new StringBuilder(EncodeCells(Cells)).Append('|').Append(Size).Append('|').Append(Name);
             foreach (var b in Bases) sb.Append('|').Append(b.U.ToString("R")).Append(',').Append(b.V.ToString("R"));
             if (HasOwners) sb.Append("|owners:").Append(string.Join(",", Owners));
+            if (Gen != null) sb.Append("|gen:").Append(Gen.ToString(Newtonsoft.Json.Formatting.None));
+            foreach (var p in Pois) sb.Append("|poi:").Append(p.Kind).Append(',').Append(p.U.ToString("R")).Append(',').Append(p.V.ToString("R"));
             return sb.ToString();
         }
 
@@ -347,6 +425,8 @@ namespace SE.Runtime.UI
         readonly TextField nameField;
         readonly Segmented sizeSeg;
         readonly List<Label> slotNames = new List<Label>();
+        // Ticket 4: the Generation tab's controls are rebuilt from the sketch (undo, load, clear)
+        VisualElement genPane;
         readonly Stack<MapSketch> undo = new Stack<MapSketch>();
         readonly Texture2D tex;
         readonly Color32[] px;
@@ -408,11 +488,25 @@ namespace SE.Runtime.UI
             var right = new VisualElement();
             right.AddToClassList("se-builder-right");
             columns.Add(right);
+            // Ticket 4: two tabs: Paint (brushes, bases, points of interest, size, name, slots) and Generation (options)
+            var paintPane = new VisualElement();
+            genPane = new VisualElement();
+            UiKit.Segmented(Opts(("paint", "Paint"), ("gen", "Generation")), "paint", v =>
+            {
+                paintPane.style.display = v == "paint" ? DisplayStyle.Flex : DisplayStyle.None;
+                genPane.style.display = v == "gen" ? DisplayStyle.Flex : DisplayStyle.None;
+            }, right, 161);
+            right.Add(paintPane);
+            right.Add(genPane);
+            genPane.style.display = DisplayStyle.None;
+            BuildGenPane();
+            var tools = right;
+            right = paintPane;
             Label("Brush", right);
-            Segmented paint = null, bases = null;
+            Segmented paint = null, bases = null, poiA = null, poiB = null;
             var brushOpts = new List<(string id, string label, string icon)>();
             foreach (var b in Brushes) brushOpts.Add((b.id, b.label, null));
-            paint = UiKit.Segmented(brushOpts, tool, v => { tool = v; if (bases != null) bases.Value = ""; }, right, 80);
+            paint = UiKit.Segmented(brushOpts, tool, v => { tool = v; if (bases != null) bases.Value = ""; if (poiA != null) poiA.Value = ""; if (poiB != null) poiB.Value = ""; }, right, 80);
             foreach (var b in Brushes)
             {
                 // a colour swatch (the brush's canvas colour) before the label, and what the terrain does in the tooltip
@@ -429,7 +523,16 @@ namespace SE.Runtime.UI
                 seg.Insert(0, sw);
             }
             Label("Bases", right);
-            bases = UiKit.Segmented(Opts(("base", "Place base"), ("erase", "Remove base")), "", v => { tool = v; paint.Value = ""; }, right, 130);
+            bases = UiKit.Segmented(Opts(("base", "Place base"), ("erase", "Remove")), "", v => { tool = v; paint.Value = ""; poiA.Value = ""; poiB.Value = ""; }, right, 130);
+            bases.Segment("erase").tooltip = "Click a base or a point of interest to remove it";
+            // Ticket 4: hand-placed points of interest: neutral cities, outposts, supply caches and power supplies
+            Label("Points of interest", right);
+            var kindsA = new List<(string id, string label, string icon)>();
+            var kindsB = new List<(string id, string label, string icon)>();
+            for (int k = 0; k < MapSketch.PoiKinds.Length; k++) (k < 4 ? kindsA : kindsB).Add(("poi:" + MapSketch.PoiKinds[k].id, MapSketch.PoiKinds[k].label, null));
+            poiA = UiKit.Segmented(kindsA, "", v => { tool = v; paint.Value = ""; bases.Value = ""; poiB.Value = ""; }, right, 80);
+            poiB = UiKit.Segmented(kindsB, "", v => { tool = v; paint.Value = ""; bases.Value = ""; poiA.Value = ""; }, right, 80);
+            foreach (var k in MapSketch.PoiKinds) { var seg = poiA.Segment("poi:" + k.id) ?? poiB.Segment("poi:" + k.id); if (seg != null) seg.tooltip = k.tip; }
             Label("Brush size", right);
             UiKit.Segmented(Opts(("1", "S"), ("2", "M"), ("4", "L"), ("7", "XL")), brush.ToString(), v => brush = int.TryParse(v, out int b) ? b : 2, right, 64);
             Label("Map size", right);
@@ -459,11 +562,12 @@ namespace SE.Runtime.UI
                 UiKit.Button("Load", () => LoadSlot(slot), row, null, "se-menu-action").AddToClassList("se-builder-slot-btn");
             }
             RefreshSlots();
-            var help = new Label("Paint the sea, land, hills and mountain ranges, then place a base for each start. Mountains are impassable walls (aircraft fly over them); hills are passable, but infantry climb them slower. The generator keeps your shapes and adds coasts, foothills, rivers, forests, resources and neutral cities. With fewer players than bases, the spare ones stay neutral.");
+            var help = new Label("Paint the sea, land, hills and mountain ranges, then place a base for each start, and any cities, outposts, supply caches and power supplies you want. Mountains are impassable walls (aircraft fly over them); hills are passable, but infantry climb them slower. The generator keeps your shapes and adds coasts, foothills, rivers, forests, resources and neutral cities (the Generation tab sets what it adds). With fewer players than bases, the spare ones stay neutral.");
             help.AddToClassList("se-menu-note");
             help.AddToClassList("se-menu-note--wrap");
             help.style.whiteSpace = WhiteSpace.Normal;
             right.Add(help);
+            right = tools;
 
             if (footer != null)
             {
@@ -506,7 +610,78 @@ namespace SE.Runtime.UI
         {
             var b = MapSketch.Default(from.Size);
             b.Name = from.Name;
+            b.Gen = (JObject)from.Gen?.DeepClone();   // Ticket 4: the generation options stay (Standard generation resets them)
             return b;
+        }
+
+        // ------------------------------------------------------------------ generation options (Ticket 4)
+        static readonly (string id, string label)[] ForestOpts = { ("0", "None"), ("0.5", "Sparse"), ("1", "Normal"), ("1.5", "Lush"), ("2", "Dense") };
+        static readonly (string id, string label)[] DenseOpts = { ("off", "Off"), ("normal", "Standard"), ("thick", "Thick") };
+        static readonly (string id, string label)[] SeasonOpts = { ("summer", "Summer"), ("autumn", "Autumn"), ("winter", "Winter"), ("spring", "Spring") };
+        static readonly (string id, string label)[] TreeOpts = { ("0.75", "Short"), ("1", "Standard"), ("1.3", "Tall"), ("1.6", "Towering") };
+        static readonly (string id, string label)[] RuinOpts = { ("mixed", "Mixed"), ("city", "City"), ("residential", "Housing"), ("farm", "Farm") };
+        static readonly (string id, string label)[] PowerOpts = { ("0", "None"), ("0.5", "Few"), ("1", "Normal"), ("2", "Many"), ("3", "Plenty") };
+
+        static string Num(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        static double ParseNum(string s) => double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double v) ? v : 1;
+        /// <summary>The option id nearest a value (a sketch saved with an in-between value still shows a choice).</summary>
+        static string Nearest((string id, string label)[] opts, double v)
+        {
+            string best = opts[0].id; double bd = double.MaxValue;
+            foreach (var o in opts) { double d = Math.Abs(ParseNum(o.id) - v); if (d < bd) { bd = d; best = o.id; } }
+            return best;
+        }
+
+        /// <summary>A slider row that fits the 330-wide tools column (the slider gives up width to its value label).</summary>
+        static VisualElement Narrow(VisualElement row)
+        {
+            row.style.flexDirection = FlexDirection.Row;
+            var s = row.Q<Slider>();
+            if (s != null) { s.style.width = 230; s.style.flexShrink = 1; }
+            var l = row.Q<Label>(className: "se-slider-value");
+            if (l != null) l.style.minWidth = 70;
+            return row;
+        }
+
+        /// <summary>The Generation tab: forest, hills, ruins, power supplies and the standard generation steps.</summary>
+        void BuildGenPane()
+        {
+            if (genPane == null) return;
+            genPane.Clear();
+            var g = genPane;
+            Label("Forest coverage", g);
+            UiKit.Segmented(Opts(ForestOpts), Nearest(ForestOpts, sketch.GenNum("forest")), v => sketch.SetGen("forest", ParseNum(v)), g, 64).tooltip =
+                "How much of the open land grows forest (None: open country; Dense: forest wherever it is moist)";
+            Label("Dense forest (infantry cannot enter)", g);
+            UiKit.Segmented(Opts(DenseOpts), sketch.GenStr("dense"), v => sketch.SetGen("dense", v), g, 107).tooltip =
+                "The closed forest cores only vehicles cross. Thick: larger groves; Off: every forest is open to infantry";
+            Label("Season", g);
+            UiKit.Segmented(Opts(SeasonOpts), sketch.GenStr("season"), v => sketch.SetGen("season", v), g, 80);
+            Label("Tree height", g);
+            UiKit.Segmented(Opts(TreeOpts), Nearest(TreeOpts, sketch.GenNum("treeHeight")), v => sketch.SetGen("treeHeight", ParseNum(v)), g, 80);
+            Label("Hills: height", g);
+            g.Add(Narrow(UiKit.SliderRow((float)sketch.GenNum("hillHeight"), 0f, 1f, v => v < .34f ? "Low" : v < .67f ? "Medium" : "High", v => sketch.SetGen("hillHeight", Math.Round(v, 2)), true)));
+            Label("Hills: gradient", g);
+            g.Add(Narrow(UiKit.SliderRow((float)sketch.GenNum("hillGradient"), 0f, 1f, v => v < .34f ? "Gentle" : v < .67f ? "Rolling" : "Steep", v => sketch.SetGen("hillGradient", Math.Round(v, 2)), true)));
+            Label("Ruins (neutral cities)", g);
+            UiKit.Segmented(Opts(RuinOpts), sketch.GenStr("ruins"), v => sketch.SetGen("ruins", v), g, 80).tooltip =
+                "City: metropolitan and industrial ruins; Residential: provincial towns; Farm: farmsteads (their supply cache restocks); Mixed: from the ground";
+            Label("Power supplies (energy caches over time)", g);
+            UiKit.Segmented(Opts(PowerOpts), Nearest(PowerOpts, sketch.GenNum("power")), v => sketch.SetGen("power", ParseNum(v)), g, 64);
+            Label("Generate", g);
+            void Toggle(string key, string label, string tip)
+            {
+                var row = UiKit.SettingRow(label, UiKit.Switch(sketch.GenBool(key), on => sketch.SetGen(key, on)), g);
+                row.tooltip = tip;
+            }
+            Toggle("rivers", "Rivers", "Rivers drain the land to the sea (bridged by roads)");
+            Toggle("lakes", "Lakes", "Lakes fill the hollows");
+            Toggle("cities", "Neutral cities", "Generated neutral city ruins between the bases (placed cities are always kept)");
+            Toggle("outposts", "Outposts", "Generated relays, energy plants, radar, repair and defensive outposts (placed ones are always kept)");
+            Toggle("caches", "Supply caches", "Supply caches beside the cities and bases (placed ones are always kept)");
+            Toggle("streets", "Base streets", "The starting bases' compound streets (roads to other cities are built when they are claimed)");
+            UiKit.Button("Standard generation", () => { Push(); sketch.Gen = null; BuildGenPane(); Redraw(); Say("Standard generation"); }, g, "back", "se-menu-action").tooltip =
+                "Every option back to the standard generator (painted terrain, bases and points of interest stay)";
         }
 
         // ------------------------------------------------------------------ painting
@@ -526,6 +701,7 @@ namespace SE.Runtime.UI
             Focus();
             if (tool == "base") { PlaceBase(u, v); e.StopPropagation(); return; }
             if (tool == "erase") { RemoveBase(u, v); e.StopPropagation(); return; }
+            if (tool.StartsWith("poi:", StringComparison.Ordinal)) { PlacePoi(u, v, tool.Substring(4)); e.StopPropagation(); return; }
             Push();
             painting = true;
             last = e.localPosition;
@@ -593,11 +769,28 @@ namespace SE.Runtime.UI
             Redraw();
         }
 
+        void PlacePoi(double u, double v, string kind)
+        {
+            if (sketch.Pois.Count >= MapSketch.MaxPois) { Say($"At most {MapSketch.MaxPois} points of interest"); return; }
+            byte under = sketch.Cells[sketch.CellOf(u, v)];
+            if (under == MapSketch.Ocean) { Say("Points of interest stand on land"); return; }
+            if (under == MapSketch.Mountain && kind != "cache" && kind != "power") { Say("Cities and outposts need land or hills, not mountains"); return; }
+            foreach (var b in sketch.Bases) if (Gap(b, u, v) < .06) { Say("Too close to a base"); return; }
+            foreach (var p in sketch.Pois) if (Gap(new Vector2Double(p.U, p.V), u, v) < .035) { Say("Too close to another point of interest"); return; }
+            Push();
+            sketch.Pois.Add(new MapSketch.Poi { U = MapSketch.Round4(u), V = MapSketch.Round4(v), Kind = kind });
+            Redraw();
+        }
+
         void RemoveBase(double u, double v)
         {
             int best = -1; double bd = .07;
             for (int i = 0; i < sketch.Bases.Count; i++) { double d = Gap(sketch.Bases[i], u, v); if (d < bd) { bd = d; best = i; } }
-            if (best < 0) { Say("Click on a base to remove it"); return; }
+            // Ticket 4: the nearest point of interest when it is closer than any base
+            int poi = -1; double pd = Math.Min(bd, .05);
+            for (int i = 0; i < sketch.Pois.Count; i++) { double d = Gap(new Vector2Double(sketch.Pois[i].U, sketch.Pois[i].V), u, v); if (d < pd) { pd = d; poi = i; } }
+            if (poi >= 0) { Push(); sketch.Pois.RemoveAt(poi); Redraw(); return; }
+            if (best < 0) { Say("Click on a base or a point of interest to remove it"); return; }
             Push();
             sketch.Bases.RemoveAt(best);
             if (sketch.Owners != null && best < sketch.Owners.Length)
@@ -628,6 +821,7 @@ namespace SE.Runtime.UI
             sketch = undo.Pop();
             nameField.SetValueWithoutNotify(sketch.Name);
             sizeSeg.Value = sketch.Size;
+            BuildGenPane();
             Redraw();
         }
 
@@ -673,6 +867,17 @@ namespace SE.Runtime.UI
                 m.style.backgroundColor = owned && team < 0 ? (Color)new Color32(120, 120, 120, 255) : (Color)MapPreview.TeamColor(team);
                 markers.Add(m);
             }
+            // Ticket 4: points of interest: a small square with the kind's letter
+            foreach (var p in sketch.Pois)
+            {
+                var info = Array.Find(MapSketch.PoiKinds, k => k.id == p.Kind);
+                var m = new Label(info.glyph ?? "?") { pickingMode = PickingMode.Ignore };
+                m.AddToClassList("se-builder-poi");
+                m.AddToClassList("se-builder-poi--" + p.Kind);
+                m.style.left = Length.Percent((float)p.U * 100f);
+                m.style.top = Length.Percent((float)p.V * 100f);
+                markers.Add(m);
+            }
             message = null;
             UpdateInfo();
         }
@@ -681,6 +886,7 @@ namespace SE.Runtime.UI
         {
             string problem = sketch.Problem();
             info.text = (message != null ? message + " · " : "") + $"{MapSketch.TilesOf(sketch.Size)}×{MapSketch.TilesOf(sketch.Size)} hexes · land {Mathf.RoundToInt(sketch.LandShare * 100)}% · {sketch.Bases.Count} base{(sketch.Bases.Count == 1 ? "" : "s")}" +
+                (sketch.Pois.Count > 0 ? $" · {sketch.Pois.Count} point{(sketch.Pois.Count == 1 ? "" : "s")} of interest" : "") +
                 (problem != null ? " · " + problem : " · ready: up to " + sketch.Bases.Count + " players");
             info.EnableInClassList("se-builder-info--warn", problem != null || message != null);
         }
@@ -710,6 +916,7 @@ namespace SE.Runtime.UI
             sketch = s;
             nameField.SetValueWithoutNotify(sketch.Name);
             sizeSeg.Value = sketch.Size;
+            BuildGenPane();
             Redraw();
             Say($"Loaded slot {slot + 1}");
         }

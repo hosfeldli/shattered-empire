@@ -38,11 +38,11 @@ test('build wheel placements: own territory only, except defenses also on neutra
   assert.equal(r.code, 'territory', r.error);
   const neutral = [...Array(g.world.owner.length).keys()].find((t) => g.world.owner[t] < 0 && g.nav.canStand(centerOf(t).x, centerOf(t).z, ACTION_UNITS.rifle_squad));
   // 2026-11-17: defenses may go on neutral ground (ring of influence, action-influence.test.js); W2: so may radar and
-  // repair posts (def.neutral, neutral-construction.test.js); a New Base may not
+  // repair posts (def.neutral, neutral-construction.test.js); the New Base left the game (2026-11-20, BASE_MENU_REWORK.md)
   g.civs[0].age = 1;   // radar and repair posts are Tier II
   assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'sensor_post', point: centerOf(neutral) }).code, 'territory');
   assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'repair_point', point: centerOf(neutral) }).code, 'territory');
-  assert.equal(g.command(0, { c: 'fieldPreview', type: 'base_site', point: centerOf(neutral) }).code, 'territory');
+  assert.equal(g.command(0, { c: 'fieldPreview', type: 'base_site', point: centerOf(neutral) }).code, 'invalid');
   assert.notEqual(g.command(0, { c: 'fieldPreview', type: 'guard_post', point: centerOf(neutral) }).code, 'territory');
   // 2026-11-17: trenches may be dug on neutral ground too (roads likewise); enemy land stays refused
   const t = g.command(0, { c: 'trenchWorld', points: [centerOf(neutral), centerOf(NB[neutral * 6 + 1] >= 0 ? NB[neutral * 6 + 1] : neutral)] });
@@ -53,10 +53,10 @@ test('build wheel placements: own territory only, except defenses also on neutra
   assert.ok(spot(g, 0, 'bunker'), 'a bunker can be placed inside own territory');
 });
 
-test('automatic engineers: two per base, free, uncommandable, they build placed defenses and respawn', () => {
+test('automatic engineers: three per tier-I base (BASE_MENU_REWORK.md), free, uncommandable, they build placed defenses and respawn', () => {
   const g = create(); rich(g);
   const team = engineers(g, 0);
-  assert.equal(team.length, 2);
+  assert.equal(team.length, 3);
   assert.ok(team.every((u) => u.type === 'engineer' && u.home === g.sites[0].id));
   assert.ok(!ACTION_BUILDINGS.barracks.trains.includes('engineer'), 'engineers are not trainable');
   assert.ok(train(g, g.civs[0], [g.sites[0].hq], 'engineer', 1).error);
@@ -74,11 +74,11 @@ test('automatic engineers: two per base, free, uncommandable, they build placed 
   // a killed engineer is replaced for free after a while
   const victim = engineers(g, 0)[0];
   g.units.delete(victim.id); reindex(g);
-  assert.equal(engineers(g, 0).length, 1);
-  assert.ok(ticks(g, 400, () => engineers(g, 0).length === 2), 'the lost engineer respawns');
+  assert.equal(engineers(g, 0).length, 2);
+  assert.ok(ticks(g, 400, () => engineers(g, 0).length === 3), 'the lost engineer respawns');
 });
 
-test('finished defenses claim the unclaimed hexes around them; trenches too', () => {
+test('finished defenses claim the unclaimed hexes around them; trenches do not', () => {
   const g = create(), home = g.sites[0];
   const edge = disk(home.tile, 3).find((t) => g.world.owner[t] === 0 && [0, 1, 2, 3, 4, 5].some((d) => NB[t * 6 + d] >= 0 && g.world.owner[NB[t * 6 + d]] < 0));
   assert.ok(edge >= 0);
@@ -93,7 +93,8 @@ test('finished defenses claim the unclaimed hexes around them; trenches too', ()
   assert.ok(outside.every((n) => g.world.owner[n] < 0));
   g.fieldworks.set(edge, { tile: edge, ...centerOf(edge), owner: 0, progress: 1, facing: 0, hp: 100 });
   g.refreshTerritory();
-  assert.ok(outside.every((n) => g.world.owner[n] === 0), 'a dug trench section claims radius 1');
+  // 2026-11-20 (user: trenches and roads should not expand influence): a dug trench section claims nothing
+  assert.ok(outside.every((n) => g.world.owner[n] < 0), 'a dug trench section claims nothing');
 });
 
 test('ring sites follow the base tier: 3 / 5 / 7', () => {
@@ -102,45 +103,7 @@ test('ring sites follow the base tier: 3 / 5 / 7', () => {
   for (const [tier, n] of [[1, 3], [2, 5], [3, 7]]) { s.tier = tier; assert.equal(openSlots(g, s).length, n); }
 });
 
-test('a New Base (1000) in own territory beside a road becomes a real base site when the engineers finish it', () => {
-  const g = create(); rich(g);
-  const before = g.sites.length;
-  let placed = null, point = null;
-  for (const t of disk(g.sites[0].tile, 4)) {
-    if (g.world.owner[t] !== 0) continue;
-    const r = g.command(0, { c: 'fieldPreview', type: 'base_site', point: centerOf(t) });
-    if (r.error) continue;
-    assert.equal(r.reply.placement.cost.materials, 1000);
-    assert.equal(r.reply.placement.parcels.length, 8);
-    point = centerOf(t); placed = g.command(0, { c: 'fieldBuild', type: 'base_site', point }); break;
-  }
-  if (!placed) {
-    // a fallback layout: lay a road through the territory edge so a valid spot exists
-    g.sites[0].tier = 2; g.refreshTerritory();
-    for (const t of disk(g.sites[0].tile, 4)) {
-      if (g.world.owner[t] !== 0 || g.sites.some((s) => distance(s, centerOf(t)) < 5)) continue;
-      const n = NB[t * 6]; if (n < 0) continue;
-      g.roads.set(t, n, 2);
-      const r = g.command(0, { c: 'fieldBuild', type: 'base_site', point: centerOf(t) });
-      if (!r.error) { placed = r; point = centerOf(t); break; }
-    }
-  }
-  assert.ok(placed && !placed.error, placed?.error || 'no valid new base spot');
-  assert.ok(g.civs[0].res.materials <= 19000);
-  const site = () => g.sites.find((s) => s.founded);
-  assert.ok(ticks(g, 2500, () => !!site()), 'engineers complete the new base');
-  const s = site();
-  assert.equal(g.sites.length, before + 1);
-  assert.equal(s.owner, 0); assert.equal(s.slots.length, 8); assert.equal(s.parcels.length, 9);
-  assert.ok(g.buildings.get(s.hq)?.done, 'the new base has an operational headquarters');
-  assert.equal(openSlots(g, s).length, 3);
-  assert.ok(![...g.buildings.values()].some((b) => b.type === 'base_site'), 'the placeholder is replaced');
-  ticks(g, 30);
-  assert.equal(engineers(g, 0).filter((u) => u.home === s.id).length, 2, 'the new base staffs its own engineers');
-  // spacing and road rules
-  const close = g.command(0, { c: 'fieldPreview', type: 'base_site', point: { x: s.x + 1.8, z: s.z } });
-  assert.ok(close.error);
-});
+// (the New Base left the game on 2026-11-20: outposts are the tiny bases now, base-menu-rework-2026-11-20.test.js)
 
 test('era levels on buildings and perimeter upgrades (level 2 gives the city built-in AA)', () => {
   const g = create(), civ = g.civs[0], s = g.sites[0]; rich(g);
@@ -154,18 +117,21 @@ test('era levels on buildings and perimeter upgrades (level 2 gives the city bui
   productionStep(g, .3);
   assert.ok(Math.abs(civ.rates.materials - base - ACTION_BUILDINGS.depot.materials * .4) < 1e-6, 'output +40%');
   assert.ok(g.command(0, { c: 'upgradeBuilding', id: depot.id }).error, 'level 3 needs era III');
-  // perimeter
-  assert.ok(g.command(0, { c: 'upgradeDefenses', site: s.id }).error, 'needs a perimeter first');
+  // perimeter (2026-11-20, BASE_MENU_REWORK.md §6): the old whole-perimeter upgrade is refused; each turret takes a path
+  assert.equal(g.command(0, { c: 'upgradeDefenses', site: s.id }).code, 'perimeter_paths');
   assert.ok(!g.command(0, { c: 'baseDefenses', site: s.id }).error);
   productionStep(g, CITY_DEFENSES.time + 1);
-  const pieces = [...g.buildings.values()].filter((b) => b.site === s.id && b.perimeterSlot);
-  const hp = pieces[0].maxHp;
-  assert.ok(!g.command(0, { c: 'upgradeDefenses', site: s.id }).error);
-  productionStep(g, CITY_DEFENSES.upgrade.time[0] + 1);
-  assert.equal(s.defenseLevel, 2);
-  assert.ok(pieces.every((b) => b.level === 2)); assert.ok(pieces[0].maxHp > hp);
+  const turret = [...g.buildings.values()].find((b) => b.site === s.id && b.type === 'city_turret');
+  assert.equal(g.command(0, { c: 'perimeterUpgrade', id: turret.id }).code, 'path', 'a path must be chosen');
+  assert.ok(!g.command(0, { c: 'perimeterUpgrade', id: turret.id, path: 'aa' }).error);
+  productionStep(g, 25);
+  assert.equal(turret.path, 'aa');
+  assert.equal(g.siteWire(s, civ, true).aa, undefined, 'anti-air level 1: the turret fires flak, no city umbrella yet');
+  assert.ok(!g.command(0, { c: 'perimeterUpgrade', id: turret.id }).error, 'level 2 at era II');
+  productionStep(g, 30);
+  assert.equal(turret.level, 2);
   const wire = g.siteWire(s, civ, true);
-  assert.equal(wire.defenseLevel, 2); assert.equal(wire.aa, 1); assert.equal(wire.capacity, 3);
+  assert.equal(wire.aa, 1, 'anti-air level 2 gives the base its air umbrella'); assert.equal(wire.capacity, 3);
 });
 
 test('men and squad firepower; small arms still hurt tracked armour (no Heavy Armor upgrade since 2026-11-19)', () => {

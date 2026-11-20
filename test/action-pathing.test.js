@@ -179,6 +179,7 @@ test('rally points carry an action: move or attack-move', () => {
 test('reachability query: impassable water, cut-off ground and a bridge', () => {
   const g = S.makeGame(sim);
   const s = S.riverBridgeScenario(sim, g, { roadType: 1, count: 2 });
+  g.civs[0].explored.fill(1);   // VISION (2026-11-20): undiscovered ground is always answered reachable
   const ask = (point, units = s.units) => g.command(0, { c: 'reach', units: units.map((u) => u.id), point }).reply.reach;
   assert.deepEqual(ask(s.to), { ok: true, all: true, reachable: 2, units: 2, reason: null });
   const river = s.area.point(-4, 5);   // open sea beside the painted patch

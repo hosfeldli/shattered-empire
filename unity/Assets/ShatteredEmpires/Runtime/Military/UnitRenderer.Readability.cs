@@ -115,9 +115,9 @@ namespace SE.Runtime.Military
             switch (kind)
             {
                 case Kind.Infantry: case Kind.Mortar: case Kind.Exo: return men <= 1 ? .30f : SquadRingSize;
-                case Kind.AutoTank: return .40f;
+                case Kind.AutoTank: return .50f;   // 2026-11-20: tanks drawn 25% larger (TankVisualScale)
                 case Kind.SpGun: return .38f;
-                case Kind.Tank: return .36f;
+                case Kind.Tank: return .45f;
                 case Kind.Apc: case Kind.Launcher: return .34f;
                 case Kind.Ifv: return .35f;
                 case Kind.ArmoredCar: case Kind.AirDefense: return .33f;

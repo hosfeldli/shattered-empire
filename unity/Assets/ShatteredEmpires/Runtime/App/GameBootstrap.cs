@@ -281,31 +281,40 @@ namespace SE.Runtime.App
             if (uiDocument != null && uiDocument.panelSettings != null) uiDocument.panelSettings.scale = Mathf.Clamp(scale, 0.75f, 1.6f);
         }
 
+        /// <summary>
+        /// Applies the graphics settings (GameSettings graphics knobs). A preset name ("low", "medium", "high", "ultra")
+        /// first fills every knob from that preset; "custom" (or any other value) re-applies the saved knobs as they are.
+        /// </summary>
         public void ApplyQuality(string preset)
         {
+            if (preset == "low" || preset == "medium" || preset == "high" || preset == "ultra") GameSettings.ApplyGraphicsPreset(preset);
+            else if (!GameSettings.HasGraphicsKnobs) GameSettings.ApplyGraphicsPreset("high");
+            else if (preset == "custom") GameSettings.GraphicsPreset = "custom";   // other values (vsync changes) just re-apply
             var urp = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
-            switch (preset)
+            string aa = GameSettings.AntiAliasing;
+            if (urp)
             {
-                case "low":
-                    if (urp) { urp.shadowDistance = 45; urp.msaaSampleCount = 1; urp.renderScale = 0.85f; }
-                    terrain.TreeDensity = 0.5f; terrain.TreeDistance = 310; terrain.LodDistance = 45; fx.Intensity = 0.5f;
-                    units.OperationalDistance = 12f;
-                    break;
-                case "medium":
-                    if (urp) { urp.shadowDistance = 80; urp.msaaSampleCount = 2; urp.renderScale = 1f; }
-                    terrain.TreeDensity = 0.75f; terrain.TreeDistance = 340; terrain.LodDistance = 60; fx.Intensity = 0.75f;
-                    units.OperationalDistance = 18f;
-                    break;
-                case "ultra":
-                    if (urp) { urp.shadowDistance = 200; urp.msaaSampleCount = 4; urp.renderScale = 1f; }
-                    terrain.TreeDensity = 1.25f; terrain.TreeDistance = 420; terrain.LodDistance = 100; fx.Intensity = 1.2f;
-                    units.OperationalDistance = 31f;
-                    break;
-                default:
-                    if (urp) { urp.shadowDistance = 130; urp.msaaSampleCount = 4; urp.renderScale = 1f; }
-                    terrain.TreeDensity = 1f; terrain.TreeDistance = 380; terrain.LodDistance = 70; fx.Intensity = 1f;
-                    units.OperationalDistance = 24f;
-                    break;
+                int shadows = GameSettings.ShadowQuality;
+                if (shadows > 0) urp.mainLightShadowmapResolution = shadows == 1 ? 1024 : shadows == 2 ? 2048 : 4096;
+                urp.shadowDistance = GameSettings.ShadowDistance;
+                urp.msaaSampleCount = aa == "msaa4" ? 4 : aa == "msaa2" ? 2 : 1;
+                urp.renderScale = GameSettings.RenderScale;
+            }
+            if (sun != null) sun.shadows = GameSettings.ShadowQuality > 0 ? LightShadows.Soft : LightShadows.None;
+            var camData = rts?.Cam != null ? rts.Cam.GetUniversalAdditionalCameraData() : null;
+            if (camData != null)
+            {
+                camData.antialiasing = aa == "off" ? AntialiasingMode.None : aa == "fxaa" ? AntialiasingMode.FastApproximateAntialiasing : AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+                camData.renderPostProcessing = GameSettings.PostProcessing;
+            }
+            terrain.TreeDensity = GameSettings.VegetationDensity; terrain.TreeDistance = GameSettings.VegetationDistance; terrain.LodDistance = GameSettings.TerrainDetail;
+            fx.Intensity = GameSettings.EffectsQuality;
+            units.OperationalDistance = GameSettings.UnitDetail;
+            // launch options (-vsync, benchmarks) keep their own timing
+            if (!(opts.Has("vsync") || opts.Has("perf") || opts.Get("mode") == "stress"))
+            {
+                QualitySettings.vSyncCount = GameSettings.VSync ? 1 : 0;
+                Application.targetFrameRate = GameSettings.VSync ? -1 : GameSettings.FrameCap > 0 ? GameSettings.FrameCap : 1000;
             }
             terrain.MarkAllDirty();
         }
@@ -428,6 +437,17 @@ namespace SE.Runtime.App
                         for (int i = 0; i < c.Ais.Count; i++) if (c.Ais[i].Closed) closed.Add(watch ? i : i + 1);
                         if (closed.Count > 0) msg["closed"] = closed;
                     }
+                    // Ticket 4: custom match rules and each seat's resource multiplier (server matchRules.js; validated there)
+                    var rules = c.Rules?.ToJson() ?? new JObject();
+                    if (!c.Tutorial)
+                    {
+                        var income = new JArray();
+                        bool custom = false;
+                        if (!watch) { income.Add(c.PlayerIncome); custom |= !Mathf.Approximately(c.PlayerIncome, 1f); }
+                        if (c.Ais != null) foreach (var ai in c.Ais) { income.Add(ai.Income); custom |= !Mathf.Approximately(ai.Income, 1f); }
+                        if (custom) rules["income"] = income;
+                    }
+                    if (rules.Count > 0) msg["rules"] = rules;
                 }
                 pendingCampaign = null;
                 if (opts.Has("perf") || opts.Has("bench"))
@@ -458,6 +478,10 @@ namespace SE.Runtime.App
                 return;
             }
             terrain.SetSeed(session.Welcome.Seed);
+            // Ticket 4: a custom map's tree season and height (server defs.MAP_STYLE; summer, standard height elsewhere)
+            var mapStyle = session.Welcome.Defs?["MAP_STYLE"];
+            string season = ProtocolDecoder.Str(mapStyle?["season"], "summer");
+            terrain.SetMapStyle(season == "autumn" ? 1 : season == "winter" ? 2 : season == "spring" ? 3 : 0, ProtocolDecoder.Float(mapStyle?["treeHeight"], 1f));
             city.Seed = session.Welcome.Seed;
             city.ActionRts = session.ActionRts;
             city.SetShowcaseRoads(null);
@@ -696,6 +720,7 @@ namespace SE.Runtime.App
         // ------------------------------------------------------------------ offline stress scene (M2)
         public void StartStress()
         {
+            if (opts.Has("stress-scale")) { StartStressScale(opts.Int("stress-civs", 8), opts.Int("stress-units", 1000), opts.Int("stress-buildings", 4000)); return; }   // GameBootstrap.Scale.cs
             hud?.ShowMenu(false, null);
             hud?.ShowGame(false);
             phase = Phase.Stress;
@@ -775,6 +800,7 @@ namespace SE.Runtime.App
             StepDescent(dt);
             StepLobbyClosed();
             if (stress != null) StepStress(dt);
+            StepStressScale(dt);   // scale pass: 8k-unit stress scene (GameBootstrap.Scale.cs)
             if (phase == Phase.Menu) { AnimateMenuWorld(); rts.Yaw += dt * .4f; rts.Apply(); }
             if (InputFacade.Pressed(KeyCode.F3)) showDiag = !showDiag;
             if (InputFacade.Pressed(KeyCode.F10)) hideUi = !hideUi;
@@ -1074,6 +1100,20 @@ namespace SE.Runtime.App
                         }
                         var target = EventPoint(e, false, .05f);
                         p = WeaponMuzzle(e.Shooter, p, target);
+                        // a tank's coaxial machine gun (2026-11-20, server weapon 'coax'): light MG tracers from beside the
+                        // main gun's mantlet; the turret and the gun's recoil stay on the main gun's target
+                        if (e.Weapon >= 0 && ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "") == "coax")
+                        {
+                            var along = math.normalizesafe(new float3(target.x - p.x, 0, target.z - p.z));
+                            var coax = p - along * .09f + new float3(along.z, -.012f, -along.x) * .028f;
+                            fx.Muzzle(coax, false, target - coax);
+                            fx.Tracer(coax, target, false);
+                            var second = new float3(UnityEngine.Random.value - .5f, UnityEngine.Random.value * .4f, UnityEngine.Random.value - .5f) * .05f;
+                            fx.Tracer(coax + (target - coax) * .04f, target + second, false);
+                            units.NoteShot(0, e.Target, time, null);
+                            audioDirector?.Play("mg", coax, 0.55f, 2f, 1, rts.Distance);
+                            break;
+                        }
                         fx.Muzzle(p, heavy, target-p);
                         if (e.Marksman) { NoteUpgradeFx(2, p); fx.MarksmanShot(p, target); }   // Designated Marksmen: one long precision shot (J)
                         else if (e.BurstRound > 0)
@@ -1112,6 +1152,9 @@ namespace SE.Runtime.App
                         // a structure's gun (the Artillery Emplacement's howitzer): a heavy shell and a bigger blast (2026-11-19)
                         bool emplacement = !session.Units.TryGet(e.Shooter, out _);
                         if (emplacement && weapon == "howitzer") fx.ArtilleryBlast(p, target - p);
+                        // a tank's main gun (2026-11-20 tank pass): a big muzzle blast, cyan-white on the autonomous tank
+                        else if (weapon == "cannon" && session.Units.TryGet(e.Shooter, out var gunner) && session.Units.Types.Name(gunner.TypeIndex).Contains("tank"))
+                            fx.TankGunBlast(p, target - p, session.Units.Types.Name(gunner.TypeIndex) == "autonomous_tank");
                         fx.Projectile(e.Grenade ? p + new float3(0, .02f, 0) : p, target, weapon, e.Flight, emplacement);
                         units.NoteShot(e.Shooter, e.Target, time, new Vector2(target.x, target.z));
                         audioDirector?.Play(weapon == "cannon" || weapon == "howitzer" || weapon == "atgun" || weapon == "fortgun" ? "cannon" : "launch", p, 0.9f, 5f, 2, rts.Distance);
@@ -1126,6 +1169,12 @@ namespace SE.Runtime.App
                         float scale = Mathf.Max(0.6f, e.Radius > 0 ? e.Radius * 1.4f : 0.7f);
                         if (e.Airburst && session.ActionRts && e.Weapon >= 0 && ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "") == "airburst") { }   // drawn by its 'flak' event (D)
                         else if (e.Airburst) { fx.AirBurst(p + new float3(0, IsAirTarget(e.Target) ? 0 : 1.6f, 0)); audioDirector?.Play("flak", p, 0.8f, 5f, 2, rts.Distance); }
+                        // a tank's high-explosive round (2026-11-20, server def.blast): a fireball and a ring out to its blast radius
+                        else if (e.Radius > 0 && e.Weapon >= 0 && ProtocolDecoder.Str(session.Defs?["WEAPON_KEYS"]?[e.Weapon], "") == "cannon")
+                        {
+                            fx.TankShellBlast(p, e.Radius, e.Radius > .5f);
+                            audioDirector?.Play("explosion_big", p, 1f, 6f, 3, rts.Distance);
+                        }
                         else
                         {
                             fx.Impact(p, scale, e.To >= 0 && e.To < world.Grid.N ? world.Biome[e.To] : 2);
@@ -1332,6 +1381,7 @@ namespace SE.Runtime.App
             if (time > diagAt) { diagAt = time + 0.25f; diagText = Diagnostics(); }
             GUI.Box(new Rect(Screen.width - 446, 48, 438, 236), GUIContent.none, box);
             GUI.Label(new Rect(Screen.width - 438, 54, 424, 226), diagText, small);
+            PerfReadoutGUI();   // scale pass: performance readout (GameBootstrap.Scale.cs)
         }
 
         string Diagnostics()
