@@ -1,8 +1,7 @@
 {
   "schema": 1,
   "version": "0.7.0",
-  "date": "2026-11-19",
-  "draft": true,
+  "date": "2026-11-22",
   "title": "Warthogs, devastating nukes and storms that travel",
   "summary": "New Blight survival mode against an endless infection. The fighter becomes the Warthog, nukes flatten cities, rare storms cross the map, and mountains are now walls. Bases are easy to read, damaged buildings show health, fog of war is clearer, and pathfinding and AI were rebuilt so big matches run smoother and stalemates break.",
   "since": {
