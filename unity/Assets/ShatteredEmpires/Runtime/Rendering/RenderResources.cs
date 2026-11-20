@@ -58,7 +58,10 @@ namespace SE.Runtime.Rendering
             Terrain.SetTexture("_GrassNormal", Tex("GroundGrassNormal"));
             Terrain.SetTexture("_EarthTex", Tex("GroundEarth"));
             Terrain.SetTexture("_EarthNormal", Tex("GroundEarthNormal"));
-            Water = Make("Shaders/Water", "SE Water");
+            // procedural multi-scale ground detail: colour drift, tussocks, worn patches, grain and their relief
+            SE.Runtime.Landscape.GroundNoise.Build(out var groundNoise, out var groundDetail);
+            Terrain.SetTexture("_GroundNoise", groundNoise);
+            Terrain.SetTexture("_GroundDetail", groundDetail);            Water = Make("Shaders/Water", "SE Water");
             Water.renderQueue = (int)RenderQueue.Transparent - 50;
             Additive = Make("Shaders/Billboard", "SE Additive");
             Additive.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);

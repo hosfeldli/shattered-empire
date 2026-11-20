@@ -1,8 +1,10 @@
 // Terrain chunks: vertex-coloured biome surface with world-space detail so large areas never look
 // uniform. Photographed grass and earth are hex-tiled (three randomly offset lookups blended over a
-// hexagonal lattice, after Mikkelsen 2022) so their repeat never shows; a far-scale photo layer and three
-// octaves of macro noise (lush hollows, sun-dried rises, bare patches, damp ground) break up biome
-// boundaries; slope rock blends by height so ledges show before cracks; developed city ground; base
+// hexagonal lattice, after Mikkelsen 2022) so their repeat never shows; a far-scale photo layer and
+// generated multi-scale ground noise (GroundNoise.cs: macro colour drift from lush green hollows through
+// olive to straw-dry rises, tussocks, worn patches of loam, earth and dust, fine grain, and their filtered
+// relief for hummocks and cavities) break up grassland and biome boundaries without shimmer at any zoom;
+// slope rock blends by height so ledges show before cracks; developed city ground; base
 // aprons and headquarters plazas from the territory field (one cohesive compound under every ring base,
 // paved further with each tier); churned no-man's land and crater bowls with torn clods, scorched cores
 // and pale rim debris; rain-wet ground; drifting cloud shadows; a soft glowing territory border in each
@@ -18,6 +20,8 @@ Shader "SE/Terrain"
         _EarthNormal ("Forest earth normal", 2D) = "bump" {}
         _DetailScale ("Detail scale", Float) = 1.35
         _DetailStrength ("Detail strength", Range(0, 0.5)) = 0.10
+        _GroundNoise ("Ground noise (GroundNoise.cs)", 2D) = "gray" {}
+        _GroundDetail ("Ground detail (GroundNoise.cs)", 2D) = "gray" {}
     }
     SubShader
     {
@@ -31,6 +35,10 @@ Shader "SE/Terrain"
         TEXTURE2D(_GrassNormal); SAMPLER(sampler_GrassNormal);
         TEXTURE2D(_EarthTex); SAMPLER(sampler_EarthTex);
         TEXTURE2D(_EarthNormal); SAMPLER(sampler_EarthNormal);
+        // Procedural ground (GroundNoise.cs), tileable: noise r macro fbm, g clump height, b patch field, a grain;
+        // detail r clump height, g patch field, ba the signed clump-height gradient (.5 = flat). Unset: flat grey.
+        TEXTURE2D(_GroundNoise);
+        TEXTURE2D(_GroundDetail);
         float4 _TerrainAtlas_TexelSize;
         CBUFFER_START(UnityPerMaterial)
             float _DetailScale;
@@ -125,6 +133,14 @@ Shader "SE/Terrain"
             return SAMPLE_TEXTURE2D_GRAD(_TerrainAtlas, sampler_TerrainAtlas, coord, ddx(uv) * span, ddy(uv) * span).rgb;
         }
 
+        // A world-space frequency snapped to a whole number of repeats per world period (_SE_FogParams.x = 1/period),
+        // so the ground detail lines up across the wrap seam.
+        float SE_PeriodScale(float f)
+        {
+            float invPeriod = _SE_FogParams.x;
+            return invPeriod > 1e-5 ? max(1.0, round(f / invPeriod)) * invPeriod : f;
+        }
+
         half3 GroundPhoto(float2 uv, uint layer)
         {
             // Two orientations with a slow, continuous blend remove recognisable repeats.
@@ -178,12 +194,48 @@ Shader "SE/Terrain"
                 half nearDetail = 1.0h - smoothstep(8.0h, 32.0h, (half)camDist);
                 half midDetail = 1.0h - smoothstep(24.0h, 110.0h, (half)camDist);
 
-                // Macro variation: three octaves of world-space noise, independent of the hex grid,
-                // so biome colours drift across hex boundaries instead of switching at them.
-                half m1 = SE_Noise(wp.xz * .021 + 3.1);
-                half m2 = SE_Noise(wp.xz * .067 + 11.7);
-                half m3 = SE_Noise(wp.xz * .19 + 5.3);
+                // Ground detail at three scales from the generated noise (GroundNoise.cs), every layer mip-filtered so
+                // it fades to its mean with distance instead of shimmering. Macro: soft colour drift over tens of
+                // hexes, independent of the hex grid, so biome colours wander across hex boundaries. Meso: tussocks
+                // and worn patches, two rotated, differently scaled reads cross-faded by the macro field so neither
+                // repeat shows. Micro: grain close in. The detail texture carries each scale's gradient, so the light
+                // catches the bumps. Five reads in all (four outside the close-up branch).
+                float2 xz = wp.xz;
+                float2 uvMacro = xz * SE_PeriodScale(.0105) + float2(.13, .71);
+                float2 uvDrift = xz.yx * SE_PeriodScale(.027) + float2(.57, .29);
+                half4 macA = SAMPLE_TEXTURE2D(_GroundNoise, sampler_GrassTex, uvMacro);
+                half m1 = macA.r, m2 = macA.b, m3 = macA.g;
                 half macro = m1 * .55h + m2 * .30h + m3 * .15h;
+                // the drift read: broad hummocks (its relief) and which soil a stretch of worn ground shows
+                half4 drift = SAMPLE_TEXTURE2D(_GroundDetail, sampler_GrassTex, uvDrift);
+                half2 hummockGrad = (drift.ab - .5h) * 2.0h;
+                hummockGrad = hummockGrad.yx;
+                half tone = drift.g;
+                float sM1 = SE_PeriodScale(.30), sM2 = SE_PeriodScale(.21);
+                float2 uvM1 = xz * sM1 + float2(.31, .17);
+                float2 uvM2 = float2(-xz.y, xz.x) * sM2 + float2(.73, .41);
+                half4 mesA = SAMPLE_TEXTURE2D(_GroundDetail, sampler_GrassTex, uvM1);
+                half4 mesB = SAMPLE_TEXTURE2D(_GroundDetail, sampler_GrassTex, uvM2);
+                half wM = smoothstep(.30h, .70h, m2);
+                half clump = lerp(mesA.r, mesB.r, wM);
+                half patch = lerp(mesA.g, mesB.g, wM);
+                // world-space tussock gradient, the second read rotated back into world axes
+                half2 gA = (mesA.ba - .5h) * 2.0h, gB = (mesB.ba - .5h) * 2.0h;
+                half2 tussockGrad = lerp(gA, half2(gB.y, -gB.x) * .70h, wM);
+                // micro grain, only where it can be seen (gradients from outside the branch keep the mips right)
+                half microDetail = 1.0h - smoothstep(10.0h, 46.0h, (half)camDist);
+                half grain = .5h; half2 grainGrad = 0;
+                float sMi = SE_PeriodScale(1.15);
+                float2 uvMi = xz * sMi + float2(.21, .67);
+                float2 gdxMi = ddx(uvMi), gdyMi = ddy(uvMi);
+                UNITY_BRANCH if (microDetail > .001h)
+                {
+                    half4 micro = SAMPLE_TEXTURE2D_GRAD(_GroundDetail, sampler_GrassTex, uvMi, gdxMi, gdyMi);
+                    grain = lerp(.5h, micro.r, microDetail);
+                    grainGrad = (micro.ba - .5h) * 2.0h * microDetail;
+                }
+                // patch edges soften with distance, so a mip-averaged field never snaps patches on and off
+                half soft = lerp(.08h, .22h, smoothstep(30.0h, 160.0h, (half)camDist));
 
                 // (perf, workstream A) the close-up photo layers (four hex-tiled reads, twelve samples) only
                 // run where they show; the gradients come from outside the branch so mips stay correct
@@ -197,28 +249,59 @@ Shader "SE/Terrain"
                 half3 palette = SRGBToLinear(i.color.rgb);
                 // vegetated land (green over red in the biome colour); deserts, rock and snow are not
                 half vegetated = saturate((i.color.g - i.color.r) * 14.0h + .35h);
+                // grassland proper for the new detail: green clearly over blue as well, so snow, tundra, rock and
+                // sand (whose biome colours are near grey or red-over-green) keep their own look
+                half lushland = saturate((i.color.g - i.color.b) * 10.0h - .4h) * saturate((i.color.g - i.color.r) * 20.0h + 1.0h);
                 half3 albedo = palette * lerp(1.0h, clamp(grassLuma / .075h, .78h, 1.22h), nearDetail * .40h);
                 // Close views retain the photograph's fine organic colour rather than
                 // turning every blade into a high-contrast luminance pattern.
                 albedo = lerp(albedo, grass * lerp(.85h, 1.12h, i.color.g), nearDetail * .12h);
                 // A far-scale reading of the photograph keeps mid-distance ground textured.
                 albedo *= lerp(1.0h, clamp(farLuma / .075h, .86h, 1.14h), midDetail * (1.0h - nearDetail * .6h) * .35h);
-                // Lush hollows and sun-dried rises in vegetated land; a gentle value drift everywhere.
-                half lush = smoothstep(.30h, .75h, m1 * .7h + m3 * .3h);
-                half3 hue = lerp(half3(1.07h, 1.02h, .86h), half3(.90h, 1.03h, .96h), lush);
-                albedo *= lerp(half3(1.0h, 1.0h, 1.0h), hue, vegetated * .55h);
-                albedo *= .93h + macro * .14h;
+                // Grassland colour: no single green. Moisture follows the macro field and the lie of the land (low
+                // ground near water stays lush, high rises dry out): deep green hollows, olive middle ground and
+                // straw-yellow dry rises, with smaller olive bands drifting through.
+                half slope = 1.0h - n.y;
+                half dry = smoothstep(.30h, .82h, m1 * .62h + m2 * .38h + ((half)wp.y - .9h) * .18h);
+                half3 lushT = half3(.88h, 1.04h, .93h), oliveT = half3(1.0h, 1.0h, .84h), dryT = half3(1.14h, 1.05h, .78h);
+                half3 hue = dry < .5h ? lerp(lushT, oliveT, dry * 2.0h) : lerp(oliveT, dryT, dry * 2.0h - 1.0h);
+                hue = lerp(hue, oliveT * half3(.95h, .97h, .97h), smoothstep(.58h, .82h, m3) * .40h);
+                albedo *= lerp(half3(1.0h, 1.0h, 1.0h), hue, lushland * .80h);
+                albedo *= .92h + macro * .16h;
+                // Tussocks: dense clumps darker and greener, their sun-bleached tops paler (more so where dry).
+                half grassy = lushland * (1.0h - smoothstep(.25h, .55h, slope));
+                albedo *= lerp(1.0h, lerp(.83h, 1.10h, clump), grassy * .80h);
+                albedo = lerp(albedo, albedo * half3(1.07h, 1.04h, .86h), saturate(clump * 2.0h - 1.1h) * grassy * (.20h + dry * .35h));
+                // fine grain close in: blades and pebbles
+                albedo *= .88h + grain * .24h;
 
                 // Far away the soil takes the photograph's mean colour (its smallest mip) instead of a
                 // near-black constant: churned ground and crater floors read as earth, not black blobs.
                 half3 earthDetail = SAMPLE_TEXTURE2D_LOD(_EarthTex, sampler_EarthTex, float2(.5, .5), 12).rgb;
                 UNITY_BRANCH if (nearOn) earthDetail = lerp(earthDetail, SE_HexTiledGrad(TEXTURE2D_ARGS(_EarthTex, sampler_EarthTex), wp.xz * 3.2, .5, gdx * 3.2, gdy * 3.2).rgb, nearDetail);
                 half3 earth = lerp(half3(.075h, .061h, .038h), earthDetail, .72h);
-                // Worn, bare patches in grassland: organic shapes that hide the hex lattice.
-                half bare = smoothstep(.70h, .86h, m2 * .65h + m3 * .35h + (SE_Noise(wp.xz * .9) - .5h) * .12h) * vegetated * .35h;
-                albedo = lerp(albedo, earth * half3(1.30h, 1.25h, 1.15h), bare);
+                // Worn ground: sparse, yellowed grass around small patches of brown soil or pale dust (more on dry
+                // rises and slopes, fewer in damp lowland), and broad trodden areas at the macro scale.
+                // tussocks fray the patch edges, so they never read as flat cut-outs
+                half cover = patch + (dry - .5h) * .26h + slope * .70h + (m3 - .5h) * .10h + (clump - .5h) * .12h + (grain - .5h) * .06h;
+                half sparse = smoothstep(.66h - soft, .81h, cover) * lushland;
+                half worn = smoothstep(.82h - soft, .82h + soft, cover) * lushland;
+                // each patch its own soil: dark loam, brown earth or pale dust (dust only where it is dry)
+                half3 loam = earth * half3(1.10h, 1.02h, .94h);
+                half3 brown = earth * half3(1.45h, 1.28h, 1.10h);
+                half3 dust = half3(.18h, .16h, .12h);
+                half3 soilT = lerp(loam, brown, smoothstep(.25h, .60h, tone));
+                soilT = lerp(soilT, dust, smoothstep(.55h, .85h, tone) * dry * .7h);
+                soilT *= .80h + grain * .40h;
+                albedo = lerp(albedo, albedo * half3(1.05h, 1.02h, .88h), sparse * .45h);
+                albedo = lerp(albedo, soilT, worn * .72h);
+                // a trodden, slightly darker rim where the turf gives way to bare soil
+                albedo *= 1.0h - saturate(worn * (1.0h - worn) * 4.0h) * .10h;
+                half bare = smoothstep(.70h, .88h, macA.b * .65h + m3 * .35h + (patch - .5h) * .14h) * lushland * .30h;
+                albedo = lerp(albedo, earth * half3(1.30h, 1.25h, 1.15h) * (.85h + grain * .3h), bare);
+                // cavity: the hollows between tussocks hold shade
+                albedo *= lerp(1.0h, .88h + clump * .12h, grassy * (1.0h - worn));
 
-                half slope = 1.0h - n.y;
                 half3 weights = pow(abs(n), 4);
                 weights /= max(dot(weights, half3(1, 1, 1)), .001h);
                 half3 rock = GroundPhoto(wp.zy * .73, 2u) * weights.x
@@ -290,6 +373,11 @@ Shader "SE/Terrain"
 
                 half relief = lerp(grassLuma, rockLuma, steep);
                 n = SE_Relief(wp, n, relief, .00012h + steep * .00050h);
+                // Ground relief from the filtered gradients: broad hummocks everywhere on land, tussocks on grass and
+                // grain close in, so the low sun catches the ground instead of a flat wash. Paving stays flat.
+                half land = (half)i.color.a * (1.0h - apron) * (1.0h - district * .7h);
+                half2 groundGrad = hummockGrad * .10h + tussockGrad * (.05h + grassy * (.08h + nearDetail * .10h)) * (1.0h - worn * .5h) + grainGrad * .12h;
+                n = normalize(n + half3(-groundGrad.x, 0, -groundGrad.y) * land * (1.0h - steep * .6h));
                 UNITY_BRANCH if (nearOn)
                 {
                     half3 grassNormal = UnpackNormal(SE_HexTiledGrad(TEXTURE2D_ARGS(_GrassNormal, sampler_GrassNormal), wp.xz * 7.0, .45, gdx * 7.0, gdy * 7.0));
