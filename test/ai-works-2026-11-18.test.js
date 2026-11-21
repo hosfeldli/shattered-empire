@@ -43,14 +43,12 @@ function match(enabled, seed = 41, minutes = MINUTES) {
 }
 
 test(`AI bases get defenses on their threat axes within ${MINUTES} minutes, at list price`, () => {
-  const { g } = match(true);
-  let total = 0;
+  const { g, placed } = match(true);
   for (const civ of g.civs.filter((c) => c.alive)) {
     const w = civ.aiPlan.works;
     assert.ok(w, 'the AI keeps a works plan');
     const bases = g.sites.filter((s) => s.owner === civ.id && s.slots);
     const armed = armedOf(g, civ.id);
-    total += armed.length;
     for (const b of armed) {
       // every planned structure lies along an axis of its nearest base (or toward the attackers of an emergency)
       const s = bases.slice().sort((x, y) => distance(x, b) - distance(y, b))[0];
@@ -68,6 +66,10 @@ test(`AI bases get defenses on their threat axes within ${MINUTES} minutes, at l
     const rivals = g.civs.some((c) => c.alive && c.id !== civ.id && g.hostile(civ.id, c.id));
     if (axes?.length && rivals) assert.ok(axes[0].kinds.some((k) => k === 'enemy' || k === 'attack' || k === 'border'), `main axis kinds ${axes[0].kinds}`);
   }
+  // counted as built (placed during the match), not as still standing at the end: this seed's match is won by one AI
+  // before minute 15, and the loser's defenses destroyed in that war were built too (2026-11-20: the exact-slot and AI
+  // reinforcement fixes moved the win 30 s earlier, before the winner's third structure went up: 2 left standing, 5 built)
+  const total = [...placed.values()].filter((b) => ACTION_BUILDINGS[b.type].attack).length;
   assert.ok(total >= 3, `the AIs built ${total} armed field defenses in ${MINUTES} minutes (before AI works: 0-1)`);
   const dug = g.civs.reduce((n, c) => n + trenchesOf(g, c.id).length, 0);
   assert.ok(dug >= 3, `the AIs dug ${dug} trench hexes in ${MINUTES} minutes`);

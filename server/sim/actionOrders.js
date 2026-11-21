@@ -198,7 +198,7 @@ function candidate(game, u, point, reserved, max, start = u, preview = false, ct
       if (failed.some((f) => (x - f.x) ** 2 + (z - f.z) ** 2 < .36)) return false;
       return reserved.query(x, z, .65, near).every((o) => distance(o, { x, z }) >= o.radius + d.radius + .06);
     });
-    if (!slot) return null;
+    if (!slot) { if (ctx && k === 0) ctx.noRoom = true; return null; }
     const path = groupRoute(game, start, slot, d, ctx);
     if (!path) { failed.push(slot); if (ctx?.far) break; continue; }   // Pass 6: failed on the way: no other slot helps
     if (!d.air && !preview) reserved.add({ ...slot, radius: d.radius });
@@ -207,9 +207,15 @@ function candidate(game, u, point, reserved, max, start = u, preview = false, ct
   return null;
 }
 
+// 2026-11-20: an exact order whose formation slot has no free ground for this hull within EXACT_SLOT (the slot lands on
+// the objective's headquarters, or the members placed before took the room) widens to EXACT_ROOM instead of leaving the
+// unit behind with no order (a tank's slot on an HQ: a 68-unit assault left it standing at home). Only when there was
+// no room at all: a slot that was found but could not be reached is not retried further out.
+const EXACT_SLOT = .45, EXACT_ROOM = 1.55;
 function routeSlot(game, u, p, reserved, opts, routing) {
-  if (routing) routing.far = false;
-  return candidate(game, u, p, reserved, opts.exact ? .45 : 1.55, u, false, routing) || (!opts.exact && !routing?.far && candidate(game, u, p, reserved, 3.1, u, false, routing));
+  if (routing) { routing.far = false; routing.noRoom = false; }
+  if (opts.exact) return candidate(game, u, p, reserved, EXACT_SLOT, u, false, routing) || (!!routing?.noRoom && candidate(game, u, p, reserved, EXACT_ROOM, u, false, routing));
+  return candidate(game, u, p, reserved, 1.55, u, false, routing) || (!routing?.far && candidate(game, u, p, reserved, 3.1, u, false, routing));
 }
 // Pass 6: a group route that failed farther than this (hexes) from its slot failed on the way there (groupRoute)
 const SLOT_NEAR = 2;

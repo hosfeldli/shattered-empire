@@ -21,7 +21,7 @@ import { W } from './constants.js';
 import { WRAP } from './hex.js';
 import * as basesApi from './actionBases.js';
 import * as engineersApi from './actionEngineers.js';
-import { distance, tileAt } from './actionNavigation.js';
+import { distance, tileAt, wrapX } from './actionNavigation.js';
 import { GROUND_PACE, moveGroup as orderGroup } from './actionOrders.js';
 
 const { advanceBase, construct, demolish, facilitiesAt, headquarters, openSlots } = basesApi;
@@ -471,15 +471,18 @@ function nextLeg(f, u) {
   return leg === 0 ? f.stage : leg === 1 ? f.rally : null;
 }
 
-/** March members toward their next waypoint; returns the members already at or past the rally. */
-function march(game, f, units, target) {
+/**
+ * March members toward their next waypoint; returns the members already at or past the rally (with `ordered`: true when
+ * an order went out). `now`: skip the force's 11 s march timer (engage's reinforcements, which keep their own timer).
+ */
+function march(game, f, units, target, now = false) {
   const ahead = [], legs = new Map();
   for (const u of units) {
     const leg = isAir(u) ? null : nextLeg(f, u);
     if (!leg) ahead.push(u); else { const list = legs.get(leg) || []; list.push(u); legs.set(leg, list); }
   }
-  if (game.time - (f.marchAt ?? -99) > 11) {
-    let ordered = false;
+  let ordered = false;
+  if (now || game.time - (f.marchAt ?? -99) > 11) {
     for (const [leg, list] of legs) {
       const idle = list.filter((u) => needsOrder(game, u, leg));
       if (!idle.length) continue;
@@ -493,6 +496,7 @@ function march(game, f, units, target) {
     }
     if (ordered) f.marchAt = game.time;
   }
+  ahead.ordered = ordered;
   return ahead;
 }
 
@@ -549,10 +553,14 @@ function engage(game, civ, p, f, units, target, enemy) {
   if (local.length < Math.min(5, units.length)) return false;
   const late = units.filter((u) => !u.goal && !u.attack && distance(u, target) >= 10);
   if (late.length && game.time > (f.reinforceAt || 0)) {
-    // reinforcements come in along this force's own axis (via its rally), not down the shortest route from home
-    const ahead = march(game, f, late, target);
-    if (ahead.length) moveGroup(game, ahead, lerp(game, target, f.rally, Math.min(.5, 3.5 / Math.max(.1, distance(f.rally, target)))), { mode: 'assault' });
-    f.reinforceAt = game.time + 14;
+    // reinforcements come in along this force's own axis (via its rally), not down the shortest route from home.
+    // 2026-11-20: the march goes out now (not on the force's march timer: the muster's last march order a few seconds
+    // earlier held it back while reinforceAt still moved on 14 s, so fresh units stood idle at home for up to 25 s), and
+    // the 14 s wait starts only once an order actually went out (not when it was deferred to the next plan)
+    const ahead = march(game, f, late, target, true);
+    let sent = ahead.ordered;
+    if (ahead.length && !moveGroup(game, ahead, lerp(game, target, f.rally, Math.min(.5, 3.5 / Math.max(.1, distance(f.rally, target)))), { mode: 'assault' }).deferred) sent = true;
+    if (sent) f.reinforceAt = game.time + 14;
   }
   return true;
 }
@@ -892,6 +900,8 @@ function siloStep(game, civ, p, n, bases, labOnly) {
  * (+1 safety margin); when the operation's own troops stand there the strike is returned with `clear` set so the
  * operation pulls them back first.
  */
+// off-centre aim points tried for a headquarters strike whose centre is unsafe (inside MISSILE_PROJECT.core = 3.2)
+const STRIKE_OFFSETS = [1.2, 2.4];
 function pickStrike(game, civ, p, silo, enemy, stalemate) {
   const R = MISSILE_PROJECT.radius, safe = R + 1;
   const friendly = [...game.units.values()].filter((u) => !game.hostile(civ.id, u.owner) && !isAir(u));
@@ -915,7 +925,15 @@ function pickStrike(game, civ, p, silo, enemy, stalemate) {
   for (const s of civ.siteIntel.values()) {
     if (!s.hq || !game.hostile(civ.id, s.owner) || !game.civs[s.owner]?.alive) continue;
     const blocked = (p.failedAt?.[s.id] || 0) * 500 + (p.op?.target === s.id && stalemate ? 1200 : 0);
+    const before = options.length;
     consider(s, 700 + (s.tier || 1) * 250 + blocked, { site: s.id, label: s.name });
+    // 2026-11-20: a headquarters with own or allied structures or troops just inside the safety ring (a captured
+    // neighbouring city's emplacement ~8 out) is aimed off-centre, at the first point whose blast clears them, with the
+    // headquarters still in the blast core (full damage); before, one such turret kept the programme from ever launching
+    if (options.length === before) for (const r of STRIKE_OFFSETS) for (let k = 0; k < 8 && options.length === before; k++) {
+      const a = k * Math.PI / 4;
+      consider({ x: wrapX(s.x + Math.sin(a) * r), z: s.z + Math.cos(a) * r }, 700 + (s.tier || 1) * 250 + blocked, { site: s.id, label: s.name });
+    }
   }
   const ground = enemy.filter((e) => !isAir(e)).sort((a, b) => a.id - b.id).slice(0, 60);
   for (const u of ground) {

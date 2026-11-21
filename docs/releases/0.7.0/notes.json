@@ -571,6 +571,10 @@
     "A missile truck whose target slipped out of sight while it was setting up finishes setting up instead of staying stuck.",
     "Old borders no longer reappear round finished defenses after a player loses all their territory.",
     "Wreck debris no longer reshuffles around every wreck each time a new one appears.",
-    "Optional diagnostics now report the real game speed, memory use and time spent on the post-match screen correctly, and count engineers in battles."
+    "Optional diagnostics now report the real game speed, memory use and time spent on the post-match screen correctly, and count engineers in battles.",
+    "A unit in a big capture or attack order whose place in the formation fell on a building now takes the nearest free spot instead of staying behind with no order.",
+    "AI reinforcements sent to an attack already under way head out straight away instead of standing at home for up to half a minute.",
+    "An AI with its own defenses just outside a stalemated enemy headquarters aims its strategic missile slightly off-centre instead of never launching.",
+    "Fixed a crash when a match or lobby started: the map preview cache called itself forever."
   ]
 }

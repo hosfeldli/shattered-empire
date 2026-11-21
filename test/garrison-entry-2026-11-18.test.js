@@ -71,7 +71,11 @@ test('right-click garrison from far away: squads walk to real structures and end
         let from = null;
         for (let k = 0; k < 16 && !from; k++) {
           const ang = a + k * Math.PI / 16, p = g.nav.nearest({ x: hq.x + Math.sin(ang) * 9, z: hq.z + Math.cos(ang) * 9 }, inf, 1.5);
-          if (p && (home < 0 || g.nav.componentOf(tileAt(p.x, p.z), inf) === home)) from = p;
+          // ... with room around it for the squads to appear: spawn tries 8 angles from a start that follows the entity
+          // id counter, so a start wedged against a mountain spawned them only by luck of the ids (the 2026-11-20 base
+          // rework staffs each base with 3 engineers instead of 2, which shifted the ids and broke seed 7)
+          const room = p && Array.from({ length: 16 }, (_, n) => n * Math.PI / 8).filter((t) => g.nav.canStand(p.x + Math.sin(t) * 1.2, p.z + Math.cos(t) * 1.2, inf)).length >= 8;
+          if (p && room && (home < 0 || g.nav.componentOf(tileAt(p.x, p.z), inf) === home)) from = p;
         }
         assert.ok(from, 'a walkable start 9 from the HQ');
         const squads = ['rifle_squad', 'rifle_squad', 'anti_armor', 'militia'].map((t) => g.spawn(civ, t, from, 1.2)).filter(Boolean);

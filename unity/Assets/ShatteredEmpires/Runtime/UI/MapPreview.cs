@@ -371,7 +371,7 @@ namespace SE.Runtime.UI
         static void Store(string key, Texture2D tex)
         {
             if (!cache.ContainsKey(key)) cacheOrder.Enqueue(key);
-            Store(key, tex);
+            cache[key] = tex;
             while (cache.Count > CacheCap && cacheOrder.Count > 0)
             {
                 string old = cacheOrder.Dequeue();
